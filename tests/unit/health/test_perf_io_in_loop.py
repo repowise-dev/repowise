@@ -1,0 +1,621 @@
+"""Unit tests for the performance pass + perf biomarkers (PR3).
+
+Covers the walker's ``_collect_perf_hits`` (loop-body scoping, constant-loop
+skip, execution-sink gating, dependency classification) and the three perf
+biomarkers that lift its hits into findings. Like the other walker tests,
+tree-sitter grammar availability is best-effort: a missing grammar skips.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+
+import pytest
+
+from repowise.core.analysis.health.biomarkers.base import FileContext
+from repowise.core.analysis.health.biomarkers.blocking_sync_in_async import (
+    BlockingSyncInAsyncDetector,
+)
+from repowise.core.analysis.health.biomarkers.io_in_loop import IoInLoopDetector
+from repowise.core.analysis.health.biomarkers.registry import detect_all
+from repowise.core.analysis.health.biomarkers.string_concat_in_loop import (
+    StringConcatInLoopDetector,
+)
+from repowise.core.analysis.health.complexity import PerfHit, walk_file
+from repowise.core.analysis.health.perf.io_boundaries import collect_io_names
+from repowise.core.analysis.health.scoring import score_file
+
+_FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
+
+
+def _walk(rel: str, lang: str):
+    path = _FIXTURE_DIR / rel
+    fc = walk_file(str(path), lang, path.read_bytes())
+    return fc
+
+
+def _kinds(perf_hits) -> Counter:
+    return Counter(h.kind for h in perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# Walker pass — inline micro-fixtures (precise, line-stable)
+# ---------------------------------------------------------------------------
+
+# (language, source, expected (kind, detail) multiset, note)
+_CASES = [
+    (
+        "python",
+        b"def f(session, repos):\n"
+        b"    from sqlalchemy import select\n"
+        b"    for r in repos:\n"
+        b"        session.execute(select(r))\n",
+        [("io_in_loop", "db")],
+        "db execute in a data-dependent loop",
+    ),
+    (
+        "python",
+        b"def f(client, queries):\n"
+        b"    for q in queries:\n"
+        b"        client.request(q).execute()\n"
+        b"        client.scalar(q)\n",
+        [],
+        "execute / scalar with no db evidence is an SDK verb, not a DB sink",
+    ),
+    (
+        "python",
+        b"def f(cur, ids):\n"
+        b"    for i in ids:\n"
+        b"        cur.execute('SELECT * FROM t WHERE id = %s', (i,))\n",
+        [("io_in_loop", "db")],
+        "a SQL statement argument is db evidence without an import",
+    ),
+    (
+        "python",
+        b"def f(client, ids):\n"
+        b"    for i in ids:\n"
+        b"        client.table('t').select('*').eq('id', i).execute()\n",
+        [("io_in_loop", "db")],
+        "a PostgREST table chain is db evidence without an import",
+    ),
+    (
+        "python",
+        b"import subprocess\n"
+        b"def f(paths):\n"
+        b"    for p in paths:\n"
+        b"        subprocess.run(['ls'], cwd=p)\n",
+        [("io_in_loop", "subprocess")],
+        "subprocess spawn per iteration",
+    ),
+    (
+        "python",
+        b"async def f(session, q):\n"
+        b"    for row in session.execute(q).scalars().all():\n"
+        b"        use(row)\n",
+        [],
+        "sink in the for-header runs once (loop-body scoping)",
+    ),
+    (
+        "python",
+        b"import subprocess\n"
+        b"def f():\n"
+        b"    for _ in range(3):\n"
+        b"        subprocess.run(['ls'])\n",
+        [],
+        "constant-bounded range loop is skipped",
+    ),
+    (
+        "python",
+        b"import subprocess\n"
+        b"ENDPOINTS = load()\n"
+        b"def f():\n"
+        b"    for e in ENDPOINTS:\n"
+        b"        subprocess.run(e)\n",
+        [],
+        "ALL_CAPS named-constant collection is skipped",
+    ),
+    (
+        "python",
+        b"from sqlalchemy import select\n"
+        b"def f(repos):\n"
+        b"    for r in repos:\n"
+        b"        select(r).where(r.id == 1)\n",
+        [],
+        "query builder (not executed) is not a sink",
+    ),
+    (
+        "python",
+        b"def f(items):\n"
+        b"    total = 0\n"
+        b"    for x in items:\n"
+        b"        total += compute(x)\n"
+        b"    return total\n",
+        [],
+        "numeric += / pure call in a loop is clean",
+    ),
+    (
+        "python",
+        b"import git\n"
+        b"def f(repos):\n"
+        b"    for r in repos:\n"
+        b"        r.commit()\n",
+        [],
+        "git repo.commit() without a db import is gated out",
+    ),
+    (
+        "python",
+        b"def f(rows):\n"
+        b"    s = ''\n"
+        b"    for r in rows:\n"
+        b"        s += 'x'\n"
+        b"    return s\n",
+        [("string_concat_in_loop", "")],
+        "string += in a loop",
+    ),
+    (
+        "python",
+        b"import time\n"
+        b"async def f():\n"
+        b"    time.sleep(1)\n",
+        [("blocking_sync_in_async", "time.sleep")],
+        "blocking sleep in async",
+    ),
+    (
+        "typescript",
+        b"async function f(urls) {\n  for (const u of urls) {\n    await fetch(u);\n  }\n}\n",
+        # An awaited sink in a loop is BOTH an N+1 (io_in_loop) and a missed-
+        # concurrency candidate (serial_await_in_loop, advisory co-signal).
+        [("io_in_loop", "network"), ("serial_await_in_loop", "network")],
+        "fetch in a loop (awaited -> also serial_await)",
+    ),
+    (
+        "typescript",
+        b"function f(m, keys) {\n  for (const k of keys) {\n    m.delete(k);\n  }\n}\n",
+        [],
+        "Map.delete is not a db sink",
+    ),
+    (
+        "typescript",
+        b"import fs from 'fs';\n"
+        b'function f() {\n  for (const p of ["/proc/net/tcp", "/proc/net/tcp6"]) {\n'
+        b'    fs.readFileSync(p, "utf8");\n  }\n}\n',
+        [],
+        "for-of over an inline array literal is constant-bounded -> skipped",
+    ),
+    (
+        "typescript",
+        b"import fs from 'fs';\nconst NAMES = ['DREAMS.md', 'dreams.md'];\n"
+        b"function f() {\n  for (const n of NAMES) {\n    fs.readFileSync(n);\n  }\n}\n",
+        [],
+        "for-of over an ALL_CAPS named constant is constant-bounded -> skipped",
+    ),
+    (
+        "typescript",
+        b"import fs from 'fs';\n"
+        b'function f(paths) {\n  for (const p of paths) {\n    fs.readFileSync(p, "utf8");\n  }\n}\n',
+        [("io_in_loop", "filesystem")],
+        "for-of over a data-dependent variable still fires (contrast to constant)",
+    ),
+    (
+        "typescript",
+        b"import axios from 'axios';\n"
+        b"function f(items) {\n"
+        b"  for (const u of items) {\n"
+        b"    if (axios.isCancel(u)) continue;\n"
+        b"    axios.create();\n"
+        b"  }\n"
+        b"}\n",
+        [],
+        "sync helpers on an imported I/O pkg (isCancel/create) are not sinks",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Names: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Names.Count - 1 do\n"
+        b"    CopyFile(PChar(Names[I]), PChar('dest'), False);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "bare CopyFile in a data-dependent loop",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Names: TStringList; FS: TFileStream);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Names.Count - 1 do\n"
+        b"    FS.SaveToFile(Names[I]);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "attribute-call stream I/O (SaveToFile) in a loop",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Items: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"    WinExec(PAnsiChar(Items[I]), 0);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "subprocess")],
+        "process spawn per iteration",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(S: string; Items: TStringList);\nvar I: Integer; T: string;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"  begin\n"
+        b"    T := Copy(S, 1, I);\n"
+        b"    DoNormalWork(T);\n"
+        b"  end;\n"
+        b"end;\nend.\n",
+        [],
+        "built-in substring Copy() is not TFile.Copy -- ordinary computation",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open();\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "DB dataset .Open() in a loop, gated by a FireDAC uses-clause import",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, IdHTTP;\nimplementation\n"
+        b"procedure F(Http: TIdHTTP; Urls: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Urls.Count - 1 do\n"
+        b"    Http.Get(Urls[I]);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "network")],
+        "HTTP client .Get() in a loop, gated by an IdHTTP uses-clause import",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open();\n"
+        b"end;\nend.\n",
+        [],
+        "the same .Open() call with no uses-clause DB evidence is not a sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(L: TStringList; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    L.Delete(0);\n"
+        b"end;\nend.\n",
+        [],
+        "TStringList.Delete is not a DB verb even with no uses evidence",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "parenless .Open (no exprCall node at all) is still a DB sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Items: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"    FindClose;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "parenless bare FindClose is still a filesystem sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"  begin\n"
+        b"    if I = 0 then Exit;\n"
+        b"    inherited;\n"
+        b"    Q.Open;\n"
+        b"  end;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "bare Exit/inherited in the same statement-wrapper shape do not false-fire",
+    ),
+]
+
+
+@pytest.mark.parametrize("lang,source,expected,note", _CASES, ids=[c[3] for c in _CASES])
+def test_perf_pass_cases(lang, source, expected, note):
+    fc = walk_file(f"t.{lang[:2]}", lang, source)
+    got = sorted((h.kind, h.detail) for h in fc.perf_hits)
+    assert got == sorted(expected), note
+
+
+# ---------------------------------------------------------------------------
+# Fixture files (the plan's tests/fixtures/lang_samples/*/perf_*)
+# ---------------------------------------------------------------------------
+
+
+def test_python_fixture_counts():
+    fc = _walk("python/perf_io_in_loop.py", "python")
+    counts = _kinds(fc.perf_hits)
+    assert counts["io_in_loop"] == 4  # db, subprocess, network, filesystem
+    assert counts["string_concat_in_loop"] == 1
+    assert counts["blocking_sync_in_async"] == 2
+    boundaries = {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"}
+    assert boundaries == {"db", "subprocess", "network", "filesystem"}
+    # The import bridge resolved the I/O libraries.
+    assert {"requests", "httpx", "subprocess"} <= set(fc.io_boundary_names)
+
+
+@pytest.mark.parametrize(
+    "use_block",
+    [b"use {std::fs, reqwest::Client};\n", b"use {reqwest::Client, std::fs};\n"],
+)
+def test_a_use_block_naming_two_io_modules_keeps_each_members_own_kind(use_block):
+    # #2894: a grouped use statement no longer lets the first classifying
+    # module win the whole group. Each member keeps its own kind, in either
+    # source order.
+    fc = walk_file("t.rs", "rust", use_block + b"fn f() {}\n")
+    assert fc.io_boundary_names["fs"] == "filesystem"
+    assert fc.io_boundary_names["Client"] == "network"
+
+
+def test_a_use_block_naming_two_different_filesystem_and_collection_members():
+    # The in-group name a module resolves through (``fs``) never binds a
+    # sibling member's unrelated name (``collections``/``HashMap``).
+    fc = walk_file(
+        "t.rs", "rust", b"use std::{fs::File, collections::HashMap};\nfn f() {}\n"
+    )
+    assert fc.io_boundary_names["fs"] == "filesystem"
+    assert fc.io_boundary_names["File"] == "filesystem"
+    assert "collections" not in fc.io_boundary_names
+    assert "HashMap" not in fc.io_boundary_names
+
+
+def test_a_nested_use_group_classifies_each_leaf_on_its_own():
+    fc = walk_file(
+        "t.rs", "rust", b"use tokio::{fs, net::TcpStream};\nfn f() {}\n"
+    )
+    assert fc.io_boundary_names["fs"] == "filesystem"
+
+
+def test_a_use_alias_binds_only_the_local_alias_name():
+    fc = walk_file("t.rs", "rust", b"use reqwest::Client as C;\nfn f() {}\n")
+    assert fc.io_boundary_names == {"C": "network"}
+
+
+def test_io_in_loop_fires_regardless_of_grouped_use_order():
+    # The issue's own repro: a db execute sink must be found whichever order
+    # the grouped use's two modules are written in.
+    for use_block in (b"use {std::fs, sqlx::PgPool};\n", b"use {sqlx::PgPool, std::fs};\n"):
+        src = use_block + b"fn f(c: &PgPool, xs: &[i32]) { for i in xs { c.execute(i); } }\n"
+        fc = walk_file("t.rs", "rust", src)
+        assert ("io_in_loop", "db") in {(h.kind, h.detail) for h in fc.perf_hits}
+
+
+class _FakeImportNode:
+    def __init__(self, node_type: str, text: bytes, children: list[_FakeImportNode] | None = None):
+        self.type = node_type
+        self.text = text
+        self.children = children or []
+
+
+def test_rust_local_use_paths_are_not_io_boundaries():
+    root = _FakeImportNode(
+        "source_file",
+        b"",
+        [
+            _FakeImportNode("use_declaration", b"use crate::request::Foo;"),
+            _FakeImportNode("use_declaration", b"use super::http::fetch;"),
+            _FakeImportNode("use_declaration", b"use self::fs::helper;"),
+        ],
+    )
+
+    assert collect_io_names(root, "rust") == {}
+
+
+def test_typescript_fixture_counts():
+    fc = _walk("typescript/perf_io_in_loop.ts", "typescript")
+    counts = _kinds(fc.perf_hits)
+    assert counts["io_in_loop"] == 3  # fetch, axios, prisma
+    assert {h.detail for h in fc.perf_hits} == {"network", "db"}
+
+
+# ---------------------------------------------------------------------------
+# Biomarkers — lift PerfHits into findings
+# ---------------------------------------------------------------------------
+
+
+def _ctx(perf_hits: list[PerfHit]) -> FileContext:
+    return FileContext(
+        file_path="x.py",
+        language="python",
+        nloc=10,
+        has_test_file=False,
+        module="x",
+        perf_hits=perf_hits,
+    )
+
+
+def test_io_in_loop_detector_lifts_hits():
+    ctx = _ctx([PerfHit("io_in_loop", 12, "f", "db")])
+    findings = IoInLoopDetector().detect(ctx)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.biomarker_type == "io_in_loop"
+    assert f.line_start == 12
+    assert f.details["boundary_kind"] == "db"
+
+
+def test_detectors_only_consume_their_own_kind():
+    ctx = _ctx(
+        [
+            PerfHit("io_in_loop", 1, "f", "db"),
+            PerfHit("string_concat_in_loop", 2, "f", ""),
+            PerfHit("blocking_sync_in_async", 3, "f", "time.sleep"),
+        ]
+    )
+    assert len(IoInLoopDetector().detect(ctx)) == 1
+    assert len(StringConcatInLoopDetector().detect(ctx)) == 1
+    assert len(BlockingSyncInAsyncDetector().detect(ctx)) == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [("src/render.ts", 1), ("src/__tests__/render.spec.ts", 0), ("tests/test_render.py", 0)],
+)
+def test_string_concat_not_reported_in_test_files(path, expected):
+    ctx = _ctx([PerfHit("string_concat_in_loop", 2, "f", "")])
+    ctx.file_path = path
+    assert len(StringConcatInLoopDetector().detect(ctx)) == expected
+
+
+def test_no_perf_hits_yields_no_findings():
+    assert IoInLoopDetector().detect(_ctx([])) == []
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: detect_all + score_file populate the performance dimension only
+# ---------------------------------------------------------------------------
+
+
+def test_perf_findings_score_performance_not_defect():
+    ctx = _ctx([PerfHit("io_in_loop", 5, "f", "db") for _ in range(2)])
+    results = detect_all(ctx)
+    perf = [r for r in results if r.biomarker_type == "io_in_loop"]
+    assert len(perf) == 2
+    scores, deductions = score_file(results)
+    assert scores["defect"] == 10.0  # perf never touches the surfaced score
+    assert scores["performance"] < 10.0
+    # Every perf finding carries 0 defect-pillar impact.
+    assert all(d == 0.0 for d in deductions)
+
+
+@pytest.mark.parametrize(
+    ("header", "chunked"),
+    [
+        ("for start in range(0, len(ids), CHUNK):", True),
+        ("for batch in itertools.batched(ids, 50):", True),
+        ("for start in range(0, len(ids), 1):", False),
+        ("for i in ids:", False),
+    ],
+)
+def test_a_sink_in_a_chunked_loop_carries_the_fact(header: str, chunked: bool):
+    source = (
+        "async def f(client, ids):\n"
+        f"    {header}\n"
+        "        await client.table('t').select('*').execute()\n"
+    ).encode()
+    fc = walk_file("f.py", "python", source)
+    loop_hits = [h for h in fc.perf_hits if h.kind in {"io_in_loop", "serial_await_in_loop"}]
+    assert loop_hits
+    assert all((h.loop is not None and h.loop.chunked) is chunked for h in loop_hits)
+    finding = IoInLoopDetector().detect(_ctx(loop_hits))[0]
+    assert finding.details.get("chunked_iteration", False) is chunked
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # A function bound to a name is named for it.
+        (
+            "const build = (parts: string[]) => {\n"
+            "  for (const p of parts) {\n"
+            "    fs.readFileSync(p)\n"
+            "  }\n"
+            "}\n",
+            "build",
+        ),
+        # A callback is named for the call it is passed to, as the walker names it.
+        (
+            "it('reads', () => {\n"
+            "  for (const p of parts) {\n"
+            "    fs.readFileSync(p)\n"
+            "  }\n"
+            "})\n",
+            "it callback",
+        ),
+        # A lambda inside a named function keeps that function's name.
+        (
+            "function render(parts: string[]) {\n"
+            "  return parts.map((p) => {\n"
+            "    for (const c of p) {\n"
+            "      fs.readFileSync(c)\n"
+            "    }\n"
+            "  })\n"
+            "}\n",
+            "render",
+        ),
+        # Top-level script code has no function to name.
+        ("for (const p of parts) {\n  fs.readFileSync(p)\n}\n", None),
+    ],
+)
+def test_a_hit_is_named_for_its_enclosing_function(source: str, expected: str | None):
+    fc = walk_file("f.ts", "typescript", source.encode())
+    hits = [h for h in fc.perf_hits if h.kind == "io_in_loop"]
+    if not hits:
+        pytest.skip("typescript grammar unavailable")
+    assert {h.function for h in hits} == {expected}
+
+
+_BATCHED_CLEAR = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for i in range(0, len(paths), _BATCH_SIZE):\n"
+    b"        rows = await session.execute(\n"
+    b"            select(Row).where(Row.path.in_(paths[i : i + _BATCH_SIZE]))\n"
+    b"        )\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+_N_PLUS_ONE = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for path in paths:\n"
+    b"        rows = await session.execute(select(Row).where(Row.path == path))\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+
+def _loop_hits(source: bytes):
+    fc = walk_file("f.py", "python", source)
+    return [h for h in fc.perf_hits if h.kind == "io_in_loop"]
+
+
+def test_reading_a_result_inside_a_chunked_loop_is_already_batched():
+    """The chunk loop steps by a batch size and queries ``.in_`` over one slice; the
+    inner ``for row in rows.scalars().all()`` runs once per chunk, not once per row."""
+    hits = _loop_hits(_BATCHED_CLEAR)
+    assert {h.line for h in hits} == {4, 7}
+    assert all(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and all(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_per_item_query_still_reports_as_not_batched():
+    hits = _loop_hits(_N_PLUS_ONE)
+    assert {h.line for h in hits} == {4, 5}
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and not any(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_query_in_the_header_of_an_inner_loop_belongs_to_the_outer_loop():
+    source = (
+        b"from sqlalchemy import select\n"
+        b"async def f(session, users):\n"
+        b"    for u in users:\n"
+        b"        for r in (await session.execute(select(T).where(T.id == u.id))).scalars().all():\n"
+        b"            r.x = 1\n"
+    )
+    hits = _loop_hits(source)
+    assert hits and all(h.loop_line == 3 for h in hits)
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)

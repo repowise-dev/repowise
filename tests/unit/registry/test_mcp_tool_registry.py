@@ -1,0 +1,128 @@
+"""MCPToolRegistry behavior."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from repowise.core.registry import MCPToolRegistry
+
+
+class _FakeMCP:
+    """Minimal stand-in for FastMCP — captures ``mcp.tool()(fn)`` calls."""
+
+    def __init__(self) -> None:
+        self.registered: list[Any] = []
+
+    def tool(self) -> Any:
+        def _decorator(fn: Any) -> Any:
+            self.registered.append(fn)
+            return fn
+
+        return _decorator
+
+
+@pytest.fixture
+def registry() -> MCPToolRegistry:
+    return MCPToolRegistry()
+
+
+def test_register_decorator_paren_form(registry):
+    @registry.register()
+    async def my_tool() -> dict:
+        return {}
+
+    assert my_tool in registry.tools()
+
+
+def test_register_decorator_bare_form(registry):
+    @registry.register
+    async def my_tool() -> dict:
+        return {}
+
+    assert my_tool in registry.tools()
+
+
+def test_tool_alias_matches_register(registry):
+    @registry.tool()
+    async def my_tool() -> dict:
+        return {}
+
+    assert my_tool in registry.tools()
+
+
+def test_legacy_default_workspace_tool_infers_utility_tier(registry):
+    @registry.tool(requires_workspace=True)
+    async def workspace_utility() -> dict:
+        return {}
+
+    entry = registry.entries()[0]
+    assert entry.default is True
+    assert entry.requires_workspace is True
+    assert entry.tier == "utility"
+
+
+def test_apply_registers_with_server(registry):
+    @registry.register
+    async def t1() -> dict:
+        return {}
+
+    @registry.register
+    async def t2() -> dict:
+        return {}
+
+    mcp = _FakeMCP()
+    registry.apply(mcp)
+    assert t1 in mcp.registered
+    assert t2 in mcp.registered
+
+
+def test_apply_is_idempotent_per_server(registry):
+    @registry.register
+    async def t1() -> dict:
+        return {}
+
+    mcp = _FakeMCP()
+    registry.apply(mcp)
+    registry.apply(mcp)
+    assert mcp.registered.count(t1) == 1
+
+
+def test_apply_supports_multiple_servers(registry):
+    @registry.register
+    async def t1() -> dict:
+        return {}
+
+    a = _FakeMCP()
+    b = _FakeMCP()
+    registry.apply(a)
+    registry.apply(b)
+    assert t1 in a.registered
+    assert t1 in b.registered
+
+
+def test_reset_clears_tools(registry):
+    @registry.register
+    async def t1() -> dict:
+        return {}
+
+    registry.reset()
+    assert registry.tools() == []
+
+
+def test_register_stores_available_when_as_is(registry):
+    def needs_flows(facts) -> bool:
+        return facts.counts.get("flows", 0) > 0
+
+    @registry.register(available_when=needs_flows)
+    async def gated() -> dict:
+        return {}
+
+    @registry.register
+    async def plain() -> dict:
+        return {}
+
+    by_name = {entry.name: entry for entry in registry.entries()}
+    assert by_name["gated"].available_when is needs_flows
+    assert by_name["plain"].available_when is None

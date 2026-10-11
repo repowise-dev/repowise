@@ -1,0 +1,986 @@
+"""Breaking-change guard — diff a workspace's provider contracts across updates.
+
+When ``repowise update --workspace`` re-extracts contracts, this module diffs the
+freshly-extracted set against the *previously persisted* one and reports the
+provider incompatibilities across repos: a removed endpoint, a removed
+or retyped request/response field, a reused field number, a newly-required field.
+Each :class:`BreakingChange` resolves its endpoint-exposed consumers from the matched
+contract links — the same provider→consumer evidence the system graph's edges are
+built from — so a break is reported with the exact consumer files that call it.
+
+**Honest non-goals.** A *non*-breaking change (an added optional field, a widened
+type, a new endpoint) produces no record. Impact is intentionally *direct*: a
+contract break endangers the consumers of that contract, which is exactly the
+first hop the cross-repo blast radius would surface — so we read it straight from
+the links rather than re-walking the graph. Transitive ripple stays the job of
+``get_blast_radius`` / the map overlay.
+
+**Extensibility (the D10 / PR #505 bar).** Diff rules live in two registries —
+contract-level (:data:`_CONTRACT_RULES`) and field-level (:data:`_FIELD_RULES`).
+Adding a new breaking-change kind is a new ``@contract_rule`` / ``@field_rule``
+function, never an ``if/elif`` in the engine. The engine only walks providers,
+dispatches to the registries, and attaches impact.
+
+Pure and I/O-free except the thin ``save`` / ``load`` helpers and the
+``run_breaking_change_detection`` orchestrator at the bottom.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+from repowise.core.fsutils import atomic_write_text
+from repowise.core.workspace.config import WORKSPACE_DATA_DIR, ensure_workspace_data_dir
+from repowise.core.workspace.contract_schema import ContractSchema, SchemaField
+from repowise.core.workspace.contracts import (
+    Contract,
+    ContractLink,
+    ContractStore,
+    normalize_contract_id,
+)
+
+_log = logging.getLogger("repowise.workspace.breaking_change")
+
+# ---------------------------------------------------------------------------
+# Constants (single source of truth)
+# ---------------------------------------------------------------------------
+
+BREAKING_CHANGES_FILENAME = "breaking_changes.json"
+
+#: Severity levels. ``breaking`` = wire/contract-incompatible (consumers break);
+#: ``warning`` = source-compatibility risk (e.g. a removed request field a proto3
+#: server simply ignores) that still merits a look.
+SEVERITY_BREAKING = "breaking"
+SEVERITY_WARNING = "warning"
+
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+
+def _node_id(repo: str, service: str | None) -> str:
+    """System-graph node id for a (repo, service) pair — mirrors system_graph."""
+    return repo if not service else f"{repo}::{service}"
+
+
+@dataclass
+class ImpactedConsumer:
+    """A consumer endangered by a provider's breaking change.
+
+    Resolved from the matched contract link, so ``file``/``symbol`` point at code
+    linked to the changed contract. This proves endpoint exposure, not exact field
+    use or runtime failure. ``node_id`` is the system-graph node (for map badging);
+    ``match_type`` carries the link confidence.
+    """
+
+    repo: str
+    service: str | None
+    node_id: str
+    file: str
+    symbol: str
+    match_type: str
+    confidence: float
+    #: The ingestion symbol id behind ``symbol``, when the contract bound to
+    #: one. ``symbol`` is a display label ("axios:GET /v1/orders"); this is what
+    #: an agent can pass to ``get_symbol`` / ``get_context``.
+    symbol_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = {
+            "repo": self.repo,
+            "service": self.service,
+            "node_id": self.node_id,
+            "file": self.file,
+            "symbol": self.symbol,
+            "match_type": self.match_type,
+            "confidence": self.confidence,
+        }
+        if self.symbol_id is not None:
+            d["symbol_id"] = self.symbol_id
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ImpactedConsumer:
+        return cls(
+            repo=data.get("repo", ""),
+            service=data.get("service"),
+            node_id=data.get("node_id", ""),
+            file=data.get("file", ""),
+            symbol=data.get("symbol", ""),
+            match_type=data.get("match_type", "exact"),
+            confidence=data.get("confidence", 0.0),
+            symbol_id=data.get("symbol_id"),
+        )
+
+
+@dataclass
+class BreakingChange:
+    """One provider incompatibility or comparison warning plus exposed consumers."""
+
+    kind: str  # registry key — removed_endpoint | removed_field | ...
+    severity: str  # SEVERITY_BREAKING | SEVERITY_WARNING
+    contract_id: str
+    contract_type: str  # http | grpc | topic
+    provider_repo: str
+    provider_file: str
+    provider_symbol: str
+    provider_service: str | None
+    detail: str  # human-readable one-liner
+    #: The provider handler's symbol id, when its contract bound to one.
+    provider_symbol_id: str | None = None
+    side: str | None = None
+    comparison_source: str | None = None
+    comparison_key: str | None = None
+    field_name: str | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+    impacted_consumers: list[ImpactedConsumer] = field(default_factory=list)
+
+    @property
+    def provider_node_id(self) -> str:
+        return _node_id(self.provider_repo, self.provider_service)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "kind": self.kind,
+            "severity": self.severity,
+            "contract_id": self.contract_id,
+            "contract_type": self.contract_type,
+            "provider_repo": self.provider_repo,
+            "provider_file": self.provider_file,
+            "provider_symbol": self.provider_symbol,
+            "provider_service": self.provider_service,
+            "provider_node_id": self.provider_node_id,
+            "detail": self.detail,
+            "impacted_consumers": [c.to_dict() for c in self.impacted_consumers],
+        }
+        if self.provider_symbol_id is not None:
+            d["provider_symbol_id"] = self.provider_symbol_id
+        if self.side is not None:
+            d["side"] = self.side
+        if self.comparison_source is not None:
+            d["comparison_source"] = self.comparison_source
+        if self.comparison_key is not None:
+            d["comparison_key"] = self.comparison_key
+        if self.field_name is not None:
+            d["field_name"] = self.field_name
+        if self.old_value is not None:
+            d["old_value"] = self.old_value
+        if self.new_value is not None:
+            d["new_value"] = self.new_value
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BreakingChange:
+        return cls(
+            kind=data["kind"],
+            severity=data.get("severity", SEVERITY_BREAKING),
+            contract_id=data.get("contract_id", ""),
+            contract_type=data.get("contract_type", ""),
+            provider_repo=data.get("provider_repo", ""),
+            provider_file=data.get("provider_file", ""),
+            provider_symbol=data.get("provider_symbol", ""),
+            provider_symbol_id=data.get("provider_symbol_id"),
+            provider_service=data.get("provider_service"),
+            detail=data.get("detail", ""),
+            side=data.get("side"),
+            comparison_source=data.get("comparison_source"),
+            comparison_key=data.get("comparison_key"),
+            field_name=data.get("field_name"),
+            old_value=data.get("old_value"),
+            new_value=data.get("new_value"),
+            impacted_consumers=[
+                ImpactedConsumer.from_dict(c) for c in data.get("impacted_consumers", [])
+            ],
+        )
+
+
+@dataclass
+class BreakingChangeReport:
+    """The full set of breaking changes from one workspace update + rollups.
+
+    ``generated_at`` is ``None`` until detection actually runs. An empty
+    ``changes`` list means "nothing broke" only when this is stamped.
+    """
+
+    version: int = 1
+    generated_at: str | None = None
+    changes: list[BreakingChange] = field(default_factory=list)
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.changes)
+
+    @property
+    def ran(self) -> bool:
+        """Whether this report is the result of an actual detection pass."""
+        return bool(self.generated_at)
+
+    @property
+    def breaking_count(self) -> int:
+        return sum(1 for c in self.changes if c.severity == SEVERITY_BREAKING)
+
+    @property
+    def warning_count(self) -> int:
+        return sum(1 for c in self.changes if c.severity == SEVERITY_WARNING)
+
+    @property
+    def impacted_repos(self) -> list[str]:
+        repos: set[str] = set()
+        for c in self.changes:
+            for ic in c.impacted_consumers:
+                repos.add(ic.repo)
+        return sorted(repos)
+
+    @property
+    def impacted_services(self) -> list[str]:
+        services: set[str] = set()
+        for c in self.changes:
+            for ic in c.impacted_consumers:
+                services.add(ic.node_id)
+        return sorted(services)
+
+    @property
+    def total_impacted_consumers(self) -> int:
+        return sum(len(c.impacted_consumers) for c in self.changes)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "generated_at": self.generated_at,
+            "changes": [c.to_dict() for c in self.changes],
+            "total": len(self.changes),
+            "breaking_count": self.breaking_count,
+            "warning_count": self.warning_count,
+            "impacted_repos": self.impacted_repos,
+            "impacted_services": self.impacted_services,
+            "total_impacted_consumers": self.total_impacted_consumers,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BreakingChangeReport:
+        return cls(
+            version=data.get("version", 1),
+            # Artifacts written before detection was clocked carry ``""``; they
+            # read as never-ran until the next update rewrites them.
+            generated_at=data.get("generated_at") or None,
+            changes=[BreakingChange.from_dict(c) for c in data.get("changes", [])],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Rule registries (plugin shape — add a kind = add a decorated function)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _RawChange:
+    """A rule's verdict before provider/consumer context is attached."""
+
+    kind: str
+    severity: str
+    detail: str
+    side: str | None = None
+    comparison_source: str | None = None
+    comparison_key: str | None = None
+    field_name: str | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+
+
+#: Contract-level rule: sees the previous and current provider contract for one
+#: normalized contract id (either may be ``None`` for added/removed endpoints).
+ContractRule = Callable[["Contract | None", "Contract | None"], Iterable[_RawChange]]
+
+#: Field-level rule: sees one field's previous + current state on a given side.
+FieldRule = Callable[["_FieldDiff"], "_RawChange | None"]
+
+_CONTRACT_RULES: list[ContractRule] = []
+_FIELD_RULES: list[FieldRule] = []
+
+
+def contract_rule(fn: ContractRule) -> ContractRule:
+    """Register a contract-level diff rule."""
+    _CONTRACT_RULES.append(fn)
+    return fn
+
+
+def field_rule(fn: FieldRule) -> FieldRule:
+    """Register a field-level diff rule."""
+    _FIELD_RULES.append(fn)
+    return fn
+
+
+@dataclass
+class _FieldDiff:
+    """One field's previous/current state on a request or response side."""
+
+    context: _ComparisonContext
+    path: str
+    prev: SchemaField | None
+    curr: SchemaField | None
+
+
+@dataclass(frozen=True)
+class _ComparisonContext:
+    """Evidence fidelity shared by every rule for one schema side."""
+
+    side: str  # "request" | "response"
+    source: str
+    comparison_key: str | None
+
+
+def _raw_field_change(
+    diff: _FieldDiff,
+    *,
+    kind: str,
+    severity: str,
+    detail: str,
+    old_value: str | None = None,
+    new_value: str | None = None,
+) -> _RawChange:
+    return _RawChange(
+        kind=kind,
+        severity=severity,
+        detail=detail,
+        side=diff.context.side,
+        comparison_source=diff.context.source,
+        comparison_key=diff.context.comparison_key,
+        field_name=diff.path,
+        old_value=old_value,
+        new_value=new_value,
+    )
+
+
+# -- contract-level rules ---------------------------------------------------
+
+
+@contract_rule
+def _removed_endpoint(prev: Contract | None, curr: Contract | None) -> list[_RawChange]:
+    """A provider contract that existed before and is gone now.
+
+    Covers a removed route/method (HTTP), a removed ``service/method`` (gRPC),
+    and a removed topic — the contract id encodes all three, so a vanished id is
+    a removed surface regardless of transport.
+    """
+    if prev is not None and curr is None:
+        return [
+            _RawChange(
+                kind="removed_endpoint",
+                severity=SEVERITY_BREAKING,
+                detail=f"{prev.contract_id} was removed",
+            )
+        ]
+    return []
+
+
+# -- field-level rules ------------------------------------------------------
+
+
+@field_rule
+def _removed_field(diff: _FieldDiff) -> _RawChange | None:
+    """A field present before and gone now.
+
+    A removed *response* field breaks consumers that read it; a removed *request*
+    field is a source-compat warning (a server simply stops reading it).
+    """
+    if diff.prev is not None and diff.curr is None:
+        severity = SEVERITY_BREAKING if diff.context.side == "response" else SEVERITY_WARNING
+        return _raw_field_change(
+            diff,
+            kind="removed_field",
+            severity=severity,
+            detail=f"{diff.context.side} field '{diff.path}' was removed",
+            old_value=diff.prev.type,
+        )
+    return None
+
+
+@field_rule
+def _field_type_changed(diff: _FieldDiff) -> _RawChange | None:
+    """A field whose type changed — wire-incompatible on either side."""
+    if diff.prev is not None and diff.curr is not None and diff.prev.type != diff.curr.type:
+        return _raw_field_change(
+            diff,
+            kind="field_type_changed",
+            severity=SEVERITY_BREAKING,
+            detail=(
+                f"{diff.context.side} field '{diff.path}' type changed "
+                f"{diff.prev.type} → {diff.curr.type}"
+            ),
+            old_value=diff.prev.type,
+            new_value=diff.curr.type,
+        )
+    return None
+
+
+@field_rule
+def _field_number_changed(diff: _FieldDiff) -> _RawChange | None:
+    """A field whose wire number (proto tag) changed — silently corrupts data."""
+    if (
+        diff.prev is not None
+        and diff.curr is not None
+        and diff.prev.number is not None
+        and diff.curr.number is not None
+        and diff.prev.number != diff.curr.number
+    ):
+        return _raw_field_change(
+            diff,
+            kind="field_number_changed",
+            severity=SEVERITY_BREAKING,
+            detail=(
+                f"{diff.context.side} field '{diff.path}' number changed "
+                f"{diff.prev.number} → {diff.curr.number}"
+            ),
+            old_value=str(diff.prev.number),
+            new_value=str(diff.curr.number),
+        )
+    return None
+
+
+@field_rule
+def _field_required_tightened(diff: _FieldDiff) -> _RawChange | None:
+    """A field that newly requires a value — an added or made-required field.
+
+    An optional→required change, or a brand-new required field, forces callers to
+    supply something they previously omitted. An added *optional* field never
+    fires here (the non-breaking case the guard must stay quiet about).
+    """
+    if (
+        diff.curr is not None
+        and diff.curr.required
+        and (diff.prev is None or not diff.prev.required)
+        and (diff.context.source != "openapi" or diff.context.side == "request")
+    ):
+        action = "added as required" if diff.prev is None else "became required"
+        return _raw_field_change(
+            diff,
+            kind="field_required",
+            severity=SEVERITY_BREAKING,
+            detail=f"{diff.context.side} field '{diff.path}' {action}",
+            new_value=diff.curr.type,
+        )
+    return None
+
+
+@field_rule
+def _openapi_response_required_relaxed(diff: _FieldDiff) -> _RawChange | None:
+    """A response value consumers could assume is no longer guaranteed."""
+    if (
+        diff.context.source == "openapi"
+        and diff.context.side == "response"
+        and diff.prev is not None
+        and diff.curr is not None
+        and diff.prev.required
+        and not diff.curr.required
+    ):
+        return _raw_field_change(
+            diff,
+            kind="field_required_relaxed",
+            severity=SEVERITY_BREAKING,
+            detail=f"response field '{diff.path}' became optional",
+            old_value="required",
+            new_value="optional",
+        )
+    return None
+
+
+@field_rule
+def _openapi_nullability_changed(diff: _FieldDiff) -> _RawChange | None:
+    """Apply opposite request/response variance to explicit nullability."""
+    if (
+        diff.context.source != "openapi"
+        or diff.prev is None
+        or diff.curr is None
+        or diff.prev.nullable is None
+        or diff.curr.nullable is None
+        or diff.prev.nullable == diff.curr.nullable
+    ):
+        return None
+    breaking = (
+        diff.context.side == "request" and diff.prev.nullable and not diff.curr.nullable
+    ) or (diff.context.side == "response" and not diff.prev.nullable and diff.curr.nullable)
+    if not breaking:
+        return None
+    became = "nullable" if diff.curr.nullable else "non-nullable"
+    return _raw_field_change(
+        diff,
+        kind="field_nullability_changed",
+        severity=SEVERITY_BREAKING,
+        detail=f"{diff.context.side} field '{diff.path}' became {became}",
+        old_value="nullable" if diff.prev.nullable else "non-nullable",
+        new_value=became,
+    )
+
+
+def _enum_tokens(field: SchemaField) -> dict[tuple[str, Any], Any]:
+    """Key enums by OpenAPI scalar semantics without conflating booleans and numbers."""
+    tokens: dict[tuple[str, Any], Any] = {}
+    for value in field.enum_values or []:
+        if value is None:
+            token = ("null", "")
+        elif field.type == "number" and isinstance(value, (int, float)):
+            token = ("number", Decimal(str(value)))
+        else:
+            token = (type(value).__name__, json.dumps(value, sort_keys=True))
+        tokens[token] = value
+    return tokens
+
+
+@field_rule
+def _openapi_enum_changed(diff: _FieldDiff) -> _RawChange | None:
+    """Requests may widen; responses may narrow."""
+    if diff.context.source != "openapi" or diff.prev is None or diff.curr is None:
+        return None
+    previous_values = diff.prev.enum_values
+    current_values = diff.curr.enum_values
+    constraint_break = (
+        diff.context.side == "request" and previous_values is None and current_values is not None
+    ) or (
+        diff.context.side == "response" and previous_values is not None and current_values is None
+    )
+    if constraint_break:
+        became = "constrained" if current_values is not None else "unconstrained"
+        return _raw_field_change(
+            diff,
+            kind="field_enum_changed",
+            severity=SEVERITY_BREAKING,
+            detail=f"{diff.context.side} field '{diff.path}' became {became}",
+            old_value=(
+                "unconstrained"
+                if previous_values is None
+                else json.dumps(previous_values, ensure_ascii=False)
+            ),
+            new_value=(
+                "unconstrained"
+                if current_values is None
+                else json.dumps(current_values, ensure_ascii=False)
+            ),
+        )
+    if previous_values is None or current_values is None:
+        return None
+    previous = _enum_tokens(diff.prev)
+    current = _enum_tokens(diff.curr)
+    incompatible = (
+        previous.keys() - current.keys()
+        if diff.context.side == "request"
+        else current.keys() - previous.keys()
+    )
+    if not incompatible:
+        return None
+    values = [
+        (previous if diff.context.side == "request" else current)[key]
+        for key in sorted(incompatible)
+    ]
+    direction = "removed" if diff.context.side == "request" else "added"
+    return _raw_field_change(
+        diff,
+        kind="field_enum_changed",
+        severity=SEVERITY_BREAKING,
+        detail=(
+            f"{diff.context.side} field '{diff.path}' enum value(s) {direction}: "
+            f"{json.dumps(values, ensure_ascii=False)}"
+        ),
+        old_value=json.dumps(diff.prev.enum_values, ensure_ascii=False),
+        new_value=json.dumps(diff.curr.enum_values, ensure_ascii=False),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schema diffing (pure)
+# ---------------------------------------------------------------------------
+
+
+def _field_identity(field: SchemaField) -> tuple[str, str]:
+    return (field.location or "", field.name)
+
+
+def _field_path(parent: str, field: SchemaField) -> str:
+    if field.name == "$body":
+        return parent or "body"
+    if field.name == "$response":
+        return parent or "response"
+    if field.name == "$items":
+        return f"{parent}[]" if parent else "[]"
+    name = f"{field.location}:{field.name}" if field.location not in {None, "body"} else field.name
+    return f"{parent}.{name}" if parent else name
+
+
+def _diff_field_pair(
+    context: _ComparisonContext,
+    path: str,
+    prev: SchemaField | None,
+    curr: SchemaField | None,
+) -> list[_RawChange]:
+    diff = _FieldDiff(context=context, path=path, prev=prev, curr=curr)
+    raws: list[_RawChange] = []
+    for rule in _FIELD_RULES:
+        raw = rule(diff)
+        if raw is not None:
+            raws.append(raw)
+    if prev is None or curr is None or prev.type != curr.type:
+        return raws
+    if prev.type == "object":
+        raws.extend(_diff_field_side(context, prev.children, curr.children, parent=path))
+    elif prev.type == "array" and prev.items is not None and curr.items is not None:
+        item_path = f"{path}[]" if path else "[]"
+        raws.extend(_diff_field_pair(context, item_path, prev.items, curr.items))
+    return raws
+
+
+def _diff_field_side(
+    context: _ComparisonContext,
+    prev: list[SchemaField],
+    curr: list[SchemaField],
+    *,
+    parent: str = "",
+) -> list[_RawChange]:
+    """Run every field rule recursively over one complete schema side."""
+    prev_by_name = {_field_identity(field): field for field in prev}
+    curr_by_name = {_field_identity(field): field for field in curr}
+    keys = list(prev_by_name) + [key for key in curr_by_name if key not in prev_by_name]
+    raws: list[_RawChange] = []
+    for key in keys:
+        representative = prev_by_name.get(key) or curr_by_name[key]
+        path = _field_path(parent, representative)
+        raws.extend(_diff_field_pair(context, path, prev_by_name.get(key), curr_by_name.get(key)))
+    return raws
+
+
+def _diff_schemas(prev: ContractSchema, curr: ContractSchema) -> list[_RawChange]:
+    """Diff complete request and response field sets of two comparable schemas."""
+    return _diff_field_side(
+        _ComparisonContext("request", curr.source, curr.comparison_key),
+        prev.request_fields,
+        curr.request_fields,
+    ) + _diff_field_side(
+        _ComparisonContext("response", curr.source, curr.comparison_key),
+        prev.response_fields,
+        curr.response_fields,
+    )
+
+
+def _side_state(schema: ContractSchema, side: str) -> str:
+    state = getattr(schema, f"{side}_state")
+    return state or "complete"
+
+
+def _side_snapshot(schema: ContractSchema, side: str) -> tuple[Any, ...]:
+    fields = getattr(schema, f"{side}_fields")
+    issues = tuple(
+        (issue.code, issue.source_pointer, issue.detail)
+        for issue in schema.issues
+        if issue.side in {side, "both"}
+    )
+    selection = (
+        schema.request_media_type
+        if side == "request"
+        else (schema.response_media_type, schema.response_status_code)
+    )
+    return (_side_state(schema, side), [field.to_dict() for field in fields], selection, issues)
+
+
+def _uncertain(
+    *,
+    side: str | None,
+    detail: str,
+    source: str | None,
+    comparison_key: str | None,
+    old_value: str | None = None,
+    new_value: str | None = None,
+) -> _RawChange:
+    return _RawChange(
+        kind="schema_comparison_uncertain",
+        severity=SEVERITY_WARNING,
+        detail=detail,
+        side=side,
+        comparison_source=source,
+        comparison_key=comparison_key,
+        old_value=old_value,
+        new_value=new_value,
+    )
+
+
+def _compare_schemas(prev: ContractSchema | None, curr: ContractSchema | None) -> list[_RawChange]:
+    """Gate by fidelity and completeness before dispatching directional rules."""
+    if prev is None and curr is None:
+        return []
+    if prev is None or curr is None:
+        present = curr or prev
+        assert present is not None
+        return [
+            _uncertain(
+                side=None,
+                detail="schema extraction coverage changed; field compatibility was not inferred",
+                source=present.source,
+                comparison_key=present.comparison_key,
+                old_value=prev.source if prev else "absent",
+                new_value=curr.source if curr else "absent",
+            )
+        ]
+    if (
+        not prev.comparison_ready
+        or not curr.comparison_ready
+        or prev.source != curr.source
+        or prev.comparison_key != curr.comparison_key
+    ):
+        if prev.to_dict() == curr.to_dict():
+            return []
+        return [
+            _uncertain(
+                side=None,
+                detail="schema source or comparison fidelity changed; field compatibility was not inferred",
+                source=curr.source,
+                comparison_key=curr.comparison_key,
+                old_value=f"{prev.source}:{prev.comparison_key or 'legacy'}",
+                new_value=f"{curr.source}:{curr.comparison_key or 'legacy'}",
+            )
+        ]
+
+    raws: list[_RawChange] = []
+    for side in ("request", "response"):
+        prev_state = _side_state(prev, side)
+        curr_state = _side_state(curr, side)
+        if prev_state != "complete" or curr_state != "complete":
+            if _side_snapshot(prev, side) != _side_snapshot(curr, side):
+                raws.append(
+                    _uncertain(
+                        side=side,
+                        detail=(
+                            f"{side} schema is not complete on both revisions "
+                            f"({prev_state} → {curr_state}); field compatibility was not inferred"
+                        ),
+                        source=curr.source,
+                        comparison_key=curr.comparison_key,
+                        old_value=prev_state,
+                        new_value=curr_state,
+                    )
+                )
+            continue
+        if side == "response" and (
+            prev.response_media_type != curr.response_media_type
+            or prev.response_status_code != curr.response_status_code
+        ):
+            raws.append(
+                _uncertain(
+                    side=side,
+                    detail="selected response status or media type changed; field compatibility was not inferred",
+                    source=curr.source,
+                    comparison_key=curr.comparison_key,
+                    old_value=f"{prev.response_status_code}:{prev.response_media_type}",
+                    new_value=f"{curr.response_status_code}:{curr.response_media_type}",
+                )
+            )
+            continue
+        context = _ComparisonContext(side, curr.source, curr.comparison_key)
+        raws.extend(
+            _diff_field_side(
+                context,
+                getattr(prev, f"{side}_fields"),
+                getattr(curr, f"{side}_fields"),
+            )
+        )
+    return raws
+
+
+# ---------------------------------------------------------------------------
+# Impact resolution (reuses the contract links the graph edges are built from)
+# ---------------------------------------------------------------------------
+
+
+def _index_providers(contracts: list[Contract]) -> dict[str, Contract]:
+    """Map normalized contract id → provider contract (last write wins)."""
+    out: dict[str, Contract] = {}
+    for c in contracts:
+        if c.role == "provider":
+            out[normalize_contract_id(c.contract_id)] = c
+    return out
+
+
+def _index_links(links: list[ContractLink]) -> dict[str, list[ContractLink]]:
+    """Map normalized contract id → matched links (provider↔consumer)."""
+    out: dict[str, list[ContractLink]] = {}
+    for lk in links:
+        out.setdefault(normalize_contract_id(lk.contract_id), []).append(lk)
+    return out
+
+
+def _resolve_impacted(
+    norm_id: str,
+    current_links: dict[str, list[ContractLink]],
+    previous_links: dict[str, list[ContractLink]],
+) -> list[ImpactedConsumer]:
+    """Direct consumers of a changed contract, from the matched links.
+
+    Prefers the current links; for a *removed* endpoint there is no current
+    provider (hence no current link), so we fall back to the previous links,
+    which still record who used to call it. De-duplicated by consumer node+file.
+    """
+    links = current_links.get(norm_id) or previous_links.get(norm_id) or []
+    seen: set[tuple[str, str]] = set()
+    consumers: list[ImpactedConsumer] = []
+    for lk in links:
+        node_id = _node_id(lk.consumer_repo, lk.consumer_service)
+        key = (node_id, lk.consumer_file)
+        if key in seen:
+            continue
+        seen.add(key)
+        consumers.append(
+            ImpactedConsumer(
+                repo=lk.consumer_repo,
+                service=lk.consumer_service,
+                node_id=node_id,
+                file=lk.consumer_file,
+                symbol=lk.consumer_symbol,
+                symbol_id=lk.consumer_symbol_id,
+                match_type=lk.match_type,
+                confidence=lk.confidence,
+            )
+        )
+    consumers.sort(key=lambda c: (-c.confidence, c.node_id, c.file))
+    return consumers
+
+
+# ---------------------------------------------------------------------------
+# Engine (pure)
+# ---------------------------------------------------------------------------
+
+
+def detect_breaking_changes(
+    previous: ContractStore,
+    current: ContractStore,
+    *,
+    version: int = 1,
+    generated_at: str | None = None,
+) -> BreakingChangeReport:
+    """Diff *previous* vs *current* provider contracts into a report (pure).
+
+    Walks every provider contract id seen in either store, dispatches the
+    contract-level and (when both sides carry a schema) field-level rules, and
+    attaches each change's direct cross-repo consumers from the matched links.
+
+    Producing a report *is* running detection, so ``generated_at`` defaults to
+    now. An unstamped report is one that was never built.
+    """
+    prev_providers = _index_providers(previous.contracts)
+    curr_providers = _index_providers(current.contracts)
+    current_links = _index_links(current.contract_links)
+    previous_links = _index_links(previous.contract_links)
+
+    changes: list[BreakingChange] = []
+    for norm_id in sorted(set(prev_providers) | set(curr_providers)):
+        prev_c = prev_providers.get(norm_id)
+        curr_c = curr_providers.get(norm_id)
+
+        raws: list[_RawChange] = []
+        for rule in _CONTRACT_RULES:
+            raws.extend(rule(prev_c, curr_c))
+        if prev_c is not None and curr_c is not None:
+            prev_schema = prev_c.schema
+            curr_schema = curr_c.schema
+            raws.extend(_compare_schemas(prev_schema, curr_schema))
+
+        if not raws:
+            continue
+
+        rep = prev_c or curr_c
+        assert rep is not None  # guaranteed: norm_id came from one of the maps
+        impacted = _resolve_impacted(norm_id, current_links, previous_links)
+        for raw in raws:
+            changes.append(
+                BreakingChange(
+                    kind=raw.kind,
+                    severity=raw.severity,
+                    contract_id=rep.contract_id,
+                    contract_type=rep.contract_type,
+                    provider_repo=rep.repo,
+                    provider_file=rep.file_path,
+                    provider_symbol=rep.symbol_name,
+                    provider_symbol_id=rep.symbol_id,
+                    provider_service=rep.service,
+                    detail=raw.detail,
+                    side=raw.side,
+                    comparison_source=raw.comparison_source,
+                    comparison_key=raw.comparison_key,
+                    field_name=raw.field_name,
+                    old_value=raw.old_value,
+                    new_value=raw.new_value,
+                    impacted_consumers=impacted,
+                )
+            )
+
+    # Stable order: breaking before warning, then by contract id + kind.
+    changes.sort(key=lambda c: (c.severity != SEVERITY_BREAKING, c.contract_id, c.kind))
+    return BreakingChangeReport(
+        version=version,
+        generated_at=generated_at or datetime.now(UTC).isoformat(),
+        changes=changes,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+
+
+def save_breaking_change_report(report: BreakingChangeReport, workspace_root: Path) -> Path:
+    """Write the report to ``.repowise-workspace/breaking_changes.json``."""
+    data_dir = ensure_workspace_data_dir(workspace_root)
+    out_path = data_dir / BREAKING_CHANGES_FILENAME
+    # Atomic: the MCP enricher reads these artifacts from a separate
+    # process and must never observe a half-written file.
+    atomic_write_text(out_path, json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+    return out_path
+
+
+def load_breaking_change_report(workspace_root: Path) -> BreakingChangeReport | None:
+    """Load the report, or ``None`` if missing/unparseable."""
+    path = workspace_root / WORKSPACE_DATA_DIR / BREAKING_CHANGES_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return BreakingChangeReport.from_dict(data)
+    except Exception:
+        _log.warning("Failed to load breaking-change report from %s", path, exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+
+def run_breaking_change_detection(
+    workspace_root: Path,
+    previous: ContractStore,
+    current: ContractStore,
+    *,
+    generated_at: str | None = None,
+) -> BreakingChangeReport:
+    """Diff the previous vs current contract stores and persist the report.
+
+    Called from ``run_cross_repo_hooks`` with the contract store as it was on
+    disk *before* this update overwrote it (``previous``) and the freshly
+    extracted store (``current``).
+    """
+    report = detect_breaking_changes(previous, current, generated_at=generated_at)
+    out_path = save_breaking_change_report(report, workspace_root)
+    _log.info(
+        "Breaking-change detection complete: %d change(s) (%d breaking) impacting "
+        "%d consumer(s) across %d repo(s) → %s",
+        len(report.changes),
+        report.breaking_count,
+        report.total_impacted_consumers,
+        len(report.impacted_repos),
+        out_path,
+    )
+    return report

@@ -1,0 +1,63 @@
+{
+ "repo": "argu",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 68% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "fsharp": {
+    "edges_per_file": 1.96,
+    "files": 27,
+    "hint_edges": {
+     "compile_order": 17
+    },
+    "import_edges": 53,
+    "import_support": "partial",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.623
+   },
+   "shell": {
+    "edges_per_file": 0.0,
+    "files": 2,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 2,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "fsharp",
+  "entry_points": [
+   "src/Argu/Parsers/Cli.fs"
+  ],
+  "modules": {
+   "count": 3,
+   "max_size": 28,
+   "min_size": 6,
+   "names": [
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "src/Argu/Parsers/Cli.fs",
+   "src/Argu/Parsers/Common.fs",
+   "src/Argu/ParseResults.fs",
+   "src/Argu/UnParsers.fs",
+   "src/Argu/PreCompute.fs",
+   "src/Argu/UnionArgInfo.fs",
+   "src/Argu/ConfigReaders.fs",
+   "src/Argu/Utils.fs",
+   "src/Argu/Attributes.fs",
+   "src/Argu/Types.fs",
+   "tests/Argu.Tests/SeparatorAttributeTests.fs"
+  ]
+ }
+}

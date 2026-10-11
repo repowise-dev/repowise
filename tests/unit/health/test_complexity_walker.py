@@ -1,0 +1,949 @@
+"""Unit tests for the tree-sitter complexity walker.
+
+These tests are best-effort: tree-sitter language packs may not all be
+installed in CI. The walker returns ``[]`` when a language pack is
+missing, so each assertion guards with ``pytest.skip`` rather than fail.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from repowise.core.analysis.health.complexity import walk_file, walk_file_complexity
+
+FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
+
+
+def _walk(rel_path: str, language: str):
+    p = FIXTURES / rel_path
+    if not p.exists():
+        pytest.skip(f"fixture missing: {p}")
+    results = walk_file_complexity(str(p), language, p.read_bytes())
+    if not results:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    return results
+
+
+def _walk_classes(rel_path: str, language: str):
+    p = FIXTURES / rel_path
+    if not p.exists():
+        pytest.skip(f"fixture missing: {p}")
+    fcx = walk_file(str(p), language, p.read_bytes())
+    if not fcx.classes:
+        pytest.skip(f"tree-sitter language pack missing / no classes for {language}")
+    return {c.name: c for c in fcx.classes}
+
+
+def _find(results, name):
+    matches = [r for r in results if r.name == name]
+    return matches[0] if matches else None
+
+
+def _require_language(language: str) -> None:
+    try:
+        from repowise.core.ingestion.parser import _get_language
+    except Exception:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    if _get_language(language) is None:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+
+
+def test_tcc_cohesive_vs_split():
+    """TCC is 1.0 when every method pair shares a field, lower when the class
+    splinters into disjoint field groups."""
+    _require_language("python")
+
+    cohesive = (
+        b"class C:\n"
+        b"    def a(self):\n        self.x = 1\n"
+        b"    def b(self):\n        return self.x\n"
+        b"    def c(self):\n        self.x += 1\n"
+    )
+    split = (
+        b"class D:\n"
+        b"    def a(self):\n        self.x = 1\n"
+        b"    def b(self):\n        return self.x\n"
+        b"    def c(self):\n        self.y = 1\n"
+        b"    def d(self):\n        return self.y\n"
+    )
+    c = next(k for k in walk_file("c.py", "python", cohesive).classes if k.name == "C")
+    d = next(k for k in walk_file("d.py", "python", split).classes if k.name == "D")
+
+    assert c.tcc == 1.0
+    # D has 6 method pairs, 2 connected (a-b via x, c-d via y) -> 1/3.
+    assert d.tcc == pytest.approx(2 / 6)
+    assert d.tcc < c.tcc
+
+
+def test_python_nested_depth():
+    results = _walk("python/nested.py", "python")
+    deep = _find(results, "deeply_nested")
+    shallow = _find(results, "shallow")
+    assert deep is not None
+    assert shallow is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    assert shallow.max_nesting == 0
+    assert deep.ccn > shallow.ccn
+
+
+def test_python_complex_method_ccn():
+    results = _walk("python/complex.py", "python")
+    many = _find(results, "many_branches")
+    assert many is not None
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+
+
+def test_python_comment_in_parameter_list_not_counted():
+    """#1775: a comment inside a parameter list must not inflate param_count.
+
+    ``Annotated[T, Form(...)]`` metadata and an explanatory comment block are
+    idiomatic in FastAPI/Pydantic signatures. The comment node is named but
+    carries no arity; before the fix it was counted, so a 5-parameter handler
+    reported 6+ (and worse on longer signatures) and tripped a spurious
+    high-arity finding.
+    """
+    src = """async def trigger_scan(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    # comment with, several, commas explaining the pattern
+    agent_id: Annotated[str, Form(pattern=r\"^[a-z0-9]+(-[a-z0-9]+)*$\", max_length=128)],
+    scan_root: Annotated[str, Form()],
+    subpath: Annotated[str, Form()] = \"\",
+) -> HTMLResponse:
+    pass
+"""
+    fcx = walk_file("/tmp/trigger.py", "python", src.encode())
+    fn = _find(fcx.functions, "trigger_scan")
+    assert fn is not None
+    assert fn.param_count == 5, f"expected 5 params, got {fn.param_count}"
+
+
+def test_typescript_nested_depth():
+    results = _walk("typescript/nested.ts", "typescript")
+    deep = _find(results, "deeplyNested")
+    if deep is None:
+        pytest.skip("typescript nested function not detected")
+    assert deep.max_nesting >= 4
+
+
+def test_go_nested_depth():
+    results = _walk("go/nested.go", "go")
+    deep = _find(results, "DeeplyNested")
+    if deep is None:
+        pytest.skip("go function not detected")
+    assert deep.max_nesting >= 4
+
+
+def test_pascal_nested_depth():
+    results = _walk("pascal/nested.pas", "pascal")
+    deep = _find(results, "DeeplyNested")
+    shallow = _find(results, "Shallow")
+    assert deep is not None
+    assert shallow is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    assert shallow.max_nesting == 0
+    assert deep.ccn > shallow.ccn
+    assert shallow.param_count == 1
+
+
+def test_pascal_complex_method_ccn():
+    results = _walk("pascal/complex.pas", "pascal")
+    many = _find(results, "ManyBranches")
+    assert many is not None
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+    assert many.param_count == 5
+
+
+def test_pascal_foreach_counts_as_a_loop():
+    # Regression: ``for x in collection do`` parses as a distinct `foreach`
+    # node (not a `for` variant), which was absent from loop_kinds -- the
+    # walker skipped it entirely, undercounting both CCN and nesting for any
+    # for-in loop (common over TList/TStringList/generics in real Delphi
+    # code).
+    src = (
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure Bar(Lst: TList);\nvar X: Integer;\nbegin\n"
+        b"  for X in Lst do\n"
+        b"  begin\n"
+        b"    if X > 0 then\n"
+        b"    begin\n"
+        b"      WriteLn(X);\n"
+        b"    end;\n"
+        b"  end;\n"
+        b"end;\nend.\n"
+    )
+    fn = _find(walk_file("u.pas", "pascal", src).functions, "Bar")
+    assert fn is not None
+    assert fn.ccn == 3, f"expected CCN 3 (base + foreach + if), got {fn.ccn}"
+    assert fn.max_nesting == 2, f"expected the if nested inside the foreach, got {fn.max_nesting}"
+
+
+def test_pascal_else_if_chain_is_flat_not_nested():
+    # Regression: found on a real ~40-arm `else if` VK-code dispatch chain
+    # (StringToVK in a real Delphi codebase) — every arm nests the grammar's
+    # `ifElse`/`if` one level inside the previous arm's `else` field, so an
+    # unflattened walk reported nesting 33 / cognitive 583 for a flat lookup
+    # table. Each arm still charges CCN (it's a real decision point) but
+    # must not open a fresh nesting level or inflate cognitive complexity.
+    src = (
+        b"unit U;\ninterface\nimplementation\n"
+        b"function F(S: string): Integer;\nbegin\n"
+        b"  if S = 'a' then Result := 1\n"
+        b"  else if S = 'b' then Result := 2\n"
+        b"  else if S = 'c' then Result := 3\n"
+        b"  else if S = 'd' then Result := 4\n"
+        b"  else if S = 'e' then Result := 5\n"
+        b"  else Result := 0;\n"
+        b"end;\nend.\n"
+    )
+    fn = _find(walk_file("u.pas", "pascal", src).functions, "F")
+    assert fn is not None
+    assert fn.ccn == 6, f"expected CCN 6 (5 arms + base), got {fn.ccn}"
+    assert fn.max_nesting == 1, f"expected flat chain (nesting 1), got {fn.max_nesting}"
+
+
+def test_pascal_no_class_metrics():
+    # Pascal method bodies live in a top-level ``defProc`` outside the
+    # ``declClass`` node (see languages.py's ``_PASCAL`` comment) -- class
+    # metrics are deliberately unmapped rather than emitting a misleading
+    # zero-method class, same posture as Go. Calls walk_file() directly
+    # (rather than through _walk_classes(), which skips on ``not
+    # fcx.classes`` -- exactly what this test asserts), so it needs its own
+    # best-effort guard rather than inheriting one from a helper.
+    pytest.importorskip("tree_sitter_pascal", reason="run `uv sync --all-packages`")
+    fcx = walk_file(
+        "unsupported.pas",
+        "pascal",
+        (
+            b"unit U;\n interface\n type\n TFoo = class\n"
+            b" public\n   procedure Bar;\n end;\n"
+            b" implementation\n"
+            b" procedure TFoo.Bar;\n begin\n end;\n"
+            b" end.\n"
+        ),
+    )
+    assert fcx.classes == []
+    assert _find(fcx.functions, "Bar") is not None
+
+
+def test_javascript_nested_depth():
+    results = _walk("javascript/nested.js", "javascript")
+    deep = _find(results, "deeplyNested")
+    if deep is None:
+        pytest.skip("js function not detected")
+    assert deep.max_nesting >= 4
+
+
+def test_javascript_module_level_arrow_callback_is_function_entry():
+    _require_language("javascript")
+    source = b"""
+router.get("/users", async (req, res) => {
+  if (req.query.active && req.user) {
+    return res.json(await loadUsers());
+  }
+  return res.status(400).end();
+});
+
+function wrapper(items) {
+  return items.map((item) => item.id);
+}
+"""
+    fcx = walk_file("/tmp/routes.js", "javascript", source)
+    names = [fn.name for fn in fcx.functions]
+    assert "router.get callback" in names
+    assert "wrapper" in names
+    assert "item" not in names
+
+    route = _find(fcx.functions, "router.get callback")
+    assert route is not None
+    assert route.ccn >= 3
+    assert route.max_nesting >= 1
+
+
+def test_javascript_test_suite_wrapper_callback_is_not_function_entry():
+    _require_language("javascript")
+    source = b"""
+test.describe("routes", () => {
+  beforeEach(() => resetDb());
+
+  it("handles active users", async () => {
+    if (ready()) {
+      await request(app).get("/users");
+    }
+  });
+});
+"""
+    fcx = walk_file("/tmp/routes.test.js", "javascript", source)
+    names = [fn.name for fn in fcx.functions]
+    assert "test.describe callback" not in names
+    assert "it callback" in names
+    assert "beforeEach callback" in names
+
+
+def test_a_chained_callee_names_its_callback_by_identifier_path():
+    """A zod schema's ``superRefine`` callback was named after the whole
+    ``z.object({...})`` expression, a name thousands of characters long."""
+    _require_language("typescript")
+    fields = ", ".join(f"field{i}: z.string().optional()" for i in range(40))
+    source = f"""
+export const Schema = z
+  .object({{ {fields} }})
+  .strict()
+  .superRefine((value, ctx) => {{
+    if (value.field1 && !value.field2) {{
+      ctx.addIssue({{ code: "custom", message: "field2" }});
+    }}
+  }});
+
+it.each([{{ name: "a", x: 1 }}, {{ name: "b", x: 2 }}])("case $name", ({{ x }}) => {{
+  expect(x).toBeGreaterThan(0);
+}});
+
+makeHandler<Entry[]>(config)((entry) => {{
+  return entry.id;
+}});
+""".encode()
+    names = [fn.name for fn in walk_file("/tmp/schema.ts", "typescript", source).functions]
+    assert "z.object.strict.superRefine callback" in names
+    assert "it.each callback" in names
+    assert "makeHandler callback" in names
+    assert all(len(name) <= 120 and "(" not in name for name in names)
+
+
+def test_rust_flat_match_complexity():
+    """A flat match (all arms are simple expressions) should count as 1 CCN
+    point for the match itself; individual arms should NOT add CCN."""
+    results = _walk("rust/flat_match.rs", "rust")
+    flat = _find(results, "flat_match")
+    if flat is None:
+        pytest.skip("rust function not detected")
+    # flat_match: base CCN 1 + match 1 = 2
+    assert flat.ccn == 2, f"flat match CCN expected 2, got {flat.ccn}"
+
+    cplx = _find(results, "complex_match")
+    if cplx is None:
+        pytest.skip("rust complex_match not detected")
+    # complex_match: match has an arm with nested `if`, so arms count
+    # individually. CCN = 1 (base) + 3 arms + 1 (if in arm) = 5
+    assert cplx.ccn > flat.ccn, (
+        f"complex match CCN ({cplx.ccn}) should exceed flat match CCN ({flat.ccn})"
+    )
+
+    multi = _find(results, "multi_stmt_match")
+    if multi is None:
+        pytest.skip("rust multi_stmt_match not detected")
+    # multi_stmt_match: arm with multi-statement block → complex match
+    # CCN = 1 (base) + 3 arms = 4
+    assert multi.ccn > flat.ccn, (
+        f"multi-stmt match CCN ({multi.ccn}) should exceed flat match CCN ({flat.ccn})"
+    )
+
+
+def test_python_match_arms_count_toward_ccn():
+    """Python match/case is pattern matching — each case is a real branch.
+
+    Unlike Rust ``match`` (a flat dispatch that counts once), a Python
+    ``match`` with N ``case`` arms is structurally an ``if``/``elif`` chain
+    and each arm must count toward CCN. Regression for #1774: the flat-match
+    suppression was over-applied to Python, so a 4-arm match reported 2
+    (base 1 + 1 for the match, all arms dropped) instead of counting each arm.
+    """
+    results = _walk("python/match.py", "python")
+    match_fn = _find(results, "python_match")
+    assert match_fn is not None, "python_match not detected"
+    # base 1 + 4 case arms (1, 2, 3, wildcard _) = 5.
+    assert match_fn.ccn == 5, f"python match CCN expected 5, got {match_fn.ccn}"
+    # The arms are genuinely counted, not flattened away.
+    assert match_fn.ccn >= 4, f"match arms must count toward CCN, got {match_fn.ccn}"
+
+
+def test_unsupported_language_returns_empty():
+    results = walk_file_complexity("/tmp/x.unknown", "klingon", b"")
+    assert results == []
+
+
+# ---- class-level metrics (LCOM4) -----------------------------------------
+
+
+def test_python_class_cohesion():
+    classes = _walk_classes("python/classes.py", "python")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    # All methods collaborate around shared state → single component.
+    assert cohesive.lcom4 == 1
+    # Two disjoint field clusters + a loner → three components.
+    assert splintered.lcom4 == 3
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+
+
+def _formatter_overload_class(overload_decorator: str) -> bytes:
+    return (
+        f"{overload_decorator}\n\n"
+        "class Formatter:\n"
+        "    def __init__(self):\n"
+        "        self.value = 0\n"
+        "        self.other = 1\n\n"
+        "    @overload\n"
+        "    def format(self, x: int) -> str: ...\n"
+        "    @overload\n"
+        "    def format(self, x: str) -> str: ...\n"
+        "    @overload\n"
+        "    def format(self, x: float) -> str: ...\n"
+        "    def format(self, x):\n"
+        "        return str(self.value) + str(x)\n\n"
+        "    def reset(self):\n"
+        "        self.other = 0\n"
+    ).encode()
+
+
+def _formatter_class_metrics(source: bytes):
+    _require_language("python")
+    classes = walk_file("formatter.py", "python", source).classes
+    if not classes:
+        pytest.skip("tree-sitter language pack missing for python")
+    fmt = next((c for c in classes if c.name == "Formatter"), None)
+    assert fmt is not None
+    return fmt
+
+
+def test_python_class_cohesion_ignores_overload_stubs():
+    fmt = _formatter_class_metrics(_formatter_overload_class("from typing import overload"))
+    assert fmt.method_count == 3
+    assert fmt.lcom4 == 1
+    assert len(fmt.methods) == 3
+
+
+def test_python_class_cohesion_ignores_typing_overload_decorator():
+    src = (
+        _formatter_overload_class("import typing")
+        .decode()
+        .replace("@overload\n", "@typing.overload\n")
+    )
+    fmt = _formatter_class_metrics(src.encode())
+    assert fmt.method_count == 3
+    assert fmt.lcom4 == 1
+
+
+def test_python_class_cohesion_ignores_aliased_overload_decorator():
+    src = (
+        _formatter_overload_class("import typing as t")
+        .decode()
+        .replace("@overload\n", "@t.overload\n")
+    )
+    fmt = _formatter_class_metrics(src.encode())
+    assert fmt.method_count == 3
+    assert fmt.lcom4 == 1
+
+
+def test_typescript_class_cohesion():
+    classes = _walk_classes("typescript/classes.ts", "typescript")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    if cohesive is None or splintered is None:
+        pytest.skip("typescript classes not detected")
+    assert cohesive.lcom4 == 1
+    assert splintered.lcom4 == 3
+
+
+def test_class_metrics_carry_methods_and_size():
+    classes = _walk_classes("python/classes.py", "python")
+    cohesive = classes["Cohesive"]
+    # methods are the same FunctionComplexity objects the function pass found
+    assert len(cohesive.methods) == cohesive.method_count
+    assert cohesive.total_nloc > 0
+    assert cohesive.max_method_ccn >= 1
+
+
+def test_unsupported_language_has_no_classes():
+    fcx = walk_file("/tmp/x.unknown", "klingon", b"")
+    assert fcx.classes == []
+    assert fcx.functions == []
+
+
+# ---- assertion-block detection (test-quality) ----------------------------
+
+
+def test_python_assertion_blocks():
+    results = _walk("python/assertions.py", "python")
+    many = _find(results, "test_many_bare_asserts")
+    assert many is not None
+    # One uninterrupted run of 16 bare asserts.
+    assert len(many.assertion_blocks) == 1
+    assert many.assertion_blocks[0][2] == 16
+
+    calls = _find(results, "test_unittest_calls")
+    assert calls is not None
+    # self.assertEqual / assertTrue calls counted as assertions.
+    assert calls.assertion_blocks[0][2] == 3
+
+
+def test_python_assertion_runs_split_on_non_assert():
+    results = _walk("python/assertions.py", "python")
+    split = _find(results, "test_split_runs")
+    assert split is not None
+    # A non-assert statement between the asserts breaks the run into two.
+    assert [b[2] for b in split.assertion_blocks] == [2, 2]
+
+
+def test_python_single_assert_is_not_a_block():
+    results = _walk("python/assertions.py", "python")
+    few = _find(results, "test_few_asserts")
+    assert few is not None
+    # Two asserts separated by an assignment → no run of ≥2.
+    assert few.assertion_blocks == []
+
+
+def test_typescript_expect_blocks():
+    results = _walk("typescript/assertions.ts", "typescript")
+    many = _find(results, "testManyExpects")
+    if many is None:
+        pytest.skip("typescript function not detected")
+    assert many.assertion_blocks[0][2] == 16
+    few = _find(results, "testFewExpects")
+    assert few is not None
+    assert few.assertion_blocks == []
+
+
+# ---- full-tier language coverage: Kotlin / C++ / C# ----------------------
+#
+# Each new full-tier language is validated end-to-end against the walker:
+# control-flow (nesting + CCN), class-level cohesion (LCOM4), and
+# assertion-block detection — mirroring the Python/TypeScript fixtures.
+
+
+def test_kotlin_nesting_and_ccn():
+    results = _walk("kotlin/nested.kt", "kotlin")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+
+
+def test_kotlin_class_cohesion():
+    classes = _walk_classes("kotlin/classes.kt", "kotlin")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert cohesive.lcom4 == 1
+    # Each cluster is an accessor pair over one field and the loner touches
+    # none: no component spans two fields, so there is no cohesion signal.
+    assert splintered.lcom4 == 1
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+
+
+def test_kotlin_assertion_blocks():
+    results = _walk("kotlin/assertions.kt", "kotlin")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks[0][2] == 16
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_cpp_nesting_and_ccn():
+    results = _walk("cpp/nested.cpp", "cpp")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+
+
+def test_cpp_class_cohesion():
+    classes = _walk_classes("cpp/classes.cpp", "cpp")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert cohesive.lcom4 == 1
+    # Each cluster is an accessor pair over one field and the loner touches
+    # none: no component spans two fields, so there is no cohesion signal.
+    assert splintered.lcom4 == 1
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+
+
+_CPP_MACRO_SCOPES = b"""namespace absl {
+ABSL_NAMESPACE_BEGIN
+namespace base_internal {
+int GetCpuType(int x) { if (x) { return 1; } return 0; }
+}  // namespace base_internal
+ABSL_NAMESPACE_END
+}  // namespace absl
+FMT_END_EXPORT
+namespace detail {
+int helper() { return 3; }
+}
+template <typename T>
+class ABSL_ATTRIBUTE_WARN_UNUSED FixedArray {
+  int size() const { return n_; }
+  int n_;
+};
+EXPORT_MACRO class Queue {
+  int pop() { return 0; }
+};
+struct foo *make_foo(void) { return 0; }
+FMT_BEGIN_NAMESPACE
+FMT_EXPORT template <typename Context> class Store {
+  int put() { return 1; }
+};
+"""
+
+
+def test_cpp_namespace_or_type_after_a_macro_is_not_a_function(tmp_path):
+    # A macro line before ``namespace x {`` / ``class X {`` makes tree-sitter
+    # read the scope as a function: it must be walked, never scored.
+    p = tmp_path / "scopes.h"
+    p.write_bytes(_CPP_MACRO_SCOPES)
+    results = walk_file_complexity(str(p), "cpp", _CPP_MACRO_SCOPES)
+    if not results:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    names = {r.name for r in results}
+    assert {"GetCpuType", "helper", "size", "put", "pop", "make_foo"} <= names
+    assert not names & {"namespace", "base_internal", "FixedArray", "Store", "Queue"}
+    assert _find(results, "GetCpuType").ccn == 2
+
+
+@pytest.mark.parametrize("language", ["cpp", "c"])
+def test_function_behind_a_macro_with_an_aggregate_return_type_stays_a_function(
+    tmp_path, language
+):
+    # The stray ``struct S`` lands in the head as it does for a misread scope,
+    # but the declarator is a real function_declarator.
+    source = b"""int plain(void) { return 0; }
+MYAPI struct S fn1(void) { return s; }
+MYAPI enum E fn2(void) { return A; }
+MYAPI union U fn4(void) { return u; }
+EXPORT_API const struct S *fn5(int a) { if (a) { return 0; } return 0; }
+"""
+    if language == "cpp":
+        source += b"MYAPI class C fn3() { return C(); }\n"
+    p = tmp_path / ("api.h" if language == "cpp" else "api.c")
+    p.write_bytes(source)
+    results = walk_file_complexity(str(p), language, source)
+    if not results:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    expected = {"fn1", "fn2", "fn4", "fn5"} | ({"fn3"} if language == "cpp" else set())
+    assert "plain" in {r.name for r in results}
+    assert expected <= {r.name for r in results}
+
+
+def test_cpp_class_body_skips_a_nested_type_read_as_a_function(tmp_path):
+    source = b"""class Outer {
+ public:
+  int get() { return x_; }
+  EXPORT_MACRO class Inner { int a() { return 1; } int b() { return 2; } };
+  int x_;
+};
+"""
+    p = tmp_path / "outer.h"
+    p.write_bytes(source)
+    classes = {c.name: c for c in walk_file(str(p), "cpp", source).classes}
+    if "Outer" not in classes:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    assert classes["Outer"].method_count == 1
+
+
+def test_cpp_class_fused_into_a_misread_head_is_not_a_cohesion_unit(tmp_path):
+    # When the grammar loses the ``;`` after a class (a macro or recovery
+    # upstream), ``class Fused {...} MACRO class Next {`` reads as one function
+    # whose return type is ``Fused``; its extent and members are not its own.
+    source = b"""class Fused {
+  int push() { return 1; }
+}
+FMT_EXPORT class Next {
+  int get() { return 2; }
+};
+class Plain { int get() { return x_; } int x_; };
+"""
+    p = tmp_path / "fused.h"
+    p.write_bytes(source)
+    fcx = walk_file(str(p), "cpp", source)
+    if not fcx.functions:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    names = {c.name for c in fcx.classes}
+    assert "Plain" in names
+    assert "Fused" not in names
+
+
+def test_cpp_assertion_blocks():
+    results = _walk("cpp/assertions.cpp", "cpp")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks[0][2] == 16
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_csharp_nesting_and_ccn():
+    results = _walk("csharp/nested.cs", "csharp")
+    deep = _find(results, "DeeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    many = _find(results, "ManyBranches")
+    assert many is not None
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+
+
+def test_csharp_class_cohesion():
+    classes = _walk_classes("csharp/classes.cs", "csharp")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert cohesive.lcom4 == 1
+    # Each cluster is an accessor pair over one field and the loner touches
+    # none: no component spans two fields, so there is no cohesion signal.
+    assert splintered.lcom4 == 1
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+
+
+def test_csharp_assertion_blocks():
+    results = _walk("csharp/assertions.cs", "csharp")
+    many = _find(results, "TestManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks[0][2] == 16
+    few = _find(results, "TestFewAsserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_dart_nesting_and_ccn():
+    results = _walk("dart/nested.dart", "dart")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected >=4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN >= 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+    assert shallow.param_count == 1
+
+
+def test_dart_class_facts():
+    # Dart has no wrapper node for ``this.member`` access, so LCOM4 sits at
+    # its "no signal" safety valve (1) for every class — the class facts
+    # under test are method grouping and size.
+    classes = _walk_classes("dart/classes.dart", "dart")
+    cohesive = classes.get("Cohesive")
+    wide = classes.get("Wide")
+    assert cohesive is not None and wide is not None
+    assert cohesive.method_count == 3
+    assert wide.method_count == 5
+    assert cohesive.lcom4 == 1
+    assert wide.lcom4 == 1
+
+
+def test_dart_assertion_blocks():
+    results = _walk("dart/assertions.dart", "dart")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks, "expected a run of assert statements"
+    assert many.assertion_blocks[0][2] == 5
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_scala_nesting_and_ccn():
+    results = _walk("scala/nested.scala", "scala")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected >=4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN >= 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+    assert shallow.param_count == 1
+
+
+def test_scala_match_and_guards():
+    results = _walk("scala/nested.scala", "scala")
+    guarded = _find(results, "matchGuards")
+    assert guarded is not None
+    # 4 cases + 2 guards (guards make the match non-flat, so arms count).
+    assert guarded.ccn == 7, f"expected CCN 7, got {guarded.ccn}"
+    flat = _find(results, "flatMatch")
+    assert flat is not None
+    # A flat match counts once for the dispatch, not per arm.
+    assert flat.ccn == 2, f"expected CCN 2, got {flat.ccn}"
+    for_guard = _find(results, "forGuard")
+    assert for_guard is not None
+    # for-comprehension (loop) + inline guard; the guard is flat (no nesting).
+    assert for_guard.ccn == 3, f"expected CCN 3, got {for_guard.ccn}"
+    assert for_guard.max_nesting == 1
+
+
+def test_scala_class_cohesion():
+    classes = _walk_classes("scala/classes.scala", "scala")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert cohesive.lcom4 == 1
+    assert splintered.lcom4 == 3
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+    # ``object`` and ``trait`` bodies group methods like a class body.
+    registry = classes.get("Registry")
+    assert registry is not None and registry.method_count == 2
+    shape = classes.get("Shape")
+    assert shape is not None and shape.method_count == 1
+
+
+def test_scala_assertion_blocks():
+    results = _walk("scala/assertions.scala", "scala")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks, "expected a run of assert calls"
+    assert many.assertion_blocks[0][2] == 5
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_ruby_nesting_and_ccn():
+    results = _walk("ruby/nested.rb", "ruby")
+    deep = _find(results, "deeply_nested")
+    assert deep is not None
+    # if > while > if > if — keyword tokens must not double-count.
+    assert deep.ccn == 5, f"expected CCN 5, got {deep.ccn}"
+    assert deep.max_nesting == 4, f"expected nesting 4, got {deep.max_nesting}"
+    many = _find(results, "many_branches")
+    assert many is not None
+    # modifier-if + if + 2 elsif + && + || over the base path; elsif chains
+    # and the one-line modifier stay flat.
+    assert many.ccn == 7, f"expected CCN 7, got {many.ccn}"
+    assert many.max_nesting == 1, f"expected nesting 1, got {many.max_nesting}"
+    wordy = _find(results, "wordy")
+    assert wordy is not None and wordy.ccn == 3  # ``and`` / ``or`` count too
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+    assert shallow.param_count == 1
+    mods = _find(results, "modifier_loops")
+    assert mods is not None
+    assert mods.ccn == 3  # until_modifier + while_modifier
+    assert mods.max_nesting == 0  # one-line modifiers are flat
+
+
+def test_ruby_blocks_are_not_closures():
+    # ``.each do … end`` / ``.map { … }`` bodies roll up into the method:
+    # no nesting, no extra entries — the block-heavy-code decision.
+    results = _walk("ruby/nested.rb", "ruby")
+    blocky = _find(results, "block_heavy")
+    assert blocky is not None
+    assert blocky.ccn == 1 and blocky.max_nesting == 0
+    assert not any("anonymous" in r.name for r in results)
+
+
+def test_ruby_case_and_rescue():
+    results = _walk("ruby/nested.rb", "ruby")
+    flat = _find(results, "flat_case")
+    assert flat is not None
+    # A flat case counts once for the dispatch, not per ``when`` arm.
+    assert flat.ccn == 2, f"expected CCN 2, got {flat.ccn}"
+    heavy = _find(results, "heavy_case")
+    assert heavy is not None
+    # 3 when arms + the nested if.
+    assert heavy.ccn == 5, f"expected CCN 5, got {heavy.ccn}"
+    pat = _find(results, "pattern_match")
+    assert pat is not None
+    assert pat.ccn == 2, f"expected CCN 2, got {pat.ccn}"  # flat case/in
+    risky = _find(results, "risky_io")
+    assert risky is not None
+    assert risky.ccn == 3, f"expected CCN 3, got {risky.ccn}"  # 2 rescue arms
+    implicit = _find(results, "implicit_rescue")
+    assert implicit is not None
+    assert implicit.ccn == 2  # method-level rescue counts like a catch
+
+
+def test_ruby_class_metrics_and_lcom4_no_signal():
+    classes = _walk_classes("ruby/classes.rb", "ruby")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert splintered.method_count == 5
+    assert splintered.max_method_ccn == 2
+    # LCOM4 sits at the "no signal" valve for Ruby (receiver-less @ivar
+    # idiom): even a splintered class must NOT read as low-cohesion.
+    assert cohesive.lcom4 == 1
+    assert splintered.lcom4 == 1
+    util = classes.get("Util")
+    assert util is not None and util.method_count == 2  # def + def self.
+
+
+def test_ruby_assertion_blocks():
+    results = _walk("ruby/assertions.rb", "ruby")
+    many = _find(results, "test_many_asserts")
+    assert many is not None
+    assert many.assertion_blocks, "expected a run of assert calls"
+    assert many.assertion_blocks[0][2] == 5
+    few = _find(results, "test_few_asserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_php_nesting_and_ccn():
+    results = _walk("php/nested.php", "php")
+    deep = _find(results, "deeply_nested")
+    assert deep is not None
+    assert deep.ccn == 5, f"expected CCN 5, got {deep.ccn}"
+    assert deep.max_nesting == 4, f"expected nesting 4, got {deep.max_nesting}"
+    many = _find(results, "many_branches")
+    assert many is not None
+    # if + if + && + elseif + || + else if + base path
+    assert many.ccn == 7, f"expected CCN 7, got {many.ccn}"
+    assert many.max_nesting == 1, f"expected nesting 1, got {many.max_nesting}"
+    wordy = _find(results, "wordy")
+    assert wordy is not None and wordy.ccn == 3  # and + or
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+    assert shallow.param_count == 1
+    loops = _find(results, "loops_galore")
+    assert loops is not None
+    assert loops.ccn == 4  # for + foreach + do-while + 1
+    assert loops.max_nesting == 1
+    tc = _find(results, "try_catch_finally")
+    assert tc is not None
+    assert tc.ccn == 4  # if + 2 catch clauses + 1
+
+
+def test_php_lambdas_and_closures():
+    results = _walk("php/nested.php", "php")
+    fn = _find(results, "lambda_and_arrow")
+    assert fn is not None
+    # anonymous_function branch rolls into lambda_and_arrow
+    assert fn.ccn >= 3
+
+
+def test_php_classes_lcom4():
+    classes = _walk_classes("php/classes.php", "php")
+    cohesive = classes.get("CohesiveClass")
+    split = classes.get("SplitClass")
+    assert cohesive is not None and split is not None
+    assert cohesive.method_count == 4
+    assert split.method_count == 4
+    assert cohesive.lcom4 == 1
+    assert split.lcom4 >= 2
+    trait = classes.get("LoggableTrait")
+    assert trait is not None
+    assert trait.method_count == 2
+
+
+def test_php_assertion_blocks():
+    results = _walk("php/assertions.php", "php")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks, "expected a run of assert calls"
+    assert many.assertion_blocks[0][2] == 5
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []

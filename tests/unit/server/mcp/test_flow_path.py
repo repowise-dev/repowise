@@ -1,0 +1,317 @@
+"""Flow-path expansion: connect question-anchored endpoints over the graph.
+
+get_answer's plain 1-hop expansion rescues "right module, wrong file" ranking
+misses but cannot reach a far endpoint the question names that retrieval buried
+or dropped. ``expand_via_flow_path`` resolves 2+ endpoints (a named symbol's
+file, a module named by basename), runs a bounded bidirectional BFS between them
+over imports + projected calls edges, and surfaces the files on the path so both
+endpoints land in the served top-5.
+
+These lock the mechanism deterministically (no LLM, no synthesis): the far
+endpoint is injected when absent and boosted when buried, calls edges are
+projected to file granularity, the confidence floor and cross-language guard
+hold, and a single-endpoint question is a no-op.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
+from repowise.server.mcp_server._flow_path import expand_via_flow_path
+
+_NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
+
+
+def _page(rid: str, path: str) -> Page:
+    return Page(
+        id=f"file_page:{path}",
+        repository_id=rid,
+        page_type="file_page",
+        title=path,
+        content=f"# {path}",
+        summary=f"summary of {path}",
+        target_path=path,
+        source_hash=path,
+        model_name="mock",
+        provider_name="mock",
+        generation_level=2,
+        confidence=1.0,
+        freshness_status="fresh",
+        metadata_json="{}",
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+def _symbol(rid: str, name: str, file_path: str) -> WikiSymbol:
+    return WikiSymbol(
+        id=f"{file_path}::{name}",
+        repository_id=rid,
+        file_path=file_path,
+        symbol_id=f"{file_path}::{name}",
+        name=name,
+        qualified_name=name,
+        kind="function",
+        signature=f"def {name}()",
+        start_line=1,
+        end_line=5,
+        docstring="",
+        visibility="public",
+        is_async=False,
+        complexity_estimate=1,
+        language="python",
+        parent_name=None,
+    )
+
+
+def _edge(rid: str, src: str, tgt: str, etype: str, conf: float = 1.0) -> GraphEdge:
+    return GraphEdge(
+        id=f"{src}->{tgt}:{etype}",
+        repository_id=rid,
+        source_node_id=src,
+        target_node_id=tgt,
+        edge_type=etype,
+        confidence=conf,
+    )
+
+
+# Paths kept short but multi-segment so basename-stem matching is exercised.
+_ANSWER = "pkg/server/answer.py"
+_RETRIEVAL = "pkg/server/retrieval.py"
+_CONF = "pkg/server/confidence.py"
+
+
+async def test_injects_absent_far_endpoint(session, repo_id):
+    """A named module endpoint absent from hits is injected onto the path."""
+    session.add(_page(repo_id, _ANSWER))
+    session.add(_page(repo_id, _RETRIEVAL))
+    session.add(_symbol(repo_id, "get_answer", _ANSWER))
+    session.add(_edge(repo_id, _ANSWER, _RETRIEVAL, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": _ANSWER, "score": 5.0}]
+    combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "how does get_answer use retrieval", {"get_answer"}
+    )
+
+    injected = [h for h in combined if h.get("target_path") == _RETRIEVAL]
+    assert len(injected) == 1
+    assert injected[0]["_expanded_from"] == "flow"
+    assert paths and [_ANSWER, _RETRIEVAL] in paths
+
+
+async def test_boosts_buried_endpoint_without_duplicating(session, repo_id):
+    """A far endpoint already ranked below the cap is boosted, not duplicated."""
+    session.add(_page(repo_id, _ANSWER))
+    session.add(_page(repo_id, _RETRIEVAL))
+    session.add(_symbol(repo_id, "get_answer", _ANSWER))
+    session.add(_edge(repo_id, _ANSWER, _RETRIEVAL, "imports"))
+    await session.commit()
+
+    hits = [
+        {"target_path": _ANSWER, "score": 5.0},
+        {"target_path": _RETRIEVAL, "score": 0.05},
+    ]
+    combined, _ = await expand_via_flow_path(
+        session, repo_id, hits, "how does get_answer use retrieval", {"get_answer"}
+    )
+
+    retr = [h for h in combined if h.get("target_path") == _RETRIEVAL]
+    assert len(retr) == 1  # boosted in place, no duplicate row
+    assert retr[0]["score"] > 3.0  # 0.7 * 5.0, was 0.05 — now rides into top-5
+    assert combined[1]["target_path"] == _RETRIEVAL  # rose to rank 2
+
+
+async def test_single_anchor_is_noop(session, repo_id):
+    """One resolvable endpoint is a plain 'what is X' — the stage does nothing."""
+    session.add(_page(repo_id, _ANSWER))
+    session.add(_symbol(repo_id, "get_answer", _ANSWER))
+    await session.commit()
+
+    hits = [{"target_path": _ANSWER, "score": 5.0}]
+    combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "how does get_answer work", {"get_answer"}
+    )
+    assert combined is hits
+    assert paths == []
+
+
+async def test_calls_edges_projected_to_files(session, repo_id):
+    """An endpoint reachable only via a symbol-level calls edge still connects."""
+    parser, builder = "pkg/core/parser.py", "pkg/core/builder.py"
+    session.add(_page(repo_id, parser))
+    session.add(_page(repo_id, builder))
+    # No import edge — only a symbol-to-symbol calls edge between the two files.
+    session.add(_edge(repo_id, f"{parser}::parse", f"{builder}::build", "calls", conf=0.9))
+    await session.commit()
+
+    hits = [{"target_path": parser, "score": 5.0}]
+    combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "how does parser feed builder", set()
+    )
+    assert any(h.get("target_path") == builder for h in combined)
+    assert paths
+
+
+async def test_low_confidence_call_edge_is_dropped(session, repo_id):
+    """A calls edge below the confidence floor is not a traversable path."""
+    parser, builder = "pkg/core/parser.py", "pkg/core/builder.py"
+    session.add(_page(repo_id, parser))
+    session.add(_page(repo_id, builder))
+    session.add(_edge(repo_id, f"{parser}::parse", f"{builder}::build", "calls", conf=0.2))
+    await session.commit()
+
+    hits = [{"target_path": parser, "score": 5.0}]
+    combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "how does parser feed builder", set()
+    )
+    assert paths == []
+    assert combined is hits
+
+
+async def test_multi_hop_path_within_depth_cap(session, repo_id):
+    """A 3-hop chain between two named endpoints is found (bidirectional BFS)."""
+    parser, mid1, mid2, builder = (
+        "pkg/parser.py",
+        "pkg/resolver.py",
+        "pkg/planner.py",
+        "pkg/builder.py",
+    )
+    for p in (parser, mid1, mid2, builder):
+        session.add(_page(repo_id, p))
+    # Chain parser - resolver - planner - builder (3 hops); parser and builder
+    # are the named endpoints, the interior is discovered by the search.
+    session.add(_edge(repo_id, parser, mid1, "imports"))
+    session.add(_edge(repo_id, mid1, mid2, "imports"))
+    session.add(_edge(repo_id, mid2, builder, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": parser, "score": 5.0}]
+    combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "how does parser feed the builder", set()
+    )
+    assert any(h.get("target_path") == builder for h in combined)
+    # Undirected search: the path may be reported from either endpoint.
+    assert paths and paths[0] in ([parser, mid1, mid2, builder], [builder, mid2, mid1, parser])
+
+
+async def test_cross_language_anchor_dropped(session, repo_id):
+    """A same-named file in another language is not an endpoint of a .py flow."""
+    sym_py = "pkg/server/symbols.py"
+    sym_ts = "web/src/symbols.ts"
+    session.add(_page(repo_id, _ANSWER))
+    session.add(_page(repo_id, sym_py))
+    session.add(_page(repo_id, sym_ts))
+    session.add(_symbol(repo_id, "get_answer", _ANSWER))
+    session.add(_edge(repo_id, _ANSWER, sym_py, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": _ANSWER, "score": 5.0}]
+    combined, _ = await expand_via_flow_path(
+        session, repo_id, hits, "how does get_answer build the symbols body", {"get_answer"}
+    )
+    paths = {h.get("target_path") for h in combined}
+    assert sym_py in paths  # in-language endpoint injected
+    assert sym_ts not in paths  # off-language same-name match dropped
+
+
+def test_plumbing_covers_test_material_by_the_shared_rules():
+    """Tests bridge unrelated files, so none of them make a flow endpoint.
+
+    The substring list this replaced anchored on ``/tests/``, so a repo whose
+    suite sits at the root had its whole test tree treated as ordinary source
+    and eligible for injection (#1103).
+    """
+    from repowise.server.mcp_server._flow_path import _is_plumbing
+
+    assert _is_plumbing("tests/unit/server/test_flow_path.py")  # root-level suite
+    assert _is_plumbing("myapp/tests.py")
+    assert _is_plumbing("Foo.Tests/Bar.cs")
+    assert _is_plumbing("packages/core/tests/conftest.py")  # support bridges too
+    assert _is_plumbing("pkg/server/__init__.py")  # re-export glue, unchanged
+    # Production code that merely spells "test" is a legitimate endpoint.
+    assert not _is_plumbing("src/analysis/missing_test_signal.py")
+    assert not _is_plumbing("src/latest/api.py")
+
+
+# --- determinism -----------------------------------------------------------
+#
+# Found by the #1510 payload oracle: the same build, same question, same index
+# produced `flow_path` with two equal-length paths in opposite orders, one
+# ordering per run. Adjacency was a dict of sets and BFS walked it, so which of
+# several shortest paths was found moved with the per-process string hash seed —
+# and a nondeterministic ordering can be frozen into the answer cache.
+
+
+def test_adjacency_neighbours_come_back_ordered():
+    """Sets dedupe; the walk needs an order, so the dict hands out sorted lists."""
+    import asyncio
+
+    from repowise.server.mcp_server._flow_path import _load_file_adjacency
+
+    class _Res:
+        def all(self):
+            return [
+                ("a.py", "z.py", "imports", 1.0),
+                ("a.py", "b.py", "imports", 1.0),
+                ("a.py", "m.py", "imports", 1.0),
+            ]
+
+    class _Session:
+        async def execute(self, _stmt):
+            return _Res()
+
+    adj = asyncio.run(_load_file_adjacency(_Session(), "r1"))
+    assert adj["a.py"] == ["b.py", "m.py", "z.py"]
+
+
+def test_bfs_breaks_a_shortest_path_tie_the_same_way_every_time():
+    """A diamond: two 3-hop routes from `a` to `d`. The ordered walk picks one.
+
+    Asserted against the neighbour order rather than "runs twice agree", which a
+    single process cannot demonstrate — the seed is fixed for its lifetime.
+    """
+    from repowise.server.mcp_server._flow_path import _bfs_path
+
+    adj = {
+        "a.py": ["b.py", "c.py"],
+        "b.py": ["a.py", "d.py"],
+        "c.py": ["a.py", "d.py"],
+        "d.py": ["b.py", "c.py"],
+    }
+    assert _bfs_path(adj, "a.py", "d.py", 4) == ["a.py", "b.py", "d.py"]
+
+    # The walk is bidirectional and the sides alternate, so on a 2-hop diamond
+    # it is the BACKWARD frontier that reaches the meeting point first. Flip
+    # `d`'s neighbours and the chosen route flips with it — which is the point:
+    # the result follows the walk order, and the walk order is now fixed.
+    flipped = {**adj, "d.py": ["c.py", "b.py"]}
+    assert _bfs_path(flipped, "a.py", "d.py", 4) == ["a.py", "c.py", "d.py"]
+
+
+async def test_the_anchor_cap_keeps_what_retrieval_ranked(session, repo_id):
+    """Determinism must not become an alphabetical bias.
+
+    Eight anchors against a cap of six. The one file retrieval ranked sorts LAST
+    alphabetically, so it survives the cap only if rank is what decides.
+    """
+    stems = ["alpha", "beta", "gamma", "delta"]
+    ranked = "zzz/delta.py"
+    paths_seeded = [_ANSWER, ranked] + [f"{d}/{s}.py" for s in stems for d in ("aaa", "mmm")]
+    for path in dict.fromkeys(paths_seeded):
+        session.add(_page(repo_id, path))
+    session.add(_symbol(repo_id, "get_answer", _ANSWER))
+    session.add(_edge(repo_id, _ANSWER, ranked, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": _ANSWER, "score": 5.0}, {"target_path": ranked, "score": 4.0}]
+    _combined, paths = await expand_via_flow_path(
+        session,
+        repo_id,
+        hits,
+        "how does get_answer reach alpha beta gamma delta",
+        {"get_answer"},
+    )
+
+    assert [_ANSWER, ranked] in paths

@@ -1,0 +1,52 @@
+[
+  {
+    "name": "documentation_low_signal",
+    "direct_scores": [0.0001],
+    "transitive_dependents": 0,
+    "historical_fix_evidence": false,
+    "expected_band": "localized"
+  },
+  {
+    "name": "small_ordinary_source",
+    "direct_scores": [0.001, 0.002],
+    "transitive_dependents": 2,
+    "historical_fix_evidence": false,
+    "expected_band": "localized"
+  },
+  {
+    "name": "historical_fix_limited_reach",
+    "direct_scores": [0.001, 0.002],
+    "transitive_dependents": 2,
+    "historical_fix_evidence": true,
+    "expected_band": "localized"
+  },
+  {
+    "name": "cochange_only_relationship",
+    "direct_scores": [0.001],
+    "transitive_dependents": 0,
+    "historical_fix_evidence": true,
+    "cochange_only": true,
+    "expected_band": "localized"
+  },
+  {
+    "name": "moderate_multi_file",
+    "direct_scores": [0.03, 0.04, 0.05, 0.06],
+    "transitive_dependents": 10,
+    "historical_fix_evidence": false,
+    "expected_band": "moderate"
+  },
+  {
+    "name": "structurally_broad_low_history",
+    "direct_scores": [0.08, 0.1, 0.12],
+    "transitive_dependents": 40,
+    "historical_fix_evidence": false,
+    "expected_band": "broad"
+  },
+  {
+    "name": "genuinely_broad_high_control",
+    "direct_scores": [0.3, 0.4, 0.5],
+    "transitive_dependents": 100,
+    "historical_fix_evidence": true,
+    "expected_band": "broad"
+  }
+]

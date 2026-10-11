@@ -1,0 +1,135 @@
+"""Framework-aware synthetic edge detection.
+
+Detects convention-based relationships (Django, FastAPI, Flask, ASP.NET, Rails,
+Laravel, Spring, Express/Nest, Angular, Gin/Echo/Chi, Axum/Actix/Rocket, TYPO3, Godot
+``class_name`` globals, pytest ``conftest.py``, JS/TS test-runner setup files,
+helpers a test names by path, Alembic migrations a command loads, the
+extension a VS Code extension test runs, and AWS Lambda handlers) and adds
+``edge_type="framework"`` edges that no static import graph captures.
+
+Previously a single ``framework_edges.py`` module; split (PR 3.5) into one
+module per framework behind this façade. The public entry point —
+``add_framework_edges`` — is unchanged; it now iterates an ordered list of
+:class:`~.base.FrameworkHandler` objects, preserving the original detection
+order (and therefore which framework "wins" a shared edge via
+:func:`~.base._add_edge_if_new`).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from . import (
+    alembic_runner,
+    android_manifest,
+    angular,
+    aspnet,
+    aws_lambda,
+    django,
+    dotnet_discovery,
+    dotnet_roots,
+    express,
+    fastapi,
+    flask,
+    flutter,
+    go,
+    godot,
+    gtest,
+    hono,
+    jakarta,
+    laravel,
+    micronaut,
+    next_app,
+    pytest_edges,
+    quarkus,
+    rails,
+    remix,
+    rust,
+    spring,
+    test_path_strings,
+    test_runner_setup,
+    trpc,
+    typo3,
+    vscode_extension,
+)
+from .base import DetectionContext, FrameworkHandler, _add_edge_if_new, read_text
+
+if TYPE_CHECKING:
+    import networkx as nx
+
+    from ..models import ParsedFile
+    from ..resolvers import ResolverContext
+
+# Ordered exactly as the original ``add_framework_edges`` invoked them — the
+# order is load-bearing because ``_add_edge_if_new`` is first-wins.
+_HANDLERS: list[FrameworkHandler] = [
+    *pytest_edges.HANDLERS,  # always runs
+    *test_runner_setup.HANDLERS,
+    *test_path_strings.HANDLERS,
+    *alembic_runner.HANDLERS,
+    *vscode_extension.HANDLERS,
+    *django.HANDLERS,
+    *fastapi.HANDLERS,
+    *flask.HANDLERS,
+    *aspnet.HANDLERS,  # ASP.NET edges, then the any-C# extension-method scan
+    *dotnet_discovery.HANDLERS,  # types a .NET framework finds by assembly scan
+    *dotnet_roots.HANDLERS,
+    *rails.HANDLERS,
+    *laravel.HANDLERS,
+    *spring.HANDLERS,
+    *jakarta.HANDLERS,
+    *quarkus.HANDLERS,
+    *micronaut.HANDLERS,
+    *android_manifest.HANDLERS,
+    *flutter.HANDLERS,
+    *express.HANDLERS,
+    *angular.HANDLERS,
+    *next_app.HANDLERS,
+    *hono.HANDLERS,
+    *remix.HANDLERS,
+    *trpc.HANDLERS,
+    *go.HANDLERS,
+    # `class_name Foo` registers a project-global identifier other scripts use
+    # with no import at all: Godot's own name table, and the largest remaining
+    # dead-code false positive once scene edges land.
+    *godot.HANDLERS,
+    *gtest.HANDLERS,
+    *rust.HANDLERS,
+    *typo3.HANDLERS,
+    *aws_lambda.HANDLERS,
+]
+
+
+def add_framework_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, ParsedFile],
+    ctx: ResolverContext,
+    tech_stack: list[str] | None = None,
+) -> int:
+    """Add synthetic edges for framework-mediated relationships.
+
+    Returns the number of edges added.
+    """
+    path_set = set(parsed_files.keys())
+    stack_lower = {s.lower() for s in (tech_stack or [])}
+    dctx = DetectionContext(
+        stack_lower=stack_lower,
+        parsed_files=parsed_files,
+        ctx=ctx,
+        path_set=path_set,
+    )
+
+    count = 0
+    for handler in _HANDLERS:
+        if handler.detect(dctx):
+            count += handler.add_edges(graph, parsed_files, ctx, path_set)
+    return count
+
+
+__all__ = [
+    "DetectionContext",
+    "FrameworkHandler",
+    "_add_edge_if_new",
+    "add_framework_edges",
+    "read_text",
+]

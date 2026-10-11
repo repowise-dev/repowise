@@ -1,0 +1,44 @@
+{#- The module page contract. The facts arrive as one JSON object built by
+    ``context/module_facts.py``; the model turns them into a page a newcomer can
+    read in five minutes. Identifiers, public API and git signals are rendered
+    into the page's digest after generation, so they are not asked for here. -#}
+{% if ctx.is_rollup %}
+This page is the overview of a subsystem whose parts have their own pages (`child_pages` in the facts). Explain how the parts fit together and send the reader to the right child page by naming its path in backticks; do not re-document each file.
+{% endif %}
+{% if ctx.packages %}
+The page covers several sibling packages (`packages` in the facts), each with its own manifest. Say what they share and how they differ, and never name the page after one of them. A table of the packages is added after you write, so do not list them.
+{% endif %}
+{% if ctx.scope %}
+Scope, for setting the boundary in the opening (what this page covers and what it leaves to neighbouring pages; do not quote it): {{ ctx.scope }}
+{% endif %}
+
+Structural facts about **{{ ctx.title }}**, read from the code and its import graph. `code_excerpts` holds exact source for the central symbols; `declared` lists what other files declare, signatures only:
+
+```json
+{{ ctx.facts_json }}
+```
+
+Write the page in Markdown with exactly this shape.
+
+# {{ ctx.title }}
+
+An opening of 2 or 3 plain sentences: what this part of the system does, what it takes in and hands on, and why the rest of the system needs it. No file paths, numbers or identifiers in the opening. Do not open with a frame: "The X layer is the Y of Z", "X serves as the ...", "X acts as the ...", "X is the entry stage of ...", "it consumes ... and produces ..." and "This module contains N files" are all banned, because two pages that open with the same first five words read as one.
+
+Then one diagram in a fenced `mermaid` block, of the type the facts' `diagram` field names:
+- `sequenceDiagram`: draw `traced_flow` as one operation, with 4 to 6 participants and 6 to 10 messages. Participants are the parts involved under plain names, declared with one-word ids (`participant Store as Result store`); an outside caller or callee may be one participant. Messages follow the traced calls in order, each written as a short plain-English phrase for what the call does ("resolve call targets"), never the function's name.
+- `flowchart`: `flowchart LR` with 4 to 9 nodes for the parts that appear in `imports_between_parts`, under plain names, the directory in small text on a second line (`Resolvers["Resolvers<br/><small>resolvers/</small>"]`). Draw at most 10 edges, each one taken from `imports_between_parts`, pointing the way data or control flows and labelled with a short verb phrase (`-->|resolves imports for|`). At most 2 outside nodes from `depends_on` or `used_by`, marked `:::ext`, with `classDef ext stroke-dasharray:4 3;`.
+- `none`: no diagram.
+Node and participant ids are short CamelCase words (`GraphViews`), never a mermaid keyword such as `end`, `graph` or `style`. `classDef`, `class` and `style` lines belong in flowcharts only.
+
+Then 3 to 5 sections, each a `##` heading that names a step or an idea in how the module works ("From a file to parsed symbols"), never a generic name such as Overview, Architecture, Key files, Public API, Dependencies or Summary. Each section is 1 to 3 short paragraphs that explain how and why. Put an identifier in backticks only where a reader would search for it. One section may carry a second small diagram when it walks a flow the first diagram does not show. End each section with one line, `Sources: ` followed by 1 to 3 file paths in backticks, written as in the facts, naming only files that section talks about.
+
+## Where to start reading
+Exactly 3 bullets: `path` - one sentence on why to read it first.
+
+## How it connects
+One short paragraph, in words: what depends on this part of the system and what it depends on.
+
+## Questions this page answers
+3 to 6 questions a developer or an agent would ask that this page answers, as a list. They are kept with the page for search, not shown in its body.
+
+Rules: 500 to 800 words before the questions. At most one table, and prefer none. No lists of symbols and no counts of files, commits or owners. Short sentences, active voice, third person. Never write markdown links: name a file, directory or child page by its path in backticks and the wiki links it. A style note at the top of this request changes voice and density; it does not change this shape. Use only the facts above: never invent files, symbols, edges or rationale. State behaviour only when an excerpt shows it; otherwise say what the file declares. A commit subject is history, not current behaviour: if you cite one, label it (historical, <date>).

@@ -1,0 +1,239 @@
+"""Context dataclasses passed to the generation Jinja2 templates.
+
+One dataclass per template; extracted from the former context_assembler.py.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# Context dataclasses — one per template
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FilePageContext:
+    file_path: str
+    language: str
+    docstring: str | None
+    symbols: list[dict[str, Any]]
+    imports: list[str]
+    exports: list[str]
+    pagerank_score: float
+    betweenness_score: float
+    community_id: int
+    dependents: list[str]
+    dependencies: list[str]
+    is_api_contract: bool
+    is_entry_point: bool
+    is_test: bool
+    parse_errors: list[str]
+    estimated_tokens: int
+    # Documentation category (code/config/doc/data/pipeline) — the file_page
+    # template adapts its summary guidance to this.
+    file_category: str = "code"
+    rag_context: list[str] = field(default_factory=list)
+    git_metadata: dict | None = None
+    # Files that change in the same commits as this one and that the import
+    # graph does not explain: [{"path", "commits", "last"}]. Coupling a reader
+    # cannot see from the code, decoded from the git metadata's partner cell.
+    co_change_pages: list[dict] = field(default_factory=list)
+    dead_code_findings: list[dict] = field(default_factory=list)
+    depth: str = "standard"
+    dependency_summaries: dict[str, str] = field(default_factory=dict)
+    # Graph intelligence (Phase 5 enrichment)
+    call_graph: list[dict] = field(default_factory=list)
+    heritage: list[dict] = field(default_factory=list)
+    community_label: str = ""
+    community_cohesion: float = 0.0
+    # Architectural decisions touching this file (extracted by
+    # DecisionExtractor — inline WHY/DECISION markers, README mining,
+    # git archaeology). Kept short on purpose; the module-page renders
+    # the full list.
+    decision_records: list[dict] = field(default_factory=list)
+    # KG layer context (populated when knowledge graph available)
+    kg_layer_name: str = ""
+    # Stable slug id of the layer (``layer:<slug>``) — the key the docs tree
+    # groups on; ``kg_layer_name`` is the mutable display label, never a key.
+    kg_layer_id: str = ""
+    kg_layer_description: str = ""
+    kg_layer_role: str = ""
+    kg_neighbors: list[dict] = field(default_factory=list)
+    kg_tour_step: dict | None = None
+    kg_tags: list[str] = field(default_factory=list)
+    kg_node_summary: str = ""
+    # The words the file's own source uses, bounded and ordered
+    # most-distinguishing first. See ``context/file_vocabulary.py`` for what
+    # goes in it and why, including why it is not the repo-level vocabulary in
+    # ``concept_tree/vocabulary.py``. Empty when the file yields nothing, in
+    # which case the template drops the section rather than rendering an empty
+    # heading.
+    file_vocabulary: str = ""
+
+
+@dataclass
+class SymbolSpotlightContext:
+    symbol_name: str
+    qualified_name: str
+    kind: str
+    signature: str
+    docstring: str | None
+    file_path: str
+    decorators: list[str]
+    is_async: bool
+    complexity_estimate: int
+    # Files importing the module that defines the symbol. Import-level
+    # references, not call sites; the template says so where it lists them.
+    callers: list[str]
+    source_body: str | None = None
+    # Resolved calls *to* this symbol: [{"caller", "caller_file"}]. Where the
+    # call resolver reached a verdict this is what "where it is used" means,
+    # and ``callers`` is the fallback for the symbols it did not resolve.
+    call_sites: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class ModulePageContext:
+    # The page's display title. A concept group spans several directories and
+    # is named for what it does, so this is prose ("Ingestion Pipeline") and
+    # not a path. Same split as the layer name/id pair on a file page: what
+    # the reader sees is separate from what the page is keyed by, and only the
+    # key is stable across regenerations.
+    title: str
+    language: str
+    total_symbols: int
+    public_symbols: int
+    entry_points: list[str]
+    dependencies: list[str]
+    dependents: list[str]
+    pagerank_mean: float
+    files: list[str]
+    # One sentence saying what this page covers and what it deliberately does
+    # NOT, computed by the outline planner to keep adjacent pages from
+    # describing each other. Rendered as guidance so the opener situates the
+    # page against its siblings; the page itself does not echo it verbatim.
+    scope: str = ""
+    # A rollup page summarises a subsystem directory whose detail lives on the
+    # child concept pages below it, rather than owning files of its own.
+    is_rollup: bool = False
+    # Child concept pages this rollup sits above: [{"title", "path", "summary"}].
+    child_pages: list[dict] = field(default_factory=list)
+    # Sibling packages a package roll-up covers: [{"path", "files"}].
+    packages: list[dict] = field(default_factory=list)
+    # What the page's packages publish, computed from manifests and re-exports:
+    # [{"name", "kind", "file", "signature", "doc", "alias_of"}]; past the budget, names only.
+    public_api: list[dict] = field(default_factory=list)
+    # Public API entries past the hard cap, counted, not listed.
+    public_api_omitted: int = 0
+    # Exact source for the central symbols: [{"file", "symbol", "lines",
+    # "truncated", "code"}], then one-line signatures for files with no excerpt.
+    code_excerpts: list[dict] = field(default_factory=list)
+    declared_files: list[str] = field(default_factory=list)
+    # Git-derived subsystem health, aggregated over the page's member files.
+    # All degrade to zero/empty when no git metadata is available, so the
+    # template renders nothing rather than a wrong number.
+    hotspot_count: int = 0
+    stable_count: int = 0
+    # Files maintained by effectively one person (bus_factor <= 1): a
+    # single-maintainer risk a reader cannot see from the code alone.
+    single_owner_files: int = 0
+    # Other modules this one changes together with in history but does not
+    # import: [{"path", "count"}]. Coupling the import graph does not show.
+    coupled_modules: list[dict] = field(default_factory=list)
+    # Bug-fix history: total fix commits across members and the file that drew
+    # the most, so the page can name where the defects have clustered.
+    bugfix_total: int = 0
+    most_fixed_file: dict = field(default_factory=dict)
+    # The directories the page covers, shallowest first. The title says what
+    # the page is about; this says where it lives, which is what a reader
+    # needs to go and look. Derived from the members rather than passed in, so
+    # it cannot disagree with them.
+    directories: list[str] = field(default_factory=list)
+    # Graph intelligence enrichment
+    file_summaries: dict[str, str] = field(default_factory=dict)
+    community_label: str = ""
+    community_cohesion: float = 0.0
+    key_classes: list[dict] = field(default_factory=list)
+    # Phase 2 enrichment: surfaced when available, gracefully degrades.
+    decision_records: list[dict] = field(default_factory=list)
+    dead_code_findings: list[dict] = field(default_factory=list)
+    external_systems: list[dict] = field(default_factory=list)
+    # Top files inside the module by PageRank, for the "key files" section.
+    key_files: list[dict] = field(default_factory=list)
+    top_owners: list[dict] = field(default_factory=list)
+    # What the model writes the page from: parts, import edges between them,
+    # key files, neighbours and a traced flow. See ``module_facts.py``.
+    facts: dict = field(default_factory=dict)
+
+    @property
+    def facts_json(self) -> str:
+        """The facts as the prompt shows them: readable JSON, arrows left unescaped."""
+        return json.dumps(self.facts, indent=1, ensure_ascii=False)
+
+
+@dataclass
+class SccPageContext:
+    scc_id: str
+    files: list[str]
+    cycle_description: str
+    total_symbols: int
+    member_symbols: list[dict] = field(default_factory=list)
+    # [{"file_path": str, "symbols": [{"name": str, "signature": str, "docstring": str}]}]
+    cross_imports: list[dict] = field(default_factory=list)
+    # [{"from": str, "to": str}]
+
+
+@dataclass
+class _TopFile:
+    """Helper for repo overview top-files list."""
+
+    path: str
+    score: float
+
+
+@dataclass
+class RepoOverviewContext:
+    repo_name: str
+    is_monorepo: bool
+    packages: list[Any]  # PackageInfo objects
+    language_distribution: dict[str, float]
+    total_files: int
+    total_loc: int
+    entry_points: list[str]
+    top_files_by_pagerank: list[_TopFile]
+    circular_dependency_count: int
+    # Graph intelligence enrichment
+    communities: list[dict] = field(default_factory=list)
+    execution_flows: list[dict] = field(default_factory=list)
+    # Phase 2: third-party dependencies + headline architectural decisions
+    external_systems: list[dict] = field(default_factory=list)
+    decision_records: list[dict] = field(default_factory=list)
+    # The repository's own headings and section openers, capped. Framing and
+    # vocabulary only: every path, count and package name on the page still
+    # comes from the structural fields above. See ``readme_digest``.
+    prose_digest: str = ""
+    # Per-package file counts and observed languages, largest first. Counted
+    # from the run's own parsed files rather than written by the model, so the
+    # table they feed reads the same on every render. Empty when the repository
+    # has no packages to tabulate.
+    package_stats: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class ApiContractContext:
+    file_path: str
+    language: str
+    raw_content: str
+    endpoints: list[str]
+    schemas: list[str]
+
+
+@dataclass
+class InfraPageContext:
+    file_path: str
+    language: str
+    raw_content: str
+    targets: list[str]

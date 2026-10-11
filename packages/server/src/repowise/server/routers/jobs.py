@@ -1,0 +1,267 @@
+"""/api/jobs — Generation job status and SSE progress stream."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
+from sqlalchemy import func, select
+from starlette.responses import StreamingResponse
+
+from repowise.core.persistence import crud
+from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import GenerationJob, LlmCost
+from repowise.server.deps import (
+    _header_scheme,
+    auth_is_open,
+    bearer_is_valid,
+    resolve_session_factory,
+    verify_api_key,
+)
+from repowise.server.schemas import JobResponse
+from repowise.server.stream_auth import verify_stream_token
+
+# The stream route can't sit under a router-level bearer dependency: an
+# EventSource can't send the Authorization header, so it authenticates with a
+# per-job ``?token=`` instead. Every other route keeps the bearer requirement
+# via its own ``Depends(verify_api_key)``.
+router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+
+async def authorize_job_stream(
+    request: Request,
+    job_id: str,
+    token: str | None = Query(None),
+    auth: str | None = Security(_header_scheme),
+) -> None:
+    """Allow the job stream for an open server, a valid bearer, or a job token.
+
+    The ``?token=`` is accepted only for the job id in the path (the token
+    embeds and is signed over that id), so it can't be replayed against another
+    job. A bearer key still works, so non-browser clients are unaffected.
+    """
+    if auth_is_open(request):
+        return
+    if bearer_is_valid(auth):
+        return
+    if verify_stream_token(token, job_id):
+        return
+    raise HTTPException(status_code=401, detail="Missing or invalid job stream credentials")
+
+
+async def _find_job_factory(app_state, job_id: str):
+    """Locate the session_factory whose database contains ``job_id``.
+
+    In workspace mode each repo has its own ``wiki.db``. The /api/jobs/*
+    endpoints don't take repo_id in the path, so we must scan: primary
+    first, then all per-repo factories. Returns ``(factory, job)`` or
+    ``(None, None)`` if no DB has the row.
+    """
+    candidates = [app_state.session_factory]
+    ws = getattr(app_state, "workspace_sessions", None)
+    if ws:
+        candidates.extend(ws.values())
+    seen: set[int] = set()
+    for factory in candidates:
+        if id(factory) in seen:
+            continue
+        seen.add(id(factory))
+        try:
+            async with get_session(factory) as session:
+                job = await crud.get_generation_job(session, job_id)
+            if job is not None:
+                return factory, job
+        except Exception:
+            # Don't let one bad DB poison the lookup; try the rest.
+            continue
+    return None, None
+
+
+def _created_sort_key(job: GenerationJob) -> datetime:
+    """Timezone-safe sort key for ``created_at`` across merged repo databases."""
+    dt = job.created_at
+    if dt is None:
+        return datetime.min.replace(tzinfo=UTC)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+@router.get("", response_model=list[JobResponse], dependencies=[Depends(verify_api_key)])
+async def list_jobs(
+    request: Request,
+    repo_id: str | None = Query(None),
+    status: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> list[JobResponse]:
+    """List generation jobs, optionally filtered by repository or status."""
+
+    async def _query_jobs(factory) -> list[GenerationJob]:
+        q = select(GenerationJob)
+        if repo_id:
+            q = q.where(GenerationJob.repository_id == repo_id)
+        if status:
+            q = q.where(GenerationJob.status == status)
+        q = q.order_by(GenerationJob.created_at.desc()).limit(limit + offset)
+        async with get_session(factory) as session:
+            result = await session.execute(q)
+            return list(result.scalars().all())
+
+    if repo_id:
+        factories = [resolve_session_factory(request.app.state, repo_id)]
+    else:
+        factories = [request.app.state.session_factory]
+        ws = getattr(request.app.state, "workspace_sessions", None)
+        if ws:
+            factories.extend(ws.values())
+
+    jobs: list[GenerationJob] = []
+    seen_factories: set[int] = set()
+    for factory in factories:
+        if id(factory) in seen_factories:
+            continue
+        seen_factories.add(id(factory))
+        try:
+            jobs.extend(await _query_jobs(factory))
+        except Exception:
+            continue
+
+    # Jobs are merged from several repo databases in workspace mode, and SQLite
+    # hands back a mix of timezone-aware and naive ``created_at`` values, which
+    # cannot be compared directly. Coerce naive timestamps to UTC for the sort
+    # (they are stored as UTC) so the merge never raises.
+    jobs.sort(key=_created_sort_key, reverse=True)
+    return [JobResponse.from_orm(j) for j in jobs[offset : offset + limit]]
+
+
+@router.get("/{job_id}", response_model=JobResponse, dependencies=[Depends(verify_api_key)])
+async def get_job(job_id: str, request: Request) -> JobResponse:
+    """Get a single generation job by ID."""
+    _, job = await _find_job_factory(request.app.state, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JobResponse.from_orm(job)
+
+
+@router.post("/{job_id}/cancel", response_model=JobResponse, dependencies=[Depends(verify_api_key)])
+async def cancel_job(job_id: str, request: Request) -> JobResponse:
+    """Cancel a pending or running generation job.
+
+    Actually stops the work: flips the job's cooperative cancellation token
+    (unwinding the CPU-bound pipeline phases) and cancels the background
+    asyncio task (interrupting in-flight awaits, including LLM calls), then
+    marks the job ``cancelled``. Also unblocks the active-job guard in
+    /repos/{id}/sync when a job is stuck in ``pending`` because its
+    background task never started.
+    """
+    app_state = request.app.state
+    factory, job = await _find_job_factory(app_state, job_id)
+    if job is None or factory is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in ("pending", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot cancel a job in '{job.status}' state",
+        )
+
+    # Signal the running pipeline first, then record the terminal state. The
+    # executor also writes "cancelled" when it unwinds; both writes are
+    # idempotent.
+    token = getattr(app_state, "job_cancel_tokens", {}).get(job_id)
+    if token is not None:
+        token.cancel()
+    task = getattr(app_state, "job_tasks", {}).get(job_id)
+    if task is not None and not task.done():
+        task.cancel()
+
+    async with get_session(factory) as session:
+        await crud.update_job_status(
+            session,
+            job_id,
+            "cancelled",
+            error_message="Cancelled by user",
+        )
+        job = await crud.get_generation_job(session, job_id)
+    assert job is not None  # we just updated it
+    return JobResponse.from_orm(job)
+
+
+@router.get("/{job_id}/stream", dependencies=[Depends(authorize_job_stream)])
+async def stream_job(job_id: str, request: Request) -> StreamingResponse:
+    """SSE progress stream for a generation job.
+
+    Emits ``event: progress`` every second until the job reaches a terminal
+    state, then emits ``event: done`` and closes. Pipeline messages recorded
+    by the executor (phase starts, per-file warnings) are interleaved as
+    ``event: message`` frames, and each progress frame carries the current
+    ``phase`` label, so clients can render "Parsing files 1200/4000" instead
+    of bare numbers.
+    """
+    factory, _ = await _find_job_factory(request.app.state, job_id)
+    if factory is None:
+        # Fall back to the primary so we still emit a structured "not found"
+        # event instead of a connection error.
+        factory = request.app.state.session_factory
+
+    async def event_generator():
+        next_seq = 0
+        while True:
+            # Check if client disconnected
+            if await request.is_disconnected():
+                return
+
+            async with get_session(factory) as session:
+                job = await crud.get_generation_job(session, job_id)
+
+            if job is None:
+                data = json.dumps({"detail": "Job not found"})
+                yield f"event: error\ndata: {data}\n\n"
+                return
+
+            # Sum LLM costs recorded since the job started
+            actual_cost_usd: float | None = None
+            if job.started_at is not None:
+                cost_q = select(func.sum(LlmCost.cost_usd)).where(
+                    LlmCost.repository_id == job.repository_id,
+                    LlmCost.ts >= job.started_at,
+                )
+                async with get_session(factory) as cost_session:
+                    actual_cost_usd = await cost_session.scalar(cost_q)
+
+            # Drain any new pipeline messages from the in-memory buffer.
+            buffer = getattr(request.app.state, "job_events", {}).get(job_id)
+            phase = buffer.phase if buffer is not None else ""
+            if buffer is not None:
+                for event in buffer.since(next_seq):
+                    next_seq = event["seq"] + 1
+                    yield f"event: message\ndata: {json.dumps(event)}\n\n"
+
+            progress = {
+                "job_id": job.id,
+                "status": job.status,
+                "completed_pages": job.completed_pages,
+                "total_pages": job.total_pages,
+                "failed_pages": job.failed_pages,
+                "current_level": job.current_level,
+                "phase": phase,
+                "actual_cost_usd": actual_cost_usd,
+                "error_message": job.error_message,
+            }
+            data = json.dumps(progress)
+            yield f"event: progress\ndata: {data}\n\n"
+
+            if job.status in ("completed", "failed", "cancelled"):
+                yield f"event: done\ndata: {data}\n\n"
+                return
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        # no-transform matters: the web app fronts this API through a Next.js
+        # rewrite whose compression middleware would otherwise gzip-buffer the
+        # stream, so no event ever reaches the browser until the job ends.
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )

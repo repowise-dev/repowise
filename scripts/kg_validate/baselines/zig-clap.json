@@ -1,0 +1,47 @@
+{
+ "repo": "zig-clap",
+ "smells": [
+  {
+   "code": "tour_too_short",
+   "message": "only 4 steps",
+   "severity": "WARN"
+  },
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 78% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "zig": {
+    "edges_per_file": 0.0,
+    "files": 12,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 12,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "zig",
+  "entry_points": [
+   ".github/workflows/main.yml"
+  ],
+  "modules": {
+   "count": 2,
+   "max_size": 14,
+   "min_size": 4,
+   "names": [
+    "Application",
+    "Config"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "build.zig",
+   "clap/args.zig",
+   "clap.zig"
+  ]
+ }
+}

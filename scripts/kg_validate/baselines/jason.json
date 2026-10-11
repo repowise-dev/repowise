@@ -1,0 +1,56 @@
+{
+ "repo": "jason",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 92% of layered nodes",
+   "severity": "WARN"
+  },
+  {
+   "code": "module_oversized",
+   "message": "json_test_suite has 325 files with subdirs (window 120)",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "elixir": {
+    "edges_per_file": 1.17,
+    "files": 24,
+    "import_edges": 28,
+    "import_support": "partial",
+    "orphan_files": 6,
+    "orphan_ratio": 0.25,
+    "resolution_rate": 0.893
+   }
+  },
+  "dominant_language": "elixir",
+  "entry_points": [],
+  "modules": {
+   "count": 5,
+   "max_size": 325,
+   "min_size": 8,
+   "names": [
+    "Data",
+    "Service",
+    "Test",
+    "formatter_test_suite",
+    "json_test_suite"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "lib/encode.ex",
+   "lib/codegen.ex",
+   "lib/ordered_object.ex",
+   "lib/fragment.ex",
+   "lib/jason.ex",
+   "lib/decoder.ex",
+   "lib/formatter.ex",
+   "lib/helpers.ex",
+   "lib/sigil.ex",
+   "lib/encoder.ex",
+   "test/test_helper.exs"
+  ]
+ }
+}

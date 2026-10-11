@@ -1,0 +1,45 @@
+{
+  "repositories": ["alpha", "beta"],
+  "changed_files": [
+    "src/measured.py",
+    "src/inferred.py",
+    "src/both.py",
+    "src/no_match.py",
+    "src/truncate.py",
+    "src/excluded.py"
+  ],
+  "unavailable_changed_files": ["src/unavailable.py"],
+  "excluded_paths": ["src/excluded.py", "tests/excluded/**"],
+  "coverage": [
+    {"test_id": "tests/test_measured.py::test_measured", "test_file": "tests/test_measured.py", "source_file": "src/measured.py"},
+    {"test_id": "tests/test_both.py::test_measured", "test_file": "tests/test_both.py", "source_file": "src/both.py"},
+    {"test_id": "tests/test_seed.py::test_seed", "test_file": "tests/test_seed.py", "source_file": "src/seed.py"},
+    {"test_id": "tests/test_truncate.py::test_00", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_01", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_02", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_03", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_04", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_05", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_06", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_07", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_08", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_09", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_10", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"},
+    {"test_id": "tests/test_truncate.py::test_11", "test_file": "tests/test_truncate.py", "source_file": "src/truncate.py"}
+  ],
+  "inferred": [
+    {"test_file": "tests/test_inferred.py", "source_file": "src/inferred.py"},
+    {"test_file": "tests/test_both_inferred.py", "source_file": "src/both.py"},
+    {"test_file": "tests/excluded/test_hidden.py", "source_file": "src/inferred.py"}
+  ],
+  "same_named": {
+    "test_id": "tests/test_shared.py::test_same_name",
+    "source_file": "src/shared.py"
+  },
+  "relationship_semantics": {
+    "dependency": {"source": "src/dependent.py", "target": "src/measured.py", "type": "imports"},
+    "co_change": {"source": "docs/history-only.md", "target": "src/measured.py", "type": "co_changes"},
+    "contract": {"provider_repo": "alpha", "consumer_repo": "beta", "type": "http"},
+    "structural_runtime_breakage_claim": false
+  }
+}

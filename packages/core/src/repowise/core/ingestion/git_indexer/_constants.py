@@ -1,0 +1,391 @@
+"""Module constants, regexes, and the GitPython noise patch for git indexing.
+
+Kept in one place so the per-tier modules share a single source of truth for
+the commit-depth defaults, decay half-lives, and skip heuristics.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import re
+from typing import Any
+
+from ...co_change import (
+    CO_CHANGE_COMMIT_DECAY_TAU,
+    CO_CHANGE_DECAY_TAU,
+    MAX_PARTNERS_PER_FILE,
+    MIN_CO_CHANGE_SUPPORT,
+)
+from ..languages.registry import REGISTRY as _LANG_REGISTRY
+
+# Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
+# When git cat-file streams are GC'd after the subprocess pipe is closed,
+# their __del__ tries to drain remaining bytes and hits a closed file.
+# This is harmless but floods stderr with tracebacks.
+try:
+    from git.cmd import _CatFileContentStream
+
+    _orig_del = _CatFileContentStream.__del__
+
+    def _quiet_del(self: Any) -> None:
+        with contextlib.suppress(ValueError, OSError):
+            _orig_del(self)
+
+    _CatFileContentStream.__del__ = _quiet_del  # type: ignore[assignment]
+except Exception:
+    pass  # git not installed — nothing to patch
+
+# Commit message prefixes that are ALWAYS skipped (no signal value).
+_HARD_SKIP_PREFIXES = ("Merge ",)
+
+# Conventional-commit prefixes normally skipped — but kept if the message
+# contains a decision-signal keyword (e.g. "build: migrate from webpack to vite").
+_SOFT_SKIP_PREFIXES = ("Bump ", "chore:", "ci:", "style:", "build:", "release:")
+
+# Lightweight subset of decision-signal keywords (mirrors decision_extractor.py).
+# Used to rescue soft-skipped commits that carry architectural intent.
+_DECISION_SIGNAL_WORDS: frozenset[str] = frozenset(
+    {
+        "migrate",
+        "migration",
+        "switch to",
+        "replace",
+        "refactor",
+        "adopt",
+        "introduce",
+        "deprecate",
+        "remove",
+        "upgrade",
+        "rewrite",
+        "extract",
+        "convert",
+        "transition",
+    }
+)
+
+_MIN_MESSAGE_LEN = 12
+
+# Default per-file commit history depth.
+_DEFAULT_COMMIT_LIMIT: int = 500
+
+# Depth of the second, deeper repo-wide log walk that serves files absent
+# from the recent-window commit index. On repos whose history is much
+# deeper than _DEFAULT_COMMIT_LIMIT, most tracked files miss the window
+# and previously each took a per-file ``git log`` subprocess (3,295
+# spawns on a 9k-commit WinUI monorepo). One --skip walk this deep
+# replaces them. Files older than window+deep still take the per-file
+# path, so behaviour degrades gracefully on very deep histories.
+_DEEP_WALK_COMMIT_LIMIT: int = 20_000
+
+# Minimum number of window-index misses before the deep walk pays for
+# itself. Below this, the handful of per-file ``git log`` fallbacks is
+# cheaper than walking the full history again (small repos typically
+# have zero misses and skip the deep walk entirely).
+_DEEP_WALK_MIN_FALLBACK: int = 100
+
+# Per-file persisted contributor / commit fan-out. Previously hard-coded
+# to 5 / 10 inline, which silently hid co-owners and meaningful history on
+# multi-team modules. 50 is generous enough that any realistic UI surface
+# can render the full list while keeping the JSON blob bounded.
+_MAX_TOP_AUTHORS: int = 50
+_MAX_SIGNIFICANT_COMMITS: int = 50
+
+# Byte ceiling for the commit body (``%b``) retained on a significant-commit
+# entry. Squash-merge repos put the whole "why" in the body, which unlocks
+# PR/squash decision mining. But the body is stored once *per file the commit
+# touched*, so a wide squash commit duplicates it many times — measuring a real
+# repo showed a 2 KB cap inflating ``significant_commits_json`` ~8x. 1 KB holds
+# the decision-bearing lead of a PR description (## Why / ## Motivation /
+# before-after) while halving that overhead, and bodies are further gated to
+# commits that actually look like decisions (see ``_body_carries_decision``).
+# Truncation is byte-accurate (UTF-8) so the cap is a real storage ceiling.
+_MAX_COMMIT_BODY_BYTES: int = 1024
+
+
+def _truncate_body(body: str) -> str:
+    """Trim *body* to the byte ceiling, never splitting a UTF-8 sequence.
+
+    Lives beside its ceiling rather than in one of the two modules that need it
+    (``file_history`` retains bodies on significant-commit entries, the
+    prior-defect walk carries them on fix commits) so the cap has exactly one
+    implementation.
+    """
+    if not body:
+        return ""
+    encoded = body.encode("utf-8")
+    if len(encoded) <= _MAX_COMMIT_BODY_BYTES:
+        return body
+    return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
+
+
+# Co-change pair extraction widens the window because individual files
+# may only co-change a handful of times in 500 commits. On low-churn repos
+# the 500-commit window produced 0 co-change pairs every run; 2000 commits
+# captures enough history without meaningfully blowing up wall-clock time
+# (single `git log` call).
+_DEFAULT_CO_CHANGE_COMMIT_LIMIT: int = 2000
+
+# What a pair must clear to be recorded, and how many survive per file. Both
+# are counts rather than weights: a cutoff on the weight has to be re-tuned
+# whenever the weighting changes, and the value that keeps a monorepo honest
+# empties a library's table entirely.
+_MIN_CO_CHANGE_SUPPORT: int = MIN_CO_CHANGE_SUPPORT
+_MAX_PARTNERS_PER_FILE: int = MAX_PARTNERS_PER_FILE
+
+# Commits that touch a very large number of files (mass renames,
+# copyright header sweeps, code-mod runs) produce O(N^2) pairs and
+# contribute no useful co-change signal. Skip pair generation for any
+# commit above this threshold. The decay-weighted score already
+# de-prioritises mass-edit commits, but the pairs are materialised
+# first — for a worst-case 500 files/commit x 2000 commits run that's
+# 250M pairs ~= 16 GB RAM. The cap is a memory safeguard, not a
+# correctness change: typical commits sit well under 20 files.
+_MAX_FILES_PER_COMMIT_FOR_COCHANGE: int = 200
+
+# Change-entropy uses a tighter file-set cap than co-change. Hassan (2009)
+# excludes very wide commits from the History Complexity Metric because a
+# sweeping edit spreads its "change probability" so thinly that it adds noise
+# rather than signal. 30 follows the commonly cited Hassan filter; commits
+# above it are dropped from the entropy accumulation entirely.
+_MAX_FILES_PER_COMMIT_FOR_ENTROPY: int = 30
+
+# Commit message classification regexes. "fix" is not here: a
+# commit is a fix exactly when ``is_fix_commit`` says so, on every surface.
+_COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
+    "feature": re.compile(
+        r"\b(add|implement|introduce|create|new|feat)\b",
+        re.IGNORECASE,
+    ),
+    "refactor": re.compile(
+        r"\b(refactor|restructure|cleanup|clean.up|rename|reorganize|extract|simplify|move)\b",
+        re.IGNORECASE,
+    ),
+    "dependency": re.compile(
+        r"\b(upgrade|bump|update.dep|migrate.to|switch.to|dependency|dependencies)\b",
+        re.IGNORECASE,
+    ),
+}
+
+# Bug-fix commit classifier — mirrors the defect benchmark's
+# ``lib/defect_counter.find_fix_commits`` (keyword strategy) so the product's
+# ``prior_defect`` signal counts exactly the commits the benchmark labels as
+# fixes (product == benchmark). A commit subject is a fix iff it matches an
+# INCLUDE pattern and NO EXCLUDE pattern; merge commits are excluded upstream
+# (the per-file walk skips ``is_merge``), mirroring the bench's ``--no-merges``.
+#
+# The one fix definition: the per-file category counts and the evolution
+# timeline both label a commit "fix" exactly when this rule does, so every
+# fix count the product shows counts the same commits.
+_FIX_COMMIT_INCLUDE: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bfix\b", re.IGNORECASE),
+    re.compile(r"\bbug\b", re.IGNORECASE),
+    re.compile(r"\bpatch\b", re.IGNORECASE),
+    re.compile(r"\bresolves?\b", re.IGNORECASE),
+    re.compile(r"closes?\s+#\d+", re.IGNORECASE),
+    re.compile(r"fixes?\s+#\d+", re.IGNORECASE),
+)
+_FIX_COMMIT_EXCLUDE: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^Merge ", re.IGNORECASE),
+    re.compile(r"\btypo\b", re.IGNORECASE),
+    re.compile(r"\bbump\b", re.IGNORECASE),
+    re.compile(r"\bdeps?\b", re.IGNORECASE),
+    re.compile(r"\bchore\b", re.IGNORECASE),
+    re.compile(r"\blint\b", re.IGNORECASE),
+    re.compile(r"\bformat\b", re.IGNORECASE),
+    re.compile(r"\bstyle\b", re.IGNORECASE),
+    re.compile(r"\bdocs?\b", re.IGNORECASE),
+)
+
+# Trailing window over which ``prior_defect`` counts bug-fix commits. 180 days
+# (≈6 months) intentionally matches the benchmark's ``defect_window_months: 6``
+# prior-defects baseline — a wider window than the 90d activity signals because
+# defect history is a slower-moving cluster than recent churn.
+PRIOR_DEFECT_WINDOW_DAYS: int = 180
+
+
+def is_fix_commit(subject: str) -> bool:
+    """Whether a commit *subject* is a bug-fix, per the benchmark's keyword rule."""
+    if not subject:
+        return False
+    if any(p.search(subject) for p in _FIX_COMMIT_EXCLUDE):
+        return False
+    return any(p.search(subject) for p in _FIX_COMMIT_INCLUDE)
+
+
+# ---------------------------------------------------------------------------
+# Single-label commit-category classification (powers the "Code Evolution"
+# timeline on the commits page). Unlike ``_COMMIT_CATEGORIES`` — which is
+# *multi-label* and tuned for per-file category *ratios* — this assigns each
+# commit exactly ONE category so a stacked timeline sums cleanly to 100%.
+#
+# Resolution order: an explicit conventional-commit prefix (``feat:``,
+# ``fix(scope):`` …) wins outright; otherwise the keyword patterns below are
+# tried in priority order and the first match decides. Anything unmatched
+# falls through to "other". The labels are the seven that read as a story arc
+# (feature-born → fix/refactor/docs as a repo matures) plus deps/chore/test.
+# ---------------------------------------------------------------------------
+
+# Ordered: more specific / higher-signal intents first so a "fix typo in docs"
+# resolves the way a human would skim it.
+EVOLUTION_CATEGORIES: tuple[str, ...] = (
+    "feature",
+    "fix",
+    "refactor",
+    "docs",
+    "test",
+    "deps",
+    "chore",
+    "other",
+)
+
+# Conventional-commit type -> our category. The prefix is authoritative when
+# present (``type(scope)!: subject``), so this short-circuits the keyword pass.
+_CONVENTIONAL_PREFIX = re.compile(
+    r"^\s*(?P<type>[a-z]+)(?:\([^)]*\))?!?:",
+    re.IGNORECASE,
+)
+_CONVENTIONAL_MAP: dict[str, str] = {
+    "feat": "feature",
+    "feature": "feature",
+    "perf": "refactor",
+    "refactor": "refactor",
+    "style": "refactor",
+    "docs": "docs",
+    "doc": "docs",
+    "test": "test",
+    "tests": "test",
+    "build": "deps",
+    "deps": "deps",
+    "ci": "chore",
+    "chore": "chore",
+}
+
+# Keyword fallback, tried in this exact order; first hit wins.
+_EVOLUTION_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("docs", re.compile(r"\b(docs?|documentation|readme|changelog|comment)\b", re.IGNORECASE)),
+    ("test", re.compile(r"\b(test|tests|testing|spec|coverage|fixture)\b", re.IGNORECASE)),
+    (
+        "deps",
+        re.compile(
+            r"\b(bump|upgrade|downgrade|depend|dependency|dependencies|lockfile|"
+            r"requirements|vendor|pin)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "refactor",
+        re.compile(
+            r"\b(refactor|restructure|cleanup|clean.up|rename|reorganize|extract|"
+            r"simplify|move|tidy|dedupe|perf|optimi[sz]e)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "feature",
+        re.compile(
+            r"\b(add|adds|added|implement|introduce|create|new|feat|feature|support|enable)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "chore",
+        re.compile(r"\b(chore|lint|format|style|ci|build|release|merge|config|tooling)\b", re.IGNORECASE),
+    ),
+)
+
+
+def classify_commit_category(subject: str) -> str:
+    """Assign a commit *subject* exactly one :data:`EVOLUTION_CATEGORIES` label.
+
+    "fix" is exactly :func:`is_fix_commit`, checked first, so the timeline's
+    fix band counts the same commits as every other fix count. Otherwise a
+    leading conventional-commit prefix is authoritative, then the first
+    matching keyword pattern (in priority order) wins. Unmatched -> ``"other"``.
+    """
+    if not subject:
+        return "other"
+    if is_fix_commit(subject):
+        return "fix"
+    m = _CONVENTIONAL_PREFIX.match(subject)
+    if m:
+        mapped = _CONVENTIONAL_MAP.get(m.group("type").lower())
+        if mapped:
+            return mapped
+    for label, pattern in _EVOLUTION_KEYWORDS:
+        if pattern.search(subject):
+            return label
+    return "other"
+
+
+# Change-entropy temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
+# Keeps the co-change name; the pair weight uses the commit clock below.
+_CO_CHANGE_DECAY_TAU: float = CO_CHANGE_DECAY_TAU
+
+# Co-change pair decay, measured in commits rather than days.
+_CO_CHANGE_COMMIT_DECAY_TAU: float = CO_CHANGE_COMMIT_DECAY_TAU
+
+# Hotspot temporal decay: half-life for exponentially weighted churn score.
+HOTSPOT_HALFLIFE_DAYS: float = 180.0
+
+#: The rules that turn git history into stored per-file rows (change numbers,
+#: author identity). Stamped into state.json as ``git_history_version`` by every
+#: full git walk; an update that finds another value, or none, walks the whole
+#: history once instead of only the changed files, since a changed file's row is
+#: the only one an incremental walk rewrites. Bump it when such a rule changes.
+#:
+#: v1: change numbers and author identity read through ``repowise.core.forges``
+#: (GitLab ``!N`` merge requests, Azure and Bitbucket PRs, GitLab noreply and
+#: forge bot accounts).
+GIT_HISTORY_VERSION: int = 1
+GIT_HISTORY_VERSION_KEY = "git_history_version"
+
+
+def git_history_stale(state: dict[str, Any]) -> bool:
+    """Whether the stored git rows predate :data:`GIT_HISTORY_VERSION`.
+
+    Unlike the health analyzer stamp, a missing stamp counts as stale: the
+    rows of an index written before it carry the change-number and identity
+    defects v1 fixes, and only a full walk rewrites the rows of files that
+    do not change.
+    """
+    return state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION
+
+# Absolute activity floors for hotspot classification (issue #361). The
+# churn percentile is repo-relative, so on a quiet repo "top quartile"
+# degenerates to "any file touched in the last 90 days" — a single drive-by
+# maintenance commit was enough to flag a hotspot. A file must clear BOTH
+# the relative gate (top-quartile decayed churn) and these absolute floors:
+#
+# - at least HOTSPOT_MIN_COMMITS_90D commits in the window (repeated
+#   recent activity, not one drive-by), AND
+# - a decayed-churn score of at least HOTSPOT_MIN_TEMPORAL_SCORE (the
+#   commits moved real lines — e.g. one ~50-line change today, or ~3
+#   focused 20-line changes this month — not a string of one-liners),
+#   OR HOTSPOT_HIGH_COMMITS_90D+ commits in the window (sustained high
+#   commit volume is hotspot-grade activity even when numstat line counts
+#   are unavailable, e.g. binary files). The 8-commit escape matches the
+#   threshold the health biomarkers already treat as hotspot-equivalent.
+#
+# Mirrored in the SQL PERCENT_RANK path (crud/git.py::recompute_git_percentiles)
+# — keep the two in sync.
+HOTSPOT_MIN_COMMITS_90D: int = 3
+HOTSPOT_MIN_TEMPORAL_SCORE: float = 0.5
+HOTSPOT_HIGH_COMMITS_90D: int = 8
+
+# Allowlist of extensions for which per-file git indexing (blame, commit
+# history, hotspot/stable classification) is worth running.  Anything NOT in
+# this set is skipped — data, config, markup, dotfiles, and binaries add no
+# documentation value, and git blame on large JSON/YAML files is very slow.
+# Co-change detection still runs across ALL tracked files regardless.
+# Derived from the centralised LanguageRegistry — all code language extensions.
+_CODE_EXTENSIONS: frozenset[str] = _LANG_REGISTRY.all_code_extensions()
+
+# Files larger than this skip git blame.  blame is O(lines) and blocks the
+# executor thread — for large files the commit-based ownership estimate is
+# used as a fallback instead.
+_MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
+
+# Maximum seconds to wait for a single file's git indexing.  If exceeded the
+# file is recorded with whatever data was collected before the timeout and the
+# semaphore slot is released so other files can proceed.
+_FILE_INDEX_TIMEOUT_SECS: float = 45.0

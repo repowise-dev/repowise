@@ -1,0 +1,216 @@
+"""``repowise mcp`` — Start the MCP server for editor integration."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import click
+
+from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path, warn
+from repowise.cli.ui import load_dotenv
+
+
+def _workspace_summary(path: Path, *, no_workspace: bool = False) -> dict[str, object] | None:
+    if no_workspace:
+        return None
+    # Deferred so ``--no-workspace`` and ``--help`` skip the config module and
+    # its yaml import entirely.
+    from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+
+    workspace_root = find_workspace_root(path)
+    if workspace_root is None:
+        return None
+
+    try:
+        ws_config = WorkspaceConfig.load(workspace_root)
+    except Exception:
+        return None
+
+    aliases = ws_config.repo_aliases()
+    default = ws_config.get_primary()
+    default_alias = default.alias if default else (aliases[0] if aliases else None)
+    resolved_path = path.resolve()
+
+    for entry in ws_config.repos:
+        entry_path = (workspace_root / entry.path).resolve()
+        try:
+            resolved_path.relative_to(entry_path)
+        except ValueError:
+            continue
+        default_alias = entry.alias
+        break
+
+    return {
+        "workspace_root": workspace_root,
+        "default_repo": default_alias,
+        "aliases": aliases,
+    }
+
+
+def _print_network_startup(
+    transport: str,
+    repo_path: Path,
+    host: str,
+    port: int,
+    workspace: dict[str, object] | None,
+) -> None:
+    label = "streamable HTTP" if transport == "streamable-http" else "SSE"
+    endpoint = "mcp" if transport == "streamable-http" else "sse"
+    console.print(
+        f"[bold green]Starting repowise MCP server ({label})[/bold green]\n"
+        f"URL: http://{host}:{port}/{endpoint}"
+    )
+
+    if not os.environ.get("REPOWISE_API_KEY") and host in ("0.0.0.0", "::"):
+        console.print(
+            "[bold yellow]SECURITY WARNING:[/bold yellow] MCP server is binding to "
+            f"[bold]{host}[/bold] without REPOWISE_API_KEY set. "
+            "All tools are unauthenticated and network-accessible. "
+            "Set REPOWISE_API_KEY or bind to 127.0.0.1."
+        )
+
+    if workspace is not None:
+        aliases = workspace["aliases"]
+        repo_list = ", ".join(aliases) if isinstance(aliases, list) else ""
+        console.print(
+            f"Workspace: {workspace['workspace_root']}\n"
+            f"Default repo: {workspace['default_repo'] or 'none'}\n"
+            f"Repos: {repo_list or 'none'}"
+        )
+    else:
+        console.print(f"Repo: {repo_path}")
+
+
+@click.command("mcp")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--transport",
+    type=click.Choice(["stdio", "sse", "streamable-http"]),
+    default="stdio",
+    help=(
+        "Transport protocol: stdio (Claude Code/Codex/Cursor), "
+        "streamable-http (HTTP clients), or sse (legacy web clients)."
+    ),
+)
+@click.option(
+    "--port",
+    type=int,
+    default=7338,
+    help="Port for HTTP/SSE transports (default: 7338).",
+)
+@click.option(
+    "--host",
+    default=None,
+    help=(
+        "Host to bind for HTTP/SSE transports. Defaults to the REPOWISE_HOST "
+        "environment variable, or 127.0.0.1. Use 0.0.0.0 to listen on all "
+        "interfaces (without REPOWISE_API_KEY a security warning will be printed)."
+    ),
+)
+@click.option(
+    "--tools",
+    default=None,
+    help=(
+        "Override which tools are exposed. A comma-separated list is an "
+        "explicit allowlist; prefix names with + or - to adjust the default "
+        "set (e.g. '+get_dependency_path,-get_dead_code'); 'lean' selects "
+        "the six-tool agent-lean profile. Overrides the mcp.tools config "
+        "block."
+    ),
+)
+@click.option(
+    "--all",
+    "all_tools",
+    is_flag=True,
+    default=False,
+    help="Expose every tool eligible in the current repository/workspace mode.",
+)
+@click.option(
+    "--no-workspace",
+    is_flag=True,
+    default=False,
+    help=(
+        "Force single-repo mode even when the path is inside a workspace. "
+        "Useful for nested indexed repos that should not inherit the "
+        "enclosing workspace's default repo."
+    ),
+)
+def mcp_command(
+    path: str | None,
+    transport: str,
+    port: int,
+    host: str | None,
+    tools: str | None,
+    all_tools: bool,
+    no_workspace: bool,
+) -> None:
+    """Start the MCP server for editor integration.
+
+    Exposes a curated set of tools for querying the repowise wiki via the MCP
+    protocol: ten by default in single-repo mode, plus one more by default
+    in workspace mode. Seven more are opt-in via ``--tools`` or the
+    ``mcp.tools`` config block. Supports stdio
+    (for Claude Code, Codex, Cursor), streamable HTTP, and legacy SSE
+    transports.
+
+    Loads ``<repo>/.repowise/.env`` into the environment before starting so
+    that MCP tools (e.g. ``get_answer``) can resolve the configured LLM
+    provider and API keys.
+
+    Examples:
+
+        repowise mcp                     # stdio, current directory
+        repowise mcp /path/to/repo       # stdio, specific repo
+        repowise mcp --tools +get_execution_flows  # default set plus one
+        repowise mcp --tools lean        # six-tool agent-lean profile
+        repowise mcp --all               # every available tool
+        repowise mcp --no-workspace      # force single-repo mode
+        repowise mcp --transport streamable-http  # HTTP on port 7338
+    """
+    if path is None:
+        repo_path = find_repowise_repo_root(Path.cwd()) or resolve_repo_path(None)
+    else:
+        repo_path = resolve_repo_path(path)
+    load_dotenv(repo_path)
+
+    workspace = _workspace_summary(repo_path, no_workspace=no_workspace)
+    repowise_dir = repo_path / ".repowise"
+    if workspace is None and not repowise_dir.exists():
+        warn(
+            f"No .repowise directory found at {repo_path}.\nRun 'repowise init' first to generate documentation."
+        )
+
+    resolved_host = host or os.environ.get("REPOWISE_HOST", "127.0.0.1")
+
+    if transport in {"sse", "streamable-http"}:
+        _print_network_startup(transport, repo_path, resolved_host, port, workspace)
+    else:
+        # stdio mode — no console output (it would corrupt the protocol)
+        pass
+
+    from repowise.server.mcp_server import run_mcp
+    from repowise.server.mcp_server._server import StoreUnavailableError
+
+    tools_override: str | None = "all" if all_tools else tools
+
+    # Which of the ways a session can end this one was. Recorded in a finally
+    # so a fault is reported as one: leaving the field off for every failed
+    # session would make its absence mean either "faulted" or "older build".
+    outcome = "server_fault"
+    try:
+        outcome = run_mcp(
+            transport=transport,
+            repo_path=str(repo_path),
+            host=resolved_host,
+            port=port,
+            tools=tools_override,
+            workspace_mode=not no_workspace,
+        )
+    except StoreUnavailableError as exc:
+        # One line on stderr and exit 1, not a traceback the host respawns on.
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        from repowise.cli.platform import telemetry
+
+        telemetry.add_command_outcome(transport=transport, transport_outcome=outcome)

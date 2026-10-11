@@ -1,0 +1,349 @@
+"""Per-tool counterfactual estimators — conservative, dict-only, never raise."""
+
+from __future__ import annotations
+
+from repowise.server.mcp_server._savings import counterfactual as cf
+
+
+def test_get_context_sums_skeleton_full_tokens() -> None:
+    result = {
+        "targets": {
+            "a.py": {"target": "a.py", "skeleton": {"tokens": 200, "full_tokens": 1500}},
+            "b.py": {"target": "b.py", "skeleton": {"tokens": 80, "full_tokens": 900}},
+            # No skeleton (small-file card / symbol target) → contributes nothing.
+            "c.py": {"target": "c.py", "docs": {"summary": "x"}},
+        },
+        "_meta": {},
+    }
+    assert cf.replaced_tokens_for("get_context", result) == 2400
+
+
+def test_get_context_no_skeletons_returns_zero() -> None:
+    result = {"targets": {"a.py": {"target": "a.py"}}, "_meta": {}}
+    assert cf.replaced_tokens_for("get_context", result) == 0
+
+
+def test_search_codebase_floors_per_distinct_cited_path() -> None:
+    result = {
+        "results": [
+            {"target_path": "src/a.py"},
+            {"target_path": "src/b.py"},
+            {"target_path": "src/a.py"},  # duplicate path — counted once
+            {"target_path": ""},  # empty path — ignored
+            {"title": "no path key"},  # missing path — ignored
+        ],
+        "_meta": {},
+    }
+    assert cf.replaced_tokens_for("search_codebase", result) == 2 * cf.SEARCH_FLOOR_PER_HIT
+
+
+def test_search_codebase_counts_symbol_rows_by_path() -> None:
+    """A symbol row has no target_path, so it used to earn nothing."""
+    result = {
+        "results": [
+            {"type": "symbol", "path": "src/a.py", "file": "src/a.py"},
+            {"page_type": "file_page", "path": "src/b.py"},
+            {"page_type": "module_page", "target_path": "src"},  # pre-path payload shape
+        ],
+        "_meta": {},
+    }
+    assert cf.replaced_tokens_for("search_codebase", result) == 3 * cf.SEARCH_FLOOR_PER_HIT
+
+
+def test_search_codebase_no_results_returns_zero() -> None:
+    assert cf.replaced_tokens_for("search_codebase", {"results": [], "_meta": {}}) == 0
+
+
+def test_unknown_tool_returns_zero() -> None:
+    assert cf.replaced_tokens_for("list_repos", {"anything": 1}) == 0
+
+
+def test_non_dict_result_returns_zero() -> None:
+    assert cf.replaced_tokens_for("get_context", None) == 0
+    assert cf.replaced_tokens_for("get_context", "oops") == 0
+
+
+def test_malformed_skeleton_does_not_raise() -> None:
+    result = {
+        "targets": {
+            "a.py": {"skeleton": {"full_tokens": "not-an-int"}},
+            "b.py": {"skeleton": "not-a-dict"},
+            "c.py": "not-a-dict",
+        }
+    }
+    assert cf.replaced_tokens_for("get_context", result) == 0
+
+
+def test_get_answer_counts_search_plus_cited_reads() -> None:
+    result = {
+        "answer": "The default is 2 (pkg/a.py).",
+        "citations": ["pkg/a.py"],
+        "fallback_targets": ["pkg/a.py", "pkg/b.py"],
+    }
+    expected = cf.ANSWER_SEARCH_FLOOR + 2 * cf.ANSWER_READ_FLOOR_PER_FILE
+    assert cf.replaced_tokens_for("get_answer", result) == expected
+
+
+def test_get_answer_empty_answer_claims_nothing() -> None:
+    # Gated/low responses tell the agent to go read — those reads still
+    # happen, so claiming them as saved repeats the E11 miscalibration.
+    result = {"answer": "", "best_guesses": [{"file": "pkg/a.py"}]}
+    assert cf.replaced_tokens_for("get_answer", result) == 0
+
+
+def test_fixed_floor_tools_credit_successful_calls_only() -> None:
+    assert cf.replaced_tokens_for("get_risk", {"targets": ["a.py"]}) == cf.RISK_FLOOR
+    assert cf.replaced_tokens_for("get_risk", {"error": "nope"}) == 0
+    assert cf.replaced_tokens_for("get_why", {"decisions": []}) == cf.WHY_FLOOR
+    assert cf.replaced_tokens_for("get_overview", {"architecture": {}}) == cf.OVERVIEW_FLOOR
+    assert cf.replaced_tokens_for("get_health", {"summary": {}}) == cf.HEALTH_FLOOR
+
+
+def test_get_context_module_credits_per_child_file() -> None:
+    # A module card lists child files the agent would otherwise open one by one.
+    result = {
+        "targets": {
+            "src/api": {
+                "target": "src/api",
+                "type": "module",
+                "docs": {"files": [{"path": "src/api/a.py"}, {"path": "src/api/b.py"}]},
+            }
+        }
+    }
+    assert cf.replaced_tokens_for("get_context", result) == 2 * cf.CONTEXT_MODULE_FILE_FLOOR
+
+
+def test_get_context_module_credit_is_capped() -> None:
+    # The child-page query is recursive, so a top-level module lists hundreds of
+    # files; the agent would never have opened them all. Credit stays capped.
+    many = [{"path": f"src/f{i}.py"} for i in range(500)]
+    result = {"targets": {"src": {"target": "src", "type": "module", "docs": {"files": many}}}}
+    assert cf.replaced_tokens_for("get_context", result) == cf.CONTEXT_MODULE_MAX
+
+
+def test_get_risk_unions_may_break_and_missing_cochanges() -> None:
+    # A file that both breaks and is a missed co-change partner is one file.
+    # Two targets so the total clears RISK_FLOOR — otherwise the floor masks
+    # whether the overlapping file was counted once or twice.
+    result = {
+        "targets": {"a.py": {}, "b.py": {}},
+        "directive": {"may_break": ["c.py"], "missing_cochanges": ["c.py"]},
+    }
+    expected = 2 * cf.RISK_PER_TARGET + 1 * cf.RISK_PER_RELATED_FILE
+    assert expected > cf.RISK_FLOOR
+    assert cf.replaced_tokens_for("get_risk", result) == expected
+
+
+def test_get_context_symbol_credits_fixed_floor() -> None:
+    result = {"targets": {"Foo": {"target": "Foo", "type": "symbol", "docs": {"name": "Foo"}}}}
+    assert cf.replaced_tokens_for("get_context", result) == cf.CONTEXT_SYMBOL_FLOOR
+
+
+def test_get_context_mixed_targets_sum() -> None:
+    # Skeleton file + module + symbol all contribute; error target is skipped.
+    result = {
+        "targets": {
+            "a.py": {"target": "a.py", "type": "file", "skeleton": {"full_tokens": 1500}},
+            "src/api": {
+                "target": "src/api",
+                "type": "module",
+                "docs": {"files": [{"path": "x.py"}]},
+            },
+            "Foo": {"target": "Foo", "type": "symbol"},
+            "gone.py": {"target": "gone.py", "error": "not found"},
+        }
+    }
+    expected = 1500 + cf.CONTEXT_MODULE_FILE_FLOOR + cf.CONTEXT_SYMBOL_FLOOR
+    assert cf.replaced_tokens_for("get_context", result) == expected
+
+
+def test_get_context_skeleton_file_not_double_counted() -> None:
+    # A file target carrying a skeleton counts once (full_tokens), never also
+    # as a per-type floor.
+    result = {
+        "targets": {"a.py": {"target": "a.py", "type": "file", "skeleton": {"full_tokens": 900}}}
+    }
+    assert cf.replaced_tokens_for("get_context", result) == 900
+
+
+def test_get_risk_scales_with_targets_and_blast() -> None:
+    result = {
+        "targets": {"a.py": {}, "b.py": {}},
+        "directive": {"may_break": ["c.py"], "missing_cochanges": ["d.py", "e.py"]},
+    }
+    expected = 2 * cf.RISK_PER_TARGET + 3 * cf.RISK_PER_RELATED_FILE
+    assert cf.replaced_tokens_for("get_risk", result) == expected
+
+
+def test_get_risk_floors_when_signal_thin() -> None:
+    assert cf.replaced_tokens_for("get_risk", {"targets": {}}) == cf.RISK_FLOOR
+    assert cf.replaced_tokens_for("get_risk", {"error": "nope"}) == 0
+
+
+def test_get_blast_radius_scales_and_caps() -> None:
+    assert cf.replaced_tokens_for("get_blast_radius", {"total_impacted": 3}) == max(
+        cf.BLAST_FLOOR, 3 * cf.BLAST_PER_IMPACTED
+    )
+    # No impact still floors a successful call.
+    assert cf.replaced_tokens_for("get_blast_radius", {"total_impacted": 0}) == cf.BLAST_FLOOR
+    # Huge fan-out is capped.
+    assert cf.replaced_tokens_for("get_blast_radius", {"total_impacted": 10_000}) == cf.BLAST_MAX
+    assert cf.replaced_tokens_for("get_blast_radius", {"error": "workspace only"}) == 0
+
+
+def test_get_execution_flows_scales_with_trace_nodes() -> None:
+    # 5 + 3 = 8 nodes, chosen so the scaled value clears FLOWS_FLOOR — otherwise
+    # max() collapses and the test would pass with the scaling deleted.
+    result = {"flows": [{"trace": [1, 2, 3, 4, 5]}, {"depth": 2}]}
+    scaled = 8 * cf.FLOWS_PER_NODE
+    assert scaled > cf.FLOWS_FLOOR
+    assert cf.replaced_tokens_for("get_execution_flows", result) == scaled
+    assert cf.replaced_tokens_for("get_execution_flows", {"flows": []}) == 0
+    assert cf.replaced_tokens_for("get_execution_flows", {"error": "no entry"}) == 0
+
+
+def test_newly_covered_tools_credit_successful_calls() -> None:
+    # Item 7: tools that previously fell through and could only ever take a
+    # dead-end debit now earn a floor on success.
+    assert cf.replaced_tokens_for("get_change_risk", {"summary": "x"}) == cf.CHANGE_RISK_FLOOR
+    assert cf.replaced_tokens_for("get_architecture", {"layers": []}) == cf.ARCHITECTURE_FLOOR
+    assert cf.replaced_tokens_for("get_dependency_path", {"path": []}) == cf.DEPENDENCY_FLOOR
+    assert cf.replaced_tokens_for("get_conformance", {"contracts": []}) == cf.CONFORMANCE_FLOOR
+    assert cf.replaced_tokens_for("get_change_risk", {"error": "bad revspec"}) == 0
+
+
+def test_generate_refactoring_code_is_grounded_in_the_spans_it_read() -> None:
+    """The spans fed to the model are exactly what a hand refactor would read."""
+    result = {"spans": [{"source": "x" * 8000}, {"source": "y" * 4000}]}
+    assert cf.replaced_tokens_for("generate_refactoring_code", result) == 3000
+    # …floored for a tiny span, capped for an enormous one, zero without them.
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"spans": [{"source": "x"}]}) == (
+        cf.REFACTOR_FLOOR
+    )
+    assert cf.replaced_tokens_for(
+        "generate_refactoring_code", {"spans": [{"source": "x" * 900_000}]}
+    ) == cf.REFACTOR_MAX
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"spans": []}) == 0
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"spans": [{"file": "a.py"}]}) == 0
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"error": "disabled"}) == 0
+
+
+def test_list_repos_scales_with_the_repos_it_named() -> None:
+    assert cf.replaced_tokens_for("list_repos", {"repos": [{}] * 10}) == 400
+    assert cf.replaced_tokens_for("list_repos", {"repos": [{}]}) == cf.REPOS_FLOOR
+    assert cf.replaced_tokens_for("list_repos", {"repos": [{}] * 500}) == cf.REPOS_MAX
+    assert cf.replaced_tokens_for("list_repos", {"repos": []}) == 0
+    assert cf.replaced_tokens_for("list_repos", {"error": "no index"}) == 0
+
+
+def test_dead_end_records_debit_row(tmp_path, monkeypatch) -> None:
+    """An error response writes raw=0/distilled=N — a negative net at
+    aggregation, so the ledger stops only ever crediting (E11)."""
+    from repowise.core.distill.store import (
+        OMISSIONS_DB_FILENAME,
+        OMISSIONS_DIRNAME,
+        OmissionStore,
+    )
+    from repowise.server.mcp_server._savings.recorder import record_mcp_dead_end
+
+    db_dir = tmp_path / ".repowise" / OMISSIONS_DIRNAME
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / OMISSIONS_DB_FILENAME
+    OmissionStore(db_path).close()  # create the sidecar
+
+    assert record_mcp_dead_end(tmp_path, "get_symbol", 350) is True
+
+    store = OmissionStore(db_path)
+    try:
+        summary = store.savings_summary()
+        per = summary["per_filter"]["get_symbol"]
+        assert per["raw_tokens"] == 0
+        assert per["distilled_tokens"] == 350
+        assert per["saved_tokens"] == -350
+    finally:
+        store.close()
+
+
+def test_a_file_card_without_a_skeleton_earns_the_file_floor() -> None:
+    """Skeleton-by-default went away on 2026-08-11 and nothing replaced the
+    credit, so the commonest ``get_context`` call earned nothing at all."""
+    result = {"targets": {"a.py": {"target": "a.py", "type": "file"}}, "_meta": {}}
+    assert cf.replaced_tokens_for("get_context", result) == cf.CONTEXT_FILE_FLOOR
+
+
+def test_a_skeleton_still_wins_over_the_file_floor() -> None:
+    """The floor is the fallback, never an addition: an exact size beats it."""
+    result = {
+        "targets": {"a.py": {"target": "a.py", "type": "file", "skeleton": {"full_tokens": 4321}}},
+        "_meta": {},
+    }
+    assert cf.replaced_tokens_for("get_context", result) == 4321
+
+
+def test_a_failed_file_target_earns_nothing() -> None:
+    result = {"targets": {"a.py": {"target": "a.py", "type": "file", "error": "nope"}}, "_meta": {}}
+    assert cf.replaced_tokens_for("get_context", result) == 0
+
+
+def test_change_risk_scales_with_the_files_in_the_diff() -> None:
+    """The flat floor credited 500 against live delivered sizes of 4,439-4,671,
+    so the tool recorded itself as a net cost on every call it answered."""
+    three = {"summary": "x", "features": {"nf": 3}}
+    assert cf.replaced_tokens_for("get_change_risk", three) == (
+        cf.CHANGE_RISK_FLOOR + 3 * cf.CHANGE_RISK_PER_FILE
+    )
+
+
+def test_change_risk_is_capped_on_a_huge_diff() -> None:
+    huge = {"summary": "x", "features": {"nf": 500}}
+    assert cf.replaced_tokens_for("get_change_risk", huge) == cf.CHANGE_RISK_MAX
+
+
+def test_change_risk_falls_back_to_the_floor_without_a_file_count() -> None:
+    """A payload with no ``features.nf`` keeps the old behaviour rather than
+    guessing a diff size."""
+    assert cf.replaced_tokens_for("get_change_risk", {"summary": "x"}) == cf.CHANGE_RISK_FLOOR
+    assert cf.replaced_tokens_for("get_change_risk", {"features": {"nf": 0}}) == (
+        cf.CHANGE_RISK_FLOOR
+    )
+    assert cf.replaced_tokens_for("get_change_risk", {"features": {"nf": "three"}}) == (
+        cf.CHANGE_RISK_FLOOR
+    )
+
+
+def test_health_scales_with_the_files_it_judged() -> None:
+    """A flat 400 credited less than a third of one median source file, on a
+    tool whose whole job is telling you about several of them."""
+    result = {"targets": [{"path": "a.py"}, {"path": "b.py"}, {"path": "c.py"}]}
+    assert cf.replaced_tokens_for("get_health", result) == (
+        cf.HEALTH_FLOOR + 3 * cf.HEALTH_PER_FILE
+    )
+
+
+def test_health_reads_repository_mode_metrics_too() -> None:
+    """Targets mode names ``targets``; repository mode names ``metrics``."""
+    result = {"metrics": [{"path": "a.py"}, {"path": "b.py"}]}
+    assert cf.replaced_tokens_for("get_health", result) == (
+        cf.HEALTH_FLOOR + 2 * cf.HEALTH_PER_FILE
+    )
+
+
+def test_health_is_capped_and_falls_back_to_its_floor() -> None:
+    assert cf.replaced_tokens_for("get_health", {"targets": [{}] * 500}) == cf.HEALTH_MAX
+    assert cf.replaced_tokens_for("get_health", {"summary": "x"}) == cf.HEALTH_FLOOR
+    assert cf.replaced_tokens_for("get_health", {"error": "no index"}) == 0
+
+
+def test_the_raised_floors_stay_under_the_artifact_they_stand_for() -> None:
+    """The bar these floors are set against, asserted so a later bump has to
+    argue with a measurement rather than with a feeling.
+
+    Measured on this repository: the README is 15,941 estimated tokens; a
+    ``git log -p -5`` on one hot file is 4,834-7,108; the median source file
+    across 4,115 of them is 1,296 and a capped grep is 1,584.
+    """
+    assert cf.OVERVIEW_FLOOR < 15_941, "get_overview must undersell one README"
+    assert cf.WHY_FLOOR < 4_834, "get_why must undersell one git log -p"
+    assert cf.RISK_PER_TARGET < 1_296 + 1_584, "a target is a read plus a grep"
+    assert cf.HEALTH_PER_FILE < 1_296, "a judged file must undersell reading it"
+    assert cf.CONTEXT_FILE_FLOOR < 620, "the file floor must sit under the p25"

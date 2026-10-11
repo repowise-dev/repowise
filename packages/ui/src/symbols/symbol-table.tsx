@@ -1,0 +1,419 @@
+"use client";
+
+import { type ReactNode } from "react";
+import {
+  BookOpen,
+  Bug,
+  Flame,
+  GitBranch,
+  Globe2,
+  Lock,
+  Rocket,
+  Sparkles,
+  TrendingUp,
+} from "lucide-react";
+import { Input } from "../ui/input";
+import { Badge } from "../ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Skeleton } from "../ui/skeleton";
+import { EmptyState } from "../shared/empty-state";
+import { ResultsFooter } from "../shared/results-footer";
+import { RowActions } from "../shared/row-actions";
+import { VirtualizedTable } from "../shared/virtualized-table";
+import { docsPagePath, filePageId } from "../shared/entity/routes";
+import { truncatePath } from "../lib/format";
+import { cn } from "../lib/cn";
+import type { CodeSymbol } from "@repowise-dev/types/symbols";
+
+const KINDS = ["function", "class", "method", "interface", "variable", "module"];
+const LANGUAGES = ["python", "typescript", "javascript", "go", "rust", "java", "cpp", "c"];
+const VISIBILITIES = ["public", "protected", "private"];
+
+export type SymbolSortKey = "importance" | "name" | "complexity" | "kind";
+
+/**
+ * The full filter set the server understands. Kept as a value object so
+ * the wrapper owns a single piece of state and there's no chance of the
+ * fetch key drifting from the rendered controls.
+ */
+export interface SymbolFilters {
+  q: string;
+  kind: string;
+  language: string;
+  visibility: string;
+  inHotFiles: boolean;
+  inEntryPoints: boolean;
+  /** Only symbols a counted bug fix landed in. Symbol-level, unlike the two
+   *  file-level facets above. */
+  bugFixed: boolean;
+  sort: SymbolSortKey;
+}
+
+export interface SymbolTableProps {
+  items: CodeSymbol[];
+  isLoading: boolean;
+  isValidating: boolean;
+  hasMore: boolean;
+  /** Authoritative count from the server's paginated envelope. */
+  total: number;
+  filters: SymbolFilters;
+  onFiltersChange: (next: SymbolFilters) => void;
+  onLoadMore: () => void;
+  onSelect: (sym: CodeSymbol) => void;
+  repoId?: string;
+  linkPrefix?: string;
+  drawer?: ReactNode;
+}
+
+function ImportanceBar({ score }: { score: number | null | undefined }) {
+  const pct = Math.min(100, Math.max(0, Math.round((score ?? 0) * 100)));
+  const color =
+    pct >= 70
+      ? "bg-[var(--color-accent-primary)]"
+      : pct >= 40
+        ? "bg-[var(--color-warning)]"
+        : "bg-[var(--color-text-tertiary)]";
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="h-1.5 w-16 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
+        <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">{pct}</span>
+    </div>
+  );
+}
+
+/**
+ * Compact signal chips that summarise the row's most important non-name
+ * properties at a glance. Kept terse so the table stays scannable.
+ */
+function SignalChips({ sym }: { sym: CodeSymbol }) {
+  const isPublic = sym.visibility === "public";
+  const isPrivate = sym.visibility === "private";
+  const complex = (sym.complexity_estimate ?? 0) >= 15;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <span
+        className={cn(
+          "inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-medium",
+          isPublic
+            ? "bg-[var(--color-success)]/15 text-[var(--color-success)]"
+            : isPrivate
+              ? "bg-[var(--color-bg-inset)] text-[var(--color-text-tertiary)]"
+              : "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
+        )}
+        title={`Visibility: ${sym.visibility}`}
+      >
+        {isPublic ? <Globe2 className="h-2.5 w-2.5" /> : isPrivate ? <Lock className="h-2.5 w-2.5" /> : null}
+        {sym.visibility}
+      </span>
+      {sym.is_entry_point && (
+        <span
+          className="inline-flex items-center gap-0.5 rounded bg-[var(--color-info)]/15 px-1 py-0.5 text-[10px] font-medium text-[var(--color-info)]"
+          title="Lives in an entry-point file"
+        >
+          <Rocket className="h-2.5 w-2.5" />
+          entry
+        </span>
+      )}
+      {sym.file_is_hotspot && (
+        <span
+          className="inline-flex items-center gap-0.5 rounded bg-[var(--color-error)]/15 px-1 py-0.5 text-[10px] font-medium text-[var(--color-error)]"
+          title="File is a churn hotspot"
+        >
+          <Flame className="h-2.5 w-2.5" />
+          hot
+        </span>
+      )}
+      {(sym.fix_count ?? 0) > 0 && (
+        <span
+          className="inline-flex items-center gap-0.5 rounded bg-[var(--color-error)]/15 px-1 py-0.5 text-[10px] font-medium text-[var(--color-error)]"
+          title={`${sym.fix_count} bug fix(es) landed here in the last 6 months (approximate: matched by line range)`}
+        >
+          <Bug className="h-2.5 w-2.5" />
+          {sym.fix_count} fix
+          {sym.fix_count === 1 ? "" : "es"}
+        </span>
+      )}
+      {complex && (
+        <span
+          className="inline-flex items-center gap-0.5 rounded bg-[var(--color-caution)]/15 px-1 py-0.5 text-[10px] font-medium text-[var(--color-caution)]"
+          title="High complexity"
+        >
+          <Sparkles className="h-2.5 w-2.5" />
+          complex
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Toggle pill — used for boolean filter facets ("in hot files",
+ * "entry points only"). Lifted into a tiny helper so the toolbar reads
+ * declaratively.
+ */
+function FacetToggle({
+  active,
+  onClick,
+  label,
+  icon,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  icon: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors",
+        active
+          ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+          : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+export function SymbolTable({
+  items,
+  isLoading,
+  isValidating,
+  hasMore,
+  total,
+  filters,
+  onFiltersChange,
+  onLoadMore,
+  onSelect,
+  repoId,
+  linkPrefix,
+  drawer,
+}: SymbolTableProps) {
+  const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
+
+  function patch(p: Partial<SymbolFilters>) {
+    onFiltersChange({ ...filters, ...p });
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          placeholder="Search symbols…"
+          value={filters.q}
+          onChange={(e) => patch({ q: e.target.value })}
+          className="max-w-xs"
+        />
+        <Select value={filters.kind} onValueChange={(v) => patch({ kind: v })}>
+          <SelectTrigger className="w-36">
+            <SelectValue placeholder="Kind" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All kinds</SelectItem>
+            {KINDS.map((k) => (
+              <SelectItem key={k} value={k}>
+                {k}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={filters.language} onValueChange={(v) => patch({ language: v })}>
+          <SelectTrigger className="w-36">
+            <SelectValue placeholder="Language" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All languages</SelectItem>
+            {LANGUAGES.map((l) => (
+              <SelectItem key={l} value={l}>
+                {l}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={filters.visibility} onValueChange={(v) => patch({ visibility: v })}>
+          <SelectTrigger className="w-36">
+            <SelectValue placeholder="Visibility" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All visibilities</SelectItem>
+            {VISIBILITIES.map((v) => (
+              <SelectItem key={v} value={v}>
+                {v}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <FacetToggle
+          active={filters.inHotFiles}
+          onClick={() => patch({ inHotFiles: !filters.inHotFiles })}
+          label="In hot files"
+          icon={<Flame className="h-3 w-3" />}
+        />
+        <FacetToggle
+          active={filters.inEntryPoints}
+          onClick={() => patch({ inEntryPoints: !filters.inEntryPoints })}
+          label="Entry points"
+          icon={<Rocket className="h-3 w-3" />}
+        />
+        <FacetToggle
+          active={filters.bugFixed}
+          onClick={() => patch({ bugFixed: !filters.bugFixed })}
+          label="Bug-fixed"
+          icon={<Bug className="h-3 w-3" />}
+        />
+        <Select value={filters.sort} onValueChange={(v) => patch({ sort: v as SymbolSortKey })}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="Sort" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="importance">Importance</SelectItem>
+            <SelectItem value="name">Name (A→Z)</SelectItem>
+            <SelectItem value="complexity">Complexity</SelectItem>
+            <SelectItem value="kind">Kind</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {isLoading && items.length === 0 ? (
+        <div className="space-y-2">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        <EmptyState title="No symbols found" description="Try adjusting your filters." />
+      ) : (
+        <div className="border border-[var(--color-border-default)] overflow-hidden">
+          <VirtualizedTable
+            rows={items}
+            rowKey={(sym) => sym.id}
+            estimateRowHeight={48}
+            className="overflow-x-auto"
+            tableClassName="w-full text-sm"
+            headerClassName="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
+            header={
+              <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32">
+                  <span className="inline-flex items-center gap-1">
+                    <TrendingUp className="h-3 w-3" />
+                    Importance
+                  </span>
+                </th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                  Name
+                </th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                  Signals
+                </th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
+                  Kind
+                </th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
+                  File
+                </th>
+                <th className="px-4 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
+                  Complexity
+                </th>
+                {prefix && <th className="px-2 py-2.5 w-12" />}
+              </tr>
+            }
+            renderRow={(sym) => (
+              <tr
+                className="group border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0 cursor-pointer focus:outline-none focus:bg-[var(--color-bg-elevated)]"
+                tabIndex={0}
+                role="button"
+                aria-label={`View ${sym.qualified_name || sym.name}`}
+                onClick={() => onSelect(sym)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSelect(sym);
+                  }
+                }}
+              >
+                <td className="px-4 py-2.5">
+                  <ImportanceBar score={sym.importance_score} />
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[200px] max-w-[420px]">
+                  <span className="truncate block group-hover:underline underline-offset-2" title={sym.qualified_name || sym.name}>
+                    {sym.name}
+                  </span>
+                  {sym.parent_name && (
+                    <span
+                      className="block truncate text-[var(--color-text-tertiary)]"
+                      title={sym.parent_name}
+                    >
+                      .{sym.parent_name}
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-2.5">
+                  <SignalChips sym={sym} />
+                </td>
+                <td className="px-4 py-2.5 hidden sm:table-cell">
+                  <Badge variant={sym.kind === "class" ? "accent" : "default"}>{sym.kind}</Badge>
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)] min-w-[200px] max-w-[420px] hidden sm:table-cell">
+                  <span className="block truncate" title={`${sym.file_path}:${sym.start_line}`}>
+                    {truncatePath(sym.file_path)}:{sym.start_line}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums hidden md:table-cell text-right">
+                  <span
+                    className={cn(
+                      sym.complexity_estimate > 15
+                        ? "text-[var(--color-error)]"
+                        : sym.complexity_estimate > 8
+                          ? "text-[var(--color-warning)]"
+                          : "",
+                    )}
+                  >
+                    {sym.complexity_estimate}
+                  </span>
+                </td>
+                {prefix && (
+                  <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <RowActions
+                      actions={[
+                        {
+                          icon: GitBranch,
+                          label: "Graph",
+                          href: `${prefix}/architecture?view=files&node=${encodeURIComponent(sym.file_path)}`,
+                        },
+                        {
+                          icon: BookOpen,
+                          label: "Docs",
+                          // `?file=` was read by nothing, so this opened the
+                          // repo overview. `?page=` is the docs reader's
+                          // parameter and takes a wiki page id; a file with no
+                          // page gets told so by name.
+                          href: docsPagePath(prefix, filePageId(sym.file_path)),
+                        },
+                      ]}
+                    />
+                  </td>
+                )}
+              </tr>
+            )}
+          />
+          <ResultsFooter
+            shown={items.length}
+            total={total}
+            hasMore={hasMore}
+            loading={isValidating}
+            onLoadMore={onLoadMore}
+            noun="symbols"
+          />
+        </div>
+      )}
+
+      {drawer}
+    </div>
+  );
+}

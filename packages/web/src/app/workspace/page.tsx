@@ -1,0 +1,383 @@
+import type { ReactNode } from "react";
+import type { Metadata } from "next";
+import Link from "next/link";
+import { Layers } from "lucide-react";
+import type { WorkspaceRepoEntry } from "@repowise-dev/api-client/types";
+import { PageShell } from "@repowise-dev/ui/shared";
+import { PageLede, LedeLink } from "@repowise-dev/ui/shared/page-lede";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import {
+  OverviewSection,
+  SectionLink,
+  RepoRows,
+  type RepoRow,
+} from "@repowise-dev/ui/overview";
+// Direct path, not the `ui/stats` barrel: that barrel re-exports two
+// "use client" modules, which would drag a hydration boundary into this
+// server page for a component that has no state.
+import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
+import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
+import { ContractTypeBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
+import { getWorkspaceActions } from "@/lib/api/actions";
+import { RemoveWorkspaceRepoButton, SyncButton } from "./sync-buttons";
+import { getTranslations } from "next-intl/server";
+import { WorkspaceNextActionsPanel } from "./workspace-next-actions-panel";
+
+const WORKSPACE_DOCS_HREF =
+  "https://github.com/repowise-dev/repowise/blob/main/docs/start/QUICKSTART.md";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("views.workspace");
+  return { title: t("title") };
+}
+
+export const revalidate = 30;
+
+/** The minimal translator shape the sentence helpers below need; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
+
+/** Co-change rows shown inline. The full list has its own page, and this
+ *  figure is never reported as a total, so the cap cannot be read as one. */
+const COCHANGE_PREVIEW = 8;
+
+/**
+ * The workspace overview.
+ *
+ * It used to open with five cross-repo `MetricCard`s and put the repositories
+ * themselves in a grid of cards underneath, which is the same shape the
+ * multi-repo dashboard carried before #1578. Three of those figures were
+ * rebuilt rather than restyled:
+ *
+ *   - "Avg Coverage" averaged per-repo percentages unweighted, so a 50-file
+ *     repo at 100% and a 5,000-file repo at 10% reported 55%. It is weighted by
+ *     page count now, and named for what the rest of the app calls it.
+ *   - The cross-repo force-directed graph drew seven nodes and thirteen edges
+ *     on a real workspace — a list wearing a canvas — and cost a third request
+ *     that swept every repo's sqlite a second time. The system map owns that
+ *     view; this page links to it.
+ *   - The repo grid became `RepoRows`, so a repository's health leads the row
+ *     that decides whether you open it.
+ */
+export default async function WorkspaceDashboardPage() {
+  const t = await getTranslations("views.workspace");
+  // One wave, both on the server. The graph section that used to sit here was
+  // a client component fetching after mount, which waterfalled a second
+  // per-repo sqlite sweep in behind the paint.
+  const [ws, cc, wa] = await Promise.allSettled([
+    getWorkspace(),
+    getWorkspaceCoChanges({ limit: COCHANGE_PREVIEW }),
+    getWorkspaceActions(),
+  ]);
+
+  const workspace = ws.status === "fulfilled" ? ws.value : null;
+  const coChanges = cc.status === "fulfilled" ? cc.value : null;
+  // A server that predates actions 404s here; the page then reads as before.
+  const actions = wa.status === "fulfilled" ? wa.value : null;
+  const repos = workspace?.repos ?? [];
+  const crossRepo = workspace?.cross_repo_summary ?? null;
+  const contracts = workspace?.contract_summary ?? null;
+
+  if (repos.length === 0) {
+    return (
+      <PageShell
+        title={workspace?.workspace_name ?? "Workspace"}
+        icon={<Layers />}
+        description={t("description")}
+      >
+        <EmptyState
+          title={t("emptyTitle")}
+          description={t("emptyDescription")}
+          icon={<Layers />}
+          action={{ label: t("emptyAction"), href: WORKSPACE_DOCS_HREF }}
+        />
+      </PageShell>
+    );
+  }
+
+  const totals = repos.reduce(
+    (acc, r) => ({
+      files: acc.files + r.file_count,
+      symbols: acc.symbols + r.symbol_count,
+      pages: acc.pages + r.page_count,
+      // Page-weighted, so a small repo cannot pull the workspace average.
+      confidenceWeighted: acc.confidenceWeighted + r.doc_coverage_pct * r.page_count,
+      hotspots: acc.hotspots + r.hotspot_count,
+    }),
+    { files: 0, symbols: 0, pages: 0, confidenceWeighted: 0, hotspots: 0 },
+  );
+  // Floored, not rounded: 99.7% rounds to a perfect 100% and tells the reader
+  // every page is current when some are not. Erring low never overclaims.
+  const docFreshness =
+    totals.pages > 0 ? Math.floor(totals.confidenceWeighted / totals.pages) : null;
+
+  const ribbon: RibbonStat[] = [
+    {
+      label: t("ribbon.files"),
+      value: formatNumber(totals.files),
+      sub: t("ribbon.filesSub", { count: repos.length }),
+    },
+    {
+      label: t("ribbon.symbols"),
+      value: formatNumber(totals.symbols),
+      sub: t("ribbon.symbolsSub"),
+    },
+    {
+      label: t("ribbon.docFreshness"),
+      value: docFreshness === null ? "—" : `${docFreshness}%`,
+      sub:
+        docFreshness === null
+          ? t("ribbon.docFreshnessNoPages")
+          : t("ribbon.docFreshnessSub", { pages: formatNumber(totals.pages) }),
+    },
+    {
+      label: t("ribbon.hotspots"),
+      value: formatNumber(totals.hotspots),
+      sub: t("ribbon.hotspotsSub"),
+    },
+    {
+      label: t("ribbon.contractLinks"),
+      value: contracts ? formatNumber(contracts.total_links) : "—",
+      // No href: a linked ribbon cell drops its `sub`, and the sentence under
+      // the figure is worth more than a second route to the section below,
+      // which already carries its own link.
+      sub: contracts ? t("ribbon.contractLinksSub") : t("ribbon.contractLinksNone"),
+    },
+  ];
+
+  const contractTypes = Object.entries(contracts?.by_type ?? {}).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <PageShell
+      title={workspace?.workspace_name ?? "Workspace"}
+      icon={<Layers />}
+      description={t("description")}
+      actions={<SyncButton variant="primary" label={t("syncWorkspace")} />}
+    >
+      <PageLede
+        label={t("ledeLabel")}
+        value={String(repos.length)}
+        unit={t("ledeUnit")}
+        layout="beside"
+        action={
+          <LedeLink href="/workspace/system-map" LinkComponent={Link}>
+            {t("seeSystemMap")}
+          </LedeLink>
+        }
+      >
+        <p>
+          {t("ledeSentence", {
+            files: formatNumber(totals.files),
+            symbols: formatNumber(totals.symbols),
+            pages:
+              totals.pages > 0
+                ? t("ledePagesWith", { pages: formatNumber(totals.pages) })
+                : "",
+          })}{" "}
+          {workspace?.workspace_root &&
+            t.rich("ledeRootedAt", {
+              root: (chunks) => (
+                <span className="font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+                  {chunks}
+                </span>
+              ),
+              path: workspace.workspace_root,
+            })}
+        </p>
+        <p>{attentionSentence(t, repos)}</p>
+        {unregisteredNote(t, repos, crossRepo)}
+      </PageLede>
+
+      <StatRibbon stats={ribbon} LinkComponent={Link} />
+
+      {actions && <WorkspaceNextActionsPanel data={actions} />}
+
+      <OverviewSection
+        title={t("reposTitle")}
+        description={t("reposDescription")}
+      >
+        <RepoRows
+          repos={repos.slice().sort(byAttention).map(toRow)}
+          LinkComponent={Link}
+          actionsFor={(repo) =>
+            repo.status === "missing_dir" ? (
+              <RemoveWorkspaceRepoButton alias={repo.id} repoName={repo.name} />
+            ) : (
+              <SyncButton
+                alias={repo.id}
+                label={repo.status === "indexed" ? t("sync") : t("indexNow")}
+              />
+            )
+          }
+        />
+      </OverviewSection>
+
+      {contracts && contracts.total_contracts > 0 && (
+        <OverviewSection
+          title={t("contractsTitle")}
+          description={t("contractsDescription")}
+          action={
+            <SectionLink href="/workspace/contracts" LinkComponent={Link}>
+              {t("viewAllContracts")}
+            </SectionLink>
+          }
+        >
+          {/* Badge and figure sit together rather than spanning the cell:
+              justify-between across a quarter of 1280px pushed them so far
+              apart they stopped reading as one pair. */}
+          <dl className="m-0 flex flex-wrap gap-x-10 gap-y-3">
+            {contractTypes.map(([type, count]) => (
+              <div key={type} className="flex items-center gap-2.5">
+                <dt>
+                  <ContractTypeBadge type={type} />
+                </dt>
+                <dd className="text-sm font-medium tabular-nums text-[var(--color-text-primary)]">
+                  {formatNumber(count)}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </OverviewSection>
+      )}
+
+      {coChanges && coChanges.co_changes.length > 0 && (
+        <OverviewSection
+          title={t("coChangesTitle")}
+          description={t("coChangesDescription")}
+          action={
+            <SectionLink href="/workspace/co-changes" LinkComponent={Link}>
+              {t("viewAllCoChanges")}
+            </SectionLink>
+          }
+        >
+          <CoChangeTable coChanges={coChanges.co_changes} compact />
+        </OverviewSection>
+      )}
+    </PageShell>
+  );
+}
+
+/** Status the server may not have stamped yet, derived the same way everywhere. */
+function statusOf(repo: WorkspaceRepoEntry): "indexed" | "needs_index" | "missing_dir" {
+  return repo.status ?? (repo.repo_id ? "indexed" : "needs_index");
+}
+
+/**
+ * Worst first: never indexed, then missing on disk, then lowest health.
+ * Mirrors the dashboard's ordering so the two lists read the same way.
+ */
+function byAttention(a: WorkspaceRepoEntry, b: WorkspaceRepoEntry): number {
+  const rank = (r: WorkspaceRepoEntry) => {
+    const s = statusOf(r);
+    if (s === "needs_index") return 0;
+    if (s === "missing_dir") return 1;
+    return 2;
+  };
+  const byRank = rank(a) - rank(b);
+  if (byRank !== 0) return byRank;
+  // A repo with no score sorts after scored ones rather than as a zero.
+  const ha = a.health_score ?? Number.POSITIVE_INFINITY;
+  const hb = b.health_score ?? Number.POSITIVE_INFINITY;
+  return ha - hb;
+}
+
+function toRow(repo: WorkspaceRepoEntry): RepoRow {
+  return {
+    id: repo.alias,
+    name: repo.alias,
+    localPath: repo.path,
+    href: repo.repo_id ? `/repos/${repo.repo_id}/overview` : "/workspace",
+    status: statusOf(repo),
+    // The wire carries 0-100; RepoRows and `bandForScore` are both 0-10.
+    // Optional on the type, so a web build ahead of its server shows "—"
+    // rather than NaN.
+    health: repo.health_score == null ? null : repo.health_score / 10,
+    fileCount: repo.file_count,
+    hotspotCount: repo.hotspot_count,
+    // The workspace payload has no per-repo fresh-page or dead-export counts.
+    // Zero here means the row omits those clauses; it never prints "0% fresh",
+    // which would report a missing measurement as a bad one.
+    docPageCount: 0,
+    docFreshPageCount: 0,
+    deadExportCount: 0,
+    updatedAt: repo.indexed_at,
+    indexBehind: null,
+  };
+}
+
+/** One sentence naming what needs doing, or confirming nothing does. */
+function attentionSentence(t: Translator, repos: WorkspaceRepoEntry[]): string {
+  const names = (list: WorkspaceRepoEntry[]) =>
+    list.length <= 3
+      ? list.map((r) => r.alias).join(", ")
+      : t("attention.andMore", {
+          list: list
+            .slice(0, 3)
+            .map((r) => r.alias)
+            .join(", "),
+          count: list.length - 3,
+        });
+
+  const parts: string[] = [];
+  const needsIndex = repos.filter((r) => statusOf(r) === "needs_index");
+  const missing = repos.filter((r) => statusOf(r) === "missing_dir");
+  const docsSkipped = repos.filter((r) => r.docs_skip_reason);
+
+  if (needsIndex.length > 0) {
+    parts.push(
+      t("attention.needsIndex", {
+        count: needsIndex.length,
+        names: names(needsIndex),
+      }),
+    );
+  }
+  if (missing.length > 0) {
+    parts.push(t("attention.missing", { count: missing.length, names: names(missing) }));
+  }
+  if (docsSkipped.length > 0) {
+    parts.push(
+      t("attention.docsSkipped", {
+        count: docsSkipped.length,
+        names: names(docsSkipped),
+      }),
+    );
+  }
+
+  if (parts.length === 0) {
+    return t("attention.none");
+  }
+  return t("attention.suffix", { parts: parts.join("; ") });
+}
+
+/**
+ * Name repositories the cross-repo artifacts cover but the config no longer
+ * registers.
+ *
+ * The two halves of this page come from different sources: the repo list is
+ * read from `.repowise-workspace.yaml` while every cross-repo figure is folded
+ * out of the persisted artifacts. When the config loses a repo, the page shows
+ * a small repo count directly above figures spanning more of them, and nothing
+ * says why. Saying it is cheap; the disagreement is itself the signal.
+ */
+function unregisteredNote(
+  t: Translator,
+  repos: WorkspaceRepoEntry[],
+  crossRepo: { top_connections: Array<{ repos: string[] }> } | null,
+): ReactNode {
+  if (!crossRepo) return null;
+  const registered = new Set(repos.map((r) => r.alias));
+  const seen = new Set<string>();
+  for (const c of crossRepo.top_connections) {
+    for (const alias of c.repos) {
+      if (!registered.has(alias)) seen.add(alias);
+    }
+  }
+  if (seen.size === 0) return null;
+  const names = [...seen].sort();
+  return (
+    <p>
+      {t("unregisteredNote", { count: names.length, names: names.join(", ") })}
+    </p>
+  );
+}

@@ -1,0 +1,53 @@
+{#- Deterministic (no-LLM) getting started.
+
+    README sections are quoted rather than rewritten: the repo's own setup
+    instructions are more reliable than anything derivable from structure,
+    and quoting keeps the page honest about where the text came from.
+-#}
+# Getting Started
+
+{% if ctx.package_managers %}
+## Toolchain
+
+`{{ ctx.repo_name }}` uses {% for pm in ctx.package_managers %}**{{ pm }}**{% if not loop.last %}, {% endif %}{% endfor %}. No install command is inferred from ecosystem detection alone.
+{% endif %}
+
+{% if ctx.entry_points %}
+## Entry points
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.readme_sections %}
+## From the README
+
+Quoted verbatim from the repository's setup documentation.
+{% for s in ctx.readme_sections %}
+### {{ s.heading }} — `{{ s.source_path }}`
+
+{{ s.body | trim }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.manifest_scripts %}
+## Declared scripts
+{% for s in ctx.manifest_scripts %}
+- From `{{ s.working_directory }}`: `{{ s.invocation }}` (declared by `{{ s.manifest_path }}` as `{{ s.command }}`)
+{% endfor %}
+{% endif %}
+
+{% if ctx.runtime_dependencies %}
+## Runtime dependencies
+{% for d in ctx.runtime_dependencies[:30] %}
+- `{{ d.name }}`{% if d.version is defined and d.version %} {{ d.version }}{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.dev_dependencies %}
+## Development dependencies
+{% for d in ctx.dev_dependencies[:30] %}
+- `{{ d.name }}`{% if d.version is defined and d.version %} {{ d.version }}{% endif %}
+{% endfor %}
+{% endif %}
+{% include "stub/_footer.j2" %}

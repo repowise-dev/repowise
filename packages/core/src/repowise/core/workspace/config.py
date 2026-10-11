@@ -1,0 +1,422 @@
+"""Workspace configuration — dataclass and YAML persistence.
+
+Pure data module with no CLI or DB dependencies. Handles the
+``.repowise-workspace.yaml`` file at the workspace root.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+_log = logging.getLogger("repowise.workspace.config")
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+WORKSPACE_CONFIG_FILENAME = ".repowise-workspace.yaml"
+WORKSPACE_DATA_DIR = ".repowise-workspace"
+CURRENT_VERSION = 1
+
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RepoEntry:
+    """One repository within a workspace."""
+
+    path: str  # Relative to workspace root, POSIX-style forward slashes
+    alias: str  # Unique short name
+    is_primary: bool = False
+    indexed_at: str | None = None  # ISO 8601 timestamp of last index
+    last_commit_at_index: str | None = None  # Git SHA at last index
+    # Free-form labels (e.g. "frontend", "tier:edge", "legacy") that group repos
+    # for architecture conformance rules. A rule like ``frontend !-> db`` matches
+    # by tag via ``tag:<name>``; every service node in this repo inherits these.
+    tags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"path": self.path, "alias": self.alias}
+        if self.is_primary:
+            d["is_primary"] = True
+        if self.indexed_at is not None:
+            d["indexed_at"] = self.indexed_at
+        if self.last_commit_at_index is not None:
+            d["last_commit_at_index"] = self.last_commit_at_index
+        if self.tags:
+            d["tags"] = list(self.tags)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RepoEntry:
+        if "path" not in data or "alias" not in data:
+            raise ValueError(f"RepoEntry requires 'path' and 'alias', got: {sorted(data.keys())}")
+        return cls(
+            path=str(data["path"]),
+            alias=str(data["alias"]),
+            is_primary=bool(data.get("is_primary", False)),
+            indexed_at=data.get("indexed_at"),
+            last_commit_at_index=data.get("last_commit_at_index"),
+            tags=[str(t) for t in data.get("tags", [])],
+        )
+
+
+@dataclass
+class ManualContractLink:
+    """A manually declared cross-repo contract link in the workspace config."""
+
+    from_repo: str
+    to_repo: str
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
+    contract_id: str  # normalized contract ID
+    from_role: str = "consumer"  # the from_repo's role
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "from_repo": self.from_repo,
+            "to_repo": self.to_repo,
+            "contract_type": self.contract_type,
+            "contract_id": self.contract_id,
+            "from_role": self.from_role,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ManualContractLink:
+        return cls(
+            from_repo=str(data["from_repo"]),
+            to_repo=str(data["to_repo"]),
+            contract_type=str(data["contract_type"]),
+            contract_id=str(data["contract_id"]),
+            from_role=str(data.get("from_role", "consumer")),
+        )
+
+
+@dataclass
+class ContractConfig:
+    """Configuration for contract detection (Phase 4)."""
+
+    detect_http: bool = True
+    detect_grpc: bool = True
+    detect_socket: bool = True
+    detect_topics: bool = True
+    detect_data: bool = True
+    #: A library's public API as a contract (``contract_type="code"``).
+    detect_code_api: bool = True
+    manual_links: list[ManualContractLink] = field(default_factory=list)
+    # Map a consumer base token or absolute host to the repo alias it targets,
+    # so a ``fetch(`${API_BASE}/users`)`` whose base resolves to ``backend`` links
+    # to that service as an exact match. Keys are env-var identifiers
+    # (``API_BASE``, ``VITE_API_URL``) or hosts (``api.example.com``).
+    service_bases: dict[str, str] = field(default_factory=dict)
+    # Extra glob patterns (added to the built-in test/spec defaults) whose files
+    # are skipped during contract extraction.
+    exclude_globs: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "detect_http": self.detect_http,
+            "detect_grpc": self.detect_grpc,
+            "detect_socket": self.detect_socket,
+            "detect_topics": self.detect_topics,
+            "detect_data": self.detect_data,
+            "detect_code_api": self.detect_code_api,
+        }
+        if self.manual_links:
+            d["manual_links"] = [ml.to_dict() for ml in self.manual_links]
+        if self.service_bases:
+            d["service_bases"] = dict(self.service_bases)
+        if self.exclude_globs:
+            d["exclude_globs"] = list(self.exclude_globs)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ContractConfig:
+        manual = [ManualContractLink.from_dict(ml) for ml in data.get("manual_links", [])]
+        return cls(
+            detect_http=bool(data.get("detect_http", True)),
+            detect_grpc=bool(data.get("detect_grpc", True)),
+            detect_socket=bool(data.get("detect_socket", True)),
+            detect_topics=bool(data.get("detect_topics", True)),
+            detect_data=bool(data.get("detect_data", True)),
+            detect_code_api=bool(data.get("detect_code_api", True)),
+            manual_links=manual,
+            service_bases={str(k): str(v) for k, v in data.get("service_bases", {}).items()},
+            exclude_globs=[str(g) for g in data.get("exclude_globs", [])],
+        )
+
+
+@dataclass
+class ConformanceRule:
+    """One architecture conformance rule: a dependency *source* may or may not
+    depend on a *target*.
+
+    ``source`` and ``target`` are **matchers** resolved against system-graph
+    service nodes (see :mod:`repowise.core.workspace.conformance`):
+
+    * ``"*"`` — any service
+    * ``"tag:<name>"`` — every service whose repo carries that tag
+    * any other string — a glob matched against the node id, repo alias, and
+      display name (so ``"frontend"`` matches a repo and ``"api::*"`` a service)
+
+    ``allow=False`` (the default) is a *deny* rule: a structural dependency from
+    a matching source to a matching target is a violation. ``allow=True`` is an
+    *exception* that whitelists an otherwise-denied edge (e.g. deny ``* !-> db``
+    but allow ``migrations -> db``).
+    """
+
+    source: str
+    target: str
+    allow: bool = False
+    description: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"source": self.source, "target": self.target}
+        if self.allow:
+            d["allow"] = True
+        if self.description:
+            d["description"] = self.description
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ConformanceRule:
+        if "source" not in data or "target" not in data:
+            raise ValueError(
+                f"ConformanceRule requires 'source' and 'target', got: {sorted(data.keys())}"
+            )
+        return cls(
+            source=str(data["source"]),
+            target=str(data["target"]),
+            allow=bool(data.get("allow", False)),
+            description=str(data.get("description", "")),
+        )
+
+
+@dataclass
+class ConformanceConfig:
+    """Architecture conformance rules for the workspace (Phase 5)."""
+
+    rules: list[ConformanceRule] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"rules": [r.to_dict() for r in self.rules]}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ConformanceConfig:
+        return cls(rules=[ConformanceRule.from_dict(r) for r in data.get("rules", [])])
+
+
+@dataclass
+class WorkspaceConfig:
+    """Workspace-level configuration stored in ``.repowise-workspace.yaml``."""
+
+    version: int = CURRENT_VERSION
+    repos: list[RepoEntry] = field(default_factory=list)
+    default_repo: str | None = None
+    contracts: ContractConfig = field(default_factory=ContractConfig)
+    conformance: ConformanceConfig = field(default_factory=ConformanceConfig)
+
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to a plain dict suitable for ``yaml.dump``."""
+        d: dict[str, Any] = {
+            "version": self.version,
+            "default_repo": self.default_repo,
+            "repos": [r.to_dict() for r in self.repos],
+        }
+        # Only include contracts section if non-default
+        contracts_d = self.contracts.to_dict()
+        if (
+            self.contracts.manual_links
+            or self.contracts.service_bases
+            or self.contracts.exclude_globs
+            or not all(
+                [
+                    self.contracts.detect_http,
+                    self.contracts.detect_grpc,
+                    self.contracts.detect_socket,
+                    self.contracts.detect_topics,
+                    self.contracts.detect_data,
+                ]
+            )
+        ):
+            d["contracts"] = contracts_d
+        # Only include conformance section when rules are declared.
+        if self.conformance.rules:
+            d["conformance"] = self.conformance.to_dict()
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkspaceConfig:
+        """Construct from a parsed YAML dict."""
+        version = int(data.get("version", CURRENT_VERSION))
+        default_repo = data.get("default_repo")
+
+        repos: list[RepoEntry] = []
+        for entry in data.get("repos", []):
+            repos.append(RepoEntry.from_dict(entry))
+
+        contracts = ContractConfig.from_dict(data.get("contracts", {}))
+        conformance = ConformanceConfig.from_dict(data.get("conformance", {}))
+
+        return cls(
+            version=version,
+            repos=repos,
+            default_repo=str(default_repo) if default_repo else None,
+            contracts=contracts,
+            conformance=conformance,
+        )
+
+    def save(self, workspace_root: Path) -> Path:
+        """Write config to ``workspace_root / .repowise-workspace.yaml``.
+
+        Returns the path to the written file.
+        """
+        config_path = workspace_root / WORKSPACE_CONFIG_FILENAME
+        self._warn_if_dropping_repos(config_path)
+        content = yaml.dump(
+            self.to_dict(),
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+        )
+        config_path.write_text(content, encoding="utf-8")
+        return config_path
+
+    def _warn_if_dropping_repos(self, config_path: Path) -> None:
+        """Log loudly when this write removes repos the file already had.
+
+        Every caller that saves for an unrelated reason (syncing a commit
+        stamp, adding a repo) goes through here, so a partial failure that
+        silently shrank the workspace leaves a trace instead of nothing. This
+        does not block the write — a removal may well be intended.
+        """
+        if not config_path.is_file():
+            return
+        try:
+            existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            previous = {
+                str(e.get("alias") or e.get("path"))
+                for e in existing.get("repos", [])
+                if isinstance(e, dict)
+            }
+        except Exception:
+            _log.warning("Could not read %s before overwriting it", config_path, exc_info=True)
+            return
+        dropped = previous - {e.alias for e in self.repos}
+        if dropped:
+            _log.warning(
+                "Writing %s with %d repo(s), down from %d — dropping: %s",
+                config_path,
+                len(self.repos),
+                len(previous),
+                ", ".join(sorted(dropped)),
+            )
+
+    @classmethod
+    def load(cls, workspace_root: Path) -> WorkspaceConfig:
+        """Load from ``workspace_root / .repowise-workspace.yaml``.
+
+        Raises :class:`FileNotFoundError` if the config file does not exist.
+        """
+        config_path = workspace_root / WORKSPACE_CONFIG_FILENAME
+        if not config_path.is_file():
+            raise FileNotFoundError(f"Workspace config not found: {config_path}")
+        text = config_path.read_text(encoding="utf-8")
+        data = yaml.safe_load(text) or {}
+        return cls.from_dict(data)
+
+    # ------------------------------------------------------------------
+    # Query helpers
+    # ------------------------------------------------------------------
+
+    def get_repo(self, alias: str) -> RepoEntry | None:
+        """Find a repo by alias. Returns ``None`` if not found."""
+        for repo in self.repos:
+            if repo.alias == alias:
+                return repo
+        return None
+
+    def get_primary(self) -> RepoEntry | None:
+        """Return the primary/default repo entry, or ``None``."""
+        if self.default_repo:
+            found = self.get_repo(self.default_repo)
+            if found:
+                return found
+        # Fallback: first repo marked as primary
+        for repo in self.repos:
+            if repo.is_primary:
+                return repo
+        # Fallback: first repo
+        return self.repos[0] if self.repos else None
+
+    def repo_paths(self, workspace_root: Path) -> list[Path]:
+        """Return absolute resolved paths for all repos."""
+        root = Path(workspace_root).resolve()
+        return [(root / entry.path).resolve() for entry in self.repos]
+
+    def repo_aliases(self) -> list[str]:
+        """Return all repo aliases in order."""
+        return [r.alias for r in self.repos]
+
+    # ------------------------------------------------------------------
+    # Mutation helpers
+    # ------------------------------------------------------------------
+
+    def add_repo(self, entry: RepoEntry) -> None:
+        """Add a repo entry. Raises ``ValueError`` if alias already exists."""
+        if self.get_repo(entry.alias) is not None:
+            raise ValueError(f"Repo alias already exists: {entry.alias}")
+        self.repos.append(entry)
+
+    def remove_repo(self, alias: str) -> RepoEntry | None:
+        """Remove a repo by alias. Returns the removed entry or ``None``."""
+        for i, repo in enumerate(self.repos):
+            if repo.alias == alias:
+                removed = self.repos.pop(i)
+                if self.default_repo == alias:
+                    self.default_repo = self.repos[0].alias if self.repos else None
+                return removed
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Workspace root detection
+# ---------------------------------------------------------------------------
+
+
+def find_workspace_root(start: Path | None = None) -> Path | None:
+    """Walk up from *start* (default: cwd) looking for ``.repowise-workspace.yaml``.
+
+    Returns the directory containing the file, or ``None`` if not found.
+    Stops at the filesystem root.
+    """
+    current = (start or Path.cwd()).resolve()
+    while True:
+        if (current / WORKSPACE_CONFIG_FILENAME).is_file():
+            return current
+        parent = current.parent
+        if parent == current:
+            return None  # reached filesystem root
+        current = parent
+
+
+def ensure_workspace_data_dir(workspace_root: Path) -> Path:
+    """Create the ``.repowise-workspace/`` data directory if it doesn't exist.
+
+    This directory holds workspace-level artifacts (overlay graph, cross-repo
+    analysis results). Distinct from the config file.
+    """
+    data_dir = workspace_root / WORKSPACE_DATA_DIR
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir

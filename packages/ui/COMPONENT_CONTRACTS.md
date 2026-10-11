@@ -1,0 +1,1452 @@
+# @repowise-dev/ui â€” Component Contracts
+
+This document is the public-facing prop contract for components in
+`@repowise-dev/ui`. Each section lists the prop interface, with types
+sourced from `@repowise-dev/types` where the prop carries an engine
+artifact. Components are presentational: they accept canonical data
+via props, manage only UI-local state internally, and emit user
+intent via callbacks. Data fetching, mutation, and routing live in
+the consumer.
+
+The contract is the package's public API. Breaking changes here
+should be deliberate and called out in PR titles.
+
+---
+
+## `ui/*` â€” Radix-CVA primitives
+
+Standard shadcn-style primitives wrapping Radix UI: `Badge`, `Button`,
+`Card` (+ `CardHeader`/`CardTitle`/`CardDescription`/`CardContent`/
+`CardFooter`), `ConfirmDialog`, `Dialog` (+ all `Dialog*` parts),
+`Input`, `Label`, `Progress`, `ScrollArea`, `Select` (+ `Select*`
+parts), `Separator`, `Sheet` (+ `Sheet*` parts), `Skeleton`, `Slider`,
+`Switch`, `Tabs` (+ `Tabs*` parts), `Tooltip` (+ `Tooltip*` parts).
+
+Props mirror the underlying Radix primitive plus a `className` prop
+merged via `cn` (`tailwind-merge` + `clsx`). `Button` and `Badge`
+expose CVA `variant` and `size` unions documented inline at the
+component definition.
+
+---
+
+## `shared/api-error` — `ApiError`
+
+Renders an inline error card with retry affordance.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `title` | `string` | no | Defaults to "Failed to load". |
+| `message` | `string` | no | Defaults to a generic fetch-error line. |
+| `onRetry` | `() => void` | no | When provided, a "Retry" button is rendered. |
+
+---
+
+## `shared/responsive-table` — `ResponsiveTable<T>`
+
+The shared table primitive with a column-priority API. Priority 1
+columns are always visible, priority 2 hide below `md`, priority 3
+hide below `lg`; the wrapper always provides `overflow-x-auto`, and
+`stacked` additionally collapses to a card list below `sm`/`md`.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `columns` | `ResponsiveColumn<T>[]` | yes | `{ key, header, render, priority?, align?, sortable?, mobileLabel?, mobileRender?, hideInCard?, headerClassName?, cellClassName? }`. |
+| `rows` | `T[]` | yes | |
+| `rowKey` | `(row: T) => string` | yes | |
+| `onRowClick` | `(row: T) => void` | no | Rows get pointer affordance plus keyboard activation (`tabIndex`, Enter/Space) when set. |
+| `selectedKey` | `string \| null` | no | Highlights the matching row. |
+| `sortField` / `sortOrder` / `onSort` | `string` / `"asc" \| "desc"` / `(key) => void` | no | Controlled sorting; sortable headers render as real buttons with `aria-sort` on the active column. |
+| `empty` | `ReactNode` | no | Rendered instead of the table when `rows` is empty (pass `EmptyState`). |
+| `caption` | `string` | no | Screen-reader-only `<caption>` describing the table. |
+| `stacked` | `"sm" \| "md"` | no | Collapse to stacked cards below the breakpoint. |
+| `bare` | `boolean` | no | Omit the rounded border + surface background (for card-embedded tables). |
+
+The module also exports `clickableRowProps(activate)` and
+`CLICKABLE_ROW_CLS` so tables that own their `<tr>` markup (for example
+`VirtualizedTable` consumers) can give clickable rows the same keyboard
+activation and focus treatment.
+
+---
+
+## `shared/adaptive-panel` — `AdaptivePanel`
+
+One overlay surface: right-side slide-in panel on `md+`, bottom sheet
+with drag-handle swipe-dismiss on mobile. Radix Dialog under the hood.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `open` / `onOpenChange` | `boolean` / `(open) => void` | yes | Controlled. |
+| `title` | `ReactNode` | yes | Accessible name; rendered in the header unless `hideHeader`. |
+| `eyebrow` | `ReactNode` | no | Small uppercase label above the title. |
+| `widthClassName` | `string` | no | Desktop width; default `md:max-w-[520px]`. |
+| `sheetHeightClassName` | `string` | no | Mobile max height; default `max-h-[85dvh]`. |
+| `hideHeader` | `boolean` | no | Title goes `sr-only`; render your own header. |
+| `modal` | `boolean` | no | Default `true`. `false` keeps the page interactive behind the panel on desktop (chat artifact panel). |
+
+---
+
+## `shared/toast` — `Toaster`, `toast`
+
+Token-themed sonner toaster (`--z-toast`, surface/border/text tokens).
+Mount `Toaster` once at the app shell; fire toasts via the re-exported
+`toast`. Framework-neutral: the host passes the resolved theme.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `theme` | `"light" \| "dark"` | no | Default `dark`. |
+| `position` | sonner position union | no | Default `bottom-right`. |
+
+---
+
+## `shared/error-boundary` — `ErrorBoundary`
+
+Class-component boundary; default fallback renders `ApiError` with a
+retry that re-mounts the subtree.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `children` | `ReactNode` | yes | |
+| `fallback` | `(error, reset) => ReactNode` | no | Replaces the default ApiError fallback. |
+| `title` | `string` | no | Forwarded to the default fallback. |
+| `onError` | `(error, info) => void` | no | Reporting hook. |
+
+---
+
+## `shared/empty-state` â€” `EmptyState`
+
+Empty-list placeholder with optional icon and CTA.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `title` | `string` | yes | Heading text. |
+| `description` | `string` | no | Sub-line; shown below the title. |
+| `icon` | `React.ReactNode` | no | Rendered above the title. |
+| `action` | `{ label: string; onClick: () => void }` | no | Renders a primary `Button` when supplied. |
+| `className` | `string` | no | Forwarded to the outer container. |
+
+---
+
+## `shared/metric-card` â€” `MetricCard`
+
+The canonical single-stat display tile.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `label` | `string` | yes | Uppercase label above the value. |
+| `value` | `React.ReactNode` | yes | Rendered tabular-nums. |
+| `description` | `string` | no | Caption under the value. |
+| `delta` | `{ value: string; positive: boolean; neutral?: boolean }` | no | Signed change; `positive` drives good/bad colour, `neutral` renders uncoloured. |
+| `sparkline` | `React.ReactNode` | no | Rendered beneath the value. |
+| `distBar` | `React.ReactNode` | no | Distribution bar beneath the value. |
+| `icon` | `React.ReactNode` | no | Right-aligned glyph. |
+| `href` | `string` | no | Wraps the card in a link; hover affordance follows. |
+| `LinkComponent` | `React.ElementType` | no | Link element used with `href`; defaults to `"a"`. |
+| `className` | `string` | no | Forwarded to the outer Card. |
+
+---
+
+## `coverage/coverage-donut` â€” `CoverageDonut`
+
+Recharts donut visualising fresh/stale/outdated counts with a centred
+percentage label for the fresh slice.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `fresh` | `number` | yes | Count of fresh pages. |
+| `stale` | `number` | yes | Count of stale pages. |
+| `outdated` | `number` | yes | Count of outdated pages. |
+
+Behaviour: zero-value slices are filtered before render; if all three
+are zero the donut renders empty and the centre text shows `0%`.
+
+---
+
+## `decisions/decision-health-widget` â€” `DecisionHealthWidget`
+
+Three-card summary tile for active / proposed / stale counts.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `health` | `DecisionHealth \| undefined` (`@repowise-dev/types/decisions`) | yes | Renders nothing while undefined; useful for the "loading or absent" state. |
+
+---
+
+## `decisions/decisions-table` â€” `DecisionsTable`
+
+Filterable table of `DecisionRecord` rows with status + source dropdowns.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `decisions` | `DecisionRecord[] \| undefined` (`@repowise-dev/types/decisions`) | yes | Filtered list as resolved by the caller. |
+| `filters` | `DecisionsTableFilters` | yes | Controlled. Caller mirrors these into fetch keys so filter changes drive a re-fetch. |
+| `onFiltersChange` | `(filters: DecisionsTableFilters) => void` | yes | Fires on every dropdown change. |
+| `repoId` | `string` | yes | Used to build the `/repos/{repoId}/decisions/{id}` link target for each row. |
+| `linkPrefix` | `string` | no | Overrides the `/repos/{repoId}` URL prefix. |
+| `LinkComponent` | `ElementType<{ href; className?; children }>` | no | Plug a router `<Link>`; defaults to `<a>`. |
+| `error` | `unknown` | no | Truthy on a failed fetch; renders an inline retry message. |
+| `isLoading` | `boolean` | no | Suppresses the "no decisions found" empty-state during the first fetch. |
+| `onRetry` | `() => void` | no | Wired to the inline retry button when `error` is truthy. |
+
+Filter unions:
+- `DecisionStatusFilter` = `DecisionStatus \| "all"`
+- `DecisionSourceFilter` = `DecisionSource \| "all"`
+
+---
+
+## `dead-code/dead-code-view` - `DeadCodeView`
+
+The whole Dead Code page: a lede (reclaimable lines and one posture
+sentence), the safe-to-delete list, and the findings table. Owns the
+optimistic patch + undo toast, bulk resolve, the AI cleanup prompt modal,
+Re-analyze, and the status control that switches which slice the table shows.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `adapter` | `DeadCodeAdapter` | yes | Everything host-specific: fetching, mutation, links, navigation. |
+
+Behaviour worth knowing:
+- Two fetches. The open slice feeds the list and the table;
+  a second, conditional fetch backs the status filter when it is not "open".
+  Both are capped at 500 rows. The open slice has a repo-wide total to
+  compare against, so its hint says "Showing N of M"; a non-open status has
+  no server-side total, so its hint can only say "First N".
+- A failed fetch with nothing to show renders a retry card and nothing else:
+  it must never fall through to an empty state, which would read as a clean
+  repository. A failed refresh over rows already in hand keeps the table and
+  puts the card above it.
+- Optimistic row state lives here, not in the table, so resolving a row moves
+  the list with it and undo can put it back.
+- Zero open findings: with `summary.analyzed_at` set, the lede reads "0 lines"
+  with a positive all-clear and no sections; without it, a neutral "Not
+  analysed yet" with a run button. Never green without a recorded run.
+
+---
+
+## `dead-code/dead-code-adapter` - `DeadCodeAdapter`
+
+The host injection point. Hosted consumes this, so treat it as public API:
+adding a required member is a breaking change for every consumer.
+
+| Member | Type | Required | Notes |
+|--------|------|----------|-------|
+| `cacheKey` | `string` | yes | Seeds the view's SWR keys. Keep stable per repo/snapshot. |
+| `repoId` | `string` | yes | Repo identity for hosts that need it. Nothing in this package reads it today; links come from `fileHref` / `graphHref`. |
+| `getSummary` | `() => Promise<DeadCodeSummary>` | yes | |
+| `listFindings` | `(opts?: { limit?: number; status?: DeadCodeStatus }) => Promise<DeadCodeFinding[]>` | yes | `status` defaults to `"open"` server-side. |
+| `analyze` | `() => Promise<{ job_id?: string } \| void>` | yes | Returning a `job_id` lets the view wait and refresh itself. |
+| `waitForAnalysis` | `(jobId: string) => Promise<void>` | no | Without it the view cannot know when to refetch, and says so in its toast. |
+| `analyzeDisabledReason` | `string` | no | Renders Re-analyze disabled with this sentence beside it. |
+| `patchFinding` | `(id: string, patch: DeadCodePatchInput) => Promise<DeadCodeFinding>` | yes | Must return the updated finding; the view stores it as the optimistic override. |
+| `fileHref` | `(path: string) => string` | yes | Makes the path a link and the row clickable. |
+| `graphHref` | `(path: string) => string` | no | Omit and the per-row Graph action disappears, which keeps app routes out of this package. |
+| `navigate` | `(href: string) => void` | yes | Host router push. |
+
+---
+
+## `dead-code/findings-table` - `FindingsTable`
+
+The findings table: kind tabs driven by the data, a search box, sortable
+columns, one confidence control (All / High only), bulk resolve, and per-row
+status actions. Built on `shared/responsive-table` with
+`stacked="sm"` and windowed rows.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `DeadCodeFinding[]` | yes | One status slice; the table filters it by kind / confidence / search client-side. |
+| `onPatch` | `(id, { status }) => Promise<DeadCodeFinding>` | yes | Host owns the API call and the undo toast. |
+| `onBulkResolve` | `(ids: string[]) => Promise<string[]>` | no | Must return the ids that actually resolved, not the ids it was given. The table reconciles against that, never against position. |
+| `fileHref` | `(path: string) => string` | no | |
+| `onNavigate` | `(href: string) => void` | no | Needed alongside `fileHref` for client-side row clicks. |
+| `graphHref` | `(path: string) => string` | no | |
+| `onGeneratePrompt` | `(ids: string[]) => void` | no | Drives both the per-row icon button and "AI prompt for N selected". |
+| `status` | `DeadCodeStatus` | no | Which slice is on screen. Defaults to `"open"`; bulk resolve only appears there. |
+| `isLoading` | `boolean` | no | Shows a skeleton instead of an empty state during the first fetch. |
+
+Selection is always intersected with the rows currently visible, so narrowing
+the confidence filter after selecting cannot resolve rows the user can no
+longer see.
+
+---
+
+## `dead-code/finding-cells` - cell renderers
+
+`FindingIdentity`, `FindingConfidence`, `FindingSafety` and
+`FindingRowActions` back the table's columns. `FindingSafety` renders nothing
+on a deletion-ready row and "Review first" plus the reason on the rest. `FindingRowActions` is separate
+because it owns per-row pending/confirm state that a plain `render(row)`
+closure cannot hold; it offers resolve/ack/FP on an open finding and Reopen
+on anything already actioned. `DEAD_CODE_STATUS_LABELS` is the shared label
+map for the status filter.
+
+---
+
+## `dead-code/safe-to-delete-pile` - `SafeToDeletePile`
+
+The "what do I delete" punchline: per-file rollup of the cleanup-ready
+findings with the AI cleanup CTA.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `SafeToDeletePileFinding[]` | yes | Caller passes the safe slice; structural subset of `DeadCodeFinding`. |
+| `onPropose` | `(ids: string[]) => void` | no | Opens the AI prompt modal; omit and the CTA disappears. |
+| `onSelect` | `(finding: DeadCodeFinding) => void` | no | Row click. |
+
+---
+
+## `docs/docs-tree` â€” `DocsTree`
+
+Filterable, collapsible directory tree of `DocPage` entries. Special
+pages (`repo_overview`, `architecture_diagram`) appear at the top
+level; module pages become directories with their page attached;
+file pages nest under their parent directory.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `pages` | `DocPage[]` (`@repowise-dev/types/docs`) | yes | Caller fetches; tree builds the directory hierarchy each render. |
+| `selectedPageId` | `string \| null` | yes | Currently-active page id; the matching node is highlighted. |
+| `onSelectPage` | `(page: DocPage) => void` | yes | Fires on leaf-page or module-page click. |
+| `className` | `string` | no | Forwarded to the outer container. |
+
+Behaviour: built-in search, type filter (`all` / `file_page` /
+`module_page` / `symbol_spotlight` / `repo_overview`), and freshness
+filter (`all` / `fresh` / `stale` / `outdated`). Filter state is
+UI-local â€” there's no fetch coupling.
+
+---
+
+## `coverage/freshness-table` â€” `FreshnessTable`
+
+Filterable table of `DocPage` rows with per-row regenerate action.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `pages` | `DocPage[]` (`@repowise-dev/types/docs`) | yes | Caller fetches the list. The table does not mutate. |
+| `onRegenerate` | `(pageId: string) => Promise<void>` | no | Caller wires to a mutation API. The table tracks per-row pending state internally and disables the row's button while in flight. Omit to hide the regenerate column. |
+
+Behaviour:
+
+- Filter tabs (`All`, `Fresh`, `Stale`, `Outdated`) are UI-local state;
+  the canonical `freshness_status` field on `DocPage` is the filter
+  predicate.
+- Confidence column is colour-graded against the same thresholds as
+  `lib/confidence.scoreToStatus`.
+- Empty state (`EmptyState`) appears when the filtered set is empty.
+
+---
+
+## `git/*` â€” Hotspot, ownership, and contributor visualisations
+
+All twelve components are presentational and accept canonical engine
+artifacts via props (`Hotspot`, `OwnershipEntry` from `@repowise-dev/types/git`,
+or anonymous shapes for partner / owner / category records). None reach
+out to data hooks or mutation APIs â€” fetching belongs to the caller.
+
+### `git/churn-bar` â€” `ChurnBar`
+
+Inline horizontal bar shaded green/yellow/red against thresholds at
+50% / 75% percentile.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `percentile` | `number` (0â€“100, clamped) | yes |
+| `className` | `string` | no |
+
+### `git/co-change-list` â€” `CoChangeList`
+
+Top-5 co-change partners with relative-magnitude bars.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `partners` | `Array<{ file_path: string; co_change_count: number }>` | yes |
+
+### `git/churn-histogram` â€” `ChurnHistogram`
+
+Recharts bar chart binning hotspots into 10-percentile buckets.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
+
+### `git/commit-category-donut` â€” `CommitCategoryDonut`
+
+Recharts donut with centred dominant-category label. Returns `null`
+when the total is zero.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `categories` | `Record<string, number>` | yes |
+
+### `git/commit-category-sparkline` â€” `CommitCategorySparkline`
+
+Single-row stacked bar sized by category counts; each segment wears a
+tooltip. Returns `null` when the total is zero.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `categories` | `Record<string, number>` | yes |
+
+### `git/contributor-bar` â€” `ContributorBar`
+
+Top-5 horizontal bar of files-by-owner.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `owners` | `Array<{ name; email?; file_count; pct }>` | yes |
+
+### `git/contributor-network` â€” `ContributorNetwork`
+
+Force-directed (`d3-force`) co-ownership graph. Computes nodes/links
+from `hotspots[].primary_owner` and shared-file overlap; top-20
+contributors only.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
+
+### `git/hotspot-table` â€” `HotspotTable`
+
+Searchable, filterable, sortable table of hotspots. Filter chips:
+`all` / `hot` / `risk` / `accelerating`. Sortable columns:
+`commits` / `churn` / `trend`. UI-local state â€” no fetch coupling.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
+
+### `git/ownership-table` â€” `OwnershipTable`
+
+Search + silo filter over module ownership rows.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `entries` | `OwnershipEntry[]` (`@repowise-dev/types/git`) | yes |
+
+### `git/ownership-treemap` â€” `OwnershipTreemap`
+
+Treemap (`d3-hierarchy`) with file-count area, owner-hash colour, and
+silo highlight stroke. Hover tooltips computed against the container's
+bounding rect.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `entries` | `OwnershipEntry[]` (`@repowise-dev/types/git`) | yes |
+
+### `git/risk-distribution-chart` â€” `RiskDistributionChart`
+
+Top-30 risk-scored vertical bar chart with average reference line.
+Score = `0.4Â·churn + 0.35Â·busFactor + 0.25Â·trend`, all normalised to
+0â€“100.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
+
+### `git/bus-factor-panel` â€” `BusFactorPanel`
+
+Stacked bar of safe / warning / risk counts plus a top-5 highest-risk
+files list.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
+
+---
+
+## `coupling/*` — Change-coupling visualisation
+
+Renders the repo-wide change-coupling graph (files that change together).
+Pure presentation over `@repowise-dev/types/coupling`; fetching belongs to
+the caller. Co-change is a temporal hint, not a verified dependency, and
+`strength` is a decay-weighted count (never a percentage or a trend).
+
+### `coupling/coupling-graph` — `CouplingGraph`
+
+Hierarchical edge-bundling diagram (`d3-hierarchy` radial cluster +
+`d3-shape` `curveBundle`). Files sit on a ring grouped by their directory
+hierarchy; bundled arcs link files that change together. Dots are colored by
+health band and sized by lines + coupling degree. Hovering a file peeks its
+couplings (colored by the partner's health band) and dims the rest; clicking a
+file pins a sticky selection (persistent accent ring) and clicking empty canvas
+clears it. The effective focus (`focusedPath` = hover ?? pinned) is controlled
+for cross-highlight with a table, and falls back to internal hover/pin state.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `nodes` | `CouplingNode[]` (`@repowise-dev/types/coupling`) | yes |
+| `edges` | `CouplingEdge[]` (`@repowise-dev/types/coupling`) | yes |
+| `totalEdges` | `number` (pre-cap count, for the "showing N of M" line) | no |
+| `focusedPath` | `string \| null` (effective focus: hover ?? pinned) | no |
+| `pinnedPath` | `string \| null` (sticky selection; draws the ring) | no |
+| `onHover` | `(path: string \| null) => void` (transient peek) | no |
+| `onPinToggle` | `(path: string \| null) => void` (click a dot / empty canvas) | no |
+| `size` | `number` (square viewBox edge, default 760) | no |
+
+### `coupling/coupling-table` — `CouplingTable`
+
+The precise, ranked companion to the diagram: one row per coupling with a
+strength bar and last-shared-commit date, sortable by Strength or Last. File
+names are links (when `linkForPath` is set); clicking a row pins its source
+file, and hovering a row (or a name) peeks that file. Uses
+`shared/responsive-table`.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `edges` | `CouplingEdge[]` (`@repowise-dev/types/coupling`) | yes |
+| `focusedPath` | `string \| null` (effective focus) | no |
+| `pinnedPath` | `string \| null` (drives the selected-row style) | no |
+| `onHover` | `(path: string \| null) => void` | no |
+| `onPinToggle` | `(path: string \| null) => void` | no |
+| `onGeneratePrompt` | `(edge: CouplingEdge) => void` (shows the AI decouple action) | no |
+| `linkForPath` | `(path: string) => string` (makes file names links) | no |
+| `LinkComponent` | link component for file links (defaults to `<a>`) | no |
+
+### `coupling/coupling-explorer` — `CouplingExplorer`
+
+The full change-coupling surface: the diagram over a sortable/filterable table,
+sharing one focus model, plus the AI-decouple modal and a default pin on the
+most-coupled hub. Lives in the shared package so OSS and hosted share the
+interaction; the host supplies only the link prefix and optional URL sync.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `data` | `CouplingGraphResponse` (`@repowise-dev/types/coupling`) | yes |
+| `repoLinkPrefix` | `string` (e.g. `/repos/abc`; makes file names links) | no |
+| `LinkComponent` | link component for file links (defaults to `<a>`) | no |
+| `initialFocus` | `string \| null` (seed pin, e.g. from a `?focus=` deep link) | no |
+| `onFocusChange` | `(path: string \| null) => void` (reflect the pin to the URL) | no |
+
+### `dashboard/coupling-mini-card` — `CouplingMiniCard`
+
+Overview front-door for the (sidebar-less) change-coupling view: previews the
+top few coupled pairs with strength bars and links to the full page. Fully
+presentational.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `edges` | `CouplingEdge[]` (top couplings, strongest-first) | yes |
+| `href` | `string` (link to the full coupling view) | yes |
+| `LinkComponent` | link component (defaults to `<a>`) | no |
+
+---
+
+## `jobs/job-log` — `JobLog`
+
+Auto-scrolling fixed-height log viewer for streaming job progress
+entries.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `entries` | `Array<{ text: string; level?: number }>` | yes | Caller accumulates from SSE / poll. |
+| `maxLines` | `number` | no | Tail length; default `6`. |
+
+## `jobs/generation-progress` — `GenerationProgress`
+
+Status header, progress bar, live cost, summary tiles, and embedded
+`JobLog` for a documentation-generation job. Presentational — the
+caller polls / streams the job and forwards the snapshot via props.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `job` | `GenerationProgressJob \| undefined` | yes | Local subset of the engine `Job` shape (id, status, total/completed_pages, current_level, started_at, error_message, config). |
+| `log` | `Array<{ text: string }>` | yes | Caller accumulates SSE log events. |
+| `elapsed` | `number` | yes | Wall-clock elapsed in ms. Caller owns the interval. |
+| `actualCost` | `number \| null` | yes | Live USD cost; `null` until the first cost-bearing event. |
+| `stuckPending` | `boolean` | yes | Caller decides — typically `pending && !started_at && elapsed > threshold`. |
+| `cancelling` | `boolean` | yes | Disables the Cancel button while in flight. |
+| `onCancel` | `() => void` | yes | Caller wires to the cancel mutation; toasts/error handling live there. |
+
+---
+
+## `symbols/symbol-graph-panel` — `SymbolGraphPanel`
+
+Right-column graph-intelligence panel for a focused symbol: pagerank /
+betweenness percentile bars, in/out degree, community label, optional
+entry-point score, callers/callees, and heritage (extends/implements).
+Presentational.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `metrics` | `GraphMetrics \| undefined` (`@repowise-dev/types/graph`) | yes | |
+| `metricsLoading` | `boolean` | yes | |
+| `callData` | `CallersCallees \| undefined` (`@repowise-dev/types/graph`) | yes | |
+| `callsLoading` | `boolean` | yes | |
+| `heritageData` | `CallersCallees \| undefined` | no | When omitted or empty, the heritage section is hidden. |
+
+## `symbols/symbol-drawer` — `SymbolDrawer`
+
+Modal dialog over a focused symbol: signature, docstring, parent, plus
+an optional right-column slot for the graph-intelligence panel.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `symbol` | `CodeSymbol \| null` (`@repowise-dev/types/symbols`) | yes | `null` closes the dialog. |
+| `onClose` | `() => void` | yes | |
+| `graphPanel` | `ReactNode` | no | Caller passes a data-coupled `<SymbolGraphPanelWrapper>`; omit to hide the column. |
+
+## `symbols/symbol-table` — `SymbolTable`, `SymbolTableProps`, `SortCol`, `SortDir`
+
+Filterable, sortable table of symbols with importance bars and a
+configurable drawer slot. Server-driven filters (`q`, `kind`,
+`language`) are controlled props because they affect fetch keys; sort
+state is UI-local.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `items` | `CodeSymbol[]` | yes | Caller fetches; flattened across pages. |
+| `importanceScores` | `Map<string, number>` | yes | Normalised 0–1, indexed by `symbol.id`. Caller computes from pagerank × log(complexity). |
+| `isLoading` / `isValidating` | `boolean` | yes | First-load skeleton vs. load-more spinner. |
+| `hasMore` | `boolean` | yes | Renders the Load-more button. |
+| `q` / `onQChange` | `string` / `(v) => void` | yes | Search query. Caller debounces before driving the fetch. |
+| `kind` / `onKindChange` | `string` / `(v) => void` | yes | Filter union; `"all"` is the off state. |
+| `language` / `onLanguageChange` | `string` / `(v) => void` | yes | Same as kind. |
+| `onLoadMore` | `() => void` | yes | Wired to the SWR `setSize` increment. |
+| `onSelect` | `(sym: CodeSymbol) => void` | yes | Caller drives the drawer state. |
+| `drawer` | `ReactNode` | no | Caller renders `<SymbolDrawer>` with its own data wiring. |
+
+---
+
+## `wiki/code-block` â€” `CodeBlock`
+
+Server-rendered fenced code block. The caller passes pre-highlighted
+HTML (e.g. from Shiki) plus the raw code for copy-to-clipboard.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `code` | `string` | yes | Raw text used for the copy action. |
+| `language` | `string` | no | Shown in the header bar. |
+| `html` | `string` | yes | Trusted HTML, set via `dangerouslySetInnerHTML`. |
+
+## `wiki/confidence-badge` â€” `ConfidenceBadge`
+
+Coloured pill showing freshness status (`fresh` / `stale` / `outdated`).
+Computes status from `score` unless `status` is supplied. When stale
+with `staleSince`, wraps in a tooltip exposing the date and confidence.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `score` | `number` (0â€“1) | yes |
+| `status` | `string` | no |
+| `showScore` | `boolean` | no |
+| `staleSince` | `string \| null` | no |
+| `className` | `string` | no |
+
+## `wiki/backlinks-panel` — `BacklinksPanel`
+
+Sidebar panel listing pages that link into the current page. Renders
+nothing when the backlink list is empty.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `backlinks` | `Backlink[]` (`wiki/wiki-links-types`) | yes | From `page.metadata.backlinks`. |
+| `repoId` | `string` | yes | |
+| `limit` | `number` | no | Default 6; remainder collapses to "+N more". |
+| `buildHref` | `(repoId, pageId) => string` | no | Default `/repos/{id}/wiki/{pageId}`. |
+| `renderLink` | `({ href, className, title, children }) => ReactNode` | no | Plug a router link; defaults to `<a>`. |
+
+## `wiki/git-history-panel` — `GitHistoryPanel`
+
+Sidebar panel summarising file lifecycle, fix history, commit categories,
+top authors with bars, co-change partners, and recent commits.
+
+The Age row needs at least one recorded commit before it will render a zero
+age, because `formatAgeDays(0)` reads "< 1 day" and `age_days` is stored NOT
+NULL with a `0` default — so a file whose git indexing never completed is
+otherwise indistinguishable from one created today. Author shares fall back to
+`commit_count / commit_count_total` when a row carries no `pct`, which is what
+the file-detail endpoint serves.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `git` | `GitMetadata` (`@repowise-dev/types/git`) | yes |
+
+## `wiki/mermaid-diagram` â€” `MermaidDiagram`
+
+Client-side mermaid renderer with dynamic import to avoid SSR. Uses a
+dark theme matched to the design tokens. Failures render an inline
+error card.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `chart` | `string` | yes |
+
+## `wiki/table-of-contents` â€” `TableOfContents`
+
+Extracts `#`/`##`/`###` headings from a markdown string and renders an
+anchor list. An `IntersectionObserver` highlights the active heading.
+Returns `null` when fewer than two headings are found.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `content` | `string` | yes |
+
+## `graph/*` — Graph layout, presentation, and chrome
+
+Presentational graph pieces — chrome (toolbar/legend/sidebar/menu),
+ELK layout primitives, and `@xyflow/react` node/edge components.
+State reaches the canvas as props; there is no graph context.
+
+`graph-flow` and the panels (`graph-doc-panel`, `graph-community-panel`,
+`path-finder-panel`) live HERE as presentational shells; `packages/web`
+hosts thin wrappers that orchestrate the `useGraph*` SWR hooks and pass
+the datasets in. The canvas renders via Sigma (`graph/sigma/`), not
+`@xyflow/react` (the xyflow node/edge components remain for the module
+browser and embedded views).
+
+### `graph/context` — `Signal`
+
+Shared graph vocabulary. `Signal` is the overlay-toggle union
+(`"dead" | "hot" | "architecture" | "hideTests"`).
+
+This module used to export a `GraphContext` / `GraphProvider` /
+`useGraphContext` / `GraphContextValue` trio mirroring ~18 fields of
+`graph-flow`'s state. It had no consumers — every field already reaches
+the canvas as a prop, and Sigma owns hover and highlight itself — so the
+provider only re-rendered the shell and rebuilt an 18-key object on every
+interaction. Removed rather than kept "just in case": a second path to
+the same state would only drift from the props.
+
+### `graph/elk-layout` and `graph/use-elk-layout`
+
+Pure layout primitives. Functions: `layoutFileGraph`,
+`layoutModuleGraph`, `groupNodesAsModules`. Hooks:
+`useFileElkLayout`, `useModuleElkLayout`. Operate on canonical
+`@repowise-dev/types/graph` shapes (`GraphNode`, `GraphLink`,
+`ModuleNode`, `ModuleEdge`) and produce `@xyflow/react` `Node[]` /
+`Edge[]`. No data fetching.
+
+### `graph/nodes/*`, `graph/edges/*`
+
+`FileNode`, `ModuleGroupNode`, `DependencyEdge` — `@xyflow/react`
+node/edge renderers. Receive selection / path-highlight state as props.
+Wear `FileNodeData` / `ModuleNodeData` / `DependencyEdgeData` types from
+`graph/elk-layout`.
+
+There is no React tooltip component. The hover card users see on the
+Sigma canvas is painted by `defaultDrawNodeHover` in
+`graph/sigma/use-sigma.ts`, not rendered as DOM.
+
+### `graph/graph-context-menu` â€” `GraphContextMenu`
+
+Floating right-click menu rendered at `(x, y)`. Pure UI; the host
+wires the four action callbacks.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `x`, `y` | `number` | yes |
+| `nodeId` | `string` | yes |
+| `isModule` | `boolean` | yes |
+| `onViewDocs` / `onExplore` / `onPathFrom` / `onPathTo` | `() => void` | yes |
+
+### `graph/graph-toolbar` â€” `GraphToolbar`
+
+Top-right toolbar exposing view mode, color mode, hide-tests toggle,
+fit-view, path-finder toggle, flows toggle, and a search input. Also
+exports the `ColorMode` (`language` / `community` / `risk`) and
+`ViewMode` (`module` / `full` / `architecture` / `dead` / `hotfiles`)
+unions consumed by `GraphLegend` and the host.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `viewMode` / `onViewChange` | `ViewMode` / `(v) => void` | yes |
+| `colorMode` / `onColorModeChange` | `ColorMode` / `(v) => void` | yes |
+| `hideTests` / `onHideTestsChange` | `boolean` / `(v) => void` | yes |
+| `onFitView` | `() => void` | yes |
+| `showPathFinder` / `onTogglePathFinder` | `boolean` / `() => void` | yes |
+| `showFlows` / `onToggleFlows` | `boolean` / `() => void` | yes |
+| `searchQuery` / `onSearchChange` | `string` / `(q) => void` | yes |
+
+### `graph/graph-legend` â€” `GraphLegend`
+
+Collapsible legend that picks a key per `colorMode`. Imports the
+`ColorMode` and `ViewMode` types from `graph-toolbar`.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `nodeCount` / `edgeCount` | `number` | yes |
+| `colorMode` | `ColorMode` | yes |
+| `viewMode` | `ViewMode` | yes |
+| `communityLabels` | `Map<number, string>` | no |
+
+---
+
+## `workspace/*` â€” Multi-repo workspace views
+
+Five presentational components that consume the canonical workspace
+shapes from `@repowise-dev/types/workspace`.
+
+### `workspace/contract-type-badge` â€” `ContractTypeBadge`, `RoleBadge`
+
+Inline pill badges for contract type (`http`, `grpc`, `topic`, â€¦) and
+role (`provider` / `consumer`).
+
+| Component | Prop | Type |
+|-----------|------|------|
+| `ContractTypeBadge` | `type` | `string` |
+| `RoleBadge` | `role` | `string` |
+
+### `workspace/repo-card` â€” `RepoCard`
+
+Tile linking to `/repos/{id}/overview` with file count, doc-coverage,
+hotspot count, and a primary indicator.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `repoId` | `string` | yes |
+| `alias` | `string` | yes |
+| `name` | `string` | yes |
+| `path` | `string` | yes |
+| `isPrimary` | `boolean` | yes |
+| `stats` | `RepoStats \| null` (`@repowise-dev/types/workspace`) | yes |
+| `gitSummary` | `GitSummary \| null` (`@repowise-dev/types/git`) | yes |
+
+### `workspace/co-change-table` â€” `CoChangeTable`
+
+Sortable cross-repo co-change table.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `coChanges` | `WorkspaceCoChangeEntry[]` | yes | |
+| `compact` | `boolean` | no | Drops the frequency and last-date columns. |
+
+### `workspace/contract-links-table` â€” `ContractLinksTable`
+
+Provider/consumer table for matched contract links with confidence
+bars colour-graded against the freshness thresholds.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `links` | `WorkspaceContractLinkEntry[]` | yes |
+
+### `workspace/cross-repo-summary` â€” `CrossRepoSummary`
+
+Four-tile summary header (`MetricCard` Ã— 4) for co-change pairs, package
+deps, contract links, and contract count.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `crossRepo` | `WorkspaceCrossRepoSummary \| null` | yes |
+| `contracts` | `WorkspaceContractSummary \| null` | yes |
+
+---
+
+## `dashboard/*` — Repo overview tiles
+
+Presentational tiles that consume canonical engine artifacts. The
+formerly data-coupled trio (`active-job-banner`, `quick-actions`,
+`community-summary-grid`) now lives here as shells (documented under
+"Phase 2C" below); their SWR wrappers live in `packages/web`.
+
+UX-overhaul additions: `dashboard/health-score-badge`
+(`HealthScoreBadge` — compact header twin of `HealthScoreRing`: score
+chip + code-health trend sparkline + click-toggled breakdown),
+`dashboard/where-to-start` (`WhereToStartCard` — onboarding targets,
+rows link to the canonical file pages), and `dashboard/commits-mini`
+(`CommitsMini` — recent-commits feed for the Overview Pulse tab; rows
+link to `/commits?commit=`). `SavingsMini` accepts the structural
+`SavingsMiniData` slice (the overview-summary savings headline fits);
+`DecisionsTimeline` accepts the structural `DecisionsTimelineItem`.
+
+## `files/*` — File entity page
+
+The canonical "everything about this file" page used by
+`/repos/[id]/files/<path>`. `symbols/symbol-page` (`SymbolPage`) is the
+symbol-page sibling fed by `SymbolDetailResponse`.
+
+**The page is four pieces, not one component, and the split is the
+hydration boundary.** A host composes them; it does not hand a
+`FileDetailResponse` to a client component.
+
+| Piece | Where it runs | Job |
+|---|---|---|
+| `FilePageHeader` | server | Eyebrow, path as identity, the `PageLede` figure, the marker row, the `StatRibbon`. |
+| `fileTabsFor(data)` | server | The tab row as `FileTabDef[]` — label, blurb, badge. `resolveFileTab` narrows a `?tab=` value against it. |
+| `buildFilePanels({...})` | server | Renders the six pure tab bodies and returns them keyed by tab id. Takes `healthPanel` as an already-wrapped node. |
+| `FilePage` | client | The shell: header slot, `ViewTabs`, active panel. Imports `ViewTabs` and nothing else from the slice. |
+
+`FilePage` used to be `"use client"` and import all seven tab bodies, so
+the whole slice plus a twice-serialised `FileDetailResponse` reached the
+browser to render one tab. `file-health-tab` is now the only file in
+`files/*` carrying `"use client"` — it owns triage state, two virtualised
+lists and a measured trend. Because its triage callback and href builders
+are functions, a host wraps it itself and passes the result in as
+`healthPanel`; that wrapper is the page's only client boundary besides
+the shell.
+
+Two consequences a host must honour:
+
+- **Key the shell on the file path.** Tab clicks are a shallow
+  `history.replaceState`, so a soft navigation from one file page to
+  another keeps React's state at the same tree position and strands the
+  active tab out of sync with the URL. Every cross-file link in the tab
+  bodies is a plain `<a>` today, which hides this; converting one to a
+  router link without the key surfaces it.
+- **`fields=slim` is the default fetch.** Only Documentation, Health and
+  Coverage read the four unbounded blocks the aggregate can drop, so the
+  route fetches slim unless the requested tab is one of those, and tells
+  the shell through `refetchTabs` which tabs need a round trip on first
+  click. A tab with nothing behind it is left out of that list rather
+  than buying a trip to be shown the same empty state.
+
+Bands come from `bandForScore` (`@repowise-dev/types/health`), never from a
+threshold of the page's own — this page sits one click from the treemap and
+the health map, and all three paint the same five bands.
+
+**The doors, and who owns each end.** The page had thirty surfaces linking
+into it and almost nothing linking out, and the docs surface — the one that
+knows a page documents *this exact path* — linked to it zero times.
+
+- `FilePageHeader` takes `wikiHref`. It used to live in the Doc tab, which
+  made the only link to the wiki reachable only from the tab that already
+  renders the wiki. Pass it **only when a page exists** — this route already
+  knows, and the reader's missing-page reply is for someone who typed the id,
+  not for a link the product offered. It reads "Read in Docs", naming the
+  surface the nav names: "Documentation" is the tab forty pixels below it, and
+  two controls with near enough one name, one staying and one leaving, is the
+  two-verbs-one-subject problem relocated rather than fixed.
+- `DocsReader` takes `buildFileHref`, and renders the door only for a
+  `file_page`. `page.target_path` is the repo-relative path the file route
+  takes, so nothing parses an id. Optional, so a host with no file route
+  (the VS Code webview) renders no door rather than a broken one.
+- `buildFilePanels` forwards `LinkComponent` to Overview, History, Decisions
+  and Dependencies. **This does not move the hydration boundary**: a
+  `next/link` element *rendered from* a server component is still server
+  markup. An `onClick` would not be — that is what would drag a body back
+  into the client bundle.
+- Because those cross-file links are soft navigations now, the shell's
+  `key` on the file path is load-bearing rather than defensive. Without it a
+  file → file click keeps React's tab state at the same tree position and
+  strands the active tab out of sync with the URL.
+
+Route builders are `fileEntityPath`, `symbolEntityPath`, `filePageId` and
+`docsPagePath` from `shared/entity`. `filePageId` exists because the
+`"file_page:<path>"` id has to agree with a backend primary key and was
+spelled out at five call sites; `pageHref` derives its parse prefix from the
+builder so the two cannot drift. The docs surface reads `?page=`, never
+`?file=` — three surfaces shipped a `?file=` link that nothing read, which
+meant they silently opened the repo overview and looked like they had worked.
+
+Repointing them at `?page=` puts real traffic on ids that resolve to nothing,
+because page selection is budgeted and most files have no page. So
+`DocsReader` takes `missingPageId` and answers by naming the page that is
+missing, instead of the "Select a page, choose one from the tree" prompt meant
+for a reader who asked for nothing. `docs-explorer` sets it only once the
+fetch has settled, or the line flashes over a request about to succeed. It
+deliberately does **not** fall back to the overview: a reader who asked about
+one file must not silently land in another file's prose.
+
+### `dashboard/attention-panel` â€” `AttentionPanel`
+
+Categorised list of items needing developer attention. Re-exports the
+`AttentionItem` type so `packages/web`'s `health-score.ts` can derive
+items without recomputing the shape.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `items` | `AttentionItem[]` | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/decisions-timeline` â€” `DecisionsTimeline`
+
+Top-6 most recent decisions with status dots and a "view all" link.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `decisions` | `DecisionRecord[]` (`@repowise-dev/types/decisions`) | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/dependency-heatmap` â€” `DependencyHeatmap`
+
+20Ã—20 canvas heatmap of module-to-module edge counts. Modules sorted
+by `avg_pagerank`. Returns `null` when fewer than two modules are
+available.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `moduleGraph` | `ModuleGraph` (`@repowise-dev/types/graph`) | yes |
+
+### `dashboard/execution-flows-panel` â€” `ExecutionFlowsPanel`
+
+Top-8 execution flows with collapsible call traces. `repoId` is
+accepted for parity with other dashboard tiles but currently unused.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `flows` | `ExecutionFlowEntry[]` (`@repowise-dev/types/graph`) | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/health-score-ring` â€” `HealthScoreRing`
+
+Animated `framer-motion` SVG ring showing 0â€“100 score with text label.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `score` | `number` (0â€“100) | yes |
+| `size` | `number` | no, default `160` |
+
+### `dashboard/hotspots-mini` â€” `HotspotsMini`
+
+Top-5 hotspots tile.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/language-donut` â€” `LanguageDonut`
+
+Top-6 languages-by-file-count donut with grouped "other" bucket.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `distribution` | `Record<string, number>` | yes |
+
+### `dashboard/module-minimap` â€” `ModuleMinimap`
+
+Force-directed module graph using `d3-force`. Doc-coverage colours
+the nodes. The simulation runs synchronously for small graphs (â‰¤150
+ticks) and re-renders once the layout converges.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `nodes` | `ModuleNode[]` (`@repowise-dev/types/graph`) | yes |
+| `edges` | `ModuleEdge[]` (`@repowise-dev/types/graph`) | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/ownership-treemap` â€” `OwnershipTreemap`
+
+`d3-hierarchy` treemap colouring rectangles by primary owner; silos
+render at lower opacity. Distinct from `git/ownership-treemap` â€”
+this variant is the dashboard tile (Card-wrapped, fixed height,
+legend below).
+
+| Prop | Type | Required |
+|------|------|----------|
+| `entries` | `OwnershipEntry[]` (`@repowise-dev/types/git`) | yes |
+
+---
+
+## `chat/*` â€” Conversation rendering primitives
+
+The chat UI types are sourced from `@repowise-dev/types/chat` â€”
+`ChatUIMessage` and `ChatUIToolCall` are the post-streaming flattened
+shapes consumed by these components. The wire types (`ChatMessage`,
+`ChatToolCall`) live in the same module; consumers are expected to
+keep the SSE merge in their own data layer.
+
+### `chat/chat-markdown` â€” `ChatMarkdown`
+
+Compact markdown renderer (`react-markdown` + `remark-gfm`) tuned for
+chat density. Code fences are inline `<pre><code>` blocks â€” no copy
+affordance.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `content` | `string` | yes |
+
+### `chat/tool-call-block` â€” `ToolCallBlock`
+
+Collapsible card showing a single tool invocation. Friendly labels for
+known tool names; falls back to the raw name. Shows a "View" button
+that fires `onViewArtifact` when an artifact is attached.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `toolCall` | `ChatUIToolCall` (`@repowise-dev/types/chat`) | yes |
+| `onViewArtifact` | `() => void` | no |
+
+### `chat/source-citations` â€” `SourceCitations`
+
+Renders an inline list of source-page links extracted from
+`tool_calls[]`. Also exports `extractSources(toolCalls, repoId)` for
+callers that need the same shape outside of rendering. Uses plain
+`<a>` (no Next-only `Link`) so the package stays framework-neutral â€”
+consumers wire prefetching at the parent level if needed.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `toolCalls` | `ChatUIToolCall[]` | yes |
+| `repoId` | `string` | yes |
+
+### `chat/chat-message` â€” `ChatMessage`
+
+Renders one user or assistant turn: avatar, message bubble for user,
+tool-call cards + markdown + citations for assistant. Streaming
+indicator shows when `message.isStreaming` and there's no text yet.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `message` | `ChatUIMessage` | yes | |
+| `repoId` | `string` | yes | Forwarded to `SourceCitations` for link targets. |
+| `onViewArtifact` | `(artifact: { type; data }) => void` | no | Wired through to `ToolCallBlock` when an artifact is attached. |
+| `assistantAvatarSrc` | `string` | no | Defaults to `/repowise-logo.png`. Override in consumers that don't host that asset. |
+
+### `chat/artifact-panel` â€” `ArtifactPanel`
+
+Right-edge slide-over panel. Switches on `artifact.type` to pick a
+renderer: markdown for `overview` / `wiki_page`, mermaid (via
+`@repowise-dev/ui/wiki/mermaid-diagram`) for `diagram`, list for
+`search_results`, JSON pretty-print fallback otherwise.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `artifacts` | `Artifact[]` (locally-defined wrapper: `{ type; title; data }`) | yes |
+| `open` | `boolean` | yes |
+| `onClose` | `() => void` | yes |
+
+---
+
+## `wiki/wiki-markdown` â€” `WikiMarkdown`
+
+Client-side markdown renderer (`react-markdown` + `remark-gfm`) with
+slugged heading anchors, copy-on-hover code blocks, and inline
+`MermaidDiagram` for `\`\`\`mermaid` fences.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `content` | `string` | yes |
+
+---
+
+## `blast-radius/*` — PR impact analysis shells
+
+Pure presentational shells for the blast-radius view. Data fetching,
+input form, and SWR hotspot suggestions stay in the consumer page;
+these components only render `BlastRadiusResponse` (from
+`@repowise-dev/types/blast-radius`).
+
+### `blast-radius/risk-score-card` — `RiskScoreCard`
+
+Structural-impact gauge. The server-owned band is `broad`, `moderate`, or
+`localized`; the value is an uncalibrated 0–10 heuristic, not a probability.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `score` | `number` (0–10) | yes |
+| `band` | `"localized" \| "moderate" \| "broad"` | no |
+
+### `blast-radius/table-section` — `TableSection`
+
+Card wrapper with title and "empty" placeholder.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `title` | `string` | yes |
+| `empty` | `boolean` | yes |
+| `emptyLabel` | `string` (defaults to "None") | no |
+| `children` | `ReactNode` | yes |
+
+### `blast-radius/direct-risks-table` — `DirectRisksTable`
+
+Renders `DirectRiskEntry[]`. `structural_score` is the raw, unbounded
+pagerank-weighted-hotspot heuristic and is displayed in those units. Bars use
+within-change relative share only; they do not invent a 0–10 scale.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `rows` | `DirectRiskEntry[]` | yes |
+
+### `blast-radius/transitive-table` — `TransitiveTable`
+
+Two-column path + dependency depth.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `rows` | `TransitiveEntry[]` | yes |
+
+### `blast-radius/cochange-table` — `CochangeTable`
+
+Three-column changed file / missing partner / score.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `rows` | `CochangeWarning[]` | yes |
+
+### `blast-radius/reviewers-table` — `ReviewersTable`
+
+Email + files-owned + percent ownership. `ownership_pct` is 0–1.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `rows` | `ReviewerEntry[]` | yes |
+
+### `blast-radius/test-gaps-list` — `TestGapsList`
+
+Compatibility list of file-level test gaps. It is not a measured-coverage
+claim; consumers use `result.test_impact` for typed recommendations, evidence
+basis, and coverage availability.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `gaps` | `string[]` | yes |
+
+### `blast-radius/blast-radius-summary` — `BlastRadiusSummary`
+
+Four-stat card sitting beside `RiskScoreCard` (Direct Risks /
+Transitive Files / Co-change Warnings / Test Gaps).
+
+| Prop | Type | Required |
+|------|------|----------|
+| `result` | `BlastRadiusResponse` | yes |
+
+### `blast-radius/blast-radius-results` — `BlastRadiusResults`
+
+Composes the full results stack: gauge, summary, impact map, typed test
+recommendations with measured/inferred basis, explicit unavailable-analysis
+copy, and the compatibility tables. `test_impact` is optional in the shared
+TypeScript contract so the component remains compatible with older servers.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `result` | `BlastRadiusResponse` | yes |
+
+## Phase 2C — dashboard wrappers + settings shells
+
+### `dashboard/active-job-banner` — `ActiveJobBanner`
+
+Slim status strip for the latest indexing/generation job. Wrapper owns
+SWR polling + freshness window; the shell is given a snapshot.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `job` | `Job \| null` | yes |
+| `detailsHref` | `string` | no |
+
+`Job` is canonical (`@repowise-dev/types/jobs`). When `job` is `null`
+or `pending`, the banner renders nothing — the wrapper is responsible
+for filtering out terminal states older than its freshness window.
+
+### `dashboard/quick-actions` — `QuickActions`
+
+Three-button action bar (sync / full-resync / dead-code) with confirm
+dialog and inline cost estimate. Pure presentational — mutations are a
+callback bag.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `onAction` | `(key: QuickActionKey) => Promise<void> \| void` | yes |
+| `actions` | `QuickActionDef[]` | no (defaults to the three baked-in) |
+| `loadingKey` | `QuickActionKey \| null` | no |
+| `lastSyncAt` | `string \| null` | no |
+| `lastResyncAt` | `string \| null` | no |
+| `pageCount` | `number` | no |
+| `modelName` | `string` | no |
+| `activeJobSlot` | `ReactNode` | no — when set, replaces the buttons |
+
+### `dashboard/community-summary-grid` — `CommunitySummaryGrid`
+
+Architecture-community list with expandable detail panel. The wrapper
+owns `useCommunityDetail`; the shell receives resolved details keyed by
+`community_id`.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `communities` | `CommunitySummaryItem[]` | yes |
+| `details` | `Record<number, CommunityDetail \| null>` | no |
+| `loadingDetailId` | `number \| null` | no |
+| `onExpand` | `(communityId: number) => void` | no |
+
+`CommunitySummaryItem` and `CommunityDetail` are canonical types in
+`@repowise-dev/types/graph`.
+
+### `settings/general-form` — `GeneralForm`
+
+Universal repo-settings editor (name, default branch, exclude
+patterns). Read-only when `onSubmit` is omitted — used by hosted, where
+multi-tenant settings persistence is deferred to Phase 5 RBAC.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `value` | `RepoSettingsValue` | yes |
+| `onSubmit` | `(next: RepoSettingsValue) => Promise<void>` | no |
+| `localPath` | `string` | no |
+| `remoteUrl` | `string` | no |
+| `disabledHint` | `string` | no |
+
+`RepoSettingsValue` lives in `@repowise-dev/types/settings`.
+
+### `chat/conversation-history` — `ConversationHistory`
+
+Dropdown listing prior conversations for a repo with select / delete /
+new-conversation affordances. The wrapper owns the SWR fetch
+(`listConversations`) and the delete mutation; the shell only renders
+the popover surface and emits intents.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `conversations` | `Conversation[] \| undefined` | yes | `undefined` while loading. |
+| `isLoading` | `boolean` | no | Renders a "Loading…" placeholder when no list is yet available. |
+| `selectedId` | `string \| null` | no | Highlights the matching row. |
+| `onSelect` | `(id: string) => void` | yes | Fires when a row is clicked. |
+| `onDelete` | `(id: string) => void \| Promise<void>` | yes | Fires when a row's trash icon is clicked. |
+| `onNew` | `() => void` | yes | Fires when "New conversation" is clicked. |
+| `className` | `string` | no | Forwarded to the outer container. |
+
+`Conversation` is canonical (`@repowise-dev/types/chat`).
+
+### `chat/chat-interface` — `ChatInterface`
+
+Top-level chat surface. Renders empty-state suggestion chips when
+`messages` is empty, otherwise a scrollable transcript above a
+textarea composer. Owns the artifact-panel state internally; transport
+(SSE / federated / mock), history dropdown, and model selector are
+wired by the wrapper as opaque slots.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `repoId` | `string` | yes | Forwarded to `ChatMessage` for citation hrefs. |
+| `repoName` | `string` | no | Used in the empty-state heading. |
+| `messages` | `ChatUIMessage[]` | yes | UI-flattened transcript. |
+| `isStreaming` | `boolean` | yes | Toggles Send → Stop in the composer. |
+| `error` | `string \| null` | no | Inline banner above the transcript. |
+| `onSend` | `(text: string) => void \| Promise<void>` | yes | Fires when the user submits. |
+| `onCancel` | `() => void` | yes | Fires when the user clicks Stop; also used as "reset" in the wrapper. |
+| `modelSelectorSlot` | `ReactNode` | no | Rendered in the header bar AND empty-state composer. |
+| `historySlot` | `ReactNode` | no | Rendered in the header bar AND empty-state composer. |
+| `assistantAvatarSrc` | `string` | no | Forwarded to `ChatMessage`. |
+| `buildCitationHref` | `(source: SourceReference) => string` | no | Forwarded to `ChatMessage` → `SourceCitations`. |
+| `emptyStateLogoSrc` | `string` | no | Defaults to `/repowise-logo.png`. |
+| `suggestions` | `string[]` | no | Override default empty-state chip set. |
+
+`ChatUIMessage` is canonical (`@repowise-dev/types/chat`). Downstream
+consumers can wire a different transport (e.g. a multi-repo fan-out
+streaming endpoint) into the same shell by substituting the wrapper —
+that swap validates the data/presentation split.
+
+### `wiki/security-panel` — `SecurityPanel`
+
+Renders a list of security findings (or an empty-state message) for a
+single file. Wrapper owns the `useSWR(["security", repoId, filePath], …)`
+fetch from `listSecurityFindings`.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `SecurityFinding[] \| undefined` | yes | Empty / undefined → "No security signals." |
+| `isLoading` | `boolean` | no | While loading the shell renders nothing. |
+
+`SecurityFinding` is canonical (`@repowise-dev/types/security`).
+
+### `wiki/regenerate-button` — `RegenerateButton`
+
+Per-page regenerate affordance: a ghost button + a dialog that hosts a
+job-progress widget. Wrapper owns `regeneratePage`, sonner toasts,
+SWR cache invalidation, and the in-flight job id.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `onRegenerate` | `() => void` | yes | Fires when the user clicks regenerate. |
+| `isLoading` | `boolean` | no | Spinner + disabled while the request is in flight. |
+| `isInProgress` | `boolean` | no | When true, the progress dialog is open. |
+| `onDialogClose` | `() => void` | no | Fires when the dialog requests to close. |
+| `jobSlot` | `ReactNode` | no | Rendered inside the dialog — typically a job-progress widget. |
+
+### `wiki/version-history` — `VersionHistory`
+
+Collapsible per-page version-history panel with an inline LCS-based
+diff view. Wrapper owns the `usePageVersions(pageId)` SWR hook; the
+shell owns expand / select / show-diff UI state and the `computeLineDiff`
+helpers.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `versions` | `DocPageVersion[]` | yes | Archived prior versions, newest-first. |
+| `currentVersion` | `number` | yes | Version number of the currently-rendered page. |
+| `currentContent` | `string` | yes | Content used as the "new" side of the diff view. |
+| `isLoading` | `boolean` | no | While loading or empty the shell renders nothing. |
+
+`DocPageVersion` is canonical (`@repowise-dev/types/docs`).
+
+---
+
+## `graph/graph-doc-panel` — `GraphDocPanel`
+
+Side-panel that renders a wiki page for a graph node. Presentational —
+the consumer fetches the `DocPage` and supplies routing hrefs.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `nodeId` | `string` | yes | Used in the header subtitle when no `page.title` is available. |
+| `page` | `DocPage \| null \| undefined` | yes | Pre-fetched wiki page. |
+| `isLoading` | `boolean` | yes | Drives the spinner state. |
+| `error` | `unknown` | no | Truthy renders the empty state. |
+| `fullPageHref` | `string` | no | When provided, renders the "open full page" external-link icon. |
+| `browseDocsHref` | `string` | no | Fallback link inside the empty state. |
+| `onClose` | `() => void` | yes | Close affordance handler. |
+
+`DocPage` is canonical (`@repowise-dev/types/docs`).
+
+---
+
+## `graph/graph-community-panel` — `GraphCommunityPanel`
+
+Side-panel that lists a Leiden community's members + neighboring
+communities. Presentational — consumer fetches the detail.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `communityId` | `number` | yes | Surfaced in the header fallback when `community` is null. |
+| `community` | `CommunityDetail \| null \| undefined` | yes | Pre-fetched detail; `null` while loading or missing. |
+| `isLoading` | `boolean` | yes | Drives the skeleton state. |
+| `onClose` | `() => void` | yes | Close affordance handler. |
+
+`CommunityDetail` is canonical (`@repowise-dev/types/graph`).
+
+---
+
+## `graph/path-finder-panel` — `PathFinderPanel`
+
+Floating panel for picking two nodes and asking the engine for a path
+between them. Presentational — the consumer injects the search and
+path-find callbacks; the shell owns input + dropdown state and uses
+the `useDebounce` presentational hook for autocomplete.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `searchNodes` | `(query: string, limit: number) => Promise<NodeSearchResult[]>` | yes | Backs the autocomplete dropdown. |
+| `findPath` | `(from: string, to: string) => Promise<GraphPath>` | yes | Resolves the highlighted path. |
+| `onPathFound` | `(pathNodes: string[]) => void` | yes | Handed the resolved node ids. |
+| `onClear` | `() => void` | yes | Called when the user clears prior results. |
+| `onClose` | `() => void` | yes | Close affordance handler. |
+| `initialFrom` | `string` | no | Pre-fill from a parent context-menu. |
+| `initialTo` | `string` | no | Pre-fill from a parent context-menu. |
+
+`NodeSearchResult` and `GraphPath` are canonical (`@repowise-dev/types/graph`).
+
+---
+
+## `graph/graph-flow` — `GraphFlow`
+
+The full graph canvas. Presentational shell over Sigma that handles
+view-mode, drill-down, search, hover/selection, context menu,
+execution-flow highlighting, constellation hubs, and layout. The
+consumer supplies every dataset (one per view mode) and renders the
+data-coupled child panels (path-finder, community-panel) via slot
+render props. The component does NOT read `window.location` — initial
+URL-derived state arrives via `initialViewMode` / `initialColorMode` /
+`initialSelectedNode`.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `moduleGraph` | `ModuleGraph \| undefined` | yes | Top-level module rollup; only required for module view at root. |
+| `isLoadingModuleGraph` | `boolean` | yes | Drives the skeleton when in module view. |
+| `fullGraph` | `GraphExport \| undefined` | yes | File-level graph — needed for drill-down and `full` view. |
+| `isLoadingFullGraph` | `boolean` | yes | |
+| `architectureGraph` | `GraphExport \| undefined` | yes | Entry-point / architecture view. |
+| `isLoadingArchitectureGraph` | `boolean` | yes | |
+| `deadCodeGraph` | `GraphExport \| undefined` | yes | Dead-code-only graph. |
+| `isLoadingDeadCodeGraph` | `boolean` | yes | |
+| `hotFilesGraph` | `GraphExport \| undefined` | yes | Hot-files-only graph. |
+| `isLoadingHotFilesGraph` | `boolean` | yes | |
+| `communities` | `CommunitySummaryItem[]` | no | Used for the legend's community labels. |
+| `executionFlows` | `ExecutionFlows` | no | Backs the flows side panel + trace highlighting. |
+| `constellationGraph` / `constellationSlices` / `onExpandedHubsChange` | see types | no | Radial Knowledge-Graph scope: community super-graph, expanded-hub member slices, and the fetch trigger. |
+| `initialViewMode` | `ViewMode` | no | Initial scope (incl. `dead` / `hotfiles` / `unified`, which seed the signal overlays). |
+| `initialColorMode` | `ColorMode` | no | Initial node color mode; hosts derive it from their URL state. |
+| `initialSelectedNode` | `string \| null` | no | Pre-selected node (e.g. `?node=`). |
+| `onViewModeChange` | `(mode: ViewMode) => void` | no | Fires when the user changes view; consumer uses this to toggle data fetches. |
+| `onModulePathChange` | `(path: string[]) => void` | no | Fires on drill-down navigation. |
+| `onNodeClick` | `(nodeId, nodeType) => void \| Promise<void>` | no | File click handler. |
+| `onNodeViewDocs` | `(nodeId: string) => void` | no | "View docs" intent — surface a side panel. |
+| `renderPathFinder` | `(props) => ReactNode` | no | Render slot for the path-finder sub-panel; the shell only owns when to mount it. |
+| `renderCommunityPanel` | `(props) => ReactNode` | no | Render slot for the community detail sub-panel. |
+
+All graph datasets are canonical (`@repowise-dev/types/graph`).

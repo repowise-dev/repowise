@@ -1,0 +1,237 @@
+"""Central client for the Repowise hosted platform (``api.repowise.dev``).
+
+This is the single seam between the OSS CLI and the hosted product. It
+carries anonymous telemetry and, once a user runs ``repowise login``, the
+authenticated account calls (whoami, OAuth token exchange, connection
+management). Keeping *all* hosted connectivity here means a new hosted
+feature adds a method, not another ad-hoc ``httpx`` call scattered across
+the CLI.
+
+Design rules:
+
+* **Production URL only.** There is no localhost override in the OSS package.
+  Backend development points the private backend repo at a local server; the
+  shipped CLI always talks to ``https://api.repowise.dev``.
+* **Fail-silent.** The OSS CLI must work fully offline, so every method
+  swallows network/parse errors and returns a sentinel instead of raising.
+* **One auth seam.** :meth:`PlatformClient._auth_headers` is the one place the
+  ``repowise login`` bearer token gets attached, so every platform call is
+  authenticated uniformly (and stays anonymous when signed out).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+#: Production base URL for the hosted platform. Intentionally not configurable
+#: from the OSS package (see module docstring).
+PLATFORM_BASE_URL = "https://api.repowise.dev"
+
+#: Short default timeout — platform calls are best-effort and must never stall
+#: a CLI command waiting on the network.
+DEFAULT_TIMEOUT = 2.0
+
+
+def _user_agent() -> str:
+    try:
+        from repowise.cli import __version__
+
+        return f"repowise-cli/{__version__}"
+    except Exception:
+        return "repowise-cli"
+
+
+class PlatformClient:
+    """Best-effort HTTP client for the hosted platform.
+
+    All methods return a sentinel on failure rather than raising; callers in
+    the OSS CLI treat hosted connectivity as optional.
+    """
+
+    def __init__(
+        self,
+        base_url: str = PLATFORM_BASE_URL,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    # -- header assembly ---------------------------------------------------
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Return auth headers for an authenticated platform call.
+
+        Reads the stored login (``repowise login``) via the auth module,
+        which transparently refreshes an expired access token. Signed-out,
+        offline, or revoked all degrade to ``{}`` — the call proceeds
+        anonymously. Lazy import: most commands never touch credentials.
+        """
+        try:
+            from repowise.cli.platform import auth
+
+            return auth.auth_headers()
+        except Exception:
+            return {}
+
+    def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {
+            "User-Agent": _user_agent(),
+            "Content-Type": "application/json",
+        }
+        headers.update(self._auth_headers())
+        if extra:
+            headers.update(extra)
+        return headers
+
+    # -- verbs -------------------------------------------------------------
+
+    def post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """POST ``payload`` as JSON to ``path``. Returns success, never raises."""
+        return 200 <= self.post_status(path, payload, timeout=timeout) < 300
+
+    def post_status(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> int:
+        """POST ``payload`` as JSON and return the HTTP status, ``0`` when the
+        request never got an answer. Never raises."""
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            import httpx
+
+            resp = httpx.post(
+                url,
+                json=payload,
+                headers=self._headers(),
+                timeout=timeout or self.timeout,
+            )
+            return resp.status_code
+        except Exception:
+            # Network, JSON — all advisory. The CLI works offline.
+            return 0
+
+    def post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """POST ``payload`` as JSON and return ``(status_code, parsed_body)``.
+
+        For account actions whose refusals the user has to read (a plan
+        limit, a missing GitHub App install), so unlike :meth:`post` the
+        status and body come back instead of a bool. A body that is not a
+        JSON object reads as ``{}``; no answer at all is ``(0, {})``.
+        """
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            import httpx
+
+            resp = httpx.post(
+                url,
+                json=payload,
+                headers=self._headers(),
+                timeout=timeout or self.timeout,
+            )
+        except Exception:
+            return 0, {}
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        return resp.status_code, body if isinstance(body, dict) else {}
+
+    def post_form(
+        self,
+        path: str,
+        form: dict[str, str],
+        *,
+        timeout: float | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """POST form-encoded data and return ``(status_code, parsed_body)``.
+
+        For OAuth endpoints (RFC 6749 wants form encoding and meaningful
+        error bodies), so unlike :meth:`post` this surfaces the status and
+        body instead of collapsing to a bool. Deliberately anonymous: the
+        token endpoint authenticates by grant, and attaching
+        :meth:`_auth_headers` here would recurse through token refresh.
+        Network failures return ``(0, {})``.
+        """
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            import httpx
+
+            resp = httpx.post(
+                url,
+                data=form,
+                headers={"User-Agent": _user_agent()},
+                timeout=timeout or self.timeout,
+            )
+            try:
+                body = resp.json()
+            except Exception:
+                body = {}
+            return resp.status_code, body if isinstance(body, dict) else {}
+        except Exception:
+            return 0, {}
+
+    def delete(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> bool:
+        """DELETE ``path``. Returns success, never raises."""
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            import httpx
+
+            resp = httpx.delete(
+                url,
+                params=params,
+                headers=self._headers(),
+                timeout=timeout or self.timeout,
+            )
+            resp.raise_for_status()
+            return True
+        except Exception:
+            return False
+
+    def get(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any] | None:
+        """GET ``path`` and return parsed JSON, or ``None`` on any failure."""
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            import httpx
+
+            resp = httpx.get(
+                url,
+                params=params,
+                headers=self._headers(),
+                timeout=timeout or self.timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            return None
+
+
+#: Process-wide default client. Callers that don't need a custom base URL or
+#: timeout share this instance.
+default_client = PlatformClient()

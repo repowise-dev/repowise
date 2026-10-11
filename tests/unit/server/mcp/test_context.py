@@ -1,0 +1,1017 @@
+"""Unit tests for repowise MCP server tools.
+
+Tests all 9 MCP tools using an in-memory SQLite database with pre-populated
+test data, mirroring the conftest pattern from the REST API tests.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+
+import pytest
+
+from repowise.core.persistence.models import GitMetadata, Page
+from repowise.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.providers.embedding.base import MockEmbedder
+
+_NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+async def multi_module_db(session, populated_db):
+    """populated_db + extra module pages that trigger partial-match collisions.
+
+    Adds path-shaped module ids that share the "api" segment so a bare "api"
+    target hits more than one module path (the MultipleResultsFound trigger),
+    plus a git-only file whose name substring-matches a module path.
+    """
+    rid = populated_db
+
+    def _module(path: str, title: str) -> Page:
+        return Page(
+            id=f"module_page:{path}",
+            repository_id=rid,
+            page_type="module_page",
+            title=title,
+            content=f"# {title}\n\nmodule body.",
+            target_path=path,
+            source_hash=f"mod-{path}",
+            model_name="mock",
+            provider_name="mock",
+            generation_level=4,
+            confidence=0.9,
+            freshness_status="fresh",
+            metadata_json="{}",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+    # "api" appears as a segment in two distinct module paths -> would raise
+    # MultipleResultsFound under the old substring + scalar_one_or_none rung.
+    session.add(_module("src/api", "API Module"))
+    session.add(_module("pkg/api", "Pkg API Module"))
+    # A different segment that must NOT match a bare "api" target.
+    session.add(_module("src/rapid", "Rapid Module"))
+    # A module path containing a literal "_" so LIKE-metachar escaping matters.
+    session.add(_module("src/a_b", "Underscore Module"))
+
+    # A real file present in git_metadata, with NO file_page, whose path
+    # substring-matches the "src/api" module path. Must resolve via the git
+    # fallback (target_type file/git), not as the module.
+    session.add(
+        GitMetadata(
+            id="gm-apiclient",
+            repository_id=rid,
+            file_path="src/api/client.py",
+            commit_count_total=3,
+            commit_count_90d=1,
+            commit_count_30d=0,
+            first_commit_at=datetime(2025, 6, 1, tzinfo=UTC),
+            last_commit_at=datetime(2026, 1, 2, tzinfo=UTC),
+            primary_owner_name="Carol",
+            primary_owner_email="carol@example.com",
+            primary_owner_commit_pct=1.0,
+            top_authors_json=json.dumps([{"name": "Carol", "count": 3}]),
+            significant_commits_json=json.dumps([]),
+            co_change_partners_json=json.dumps([]),
+            is_hotspot=False,
+            is_stable=True,
+            churn_percentile=0.1,
+            age_days=200,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+    )
+    await session.flush()
+    return rid
+
+
+@pytest.fixture
+async def setup_mcp_multi(factory, fts, vector_store, multi_module_db):
+    """Wire MCP globals to the multi-module database."""
+    import repowise.server.mcp_server as mcp_mod
+
+    mcp_mod._session_factory = factory
+    mcp_mod._fts = fts
+    mcp_mod._vector_store = vector_store
+    mcp_mod._decision_store = InMemoryVectorStore(embedder=MockEmbedder())
+    mcp_mod._repo_path = "/tmp/test-repo"
+
+    yield multi_module_db
+
+    mcp_mod._session_factory = None
+    mcp_mod._fts = None
+    mcp_mod._vector_store = None
+    mcp_mod._decision_store = None
+    mcp_mod._repo_path = None
+    mcp_mod._registry = None
+    mcp_mod._workspace_root = None
+    mcp_mod._embedder_status = None
+
+
+@pytest.mark.asyncio
+async def test_get_context_single_file(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(
+        ["src/auth/service.py"],
+        include=["docs", "full_doc", "ownership", "last_change", "decisions", "freshness"],
+        compact=False,
+    )
+    targets = result["targets"]
+    assert "src/auth/service.py" in targets
+    t = targets["src/auth/service.py"]
+    assert t["type"] == "file"
+    # Docs
+    assert t["docs"]["title"] == "Auth Service"
+    assert "AuthService" in t["docs"]["content_md"]
+    assert len(t["docs"]["symbols"]) == 2
+    assert any(s["name"] == "AuthService" for s in t["docs"]["symbols"])
+    assert "src/auth/middleware.py" in t["docs"]["imported_by"]
+    # Ownership
+    assert t["ownership"]["primary_owner"] == "Alice"
+    assert t["ownership"]["owner_pct"] == 0.65
+    assert t["ownership"]["contributor_count"] == 2
+    # Last change
+    assert t["last_change"]["author"] == "Alice"
+    assert t["last_change"]["days_ago"] == 443
+    # Decisions. The fixture record is ``proposed`` with no acceptance behind
+    # it, so it is a candidate — it used to be served as a governing decision.
+    assert t["decisions"] == []
+    assert any(d["title"] == "Use JWT for authentication" for d in t["candidates"])
+    # Freshness
+    assert t["freshness"]["confidence_score"] == 0.85
+    assert t["freshness"]["freshness_status"] == "fresh"
+    assert t["freshness"]["is_stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_context_single_module(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(
+        ["src/auth"],
+        include=["docs", "full_doc", "ownership", "last_change", "decisions", "freshness"],
+        compact=False,
+    )
+    targets = result["targets"]
+    assert "src/auth" in targets
+    t = targets["src/auth"]
+    assert t["type"] == "module"
+    assert t["docs"]["title"] == "Auth Module"
+    assert "authentication" in t["docs"]["content_md"].lower()
+    assert len(t["docs"]["files"]) == 2  # service.py and middleware.py
+    # Freshness from module page
+    assert t["freshness"]["confidence_score"] == 0.95
+
+
+@pytest.mark.asyncio
+async def test_get_context_single_symbol(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(
+        ["AuthService"],
+        include=["docs", "full_doc"],
+        compact=False,
+    )
+    targets = result["targets"]
+    assert "AuthService" in targets
+    t = targets["AuthService"]
+    assert t["type"] == "symbol"
+    assert t["docs"]["name"] == "AuthService"
+    assert t["docs"]["kind"] == "class"
+    assert t["docs"]["signature"] == "class AuthService"
+    assert t["docs"]["file_path"] == "src/auth/service.py"
+    assert t["docs"]["documentation"]  # Has content from file page
+
+
+@pytest.mark.asyncio
+async def test_get_context_multiple_targets(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/auth/service.py", "src/auth", "AuthService"])
+    targets = result["targets"]
+    assert len(targets) == 3
+    assert targets["src/auth/service.py"]["type"] == "file"
+    assert targets["src/auth"]["type"] == "module"
+    assert targets["AuthService"]["type"] == "symbol"
+
+
+@pytest.mark.asyncio
+async def test_get_context_include_filter(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/auth/service.py"], include=["docs"])
+    t = result["targets"]["src/auth/service.py"]
+    # docs + freshness are the always-on defaults (the tool contract says
+    # "defaults are always returned"); include only ADDS blocks.
+    assert "docs" in t
+    assert "freshness" in t
+    assert "ownership" not in t
+    assert "last_change" not in t
+    assert "decisions" not in t
+
+
+@pytest.mark.asyncio
+async def test_get_context_skeleton_keeps_default_card(setup_mcp):
+    """include=["skeleton"] must not silently drop the summary/freshness card."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/auth/service.py"], include=["skeleton"])
+    t = result["targets"]["src/auth/service.py"]
+    assert "freshness" in t
+    assert "docs" in t
+    assert t["docs"].get("summary")
+    # ...but the symbol list is suppressed: the skeleton already carries
+    # every signature, so repeating it in docs would double the response.
+    assert "symbols" not in t["docs"]
+
+
+@pytest.mark.asyncio
+async def test_get_context_not_found(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["nonexistent_thing_xyz"])
+    t = result["targets"]["nonexistent_thing_xyz"]
+    assert "error" in t
+
+
+@pytest.mark.asyncio
+async def test_get_context_legacy_community_id_hint(setup_mcp):
+    """Old community-ordinal module ids get a redirect to path-shaped ids."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["community-12"])
+    t = result["targets"]["community-12"]
+    assert "error" in t
+    assert "directory" in t["error"]
+    # Suggestions list the real module pages by their directory path.
+    assert "src/auth" in t["suggestions"]
+    assert "src/db" in t["suggestions"]
+
+
+def _make_big_response(n_targets: int = 5, n_symbols: int = 80, body_chars: int = 4000) -> dict:
+    """Build a synthetic get_context response well over the 32 KB budget."""
+    targets = {}
+    for i in range(n_targets):
+        name = f"pkg/mod_{i}/file_{i}.ext"
+        targets[name] = {
+            "target": name,
+            "type": "file",
+            "docs": {
+                "title": f"File {i}",
+                "summary": "s" * 200,
+                "content_md": "x" * body_chars,
+                "symbols": [
+                    {
+                        "name": f"Sym{i}_{j}",
+                        "kind": "class" if j % 5 == 0 else "function",
+                        "signature": f"sig_{j}(...)",
+                        "start_line": j * 10,
+                        "end_line": j * 10 + 8,
+                        "docstring": "d" * 300,
+                    }
+                    for j in range(n_symbols)
+                ],
+            },
+        }
+    return {"targets": targets, "_meta": {"timing_ms": 1.0}}
+
+
+def test_truncate_to_budget_enforces_cap():
+    from repowise.server.mcp_server.tool_context import (
+        _CHAR_BUDGET,
+        _truncate_to_budget,
+    )
+
+    big = _make_big_response()
+    raw_size = len(json.dumps(big, separators=(",", ":"), default=str))
+    assert raw_size > _CHAR_BUDGET, "fixture must exceed budget to be meaningful"
+
+    out = _truncate_to_budget(big)
+    final_size = len(json.dumps(out, separators=(",", ":"), default=str))
+    assert final_size <= _CHAR_BUDGET
+    assert out["truncated"] is True
+    # At least one target must survive.
+    assert len(out["targets"]) >= 1
+
+
+def test_truncate_flags_and_dropped_fields_populate():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    big = _make_big_response(n_targets=6, n_symbols=60, body_chars=5000)
+    out = _truncate_to_budget(big)
+
+    assert out["truncated"] is True
+    # Either whole targets were dropped, or individual symbols were dropped —
+    # both are acceptable outcomes; at least one must be populated.
+    dropped_any = bool(out["dropped_targets"]) or bool(out["dropped_symbols"])
+    assert dropped_any
+    # Heavy optional fields should have been stripped from surviving targets.
+    for tgt in out["targets"].values():
+        assert "content_md" not in tgt.get("docs", {})
+    # Dropped symbol lists (if any) must reference actual symbol names.
+    for tgt_name, names in out["dropped_symbols"].items():
+        assert tgt_name in big["targets"] or tgt_name not in out["targets"]
+        assert all(isinstance(n, str) for n in names)
+
+
+def test_truncate_noop_when_under_budget():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    small = {
+        "targets": {
+            "a.py": {
+                "target": "a.py",
+                "type": "file",
+                "docs": {"title": "A", "symbols": [{"name": "f", "kind": "function"}]},
+            }
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(small)
+    # Absent, not false. ``truncated: false`` plus two empty containers is 60
+    # characters of "nothing happened" on every response that fits — which is
+    # nearly all of them. Both projections read these with ``.get()``, so empty
+    # and absent are the same answer to a consumer.
+    assert not out.get("truncated")
+    assert not out.get("dropped_targets")
+    assert not out.get("dropped_symbols")
+    assert "truncated" not in out
+    assert "content_md" not in out["targets"]["a.py"]["docs"]  # wasn't there anyway
+
+
+# --- Partial-module-match hardening (segment boundary + LIKE escaping) -------
+
+
+@pytest.mark.asyncio
+async def test_partial_module_multi_match_does_not_raise(setup_mcp_multi):
+    """A target matching 2+ module paths resolves deterministically, no raise."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["api"])
+    t = result["targets"]["api"]
+    # Old code raised MultipleResultsFound here. Now it picks the shortest,
+    # lexicographically-first matching module path: "pkg/api" vs "src/api"
+    # both len 7 -> lexicographic -> "pkg/api".
+    assert t.get("type") == "module"
+    assert t["docs"]["title"] == "Pkg API Module"
+
+
+@pytest.mark.asyncio
+async def test_partial_module_segment_boundary(setup_mcp_multi):
+    """Substrings that aren't whole path segments must not match a module."""
+    from repowise.server.mcp_server import get_context
+
+    # "apiclient" / "pi" are substrings of "src/api" but not path segments.
+    result = await get_context(["apiclient", "pi", "rapid"])
+    targets = result["targets"]
+    # apiclient: not a module, not a file -> error
+    assert "error" in targets["apiclient"]
+    assert targets["apiclient"].get("type") != "module"
+    # pi: substring of "rapid"/"api" but not a segment -> not a module
+    assert targets["pi"].get("type") != "module"
+    # rapid: a full segment of "src/rapid" -> resolves as that module, and a
+    # bare "api" must NOT have matched it.
+    assert targets["rapid"].get("type") == "module"
+    assert targets["rapid"]["docs"]["title"] == "Rapid Module"
+
+
+@pytest.mark.asyncio
+async def test_partial_module_api_matches_only_api_segment(setup_mcp_multi):
+    """'api' resolves to an api module, never to 'src/rapid'."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["api"])
+    t = result["targets"]["api"]
+    assert t["type"] == "module"
+    assert "Rapid" not in t["docs"]["title"]
+
+
+@pytest.mark.asyncio
+async def test_partial_module_like_metachars_not_wildcards(setup_mcp_multi):
+    """A target with '_' / '%' must match literally, not as a SQL wildcard."""
+    from repowise.server.mcp_server import get_context
+
+    # "a%b" would wildcard-match "a_b" if % were treated as a metachar.
+    # "axb" would match "a_b" if _ were treated as a single-char wildcard.
+    result = await get_context(["a%b", "axb"])
+    targets = result["targets"]
+    assert targets["a%b"].get("type") != "module"
+    assert "error" in targets["a%b"]
+    assert targets["axb"].get("type") != "module"
+    assert "error" in targets["axb"]
+    # Sanity: the literal "a_b" segment DOES resolve as the module.
+    result2 = await get_context(["a_b"])
+    assert result2["targets"]["a_b"]["type"] == "module"
+
+
+@pytest.mark.asyncio
+async def test_file_on_git_preferred_over_partial_module(setup_mcp_multi):
+    """A git-only file substring-matching a module resolves via git, not module."""
+    from repowise.server.mcp_server import get_context
+
+    # "src/api/client.py" is in git_metadata, has no file_page, and contains
+    # the "src/api" module path as a prefix segment. It must resolve via the
+    # git fallback rung, not be captured as the "src/api" module.
+    result = await get_context(["src/api/client.py"])
+    t = result["targets"]["src/api/client.py"]
+    assert t.get("type") != "module"
+    assert t.get("exists_in_git") is True
+    assert t["primary_owner"] == "Carol"
+    assert "error" not in t
+    assert t["type"] == "file"
+    assert t["index_status"] == "live_file_without_wiki_page"
+
+
+@pytest.mark.asyncio
+async def test_legacy_community_hint_unaffected_by_multi_module(setup_mcp_multi):
+    """Extra module pages don't break the legacy community-N redirect rung."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["community-12"])
+    t = result["targets"]["community-12"]
+    assert "error" in t
+    assert "directory" in t["error"]
+    assert "src/auth" in t["suggestions"]
+
+
+@pytest.mark.asyncio
+async def test_batch_isolation_one_target_errors(setup_mcp, monkeypatch):
+    """One target raising internally yields an error entry; siblings resolve."""
+    import repowise.server.mcp_server.tool_context.context as ctx_mod
+    from repowise.server.mcp_server import get_context
+
+    real_resolver = ctx_mod._resolve_one_target
+
+    async def flaky(session, repository, target, *args, **kwargs):
+        if target == "boom":
+            raise RuntimeError("synthetic resolver failure")
+        return await real_resolver(session, repository, target, *args, **kwargs)
+
+    monkeypatch.setattr(ctx_mod, "_resolve_one_target", flaky)
+
+    result = await get_context(["src/auth/service.py", "boom"])
+    targets = result["targets"]
+    # Sibling still resolves normally.
+    assert targets["src/auth/service.py"]["type"] == "file"
+    # Failing target carries a per-target error entry (keyed on its target).
+    assert "boom" in targets
+    assert "error" in targets["boom"]
+    # The map key is the target. The card no longer echoes it back as a field.
+    assert "target" not in targets["boom"]
+
+
+@pytest.mark.asyncio
+async def test_file_target_callers_rolls_up_importers(setup_mcp):
+    """B5: include=["callers"] on a FILE target returns the import rollup
+    instead of an empty list (which forced a second round-trip)."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/auth/service.py"], include=["callers"], compact=False)
+    t = result["targets"]["src/auth/service.py"]
+    callers = t.get("callers")
+    assert callers, "file-level callers must not be empty when importers exist"
+    [middleware] = [c for c in callers if c["file"] == "src/auth/middleware.py"]
+    assert middleware.get("imports") is True
+    assert "rollup" in t.get("_call_graph_note", "")
+
+
+@pytest.mark.asyncio
+async def test_file_target_callers_bank_the_full_ranked_tail(
+    setup_mcp, session, tmp_path, monkeypatch
+):
+    """File import rollups report and bank every caller beyond the visible 20."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context, get_symbol
+
+    store_path = tmp_path / "omissions.sqlite3"
+    monkeypatch.setattr(
+        "repowise.server.mcp_server._budget.collector.default_store_path",
+        lambda _root: store_path,
+    )
+    monkeypatch.setattr(
+        "repowise.core.distill.store.default_store_path",
+        lambda _root=None: store_path,
+    )
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    for index in range(25):
+        node_id = f"src/generated/importer_{index:02d}.py"
+        session.add(
+            GraphNode(
+                id=f"file_importer_{index}",
+                repository_id=repo.id,
+                node_id=node_id,
+                node_type="file",
+                name=f"importer_{index:02d}.py",
+                file_path=node_id,
+            )
+        )
+        session.add(
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id=node_id,
+                target_node_id="src/auth/service.py",
+                edge_type="imports",
+            )
+        )
+    await session.commit()
+
+    result = await get_context(["src/auth/service.py"], include=["callers"], compact=False)
+    card = result["targets"]["src/auth/service.py"]
+    assert card["callers_total"] == 27
+    assert card["callers_emitted"] == 20
+    assert card["callers_reduced_reason"] == "construction_cap"
+    [ref] = result["_meta"]["omitted"]["refs"]
+    recovered = await get_symbol(ref)
+    assert "src/generated/importer_24.py" in recovered.get("content", ""), recovered
+
+
+@pytest.mark.asyncio
+async def test_symbol_callers_carry_definition_line(setup_mcp, session):
+    """Symbol-level callers must carry the caller's definition line so the
+    agent jumps to it instead of grepping for the call-site position."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context
+
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    target_id = "src/auth/service.py::login"
+    caller_id = "src/auth/service.py::caller_fn"
+    session.add_all(
+        [
+            GraphNode(
+                id="sgn_login",
+                repository_id=repo.id,
+                node_id=target_id,
+                node_type="symbol",
+                name="login",
+                file_path="src/auth/service.py",
+                kind="method",
+                start_line=20,
+                end_line=40,
+                created_at=_NOW,
+            ),
+            GraphNode(
+                id="sgn_caller",
+                repository_id=repo.id,
+                node_id=caller_id,
+                node_type="symbol",
+                name="caller_fn",
+                file_path="src/auth/service.py",
+                kind="function",
+                start_line=55,
+                end_line=70,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="sge_call",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="calls",
+                confidence=0.95,
+                created_at=_NOW,
+            ),
+        ]
+    )
+    await session.flush()
+
+    result = await get_context([target_id], include=["callers"], compact=False)
+    t = result["targets"][target_id]
+    [caller] = [c for c in t.get("callers", []) if c["symbol_id"] == caller_id]
+    assert caller["line"] == 55
+
+
+@pytest.mark.asyncio
+async def test_one_caller_joined_by_two_edge_types_is_listed_once(setup_mcp, session):
+    """Two edges between the same pair must not become two callers.
+
+    The displayed list is compared against a COUNT(DISTINCT) to decide
+    truncation, so an entry per edge makes the two sides count different
+    things: the list looks longer than the true total and `callers_truncated`
+    stays unset while real callers have been cut. Reachable since the caller
+    set became the shared symbol view — in Go a struct routinely both `calls`
+    an interface's methods and `method_implements` it.
+    """
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context
+
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    target_id = "src/store/iface.go::Storer"
+    caller_id = "src/store/disk.go::DiskStore"
+    session.add_all(
+        [
+            GraphNode(
+                id="dup_tgt",
+                repository_id=repo.id,
+                node_id=target_id,
+                node_type="symbol",
+                name="Storer",
+                file_path="src/store/iface.go",
+                kind="interface",
+                start_line=1,
+                end_line=5,
+                created_at=_NOW,
+            ),
+            GraphNode(
+                id="dup_src",
+                repository_id=repo.id,
+                node_id=caller_id,
+                node_type="symbol",
+                name="DiskStore",
+                file_path="src/store/disk.go",
+                kind="struct",
+                start_line=1,
+                end_line=9,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="dup_edge_calls",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="calls",
+                confidence=0.9,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="dup_edge_impl",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="method_implements",
+                confidence=0.95,
+                created_at=_NOW,
+            ),
+        ]
+    )
+    await session.flush()
+
+    result = await get_context([target_id], include=["callers"], compact=False)
+    t = result["targets"][target_id]
+    matching = [c for c in t.get("callers", []) if c["symbol_id"] == caller_id]
+    assert len(matching) == 1, matching
+    # The two edges are different relations, so they are reported separately
+    # rather than collapsed onto whichever had the higher confidence: the call
+    # is a call, and satisfying the interface is heritage.
+    assert matching[0]["edge_type"] == "calls"
+    assert not t.get("callers_truncated")
+
+    impl = [
+        r
+        for r in t.get("relations", [])
+        if r["edge_type"] == "method_implements" and r["direction"] == "in"
+    ]
+    assert len(impl) == 1, t.get("relations")
+    assert impl[0]["group"] == "heritage"
+    assert impl[0]["total"] == 1
+    assert [r["symbol_id"] for r in impl[0]["rows"]] == [caller_id]
+
+
+@pytest.mark.asyncio
+async def test_high_fan_in_callers_signal_truncation(
+    setup_mcp, session, tmp_path, monkeypatch
+):
+    """A symbol with more callers than the display cap must report the TRUE
+    total + a truncation flag, so a find-all-callers sweep is not silently
+    misled into thinking the partial list is complete (S2 dogfood bug)."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server._budget import collector as collector_mod
+
+    monkeypatch.setattr(
+        collector_mod, "default_store_path", lambda start=None: tmp_path / "omissions.db"
+    )
+
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    target_id = "src/db/util.py::hot"
+    nodes = [
+        GraphNode(
+            id="hot_tgt",
+            repository_id=repo.id,
+            node_id=target_id,
+            node_type="symbol",
+            name="hot",
+            file_path="src/db/util.py",
+            kind="function",
+            start_line=10,
+            end_line=20,
+            created_at=_NOW,
+        )
+    ]
+    edges = []
+    n_callers = 75  # > the cap of 50
+    for i in range(n_callers):
+        cid = f"src/callers/c{i}.py::caller_{i}"
+        nodes.append(
+            GraphNode(
+                id=f"hot_caller_{i}",
+                repository_id=repo.id,
+                node_id=cid,
+                node_type="symbol",
+                name=f"caller_{i}",
+                file_path=f"src/callers/c{i}.py",
+                kind="function",
+                start_line=i + 1,
+                end_line=i + 5,
+                created_at=_NOW,
+            )
+        )
+        edges.append(
+            GraphEdge(
+                id=f"hot_edge_{i}",
+                repository_id=repo.id,
+                source_node_id=cid,
+                target_node_id=target_id,
+                edge_type="calls",
+                confidence=0.95,
+                created_at=_NOW,
+            )
+        )
+    session.add_all(nodes + edges)
+    await session.flush()
+
+    result = await get_context([target_id], include=["callers"], compact=False)
+    t = result["targets"][target_id]
+    assert len(t["callers"]) == 50  # capped display
+    assert t["callers_total"] == n_callers  # true total surfaced
+    assert t["callers_emitted"] == 50
+    assert t["callers_reduced_reason"] == "construction_cap"
+    assert t["callers_truncated"] is True
+    assert "get_symbol" in t["_callers_note"]
+    assert result["_meta"]["omitted"]["refs"]
+
+
+# --- Structural retrieval: parent page + concept-page tree position ---------
+
+
+async def _add_tree(session) -> None:
+    """Wire a layer -> concept -> file/sub-concept tree onto the populated db.
+
+    ``layer:core`` (§1) -> ``src/payments`` concept (§1.2) -> a file page (§1.2.1)
+    and a ``src/payments/providers`` sub-concept child (§1.2.3).
+    """
+    from repowise.core.persistence.models import Repository
+
+    rid = (
+        await session.execute(__import__("sqlalchemy").select(Repository))
+    ).scalars().first().id
+
+    def _page(pid, ptype, title, path, *, parent=None, section=None, order=0):
+        return Page(
+            id=pid,
+            repository_id=rid,
+            page_type=ptype,
+            title=title,
+            content=f"# {title}\n\nbody for {title}.",
+            summary=f"{title} summary.",
+            target_path=path,
+            source_hash=f"h-{pid}",
+            model_name="mock",
+            provider_name="mock",
+            generation_level=2,
+            confidence=0.9,
+            freshness_status="fresh",
+            metadata_json="{}",
+            parent_page_id=parent,
+            section_number=section,
+            display_order=order,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+    session.add_all(
+        [
+            _page("layer_page:layer:core", "layer_page", "Layer: Core", "layer:core", section="1"),
+            _page(
+                "module_page:src/payments",
+                "module_page",
+                "Payments Module",
+                "src/payments",
+                parent="layer_page:layer:core",
+                section="1.2",
+            ),
+            _page(
+                "file_page:src/payments/charge.py",
+                "file_page",
+                "Charge",
+                "src/payments/charge.py",
+                parent="module_page:src/payments",
+                section="1.2.1",
+                order=1,
+            ),
+            _page(
+                "module_page:src/payments/providers",
+                "module_page",
+                "Payment Providers",
+                "src/payments/providers",
+                parent="module_page:src/payments",
+                section="1.2.3",
+                order=2,
+            ),
+        ]
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_file_target_surfaces_parent_concept_page(setup_mcp, session):
+    """A file target points up to the subsystem page that documents it."""
+    from repowise.server.mcp_server import get_context
+
+    await _add_tree(session)
+    result = await get_context(["src/payments/charge.py"])
+    t = result["targets"]["src/payments/charge.py"]
+    assert t["type"] == "file"
+    parent = t["parent_page"]
+    assert parent["title"] == "Payments Module"
+    assert parent["target_path"] == "src/payments"
+    assert parent["section"] == "1.2"
+
+
+@pytest.mark.asyncio
+async def test_concept_target_returns_section_and_children(setup_mcp, session):
+    """A concept target carries its tree position (section, parent) and its
+    non-file sub-concept children, not just the flat member-file list."""
+    from repowise.server.mcp_server import get_context
+
+    await _add_tree(session)
+    result = await get_context(["src/payments"])
+    t = result["targets"]["src/payments"]
+    assert t["type"] == "module"
+    # Own tree position.
+    assert t["docs"]["section"] == "1.2"
+    assert t["parent_page"]["title"] == "Layer: Core"
+    # Sub-concept child surfaced; the file child stays in "files", not "children".
+    children = t["docs"].get("children", [])
+    assert any(
+        c["target_path"] == "src/payments/providers" and c["page_type"] == "module_page"
+        for c in children
+    )
+    assert all(c["page_type"] != "file_page" for c in children)
+    assert any(f["path"] == "src/payments/charge.py" for f in t["docs"]["files"])
+
+
+@pytest.mark.asyncio
+async def test_get_context_meta_envelope(setup_mcp):
+    """get_context returns a well-formed _meta envelope without dead hint fields."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/payments/charge.py"])
+    assert "_meta" in result
+    meta = result["_meta"]
+    assert "index_age_days" in meta
+    # Diagnostics stay off a routine response.
+    assert "contract_version" not in meta
+    assert "timing_ms" not in meta
+    # hint was dead/always None and has been removed; no empty or spurious hint field
+    assert "hint" not in meta
+
+
+
+def _card(name: str, *, symbols: int, callers: int, pad: int = 120) -> dict:
+    return {
+        "target": name,
+        "type": "file",
+        "docs": {
+            "title": name,
+            "summary": "s" * 80,
+            "symbols": [
+                {"name": f"f{j}", "kind": "function", "signature": "x" * pad, "line": j}
+                for j in range(symbols)
+            ],
+        },
+        "callers": [{"file": f"caller_{j}.py", "note": "c" * pad} for j in range(callers)],
+    }
+
+
+def test_two_targets_share_the_budget_instead_of_one_being_dropped():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    result = {
+        "targets": {
+            "a.py": _card("a.py", symbols=40, callers=40),
+            "b.py": _card("b.py", symbols=40, callers=40),
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(result, char_budget=9000)
+
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 9000
+    assert set(out["targets"]) == {"a.py", "b.py"}
+    assert not out.get("dropped_targets")
+    for name, tgt in out["targets"].items():
+        assert tgt["docs"]["title"] == name
+        assert tgt["docs"]["symbols"]
+        assert "callers" in out["dropped_blocks"][name]
+
+
+def test_a_small_target_keeps_everything_while_a_large_one_degrades():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    small = _card("small.py", symbols=2, callers=2)
+    result = {
+        "targets": {
+            "small.py": json.loads(json.dumps(small)),
+            "large.py": _card("large.py", symbols=80, callers=80),
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(result, char_budget=9000)
+
+    assert out["targets"]["small.py"] == small
+    assert "small.py" not in out.get("dropped_blocks", {})
+    assert "large.py" in out["dropped_symbols"]
+
+
+def test_a_dropped_target_leads_the_response_with_its_recovery_call():
+    import inspect
+
+    from repowise.server.mcp_server._budget import enforce_response_budget
+
+    def get_context(targets, include=None, compact=True, repo=None):
+        pass
+
+    # Identity cards alone overflow: every summary is long and cannot shrink.
+    names = [f"src/m{i}.py" for i in range(60)]
+    cards = {name: _card(name, symbols=1, callers=0, pad=10) for name in names}
+    for card in cards.values():
+        card["docs"]["summary"] = "s" * 900
+    payload = {"targets": cards, "_meta": {}}
+    out = enforce_response_budget(
+        "get_context",
+        payload,
+        signature=inspect.signature(get_context),
+        args=(),
+        kwargs={"targets": names, "include": ["callers"]},
+    )
+
+    dropped = out["dropped_targets"]
+    assert dropped and not set(dropped) & set(out["targets"])
+    assert list(out)[:2] == ["dropped_targets", "recovery"]
+    assert out["recovery"] == {
+        "tool": "get_context",
+        "arguments": {"targets": dropped, "include": ["callers"]},
+    }
+
+
+def _crowd(n: int) -> dict:
+    """*n* ordinary cards plus a miss with suggestions and an ambiguous symbol."""
+    targets = {f"src/m{i}.py": _card(f"src/m{i}.py", symbols=6, callers=4, pad=40) for i in range(n)}
+    targets["src/missing.py"] = {
+        "target": "src/missing.py",
+        "error": "Target not found: 'src/missing.py'",
+        "suggestions": ["src/m1.py", "src/m2.py"],
+    }
+    targets["src/amb.py::run"] = {
+        "target": "src/amb.py::run",
+        "type": "symbol",
+        "docs": {
+            "title": "run",
+            "candidates": [{"symbol_id": "src/amb.py::A::run"}, {"symbol_id": "src/amb.py::B::run"}],
+        },
+    }
+    return {"targets": targets, "_meta": {}}
+
+
+def test_suggestions_and_candidates_survive_budget_pressure():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    for n, budget in ((30, 6000), (60, 12000), (80, 12000)):
+        out = _truncate_to_budget(_crowd(n), char_budget=budget)
+        missing = out["targets"].get("src/missing.py")
+        assert missing is not None and missing["suggestions"] == ["src/m1.py", "src/m2.py"]
+        amb = out["targets"].get("src/amb.py::run")
+        if amb is not None:
+            assert len(amb["docs"]["candidates"]) == 2
+        for labels in out.get("dropped_blocks", {}).values():
+            assert "suggestions" not in labels and "docs.candidates" not in labels
+
+
+def test_a_capped_list_dropped_whole_reports_zero_emitted():
+    from repowise.server.mcp_server._budget import truncate_to_budget
+
+    card = _card("a.py", symbols=2, callers=20, pad=200)
+    card.update(callers_total=50, callers_emitted=20)
+    other = _card("b.py", symbols=2, callers=0)
+    out = truncate_to_budget(
+        {"targets": {"a.py": card, "b.py": other}, "_meta": {}},
+        char_budget=2500,
+        record_counts=True,
+    )
+    kept = out["targets"]["a.py"]
+    assert "callers" not in kept
+    assert kept["callers_emitted"] == 0
+    assert kept["callers_total"] == 50
+
+
+def test_survivors_keep_their_detail_when_identity_cards_overflow():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    out = _truncate_to_budget(_crowd(30), char_budget=6000)
+
+    assert out["dropped_targets"]
+    # Eviction came first, so the fair share had room: no survivor lost a block.
+    assert not out.get("dropped_blocks")
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 6000

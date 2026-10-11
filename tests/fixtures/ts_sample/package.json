@@ -1,0 +1,9 @@
+{
+  "name": "@org/ts-sample-root",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "lint": "eslint src"
+  }
+}

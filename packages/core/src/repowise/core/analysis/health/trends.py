@@ -1,0 +1,834 @@
+"""Snapshot diffing + trend alerts.
+
+Consumed by:
+  * the snapshot writer (``persistence/crud.py.save_health_snapshot``) which
+    feeds in the rolling window
+  * the ``repowise health --trend`` CLI flag (prints the 10 most recent
+    snapshots' KPIs side-by-side)
+  * the MCP ``get_health(include=["trend"])`` response
+
+Both detectors run over every metric in ``_ALERT_METRICS``, skipping any a
+snapshot never recorded. Three alert kinds come out:
+
+  * ``declining`` — the current reading is ≥ ``DECLINE_THRESHOLD`` points
+    (default 0.5) below the snapshot N-5 entries ago. This catches sustained
+    drops, not single-snapshot noise.
+  * ``predicted_decline`` — the three most recent snapshots are each
+    strictly below the one before them. Magnitude is not required —
+    direction is the signal.
+  * ``history_drag`` — either of the above on the composite headline, where
+    the only half that moved down was git history. Same numbers, opposite
+    reading: there is nothing in the code to act on.
+
+The module is intentionally state-free. Callers pass in the snapshot
+history (oldest → newest) and receive a list of alerts back. No DB
+access lives here so trend logic stays unit-testable without an engine
+or a session. The one exception is ``_parsed_map`` below, a bounded
+content-keyed cache over ``json.loads`` of a snapshot's per-file map — a pure
+cache with no observable effect on any return value.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
+from functools import lru_cache
+from typing import Any, TypeAlias
+
+from .rows import scored_rows
+from .scoring import SCORE_FLOOR, SCORE_MAX
+
+DECLINE_THRESHOLD: float = 0.5
+DECLINE_LOOKBACK: int = 5  # compare current vs snapshot N positions back
+PREDICTED_DECLINE_CONSECUTIVE: int = 3
+
+# Metrics a decline alert watches. ``maintainability_average`` is pure code
+# shape, so it is the one whose fall always answers to editing; it is absent
+# from snapshots taken before it was recorded and from narrowed ones, and a
+# metric a snapshot does not carry is skipped rather than read as zero.
+_ALERT_METRICS = ("hotspot_health", "average_health", "maintainability_average")
+
+_METRIC_LABEL = {
+    "hotspot_health": "Hotspot health",
+    "average_health": "Code health",
+    "maintainability_average": "Maintainability",
+}
+
+
+@dataclass
+class TrendAlert:
+    """A single trend signal worth surfacing on the dashboard / CLI."""
+
+    # ``history_drag`` is a decline whose whole cause is git history while the
+    # code shape held or improved. It carries the same numbers as ``declining``
+    # and the opposite reading, so a surface renders it as a watch item.
+    kind: str  # "declining" | "predicted_decline" | "history_drag"
+    metric: str  # one of _ALERT_METRICS
+    current: float
+    baseline: float | None
+    delta: float
+    message: str
+    # Which half of the headline moved, in score points. ``structure`` is code
+    # shape, which a rewrite can fix; ``history`` is git-derived and answers to
+    # time, not to editing. They are changes in each half's mean DEDUCTION, so
+    # they sum to ``delta`` only while no file sits at the score floor — the
+    # clamp is what the two measures disagree about. All ``None`` for
+    # ``hotspot_health``, whose halves are not snapshotted, and on snapshots
+    # taken before the split existed.
+    driver: str | None = None
+    structure_delta: float | None = None
+    history_delta: float | None = None
+
+
+@dataclass
+class TrendSummary:
+    """Lightweight diff between the newest snapshot and the prior window."""
+
+    current_hotspot_health: float
+    current_average_health: float
+    previous_hotspot_health: float | None
+    previous_average_health: float | None
+    hotspot_delta: float | None
+    average_delta: float | None
+    alerts: list[TrendAlert] = field(default_factory=list)
+    # The newest snapshot's headline split, in deduction points, so a surface
+    # can show the two halves without replaying findings. ``None`` before the
+    # split was recorded.
+    current_structure_deduction: float | None = None
+    current_history_deduction: float | None = None
+
+
+def _delta(current: float, previous: float | None) -> float | None:
+    if previous is None:
+        return None
+    return round(current - previous, 3)
+
+
+def _attribution(current: Any, baseline: Any) -> tuple[str | None, float | None, float | None]:
+    """Split a headline move into its structure and history halves.
+
+    Snapshots store the two as deduction points, so each contribution to the
+    score is the negated change. Returns ``(driver, structure, history)``, all
+    ``None`` when either snapshot predates the split.
+    """
+    values = [
+        (getattr(snap, attr, None))
+        for snap in (current, baseline)
+        for attr in ("structure_average", "history_average")
+    ]
+    if any(v is None for v in values):
+        return None, None, None
+    cur_structure, cur_history, base_structure, base_history = (float(v) for v in values)
+    structure = round(base_structure - cur_structure, 3)
+    history = round(base_history - cur_history, 3)
+    driver = "structure" if abs(structure) >= abs(history) else "history"
+    return driver, structure, history
+
+
+_DRIVER_PHRASE = {
+    "structure": "Code shape moved most",
+    "history": "History moved most, and no edit to these files settles it",
+}
+
+
+def _driver_sentence(driver: str | None, structure: float | None, history: float | None) -> str:
+    """Name the driver and both halves, without claiming they sum to ``delta``.
+
+    They are deduction means and ``delta`` is a mean of clamped scores, so the
+    two agree only on a repo with no floored file. Stating each half and
+    stopping there is the claim the numbers actually support.
+    """
+    if driver is None or structure is None or history is None:
+        return ""
+    return f" {_DRIVER_PHRASE[driver]} (code shape {structure:+.2f}, history {history:+.2f})."
+
+
+@dataclass
+class _ScopedSnapshot:
+    """One snapshot with its production figure standing in for the headline.
+
+    Only ``average_health`` was recorded for both populations. Everything else
+    on a snapshot describes the whole repository, and a repo-wide figure served
+    under a production label is worse than an absent one, so the rest is
+    dropped rather than carried across.
+    """
+
+    taken_at: Any
+    average_health: float
+    per_file_scores_json: str
+    hotspot_health: float = 0.0
+    worst_performer_path: str | None = None
+    worst_performer_score: float | None = None
+    structure_average: float | None = None
+    history_average: float | None = None
+
+
+def project_scope(history: list[Any], scope: str) -> list[Any]:
+    """Re-read a snapshot series through one scope.
+
+    The default scope is what the rows already hold. Narrowing swaps in the
+    stored production average and drops snapshots taken before it was
+    recorded — a gap in the line is honest where a repo-wide number wearing a
+    production label would not be.
+    """
+    from .scope import parse_scope
+
+    if parse_scope(scope) != "production":
+        return history
+    out: list[Any] = []
+    for snap in history:
+        value = getattr(snap, "production_average", None)
+        if value is None:
+            continue
+        out.append(
+            _ScopedSnapshot(
+                taken_at=snap.taken_at,
+                average_health=float(value),
+                per_file_scores_json=snap.per_file_scores_json,
+            )
+        )
+    return out
+
+
+def diff_snapshots(history: list[Any]) -> TrendSummary:
+    """Compare the newest snapshot against the window behind it.
+
+    *history* is expected oldest-first (the natural insertion order in
+    ``HealthSnapshot``). Empty history yields a summary with neutral
+    fields and no alerts.
+    """
+    if not history:
+        return TrendSummary(
+            current_hotspot_health=10.0,
+            current_average_health=10.0,
+            previous_hotspot_health=None,
+            previous_average_health=None,
+            hotspot_delta=None,
+            average_delta=None,
+        )
+
+    current = history[-1]
+    prior = history[-2] if len(history) >= 2 else None
+    summary = TrendSummary(
+        current_hotspot_health=float(current.hotspot_health),
+        current_average_health=float(current.average_health),
+        previous_hotspot_health=float(prior.hotspot_health) if prior else None,
+        previous_average_health=float(prior.average_health) if prior else None,
+        hotspot_delta=_delta(
+            float(current.hotspot_health),
+            float(prior.hotspot_health) if prior else None,
+        ),
+        average_delta=_delta(
+            float(current.average_health),
+            float(prior.average_health) if prior else None,
+        ),
+        current_structure_deduction=getattr(current, "structure_average", None),
+        current_history_deduction=getattr(current, "history_average", None),
+    )
+
+    summary.alerts.extend(_declining_alerts(history))
+    summary.alerts.extend(_predicted_decline_alerts(history))
+    return summary
+
+
+def hotspot_trend(history: list[Any]) -> str | None:
+    """``"improving"``, ``"stable"`` or ``"declining"`` for the hotspot KPI.
+
+    Compared over the same window the declining alert uses, so the two never
+    disagree. ``None`` with fewer than two snapshots: one reading is not a
+    trend, and a surface should say nothing rather than print "stable".
+    """
+    if len(history) < 2:
+        return None
+    baseline = history[max(0, len(history) - 1 - DECLINE_LOOKBACK)]
+    delta = float(history[-1].hotspot_health) - float(baseline.hotspot_health)
+    if delta <= -DECLINE_THRESHOLD:
+        return "declining"
+    if delta >= DECLINE_THRESHOLD:
+        return "improving"
+    return "stable"
+
+
+def _metric_value(snap: Any, metric: str) -> float | None:
+    """One metric off a snapshot, ``None`` when it was never recorded."""
+    value = getattr(snap, metric, None)
+    return None if value is None else float(value)
+
+
+def _build_alert(
+    *,
+    kind: str,
+    metric: str,
+    current: float,
+    baseline: float,
+    delta: float,
+    movement: str,
+    attribution: tuple[str | None, float | None, float | None],
+) -> TrendAlert:
+    """One alert, re-read as a watch item when only history moved.
+
+    *movement* names the fall and its window, e.g. "dropped 0.62 points vs.
+    snapshot 5 ago"; what follows depends on what drove it. A decline the code
+    shape did not contribute to is not something to fix, and reporting it in
+    the same red as a real regression tells a reader their refactoring made
+    things worse. Such a decline keeps every number and swaps the reading.
+    """
+    driver, structure, history_share = attribution
+    label = _METRIC_LABEL[metric]
+    window = f"({baseline:.2f} → {current:.2f})"
+    # Both halves are checked, not just the driver. ``driver`` names whichever
+    # moved further, which on a repo with floored files can be a half that
+    # moved *up*: the halves are deduction means and the score is a mean of
+    # clamped scores, so the two can disagree about direction. Claiming a cause
+    # is only honest when history is the one half that actually fell.
+    only_history_fell = (
+        structure is not None and structure >= 0 and history_share is not None and history_share < 0
+    )
+    if driver == "history" and only_history_fell:
+        shape = "held" if round(structure or 0.0, 2) == 0 else f"improved {structure:.2f}"
+        message = (
+            f"{label} {movement} {window}, and code shape {shape} over the same "
+            f"window. Change history is the only half that moved down, and no "
+            f"edit to these files settles it."
+        )
+        kind = "history_drag"
+    else:
+        message = f"{label} {movement} {window}.{_driver_sentence(driver, structure, history_share)}"
+    return TrendAlert(
+        kind=kind,
+        metric=metric,
+        current=round(current, 2),
+        baseline=round(baseline, 2),
+        delta=delta,
+        message=message,
+        driver=driver,
+        structure_delta=structure,
+        history_delta=history_share,
+    )
+
+
+def _declining_alerts(history: list[Any]) -> list[TrendAlert]:
+    """Current reading is at least the threshold below snapshot N-5."""
+    if len(history) <= DECLINE_LOOKBACK:
+        return []
+    current = history[-1]
+    baseline = history[-1 - DECLINE_LOOKBACK]
+    out: list[TrendAlert] = []
+    for metric in _ALERT_METRICS:
+        cur_val = _metric_value(current, metric)
+        base_val = _metric_value(baseline, metric)
+        if cur_val is None or base_val is None:
+            continue
+        delta = round(cur_val - base_val, 3)
+        if delta > -DECLINE_THRESHOLD:
+            continue
+        out.append(
+            _build_alert(
+                kind="declining",
+                metric=metric,
+                current=cur_val,
+                baseline=base_val,
+                delta=delta,
+                movement=f"dropped {abs(delta):.2f} points vs. snapshot {DECLINE_LOOKBACK} ago",
+                attribution=_attribution_for(metric, current, baseline),
+            )
+        )
+    return out
+
+
+def _predicted_decline_alerts(history: list[Any]) -> list[TrendAlert]:
+    """N consecutive strict drops, any magnitude."""
+    needed = PREDICTED_DECLINE_CONSECUTIVE + 1
+    if len(history) < needed:
+        return []
+    tail = history[-needed:]
+    out: list[TrendAlert] = []
+    for metric in _ALERT_METRICS:
+        vals = [_metric_value(s, metric) for s in tail]
+        # One missing reading drops the metric rather than shortening the run:
+        # three drops either side of a gap are not three consecutive drops.
+        if any(v is None for v in vals):
+            continue
+        readings = [v for v in vals if v is not None]  # narrows float | None
+        if not all(readings[i + 1] < readings[i] for i in range(len(readings) - 1)):
+            continue
+        delta = round(readings[-1] - readings[0], 3)
+        out.append(
+            _build_alert(
+                kind="predicted_decline",
+                metric=metric,
+                current=readings[-1],
+                baseline=readings[0],
+                delta=delta,
+                movement=f"declined for {PREDICTED_DECLINE_CONSECUTIVE} consecutive snapshots",
+                attribution=_attribution_for(metric, tail[-1], tail[0]),
+            )
+        )
+    return out
+
+
+def _attribution_for(
+    metric: str, current: Any, baseline: Any
+) -> tuple[str | None, float | None, float | None]:
+    """The structure / history split, which only the composite headline has.
+
+    Maintainability is already code shape alone and the hotspot figure never
+    had its halves snapshotted, so neither one splits.
+    """
+    if metric != "average_health":
+        return None, None, None
+    return _attribution(current, baseline)
+
+
+def drop_unscoped_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Blank the per-row figures a narrowed snapshot never recorded.
+
+    A projected snapshot carries the production average and nothing else, so
+    the placeholders the rest of the row picked up must not read as measurements.
+    """
+    return [
+        {
+            **row,
+            "hotspot_health": None,
+            "worst_performer_path": None,
+            "worst_performer_score": None,
+            "structure_average": None,
+            "history_average": None,
+            "maintainability_average": None,
+            **({"doc_drift_count": None} if "doc_drift_count" in row else {}),
+        }
+        for row in rows
+    ]
+
+
+def _point(snap: Any, attr: str) -> float | None:
+    """One optional snapshot column, rounded for the wire."""
+    value = getattr(snap, attr, None)
+    return round(float(value), 2) if value is not None else None
+
+
+def recent_kpis(
+    history: list[Any], limit: int = 10, *, doc_drift: bool = False
+) -> list[dict[str, Any]]:
+    """Serialize the most-recent *limit* snapshots for CLI / API consumers.
+
+    Newest first (so the CLI table reads top-down chronologically when
+    flipped, which matches user expectation for "recent runs"). Each row
+    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count``;
+    off by default so agent-facing trend rows stay as they were.
+    """
+    if not history:
+        return []
+    tail = history[-limit:]
+    rows: list[dict[str, Any]] = []
+    for snap in reversed(tail):
+        rows.append(
+            {
+                "taken_at": snap.taken_at.isoformat() if snap.taken_at else None,
+                "hotspot_health": round(float(snap.hotspot_health), 2),
+                "average_health": round(float(snap.average_health), 2),
+                "worst_performer_path": snap.worst_performer_path,
+                "worst_performer_score": (
+                    round(float(snap.worst_performer_score), 2)
+                    if snap.worst_performer_score is not None
+                    else None
+                ),
+                # The headline's two halves and the maintainability pillar at
+                # the same instant. NULL on snapshots taken before each was
+                # recorded, which is what lets a reader see where the series
+                # starts rather than reading a gap as a zero.
+                "structure_average": _point(snap, "structure_average"),
+                "history_average": _point(snap, "history_average"),
+                "maintainability_average": _point(snap, "maintainability_average"),
+            }
+        )
+        if doc_drift:
+            rows[-1]["doc_drift_count"] = getattr(snap, "doc_drift_count", None)
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# Per-file trajectory
+#
+# The snapshot writer stores two compact maps per snapshot: ``{path: score}``
+# (``HealthSnapshot.per_file_scores_json``) for every scored file, and
+# ``{path: total_deduction}`` (``per_file_deductions_json``) for the files whose
+# score is held at ``SCORE_FLOOR``. These helpers turn that rolling window into
+# a single file's trajectory. Like the repo-level helpers above they are
+# intentionally state-free: callers pass the snapshot history (oldest → newest)
+# and get plain data back, so the logic stays unit-testable without a DB and is
+# reused verbatim by the PR bot's in-comment sparkline.
+# --------------------------------------------------------------------------- #
+
+
+def snapshot_file_maps(
+    metrics: list[Any],
+    findings: list[Any],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Build both of a snapshot's per-file maps from one health report.
+
+    Returns ``(per_file_scores, per_file_deductions)``, ready to hand to
+    ``save_health_snapshot``.
+
+    One function because there are three writers — ``repowise health``,
+    ``repowise upgrade`` and the full-index pipeline — and a repo's history
+    would otherwise carry different data depending on which of them wrote the
+    row last. That failure has happened here before, with a different argument
+    and four call sites.
+
+    ``per_file_deductions`` holds only the files whose score sits at
+    ``SCORE_FLOOR``. For every other file the deduction is exactly
+    ``SCORE_MAX - score``, so recording it would be storing a value the reader
+    can already compute — on the repowise index, 2,083 B of floored files
+    against 142,812 B if every file with findings were written, beside a
+    187,593 B score map. The deduction is summed from ``health_impact``, which
+    is the per-finding contribution the scorer used to produce ``score``, so
+    the pair is consistent by construction rather than by reconciliation.
+
+    Note the recorded depth is the **category-capped** total, so it is itself
+    bounded by ``sum(CATEGORY_CAPS)`` and the unclamped score cannot go below
+    ``SCORE_MAX - sum(CATEGORY_CAPS)``. A file with every category at its cap
+    is flat again, one level down. Nothing on the repowise index is close
+    (deepest is 12.91 of a possible 13.5), and recording the pre-cap sum
+    instead would be recording a number the score was never computed from.
+    """
+    metrics = scored_rows(metrics)
+    per_file_scores = {m.file_path: round(float(m.score), 2) for m in metrics}
+
+    totals: dict[str, float] = {}
+    for f in findings:
+        path = getattr(f, "file_path", None)
+        if not path:
+            continue
+        totals[path] = totals.get(path, 0.0) + float(getattr(f, "health_impact", 0.0) or 0.0)
+
+    per_file_deductions = {
+        m.file_path: round(totals[m.file_path], 2)
+        for m in metrics
+        if float(m.score) <= SCORE_FLOOR and m.file_path in totals
+    }
+    return per_file_scores, per_file_deductions
+
+
+def snapshot_fields(
+    kpis: dict[str, Any], metrics: list[Any], findings: list[Any]
+) -> dict[str, Any] | None:
+    """``save_health_snapshot``'s keyword arguments for one health report.
+
+    ``None`` when no file carries a score (every file is in a language health
+    has no dialect for): a trend point would chart a 10.0 nobody measured.
+    Shared by the three snapshot writers for the reason
+    :func:`snapshot_file_maps` gives.
+    """
+    if "average_health" in kpis and kpis["average_health"] is None:
+        return None
+    scores_map, deductions_map = snapshot_file_maps(metrics, findings)
+    return {
+        "hotspot_health": float(kpis.get("hotspot_health", SCORE_MAX)),
+        "average_health": float(kpis.get("average_health", SCORE_MAX)),
+        "worst_performer_path": kpis.get("worst_performer_path"),
+        "worst_performer_score": kpis.get("worst_performer_score"),
+        "per_file_scores": scores_map,
+        "per_file_deductions": deductions_map,
+        "structure_average": kpis.get("structure_average"),
+        "history_average": kpis.get("history_average"),
+        "production_average": kpis.get("production_average"),
+        "maintainability_average": kpis.get("maintainability_average"),
+    }
+
+
+#: One normalized snapshot reading for a single file: when it was taken, the
+#: clamped score, and the recorded pre-clamp deduction where the reading
+#: captured one. The storage-neutral input to :func:`build_file_points`.
+FileScoreReading: TypeAlias = tuple[datetime | None, float, float | None]
+
+#: Readings needed before a per-file series is worth drawing.
+MIN_TREND_POINTS: int = 2
+
+
+@dataclass
+class FileTrendPoint:
+    """One file's score at one snapshot.
+
+    ``score`` is the clamped, surfaced number. ``unclamped_score`` is
+    ``SCORE_MAX - total_deduction`` where the snapshot recorded a deduction,
+    and ``score`` otherwise — so it is the series that keeps moving after the
+    floor is hit, and is identical to ``score`` for every file that has not hit
+    it and for every row written before deductions were captured.
+
+    Required rather than defaulted: a point that silently defaults to its own
+    score is exactly the flat line this field exists to stop, and it would be
+    indistinguishable from a real one at the read site.
+    """
+
+    taken_at: datetime | None
+    score: float
+    unclamped_score: float
+
+
+@dataclass
+class FileTrend:
+    """A file's score trajectory + the deltas worth surfacing.
+
+    ``points`` is oldest-first and **empty when fewer than two snapshots
+    carry the file** — a per-file trend is silent on thin history rather than
+    drawing a misleading single dot (plan §2: "silent when < 2 real
+    snapshots"). ``current`` / ``previous`` / ``delta`` and ``declining``
+    are all ``None`` / ``False`` in that case.
+
+    ``current`` / ``previous`` / ``delta`` stay on the clamped score — that is
+    the number printed everywhere else in the product and changing it would
+    make the trend disagree with the file's own header. ``unclamped_delta`` is
+    the movement the floor hides, and equals ``delta`` whenever the floor is
+    not involved, so a consumer can read it unconditionally.
+    """
+
+    file_path: str
+    points: list[FileTrendPoint]
+    current: float | None
+    previous: float | None
+    delta: float | None
+    declining: bool
+    snapshot_count: int
+    unclamped_delta: float | None = None
+
+
+# A snapshot's ``{path: value}`` map is a per-*repo* blob — one JSON object
+# holding every file's score — and this module reads it one file at a time. So a
+# caller asking about N files paid ``N x len(history)`` parses of the same few
+# blobs: the cross-function N+1 the health pillar's own ``json_parse_in_loop``
+# biomarker exists to flag, in the health pillar. Measured on the repowise index
+# (20 snapshots averaging 186 KB each), ``get_health`` on a ``module:`` target
+# expanding to 822 files spent **13.0s** here; memoized, 0.4s.
+#
+# Keyed on the raw JSON **text**, not on the snapshot object. Content-keying
+# makes staleness impossible by construction (different bytes are a different
+# key), needs no hashable/weak-referenceable snapshot — a plain dataclass in a
+# test is neither — and lets two callers holding different rows for the same
+# stored snapshot share one parse. The window a caller reads is 20 snapshots x 2
+# maps, so ``maxsize`` covers a full window with headroom; the ceiling is that a
+# long-lived server holds up to 64 parsed maps, which is what bounds it.
+@lru_cache(maxsize=64)
+def _parsed_map(raw: str) -> Any:
+    """``json.loads(raw)``, memoized. ``None`` when the text will not parse."""
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+def _value_in_snapshot(snap: Any, column: str, file_path: str) -> float | None:
+    """Read one float out of a snapshot's compact ``{path: value}`` JSON map.
+
+    Returns ``None`` when the file is absent from that map (it may have been
+    added later, renamed, filtered out of that run, or — for the deductions map
+    — simply not be at the floor) or when the map can't be parsed.
+    """
+    raw = getattr(snap, column, None)
+    if not raw:
+        return None
+    parsed = _parsed_map(raw)
+    val = parsed.get(file_path) if isinstance(parsed, dict) else None
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def _score_in_snapshot(snap: Any, file_path: str) -> float | None:
+    """``file_path``'s clamped score in *snap*, or ``None`` if not recorded."""
+    return _value_in_snapshot(snap, "per_file_scores_json", file_path)
+
+
+def _unclamped_score(score: float, deduction: float | None) -> float | None:
+    """One reading's score with the floor undone, as far as it is known.
+
+    Three cases, and the third is the one that matters:
+
+    * A recorded deduction means the clamp bit and the reading kept the depth.
+      The honest value is ``SCORE_MAX - deduction``, below the floor and
+      possibly negative.
+    * No deduction and a score above the floor: the clamp did not bite, so the
+      score already *is* the unclamped value.
+    * No deduction and a score **at** the floor: the depth is unknown. The row
+      predates deduction capture, or the file had no findings to sum. Returns
+      ``None`` — not ``score``, which would assert a depth of exactly 9.0 that
+      was never measured.
+    """
+    if deduction is not None:
+        return round(SCORE_MAX - deduction, 2)
+    return score if score > SCORE_FLOOR else None
+
+
+def build_file_points(
+    readings: Sequence[FileScoreReading],
+    *,
+    min_points: int = MIN_TREND_POINTS,
+) -> list[FileTrendPoint]:
+    """Turn normalized readings into a file's oldest-first trend series.
+
+    The correctness half of a per-file trend, over storage-neutral readings, so
+    that where the numbers came from — a snapshot row here, something else
+    elsewhere — stays entirely inside the adapter that produced them.
+
+    Returns ``[]`` below *min_points*, so a consumer renders a "no history yet"
+    state instead of a single misleading dot. The threshold is a parameter
+    rather than a constant because it is a presentation floor, not a
+    correctness one: two is right for a chart, and a consumer that can surface a
+    lone reading honestly may ask for one.
+
+    ``unclamped_score`` diverges from ``score`` only when **every** reading has
+    a known depth. A series that mixes measured depth with readings that never
+    recorded it is the dangerous case, not the harmless one: the unmeasured
+    points read as ``1.0`` and the measured ones as their real depth, so the
+    first index after depth capture is switched on draws a cliff on a file that
+    did not change. Measured against the live index — fifteen snapshots without
+    capture plus one with, and nothing altered — that flipped **21 of 32**
+    floored files to ``declining`` with drops up to 3.9 points. Waiting for the
+    window to fill costs a slow start; not waiting reports a collapse that
+    never happened.
+    """
+    if len(readings) < min_points:
+        return []
+    depths = [_unclamped_score(score, deduction) for _, score, deduction in readings]
+    depth_known = all(depth is not None for depth in depths)
+    return [
+        FileTrendPoint(
+            taken_at=taken_at,
+            score=score,
+            unclamped_score=depth if depth_known and depth is not None else score,
+        )
+        for (taken_at, score, _), depth in zip(readings, depths, strict=True)
+    ]
+
+
+def _snapshot_readings(history: list[Any], file_path: str) -> list[FileScoreReading]:
+    """Normalize one file out of the snapshot window. The storage adapter."""
+    readings: list[FileScoreReading] = []
+    for snap in history:
+        score = _score_in_snapshot(snap, file_path)
+        if score is None:
+            continue
+        readings.append(
+            (
+                getattr(snap, "taken_at", None),
+                score,
+                _value_in_snapshot(snap, "per_file_deductions_json", file_path),
+            )
+        )
+    return readings
+
+
+def file_score_series(history: list[Any], file_path: str) -> list[FileTrendPoint]:
+    """A file's oldest-first score series across the snapshot window.
+
+    Snapshots missing the file are skipped (gaps don't break the line).
+    *history* is expected oldest-first (the natural ``list_health_snapshots``
+    order). This is the exact function the PR bot reuses for its in-comment
+    sparkline, so it stays free of any persistence or presentation concern.
+    """
+    return build_file_points(_snapshot_readings(history, file_path))
+
+
+def _file_declining(points: list[FileTrendPoint]) -> bool:
+    """A sustained-decline heuristic for a single file's series.
+
+    Mirrors the repo-level signals: fire when either the latest score is
+    ``DECLINE_THRESHOLD`` below the point ``DECLINE_LOOKBACK`` back, or the
+    tail is ``PREDICTED_DECLINE_CONSECUTIVE`` strict drops in a row. Single
+    snapshot-to-snapshot noise is deliberately not enough.
+
+    Computed on ``unclamped_score``, which is identical to ``score`` for every
+    file that has not hit the floor — so nothing changes for the 99% — and is
+    the only series that can move for one that has. There is deliberately **no**
+    third ``at_floor`` state: the original complaint was that ``declining:
+    false`` sat beside a visibly collapsed series, and that was a disagreement
+    between the flag and the *clamped* line, not a missing state. Against the
+    unclamped line a flat flag now describes a flat series, and a file that
+    keeps getting worse below the floor trips the flag for the first time —
+    which is the behaviour the flag always claimed to have.
+    """
+    if len(points) <= 1:
+        return False
+    scores = [p.unclamped_score for p in points]
+
+    if (
+        len(scores) > DECLINE_LOOKBACK
+        and scores[-1] <= scores[-1 - DECLINE_LOOKBACK] - DECLINE_THRESHOLD
+    ):
+        return True
+
+    needed = PREDICTED_DECLINE_CONSECUTIVE + 1
+    if len(scores) >= needed:
+        tail = scores[-needed:]
+        if all(tail[i + 1] < tail[i] for i in range(len(tail) - 1)):
+            return True
+    return False
+
+
+def file_trend_from_points(
+    file_path: str,
+    readings: Sequence[FileScoreReading],
+    *,
+    snapshot_count: int,
+    min_points: int = MIN_TREND_POINTS,
+) -> FileTrend:
+    """Assemble a :class:`FileTrend` from normalized readings.
+
+    The whole per-file trend contract with no storage in it. *snapshot_count*
+    is the size of the caller's whole window rather than of *readings*, so a
+    consumer can tell "young repo" from "file absent from older snapshots".
+
+    ``previous``, ``delta`` and ``unclamped_delta`` need two points and stay
+    ``None`` on a series shorter than that — which only a caller passing
+    ``min_points=1`` can see.
+    """
+    points = build_file_points(readings, min_points=min_points)
+    if not points:
+        return FileTrend(
+            file_path=file_path,
+            points=[],
+            current=None,
+            previous=None,
+            delta=None,
+            declining=False,
+            snapshot_count=snapshot_count,
+        )
+    current = round(points[-1].score, 2)
+    if len(points) < 2:
+        return FileTrend(
+            file_path=file_path,
+            points=points,
+            current=current,
+            previous=None,
+            delta=None,
+            declining=False,
+            snapshot_count=snapshot_count,
+        )
+    previous = round(points[-2].score, 2)
+    return FileTrend(
+        file_path=file_path,
+        points=points,
+        current=current,
+        previous=previous,
+        delta=round(current - previous, 2),
+        unclamped_delta=round(points[-1].unclamped_score - points[-2].unclamped_score, 2),
+        declining=_file_declining(points),
+        snapshot_count=snapshot_count,
+    )
+
+
+def file_trend(history: list[Any], file_path: str) -> FileTrend:
+    """A file's :class:`FileTrend` over the snapshot window.
+
+    The snapshot adapter over :func:`file_trend_from_points`.
+    """
+    return file_trend_from_points(
+        file_path,
+        _snapshot_readings(history, file_path),
+        snapshot_count=len(history),
+    )

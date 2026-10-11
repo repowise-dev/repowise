@@ -1,0 +1,214 @@
+"""Parse MSBuild project files (.csproj, .vbproj, Directory.Build.props/targets).
+
+Only the fields repowise actually uses are extracted: ProjectReference,
+PackageReference, RootNamespace, AssemblyName, ImplicitUsings, and
+project-level <Using Include=...> / <Import Include=...> items. The parser
+tolerates both SDK-style and legacy XML (``<Project ToolsVersion="...">``).
+
+.vbproj carries the same MSBuild schema as .csproj, so one parser serves both.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+from xml.etree import ElementTree as ET
+
+import structlog
+
+from repowise.core.fs_walk import glob_via
+
+log = structlog.get_logger(__name__)
+
+
+# Directory basenames the .NET / Unity resolver should never scan for
+# projects or source. These are intentionally scoped to the dotnet path,
+# not shared global fs_walk pruning, because names like Library/ or Logs/
+# can be legitimate source trees in non-Unity repos.
+DOTNET_SCAN_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        "bin",
+        "obj",
+        ".vs",
+        "node_modules",
+        ".git",
+        "packages",
+        "TestResults",
+        "Library",
+        "Temp",
+        "Logs",
+        "UserSettings",
+        "MemoryCaptures",
+        "Builds",
+    }
+)
+_DOTNET_SCAN_SKIP_DIRS_CASEFOLDED = frozenset(part.casefold() for part in DOTNET_SCAN_SKIP_DIRS)
+
+
+@dataclass
+class MSBuildProject:
+    """Parsed MSBuild project file."""
+
+    path: Path  # absolute path to the .csproj
+    project_dir: Path  # directory containing the .csproj
+    root_namespace: str | None = None
+    assembly_name: str | None = None
+    implicit_usings: bool = False
+    project_references: list[Path] = field(default_factory=list)  # absolute paths to referenced .csproj
+    package_references: set[str] = field(default_factory=set)  # NuGet package ids
+    project_usings: set[str] = field(default_factory=set)  # <Using Include="X"/> namespaces
+    #: Explicit ``<Compile Include>`` items, ``/``-separated and unevaluated. A
+    #: file linked in from outside the project directory (``..\Shared\X.cs``,
+    #: ``$(CommonPath)X.cs``) belongs to this project too, which the directory
+    #: walk cannot see.
+    compile_includes: list[str] = field(default_factory=list)
+    package_id: str | None = None  # <PackageId>, the id this project publishes under
+    #: Tri-state on purpose: None = the project says nothing, which is not the
+    #: same as an explicit <IsPackable>false</IsPackable>.
+    is_packable: bool | None = None
+    generate_package_on_build: bool = False
+
+    @property
+    def name(self) -> str:
+        """Display name — the .csproj filename without extension."""
+        return self.path.stem
+
+    @property
+    def published_id(self) -> str | None:
+        """The id this project publishes a package under, or None when it does not.
+
+        Packability is opt-in, never assumed: an SDK-style project is packable
+        by default, so treating silence as yes would make every internal
+        project in a solution a published library.
+        """
+        if self.is_packable is False:
+            return None
+        if not (self.is_packable or self.generate_package_on_build or self.package_id is not None):
+            return None
+        return self.package_id or self.assembly_name or self.path.stem
+
+
+# Strip XML namespace prefix from a tag — MSBuild docs say the namespace
+# is optional in SDK-style projects but legacy projects use
+# ``http://schemas.microsoft.com/developer/msbuild/2003``.
+def _local(tag: str) -> str:
+    return tag.split("}", 1)[1] if tag.startswith("{") else tag
+
+
+def _bool(value: str | None) -> bool:
+    return (value or "").strip().lower() in ("true", "enable", "1")
+
+
+def _tristate(value: str | None) -> bool | None:
+    """None for anything that is not a literal boolean.
+
+    ``<IsPackable>$(PublishLibraries)</IsPackable>`` is the normal way to
+    centralise the flag; reading an unevaluated property as ``false`` would
+    record an unknown as an explicit no.
+    """
+    text = (value or "").strip().lower()
+    if text in ("true", "enable", "1"):
+        return True
+    return False if text in ("false", "disable", "0") else None
+
+
+def _compile_items(include: str | None) -> list[str]:
+    """The ``;``-separated items of a ``<Compile Include>``, wildcards dropped."""
+    items = (item.strip().replace("\\", "/") for item in (include or "").split(";"))
+    return [item for item in items if item and "*" not in item]
+
+
+def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
+    """Parse a single .csproj file. Returns None on parse failure."""
+    try:
+        tree = ET.parse(csproj_path)
+    except (ET.ParseError, OSError) as exc:
+        log.debug("Failed to parse csproj", path=str(csproj_path), error=str(exc))
+        return None
+
+    project = MSBuildProject(path=csproj_path.resolve(), project_dir=csproj_path.parent.resolve())
+    root = tree.getroot()
+
+    for elem in root.iter():
+        tag = _local(elem.tag)
+
+        if tag == "RootNamespace" and elem.text:
+            project.root_namespace = elem.text.strip()
+        elif tag == "AssemblyName" and elem.text:
+            project.assembly_name = elem.text.strip()
+        elif tag == "ImplicitUsings" and elem.text:
+            project.implicit_usings = _bool(elem.text)
+        elif tag == "PackageId" and elem.text:
+            project.package_id = elem.text.strip()
+        elif tag == "IsPackable" and elem.text:
+            # Last literal wins; a conditional PropertyGroup is not evaluated.
+            packable = _tristate(elem.text)
+            if packable is not None:
+                project.is_packable = packable
+        elif tag == "GeneratePackageOnBuild" and elem.text:
+            project.generate_package_on_build = _bool(elem.text)
+        elif tag == "ProjectReference":
+            include = elem.get("Include")
+            if include:
+                # ProjectReference paths use Windows-style backslashes by
+                # convention; normalise and resolve relative to the .csproj.
+                rel = include.replace("\\", "/")
+                target = (project.project_dir / rel).resolve()
+                project.project_references.append(target)
+        elif tag == "Compile":
+            project.compile_includes.extend(_compile_items(elem.get("Include")))
+        elif tag == "PackageReference":
+            pkg = elem.get("Include")
+            if pkg:
+                project.package_references.add(pkg.strip())
+        elif tag in ("Using", "Import"):
+            # <Using Include="X"/> is the C# form, <Import Include="X"/> the VB
+            # one; MSBuild's own <Import Project="..."/> carries no Include.
+            ns = elem.get("Include")
+            if ns:
+                project.project_usings.add(ns.strip())
+
+    return project
+
+
+def _find_project_files(
+    repo_path: Path,
+    pattern: str,
+    *,
+    prune_nested_git: bool = True,
+    snapshot: Any | None = None,
+) -> list[Path]:
+    out: list[Path] = []
+    for proj in glob_via(snapshot, repo_path, pattern, prune_nested_git=prune_nested_git):
+        if path_has_dotnet_scan_skip_dir(proj, repo_path):
+            continue
+        out.append(proj)
+    return out
+
+
+def find_csproj_files(
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+) -> list[Path]:
+    """Return all .csproj files under *repo_path*, skipping bin/obj output."""
+    return _find_project_files(
+        repo_path, "*.csproj", prune_nested_git=prune_nested_git, snapshot=snapshot
+    )
+
+
+def find_vbproj_files(
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+) -> list[Path]:
+    """Return all .vbproj files under *repo_path*, skipping bin/obj output."""
+    return _find_project_files(
+        repo_path, "*.vbproj", prune_nested_git=prune_nested_git, snapshot=snapshot
+    )
+
+
+def path_has_dotnet_scan_skip_dir(path: Path, repo_root: Path) -> bool:
+    """Return True when *path* lives under a dotnet-skip directory in *repo_root*."""
+    try:
+        parts = path.relative_to(repo_root).parts
+    except ValueError:
+        parts = path.parts
+    return any(part.casefold() in _DOTNET_SCAN_SKIP_DIRS_CASEFOLDED for part in parts)

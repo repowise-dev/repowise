@@ -1,0 +1,78 @@
+# Dependabot configuration.
+#
+# Until this file existed, Dependabot ran on its defaults: one pull request per
+# package, ungrouped, with no schedule of our own. That produced a steady trickle
+# of single-package PRs that nobody wanted to review one at a time, and a backlog
+# of thirteen open at once — six of which were already satisfied on main and were
+# only still open because nothing had re-evaluated them.
+#
+# The fix is grouping. Routine minor and patch bumps arrive as one PR per
+# ecosystem per week, which is a single review of a single lockfile diff.
+# Major bumps are deliberately left ungrouped: those are the ones that need a
+# real read (pytest 8 -> 9 rewrites test collection, uuid 11 -> 14 drops Node 18),
+# and burying one inside a group of patches is how a breaking change gets merged
+# on a green check without anyone looking at it.
+version: 2
+
+updates:
+  # --- Python (uv) ----------------------------------------------------------
+  # The manifest pins ranges (`gitpython>=3.1,<4`), so these PRs move `uv.lock`
+  # rather than `pyproject.toml`, unless a bump needs its cap raised.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      python-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # --- JavaScript (npm workspaces) ------------------------------------------
+  # One entry covers every workspace: packages/types, ui, api-client, web and
+  # vscode all resolve through the root package-lock.json, so a per-workspace
+  # entry would split one lockfile into five competing PRs.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+      prefix-development: "build(deps-dev)"
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # --- GitHub Actions -------------------------------------------------------
+  # Never configured before, so action versions in .github/workflows have been
+  # drifting silently with nothing watching them.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      actions-all:
+        patterns:
+          - "*"

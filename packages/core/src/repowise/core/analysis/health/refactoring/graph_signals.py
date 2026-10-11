@@ -1,0 +1,166 @@
+"""Repo-level graph signals shared by the graph-native detectors.
+
+Move Method and Break Cycle reason over the symbol/file graph rather than a
+single file, but the detector contract is per-file. To keep that contract
+intact — and avoid each detector re-deriving global structure on every file —
+the health engine precomputes the few repo-wide signals here ONCE before the
+per-file pass and threads the per-file slice into ``RefactoringContext``.
+
+All functions are pure and deterministic: the same graph yields the same
+output, with stable (sorted) ordering, and degrade to empty on a missing
+graph rather than raising.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from ....ingestion.cohesion import cannot_close_cycle
+from ....ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+
+# File->file edge types that constitute a structural dependency cycle.
+# ``imports`` is the actionable, invertible edge; the others are carried so a
+# cycle that closes through a framework/type edge is still reported.
+#
+# This used to be a hand-written tuple, with a comment claiming ``imports`` was
+# the only file-level type the graph emits. That was wrong in both directions:
+# the tuple held a bare ``dynamic`` no producer writes, so every real
+# ``dynamic_*`` edge was invisible to cycle detection, and it carried
+# ``extends``/``implements``, which are symbol-to-symbol and cannot close a
+# file cycle. Sharing ``FILE_DEPENDENCY_EDGE_TYPES`` is what stops the next
+# file-level type from being added to one definition and not the other.
+#
+# It stays deliberately different from ``GraphBuilder.file_subgraph``, which is
+# an exclusion list (drop ``co_changes``) rather than an allowlist. Both reach
+# the same set today; the allowlist is the safer shape here because a new
+# non-dependency type defaults to "not a cycle" instead of silently closing one.
+#
+# Edge *type* is not sufficient on its own: the resolver passes synthesise
+# ``imports`` and ``type_use`` edges to express that two files are one
+# compilation unit (Go package siblings, C# partial fragments, a C++
+# header/impl pair). Those are not dependencies and must not close a cycle, so
+# both definitions additionally reject ``cannot_close_cycle``, which also drops
+# type-only and deferred imports and ``dynamic_uses`` hints. See
+# repowise.core.ingestion.cohesion.
+_CYCLE_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
+
+
+def _is_cycle_edge(data: Any) -> bool:
+    """True if *data* is a file-level edge that can close a runtime cycle.
+
+    ``framework``, ``dynamic_imports`` and ``dynamic_url_route`` stay in: they
+    were not the edge types the measured false positives came from.
+    """
+    return data.get("edge_type") in _CYCLE_EDGE_TYPES and not cannot_close_cycle(data)
+
+
+def build_file_scc_index(graph: Any) -> dict[str, tuple[str, ...]]:
+    """Map each file in a non-trivial dependency cycle to its sorted members.
+
+    Returns ``{file_path: (member, ...)}`` covering only files that sit in a
+    strongly-connected component of size >= 2 (a real cycle). Files with no
+    cycle — the overwhelming majority — are absent. The member tuple is
+    sorted, so the canonical anchor (``members[0]``) is deterministic.
+    """
+    if graph is None:
+        return {}
+    try:
+        import networkx as nx
+    except Exception:
+        return {}
+
+    fg: nx.DiGraph = nx.DiGraph()
+    for node, data in graph.nodes(data=True):
+        if data.get("node_type", "file") in ("file", "external"):
+            fg.add_node(node)
+    for u, v, data in graph.edges(data=True):
+        if u == v:
+            continue
+        if _is_cycle_edge(data) and u in fg and v in fg:
+            fg.add_edge(u, v)
+
+    out: dict[str, tuple[str, ...]] = {}
+    for scc in nx.strongly_connected_components(fg):
+        if len(scc) < 2:
+            continue
+        members = tuple(sorted(scc))
+        for node in scc:
+            out[node] = members
+    return out
+
+
+def cycle_edges(graph: Any, members: tuple[str, ...]) -> list[tuple[str, str]]:
+    """Return the directed dependency edges *within* a cycle's member set.
+
+    Deterministic (sorted). Self-loops and edges leaving the cycle are
+    excluded — only the edges that keep the cycle strongly connected.
+    Every qualifying edge originates at a member, so walking each member's
+    out-edges covers the same set as a full-graph edge scan at a fraction
+    of the cost (this runs once per cycle-member file).
+    """
+    if graph is None:
+        return []
+    member_set = set(members)
+    edges: list[tuple[str, str]] = []
+    for u in members:
+        if u not in graph:
+            continue
+        for _u, v, data in graph.out_edges(u, data=True):
+            if u == v or v not in member_set:
+                continue
+            if _is_cycle_edge(data):
+                edges.append((u, v))
+    return sorted(set(edges))
+
+
+def build_methods_by_file(graph: Any) -> dict[str, tuple[str, ...]]:
+    """Methods defined in each file, precomputed in one graph sweep.
+
+    Mirrors ``MoveMethodDetector._methods_in_file`` for every file at once:
+    a file's ``defines``-edge methods are authoritative; a file with none
+    falls back to the ``file::``-prefix scan over symbol nodes. Doing both
+    in one pass here replaces a per-file full-node scan that dominated the
+    health evaluate loop on large repos. Files with no methods are absent.
+    """
+    if graph is None:
+        return {}
+    edge_map: dict[str, set[str]] = {}
+    prefix_map: dict[str, set[str]] = {}
+    for node_id, data in graph.nodes(data=True):
+        if (
+            data.get("node_type") == "symbol"
+            and data.get("kind") == "method"
+            and "::" in node_id
+        ):
+            prefix_map.setdefault(node_id.split("::", 1)[0], set()).add(node_id)
+    for u, v, data in graph.edges(data=True):
+        if data.get("edge_type") != "defines":
+            continue
+        node = graph.nodes[v] if v in graph else None
+        if node is not None and node.get("kind") == "method":
+            edge_map.setdefault(u, set()).add(v)
+    out: dict[str, tuple[str, ...]] = {}
+    for file_path in set(edge_map) | set(prefix_map):
+        methods = edge_map.get(file_path) or prefix_map.get(file_path) or set()
+        if methods:
+            out[file_path] = tuple(sorted(methods))
+    return out
+
+
+def defined_symbols(graph: Any, file_path: str) -> list[tuple[str, dict[str, Any]]]:
+    """``(id, node)`` for each declaration *file_path* defines (``defines``
+    edges), the synthetic module symbol left out, with a whole line span.
+    Empty when the graph has no node for the file."""
+    if graph is None or file_path not in graph:
+        return []
+    out = []
+    for _u, target, data in graph.out_edges(file_path, data=True):
+        if data.get("edge_type") != "defines":
+            continue
+        node = graph.nodes[target]
+        if node.get("node_type") != "symbol" or node.get("kind") == "module":
+            continue
+        start, end = node.get("start_line"), node.get("end_line")
+        if isinstance(start, int) and isinstance(end, int) and end >= start:
+            out.append((target, node))
+    return out

@@ -1,0 +1,570 @@
+"""Deterministic knowledge graph skeleton from ingestion data.
+
+Generates KG nodes, edges, and draft layers from parsed files, the
+dependency graph, and community detection — no LLM required. The skeleton
+is later enriched by the generation pipeline (Phase 3) with semantic layer
+names and a guided tour.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+from repowise.core.generation.entry_points import orientation_entry_points
+from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS, classification_token
+
+_log = logging.getLogger(__name__)
+
+#: Schema version of the ``knowledge-graph.json`` artifact. Bump whenever a
+#: change makes an older file unsafe to load — readers reject anything below
+#: this and callers rebuild from scratch, which is cheaper and safer than
+#: migrating a file the user may have hand-edited. Files written before the
+#: field existed read as 1, matching the shape they actually have.
+#:
+#: Kept separate from the ``"version": "1.0.0"`` string, which is a
+#: human-facing label consumers already read and must not change meaning.
+_KG_SCHEMA_VERSION = 1
+
+
+@dataclass
+class KnowledgeGraphResult:
+    """Complete KG output — deterministic skeleton + optional LLM enrichment."""
+
+    project: dict = field(default_factory=dict)
+    nodes: list[dict] = field(default_factory=list)
+    edges: list[dict] = field(default_factory=list)
+    layers: list[dict] = field(default_factory=list)
+    tour: list[dict] = field(default_factory=list)
+    # Curated wiki modules (``derive_modules`` in kg_curation): right-sized
+    # directory groups with stable path-derived ids. Only the curated export
+    # populates this; empty means the key is omitted from ``to_dict`` so the
+    # flag-off artifact stays byte-identical.
+    modules: list[dict] = field(default_factory=list)
+    fingerprint: str = ""
+
+    def to_dict(self) -> dict:
+        # Canonical ordering: node/edge/layer-member lists carry no semantic
+        # order, but file-traversal and graph-insertion order vary run to
+        # run. Sorting here makes the exported artifact byte-stable across
+        # identical runs (baseline diffs, fingerprint reuse, clean diffs).
+        nodes = sorted(self.nodes, key=lambda n: str(n.get("id", "")))
+        edges = sorted(
+            self.edges,
+            key=lambda e: (
+                str(e.get("source", "")),
+                str(e.get("target", "")),
+                str(e.get("type", "")),
+            ),
+        )
+        def _canonical_layer(layer: dict) -> dict:
+            out = {**layer, "nodeIds": sorted(layer.get("nodeIds", []))}
+            if isinstance(layer.get("subGroups"), list):
+                out["subGroups"] = [
+                    {**sg, "nodeIds": sorted(sg.get("nodeIds", []))}
+                    if isinstance(sg, dict)
+                    else sg
+                    for sg in layer["subGroups"]
+                ]
+            return out
+
+        layers = [_canonical_layer(layer) for layer in self.layers]
+        out = {
+            "version": "1.0.0",
+            "schema_version": _KG_SCHEMA_VERSION,
+            "project": self.project,
+            "nodes": nodes,
+            "edges": edges,
+            "layers": layers,
+            "tour": self.tour,
+        }
+        if self.modules:
+            # Additive key: present only when curation derived modules, so
+            # the uncurated export's byte shape is unchanged.
+            out["modules"] = [
+                {**m, "nodeIds": sorted(m.get("nodeIds", []))} for m in self.modules
+            ]
+        return out
+
+    @classmethod
+    def from_file(cls, path: Path) -> KnowledgeGraphResult | None:
+        """Load a previously-persisted KG from JSON, or None on failure.
+
+        ``None`` also covers an artifact written by an older schema: callers
+        treat it as absent and rebuild, so a stale file can never be read as
+        if it had the current shape.
+
+        A version *above* the current one is deliberately accepted. The gate
+        protects a new reader from an old file, which is the direction that
+        actually happens on upgrade; refusing to read a newer file would only
+        help a downgrade, and would strand the user on a rebuild loop until
+        they deleted the artifact by hand.
+
+        Never raises: this runs inside an index, and a hand-edited file must
+        cost a rebuild rather than the whole run.
+        """
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            _log.warning("knowledge-graph.json at %s is unreadable", path, exc_info=True)
+            return None
+        if not isinstance(data, dict):
+            # ``[]``, ``"x"`` and ``5`` are all valid JSON and all reachable
+            # from a hand edit; reading on would raise AttributeError out of
+            # an index run.
+            _log.warning(
+                "Ignoring knowledge-graph.json at %s (expected an object, found %s); rebuilding",
+                path,
+                type(data).__name__,
+            )
+            return None
+        found = data.get("schema_version", 1)
+        # ``bool`` is an ``int`` in Python, and ``True < 1`` is False, so a
+        # version of ``true`` would otherwise sail through the gate.
+        if not isinstance(found, int) or isinstance(found, bool) or found < _KG_SCHEMA_VERSION:
+            _log.info(
+                "Ignoring knowledge-graph.json at %s (schema_version %s < %s); rebuilding",
+                path,
+                found,
+                _KG_SCHEMA_VERSION,
+            )
+            return None
+        return cls(
+            project=data.get("project", {}),
+            nodes=data.get("nodes", []),
+            edges=data.get("edges", []),
+            layers=data.get("layers", []),
+            tour=data.get("tour", []),
+            modules=data.get("modules", []),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Node classification helpers
+# ---------------------------------------------------------------------------
+
+_CONFIG_EXTENSIONS = CONFIG_EXTENSIONS
+
+_INFRA_EXTENSIONS = frozenset({
+    ".dockerfile", ".tf", ".hcl",
+})
+
+_INFRA_NAMES = frozenset({
+    "dockerfile", "makefile", "rakefile", "justfile", "taskfile",
+    "vagrantfile", "procfile",
+})
+
+_INFRA_LANGUAGES = frozenset({"dockerfile", "makefile"})
+
+_DOC_EXTENSIONS = DOC_EXTENSIONS
+
+
+def _classify_file_type(path: str, language: str, is_config: bool) -> str:
+    p = PurePosixPath(path)
+    ext = p.suffix.lower()
+    stem = p.stem.lower()
+
+    # `classification_token` covers dotfiles: `.env` has no suffix, so the
+    # suffix-only check below never matched the entry that names it (#2379).
+    if is_config or classification_token(path) in _CONFIG_EXTENSIONS:
+        return "config"
+    # Infra names only count for extension-less files (Dockerfile, Makefile)
+    # or when ingestion parsed the file as an infra language — a Python module
+    # *named* dockerfile.py is code, not infrastructure.
+    if (
+        ext in _INFRA_EXTENSIONS
+        or language in _INFRA_LANGUAGES
+        or (not ext and stem in _INFRA_NAMES)
+    ):
+        return "service"
+    if ext in _DOC_EXTENSIONS:
+        return "document"
+    return "file"
+
+
+def _classify_complexity(symbol_count: int, line_count: int) -> str:
+    if symbol_count <= 3 and line_count < 100:
+        return "simple"
+    if symbol_count > 15 or line_count > 500:
+        return "complex"
+    return "moderate"
+
+
+def _slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower().strip())
+    return slug.strip("-") or "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Edge type mapping
+# ---------------------------------------------------------------------------
+
+# Bump when the builder or the curation pass changes what it emits from an
+# unchanged graph — a wider `_EDGE_TYPE_MAP`, a different entry-point ranking,
+# a new node field. Folded into `compute_kg_fingerprint`, which otherwise only
+# measures the input graph and would let an existing store serve the old
+# artifact indefinitely. See that function for why one bump is one rebuild.
+#
+# "2": `_EDGE_TYPE_MAP` gained six types and `_curate_entry_points` changed its
+# ranking, neither of which moves a node or edge count.
+# "3": `references` joined the map, so C/C++ dispatch tables and registration
+# macros reach the export instead of being dropped.
+# "4": `framework_binds` joined the map, so a container-wired symbol pair
+# reaches the export instead of being dropped.
+# "5": which files are tests changed (``repowise.core.test_paths``), moving the
+# ``test`` tag on file nodes without moving a node or edge count.
+# "6": a test-named Python module that pytest's config does not collect is no
+# longer a test, moving its ``test`` tag.
+KG_BUILDER_VERSION = "6"
+
+# An unmapped type is dropped from the export entirely (see the
+# `if not kg_type: continue` below), which is silent. Six real types used to be
+# missing — framework, the three dynamic_* kinds, reads and method_implements —
+# so framework-wired and dynamically-dispatched relations never reached the
+# knowledge graph at all. `test_edge_type_map_covers_the_vocabulary` keeps this
+# total over every dependency type.
+#
+# `co_changes` is the one deliberate omission: it is git history, not a code
+# reference, and the export has no relation kind that would keep that
+# distinction downstream. Admitting it here is how a co-change partner starts
+# looking like an import.
+_EDGE_TYPE_MAP: dict[str, str] = {
+    "imports": "imports",
+    "type_use": "imports",
+    "framework": "imports",
+    "dynamic_imports": "imports",
+    "dynamic_uses": "depends_on",
+    "dynamic_url_route": "depends_on",
+    "defines": "contains",
+    "has_method": "contains",
+    "calls": "depends_on",
+    "extends": "depends_on",
+    "implements": "depends_on",
+    "method_implements": "depends_on",
+    "dispatches_to": "depends_on",
+    "framework_binds": "depends_on",
+    "reads": "depends_on",
+    "references": "depends_on",
+}
+
+
+# ---------------------------------------------------------------------------
+# Builder
+# ---------------------------------------------------------------------------
+
+
+def build_knowledge_graph_skeleton(
+    parsed_files: list[Any],
+    graph_builder: Any,
+    repo_structure: Any,
+    tech_stack: list[dict],
+    external_systems: list[dict],
+    git_meta_map: dict[str, dict] | None = None,
+    dead_code_report: Any | None = None,
+    repo_path: Path | None = None,
+) -> KnowledgeGraphResult:
+    """Build deterministic KG skeleton from ingestion data. No LLM needed."""
+    graph = graph_builder.graph()
+    pagerank = graph_builder.pagerank()
+    cd = graph_builder.community_detection()
+    ci = graph_builder.community_info()
+
+    git_meta_map = git_meta_map or {}
+    top_pr_threshold = _top_pagerank_threshold(pagerank)
+
+    # ---- Project metadata ------------------------------------------------
+    project = {
+        "name": repo_path.name if repo_path else "",
+        "is_monorepo": repo_structure.is_monorepo if repo_structure else False,
+        "total_files": repo_structure.total_files if repo_structure else len(parsed_files),
+        "entry_points": orientation_entry_points(repo_structure),
+        "packages": [
+            {"name": p.name, "path": p.path, "declared": p.declared}
+            for p in getattr(repo_structure, "packages", None) or []
+        ],
+        "tech_stack": tech_stack[:20],
+    }
+
+    # ---- Nodes -----------------------------------------------------------
+    nodes: list[dict] = []
+    node_id_set: set[str] = set()
+
+    for pf in parsed_files:
+        fi = pf.file_info
+        path = fi.path
+        node_id = f"file:{path}"
+        line_count = _get_line_count(fi)
+
+        file_type = _classify_file_type(path, fi.language, fi.is_config)
+        complexity = _classify_complexity(len(pf.symbols), line_count)
+
+        tags: list[str] = []
+        if fi.is_test:
+            tags.append("test")
+        if fi.is_entry_point:
+            tags.append("entry_point")
+        if fi.is_config:
+            tags.append("config")
+        if fi.is_api_contract:
+            tags.append("api_contract")
+
+        git = git_meta_map.get(path, {})
+
+        node: dict[str, Any] = {
+            "id": node_id,
+            "type": file_type,
+            "filePath": path,
+            "language": fi.language,
+            "symbolCount": len(pf.symbols),
+            "lineCount": line_count,
+            "complexity": complexity,
+            "pagerank": round(pagerank.get(path, 0.0), 6),
+            "communityId": cd.get(path, -1),
+            "tags": tags,
+            "summary": "",
+        }
+        if git:
+            owner = git.get("primary_owner_name") or git.get("primary_owner_email", "")
+            if owner:
+                node["primaryOwner"] = owner
+
+        nodes.append(node)
+        node_id_set.add(node_id)
+
+        # Symbol-level nodes for high-PageRank files only
+        if pagerank.get(path, 0.0) >= top_pr_threshold:
+            for sym in pf.symbols:
+                if sym.kind in ("function", "method", "class"):
+                    kg_type = "class" if sym.kind == "class" else "function"
+                    sym_node_id = f"{kg_type}:{path}:{sym.name}"
+                    if sym_node_id not in node_id_set:
+                        nodes.append({
+                            "id": sym_node_id,
+                            "type": kg_type,
+                            "filePath": path,
+                            "name": sym.name,
+                            "language": fi.language,
+                            "tags": [],
+                            "summary": "",
+                        })
+                        node_id_set.add(sym_node_id)
+
+    # ---- Edges -----------------------------------------------------------
+    edges: list[dict] = []
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    for u, v, data in graph.edges(data=True):
+        raw_type = data.get("edge_type", "imports")
+        kg_type = _EDGE_TYPE_MAP.get(raw_type)
+        if not kg_type:
+            continue
+
+        u_data = graph.nodes.get(u, {})
+        v_data = graph.nodes.get(v, {})
+        u_node_type = u_data.get("node_type", "file")
+        v_node_type = v_data.get("node_type", "file")
+
+        if u_node_type == "file" and v_node_type == "file":
+            source_id = f"file:{u}"
+            target_id = f"file:{v}"
+        elif raw_type == "defines" or raw_type == "has_method":
+            source_id = f"file:{u}"
+            sym_kind = v_data.get("kind", "function")
+            kg_sym_type = "class" if sym_kind == "class" else "function"
+            target_id = f"{kg_sym_type}:{v_data.get('file_path', u)}:{v_data.get('name', v)}"
+            if target_id not in node_id_set:
+                continue
+        else:
+            continue
+
+        if kg_type == "imports" and u_data.get("is_test") and not v_data.get("is_test"):
+            kg_type = "tested_by"
+
+        edge_key = (source_id, target_id, kg_type)
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+
+        edge_dict = {
+            "source": source_id,
+            "target": target_id,
+            "type": kg_type,
+            "direction": "forward",
+            "weight": data.get("confidence", 1.0),
+        }
+        # Additive provenance marker: edges synthesised from convention
+        # passes (e.g. JVM same-package references) carry their origin so
+        # density metrics can separate them from declared imports and any
+        # false positive is diagnosable at the source. Key absent for
+        # regular declared-import edges.
+        hint = data.get("hint_source")
+        if hint:
+            edge_dict["hint"] = hint
+        edges.append(edge_dict)
+
+    # ---- Layers (from communities) ---------------------------------------
+    layers_by_id: dict[str, dict] = {}
+    for cid in sorted(ci.keys()):
+        info = ci[cid]
+        layer_id = f"layer:{_slugify(info.label)}"
+        new_nodes = [f"file:{m}" for m in info.members]
+        if layer_id in layers_by_id:
+            layers_by_id[layer_id]["nodeIds"].extend(new_nodes)
+        else:
+            layers_by_id[layer_id] = {
+                "id": layer_id,
+                "name": info.label,
+                "description": "",
+                "nodeIds": new_nodes,
+                "display_order": len(layers_by_id),
+            }
+    layers = list(layers_by_id.values())
+
+    return KnowledgeGraphResult(
+        project=project,
+        nodes=nodes,
+        edges=edges,
+        layers=layers,
+    )
+
+
+def compute_kg_fingerprint(graph_builder: Any) -> str:
+    """Compute a fingerprint from the graph state for incremental skip logic.
+
+    The four graph measures describe the *input* graph. They cannot see a
+    change in how this module turns that graph into an export, and the export
+    is not total: :data:`_EDGE_TYPE_MAP` drops every unmapped edge type. So
+    widening that map — six types in 0.43.0 — changes what the knowledge graph
+    contains while all four measures hold still, and the stored artifact would
+    keep the narrower edge set until some unrelated commit happened to move a
+    node or edge count. Same for the ordering the curation pass applies to
+    ``project.entry_points``, which every orientation surface reads.
+
+    :data:`KG_BUILDER_VERSION` closes that: bump it in the same commit as a
+    change to what the builder or the curation pass emits, and every existing
+    store rebuilds its knowledge graph once, on its next ``repowise update``
+    that has work to do. Two limits on that sentence, both deliberate:
+
+    * An update with nothing to do returns ``NOOP`` before the refresh is
+      reached, so a repo with no new commits stays on its old artifact until
+      something changes. That is the right trade — the alternative is making
+      every quiet repo in the world re-curate on a version bump — but it does
+      mean this is not a hard guarantee of "everyone, once".
+    * The rebuild itself is deterministic and model-free (skeleton plus
+      curation over a graph the run already holds, betweenness served from its
+      disk cache). On a **docs** update the non-``None`` result then also
+      triggers one KG layer-enrichment LLM call per five layers, which is real
+      spend the caller pays for a graph whose shape did not change. Index-only
+      and keyless runs never reach it.
+
+    One rebuild and not a loop: the new value is stored as the artifact's
+    fingerprint, so the next run matches and skips.
+    """
+    g = graph_builder.graph()
+    cd = graph_builder.community_detection()
+    parts = [
+        KG_BUILDER_VERSION,
+        str(g.number_of_nodes()),
+        str(g.number_of_edges()),
+        str(len(set(cd.values()))),
+        ",".join(sorted(list(cd.keys())[:100])),
+    ]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+def should_skip_kg_rebuild(
+    existing_fingerprint: str | None,
+    new_fingerprint: str,
+    kg_path: Path,
+) -> bool:
+    return bool(
+        existing_fingerprint
+        and existing_fingerprint == new_fingerprint
+        and kg_path.exists()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _top_pagerank_threshold(pagerank: dict[str, float]) -> float:
+    """Return the PageRank threshold for the top 20% of files."""
+    if not pagerank:
+        return 0.0
+    values = sorted(pagerank.values(), reverse=True)
+    idx = max(0, int(len(values) * 0.2) - 1)
+    return values[idx]
+
+
+def _get_line_count(fi: Any) -> int:
+    for attr in ("line_count", "loc", "total_loc"):
+        val = getattr(fi, attr, None)
+        if val is not None:
+            return int(val)
+    if hasattr(fi, "size_bytes"):
+        return fi.size_bytes // 40
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Export helpers (state.json summary block + knowledge-graph.json artifact)
+# ---------------------------------------------------------------------------
+# Lived in ``repowise.cli.state_persistence`` until the incremental update
+# path (which includes the core workspace updater) started refreshing the KG;
+# core code can't import the CLI, so the writers live here and the CLI module
+# re-exports them.
+
+
+def build_kg_state(kg: Any) -> dict[str, Any]:
+    """Build the ``state.json`` ``knowledge_graph`` summary block for a KG result.
+
+    Mirrors the summary the ``init`` / ``update`` flows persist so the web UI and
+    subsequent runs can read KG size + fingerprint without loading the full graph.
+    """
+    return {
+        "version": "1.0.0",
+        "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
+        "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
+        "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
+        "has_summaries": any(n.get("summary") for n in kg.nodes) if hasattr(kg, "nodes") else False,
+        "fingerprint": getattr(kg, "fingerprint", ""),
+    }
+
+
+def save_knowledge_graph_json(repo_path: Path, kg: Any, *, portable: bool = False) -> None:
+    """Write ``.repowise/knowledge-graph.json`` for a KG result.
+
+    No-op when the result can't serialize itself (``to_dict`` missing), so
+    callers only need to guard against a ``None`` knowledge graph.
+
+    When ``portable`` is set, write the self-contained, self-validated artifact
+    (curated layers + tour + entry points + summaries + a ``meta``/``validation``
+    block) instead of the bare ``to_dict`` output. Hard invariant violations are
+    logged but the artifact is still emitted, with the failures recorded under
+    ``meta.validation`` so a consumer can see them ("repaired, not rejected").
+    """
+    if not hasattr(kg, "to_dict"):
+        return
+    import logging
+
+    if portable:
+        from repowise.core.analysis.kg_curation import build_portable_kg
+
+        data, validation = build_portable_kg(kg)
+        if not validation.ok:
+            logging.getLogger(__name__).warning(
+                "portable KG failed invariants: %s", "; ".join(validation.errors)
+            )
+    else:
+        data = kg.to_dict()
+
+    kg_json_path = Path(repo_path) / ".repowise" / "knowledge-graph.json"
+    kg_json_path.parent.mkdir(parents=True, exist_ok=True)
+    kg_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")

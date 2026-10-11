@@ -1,0 +1,71 @@
+{
+  "target": "src/auth/service.py",
+  "excluded_path": "src/excluded.py",
+  "nodes": [
+    "src/auth/service.py",
+    "src/db/models.py",
+    "src/direct_0.py",
+    "src/direct_1.py",
+    "src/direct_2.py",
+    "src/direct_3.py",
+    "src/direct_4.py",
+    "src/direct_5.py",
+    "src/transitive.py",
+    "src/excluded.py",
+    "src/excluded_child.py",
+    "docs/cochange-only.md",
+    "src/unknown.py"
+  ],
+  "edges": [
+    {"source": "src/direct_0.py", "target": "src/auth/service.py", "type": "imports"},
+    {"source": "src/direct_1.py", "target": "src/auth/service.py", "type": "type_use"},
+    {"source": "src/direct_2.py", "target": "src/auth/service.py", "type": "framework"},
+    {"source": "src/direct_3.py", "target": "src/auth/service.py", "type": "imports"},
+    {"source": "src/direct_4.py", "target": "src/auth/service.py", "type": "imports"},
+    {"source": "src/direct_5.py", "target": "src/auth/service.py", "type": "imports"},
+    {"source": "src/transitive.py", "target": "src/direct_0.py", "type": "imports"},
+    {"source": "src/auth/service.py", "target": "src/db/models.py", "type": "imports"},
+    {"source": "src/excluded.py", "target": "src/auth/service.py", "type": "imports"},
+    {"source": "src/excluded_child.py", "target": "src/excluded.py", "type": "imports"},
+    {"source": "docs/cochange-only.md", "target": "src/auth/service.py", "type": "co_changes"},
+    {"source": "src/unknown.py", "target": "src/auth/service.py", "type": "mystery_edge"}
+  ],
+  "co_changes": [
+    {"file_path": "docs/cochange-only.md", "co_change_count": 9.5, "frequency": 7, "last_co_change": "2026-08-20"},
+    {"file_path": "src/direct_0.py", "co_change_count": 8.5, "frequency": 6, "last_co_change": "2026-08-19"},
+    {"file_path": "src/history_1.py", "co_change_count": 7.5, "frequency": 5, "last_co_change": "2026-08-18"},
+    {"file_path": "src/history_2.py", "co_change_count": 6.5, "frequency": 4, "last_co_change": "2026-08-17"},
+    {"file_path": "src/history_3.py", "co_change_count": 5.5, "frequency": 3, "last_co_change": "2026-08-16"},
+    {"file_path": "src/history_4.py", "co_change_count": 4.5, "frequency": 2, "last_co_change": "2026-08-15"},
+    {"file_path": "src/excluded.py", "co_change_count": 99.0, "frequency": 99, "last_co_change": "2026-08-21"}
+  ],
+  "cross_repo": {
+    "version": 2,
+    "generated_at": "2026-08-21T00:00:00Z",
+    "repo_provenance": {"alpha": {"indexed_commit": "alpha-indexed"}, "beta": {"indexed_commit": "beta-indexed"}},
+    "total_co_changes": 8,
+    "co_changes": [
+      {"source_repo": "alpha", "source_file": "src/auth/service.py", "target_repo": "beta", "target_file": "src/auth/service.py", "strength": 0.9, "frequency": 9, "last_date": "2026-08-20"},
+      {"source_repo": "alpha", "source_file": "src/auth/service.py", "target_repo": "beta", "target_file": "src/client_1.ts", "strength": 0.8, "frequency": 8, "last_date": "2026-08-19"},
+      {"source_repo": "alpha", "source_file": "src/auth/service.py", "target_repo": "beta", "target_file": "src/client_2.ts", "strength": 0.7, "frequency": 7, "last_date": "2026-08-18"},
+      {"source_repo": "alpha", "source_file": "src/auth/service.py", "target_repo": "gamma", "target_file": "src/client_3.ts", "strength": 0.6, "frequency": 6, "last_date": "2026-08-17"},
+      {"source_repo": "alpha", "source_file": "src/auth/service.py", "target_repo": "gamma", "target_file": "src/client_4.ts", "strength": 0.5, "frequency": 5, "last_date": "2026-08-16"},
+      {"source_repo": "alpha", "source_file": "src/auth/service.py", "target_repo": "gamma", "target_file": "src/client_5.ts", "strength": 0.4, "frequency": 4, "last_date": "2026-08-15"}
+    ],
+    "package_deps": [
+      {"source_repo": "delta", "target_repo": "alpha", "source_manifest": "package.json", "kind": "npm_workspace"}
+    ],
+    "repo_summaries": {}
+  },
+  "contracts": {
+    "version": 2,
+    "generated_at": "2026-08-21T01:00:00Z",
+    "repo_provenance": {"alpha": {"indexed_commit": "alpha-contract"}, "gamma": {"indexed_commit": "gamma-contract"}},
+    "contracts": [],
+    "contract_links": [
+      {"contract_id": "http::GET::/service", "contract_type": "http", "match_type": "exact", "confidence": 0.9, "provider_repo": "alpha", "provider_file": "src/auth/service.py", "consumer_repo": "beta", "consumer_file": "src/auth/service.py"},
+      {"contract_id": "topic::auth-events", "contract_type": "topic", "match_type": "exact", "confidence": 0.8, "provider_repo": "gamma", "provider_file": "src/provider.py", "consumer_repo": "alpha", "consumer_file": "src/auth/service.py"},
+      {"contract_id": "code::local", "contract_type": "code", "match_type": "exact", "confidence": 1.0, "provider_repo": "alpha", "provider_file": "src/auth/service.py", "consumer_repo": "alpha", "consumer_file": "src/local_consumer.py"}
+    ]
+  }
+}

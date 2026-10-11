@@ -1,0 +1,1203 @@
+"""ContextAssembler — converts ParsedFile + graph metrics into template context."""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from collections.abc import Sequence
+from pathlib import PurePosixPath
+from typing import Any
+
+import structlog
+
+from repowise.core.analysis.dead_code.file_reachability import (
+    ReachabilityRescues,
+    build_package_file_map,
+    file_dependency_neighbors,
+    is_file_reachable,
+)
+from repowise.core.ids import file_path_of, is_external
+from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
+from repowise.core.ingestion.package_roots import (
+    module_for,
+    package_roots_from_paths,
+    scan_package_roots,
+)
+
+from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
+from ..categories import file_category
+from ..entry_points import orientation_entry_points, rank_entry_point_paths
+from ..models import GenerationConfig
+from .contexts import (
+    ApiContractContext,
+    FilePageContext,
+    InfraPageContext,
+    ModulePageContext,
+    RepoOverviewContext,
+    SccPageContext,
+    SymbolSpotlightContext,
+    _TopFile,
+)
+from .file_vocabulary import file_vocabulary
+from .graph_intelligence import (
+    extract_call_graph,
+    extract_community_meta,
+    extract_heritage,
+)
+from .module_excerpts import module_excerpts
+from .module_facts import build_module_facts
+from .token_budget import (
+    estimate_kg_tokens,
+    estimate_tokens,
+    items_within_budget,
+    trim_to_budget,
+)
+
+log = structlog.get_logger(__name__)
+
+
+# Maximum imports to include before truncating
+_MAX_IMPORTS = 30
+# Tokens of code excerpts a module page prompt carries; the Public API claims them first.
+_MODULE_EXCERPT_BUDGET = 10_000
+# Public API names are always listed, even past the budget, up to this cap; the rest are counted.
+_MODULE_EXCERPT_HARD_CAP = 15_000
+# Maximum top-files to include in repo overview
+_MAX_TOP_FILES = 20
+
+# How many rows the concept index may carry. A module page groups directories,
+# so a wide one can reach several hundred public symbols and the table would
+# then be longer than the page it is attached to. Rows past this are counted
+# rather than dropped silently, so a truncated table cannot read as a complete
+# public surface.
+_MAX_CONCEPT_ROWS = 40
+
+# The graph gives every file a synthetic symbol that owns its module-scope
+# calls. It is not a caller anyone can look up, and the importer list already
+# covers import-time use.
+_MODULE_SCOPE_NODE = "__module__"
+
+# How many co-change partners a file page names. Past a handful the list
+# stops being "and this other thing moves with it" and becomes a second,
+# weaker dependency table.
+_MAX_CO_CHANGE_PARTNERS = 5
+
+# The module page's "Class hierarchy" section: how many classes it shows, and
+# how many any one file may contribute so a single dense file cannot fill it.
+_MAX_KEY_CLASSES = 10
+_MAX_CLASSES_PER_FILE = 5
+
+# Identifier word splits: a snake_case underscore, or the boundary before a
+# capital that starts a new word. The second pattern keeps acronym runs whole —
+# ``HTTPAdapter`` is two words, not nine — which matters because the acronym is
+# usually the word a reader would actually say.
+_IDENTIFIER_SPLIT = re.compile(r"_+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+# A language has to reach this share of a package's files to be named as one of
+# its languages. Below it the mention is noise: nearly every TypeScript package
+# holds a JSON fixture and a shell script, and listing them makes the column
+# longer without making it more true.
+_PACKAGE_LANGUAGE_FLOOR = 0.10
+
+
+def _package_stats(repo_structure: RepoStructure, parsed_files: list[ParsedFile]) -> list[dict]:
+    """Count files and observe languages per package, largest package first.
+
+    ``PackageInfo.language`` is a single tag chosen when the package was
+    detected, so it calls a package with a hundred TypeScript files and one
+    build script "typescript" and says nothing about the mix. These counts come
+    from the files the run actually parsed.
+
+    A package with no parsed files still gets a row: the walker skipping a
+    directory is a fact about the run, and dropping the row would shorten the
+    table with no way to tell that from the package not existing.
+    """
+    packages = getattr(repo_structure, "packages", None) or []
+    if not packages:
+        return []
+
+    # Longest path first so a nested package claims its files before its parent
+    # does — ``packages/ui/src/foo`` is not one of ``packages/ui``'s files if a
+    # package sits in between.
+    by_path = sorted(packages, key=lambda p: len(p.path), reverse=True)
+    counts: dict[str, int] = {p.path: 0 for p in packages}
+    langs: dict[str, Counter[str]] = {p.path: Counter() for p in packages}
+
+    for parsed in parsed_files:
+        path = getattr(getattr(parsed, "file_info", None), "path", "")
+        if not path:
+            continue
+        for pkg in by_path:
+            if path.startswith(f"{pkg.path}/"):
+                counts[pkg.path] += 1
+                language = getattr(parsed.file_info, "language", "") or ""
+                if language:
+                    langs[pkg.path][language] += 1
+                break
+
+    stats: list[dict] = []
+    for pkg in packages:
+        total = counts[pkg.path]
+        observed = [
+            lang
+            for lang, n in langs[pkg.path].most_common()
+            if total and n / total >= _PACKAGE_LANGUAGE_FLOOR
+        ]
+        stats.append(
+            {
+                "name": pkg.name,
+                "path": pkg.path,
+                "files": total,
+                # Falls back to the detected tag when nothing was parsed, so a
+                # skipped package still names a language rather than a dash.
+                "languages": observed or ([pkg.language] if not total and pkg.language else []),
+            }
+        )
+    # Biggest first: the table doubles as a reading order. Name breaks ties so
+    # a repository whose packages are all the same size does not reorder its
+    # own overview between runs.
+    stats.sort(key=lambda s: (-s["files"], s["name"]))
+    return stats
+
+
+def concept_wording(identifier: str) -> str:
+    """Spell an identifier the way prose would say it.
+
+    ``ResolverContext`` becomes "Resolver context" — the noun a reader who has
+    only read the page's prose would use, next to the token they have to type
+    to find it. Derived rather than written: a described column could name a
+    symbol that is not there, and the point of this table is that it cannot.
+    """
+    words = [w for w in _IDENTIFIER_SPLIT.split(identifier) if w]
+    if not words:
+        return identifier
+    # An acronym inside a camel-cased name keeps its case ("HTTPAdapter" →
+    # "HTTP adapter"), because the acronym is the word a reader would say. An
+    # underscore-separated name is lowered whole: ``EMBED_BATCH_MAX_ITEMS`` is a
+    # constant spelled in caps, not four acronyms.
+    keep_case = "_" not in identifier
+    spelled = [w if keep_case and w.isupper() and len(w) > 1 else w.lower() for w in words]
+    first = spelled[0]
+    return " ".join([first[:1].upper() + first[1:], *spelled[1:]])
+
+
+def build_concept_index(
+    file_contexts: list[FilePageContext],
+) -> tuple[list[dict[str, str]], int]:
+    """Rows pairing each public symbol's prose name with its identifier and file.
+
+    Returns the rows and how many were left off by the cap.
+
+    Module pages are written by the model and come out as prose: a real run
+    produced 89 of them carrying four fenced code blocks between them. So the
+    identifiers a reader needs to grep for, and an identifier-exact query needs
+    to match, are not on the page in any spelling. These rows put them there,
+    straight from the assembled symbol data, which is why the table can be
+    trusted where the surrounding prose has to be read as a summary.
+
+    Only top-level public symbols. Methods would multiply the table by the size
+    of the classes without adding a name a reader would search for on its own,
+    and a private symbol is not a route into the module.
+    """
+    ranked = sorted(file_contexts, key=lambda fc: fc.pagerank_score, reverse=True)
+    rows: list[dict[str, str]] = []
+    total = 0
+    for fc in ranked:
+        for symbol in sorted(fc.symbols, key=lambda s: s.get("start_line") or 0):
+            name = (symbol.get("name") or "").strip()
+            if not name or name.startswith("_"):
+                continue
+            if symbol.get("visibility") != "public":
+                continue
+            # A method's own name is rarely what a reader searches for, and
+            # including them turns a 40-row cap into 40 rows of one class.
+            if symbol.get("parent_name"):
+                continue
+            total += 1
+            if len(rows) < _MAX_CONCEPT_ROWS:
+                rows.append(
+                    {
+                        "concept": concept_wording(name),
+                        "symbol": name,
+                        "file": fc.file_path,
+                    }
+                )
+    return rows, total - len(rows)
+
+
+def _flow_entry_is_reachable(flow: Any, graph: Any, rescues: ReachabilityRescues) -> bool:
+    """Can anything actually get to this flow's entry point?
+
+    Execution-flow scoring treats zero inbound calls as its strongest positive
+    signal, because a symbol nothing calls looks like a front door. File-level
+    reachability reads the same evidence in the opposite direction: a file
+    nothing imports is ``unreachable_file``. So a file with no importers was
+    promoted to Primary Execution Flow #1 *and* reported as dead code, from
+    the same fact, on the same index.
+
+    Dead code is right in that argument and the flow is wrong, so drop the
+    flow. Which files that argument spares is not decided here: it is
+    :func:`is_file_reachable`, the same predicate the dead-code pass asks, so
+    the two cannot drift. This function only resolves a flow to a file path.
+
+    An unresolvable entry point stays. That is the one rescue local to this
+    caller, and it is the only forgiving-by-default limb left now that the
+    caller supplies the package map: a missed drop leaves one wrong flow on the
+    page, while an over-eager drop empties the section. Same asymmetry
+    ``ReachabilityRescues`` records for ``package_files``.
+    """
+    node = graph.nodes.get(flow.entry_point_id, {})
+    path = node.get("file_path") or file_path_of(flow.entry_point_id) or ""
+    if not path:
+        return True
+    return is_file_reachable(path, graph, rescues)
+
+
+# ---------------------------------------------------------------------------
+# ContextAssembler
+# ---------------------------------------------------------------------------
+
+
+class ContextAssembler:
+    """Assemble Jinja2 template context from ingestion data.
+
+    All public methods return one context dataclass.  The token budget is
+    applied inside ``_assemble_with_budget`` — no assembly method exceeds
+    ``config.token_budget`` tokens.
+    """
+
+    def __init__(self, config: GenerationConfig, repo_path: Any | None = None) -> None:
+        self._config = config
+        # Checkout root, used only to read package boundaries off disk.
+        self._repo_path = repo_path
+        self._package_roots: set[str] | None = None
+
+    # ------------------------------------------------------------------
+    # Token utilities
+    # ------------------------------------------------------------------
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count using the 4-chars-per-token heuristic."""
+        return estimate_tokens(text)
+
+    def _trim_to_budget(self, text: str, remaining: int) -> str:
+        """Truncate *text* so it fits within *remaining* token budget."""
+        return trim_to_budget(text, remaining)
+
+    def _estimate_kg_tokens(self, kg_context: Any) -> int:
+        """Estimate token cost for KG context sections in the template."""
+        return estimate_kg_tokens(kg_context)
+
+    # ------------------------------------------------------------------
+    # File page
+    # ------------------------------------------------------------------
+
+    def assemble_file_page(
+        self,
+        parsed: ParsedFile,
+        graph: Any,  # nx.DiGraph
+        pagerank: dict[str, float],
+        betweenness: dict[str, float],
+        community: dict[str, int],
+        source_bytes: bytes,
+        git_meta: dict | None = None,
+        dead_code_findings: list[dict] | None = None,
+        page_summaries: dict[str, str] | None = None,
+        decision_records: list[dict] | None = None,
+        kg_context: Any | None = None,
+        symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
+    ) -> FilePageContext:
+        """Assemble context for the file_page template.
+
+        *symbol_index* (see :func:`build_symbol_index`) makes the call-graph /
+        heritage extraction a dict lookup instead of a full graph-node scan —
+        pass it when assembling context for many files against one graph.
+        """
+        path = parsed.file_info.path
+        budget = self._config.token_budget
+        used = 0
+
+        # Reserve token budget for KG context when available
+        kg_budget_tokens = 800
+        if kg_context:
+            used += min(kg_budget_tokens, self._estimate_kg_tokens(kg_context))
+
+        # Always include: path + language tag overhead
+        used += self._estimate_tokens(path) + 5
+
+        # Separate public and private symbols
+        public_syms = [s for s in parsed.symbols if s.visibility == "public"]
+        private_syms = [s for s in parsed.symbols if s.visibility != "public"]
+
+        # Build symbol dicts — public first, then private (documented before
+        # undocumented), each added only while the running budget allows.
+        sig_cost = lambda s: self._estimate_tokens(s.signature or "")  # noqa: E731
+        selected_public, used = items_within_budget(public_syms, used, budget, sig_cost)
+        private_documented = [s for s in private_syms if s.docstring]
+        private_undocumented = [s for s in private_syms if not s.docstring]
+        selected_private, used = items_within_budget(
+            private_documented + private_undocumented, used, budget, sig_cost
+        )
+        sym_dicts = [_symbol_to_dict(s) for s in selected_public + selected_private]
+
+        # Imports (truncate to _MAX_IMPORTS)
+        raw_imports = [imp.raw_statement for imp in parsed.imports]
+        import_list = raw_imports[:_MAX_IMPORTS]
+        imports_text = "\n".join(import_list)
+        imports_tokens = self._estimate_tokens(imports_text)
+        if used + imports_tokens <= budget:
+            used += imports_tokens
+        else:
+            import_list = []
+
+        # Structural file dependencies only. The full graph also contains
+        # file→symbol containment and historical co-change edges.
+        in_edges = file_dependency_neighbors(graph, path, incoming=True)
+        out_edges = file_dependency_neighbors(graph, path, incoming=False)
+
+        # Decoded to derive the vocabulary below, and deliberately not carried on
+        # the returned context. The context used to hold a ``file_source_snippet``
+        # trimmed to ``token_budget`` (48k tokens ≈ 190KB), which for most files
+        # is the entire file — and no template, prompt or caller ever read it.
+        # A generation run keeps one context per code file alive from level 2
+        # until it ends, so that field amounted to a second copy of the whole
+        # repository's source resident for the length of the run, which is what
+        # exhausted memory on large repositories (issue #1394). ``source_text``
+        # is local, so it is freed as soon as this function returns.
+        source_text = source_bytes.decode("utf-8", errors="replace")
+
+        # Dependency summaries from already-completed pages
+        dep_summaries: dict[str, str] = {}
+        if page_summaries:
+            for dep in out_edges:
+                if dep in page_summaries:
+                    dep_summaries[dep] = page_summaries[dep]
+
+        # Generation depth
+        depth = self._select_generation_depth(path, git_meta, pagerank.get(path, 0.0))
+
+        # Files this one changes with in history and does not import. The
+        # partners the graph already explains are dropped: they are the paths
+        # the page lists under "Depends on" two sections down, and a section
+        # that repeats them says nothing. Decoded here rather than in the
+        # template because the indexer persists them as a JSON cell.
+        co_change_pages = [
+            {
+                "path": partner.file_path,
+                "commits": partner.support,
+                "last": partner.last_co_change or "",
+            }
+            for partner in parse_partners((git_meta or {}).get("co_change_partners_json"))
+            if partner.structural == STRUCTURAL_UNEXPLAINED and partner.support > 0
+        ][:_MAX_CO_CHANGE_PARTNERS]
+
+        # Graph intelligence: call graph, heritage, community metadata
+        call_graph_entries = extract_call_graph(path, graph, symbol_index)
+        heritage_entries = extract_heritage(path, graph, symbol_index)
+        community_label, community_cohesion = extract_community_meta(path, graph)
+
+        return FilePageContext(
+            file_path=path,
+            language=parsed.file_info.language,
+            docstring=parsed.docstring,
+            symbols=sym_dicts,
+            imports=import_list,
+            exports=parsed.exports,
+            pagerank_score=pagerank.get(path, 0.0),
+            betweenness_score=betweenness.get(path, 0.0),
+            community_id=community.get(path, 0),
+            dependents=in_edges,
+            dependencies=out_edges,
+            is_api_contract=parsed.file_info.is_api_contract,
+            is_entry_point=parsed.file_info.is_entry_point,
+            is_test=parsed.file_info.is_test,
+            file_category=file_category(
+                path,
+                parsed.file_info.language,
+                is_config=getattr(parsed.file_info, "is_config", False),
+            ),
+            parse_errors=parsed.parse_errors,
+            estimated_tokens=used,
+            git_metadata=git_meta,
+            co_change_pages=co_change_pages,
+            dead_code_findings=dead_code_findings or [],
+            depth=depth,
+            dependency_summaries=dep_summaries,
+            call_graph=call_graph_entries,
+            heritage=heritage_entries,
+            community_label=community_label,
+            community_cohesion=community_cohesion,
+            decision_records=decision_records or [],
+            kg_layer_name=kg_context.layer_name if kg_context else "",
+            kg_layer_id=kg_context.layer_id if kg_context else "",
+            kg_layer_description=kg_context.layer_description if kg_context else "",
+            kg_layer_role=kg_context.role if kg_context else "",
+            kg_neighbors=kg_context.neighbors if kg_context else [],
+            kg_tour_step=kg_context.tour_step if kg_context else None,
+            kg_tags=kg_context.tags if kg_context else [],
+            kg_node_summary=kg_context.node_summary if kg_context else "",
+            # Computed from the whole decoded source rather than any trimmed
+            # excerpt, so the biggest files do not end up with the thinnest
+            # vocabulary. This section carries its own cap and is not charged
+            # against the prompt budget because it is page content rather than
+            # model input.
+            file_vocabulary=file_vocabulary(source_text),
+        )
+
+    # ------------------------------------------------------------------
+    # Symbol spotlight
+    # ------------------------------------------------------------------
+
+    def assemble_symbol_spotlight(
+        self,
+        symbol: Symbol,
+        parsed: ParsedFile,
+        pagerank: dict[str, float],
+        graph: Any,  # nx.DiGraph
+        source_bytes: bytes = b"",
+    ) -> SymbolSpotlightContext:
+        """Assemble context for the symbol_spotlight template."""
+        path = parsed.file_info.path
+        # The file page's own importer list, so the two pages report one count.
+        callers = file_dependency_neighbors(graph, path, incoming=True)
+
+        call_sites = _resolved_call_sites(symbol, graph)
+
+        # Extract source body for the symbol
+        source_body = None
+        if source_bytes and symbol.start_line and symbol.end_line:
+            lines = source_bytes.decode("utf-8", errors="replace").splitlines()
+            body_lines = lines[symbol.start_line - 1 : symbol.end_line]
+            body = "\n".join(body_lines)
+            if len(body) > 8000:
+                body = body[:8000] + "\n...[truncated]"
+            source_body = body
+
+        return SymbolSpotlightContext(
+            symbol_name=symbol.name,
+            qualified_name=symbol.qualified_name,
+            kind=symbol.kind,
+            signature=symbol.signature,
+            docstring=symbol.docstring,
+            file_path=path,
+            decorators=symbol.decorators,
+            is_async=symbol.is_async,
+            complexity_estimate=symbol.complexity_estimate,
+            callers=callers,
+            source_body=source_body,
+            call_sites=call_sites,
+        )
+
+    # ------------------------------------------------------------------
+    # Module page
+    # ------------------------------------------------------------------
+
+    def assemble_module_page(
+        self,
+        title: str,
+        language: str,
+        file_contexts: list[FilePageContext],
+        graph: Any,  # nx.DiGraph
+        page_summaries: dict[str, str] | None = None,
+        git_meta_map: dict[str, dict] | None = None,
+        decision_records: list[dict] | None = None,
+        dead_code_findings: list[dict] | None = None,
+        external_systems: list[dict] | None = None,
+        community_label: str | None = None,
+        community_cohesion: float | None = None,
+        scope: str = "",
+        is_rollup: bool = False,
+        child_pages: list[dict] | None = None,
+        packages: list[dict] | None = None,
+        public_api: list[dict] | None = None,
+        parsed_files: dict[str, ParsedFile] | None = None,
+        source_map: dict[str, bytes] | None = None,
+        execution_flows: Sequence[Any] = (),
+    ) -> ModulePageContext:
+        """Assemble context for the module_page template.
+
+        *public_api* (see :func:`~.public_api.compute_public_api`) has first
+        claim on the excerpt budget; entries past it keep only their name.
+        With *parsed_files* and *source_map*, code excerpts take what it leaves.
+        """
+        total_symbols = sum(len(fc.symbols) for fc in file_contexts)
+        public_symbols = sum(
+            sum(1 for s in fc.symbols if s.get("visibility") == "public") for fc in file_contexts
+        )
+        # ``module_page.j2`` renders these under a literal "Entry points"
+        # heading, so this is a displayed ordering and takes the shared rule.
+        # The input is ``file_contexts`` order, which is whatever the selector
+        # handed over.
+        entry_points = rank_entry_point_paths(
+            fc.file_path for fc in file_contexts if fc.is_entry_point
+        )
+        files = [fc.file_path for fc in file_contexts]
+
+        # Aggregate dependencies/dependents across all files in module
+        all_deps: set[str] = set()
+        all_dependents: set[str] = set()
+        for fc in file_contexts:
+            all_deps.update(fc.dependencies)
+            all_dependents.update(fc.dependents)
+        # Remove intra-module edges
+        all_deps -= set(files)
+        all_dependents -= set(files)
+
+        pagerank_mean = 0.0
+        if file_contexts:
+            pagerank_mean = sum(fc.pagerank_score for fc in file_contexts) / len(file_contexts)
+
+        # File summaries from completed pages (enriches module docs with what each file does)
+        file_summaries: dict[str, str] = {}
+        if page_summaries:
+            for fp in files:
+                if fp in page_summaries:
+                    file_summaries[fp] = page_summaries[fp][:200]
+
+        # Community info: prefer caller-supplied label (community-grouped
+        # module pages already know their label), else derive the dominant
+        # label across files.
+        if community_label is None:
+            community_label = ""
+            labels = [fc.community_label for fc in file_contexts if fc.community_label]
+            if labels:
+                from collections import Counter
+
+                community_label = Counter(labels).most_common(1)[0][0]
+        if community_cohesion is None:
+            community_cohesion = 0.0
+            cohesions = [fc.community_cohesion for fc in file_contexts if fc.community_cohesion > 0]
+            if cohesions:
+                community_cohesion = sum(cohesions) / len(cohesions)
+
+        # Key files inside the module by PageRank, with a short summary.
+        ranked = sorted(file_contexts, key=lambda fc: fc.pagerank_score, reverse=True)[:10]
+        key_files = [
+            {
+                "path": fc.file_path,
+                "pagerank": round(fc.pagerank_score, 4),
+                "summary": (file_summaries.get(fc.file_path) or "").strip()[:200],
+                "is_entry_point": fc.is_entry_point,
+            }
+            for fc in ranked
+        ]
+
+        # Aggregate ownership from git metadata: who maintains the most
+        # files in this module.
+        top_owners: list[dict] = []
+        if git_meta_map:
+            from collections import Counter
+
+            owner_counts: Counter[str] = Counter()
+            for fp in files:
+                meta = git_meta_map.get(fp)
+                if meta and meta.get("primary_owner_name"):
+                    owner_counts[meta["primary_owner_name"]] += 1
+            top_owners = [
+                {"name": name, "file_count": count} for name, count in owner_counts.most_common(3)
+            ]
+
+        # Key classes: the classes with heritage info, most central file first.
+        # ``module_page.j2`` renders this under a "Class hierarchy" heading, so
+        # the ten it keeps are the ten a reader is told matter. Taking them in
+        # ``file_contexts`` order meant the first two files with classes filled
+        # the list and every later file contributed nothing, whatever was in
+        # it. The rank is the file's PageRank — the same key ``key_files`` uses
+        # a few lines up, so one module page cannot call two files its most
+        # important — with the path breaking ties, since leaf files share a
+        # PageRank in bulk. Each file's own entries arrive already ranked by
+        # ``extract_heritage``; the per-file cap stays so one dense file cannot
+        # take every slot.
+        key_classes: list[dict] = []
+        by_rank = sorted(file_contexts, key=lambda fc: (-fc.pagerank_score, fc.file_path))
+        for fc in by_rank:
+            for h in fc.heritage[:_MAX_CLASSES_PER_FILE]:
+                key_classes.append(h)
+        key_classes = key_classes[:_MAX_KEY_CLASSES]
+
+        # Where the page's files actually live: the directories that hold one
+        # directly, not every ancestor of every file, so the list reads as the
+        # set of places to go and look. Files at the repository root have
+        # ``"."`` for a parent and contribute no entry; a page that is only
+        # root files therefore has none, and the template says so rather than
+        # printing a dot.
+        directories = sorted(
+            {parent for f in files if (parent := str(PurePosixPath(f).parent)) != "."}
+        )
+
+        # Git-derived subsystem health, aggregated over the member files. These
+        # are what a reader cannot get from the code alone, and they degrade to
+        # nothing when a repository has no git history rather than inventing a
+        # number. Reuses the same per-file fields the repo overview reads.
+        (
+            hotspot_count,
+            stable_count,
+            single_owner_files,
+            coupled_modules,
+            bugfix_total,
+            most_fixed_file,
+        ) = self._module_git_enrichment(files, set(files), git_meta_map)
+
+        api_rows, api_cost = self._excerpt_public_api(public_api or [])
+        excerpts, declared_files = module_excerpts(
+            public_api or [],
+            parsed_files or {},
+            [fc.file_path for fc in by_rank],
+            source_map or {},
+            max(0, _MODULE_EXCERPT_BUDGET - api_cost),
+        )
+
+        ctx = ModulePageContext(
+            title=title,
+            directories=directories,
+            language=language,
+            total_symbols=total_symbols,
+            public_symbols=public_symbols,
+            entry_points=entry_points,
+            dependencies=sorted(all_deps),
+            dependents=sorted(all_dependents),
+            pagerank_mean=pagerank_mean,
+            files=files,
+            file_summaries=file_summaries,
+            community_label=community_label,
+            community_cohesion=community_cohesion,
+            key_classes=key_classes,
+            decision_records=decision_records or [],
+            dead_code_findings=dead_code_findings or [],
+            external_systems=external_systems or [],
+            key_files=key_files,
+            top_owners=top_owners,
+            scope=scope,
+            is_rollup=is_rollup,
+            child_pages=child_pages or [],
+            packages=packages or [],
+            public_api=api_rows,
+            public_api_omitted=len(public_api or ()) - len(api_rows),
+            code_excerpts=[
+                {
+                    "file": item.path,
+                    "symbol": item.symbol,
+                    "lines": f"{item.start_line}-{item.end_line}",
+                    "truncated": item.truncated,
+                    "code": item.text,
+                }
+                for item in excerpts.included
+            ],
+            declared_files=declared_files,
+            hotspot_count=hotspot_count,
+            stable_count=stable_count,
+            single_owner_files=single_owner_files,
+            coupled_modules=coupled_modules,
+            bugfix_total=bugfix_total,
+            most_fixed_file=most_fixed_file,
+        )
+        ctx.facts = build_module_facts(ctx, file_contexts, graph, execution_flows)
+        return ctx
+
+    def _excerpt_public_api(self, api: list[dict]) -> tuple[list[dict], int]:
+        """Every name (to the hard cap), then signature + doc line while half the rest lasts.
+
+        Costs follow the rendered shape (bare names grouped under their file);
+        +1 per row so rounding cannot add up past a limit.
+        """
+        files: set[str] = set()
+
+        def name_cost(e: dict) -> int:
+            head = 0 if e["file"] in files else self._estimate_tokens(f"- `{e['file']}`: ")
+            files.add(e["file"])
+            return 1 + head + self._estimate_tokens(f"`{e['name']}`, ")
+
+        def row_cost(e: dict) -> int:
+            row = f"- `{e['name']}` ({e['kind']}, `{e['file']}`): `` {e['signature']} `` {e['doc']}"
+            return 1 + self._estimate_tokens(row)
+
+        named, used = items_within_budget(api, 0, _MODULE_EXCERPT_HARD_CAP, name_cost)
+        half = used + max(0, _MODULE_EXCERPT_BUDGET - used) // 2
+        kept, used = items_within_budget(named, used, half, row_cost)
+        return kept + [{**e, "signature": "", "doc": ""} for e in named[len(kept) :]], used
+
+    def _package_boundaries(self, known_paths: set[str]) -> set[str]:
+        """Package roots for this repo, resolved once.
+
+        Scans the checkout, exactly as the health writer does, so both producers
+        of ``module`` agree. The path-list fallback is for a caller with no
+        checkout, and it only sees manifests already in *known_paths* -- on an
+        incremental run that is the changed files alone, which is why the scan
+        is preferred rather than optional.
+        """
+        if self._package_roots is not None:
+            return self._package_roots
+        roots: set[str] | None = None
+        if self._repo_path is not None:
+            try:
+                roots = scan_package_roots(self._repo_path)
+            except OSError as exc:
+                log.debug("generation_package_root_scan_failed", error=str(exc))
+        if roots is None:
+            roots = package_roots_from_paths(known_paths)
+        self._package_roots = roots
+        return roots
+
+    def _module_git_enrichment(
+        self,
+        files: list[str],
+        member_set: set[str],
+        git_meta_map: dict[str, dict] | None,
+    ) -> tuple[int, int, int, list[dict], int, dict]:
+        """Aggregate the git signals a subsystem page can carry over its members.
+
+        Returns ``(hotspot_count, stable_count, single_owner_files,
+        coupled_modules, bugfix_total, most_fixed_file)``. Everything is zero or
+        empty when there is no git metadata, so a repository indexed without
+        history renders none of it rather than a fabricated health line.
+        """
+        from collections import Counter
+
+        if not git_meta_map:
+            return 0, 0, 0, [], 0, {}
+
+        metas = [git_meta_map[f] for f in files if f in git_meta_map]
+        if not metas:
+            return 0, 0, 0, [], 0, {}
+
+        roots = self._package_boundaries(set(git_meta_map))
+
+        hotspot_count = sum(1 for m in metas if m.get("is_hotspot"))
+        stable_count = sum(1 for m in metas if m.get("is_stable"))
+        # bus_factor is the number of authors covering the bulk of a file's
+        # history; 1 means one person carries it. 0 is "not computed" and does
+        # not count as a risk.
+        single_owner_files = sum(1 for m in metas if 0 < (m.get("bus_factor") or 0) <= 1)
+
+        # Files this subsystem changes together with in history but that live in
+        # another module. Restricted to pairs the dependency graph does not
+        # explain, because the page claims exactly that.
+        coupled: Counter[str] = Counter()
+        for m in metas:
+            for p in parse_partners(m.get("co_change_partners_json")):
+                if p.file_path in member_set or p.structural != STRUCTURAL_UNEXPLAINED:
+                    continue
+                module = module_for(p.file_path, roots)
+                if module:
+                    coupled[module] += 1
+        coupled_modules = [{"path": path, "count": count} for path, count in coupled.most_common(5)]
+
+        bugfix_total = sum(int(m.get("prior_defect_count") or 0) for m in metas)
+        most = max(metas, key=lambda m: int(m.get("prior_defect_count") or 0))
+        most_fixed_file: dict = {}
+        if int(most.get("prior_defect_count") or 0) > 0:
+            most_fixed_file = {
+                "path": most.get("file_path", ""),
+                "fixes": int(most.get("prior_defect_count") or 0),
+            }
+
+        return (
+            hotspot_count,
+            stable_count,
+            single_owner_files,
+            coupled_modules,
+            bugfix_total,
+            most_fixed_file,
+        )
+
+    # ------------------------------------------------------------------
+    # SCC page
+    # ------------------------------------------------------------------
+
+    def assemble_scc_page(
+        self,
+        scc_id: str,
+        scc_files: list[str],
+        file_contexts: list[FilePageContext],
+    ) -> SccPageContext:
+        """Assemble context for the scc_page template."""
+        cycle_parts = " → ".join(scc_files)
+        cycle_description = f"Circular dependency cycle: {cycle_parts}"
+        total_symbols = sum(len(fc.symbols) for fc in file_contexts)
+
+        scc_set = set(scc_files)
+        member_symbols = []
+        for fc in file_contexts:
+            pub = [s for s in fc.symbols if s.get("visibility") == "public"][:5]
+            member_symbols.append({"file_path": fc.file_path, "symbols": pub})
+
+        cross_imports = [
+            {"from": fc.file_path, "to": dep}
+            for fc in file_contexts
+            for dep in fc.dependencies
+            if dep in scc_set and dep != fc.file_path
+        ]
+
+        return SccPageContext(
+            scc_id=scc_id,
+            files=scc_files,
+            cycle_description=cycle_description,
+            total_symbols=total_symbols,
+            member_symbols=member_symbols,
+            cross_imports=cross_imports,
+        )
+
+    # ------------------------------------------------------------------
+    # Repo overview
+    # ------------------------------------------------------------------
+
+    def assemble_repo_overview(
+        self,
+        repo_structure: RepoStructure,
+        pagerank: dict[str, float],
+        sccs: list[Any],  # list[frozenset[str]]
+        community: dict[str, int],
+        graph_builder: Any | None = None,
+        repo_name: str | None = None,
+        external_systems: list[dict] | None = None,
+        decision_records: list[dict] | None = None,
+        parsed_files: list[ParsedFile] | None = None,
+        prose_digest: str = "",
+    ) -> RepoOverviewContext:
+        """Assemble context for the repo_overview template."""
+        # Top files sorted by PageRank descending, path breaking ties. Leaf
+        # files share a PageRank in bulk, and dict order here is graph
+        # insertion order, so without the tiebreak the overview's top-file
+        # list is a different list on every run.
+        sorted_pr = sorted(pagerank.items(), key=lambda x: (-x[1], x[0]))
+        top_files = [
+            _TopFile(path=p, score=s) for p, s in sorted_pr[:_MAX_TOP_FILES] if not is_external(p)
+        ]
+
+        # SCCs with len > 1 are true circular deps
+        circular_count = sum(1 for scc in sccs if len(scc) > 1)
+
+        package_stats = _package_stats(repo_structure, parsed_files or [])
+
+        # Community metadata from graph builder
+        communities_list: list[dict] = []
+        execution_flows_list: list[dict] = []
+        if graph_builder is not None:
+            try:
+                for ci in graph_builder.community_info():
+                    communities_list.append(
+                        {
+                            "id": ci.id,
+                            "label": ci.label,
+                            "size": ci.size,
+                            "cohesion": round(ci.cohesion, 2),
+                        }
+                    )
+                # Id, not label: two same-size communities can carry the same
+                # label, so the label is not a total order.
+                communities_list.sort(key=lambda c: (-c["size"], c["id"]))
+                communities_list = communities_list[:10]
+            except Exception as exc:
+                # Same silent shape as the flow block below, which is how that
+                # one went a year unnoticed. Say something.
+                log.warning(
+                    "overview_communities_unavailable",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+
+            try:
+                flow_report = graph_builder.execution_flows()
+                if flow_report and hasattr(flow_report, "flows"):
+                    # Highest-scoring first: the templates render the first
+                    # five, so the order here is the selection.
+                    ranked = sorted(
+                        flow_report.flows,
+                        key=lambda f: (-f.entry_point_score, f.entry_point_id),
+                    )
+                    flow_graph = graph_builder.graph()
+                    # The package map is supplied, so a Go / JVM / C-C++ file
+                    # is answered for rather than assumed reachable. It used to
+                    # be withheld because the file-level cost looked large, but
+                    # the file-level cost is the wrong quantity: a flow's entry
+                    # point is a function in a file something imports, so the
+                    # flipped files are mostly not flow entries. Measured over
+                    # the indexed repositories by tracing flows for real, the
+                    # map costs **1 flow of 1,416 kept**, on one repository,
+                    # changes no rendered top five and empties no section.
+                    #
+                    # Residual risk this does not remove, and no test can: on a
+                    # repository where every traced flow starts in a package
+                    # with no live sibling, this empties the section rather
+                    # than showing wrong flows. The corpus holds no such
+                    # repository, but "measured on 42" is not "cannot happen",
+                    # which is what the log below is for.
+                    #
+                    # Built once, and only when there is something to filter:
+                    # three passes over the node ids of a graph that can reach
+                    # 175k nodes.
+                    flow_rescues = ReachabilityRescues(
+                        package_files=build_package_file_map(flow_graph) if ranked else None
+                    )
+                    kept = [
+                        f for f in ranked if _flow_entry_is_reachable(f, flow_graph, flow_rescues)
+                    ]
+                    if len(kept) != len(ranked):
+                        # The section disappears when this empties it, and a
+                        # silently empty section is the failure the comment
+                        # below was written to end. Say how many and why.
+                        log.info(
+                            "overview_flows_dropped_unreachable",
+                            dropped=len(ranked) - len(kept),
+                            kept=len(kept),
+                        )
+                    ranked = kept
+                    for flow in ranked[:5]:
+                        execution_flows_list.append(
+                            {
+                                "entry_point": flow.entry_point_id,
+                                "entry_point_name": flow.entry_point_name,
+                                "score": round(flow.entry_point_score, 3),
+                                "trace_length": len(flow.trace) if hasattr(flow, "trace") else 0,
+                            }
+                        )
+            except Exception as exc:
+                # This was a bare ``except: pass`` reading ``flow.entry_point``
+                # and ``flow.score`` off a dataclass whose fields are
+                # ``entry_point_id`` and ``entry_point_score``. The
+                # AttributeError was swallowed, the list stayed empty, and the
+                # template's ``{% if %}`` guard dropped the section — so no
+                # overview has ever carried an execution flow. An empty
+                # section is a fine outcome; a silent one is not.
+                log.warning(
+                    "overview_execution_flows_unavailable",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+
+        return RepoOverviewContext(
+            # RepoStructure carries no name, so the old getattr fallback made
+            # every overview call the project "repo". The caller knows it.
+            repo_name=repo_name or getattr(repo_structure, "name", None) or "this repository",
+            is_monorepo=repo_structure.is_monorepo,
+            packages=repo_structure.packages,
+            language_distribution=repo_structure.root_language_distribution,
+            total_files=repo_structure.total_files,
+            total_loc=repo_structure.total_loc,
+            # Ranked, not filtered, and ranked by the helper every other
+            # orientation surface now calls so they cannot name different
+            # front doors. Why it is ranked at all is on
+            # ``orientation_entry_points``.
+            entry_points=orientation_entry_points(repo_structure),
+            top_files_by_pagerank=top_files,
+            circular_dependency_count=circular_count,
+            communities=communities_list,
+            execution_flows=execution_flows_list,
+            external_systems=external_systems or [],
+            decision_records=decision_records or [],
+            package_stats=package_stats,
+            prose_digest=prose_digest,
+        )
+
+    # ------------------------------------------------------------------
+    # API contract
+    # ------------------------------------------------------------------
+
+    def assemble_api_contract(
+        self,
+        parsed: ParsedFile,
+        source_bytes: bytes,
+    ) -> ApiContractContext:
+        """Assemble context for the api_contract template."""
+        source_text = source_bytes.decode("utf-8", errors="replace")
+        remaining = self._config.token_budget
+        raw_content = self._trim_to_budget(source_text, remaining)
+
+        # Extract endpoints/schemas from metadata if available
+        endpoints: list[str] = []
+        schemas: list[str] = []
+        for sym in parsed.symbols:
+            if sym.kind in ("function", "method"):
+                endpoints.append(sym.signature)
+            elif sym.kind in ("class", "interface", "struct"):
+                schemas.append(sym.name)
+
+        return ApiContractContext(
+            file_path=parsed.file_info.path,
+            language=parsed.file_info.language,
+            raw_content=raw_content,
+            endpoints=endpoints,
+            schemas=schemas,
+        )
+
+    # ------------------------------------------------------------------
+    # Infra page
+    # ------------------------------------------------------------------
+
+    def assemble_infra_page(
+        self,
+        parsed: ParsedFile,
+        source_bytes: bytes,
+    ) -> InfraPageContext:
+        """Assemble context for the infra_page template."""
+        source_text = source_bytes.decode("utf-8", errors="replace")
+        remaining = self._config.token_budget
+        raw_content = self._trim_to_budget(source_text, remaining)
+
+        targets = [sym.name for sym in parsed.symbols]
+
+        return InfraPageContext(
+            file_path=parsed.file_info.path,
+            language=parsed.file_info.language,
+            raw_content=raw_content,
+            targets=targets,
+        )
+
+    # ------------------------------------------------------------------
+    # Generation depth selection (Phase 5.5)
+    # ------------------------------------------------------------------
+
+    def _select_generation_depth(
+        self,
+        file_path: str,
+        git_meta: dict | None,
+        pagerank_score: float,
+        config_depth: str = "standard",
+    ) -> str:
+        """Select generation depth based on git metadata.
+
+        Upgrade to "thorough" if: hotspot, >100 commits with >10 in 90d,
+          >=8 significant commits, or has co-change partners.
+        Downgrade to "minimal" if: stable AND pagerank < 0.3 AND commit_count < 5.
+        """
+        if git_meta is None:
+            return config_depth
+
+        import json as _json
+
+        # Upgrade conditions
+        if git_meta.get("is_hotspot", False):
+            return "thorough"
+
+        commit_total = git_meta.get("commit_count_total", 0)
+        commit_90d = git_meta.get("commit_count_90d", 0)
+        if commit_total > 100 and commit_90d > 10:
+            return "thorough"
+
+        sig_json = git_meta.get("significant_commits_json", "[]")
+        try:
+            sig_commits = _json.loads(sig_json) if isinstance(sig_json, str) else sig_json
+        except Exception:
+            sig_commits = []
+        if len(sig_commits) >= 8:
+            return "thorough"
+
+        if parse_partners(git_meta.get("co_change_partners_json")):
+            return "thorough"
+
+        # Downgrade conditions
+        if git_meta.get("is_stable", False) and pagerank_score < 0.3 and commit_total < 5:
+            return "minimal"
+
+        return config_depth
+
+    # ------------------------------------------------------------------
+    # Update context assembly (Phase 5.5)
+    # ------------------------------------------------------------------
+
+    def assemble_update_context(
+        self,
+        parsed: ParsedFile,
+        graph: Any,
+        pagerank: dict[str, float],
+        betweenness: dict[str, float],
+        community: dict[str, int],
+        source_bytes: bytes,
+        trigger_commit_sha: str | None = None,
+        trigger_commit_message: str | None = None,
+        diff_text: str | None = None,
+        git_meta: dict | None = None,
+    ) -> FilePageContext:
+        """Assemble context for maintenance regeneration using trigger commit + diff."""
+        ctx = self.assemble_file_page(
+            parsed,
+            graph,
+            pagerank,
+            betweenness,
+            community,
+            source_bytes,
+            git_meta=git_meta,
+        )
+        # Enrich with trigger context (stored in rag_context for now)
+        if trigger_commit_sha:
+            ctx.rag_context.append(
+                f"Trigger commit: {trigger_commit_sha}"
+                + (f" — {trigger_commit_message}" if trigger_commit_message else "")
+            )
+        if diff_text:
+            trimmed_diff = self._trim_to_budget(diff_text, 1000)
+            ctx.rag_context.append(f"Diff:\n{trimmed_diff}")
+        return ctx
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:
+    """Convert a Symbol to a plain dict for template rendering."""
+    return {
+        "name": symbol.name,
+        "qualified_name": symbol.qualified_name,
+        "kind": symbol.kind,
+        "signature": symbol.signature,
+        "docstring": symbol.docstring,
+        "visibility": symbol.visibility,
+        "is_async": symbol.is_async,
+        "complexity_estimate": symbol.complexity_estimate,
+        "decorators": symbol.decorators,
+        "parent_name": symbol.parent_name,
+        "start_line": symbol.start_line,
+        "end_line": symbol.end_line,
+    }
+
+
+def _resolved_call_sites(symbol: Symbol, graph: Any) -> list[dict]:
+    """Calls the resolver actually resolved to *symbol*, most confident first.
+
+    A spotlight's ``callers`` list is the files importing the defining module,
+    which for a constant like ``PRUNED_DIRS`` means thirty-seven files that
+    may never touch it. The call graph knows better wherever the resolver
+    reached a verdict, and ``Symbol.id`` is the graph's own node key, so this
+    is an in-edge scan on one node rather than a walk.
+
+    Uncapped: the template slices what it prints and reports the true total,
+    the way the importer list already does. A count that was silently the cap
+    would tell a reader with nine hundred callers that it had twenty-five.
+
+    Empty when nothing resolved, which is the common case for data and for
+    dynamically dispatched languages — the template then keeps the honest
+    import-level wording.
+    """
+    try:
+        if symbol.id not in graph:
+            return []
+        scored: list[tuple[float, dict]] = []
+        for source, _, edata in graph.in_edges(symbol.id, data=True):
+            if edata.get("edge_type") != "calls":
+                continue
+            data = graph.nodes.get(source, {})
+            if data.get("name") == _MODULE_SCOPE_NODE:
+                continue
+            scored.append(
+                (
+                    float(edata.get("confidence") or 0.0),
+                    {
+                        "caller": data.get("name", source),
+                        "caller_file": data.get("file_path", ""),
+                    },
+                )
+            )
+    except Exception:
+        return []
+    scored.sort(key=lambda s: (-s[0], s[1]["caller_file"], s[1]["caller"]))
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict] = []
+    for _, site in scored:
+        key = (site["caller_file"], site["caller"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(site)
+    return unique

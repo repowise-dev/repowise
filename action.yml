@@ -1,0 +1,194 @@
+name: Repowise CI gates
+description: >-
+  Gate a pull request on patch coverage, documentation drift, new security
+  findings and change risk, and select the tests it needs. The gates need git
+  and nothing else (no index, no API key); test selection reads a cached index.
+author: repowise-dev
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  checks:
+    description: >-
+      Comma-separated gates to run: coverage, doc-drift, security, risk.
+      Coverage needs a report, so it is not on by default. Doc drift checks the
+      whole tree; on a repository that already has drift, commit a baseline
+      first. Risk is opt-in too, and gates only when risk-fail-above-percentile
+      is set.
+    default: doc-drift,security
+  version:
+    description: Repowise version to install from PyPI. Empty installs the latest.
+    default: ""
+  python-version:
+    description: Python used to install and run Repowise (3.11 or newer).
+    default: "3.12"
+  working-directory:
+    description: Path inside the repository to run from.
+    default: "."
+  base:
+    description: >-
+      Revision range for coverage, security and risk, e.g. origin/main...HEAD.
+      Empty reads the pull request's target branch, else the default branch.
+    default: ""
+  coverage-report:
+    description: >-
+      Coverage reports, one per line. Each line is a path or a glob such as
+      artifacts/**/lcov.info (Repowise expands it), optionally path=prefix to
+      prepend a directory to that report's paths. Empty uses coverage.paths
+      from .repowise/config.yaml, else discovery.
+    default: ""
+  coverage-fail-under:
+    description: >-
+      Minimum patch coverage percent. Empty uses coverage.fail_under from
+      .repowise/config.yaml, else reports without gating.
+    default: ""
+  coverage-min-coverable-lines:
+    description: >-
+      Small-change tolerance: a change with fewer changed executable lines
+      than this is reported but never fails the coverage gate. Empty uses
+      coverage.min_coverable_lines from .repowise/config.yaml.
+    default: ""
+  coverage-fail-under-risky:
+    description: >-
+      Minimum patch coverage percent over risky files only: hotspots or bug
+      magnets from the index; on git alone, the top quartile of files with
+      bug-fix history. A change with no risky file is not gated. Empty uses
+      coverage.fail_under_risky from .repowise/config.yaml, else no risky gate.
+    default: ""
+  coverage-fail-under-branches:
+    description: >-
+      Minimum percent of branches taken on changed lines, judged beside patch
+      coverage and never blended into it. A change with no branching line is
+      not gated; a report without per-line branch data fails the step as
+      cannot evaluate (exit 2). Empty uses coverage.fail_under_branches from
+      .repowise/config.yaml (where missing branch data is only a note), else
+      no branch gate.
+    default: ""
+  coverage-base-report:
+    description: >-
+      Coverage reports measured at the change's base commit (the merge-base
+      with the target branch), one per line, read like coverage-report. Adds
+      project coverage at the base against the head, and the files whose
+      coverage changed outside the change.
+    default: ""
+  coverage-max-drop:
+    description: >-
+      Most project coverage may fall from the change's base, in percentage
+      points. Needs coverage-base-report (or an index that stored coverage at
+      the base). Empty uses coverage.max_drop from .repowise/config.yaml, else
+      reports without gating.
+    default: ""
+  doc-drift-baseline:
+    description: Committed doc-drift baseline file; only findings it does not list fail.
+    default: ""
+  security-fail-on:
+    description: Lowest severity that fails the security gate (high, med or low).
+    default: high
+  security-baseline:
+    description: Committed security baseline file; only findings it does not list fail.
+    default: ""
+  risk-fail-above-percentile:
+    description: >-
+      Fail when the change ranks above this percentile of the repository's
+      recent commits by size and spread. Empty reports the rank without gating.
+    default: ""
+  upload-sarif:
+    description: >-
+      "true" uploads doc-drift and security findings to GitHub code scanning.
+      The workflow needs the security-events write permission.
+    default: "false"
+  impacted-tests:
+    description: >-
+      "true" selects the tests the change needs (repowise impacted-tests
+      --format args) and sets the impacted-tests and run-all-tests outputs. It
+      requires a cached Repowise index: restore .repowise into the working
+      directory first, and the step brings it up to date with repowise update
+      --index-only. Without one every answer is run-all-tests, with the reason.
+    default: "false"
+  impacted-tests-runner:
+    description: Runner the tests output is written for (auto, pytest, go, jest or files).
+    default: auto
+
+outputs:
+  coverage:
+    description: Exit code of the coverage gate (0 passed, 1 failed, 2 could not evaluate), empty when not run.
+    value: ${{ steps.gates.outputs.coverage }}
+  doc-drift:
+    description: Exit code of the doc-drift gate, empty when not run.
+    value: ${{ steps.gates.outputs.doc-drift }}
+  security:
+    description: Exit code of the security gate, empty when not run.
+    value: ${{ steps.gates.outputs.security }}
+  risk:
+    description: Exit code of the change-risk gate, empty when not run.
+    value: ${{ steps.gates.outputs.risk }}
+  sarif-dir:
+    description: Directory holding the SARIF files, when upload-sarif is on.
+    value: ${{ steps.gates.outputs.sarif-dir }}
+  impacted-tests:
+    description: With impacted-tests, the runner arguments for the selected tests, or ":all" to run every test.
+    value: ${{ steps.impacted.outputs.impacted-tests }}
+  run-all-tests:
+    description: >-
+      With impacted-tests, "false" only when the subset is safe to run alone;
+      "true" when every test must run, also when selection could not run.
+      Branch on != 'false' so a skipped step runs everything.
+    value: ${{ steps.impacted.outputs.run-all-tests }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Repowise
+      shell: bash
+      env:
+        REPOWISE_VERSION: ${{ inputs.version }}
+      run: python -m pip install --quiet "repowise${REPOWISE_VERSION:+==$REPOWISE_VERSION}"
+
+    - name: Select impacted tests
+      id: impacted
+      if: inputs.impacted-tests == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BASE: ${{ inputs.base }}
+        RUNNER: ${{ inputs.impacted-tests-runner }}
+        PYTHONUTF8: "1"
+      run: bash "$GITHUB_ACTION_PATH/ci/github/impacted-tests.sh"
+
+    - name: Run gates
+      id: gates
+      # Test selection alone runs no gate.
+      if: inputs.checks != '' || inputs.impacted-tests != 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CHECKS: ${{ inputs.checks }}
+        BASE: ${{ inputs.base }}
+        COVERAGE_REPORT: ${{ inputs.coverage-report }}
+        COVERAGE_FAIL_UNDER: ${{ inputs.coverage-fail-under }}
+        COVERAGE_MIN_COVERABLE_LINES: ${{ inputs.coverage-min-coverable-lines }}
+        COVERAGE_FAIL_UNDER_RISKY: ${{ inputs.coverage-fail-under-risky }}
+        COVERAGE_FAIL_UNDER_BRANCHES: ${{ inputs.coverage-fail-under-branches }}
+        COVERAGE_BASE_REPORT: ${{ inputs.coverage-base-report }}
+        COVERAGE_MAX_DROP: ${{ inputs.coverage-max-drop }}
+        DOC_DRIFT_BASELINE: ${{ inputs.doc-drift-baseline }}
+        SECURITY_FAIL_ON: ${{ inputs.security-fail-on }}
+        SECURITY_BASELINE: ${{ inputs.security-baseline }}
+        RISK_FAIL_ABOVE_PERCENTILE: ${{ inputs.risk-fail-above-percentile }}
+        SARIF: ${{ inputs.upload-sarif }}
+        SARIF_DIR: ${{ runner.temp }}/repowise-sarif
+        PYTHONUTF8: "1"
+      run: bash "$GITHUB_ACTION_PATH/ci/github/run-gates.sh"
+
+    - name: Upload SARIF
+      if: always() && inputs.upload-sarif == 'true' && steps.gates.outputs.sarif-dir != ''
+      # A fork's pull request has a read-only token; the gates decide the check.
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.gates.outputs.sarif-dir }}

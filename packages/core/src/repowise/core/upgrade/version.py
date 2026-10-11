@@ -1,0 +1,94 @@
+"""Authoritative version constants for the on-disk store format.
+
+These two integers are the *single source of truth* for "what shape is the
+``.repowise`` store, and does upgrading repowise need to touch it." They are
+deliberately decoupled from the package ``__version__`` so that ordinary
+releases (which ship code changes but no store-format change) never invalidate
+a user's cached work.
+
+When to bump
+------------
+``STORE_FORMAT_VERSION``
+    Bump by one whenever the *meaning or layout* of the persisted store changes
+    in a way the running code must react to (a new required column the additive
+    reconcile cannot back-fill, a vector-store layout change, a re-derivation
+    that older stores lack). Every bump MUST add a matching entry to
+    :data:`repowise.core.upgrade.registry.MIGRATIONS` declaring its upgrade
+    impact tier. The overwhelming default for a release is to leave this alone.
+
+``PARSER_SCHEMA_VERSION``
+    Bump by one only when parser / extractor logic changes such that a cached
+    ``ParsedFile`` from an older build is no longer correct (tree-sitter query
+    edits are already covered by hashing the ``.scm`` sources; bump this for
+    Python-side extraction changes). Bumping it invalidates the parse cache and
+    forces a cheap, automatic re-parse on the next ingest. Leaving package
+    ``__version__`` out of the fingerprint is the whole point: unrelated
+    releases keep the cache warm.
+"""
+
+from __future__ import annotations
+
+#: Current on-disk store format. Stamped into ``state.json`` as
+#: ``store_format_version`` on every persist. Legacy stores predating this
+#: field are treated as version 0.
+#:
+#: v2 introduces the derived concept tree (subsystem pages + written prose in
+#: place of per-directory module pages). Unlike v1, it is not reachable by the
+#: automatic reconcile: only a full re-index rebuilds an old store's pages into
+#: it. Its migration is therefore ``REINDEX_RECOMMENDED``, and :func:`stamp`
+#: clamps a routine persist just below it so the notice keeps firing until the
+#: user actually re-indexes.
+STORE_FORMAT_VERSION: int = 2
+
+#: Current parser/extractor schema. Folded into the parse-cache fingerprint in
+#: place of the package version. See :mod:`repowise.core.ingestion.parse_cache`.
+#:
+#: v2: ``RawCall`` gained ``scope_name`` (the C++ ``Ns::f()`` qualifier as
+#: written) and ``receiver_call`` (the inner call of a chained expression), and
+#: a Rust macro invocation stopped being extracted as a call. A cache written
+#: before that carries neither field, so the scoped-call, chained-call and
+#: macro fixes would resolve against stale rows instead of firing.
+#:
+#: v3: a Python import that resolves to no repo file now becomes an
+#: ``external:`` node and edge instead of resolving to nothing. The fingerprint
+#: change makes ``persist_incremental_edges`` reconcile every file's edges once
+#: on the next update, so an existing index does not keep half its Python files
+#: without external edges.
+#:
+#: v4: Python absolute imports resolve only by their full dotted path (no stem
+#: guess, no sibling lookup inside a package, never the importer itself), and
+#: ``from pkg import a, b`` over submodules no longer edges into
+#: ``pkg/__init__.py``. Reconciling once drops the stale edges from old stores.
+#:
+#: v5: an overload signature (Python ``@overload``, TypeScript function / method
+#: overload) is marked ``is_declaration`` so lookups serve the implementation.
+#:
+#: v6: a member call a bare-call pattern also matched (Java ``obj.m()``, Ruby
+#: ``obj.m(x)``) is kept once, with its receiver and ``bare_name_fallback``, so
+#: a cached receiver-less copy no longer resolves by bare name beside it. Also,
+#: Java, C# and C++ overloads of different arity get their own ids (``notNull#1``,
+#: ``notNull#2``) and a C# generic type beside a same-named one gets its arity
+#: (``IFoo`1``); the first update re-keys symbols and graph nodes repo-wide. A
+#: C++ template function is one ``function`` symbol, no longer also a ``class``.
+#:
+#: v7: code naming Alembic gets a framework edge to every migration it can
+#: load, and a VS Code extension test to the entry its package declares; the
+#: first update writes those edges for unchanged files too.
+PARSER_SCHEMA_VERSION: int = 7
+
+#: state.json key holding the store format version that wrote the store.
+STORE_FORMAT_VERSION_KEY = "store_format_version"
+
+#: state.json key holding the package ``__version__`` that last wrote the store.
+WRITTEN_BY_VERSION_KEY = "written_by_version"
+
+#: state.json key holding the embedding model id the vectors were built with.
+EMBEDDING_MODEL_KEY = "embedding_model"
+
+__all__ = [
+    "EMBEDDING_MODEL_KEY",
+    "PARSER_SCHEMA_VERSION",
+    "STORE_FORMAT_VERSION",
+    "STORE_FORMAT_VERSION_KEY",
+    "WRITTEN_BY_VERSION_KEY",
+]

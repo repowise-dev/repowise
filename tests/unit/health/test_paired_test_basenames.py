@@ -1,0 +1,220 @@
+"""Equivalence tests for the precomputed test-pair basename set.
+
+``_has_paired_test_file`` used to scan every analyzed path for every
+evaluated file (O(files x paths x candidates) string suffix checks; 16s
+isolated on an ~2,000-file repo). It now answers from one precomputed
+``_path_basenames`` set. These tests pin the new formulation to a verbatim
+copy of the old scan over a corpus of tricky paths.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import ClassVar
+
+import pytest
+
+from repowise.core.analysis.health.engine import (
+    _has_paired_test_file,
+    _path_basenames,
+)
+
+
+def _reference_has_paired_test_file(rel_path: str, all_paths: set[str]) -> bool:
+    """The pre-index implementation, kept verbatim as the oracle."""
+    p = Path(rel_path)
+    stem = p.stem
+    candidates = {
+        f"test_{stem}.py",
+        f"{stem}_test.py",
+        f"{stem}_spec.rb",
+        f"{stem}.test.ts",
+        f"{stem}.test.tsx",
+        f"{stem}.test.js",
+        f"{stem}.test.mts",
+        f"{stem}.test.cts",
+        f"{stem}.spec.ts",
+        f"{stem}.spec.js",
+        f"{stem}.spec.mts",
+        f"{stem}.spec.cts",
+        f"{stem}_test.go",
+    }
+    return any(
+        any(other.endswith("/" + c) or other == c for c in candidates)
+        for other in all_paths
+    )
+
+
+CORPUS: set[str] = {
+    # root-level pair (the `other == c` branch)
+    "test_root.py",
+    "root.py",
+    # nested pairs (the `endswith("/" + c)` branch)
+    "pkg/sub/test_mod.py",
+    "pkg/sub/mod.py",
+    "src/widget.ts",
+    "src/widget.spec.ts",
+    "cmd/server.go",
+    "cmd/server_test.go",
+    # near-misses that must NOT match: prefix without separator
+    "pkg/xtest_near.py",
+    "near.py",
+    "src/footest_other.go",
+    "other.go",
+    # test-suffix file with no source pair
+    "orphan.test.js",
+    # backslash path: the old scan only recognised "/" separators, so
+    # this must NOT read as a pair for windowsy.py
+    "dir\\test_windowsy.py",
+    "windowsy.py",
+    # deep nesting + dotted stem
+    "a/b/c/d/e/data.test.tsx",
+    "a/b/c/d/e/data.tsx",
+    "lib/parser.config.ts",
+}
+
+
+class TestPairedTestBasenames:
+    def test_matches_reference_over_corpus(self) -> None:
+        basenames = _path_basenames(CORPUS)
+        for rel_path in sorted(CORPUS):
+            expected = _reference_has_paired_test_file(rel_path, CORPUS)
+            assert _has_paired_test_file(rel_path, basenames) == expected, rel_path
+
+    def test_positive_and_negative_anchors(self) -> None:
+        basenames = _path_basenames(CORPUS)
+        # Anchors so the corpus comparison cannot silently pass on all-False.
+        assert _has_paired_test_file("root.py", basenames)
+        assert _has_paired_test_file("pkg/sub/mod.py", basenames)
+        assert _has_paired_test_file("src/widget.ts", basenames)
+        assert _has_paired_test_file("cmd/server.go", basenames)
+        assert _has_paired_test_file("a/b/c/d/e/data.tsx", basenames)
+        assert not _has_paired_test_file("near.py", basenames)
+        assert not _has_paired_test_file("other.go", basenames)
+        assert not _has_paired_test_file("lib/parser.config.ts", basenames)
+        # Backslash separator was never recognised by the old scan.
+        assert not _has_paired_test_file("windowsy.py", basenames)
+
+    def test_basenames_split_on_forward_slash_only(self) -> None:
+        assert _path_basenames({"a/b.py", "c.py", "d\\e.py", "x/y/z.go"}) == {
+            "b.py",
+            "c.py",
+            "d\\e.py",
+            "z.go",
+        }
+
+    def test_empty_paths(self) -> None:
+        assert _path_basenames(set()) == set()
+        assert not _has_paired_test_file("anything.py", set())
+
+class TestPascalPairing:
+    """Delphi/FPC's ``u``-prefixed unit pairs with a standalone console test
+    program named ``Test<Stem>.dpr`` (the ``u`` dropped) -- confirmed against
+    a real ~150-file Delphi codebase's ``src/tools/Test*.dpr`` convention."""
+
+    CORPUS: ClassVar[set[str]] = {
+        "src/Core/uKeymap.pas",
+        "src/tools/TestKeymap.dpr",
+        "src/Core/uANSIParser.pas",
+        "src/tools/TestANSIParser.dpr",
+        # no leading "u" -- stem passes through unchanged
+        "src/Core/Utils.pas",
+        "src/tools/TestUtils.dpr",
+        # a unit with no paired test at all
+        "src/Core/uOrphan.pas",
+        # near-miss: same stem, wrong extension -- must NOT match
+        "src/Core/uOther.pas",
+        "src/tools/TestOther.pp",
+    }
+
+    def test_pascal_pairs_match(self) -> None:
+        basenames = _path_basenames(self.CORPUS)
+        assert _has_paired_test_file("src/Core/uKeymap.pas", basenames)
+        assert _has_paired_test_file("src/Core/uANSIParser.pas", basenames)
+        assert _has_paired_test_file("src/Core/Utils.pas", basenames)
+
+    def test_pascal_orphan_and_near_miss_do_not_match(self) -> None:
+        basenames = _path_basenames(self.CORPUS)
+        assert not _has_paired_test_file("src/Core/uOrphan.pas", basenames)
+        assert not _has_paired_test_file("src/Core/uOther.pas", basenames)
+
+    def test_non_pascal_file_is_unaffected_by_pascal_candidate(self) -> None:
+        # A non-Pascal file named e.g. "uKeymap.ts" must not spuriously pick
+        # up the Pascal Test<Stem>.dpr candidate.
+        basenames = _path_basenames({"uKeymap.ts", "TestKeymap.dpr"})
+        assert not _has_paired_test_file("uKeymap.ts", basenames)
+
+    def test_ruby_and_crystal_underscore_spec_pairing(self) -> None:
+        """Ruby's <stem>_spec.rb (and Crystal's <stem>_spec.cr) is a paired test (#1768)."""
+        ruby = {"spec/user_spec.rb"}
+        assert _has_paired_test_file("lib/user.rb", _path_basenames(ruby))
+        crystal = {"spec/user_spec.cr"}
+        assert _has_paired_test_file("src/user.cr", _path_basenames(crystal))
+        # Same stem, dot form, must NOT count for Ruby's underscore layout.
+        assert not _has_paired_test_file("lib/user.rb", _path_basenames({"spec/user.spec.rb"}))
+
+
+def test_name_match_tier_finds_tests_named_for_a_target_anywhere():
+    from repowise.core.analysis.test_reachability import tests_matching_by_name
+
+    tests = {"tests/unit/test_jira_links.py", "tests/app/test_jira_links.py", "web/a.test.ts"}
+    found = tests_matching_by_name(["app/jira_links.py", "web/a.ts", "app/none.py"], tests)
+
+    # Same name twice: the one whose directories mirror the target's leads.
+    assert found["app/jira_links.py"].tests == [
+        "tests/app/test_jira_links.py",
+        "tests/unit/test_jira_links.py",
+    ]
+    assert found["app/jira_links.py"].via == "name-match"
+    assert found["web/a.ts"].total == 1
+    assert "app/none.py" not in found
+
+
+def test_unnamed_tests_rank_by_the_directories_they_share_with_the_target():
+    from repowise.core.analysis.test_reachability import rank_tests
+
+    ranked = rank_tests("pkg/a/b/mod.py", ["pkg/x/test_other.py", "pkg/a/b/test_sibling.py"])
+    assert ranked == ["pkg/a/b/test_sibling.py", "pkg/x/test_other.py"]
+
+
+class TestClassNamedPairing:
+    """JVM and .NET tests are a class named ``<Stem>Test``/``<Stem>Tests``/``<Stem>Spec``."""
+
+    @pytest.mark.parametrize(
+        ("source", "test"),
+        [
+            ("src/main/java/a/Foo.java", "src/test/java/a/FooTest.java"),
+            ("src/main/java/a/Foo.java", "src/test/java/a/FooTests.java"),
+            ("src/App/Foo.cs", "tests/App.Tests/FooTest.cs"),
+            ("src/App/Foo.cs", "tests/App.Tests/FooTests.cs"),
+            ("src/main/kotlin/Foo.kt", "src/test/kotlin/FooTest.kt"),
+            ("src/main/kotlin/Foo.kt", "src/test/kotlin/FooSpec.kt"),
+            ("src/main/scala/Foo.scala", "src/test/scala/FooSpec.scala"),
+            ("src/main/scala/Foo.scala", "src/test/scala/FooSuite.scala"),
+            ("src/main/scala/Foo.scala", "src/test/scala/FooTest.scala"),
+        ],
+    )
+    def test_pairs(self, source: str, test: str) -> None:
+        assert _has_paired_test_file(source, _path_basenames({source, test}))
+
+    @pytest.mark.parametrize(
+        ("source", "test"),
+        [
+            # Suffix belongs to the language: a C# test does not pair a Java class.
+            ("src/Foo.java", "tests/FooTests.cs"),
+            ("src/Foo.cs", "tests/FooSpec.cs"),
+            ("src/Foo.java", "tests/FooSuite.java"),
+            # Case matters: ``Footest`` is not a test class for ``Foo``.
+            ("src/Foo.java", "tests/Footest.java"),
+        ],
+    )
+    def test_near_misses(self, source: str, test: str) -> None:
+        assert not _has_paired_test_file(source, _path_basenames({source, test}))
+
+    def test_name_match_tier_finds_a_java_test(self) -> None:
+        from repowise.core.analysis.test_reachability import tests_matching_by_name
+
+        found = tests_matching_by_name(
+            ["src/main/java/a/Foo.java"], {"src/test/java/a/FooTest.java"}
+        )
+        assert found["src/main/java/a/Foo.java"].tests == ["src/test/java/a/FooTest.java"]

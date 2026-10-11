@@ -1,0 +1,199 @@
+"""Pure-function tests for the health badge fields + SVG rendering, plus the
+per-file trend serializer's wire shape."""
+
+from __future__ import annotations
+
+from repowise.core.analysis.health.churn_complexity import ChurnComplexityPoint
+from repowise.core.analysis.health.signals import file_signals
+from repowise.core.analysis.health.trends import FileTrend, FileTrendPoint
+from repowise.server.routers.code_health import (
+    _badge_fields,
+    _churn_complexity_to_dict,
+    _file_signals_to_dict,
+    _file_trend_to_dict,
+    _render_badge_svg,
+)
+
+
+def test_badge_fields_band_colors() -> None:
+    assert _badge_fields(9.0) == ("health", "9.0/10", "brightgreen", "excellent")
+    assert _badge_fields(7.5) == ("health", "7.5/10", "brightgreen", "good")
+    assert _badge_fields(6.0) == ("health", "6.0/10", "yellow", "fair")
+    assert _badge_fields(4.5) == ("health", "4.5/10", "orange", "needs_work")
+    assert _badge_fields(2.0) == ("health", "2.0/10", "red", "at_risk")
+    # Just under an edge: the message must not round up into the next band.
+    assert _badge_fields(6.98) == ("health", "6.9/10", "yellow", "fair")
+
+
+def test_every_band_colour_has_a_hex_for_the_self_rendered_svg() -> None:
+    # The JSON endpoint hands shields a colour name; the SVG endpoint has to
+    # resolve it here. A band colour without a hex renders grey.
+    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR
+    from repowise.server.routers.code_health.badge import _BADGE_COLOR_HEX
+
+    assert set(BAND_BADGE_COLOR.values()) <= set(_BADGE_COLOR_HEX)
+
+
+def test_badge_fields_no_data() -> None:
+    _label, message, color, band = _badge_fields(None)
+    assert message == "no data"
+    assert band == "unknown"
+    assert color == "lightgrey"
+
+
+def test_render_badge_svg_embeds_label_and_message() -> None:
+    svg = _render_badge_svg("health", "7.4/10", "brightgreen")
+    assert svg.startswith("<svg")
+    assert svg.endswith("</svg>")
+    assert "7.4/10" in svg
+    assert "#4c1" in svg  # brightgreen hex
+    assert "media" not in svg  # sanity: it's markup, not a response wrapper
+
+
+def test_file_trend_to_dict_thin_history() -> None:
+    t = FileTrend(
+        file_path="a.py",
+        points=[],
+        current=None,
+        previous=None,
+        delta=None,
+        declining=False,
+        snapshot_count=1,
+    )
+    d = _file_trend_to_dict(t)
+    assert d == {
+        "file_path": "a.py",
+        "points": [],
+        "current": None,
+        "previous": None,
+        "delta": None,
+        # Null alongside ``delta``, not absent: a thin history has no movement
+        # to report on either series, and a consumer reading
+        # ``unclamped_delta ?? delta`` must not fall through to a stale number.
+        "unclamped_delta": None,
+        "declining": False,
+        "snapshot_count": 1,
+    }
+
+
+def test_file_trend_to_dict_serializes_points() -> None:
+    from datetime import UTC, datetime
+
+    t = FileTrend(
+        file_path="a.py",
+        points=[
+            FileTrendPoint(
+                taken_at=datetime(2026, 1, 1, tzinfo=UTC), score=8.0, unclamped_score=8.0
+            ),
+            # Sitting on the floor with the real depth recorded: the point the
+            # serializer has to carry both numbers for.
+            FileTrendPoint(taken_at=None, score=1.0, unclamped_score=-2.9),
+        ],
+        current=1.0,
+        previous=8.0,
+        delta=-7.0,
+        unclamped_delta=-10.9,
+        declining=True,
+        snapshot_count=2,
+    )
+    d = _file_trend_to_dict(t)
+    assert d["points"][0]["taken_at"] == "2026-01-01T00:00:00+00:00"
+    assert d["points"][0]["score"] == 8.0
+    assert d["points"][0]["unclamped_score"] == 8.0
+    assert d["points"][1]["taken_at"] is None
+    assert d["points"][1]["score"] == 1.0
+    assert d["points"][1]["unclamped_score"] == -2.9
+    assert d["delta"] == -7.0
+    assert d["unclamped_delta"] == -10.9
+    assert d["declining"] is True
+
+
+class _Git:
+    """Stub git-metadata row for the signals serializer."""
+
+    def __init__(self, **kw: object) -> None:
+        defaults = dict(
+            prior_defect_count=0,
+            change_entropy_pct=0.0,
+            lines_added_90d=0,
+            lines_deleted_90d=0,
+            commit_count_90d=0,
+            age_days=0,
+            primary_owner_name=None,
+            primary_owner_commit_pct=None,
+            recent_owner_name=None,
+            recent_owner_commit_pct=None,
+        )
+        defaults.update(kw)
+        self.__dict__.update(defaults)
+
+
+def test_file_signals_to_dict_no_data_all_null() -> None:
+    d = _file_signals_to_dict(file_signals(None, None))
+    assert d == {
+        "prior_defect_count": None,
+        "change_entropy_pct": None,
+        "lines_added_90d": None,
+        "lines_deleted_90d": None,
+        "commit_count_90d": None,
+        "age_days": None,
+        "primary_owner_name": None,
+        "primary_owner_commit_pct": None,
+        "recent_owner_name": None,
+        "recent_owner_commit_pct": None,
+        "in_degree": None,
+        "out_degree": None,
+        "bug_magnet": None,
+        "last_fix_at": None,
+        "fix_symbol_counts": None,
+    }
+
+
+def test_file_signals_to_dict_populated_and_normalized() -> None:
+    git = _Git(prior_defect_count=2, change_entropy_pct=0.5, primary_owner_name="Ada")
+    d = _file_signals_to_dict(file_signals(git, {"in_degree": 9, "out_degree": 4}))
+    assert d["prior_defect_count"] == 2
+    assert d["change_entropy_pct"] == 50.0  # 0-1 column → 0-100 wire
+    assert d["primary_owner_name"] == "Ada"
+    assert d["in_degree"] == 9
+    assert d["out_degree"] == 4
+
+
+def test_churn_complexity_to_dict_wire_shape() -> None:
+    p = ChurnComplexityPoint(
+        file_path="a.py",
+        commit_count_90d=14,
+        max_ccn=22,
+        nloc=420,
+        score=3.4,
+        churn_percentile=92.0,
+    )
+    d = _churn_complexity_to_dict(p)
+    assert d == {
+        "file_path": "a.py",
+        "commit_count_90d": 14,
+        "max_ccn": 22,
+        "nloc": 420,
+        "score": 3.4,
+        "churn_percentile": 92.0,
+    }
+
+
+def test_the_badge_response_model_keeps_schema_version() -> None:
+    """Shields renders "invalid response" without it, so the model must carry it.
+
+    The route builds the payload as a plain dict, so a model that omitted this
+    key would drop it silently and break every embedded badge.
+    """
+    from repowise.server.schemas import HealthBadgeResponse
+
+    label, message, color, band = _badge_fields(9.0)
+    body = {
+        "schemaVersion": 1,
+        "label": label,
+        "message": message,
+        "color": color,
+        "band": band,
+    }
+
+    assert HealthBadgeResponse.model_validate(body).model_dump() == body

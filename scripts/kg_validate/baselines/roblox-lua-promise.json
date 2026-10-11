@@ -1,0 +1,46 @@
+{
+ "repo": "roblox-lua-promise",
+ "smells": [
+  {
+   "code": "tour_too_short",
+   "message": "only 4 steps",
+   "severity": "WARN"
+  },
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 81% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "luau": {
+    "edges_per_file": 0.67,
+    "files": 3,
+    "import_edges": 2,
+    "import_support": "partial",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.5
+   }
+  },
+  "dominant_language": "luau",
+  "entry_points": [
+   "lib/init.lua"
+  ],
+  "modules": {
+   "count": 1,
+   "max_size": 17,
+   "min_size": 17,
+   "names": [
+    "Application"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "lib/init.lua",
+   "runTests.server.lua",
+   "lib/init.spec.lua"
+  ]
+ }
+}

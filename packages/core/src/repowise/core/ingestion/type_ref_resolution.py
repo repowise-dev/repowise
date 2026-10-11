@@ -1,0 +1,926 @@
+"""Resolve ``TypeReference`` records to file-level ``imports`` edges.
+
+Background
+==========
+Static-typed, DI-heavy languages (C#, Java, Kotlin, Scala, Swift) place
+half their dependency surface inside constructor and method parameter
+lists rather than at the top of the file. A constructor like::
+
+    public class BasketViewModel(IBasketService basket) { ... }
+
+declares a hard dependency on ``IBasketService`` that the existing
+``using``-directive resolver never sees — there is no statement to
+translate into a file-to-file edge. The result is a graph in which every
+class registered for DI as a concrete implementation reads as an
+orphan, and dead-code analysis fires on every interface and ViewModel.
+
+This module closes the gap. The parser emits ``TypeReference`` records
+from ``@param.type`` captures in each language's ``.scm`` file; this
+module resolves them to defining files and emits ``imports`` edges
+during the graph build phase.
+
+Design
+======
+Per-language *strategies* sit behind a single ``resolve_type_refs``
+entrypoint. A strategy receives the ``ParsedFile``, the resolver
+context, and the graph being built, and is responsible for emitting
+edges into the graph. Strategies are registered in
+``_STRATEGIES`` keyed by ``LanguageTag``.
+
+Adding a new language is a matter of:
+    1. Capturing ``@param.type`` in that language's ``.scm`` file.
+    2. Writing a ``_resolve_<lang>_type_refs`` function (typically a
+       30-line wrapper that calls the language's existing resolver
+       index — Java uses the package map, Kotlin the package map plus
+       Gradle sourceSets, Swift the SPM target map, etc).
+    3. Registering it in ``_STRATEGIES``.
+
+No changes are required to ``parser.py`` or ``graph.py`` to add a
+language — the dispatcher walks every ``ParsedFile`` and routes by
+language tag.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import structlog
+
+from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
+from .models import ParsedFile
+
+if TYPE_CHECKING:
+    import networkx as nx
+
+    from .resolvers import ResolverContext
+
+log = structlog.get_logger(__name__)
+
+# Confidence floor for synthesised type-use edges. Lower than a real
+# `using` directive (~1.0) because a same-name type can be defined in
+# multiple files and we rank-pick the most likely. The dead-code
+# analyzer treats any confidence > 0 as "reachable" so the exact value
+# only matters for downstream weighting (PageRank, blast-radius).
+_TYPE_USE_CONFIDENCE = 0.8
+
+_EMPTY_NAMES: frozenset[str] = frozenset()
+
+
+def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
+    """Map each node to the set of symbol names among its direct successors.
+
+    Replaces the per-candidate ``graph.successors`` scans the find helpers
+    below used to run for every type reference, which cost O(refs x
+    candidates x symbols_per_file) on package-fan-out languages like Go.
+    Built once per ``resolve_type_refs`` pass.
+
+    Building it upfront is equivalent to scanning live: strategies only add
+    file -> file ``type_use`` edges and the ``local_type_uses`` node
+    attribute while they run, never symbol nodes or edges to symbols, so a
+    candidate's symbol-successor set cannot change mid-pass. Falsy symbol
+    names are excluded, matching the callers, which all skip falsy type
+    names before lookup.
+    """
+    sym_name: dict[str, str] = {}
+    for node, data in graph.nodes(data=True):
+        if data.get("node_type") == "symbol":
+            name = data.get("name")
+            if name:
+                sym_name[node] = name
+    index: dict[str, set[str]] = {}
+    for src, dst in graph.edges():
+        name = sym_name.get(dst)
+        if name is not None:
+            index.setdefault(src, set()).add(name)
+    return index
+
+
+def _stamp_local_type_uses(graph: nx.DiGraph, from_path: str, names: set[str]) -> None:
+    """Record type names a file references from its own declarations.
+
+    No self-loop edge is emitted for them, so the dead-code analyzer reads this
+    node attribute instead to see a type used only inside its own file as live.
+    """
+    if not names or not graph.has_node(from_path):
+        return
+    existing = graph.nodes[from_path].get("local_type_uses")
+    if existing is None:
+        graph.nodes[from_path]["local_type_uses"] = set(names)
+    else:
+        existing.update(names)
+
+
+# Languages whose compilers bind a bare type name to a type the referencing
+# file declares (top-level or nested) before any same-package, same-namespace
+# or imported type of that name. A JVM policy class with its own nested
+# ``Node`` means that ``Node``, never a sibling's; a Kotlin ``expect class`` and
+# its platform ``actual`` each name their own declaration; a C# class naming
+# itself means itself, not a same-named class in another project. The
+# strategies below resolve such names to another file anyway, which minted
+# edges in both directions between files that never name each other.
+#
+# Those edges are only kept out of cycle detection (see :data:`OWN_TYPE_NAME_HINT`):
+# call resolution and dead code read them as scope, and dropping them moved
+# call edges onto worse candidates. Upgrade path: resolve own names to the file
+# itself in every strategy once call resolution no longer leans on them.
+_OWN_TYPE_FIRST_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin", "csharp"})
+
+# Symbol kinds that declare a type name. Properties and fields are left out on
+# purpose: C#'s ``public Color Color { get; }`` names the type ``Color`` from
+# another file through a member of the same name.
+_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
+    {"class", "interface", "enum", "struct", "trait", "type_alias"}
+)
+
+
+def _mark_own_name_edges(parsed: ParsedFile, graph: nx.DiGraph) -> None:
+    """Stamp each ``type_use`` edge whose every type name *parsed* declares itself.
+
+    Such an edge carries no reference the file could not satisfy on its own,
+    so it cannot close a dependency cycle. An edge with one name the file does
+    not declare is real evidence and is left alone.
+    """
+    own = {s.name for s in parsed.symbols if s.name and s.kind in _TYPE_DECLARATION_KINDS}
+    src = parsed.file_info.path
+    if not own or not graph.has_node(src):
+        return
+    for _, _, data in graph.out_edges(src, data=True):
+        if _names_only_own_types(data, own):
+            data["hint_source"] = OWN_TYPE_NAME_HINT
+
+
+def _names_only_own_types(data: dict[str, Any], own: set[str]) -> bool:
+    """An unstamped ``type_use`` edge whose type names are all in *own*."""
+    if data.get("edge_type") != "type_use" or "hint_source" in data:
+        return False
+    names = data.get("type_uses")
+    return bool(names) and own.issuperset(names)
+
+
+# ---------------------------------------------------------------------------
+# Strategy: C# / .NET
+# ---------------------------------------------------------------------------
+
+def _resolve_csharp_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve C# ``@param.type`` captures via ``DotNetProjectIndex``.
+
+    Returns the number of edges emitted. Same-file references and
+    references to builtin types are dropped silently (the parser
+    already filters builtins, but defence-in-depth is cheap here).
+    """
+    from .resolvers.dotnet import get_or_build_index
+
+    if not parsed.type_refs:
+        return 0
+
+    index = get_or_build_index(ctx)
+    if index is None or not index.type_map:
+        return 0
+
+    from_path = parsed.file_info.path
+    from_abs = Path(parsed.file_info.abs_path) if parsed.file_info.abs_path else None
+    if from_abs is None:
+        return 0
+
+    emitted = 0
+    for ref in parsed.type_refs:
+        candidates = index.rank_type_candidates(ref.type_name, from_abs)
+        if not candidates:
+            continue
+        target_abs = candidates[0]
+        # Convert to repo-relative POSIX path for graph keying.
+        try:
+            target_rel = target_abs.resolve().relative_to(index.repo_path).as_posix()
+        except ValueError:
+            continue
+        if target_rel == from_path:
+            continue
+        if not graph.has_node(target_rel):
+            # The defining file may have been gated out (e.g. excluded
+            # by .gitignore but still on disk). Skip silently.
+            continue
+        _add_or_merge_type_use_edge(
+            graph,
+            src=from_path,
+            dst=target_rel,
+            type_name=ref.type_name,
+            origin=ref.origin,
+        )
+        emitted += 1
+    return emitted
+
+
+# ---------------------------------------------------------------------------
+# Strategy: Rust
+# ---------------------------------------------------------------------------
+
+def _resolve_rust_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve Rust ``@param.type`` captures via stem map + import graph."""
+    if not parsed.type_refs:
+        return 0
+
+    from .language_data import get_builtin_types
+    from .type_names import bare_type_name
+
+    rust_builtin_types = get_builtin_types("rust")
+    from_path = parsed.file_info.path
+    emitted = 0
+
+    import_targets: set[str] = set()
+    for imp in parsed.imports:
+        if imp.resolved_file and not imp.resolved_file.startswith("external:"):
+            import_targets.add(imp.resolved_file)
+    # Sorted once: import_targets is a set; first-match must be deterministic.
+    sorted_imports = sorted(import_targets)
+
+    for ref in parsed.type_refs:
+        type_name = ref.type_name
+        if not type_name:
+            continue
+        # Tested after reduction, so a path ending in a prelude type is caught
+        # as well as one written bare.
+        bare = bare_type_name(type_name)
+        if bare in rust_builtin_types:
+            continue
+
+        target, inferred = _find_rust_type_file(
+            bare, from_path, sorted_imports, ctx, graph, defined_names
+        )
+        if target is None:
+            continue
+        _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
+                                    type_name=bare, origin=ref.origin,
+                                    widens_scope=not inferred)
+        emitted += 1
+    return emitted
+
+
+def _rust_unique_owner_index(
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> dict[str, str]:
+    """Map each type name declared in exactly one Rust file to that file.
+
+    Rust reaches most sibling-crate types through a ``use`` path that import
+    resolution cannot always land on a file, and its type names almost never
+    match a file stem, so the import and stem lookups in
+    :func:`_find_rust_type_file` both miss. Without a third lookup the vast
+    majority of Rust type references resolve to nothing, and a type used only
+    in a parameter or return position reads as an unused export.
+
+    Only names with a single Rust definition are kept: a name defined twice is
+    ambiguous and gets no edge, the same rule the stem lookup applies. The
+    index is restricted to Rust files so a name shared with a class in another
+    language cannot mint a cross-language edge.
+
+    Cached on the graph and keyed by the identity of *defined_names*, which is
+    rebuilt once per :func:`resolve_type_refs` pass; holding the reference
+    keeps that identity valid for the life of the cache.
+    """
+    cached = graph.graph.get("_rust_type_owner_cache")
+    if cached is not None and cached[0] is defined_names:
+        return cached[1]
+
+    owners: dict[str, str | None] = {}
+    for file_path, names in defined_names.items():
+        node = graph.nodes.get(file_path)
+        if node is None or node.get("language") != "rust":
+            continue
+        for name in names:
+            owners[name] = file_path if name not in owners else None
+    index = {name: f for name, f in owners.items() if f is not None}
+    graph.graph["_rust_type_owner_cache"] = (defined_names, index)
+    return index
+
+
+def _find_rust_type_file(
+    type_name: str,
+    from_path: str,
+    sorted_imports: list[str],
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> tuple[str | None, bool]:
+    """Find the file defining *type_name*, preferring imported files.
+
+    Returns ``(target, inferred)``. *inferred* is True when the answer came
+    from a name-shaped guess — the file stem matching the type name, or the
+    repo-wide unique-owner index — rather than from an import the file actually
+    writes. That distinction matters downstream: an inferred edge is good
+    evidence the target file is *used* (so it counts for reachability and the
+    unused-export pass) but it is not evidence that the caller's bare names
+    resolve into that file, so it must not widen call-resolution scope. Both
+    guesses were measured minting false call edges on goose when they did.
+    """
+    for imp_file in sorted_imports:
+        if type_name in defined_names.get(imp_file, _EMPTY_NAMES):
+            return imp_file, False
+
+    # The stem match is Rust-only for the reason the unique-owner index below
+    # states: the stem map spans every language, so a type named ``Tool``
+    # matched ``Tool.tsx`` and a ``Meta`` matched a ``meta.json``.
+    candidates = ctx.stem_map.get(type_name.lower(), [])
+    if (
+        len(candidates) == 1
+        and candidates[0] != from_path
+        and graph.has_node(candidates[0])
+        and graph.nodes[candidates[0]].get("language") == "rust"
+    ):
+        return candidates[0], True
+
+    owner = _rust_unique_owner_index(graph, defined_names).get(type_name)
+    if owner is not None and owner != from_path:
+        return owner, True
+
+    return None, False
+
+
+# ---------------------------------------------------------------------------
+# Strategy: Go
+# ---------------------------------------------------------------------------
+
+def _resolve_go_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve Go ``@param.type`` captures via the Go package index.
+
+    Go references a type either bare (same package — no import) or
+    package-qualified (``pkg.Type`` — the qualifier was already stripped by
+    the head extractor). The candidate set is therefore the file's own
+    package siblings plus every ``.go`` file in each imported local package.
+    The type name is matched against the symbols those files define, and a
+    file-level ``type_use`` edge is emitted — which is what lets the
+    unused-export pass see a struct used only as a field/param/return type.
+    """
+    if not parsed.type_refs:
+        return 0
+
+    from .cohesion import SAME_PACKAGE_HINT
+    from .language_data import get_builtin_types
+    from .resolvers.go_workspace import get_or_build_go_index
+
+    index = get_or_build_go_index(ctx)
+    go_builtin_types = get_builtin_types("go")
+    from_path = parsed.file_info.path
+
+    # Candidate defining files: same-package siblings (referenced with no
+    # import) + every file in each imported local package (Phase 1 fan-out
+    # means a single import already maps to all of a package's files).
+    candidates: set[str] = set()
+    own_pkg = index.package_for_file(from_path)
+    # Siblings are one compilation unit, not dependencies: a Go package's files
+    # reference each other freely and cannot form an import cycle. Tracked so
+    # the resulting edges can be marked and kept out of cycle detection.
+    sibling_files: frozenset[str] = frozenset(own_pkg.files) if own_pkg else frozenset()
+    if own_pkg:
+        candidates.update(own_pkg.files)
+    for imp in parsed.imports:
+        files = index.files_for_import(imp.module_path)
+        if files:
+            candidates.update(files)
+        elif imp.resolved_file and not imp.resolved_file.startswith("external:"):
+            candidates.add(imp.resolved_file)
+    candidates.discard(from_path)
+    # Sorted once: set iteration; first-match must be deterministic.
+    sorted_candidates = sorted(candidates)
+
+    emitted = 0
+    seen_targets: set[tuple[str, str]] = set()
+    same_file_refs: set[str] = set()
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name or name in go_builtin_types:
+            continue
+        # Check cross-file candidates first.
+        target = _find_go_type_file(name, sorted_candidates, defined_names)
+        if target is not None and target != from_path:
+            if (name, target) not in seen_targets:
+                seen_targets.add((name, target))
+                _add_or_merge_type_use_edge(
+                    graph,
+                    src=from_path,
+                    dst=target,
+                    type_name=name,
+                    origin=ref.origin,
+                    hint_source=SAME_PACKAGE_HINT if target in sibling_files else None,
+                )
+                emitted += 1
+            continue
+        # Type not found cross-file — check if it is defined in the same file.
+        # Stamp it onto local_type_uses so the dead-code analyzer rescues it
+        # (same mechanism used by TS/JS for intra-module type references).
+        if name in defined_names.get(from_path, _EMPTY_NAMES):
+            same_file_refs.add(name)
+
+    _stamp_local_type_uses(graph, from_path, same_file_refs)
+
+    return emitted
+
+
+def _find_go_type_file(
+    type_name: str,
+    sorted_candidates: list[str],
+    defined_names: dict[str, set[str]],
+) -> str | None:
+    """Return the first sorted candidate file defining a type named *type_name*."""
+    for cand in sorted_candidates:
+        if type_name in defined_names.get(cand, _EMPTY_NAMES):
+            return cand
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Strategy: C / C++
+# ---------------------------------------------------------------------------
+
+# ``std::vector`` / ``std::optional`` / ``std::shared_ptr`` — when the
+# parser captures these as type-ref heads (no unwrap path through the
+# grammar caught the inner T), the lookup is guaranteed to find nothing
+# useful. Filter them so we don't waste a per-ref graph walk. Same idea
+# as the TS/Rust builtin filters above.
+_CPP_STL_HEAD_NAMES: frozenset[str] = frozenset({
+    "vector", "array", "deque", "list", "forward_list",
+    "set", "multiset", "map", "multimap",
+    "unordered_set", "unordered_multiset",
+    "unordered_map", "unordered_multimap",
+    "stack", "queue", "priority_queue", "span",
+    "string", "string_view", "wstring", "u16string", "u32string",
+    "pair", "tuple",
+    "optional", "variant", "any", "bitset",
+    "shared_ptr", "unique_ptr", "weak_ptr",
+    "function", "reference_wrapper", "atomic", "atomic_ref",
+    "future", "promise", "shared_future",
+    "thread", "mutex", "lock_guard", "unique_lock", "shared_lock",
+    "condition_variable", "condition_variable_any",
+    "chrono", "duration", "time_point",
+    "initializer_list", "common_type", "decay", "remove_reference",
+    "enable_if", "is_same", "conditional",
+    # Smart casts / trait helpers
+    "make_shared", "make_unique", "make_pair", "make_tuple",
+})
+
+
+def _resolve_c_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve C / C++ ``@param.type`` captures via ``#include`` + stem map.
+
+    A struct or typedef declared in a header and used as a field / param /
+    return type in a ``.c`` that ``#include``s the header has no statement
+    naming the type — the ``#include`` resolves to the header *file*, but
+    the type itself never lands in ``imported_names``. This mirrors the Go
+    type-ref strategy for ``.go`` and the Rust one for ``.rs``: resolve the
+    bare type name against the files this translation unit includes, falling
+    back to a unique global stem match, and emit a ``type_use`` edge so the
+    unused-export pass sees the header type as used.
+
+    C++ extensions over the bare C strategy:
+      * ``std::*`` container heads (``vector``, ``optional``, ``map`` …)
+        are filtered up-front — the inner ``T`` template argument is
+        captured separately by the template_argument_list query and
+        resolves on its own. The container head will never name a user
+        type.
+      * The same-target sibling file set from
+        :class:`CppWorkspaceIndex` is considered alongside ``#include``d
+        files, so a type declared in one TU and used in a sibling TU
+        of the same CMake / Bazel target resolves even when no header
+        wires them together.
+    """
+    if not parsed.type_refs:
+        return 0
+
+    from .language_data import get_builtin_types
+
+    from_path = parsed.file_info.path
+    is_cpp = parsed.file_info.language == "cpp"
+    c_builtin_types = get_builtin_types("c")
+
+    import_targets: set[str] = set()
+    for imp in parsed.imports:
+        if imp.resolved_file and not imp.resolved_file.startswith("external:"):
+            import_targets.add(imp.resolved_file)
+
+    sibling_files: set[str] = set()
+    if is_cpp:
+        try:
+            from .resolvers.cpp_workspace import get_or_build_cpp_index
+
+            cpp_index = get_or_build_cpp_index(ctx)
+            sibling_files = set(cpp_index.siblings_in_targets(from_path))
+        except Exception:
+            sibling_files = set()
+
+    # Sorted once: set iteration; first-match must be deterministic.
+    sorted_imports = sorted(import_targets)
+    sorted_siblings = sorted(sibling_files)
+
+    emitted = 0
+    seen_targets: set[tuple[str, str]] = set()
+    same_file_refs: set[str] = set()
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name or name in c_builtin_types:
+            continue
+        if is_cpp and name in _CPP_STL_HEAD_NAMES:
+            continue
+        target = _find_c_type_file(
+            name, from_path, sorted_imports, sorted_siblings, ctx, graph,
+            defined_names,
+        )
+        # A type defined in this very translation unit has no cross-file edge
+        # to mint — ``_find_c_type_file`` returns ``None`` for it (the stem
+        # map excludes ``from_path``). It is still genuinely referenced, so
+        # stamp it onto ``local_type_uses`` so the dead-code analyzer rescues
+        # it, exactly as the Go and TS resolvers do for intra-module type
+        # refs. Otherwise a struct/class used only inside its own .cpp reads
+        # as an unused_export with ``safe_to_delete: ✓``, yet deleting it
+        # breaks the build.
+        if target is None:
+            if name in defined_names.get(from_path, _EMPTY_NAMES):
+                same_file_refs.add(name)
+            continue
+        if (name, target) in seen_targets:
+            continue
+        seen_targets.add((name, target))
+        _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
+                                    type_name=name, origin=ref.origin)
+        emitted += 1
+
+    _stamp_local_type_uses(graph, from_path, same_file_refs)
+
+    return emitted
+
+
+def _find_c_type_file(
+    type_name: str,
+    from_path: str,
+    sorted_imports: list[str],
+    sorted_siblings: list[str],
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> str | None:
+    """Find the file defining *type_name*, preferring ``#include``d headers.
+
+    Falls back to *sorted_siblings* (same workspace target, usually a
+    sibling ``.cc`` declaring an internal class that another ``.cc`` in
+    the same target uses by value), then the global stem map.
+    """
+    for imp_file in sorted_imports:
+        if type_name in defined_names.get(imp_file, _EMPTY_NAMES):
+            return imp_file
+
+    for sib in sorted_siblings:
+        if sib == from_path:
+            continue
+        if type_name in defined_names.get(sib, _EMPTY_NAMES):
+            return sib
+
+    candidates = ctx.stem_map.get(type_name.lower(), [])
+    if len(candidates) == 1 and candidates[0] != from_path and graph.has_node(candidates[0]):
+        return candidates[0]
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Strategy: TypeScript / JavaScript
+# ---------------------------------------------------------------------------
+
+def _resolve_ts_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve TS/JS ``@param.type`` captures via import bindings + stem map.
+
+    TypeScript has no central type-name registry the way C# has the
+    project's type-map; the canonical place to learn ``Foo``'s defining
+    file is the file's own ``import`` statements. The resolution order
+    mirrors how ``tsc`` itself reasons about names:
+
+        1. ``import { Foo } from './x'``    — bound name; the import's
+           ``resolved_file`` is the answer.
+        2. ``import * as ns from './x'``    — ``ns.Foo`` strips to ``Foo``;
+           the namespace alias points at the module.
+        3. Stem-map fallback                — unique global file whose
+           basename matches the type name; matches Rust's strategy.
+        4. Same-file definitions are skipped silently (no edge needed).
+
+    This emits ``type_use`` edges at file granularity — the dead-code
+    analyzer's unused-export pass consumes ``imported_names`` on either
+    edge type, so an ``interface Foo`` referenced only as a field type
+    in a sibling module is no longer flagged.
+    """
+    if not parsed.type_refs:
+        return 0
+
+    from_path = parsed.file_info.path
+
+    # name -> (resolved_file, exported_name) for direct imports.
+    name_to_source: dict[str, str] = {}
+    # alias -> resolved_file for namespace / module imports.
+    namespace_to_source: dict[str, str] = {}
+    for imp in parsed.imports:
+        if not imp.resolved_file or imp.resolved_file.startswith("external:"):
+            continue
+        for binding in imp.bindings:
+            if binding.local_name == "*":
+                continue
+            if binding.is_module_alias:
+                namespace_to_source[binding.local_name] = imp.resolved_file
+            else:
+                name_to_source[binding.local_name] = imp.resolved_file
+
+    # Symbol names defined in this file — used to filter same-file refs.
+    local_names: set[str] = {s.name for s in parsed.symbols if s.name}
+
+    # Stamp same-file type references on the file node so the dead-code
+    # analyzer can treat an ``interface Foo`` referenced as ``bar: Foo``
+    # inside its own file as live, even though we never emit a self-loop
+    # edge. The C#/Go strategies don't need this because their resolvers
+    # rely on package-level symbol indexes and reach types through value
+    # imports; TS commonly defines a private interface beside the class
+    # that consumes it (``src/context.ts::Get`` is the canonical case).
+    same_file_refs: set[str] = set()
+
+    emitted = 0
+    seen: set[tuple[str, str]] = set()
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name:
+            continue
+        if name in local_names:
+            same_file_refs.add(name)
+            continue
+        target = name_to_source.get(name) or namespace_to_source.get(name)
+        if target is None:
+            target = _find_ts_type_in_stem_map(
+                name, from_path, ctx, graph, defined_names
+            )
+        if target is None or target == from_path:
+            continue
+        if (name, target) in seen:
+            continue
+        seen.add((name, target))
+        if not graph.has_node(target):
+            continue
+        _add_or_merge_type_use_edge(
+            graph, src=from_path, dst=target, type_name=name, origin=ref.origin
+        )
+        emitted += 1
+
+    _stamp_local_type_uses(graph, from_path, same_file_refs)
+
+    return emitted
+
+
+def _find_ts_type_in_stem_map(
+    type_name: str,
+    from_path: str,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> str | None:
+    """Locate ``type_name`` via the global stem map.
+
+    Used when no import binds the name — common when a sibling module
+    in the same package augments a global ``namespace`` or when a type
+    is reached via a tsconfig-paths alias whose binding wasn't extracted
+    (rare but possible). A match is only accepted if exactly one file
+    in the workspace defines a top-level symbol by that name.
+    """
+    candidates = ctx.stem_map.get(type_name.lower(), [])
+    if len(candidates) != 1:
+        return None
+    candidate = candidates[0]
+    if candidate == from_path:
+        return None
+    # Verify the candidate file actually exports a symbol matching name —
+    # avoids accidentally matching ``utils.ts`` to a type called ``Utils``.
+    if type_name in defined_names.get(candidate, _EMPTY_NAMES):
+        return candidate
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Strategy: Java / Kotlin (shared JVM workspace)
+# ---------------------------------------------------------------------------
+
+def _resolve_jvm_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve Java / Kotlin ``@param.type`` captures via ``JvmWorkspaceIndex``.
+
+    JVM resolution order — mirrors how ``javac`` / ``kotlinc`` resolve a
+    bare type name in a source file:
+
+      1. Same-package siblings — both ``.java`` and ``.kt`` files in
+         the package directory (Java + Kotlin co-located).
+      2. Explicit imports (``import com.foo.Bar`` resolves to that file
+         via the workspace's FQN map; wildcard ``import com.foo.*`` /
+         ``import static com.foo.Bar.*`` fan out to every file in the
+         package; both are already attached to the file's ``Import``
+         records by the per-language resolver).
+      3. ``java.lang`` builtins are filtered at extraction time by the
+         per-language head extractor — they never reach this code.
+
+    The candidate file set is collected once and then scanned for each
+    type reference, mirroring the Go strategy. Edges are emitted at
+    file granularity with the standard ``type_use`` confidence so the
+    unused-export pass sees field/param/return-only types as live.
+    """
+    if not parsed.type_refs:
+        return 0
+
+    from .resolvers.jvm_workspace import get_or_build_jvm_index
+
+    index = get_or_build_jvm_index(ctx)
+    from_path = parsed.file_info.path
+
+    candidates: set[str] = set()
+    own_pkg = index.package_for_file(from_path)
+    if own_pkg:
+        pkg = index.packages.get(own_pkg)
+        if pkg is not None:
+            candidates.update(pkg.files)
+    for imp in parsed.imports:
+        resolved = imp.resolved_file
+        if resolved and not resolved.startswith("external:"):
+            candidates.add(resolved)
+    candidates.discard(from_path)
+    if not candidates:
+        return 0
+    # Sorted once: set iteration; first-match must be deterministic.
+    sorted_candidates = sorted(candidates)
+
+    emitted = 0
+    seen_targets: set[tuple[str, str]] = set()
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name:
+            continue
+        target = _find_jvm_type_file(name, sorted_candidates, defined_names)
+        if target is None or target == from_path:
+            continue
+        if (name, target) in seen_targets:
+            continue
+        seen_targets.add((name, target))
+        if not graph.has_node(target):
+            continue
+        _add_or_merge_type_use_edge(
+            graph, src=from_path, dst=target, type_name=name, origin=ref.origin
+        )
+        emitted += 1
+    return emitted
+
+
+def _find_jvm_type_file(
+    type_name: str,
+    sorted_candidates: list[str],
+    defined_names: dict[str, set[str]],
+) -> str | None:
+    """Return the first sorted candidate file defining a top-level type named *type_name*."""
+    for cand in sorted_candidates:
+        if type_name in defined_names.get(cand, _EMPTY_NAMES):
+            return cand
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Strategy registry
+# ---------------------------------------------------------------------------
+
+Strategy = Callable[
+    [ParsedFile, "ResolverContext", "nx.DiGraph", dict[str, set[str]]], int
+]
+
+# Add new languages here — see module docstring. Keep the entries
+# tightly scoped: each strategy must only touch its own language's
+# index, never share resolver state across languages.
+_STRATEGIES: dict[str, Strategy] = {
+    "csharp": _resolve_csharp_type_refs,
+    "rust": _resolve_rust_type_refs,
+    "go": _resolve_go_type_refs,
+    "c": _resolve_c_type_refs,
+    "cpp": _resolve_c_type_refs,
+    "typescript": _resolve_ts_type_refs,
+    "javascript": _resolve_ts_type_refs,
+    "java": _resolve_jvm_type_refs,
+    "kotlin": _resolve_jvm_type_refs,
+}
+
+
+def resolve_type_refs(
+    parsed_files: dict[str, ParsedFile],
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+) -> dict[str, int]:
+    """Dispatch each parsed file to its language's type-ref strategy.
+
+    Returns a per-language emitted-edge count for logging.
+    """
+    counts: dict[str, int] = {}
+    defined_names = _build_defined_name_index(graph)
+    for parsed in parsed_files.values():
+        lang = parsed.file_info.language
+        strategy = _STRATEGIES.get(lang)
+        if strategy is None:
+            continue
+        emitted = strategy(parsed, ctx, graph, defined_names)
+        if lang in _OWN_TYPE_FIRST_LANGUAGES:
+            _mark_own_name_edges(parsed, graph)
+        if emitted:
+            counts[lang] = counts.get(lang, 0) + emitted
+    if counts:
+        log.info("type_use edges emitted", per_language=counts)
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# Edge writer
+# ---------------------------------------------------------------------------
+
+def _add_or_merge_type_use_edge(
+    graph: nx.DiGraph,
+    src: str,
+    dst: str,
+    type_name: str,
+    origin: str,
+    hint_source: str | None = None,
+    widens_scope: bool = True,
+) -> None:
+    """Add a ``type_use`` edge between two files, merging on conflict.
+
+    *hint_source* marks the edge's provenance when the two files belong to one
+    compilation unit (see :mod:`repowise.core.ingestion.cohesion`); it is
+    stamped on creation only, since an existing edge already carries whatever
+    stronger evidence produced it.
+
+    The edge is persisted as its own ``edge_type='type_use'`` row so it
+    is observable in ``graph_edges`` (the SQLite layer drops ad-hoc
+    NetworkX attributes like ``via`` and ``origin``, so encoding the
+    provenance in the edge type itself is the only round-tripping way
+    to surface it). All file-reachability analyses
+    (dead-code's ``in_degree`` check, PageRank, blast-radius) operate
+    across edge types and still pick it up.
+
+    If a stronger ``imports`` edge from a real ``using``/package directive
+    already connects the same files, leave its ``edge_type`` and confidence
+    alone — the directive is strictly stronger evidence — but still record
+    the referenced type in both ``type_uses`` (provenance) and
+    ``imported_names``. The latter matters because the unused-export pass
+    treats ``imported_names`` as the set of names used from a file: a type
+    referenced as a field/param/return is genuinely used, and Go's package
+    import fan-out means the defining file almost always already carries an
+    ``imports`` edge keyed by the *package* alias, not the type name —
+    without this the type would still read as an unused export.
+    """
+    if graph.has_edge(src, dst):
+        data = graph[src][dst]
+        type_uses = data.setdefault("type_uses", [])
+        if type_name not in type_uses:
+            type_uses.append(type_name)
+        names = data.setdefault("imported_names", [])
+        if type_name not in names:
+            names.append(type_name)
+        # One directly-evidenced reference upgrades the whole edge: the files
+        # are genuinely import-linked however the earlier references were found.
+        if widens_scope:
+            data.pop("no_scope_widening", None)
+        withdraw_declaration_hint(data)
+        return
+    attrs: dict[str, Any] = {
+        "edge_type": "type_use",
+        "origin": origin,
+        "confidence": _TYPE_USE_CONFIDENCE,
+        "type_uses": [type_name],
+        "imported_names": [type_name],
+    }
+    if not widens_scope:
+        attrs["no_scope_widening"] = True
+    if hint_source is not None:
+        attrs["hint_source"] = hint_source
+    graph.add_edge(src, dst, **attrs)

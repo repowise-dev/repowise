@@ -1,0 +1,100 @@
+"""Function Hotspot — functions that are both complex and frequently modified.
+
+File-level hotspot misses the case where one file has a stable scaffold
+plus a single hot, ugly function. Joining the per-line blame index
+(``ctx.blame_index``) with the walker's ``FunctionComplexity`` lets us
+project commit shas onto each function's line range and pair churn with
+structural complexity.
+
+Tier-aware: ``ctx.blame_index`` is ``None`` on the ESSENTIAL git tier
+(per-line blame is deferred to the FULL-tier backfill,
+``backfill_full_tier()``); in that case the
+detector emits zero findings. The same no-op holds when the engine
+could not compute the repo-wide p80 (no functions had a non-zero
+mod_count).
+
+The churn bar is ``max(p80, 5)`` changes: a repo-relative top quintile, but
+never fewer than five commits. Two to four edits are what any function under
+active work collects, and on a thin window (a shallow clone, whose blame
+credits every older line to its boundary commit, or a young repository) the
+p80 is 1 or 2, so the quintile alone would flag a function changed twice.
+
+Severity — combined evidence, relative to that bar:
+
+* MEDIUM   when the function is at-or-above the bar AND meets the
+  structural floor (``ccn >= 10`` or ``max_nesting >= 3``).
+* HIGH     when *both* axes are top-decile (mod_count >= 2 * bar OR ccn >= 15).
+* CRITICAL when both axes are top-5% (mod_count >= 3 * bar AND ccn >= 20).
+
+The relative cut-offs are a calibrated approximation of the Z-score
+criterion from the spec — easier to reason about, no per-repo
+distribution math, and they collapse to the same result on the synthetic
+fixtures we test against.
+"""
+
+from __future__ import annotations
+
+from ....ingestion.git_indexer.function_blame import distinct_commits_in_range
+from ..models import Severity
+from .base import BiomarkerResult, FileContext
+
+_CCN_FLOOR = 10
+_MIN_CHANGES = 5
+_NESTING_FLOOR = 3
+_CCN_HIGH = 15
+_CCN_CRITICAL = 20
+
+
+def _severity_for(mod_count: int, bar: int, ccn: int) -> Severity:
+    if mod_count >= 3 * bar and ccn >= _CCN_CRITICAL:
+        return Severity.CRITICAL
+    if mod_count >= 2 * bar or ccn >= _CCN_HIGH:
+        return Severity.HIGH
+    return Severity.MEDIUM
+
+
+class FunctionHotspotDetector:
+    name = "function_hotspot"
+    category = "organizational"
+
+    def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
+        idx = ctx.blame_index
+        if idx is None or not idx.lines:
+            return []
+        p80 = ctx.repo_function_mod_p80
+        if p80 is None or p80 <= 0:
+            return []
+        bar = max(p80, _MIN_CHANGES)
+
+        findings: list[BiomarkerResult] = []
+        for fc in ctx.all_functions:
+            mod_count = len(distinct_commits_in_range(idx, fc.start_line, fc.end_line))
+            if mod_count < bar:
+                continue
+            if fc.ccn < _CCN_FLOOR and fc.max_nesting < _NESTING_FLOOR:
+                continue
+            severity = _severity_for(mod_count, bar, fc.ccn)
+            findings.append(
+                BiomarkerResult(
+                    biomarker_type=self.name,
+                    severity=severity,
+                    function_name=fc.name,
+                    line_start=fc.start_line,
+                    line_end=fc.end_line,
+                    details={
+                        "modification_count": mod_count,
+                        "repo_p80": p80,
+                        "ccn": fc.ccn,
+                        "max_nesting": fc.max_nesting,
+                    },
+                    reason=(
+                        f"{fc.name} has been modified across {mod_count} "
+                        f"commits (repo p80={p80}) and carries CCN={fc.ccn} / "
+                        f"nesting={fc.max_nesting}"
+                    ),
+                )
+            )
+        return findings
+
+
+BIOMARKER = FunctionHotspotDetector()

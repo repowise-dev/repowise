@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?><!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd"><report name="sample">
+  <sessioninfo id="host-1" start="1700000000000" dump="1700000001000"/>
+  <group name="app">
+    <package name="com/foo">
+      <class name="com/foo/Bar" sourcefilename="Bar.java">
+        <method name="run" desc="()V" line="5">
+          <counter type="INSTRUCTION" missed="3" covered="6"/>
+          <counter type="LINE" missed="1" covered="2"/>
+        </method>
+        <counter type="LINE" missed="2" covered="2"/>
+      </class>
+      <sourcefile name="Bar.java">
+        <line nr="3" mi="0" ci="2" mb="0" cb="0"/>
+        <line nr="5" mi="0" ci="4" mb="1" cb="1"/>
+        <line nr="7" mi="3" ci="0" mb="2" cb="0"/>
+        <line nr="9" mi="1" ci="0" mb="0" cb="0"/>
+        <counter type="LINE" missed="2" covered="2"/>
+      </sourcefile>
+      <sourcefile name="Api.java">
+        <counter type="CLASS" missed="0" covered="1"/>
+      </sourcefile>
+    </package>
+    <package name="">
+      <class name="Main" sourcefilename="Main.java">
+        <counter type="LINE" missed="1" covered="1"/>
+      </class>
+      <sourcefile name="Main.java">
+        <line nr="1" mi="1" ci="0" mb="0" cb="0"/>
+        <line nr="2" mi="0" ci="1" mb="0" cb="0"/>
+        <line nr="4" mi="0" ci="0" mb="0" cb="0"/>
+      </sourcefile>
+    </package>
+  </group>
+  <group name="lib">
+    <package name="com/foo">
+      <sourcefile name="Bar.java">
+        <line nr="7" mi="0" ci="3" mb="1" cb="1"/>
+      </sourcefile>
+    </package>
+  </group>
+  <counter type="LINE" missed="3" covered="4"/>
+</report>

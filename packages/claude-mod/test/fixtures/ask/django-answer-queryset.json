@@ -1,0 +1,9 @@
+{
+  "answer": "Synthesis is unavailable (no-llm-provider), but symbol_bodies contains live source for the named code. Use that evidence directly.",
+  "citations": [
+    "django/db/models/query.py"
+  ],
+  "confidence": "medium",
+  "retrieval_quality": "high",
+  "degraded": "no-llm-provider"
+}

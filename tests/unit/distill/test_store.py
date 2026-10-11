@@ -1,0 +1,239 @@
+"""Unit tests for the OmissionStore sidecar."""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+from pathlib import Path
+
+import pytest
+
+from repowise.core.distill import store as store_module
+from repowise.core.distill.store import OmissionStore, content_ref, default_store_path
+
+
+def test_put_get_roundtrip(store: OmissionStore) -> None:
+    content = "line one\nline two with unicode ✓\nline three"
+    ref = store.put(content, source="cli:test_output", original_tokens=100, kept_tokens=20)
+    assert len(ref) == 12
+    assert store.get(ref) == content
+
+
+def test_put_is_idempotent_per_content(store: OmissionStore) -> None:
+    a = store.put("same", source="cli:logs", original_tokens=10, kept_tokens=2)
+    b = store.put("same", source="cli:logs", original_tokens=10, kept_tokens=2)
+    assert a == b == content_ref("same")
+
+
+def test_get_unknown_ref_returns_none(store: OmissionStore) -> None:
+    assert store.get("0" * 12) is None
+    assert store.get("not-a-ref") is None
+
+
+def test_get_record_returns_provenance(store: OmissionStore) -> None:
+    before = time.time()
+    ref = store.put(
+        "payload\nERROR boom", source="mcp:get_context", original_tokens=50, kept_tokens=5
+    )
+    record = store.get_record(ref)
+    assert record["content"] == "payload\nERROR boom"
+    assert record["source"] == "mcp:get_context"
+    assert record["original_tokens"] == 50
+    assert record["kept_tokens"] == 5
+    assert record["created_at"] >= before
+    # Query filtering applies to the record's content too.
+    assert store.get_record(ref, query="^ERROR")["content"] == "ERROR boom"
+    assert store.get_record("0" * 12) is None
+
+
+def test_evidence_reference_roundtrip_uses_exact_public_id(store: OmissionStore) -> None:
+    reference = '{"id":"ev_abc","repository":"backend","kind":"file_range"}'
+    store.put_evidence_reference("ev_abc", reference, repository="backend")
+
+    assert store.get_evidence_reference("ev_abc") == {
+        "content": reference,
+        "repository": "backend",
+    }
+    assert store.get_evidence_reference("ev_missing") is None
+
+
+def test_get_with_query_filters_lines(store: OmissionStore) -> None:
+    content = "FAILED test_a\npassed test_b\nFAILED test_c"
+    ref = store.put(content, source="cli:test_output", original_tokens=10, kept_tokens=2)
+    assert store.get(ref, query="FAILED") == "FAILED test_a\nFAILED test_c"
+
+
+def test_get_with_invalid_regex_falls_back_to_substring(store: OmissionStore) -> None:
+    content = "a [bracket( line\nother"
+    ref = store.put(content, source="cli:logs", original_tokens=10, kept_tokens=2)
+    assert store.get(ref, query="[bracket(") == "a [bracket( line"
+
+
+def test_access_count_increments(store: OmissionStore) -> None:
+    ref = store.put("content", source="cli:logs", original_tokens=10, kept_tokens=2)
+    store.get(ref)
+    store.get(ref)
+    count = store._conn.execute(
+        "SELECT access_count FROM omissions WHERE ref = ?", (ref,)
+    ).fetchone()[0]
+    assert count == 2
+
+
+def test_ttl_prune_drops_old_rows(tmp_path: Path) -> None:
+    s = OmissionStore(tmp_path / "omissions.db", ttl_days=1)
+    ref = s.put("old content", source="cli:logs", original_tokens=10, kept_tokens=2)
+    # Backdate the row past the TTL, then trigger an opportunistic prune.
+    s._conn.execute(
+        "UPDATE omissions SET created_at = ? WHERE ref = ?",
+        (time.time() - 2 * 86400, ref),
+    )
+    s._conn.commit()
+    s.prune()
+    assert s.get(ref) is None
+    s.close()
+
+
+def test_size_cap_prunes_oldest_first(tmp_path: Path) -> None:
+    # Cap small enough that two large random-ish payloads cannot coexist.
+    s = OmissionStore(tmp_path / "omissions.db", max_mb=0.001)  # 1 KB
+    import random
+
+    rng = random.Random(42)
+    blob_a = "".join(chr(rng.randint(33, 126)) for _ in range(4000))
+    blob_b = "".join(chr(rng.randint(33, 126)) for _ in range(4000))
+    ref_a = s.put(blob_a, source="cli:logs", original_tokens=10, kept_tokens=2)
+    s._conn.execute("UPDATE omissions SET created_at = created_at - 60 WHERE ref = ?", (ref_a,))
+    s._conn.commit()
+    ref_b = s.put(blob_b, source="cli:logs", original_tokens=10, kept_tokens=2)
+    assert s.get(ref_a) is None  # oldest evicted
+    s.close()
+    assert ref_b != ref_a
+
+
+def test_savings_ledger_roundtrip(store: OmissionStore) -> None:
+    store.record_saving(
+        filter_name="test_output",
+        source="cli",
+        command="pytest",
+        raw_tokens=1000,
+        distilled_tokens=100,
+    )
+    store.record_saving(
+        filter_name="git_log",
+        source="cli",
+        command="git log",
+        raw_tokens=500,
+        distilled_tokens=50,
+    )
+    summary = store.savings_summary()
+    assert summary["events"] == 2
+    assert summary["raw_tokens"] == 1500
+    assert summary["saved_tokens"] == 1350
+    assert summary["per_filter"]["test_output"]["saved_tokens"] == 900
+
+
+def test_mcp_drops_summary_reads_omissions(store: OmissionStore) -> None:
+    from repowise.core.distill.tracking import mcp_drops_summary
+
+    # MCP truncation drops land in the omissions table (kept_tokens=0), never
+    # in the savings ledger.
+    store.put("a" * 400, source="mcp:get_risk", original_tokens=300, kept_tokens=0)
+    store.put("b" * 400, source="mcp:get_risk", original_tokens=200, kept_tokens=0)
+    store.put("c" * 400, source="mcp:get_overview", original_tokens=100, kept_tokens=0)
+    # Distill omissions must not leak into the MCP view.
+    store.put("d" * 400, source="cli:test_output", original_tokens=999, kept_tokens=50)
+
+    summary = mcp_drops_summary(store._conn)
+    assert summary["events"] == 3
+    assert summary["tokens"] == 600
+    assert summary["per_tool"]["get_risk"] == {"events": 2, "tokens": 500}
+    assert summary["per_tool"]["get_overview"] == {"events": 1, "tokens": 100}
+    # Ordered by tokens desc — biggest tool first.
+    assert list(summary["per_tool"]) == ["get_risk", "get_overview"]
+
+
+def test_mcp_drops_summary_empty(store: OmissionStore) -> None:
+    from repowise.core.distill.tracking import mcp_drops_summary
+
+    summary = mcp_drops_summary(store._conn)
+    assert summary == {"events": 0, "tokens": 0, "per_tool": {}}
+
+
+def test_distill_summary_excludes_mcp_rows(store: OmissionStore) -> None:
+    from repowise.core.distill.tracking import distill_summary
+
+    # Distill surface rows…
+    store.record_saving(
+        filter_name="test_output",
+        source="cli",
+        command="pytest",
+        raw_tokens=1000,
+        distilled_tokens=100,
+    )
+    store.record_saving(
+        filter_name="git_log",
+        source="hook-bash",
+        command="git log",
+        raw_tokens=500,
+        distilled_tokens=50,
+    )
+    # …and an MCP counterfactual row in the same ledger, which distill must skip.
+    store.record_saving(
+        filter_name="get_context",
+        source="mcp:get_context",
+        command=None,
+        raw_tokens=4000,
+        distilled_tokens=400,
+    )
+
+    summary = distill_summary(store._conn)
+    assert summary["events"] == 2
+    assert summary["raw_tokens"] == 1500
+    assert summary["saved_tokens"] == 1350
+    assert set(summary["per_filter"]) == {"test_output", "git_log"}
+    assert "get_context" not in summary["per_filter"]
+
+
+def test_mcp_savings_summary_empty(store: OmissionStore) -> None:
+    from repowise.core.distill.tracking import mcp_savings_summary
+
+    summary = mcp_savings_summary(store._conn)
+    assert summary == {"events": 0, "tokens": 0, "queries": 0, "per_tool": []}
+
+
+def test_default_store_path_finds_repowise_dir(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    nested = repo / "src" / "deep"
+    nested.mkdir(parents=True)
+    (repo / ".repowise").mkdir()
+    path = default_store_path(nested)
+    assert path == repo / ".repowise" / "omissions" / "omissions.db"
+
+
+def test_default_store_path_falls_back_to_home(tmp_path: Path) -> None:
+    # No .repowise anywhere up the tree (tmp_path is outside home's subtree
+    # on CI runners; if not, the walk stops at home and still falls back).
+    path = default_store_path(tmp_path)
+    assert path.name == "omissions.db"
+    assert ".repowise" in str(path)
+
+
+def test_a_store_that_fails_to_open_closes_its_connection(tmp_path: Path, monkeypatch) -> None:
+    """A corrupt database file must not leak the connection opened for it."""
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def _connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", _connect)
+    db = tmp_path / "omissions.db"
+    db.write_bytes(b"not a sqlite database" * 100)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        OmissionStore(db)
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")

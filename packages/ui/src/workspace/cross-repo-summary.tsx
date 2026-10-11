@@ -1,0 +1,51 @@
+"use client";
+
+import { Link2, GitMerge, Package } from "lucide-react";
+import { MetricCard } from "../shared/metric-card";
+import type {
+  WorkspaceCrossRepoSummary,
+  WorkspaceContractSummary,
+} from "@repowise-dev/types/workspace";
+
+interface CrossRepoSummaryProps {
+  crossRepo: WorkspaceCrossRepoSummary | null;
+  contracts: WorkspaceContractSummary | null;
+}
+
+export function CrossRepoSummary({ crossRepo, contracts }: CrossRepoSummaryProps) {
+  const byTypeDescription = contracts?.by_type
+    ? Object.entries(contracts.by_type)
+        .map(([k, v]) => `${v} ${k}`)
+        .join(", ")
+    : undefined;
+  const packageDescription = crossRepo?.package_diagnostic_count
+    ? `${crossRepo.package_diagnostic_count} Maven non-matches; ${crossRepo.package_diagnostics_emitted ?? 0} retained`
+    : undefined;
+
+  return (
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <MetricCard
+        label="Co-Change Pairs"
+        value={crossRepo?.co_change_count ?? 0}
+        icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
+      />
+      <MetricCard
+        label="Package Deps"
+        value={crossRepo?.package_dep_count ?? 0}
+        {...(packageDescription ? { description: packageDescription } : {})}
+        icon={<Package className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
+      />
+      <MetricCard
+        label="Contract Links"
+        value={contracts?.total_links ?? 0}
+        icon={<Link2 className="h-4 w-4 text-[var(--color-info)]" />}
+      />
+      <MetricCard
+        label="Contracts Detected"
+        value={contracts?.total_contracts ?? 0}
+        {...(byTypeDescription ? { description: byTypeDescription } : {})}
+        icon={<Link2 className="h-4 w-4 text-[var(--color-warning)]" />}
+      />
+    </div>
+  );
+}

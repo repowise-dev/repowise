@@ -1,0 +1,415 @@
+"use client";
+
+import { useCallback } from "react";
+import Link from "next/link";
+import useSWR from "swr";
+import { ArrowRight, Flame, Bug } from "lucide-react";
+import { cn } from "@/lib/utils/cn";
+import { getGitMetadata } from "@/lib/api/git";
+import { summarizeFixHistory } from "@repowise-dev/ui/lib/fix-history";
+import { DocsReader } from "@repowise-dev/ui/docs/docs-reader";
+import { docsPagePath, fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { isModelWrittenType } from "@repowise-dev/ui/lib/page-types";
+import { PageGenerateButton } from "./page-generate-button";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { VersionHistoryWrapper } from "@/components/wiki/version-history";
+import { SecurityPanelWrapper } from "@/components/wiki/security-panel";
+import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
+import type { ReaderPersona } from "@repowise-dev/ui/docs/reader-persona";
+import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
+import type { PageResponse, PageSummary } from "@/lib/api/types";
+import { useTranslations } from "next-intl";
+
+function PercentileBar({ value, label }: { value: number; label: string }) {
+  const t = useTranslations("docs");
+  const pct = 100 - value;
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs text-[var(--color-text-tertiary)] shrink-0">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <div className="w-16 h-1.5 rounded-full bg-[var(--color-bg-elevated)] overflow-hidden">
+          <div
+            className={cn(
+              "h-full rounded-full",
+              value >= 75 ? "bg-[var(--color-success)]" : value >= 50 ? "bg-[var(--color-warning)]" : "bg-[var(--color-text-tertiary)]",
+            )}
+            style={{ width: `${value}%` }}
+          />
+        </div>
+        <span className={cn(
+          "text-[10px] font-mono tabular-nums w-10 text-right",
+          value >= 75 ? "text-[var(--color-success)]" : value >= 50 ? "text-[var(--color-warning)]" : "text-[var(--color-text-tertiary)]",
+        )}>
+          {t("viewer.topPercent", { pct })}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: string }) {
+  const t = useTranslations("docs");
+  const nodeId = targetPath;
+  const { metrics, isLoading: metricsLoading } = useGraphMetrics(repoId, nodeId);
+  const symbolNodeId = targetPath.includes("::") ? targetPath : null;
+  const { data: callData } = useCallersCallees(repoId, symbolNodeId);
+
+  if (metricsLoading) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-4 w-20" />
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-3/4" />
+      </div>
+    );
+  }
+
+  // No graph data — render nothing rather than announcing the absence.
+  if (!metrics) return null;
+
+  return (
+    <div className="space-y-4">
+      {/* Graph importance. No section header of its own — the rail groups these
+          under one "Signals" label, so the rows speak for themselves. */}
+      <div>
+        <div className="space-y-2">
+          <PercentileBar value={metrics.pagerank_percentile} label="PageRank" />
+          {metrics.betweenness_scored === false ? (
+            // Never measured, so a percentile bar would draw a rank it does not have.
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[var(--color-text-tertiary)]">
+                {t("viewer.centrality")}
+              </span>
+              <span className="text-xs text-[var(--color-text-tertiary)]">
+                {t("viewer.notScored")}
+              </span>
+            </div>
+          ) : (
+            <PercentileBar
+              value={metrics.betweenness_percentile}
+              label={t("viewer.centrality")}
+            />
+          )}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-[var(--color-text-tertiary)]">
+              {t("viewer.degree")}
+            </span>
+            <span className="text-xs font-mono text-[var(--color-text-secondary)]">
+              {t("viewer.degreeValue", {
+                inbound: metrics.in_degree,
+                outbound: metrics.out_degree,
+              })}
+            </span>
+          </div>
+          {metrics.is_entry_point && (
+            <Badge variant="accent" className="text-[10px]">
+              {t("viewer.entryPoint")}
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      {/* Community — a single value, so it renders as a labelled row like the
+          rest rather than as its own titled section. */}
+      {metrics.community_label && (
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-[var(--color-text-tertiary)]">
+            {t("viewer.community")}
+          </span>
+          <Link
+            href={`/repos/${repoId}/architecture?view=communities`}
+            className="inline-flex items-center gap-1 truncate text-xs text-[var(--color-accent)] hover:underline"
+          >
+            {metrics.community_label}
+            <ArrowRight className="h-2.5 w-2.5 shrink-0" />
+          </Link>
+        </div>
+      )}
+
+      {/* Callers/Callees (for symbol pages) */}
+      {callData && (callData.caller_count > 0 || callData.callee_count > 0) && (
+        <div>
+          {callData.caller_count > 0 && (
+            <div className="mb-2">
+              <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">
+                {t("viewer.calledBy", { count: callData.caller_count })}
+              </p>
+              {callData.callers.slice(0, 5).map((c) => (
+                <p key={c.symbol_id} className="text-xs font-mono text-[var(--color-text-secondary)] truncate pl-2" title={c.symbol_id}>
+                  {c.name}
+                </p>
+              ))}
+            </div>
+          )}
+          {callData.callee_count > 0 && (
+            <div>
+              <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">
+                {t("viewer.calls", { count: callData.callee_count })}
+              </p>
+              {callData.callees.slice(0, 5).map((c) => (
+                <p key={c.symbol_id} className="text-xs font-mono text-[var(--color-text-secondary)] truncate pl-2" title={c.symbol_id}>
+                  {c.name}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Consolidated "At a glance" signals for a file page — hotspot, ownership,
+ * churn, bus factor — pulled from the git-metadata endpoint so the reader
+ * doesn't have to leave the doc to learn how risky/owned a file is.
+ * Renders nothing for non-file pages or files without git history.
+ */
+function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string }) {
+  const t = useTranslations("docs");
+  const isFile =
+    !!targetPath &&
+    !targetPath.includes("::") &&
+    !targetPath.startsWith("onboarding/") &&
+    !targetPath.startsWith("layer:");
+  const { data } = useSWR(
+    isFile ? `git-meta:${repoId}:${targetPath}` : null,
+    () => getGitMetadata(repoId, targetPath),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+  if (!data || data.commit_count_total === 0) return null;
+
+  const churnTop = Math.max(1, 100 - Math.round(data.churn_percentile));
+  // Null for a file with no counted fixes, so the panel says nothing new.
+  const fix = summarizeFixHistory(
+    data.prior_defect_count,
+    data.last_fix_at,
+    data.bug_magnet,
+  );
+  return (
+    <div>
+      {/* Leads the Signals list: the chips are the fastest read on the page,
+          and they carry their own meaning without a header over them. */}
+      <div className="flex flex-wrap gap-1.5">
+        {data.is_hotspot && (
+          <Badge variant="outline" className="text-[10px] border-[var(--color-warning)]/40 text-[var(--color-warning)]">
+            <Flame className="h-2.5 w-2.5 mr-1" />
+            {t("viewer.hotspot", { pct: churnTop })}
+          </Badge>
+        )}
+        {data.is_stable && !data.is_hotspot && (
+          <Badge variant="outline" className="text-[10px]">
+            {t("viewer.stable")}
+          </Badge>
+        )}
+        {data.bus_factor === 1 && (
+          <Badge variant="outline" className="text-[10px] border-[var(--color-warning)]/40 text-[var(--color-warning)]">
+            {t("viewer.busFactorOne")}
+          </Badge>
+        )}
+        {/* Plain outline, like every other chip in this row. It used to carry
+            --color-error, which made it the loudest mark on the panel and put
+            it in the same colour vocabulary the health bands use. */}
+        {fix?.magnet && (
+          <Badge
+            variant="outline"
+            className="text-[10px]"
+            title={t("viewer.bugMagnetTitle", { age: fix.age ?? "" })}
+          >
+            <Bug className="h-2.5 w-2.5 mr-1" />
+            {t("viewer.bugMagnet")}
+          </Badge>
+        )}
+      </div>
+      <div className="mt-2 space-y-1 text-xs text-[var(--color-text-secondary)]">
+        {data.primary_owner_name && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[var(--color-text-tertiary)]">
+              {t("viewer.owner")}
+            </span>
+            <span className="truncate" title={data.primary_owner_name}>
+              {data.primary_owner_name}
+              {data.primary_owner_commit_pct != null &&
+                ` · ${Math.round(data.primary_owner_commit_pct * 100)}%`}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[var(--color-text-tertiary)]">
+            {t("viewer.commits90d")}
+          </span>
+          <span className="font-mono">{data.commit_count_90d}</span>
+        </div>
+        {fix && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[var(--color-text-tertiary)]">
+              {t("viewer.bugFixes")}
+            </span>
+            <span
+              className="font-mono"
+              title={t("viewer.bugFixesTitle")}
+            >
+              {fix.count}
+              {fix.age && ` · last ${fix.age}`}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[var(--color-text-tertiary)]">
+            {t("viewer.contributors")}
+          </span>
+          <span className="font-mono">{data.contributor_count}</span>
+        </div>
+        {data.agent_authored_pct != null && (data.agent_commit_count ?? 0) > 0 && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[var(--color-text-tertiary)]">Agent-authored</span>
+            <span className="font-mono">
+              {Math.round(data.agent_authored_pct * 100)}% · {data.agent_commit_count}
+            </span>
+          </div>
+        )}
+        {data.original_path && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="shrink-0 text-[var(--color-text-tertiary)]">
+              {t("viewer.renamedFrom")}
+            </span>
+            <span className="truncate font-mono" title={data.original_path}>
+              {data.original_path}
+            </span>
+          </div>
+        )}
+        {data.commit_count_capped && (
+          <p className="text-[10px] text-[var(--color-text-tertiary)]">
+            {t("viewer.historyCapped")}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface DocsViewerProps {
+  page: PageResponse | null;
+  /** Full page list — powers hierarchical breadcrumbs and prev/next. Rows
+   *  carry no bodies; the page being read is fetched on its own. */
+  pages?: PageSummary[];
+  repoId: string;
+  isLoading?: boolean;
+  /** Select another page in-place (breadcrumb / prev-next / wiki links). */
+  onSelectPage?: (page: DocPageSummary) => void;
+  persona: ReaderPersona;
+  sidebarOpen: boolean;
+  /** Called once an inline page upgrade completes so the host refreshes. */
+  onGenerated?: () => void;
+  /** A `?page=` id whose fetch settled with nothing. See `DocsReader`. */
+  missingPageId?: string | undefined;
+}
+
+/**
+ * Web data wrapper around the presentational ``DocsReader`` ui shell. Owns the
+ * data-bound rail sections (git "at a glance", graph intelligence, version
+ * history) and the Next route shape; the reader layout itself lives in ui so
+ * the redesign ships through the package bump.
+ */
+export function DocsViewer({
+  page,
+  pages = [],
+  repoId,
+  isLoading,
+  onSelectPage,
+  persona,
+  sidebarOpen,
+  onGenerated,
+  missingPageId,
+}: DocsViewerProps) {
+  const t = useTranslations("docs");
+  const buildPageHref = useCallback(
+    (pageId: string) => docsPagePath(`/repos/${repoId}`, pageId),
+    [repoId],
+  );
+
+  const buildFileHref = useCallback(
+    (filePath: string) => fileEntityPath(`/repos/${repoId}`, filePath),
+    [repoId],
+  );
+
+  // Fall back to the wiki deep-link route only when the target isn't in the
+  // loaded list (which itself opens the unified reader via redirect).
+  const onNavigatePageId = useCallback(
+    (pageId: string) => {
+      window.location.href = `/repos/${repoId}/wiki/${encodeURIComponent(pageId)}`;
+    },
+    [repoId],
+  );
+
+  const targetPath = page?.target_path ?? "";
+  // Decided by page type, not path shape: a module page's target is a
+  // directory, which every row below would answer with nothing, and the
+  // reader already gives module pages their own history card.
+  const showSignals = !!targetPath && page?.page_type !== "module_page";
+  // Security findings only make sense for real source files.
+  const isFilePath =
+    showSignals &&
+    !targetPath.includes("::") &&
+    !targetPath.startsWith("onboarding/") &&
+    !targetPath.startsWith("layer:");
+
+  return (
+    <DocsReader
+      page={page as unknown as DocPage | null}
+      pages={pages}
+      repoId={repoId}
+      isLoading={isLoading}
+      onSelectPage={onSelectPage}
+      onNavigatePageId={onNavigatePageId}
+      persona={persona}
+      sidebarOpen={sidebarOpen}
+      buildPageHref={buildPageHref}
+      buildFileHref={buildFileHref}
+      missingPageId={missingPageId}
+      LinkComponent={Link}
+      upgradeSlot={
+        page && isModelWrittenType(page.page_type) ? (
+          <PageGenerateButton
+            page={page}
+            repoId={repoId}
+            onGenerated={onGenerated}
+            variant="inline"
+          />
+        ) : undefined
+      }
+      versionHistorySlot={
+        page ? (
+          <VersionHistoryWrapper
+            pageId={page.id}
+            currentVersion={page.version}
+            currentContent={page.content}
+          />
+        ) : undefined
+      }
+      intelligenceSlot={
+        showSignals ? (
+          // One "Signals" block, not five. At a glance, Importance, Community,
+          // Call graph and Security each announced themselves with their own
+          // uppercase label over a handful of rows, so the rail was mostly
+          // label. They answer one question between them — what should I know
+          // about this code before I touch it — so they read as one list.
+          <div>
+            <p className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              {t("viewer.signals")}
+            </p>
+            <div className="flex flex-col gap-4">
+              <AtAGlance repoId={repoId} targetPath={targetPath} />
+              <DocsSidebar repoId={repoId} targetPath={targetPath} />
+              {isFilePath && (
+                <SecurityPanelWrapper repoId={repoId} filePath={targetPath} />
+              )}
+            </div>
+          </div>
+        ) : undefined
+      }
+    />
+  );
+}

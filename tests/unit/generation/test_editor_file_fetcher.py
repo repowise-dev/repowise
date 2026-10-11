@@ -1,0 +1,643 @@
+"""Unit tests for EditorFileDataFetcher DB queries."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
+from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND
+from repowise.core.generation.editor_files.fetcher import EditorFileDataFetcher
+from repowise.core.persistence.crud import upsert_repository
+from repowise.core.persistence.database import init_db
+from repowise.core.persistence.models import (
+    DecisionRecord,
+    GitMetadata,
+    GraphNode,
+    Page,
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def async_engine():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    await init_db(engine)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture
+async def session(async_engine):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
+    async with factory() as sess:
+        yield sess
+
+
+@pytest.fixture
+async def repo(session):
+    r = await upsert_repository(
+        session,
+        name="test-repo",
+        local_path="/tmp/test-repo",
+        url="",
+    )
+    await session.commit()
+    return r
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def _add_graph_node(session, repo_id, node_id, *, is_entry_point=False, pagerank=0.1):
+    node = GraphNode(
+        repository_id=repo_id,
+        node_id=node_id,
+        node_type="file",
+        language="python",
+        is_entry_point=is_entry_point,
+        pagerank=pagerank,
+    )
+    session.add(node)
+    await session.flush()
+    return node
+
+
+async def _add_page(session, repo_id, page_id, page_type, target_path, content):
+    page = Page(
+        id=page_id,
+        repository_id=repo_id,
+        page_type=page_type,
+        title=target_path,
+        content=content,
+        target_path=target_path,
+        source_hash="abc",
+        model_name="mock",
+        provider_name="mock",
+        generation_level=0,
+        confidence=0.9,
+        freshness_status="fresh",
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    session.add(page)
+    await session.flush()
+    return page
+
+
+def _touch(root: Path, *paths: str) -> None:
+    """The hotspot list only names files that exist in the checkout."""
+    for path in paths:
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("", encoding="utf-8")
+
+
+async def _add_git_meta(
+    session,
+    repo_id,
+    file_path,
+    *,
+    is_hotspot=False,
+    churn_pct=0.5,
+    owner=None,
+    prior_defect_count=0,
+    fix_mass=0.0,
+    bug_magnet=False,
+    last_fix_at=None,
+):
+    gm = GitMetadata(
+        repository_id=repo_id,
+        file_path=file_path,
+        is_hotspot=is_hotspot,
+        churn_percentile=churn_pct,
+        commit_count_90d=10,
+        primary_owner_name=owner,
+        prior_defect_count=prior_defect_count,
+        fix_mass=fix_mass,
+        bug_magnet=bug_magnet,
+        last_fix_at=last_fix_at,
+    )
+    session.add(gm)
+    await session.flush()
+    return gm
+
+
+async def _add_decision(
+    session, repo_id, title, status="active", rationale="Some reason", **accept
+):
+    """Add a record, accepting it when the caller wants one that governs.
+
+    The generated block serves accepted decisions, so a fixture that only sets
+    ``status`` would be seeding candidates and asserting on decisions.
+    """
+    dr = DecisionRecord(
+        repository_id=repo_id,
+        title=title,
+        status=status,
+        rationale=rationale,
+        # Varies with the title: identity is the evidence, so two titles
+        # over one body and one file are one decision.
+        decision=f"Decided to use X, for {title}",
+        context="Context here",
+        source="inline_marker",
+        affected_files_json='["src/app.py"]',
+        evidence_file="src/app.py",
+        staleness_score=0.0,
+    )
+    session.add(dr)
+    await session.flush()
+    if status == "active":
+        from repowise.core.persistence.crud.authority import accept_decision
+
+        accept.setdefault("accepter", "tester")
+        await accept_decision(session, dr, **accept)
+    return dr
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_empty_db_returns_defaults(session, repo, tmp_path):
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.repo_name == "test-repo"
+    assert data.architecture_summary == ""
+    assert data.key_modules == []
+    assert data.entry_points == []
+    assert data.hotspots == []
+    assert data.decisions == []
+    assert data.avg_confidence == 0.0
+
+
+async def test_fetch_repo_name(session, repo, tmp_path):
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+    assert data.repo_name == "test-repo"
+
+
+async def test_fetch_architecture_summary(session, repo, tmp_path):
+    content = (
+        "## Overview\n\n"
+        "This is a FastAPI application. It handles user authentication. "
+        "PostgreSQL is used for persistence. Redis backs the cache.\n"
+    )
+    await _add_page(session, repo.id, "repo_overview:.", "repo_overview", ".", content)
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.architecture_summary != ""
+    assert "FastAPI" in data.architecture_summary
+
+
+async def test_fetch_entry_points(session, repo, tmp_path):
+    await _add_graph_node(session, repo.id, "src/main.py", is_entry_point=True, pagerank=0.8)
+    await _add_graph_node(session, repo.id, "src/worker.py", is_entry_point=True, pagerank=0.3)
+    await _add_graph_node(session, repo.id, "src/utils.py", is_entry_point=False)
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert "src/main.py" in data.entry_points
+    assert "src/worker.py" in data.entry_points
+    assert "src/utils.py" not in data.entry_points
+
+
+async def test_fetch_entry_points_breaks_ties_on_pagerank(session, repo, tmp_path):
+    """PageRank is the tiebreak, and only that.
+
+    Both names are neutral and both sit at depth 1, so nothing above centrality
+    in the shared rank key separates them and the more central file still leads.
+    Renamed from ``..._sorted_by_pagerank``: PageRank used to be the whole
+    ordering here, and the name outlived it by one commit.
+    """
+    await _add_graph_node(session, repo.id, "src/low.py", is_entry_point=True, pagerank=0.1)
+    await _add_graph_node(session, repo.id, "src/high.py", is_entry_point=True, pagerank=0.9)
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.entry_points[0] == "src/high.py"
+
+
+async def test_fetch_entry_points_ranks_execution_start_above_pagerank(session, repo, tmp_path):
+    """The fallback's own defect: centrality rewards fan-in, so a widely
+    imported barrel outranked the real front door precisely because everything
+    depends on it. ``ORDER BY pagerank DESC`` led with ``types/index.ts``."""
+    await _add_graph_node(
+        session, repo.id, "src/types/index.ts", is_entry_point=True, pagerank=0.99
+    )
+    await _add_graph_node(session, repo.id, "src/main.py", is_entry_point=True, pagerank=0.01)
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.entry_points == ["src/main.py", "src/types/index.ts"]
+
+
+async def test_fetch_entry_points_prefers_curated_list(session, repo, tmp_path):
+    # The raw is_entry_point flag tags package-export sinks (a high-pagerank
+    # cn.ts-style leaf). When the curation pass has run, its orientation list
+    # wins over the flag — the sink must not surface as an entry point.
+    import json
+
+    from repowise.core.persistence.models import KnowledgeGraphProjectMeta
+
+    await _add_graph_node(session, repo.id, "src/ui/cn.ts", is_entry_point=True, pagerank=0.99)
+    session.add(
+        KnowledgeGraphProjectMeta(
+            repository_id=repo.id,
+            entry_points_json=json.dumps(["src/cli/main.py"]),
+            entry_candidates_json=json.dumps(["src/cli/main.py"]),
+        )
+    )
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.entry_points == ["src/cli/main.py"]
+    assert "src/ui/cn.ts" not in data.entry_points
+
+
+async def test_fetch_hotspots(session, repo, tmp_path):
+    _touch(tmp_path, "src/billing.py", "src/utils.py")
+    await _add_git_meta(
+        session, repo.id, "src/billing.py", is_hotspot=True, churn_pct=0.95, owner="@alice"
+    )
+    await _add_git_meta(session, repo.id, "src/utils.py", is_hotspot=False, churn_pct=0.10)
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert len(data.hotspots) == 1
+    assert data.hotspots[0].path == "src/billing.py"
+    assert data.hotspots[0].owner == "@alice"
+    assert data.hotspots[0].churn_percentile == 95.0  # stored 0.95 → displayed 95.0
+
+
+async def test_fetch_hotspots_admits_bug_magnets_that_are_not_churn_hotspots(
+    session, repo, tmp_path
+):
+    _touch(tmp_path, "src/busy.py", "src/broken.py")
+    # The filter used to be is_hotspot-only, so a file fixed four times last
+    # month that simply is not busy could never appear no matter how it ranked.
+    await _add_git_meta(session, repo.id, "src/busy.py", is_hotspot=True, churn_pct=0.99)
+    await _add_git_meta(
+        session,
+        repo.id,
+        "src/broken.py",
+        is_hotspot=False,
+        churn_pct=0.10,
+        bug_magnet=True,
+        fix_mass=9.0,
+        prior_defect_count=4,
+        last_fix_at=datetime.now(UTC) - timedelta(days=14),
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    paths = [h.path for h in data.hotspots]
+    assert paths == ["src/broken.py", "src/busy.py"]  # fix evidence leads
+    assert data.hotspots[0].fix_count == 4
+    assert data.hotspots[0].bug_magnet is True
+    assert data.hotspots[0].last_fix_age == "2 weeks ago"
+
+
+async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session, repo, tmp_path):
+    _touch(tmp_path, "src/low.py", "src/high.py")
+    # A repo with no fix convention has zero fix mass everywhere; the ordering
+    # must degrade to exactly the churn ranking it had before, not to nothing.
+    await _add_git_meta(session, repo.id, "src/low.py", is_hotspot=True, churn_pct=0.20)
+    await _add_git_meta(session, repo.id, "src/high.py", is_hotspot=True, churn_pct=0.90)
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [h.path for h in data.hotspots] == ["src/high.py", "src/low.py"]
+    assert all(h.fix_count == 0 and h.last_fix_age is None for h in data.hotspots)
+
+
+async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
+    session, repo, tmp_path
+):
+    _touch(tmp_path, "src/a.py")
+    # bug_magnet with a NULL last_fix_at would render an unanchored accusation.
+    await _add_git_meta(
+        session,
+        repo.id,
+        "src/a.py",
+        is_hotspot=True,
+        bug_magnet=True,
+        prior_defect_count=9,
+        last_fix_at=None,
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.hotspots[0].bug_magnet is False
+    assert data.hotspots[0].last_fix_age is None
+
+
+async def test_fetch_active_decisions_only(session, repo, tmp_path):
+    await _add_decision(session, repo.id, "Use JWT", status="active")
+    await _add_decision(session, repo.id, "Old choice", status="deprecated")
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    titles = [d.title for d in data.decisions]
+    assert "Use JWT" in titles
+    assert "Old choice" not in titles
+
+
+async def test_a_candidate_never_reaches_the_generated_block(session, repo, tmp_path):
+    """An agent reads that block as instructions, so acceptance is the gate.
+
+    A record whose status column says ``active`` but which nobody accepted is
+    still a candidate, and the block is where treating one as guidance does the
+    most damage.
+    """
+    await _add_decision(session, repo.id, "Never accepted", status="proposed")
+    unaccepted = await _add_decision(session, repo.id, "Looks active", status="proposed")
+    unaccepted.status = "active"
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [d.title for d in data.decisions] == []
+
+
+async def test_a_person_signed_line_carries_no_mark(session, repo, tmp_path):
+    """The ordinary case, and the one that must stay free.
+
+    These files are read into every session, so the signature costs tokens
+    only where it changes what the line means.
+    """
+    await _add_decision(session, repo.id, "Use JWT", accepter="Raghav", kind="person")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [d.signed_by for d in data.decisions] == [""]
+
+
+async def test_an_agent_signed_line_says_a_person_did_not(session, repo, tmp_path):
+    """Otherwise an agent reads its own acceptance back as a standing rule."""
+    await _add_decision(
+        session,
+        repo.id,
+        "Use JWT",
+        accepter="claude_code",
+        kind="agent",
+        agent_acceptance=True,
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    mark = data.decisions[0].signed_by
+    assert "claude_code" in mark and "not a person" in mark
+
+
+async def test_the_mark_reaches_both_generated_files(session, repo, tmp_path):
+    """The template carries it, not only the summary."""
+    from repowise.core.generation.editor_files import AgentsMdGenerator, ClaudeMdGenerator
+
+    await _add_decision(
+        session,
+        repo.id,
+        "Use JWT",
+        accepter="claude_code",
+        kind="agent",
+        agent_acceptance=True,
+    )
+    await session.commit()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    for gen in (ClaudeMdGenerator(), AgentsMdGenerator()):
+        assert "not a person" in gen.render_full(tmp_path, data), type(gen).__name__
+
+
+async def test_an_accepted_agreement_reaches_the_generated_block(session, repo, tmp_path):
+    """A working agreement rides the instructions file unchanged.
+
+    The query filters on ``status = 'active'`` and acceptance and nothing else,
+    and since the entity split an agreement can be both: its acceptance row
+    records the repository as its scope. The exclusion sweep keeps a record
+    with no affected files rather than dropping it, so nothing here has to know
+    about the noun. Pinned because that is a claim about the delivery half, not
+    an accident of this query's current shape.
+    """
+    agreement = DecisionRecord(
+        repository_id=repo.id,
+        title="Never use em dashes",
+        status="active",
+        kind=AGREEMENT_KIND,
+        rationale="they read as machine-written",
+        decision="never use em dashes in any output",
+        source="session",
+        affected_files_json="[]",
+        evidence_file="agreement",
+        staleness_score=0.0,
+    )
+    session.add(agreement)
+    await session.flush()
+    from repowise.core.persistence.crud.authority import accept_decision
+
+    await accept_decision(session, agreement, accepter="tester")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert "Never use em dashes" in [d.title for d in data.decisions]
+
+
+async def test_fetch_avg_confidence(session, repo, tmp_path):
+    await _add_page(session, repo.id, "file_page:src/a.py", "file_page", "src/a.py", "content")
+    # Update confidence manually
+    from sqlalchemy import update
+
+    await session.execute(
+        update(Page).where(Page.id == "file_page:src/a.py").values(confidence=0.8)
+    )
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.avg_confidence == pytest.approx(0.8, abs=0.01)
+
+
+async def test_fetch_indexed_at_is_date_string(session, repo, tmp_path):
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    import re
+
+    assert re.match(r"^\d{4}-\d{2}-\d{2}$", data.indexed_at)
+
+
+async def test_fetch_indexed_commit_reports_stored_head_commit(session, tmp_path):
+    """The stamp must report the commit the index was built against.
+
+    Regression test for #1874: the stamp used to shell out for the live HEAD,
+    which drifts from the indexed commit (e.g. a rebase rewrites CLAUDE.md
+    with the then-current HEAD while the index underneath is unchanged).
+    """
+    stored_commit = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    repo = await upsert_repository(
+        session,
+        name="test-repo",
+        local_path="/tmp/test-repo",
+        url="",
+        head_commit=stored_commit,
+    )
+    await session.commit()
+
+    # tmp_path is not a git checkout, so any shell-out for live HEAD would
+    # return "" — the stamp must still carry the stored commit's short form.
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.indexed_commit == stored_commit[:7]
+
+
+async def test_fetch_indexed_commit_falls_back_to_live_head_when_stored_is_empty(session, tmp_path):
+    """Pre-backfill indexes (head_commit NULL) keep the legacy shell-out path."""
+    repo = await upsert_repository(
+        session,
+        name="test-repo",
+        local_path="/tmp/test-repo",
+        url="",
+    )
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    # tmp_path is not a git checkout, so the fallback resolves to "".
+    assert data.indexed_commit == ""
+
+
+async def test_fetch_hotspots_skips_files_no_longer_in_the_checkout(session, repo, tmp_path):
+    """A git_metadata row outlives its file when the prune refuses a run; the
+    deleted file used to rank first in "files that need care" forever (#1929)."""
+    _touch(tmp_path, "src/alive.py")
+    await _add_git_meta(
+        session,
+        repo.id,
+        "src/deleted.py",
+        is_hotspot=True,
+        churn_pct=0.99,
+        fix_mass=9.0,
+        bug_magnet=True,
+        last_fix_at=_now() - timedelta(days=3),
+    )
+    await _add_git_meta(session, repo.id, "src/alive.py", is_hotspot=True, churn_pct=0.50)
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [h.path for h in data.hotspots] == ["src/alive.py"]
+
+
+async def _add_metric(session, repo_id, path, score):
+    from repowise.core.persistence.models import HealthFileMetric
+
+    session.add(HealthFileMetric(repository_id=repo_id, file_path=path, score=score, nloc=10))
+    await session.flush()
+
+
+async def test_code_health_trend_is_absent_without_history(session, repo, tmp_path):
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health is not None
+    assert data.code_health.hotspot_trend is None
+
+
+async def test_code_health_trend_is_read_from_the_snapshots(session, repo, tmp_path):
+    from repowise.core.persistence.crud import save_health_snapshot
+
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+    for day, value in enumerate((8.0, 6.5)):
+        await save_health_snapshot(
+            session,
+            repo.id,
+            hotspot_health=value,
+            average_health=value,
+            worst_performer_path="src/a.py",
+            worst_performer_score=value,
+            per_file_scores={"src/a.py": value},
+            per_file_deductions={},
+            taken_at=_now() + timedelta(days=day),
+        )
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health.hotspot_trend == "declining"
+
+
+async def test_code_health_names_production_files_only(session, repo, tmp_path):
+    """The worst file and Fix first are a worklist: tests stay out."""
+    from repowise.core.persistence.crud import save_health_findings
+    from repowise.core.persistence.models import HealthFileMetric
+
+    session.add(
+        HealthFileMetric(
+            repository_id=repo.id, file_path="tests/test_a.py", score=1.0, nloc=10, is_test=True
+        )
+    )
+    await _add_metric(session, repo.id, "src/a.py", 4.0)
+    await save_health_findings(
+        session,
+        repo.id,
+        [
+            {
+                "file_path": path,
+                "biomarker_type": "brain_method",
+                "severity": "high",
+                "function_name": "f",
+                "line_start": 1,
+                "line_end": 130,
+                "details": {"ccn": 30, "nloc": 120, "max_nesting": 4, "deepest_block": {"start": 40, "end": 52}},
+                "health_impact": 2.0,
+                "reason": "brain method",
+            }
+            for path in ("tests/test_a.py", "src/a.py")
+        ],
+    )
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health.worst_path == "src/a.py"
+    assert [f["where"] for f in data.code_health.fix_first] == ["src/a.py:1"]
+    assert data.code_health.fix_first[0]["title"] == "Split f into smaller functions"

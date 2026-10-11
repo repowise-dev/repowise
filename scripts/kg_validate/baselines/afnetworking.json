@@ -1,0 +1,65 @@
+{
+ "repo": "afnetworking",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 70% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "cpp": {
+    "edges_per_file": 0.0,
+    "files": 31,
+    "import_edges": 0,
+    "import_support": "full",
+    "orphan_files": 31,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "objectivec": {
+    "edges_per_file": 0.0,
+    "files": 49,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 49,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "swift": {
+    "edges_per_file": 1.5,
+    "files": 4,
+    "hint_edges": {
+     "same_module": 1
+    },
+    "import_edges": 6,
+    "import_support": "full",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.167
+   }
+  },
+  "dominant_language": "objectivec",
+  "entry_points": [],
+  "modules": {
+   "count": 4,
+   "max_size": 85,
+   "min_size": 4,
+   "names": [
+    "Application",
+    "Config",
+    "Data",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "AFNetworking/AFNetworking.h",
+   "UIKit+AFNetworking/AFAutoPurgingImageCache.h",
+   "AFNetworking/AFCompatibilityMacros.h",
+   "Framework/AFNetworking.h",
+   "Tests/Tests/AFAutoPurgingImageCacheTests.m"
+  ]
+ }
+}

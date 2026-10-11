@@ -1,0 +1,652 @@
+"""Tests for the Split File refactoring detector (module decomposition).
+
+The detector reads the file's top-level symbols (``defines`` edges) and their
+intra-file cohesion (``calls`` edges) off the in-memory graph, builds a
+weighted symbol graph, partitions it by modularity, and suggests splitting the
+file into the resulting cohesive groups. Fixtures build a tiny NetworkX graph
+directly so the symbol set and the call edges — and therefore the expected
+partition — are explicit.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import networkx as nx
+import pytest
+
+from repowise.core.analysis.health.function_blame_rollup import (
+    blame_commit_entries,
+    commit_spans,
+)
+from repowise.core.analysis.health.refactoring import (
+    RefactoringContext,
+    detect_refactorings,
+)
+from repowise.core.analysis.health.refactoring.split_file import (
+    SplitFileDetector,
+    _CallSignals,
+    _dominant_token,
+    _module_label,
+    _shim_required,
+    _weighted_graph,
+)
+from repowise.core.ingestion.git_indexer.function_blame import BlameIndex
+
+
+def _add_func(g: nx.DiGraph, file_path: str, name: str, *, start: int = 1, end: int = 30) -> str:
+    if file_path not in g:
+        g.add_node(file_path, node_type="file")
+    sid = f"{file_path}::{name}"
+    g.add_node(
+        sid,
+        node_type="symbol",
+        kind="function",
+        name=name,
+        file_path=file_path,
+        start_line=start,
+        end_line=end,
+        parent_name=None,
+    )
+    g.add_edge(file_path, sid, edge_type="defines")
+    return sid
+
+
+def _add_class(g: nx.DiGraph, file_path: str, name: str, *, start: int = 1, end: int = 30) -> str:
+    if file_path not in g:
+        g.add_node(file_path, node_type="file")
+    sid = f"{file_path}::{name}"
+    g.add_node(
+        sid,
+        node_type="symbol",
+        kind="class",
+        name=name,
+        file_path=file_path,
+        start_line=start,
+        end_line=end,
+        parent_name=None,
+    )
+    g.add_edge(file_path, sid, edge_type="defines")
+    return sid
+
+
+def _call(g: nx.DiGraph, src: str, dst: str) -> None:
+    g.add_edge(src, dst, edge_type="calls")
+
+
+def _ctx(
+    g: nx.DiGraph,
+    file_path: str,
+    *,
+    nloc: int = 600,
+    language: str = "python",
+    blame_index: BlameIndex | None = None,
+    community_label_map: dict[str, str] | None = None,
+) -> RefactoringContext:
+    # The file's symbols stand in for the walker's functions, and the spans go
+    # through the projection the engine uses on a full index.
+    functions = [
+        SimpleNamespace(name=d["name"], start_line=d["start_line"], end_line=d["end_line"])
+        for _n, d in g.nodes(data=True)
+        if d.get("file_path") == file_path and d.get("start_line") is not None
+    ]
+    return RefactoringContext(
+        file_path=file_path,
+        language=language,
+        nloc=nloc,
+        graph=g,
+        commit_spans=commit_spans(functions, blame_commit_entries(functions, blame_index)),
+        community_label_map=community_label_map or {},
+    )
+
+
+def _add_foreign_call(g: nx.DiGraph, src: str, foreign_file: str, callee_name: str) -> None:
+    """Make *src* (a local symbol id) call a symbol living in *foreign_file*."""
+    if foreign_file not in g:
+        g.add_node(foreign_file, node_type="file")
+    cid = f"{foreign_file}::{callee_name}"
+    if cid not in g:
+        g.add_node(cid, node_type="symbol", kind="function", name=callee_name, file_path=foreign_file)
+    g.add_edge(src, cid, edge_type="calls")
+
+
+def _imports(g: nx.DiGraph, src_file: str, dst_file: str, names: list[str]) -> None:
+    g.add_edge(src_file, dst_file, edge_type="imports", imported_names=list(names))
+
+
+def _blame_index(ranges: list[tuple[int, int, str]]) -> BlameIndex:
+    """Blame index where every line in ``[start, end]`` is attributed to ``sha``."""
+    lines: dict[int, tuple[str, int]] = {}
+    for start, end, sha in ranges:
+        for ln in range(start, end + 1):
+            lines[ln] = (sha, 0)
+    return BlameIndex(lines=lines, authors={})
+
+
+def _blame_from_sets(node_shas: dict[int, list[str]]) -> BlameIndex:
+    """Blame index for the ``_disconnected_blocks`` layout: ``fn_i`` spans lines
+    ``10*i+1..10*i+10``; spread its list of shas across those lines so
+    ``distinct_commits_in_range`` recovers exactly that set."""
+    lines: dict[int, tuple[str, int]] = {}
+    for i, shas in node_shas.items():
+        base = 10 * i + 1
+        for offset in range(10):
+            lines[base + offset] = (shas[offset % len(shas)], 0)
+    return BlameIndex(lines=lines, authors={})
+
+
+def _detect(g: nx.DiGraph, file_path: str, **kw) -> list:
+    return [
+        s
+        for s in detect_refactorings(_ctx(g, file_path, **kw))
+        if s.refactoring_type == "split_file"
+    ]
+
+
+def _two_cluster_graph(file_path: str = "big.py", n_each: int = 5) -> nx.DiGraph:
+    """Two internally-cohesive clusters with no edges between them — a textbook
+    2-way split. Each cluster is a clique of direct calls."""
+    g = nx.DiGraph()
+    cluster_a = [_add_func(g, file_path, f"alpha_{i}") for i in range(n_each)]
+    cluster_b = [_add_func(g, file_path, f"beta_{i}") for i in range(n_each)]
+    for cluster in (cluster_a, cluster_b):
+        for i in range(len(cluster)):
+            for j in range(len(cluster)):
+                if i != j:
+                    _call(g, cluster[i], cluster[j])
+    return g
+
+
+def test_two_cohesive_clusters_split_into_two_files():
+    out = _detect(_two_cluster_graph(), "big.py")
+    assert len(out) == 1
+    s = out[0]
+    assert s.refactoring_type == "split_file"
+    assert s.evidence["symbol_count"] == 10
+    assert s.evidence["group_count"] == 2
+    assert s.evidence["modularity"] >= 0.30
+    assert len(s.plan["groups"]) == 2
+    # The two clusters partition cleanly: each group is all-alpha or all-beta.
+    group_syms = [set(g["symbols"]) for g in s.plan["groups"]]
+    for syms in group_syms:
+        prefixes = {name.split("_")[0] for name in syms}
+        assert len(prefixes) == 1  # no cross-contamination
+    assert s.plan["shim_required"] is True
+    assert s.impact_delta == 0.0
+
+
+def test_cohesive_big_file_is_suppressed_by_modularity_gate():
+    # One big clique: every symbol calls every other — high cohesion, no clean
+    # cut, low modularity → no suggestion (better no split than a bad one).
+    g = nx.DiGraph()
+    syms = [_add_func(g, "mono.py", f"fn_{i}") for i in range(10)]
+    for i in range(len(syms)):
+        for j in range(len(syms)):
+            if i != j:
+                _call(g, syms[i], syms[j])
+    assert _detect(g, "mono.py") == []
+
+
+def test_single_dominant_class_routes_to_extract_class():
+    # One class spanning ~90% of the file → Extract Class territory, not Split.
+    g = nx.DiGraph()
+    _add_class(g, "svc.py", "BigService", start=1, end=540)
+    for i in range(8):
+        _add_func(g, "svc.py", f"helper_{i}", start=541 + i, end=541 + i)
+    assert _detect(g, "svc.py", nloc=600) == []
+
+
+def test_below_nloc_floor_is_skipped():
+    assert _detect(_two_cluster_graph(), "big.py", nloc=100) == []
+
+
+def test_below_symbol_floor_is_skipped():
+    g = nx.DiGraph()
+    a = [_add_func(g, "small.py", f"a_{i}") for i in range(3)]
+    for i in range(len(a)):
+        for j in range(len(a)):
+            if i != j:
+                _call(g, a[i], a[j])
+    assert _detect(g, "small.py") == []
+
+
+def test_test_file_is_excluded():
+    g = _two_cluster_graph("tests/test_big.py")
+    assert _detect(g, "tests/test_big.py") == []
+
+
+def test_generated_and_barrel_files_are_excluded():
+    assert _detect(_two_cluster_graph("pkg/__init__.py"), "pkg/__init__.py") == []
+    assert _detect(_two_cluster_graph("app/migrations/0001_x.py"), "app/migrations/0001_x.py") == []
+
+
+def test_no_graph_yields_nothing():
+    ctx = RefactoringContext(file_path="big.py", language="python", nloc=600, graph=None)
+    assert SplitFileDetector().detect(ctx) == []
+
+
+def test_deterministic_and_stable_order():
+    g = _two_cluster_graph()
+    first = _detect(g, "big.py")
+    second = _detect(g, "big.py")
+    assert [s.target_symbol for s in first] == [s.target_symbol for s in second]
+    assert first[0].plan["groups"] == second[0].plan["groups"]
+
+
+def test_blast_radius_lists_external_referrers():
+    g = _two_cluster_graph()
+    # An external file calls into one of the file's symbols.
+    g.add_node("caller.py", node_type="file")
+    g.add_node(
+        "caller.py::client",
+        node_type="symbol",
+        kind="function",
+        name="client",
+        file_path="caller.py",
+        start_line=1,
+        end_line=5,
+        parent_name=None,
+    )
+    _call(g, "caller.py::client", "big.py::alpha_0")
+    g.add_edge("caller.py", "big.py", edge_type="imports")
+    out = _detect(g, "big.py")
+    assert len(out) == 1
+    br = out[0].blast_radius
+    assert "caller.py" in br["dependent_files"]
+    assert br["dependent_count"] >= 1
+    assert br["import_rewrites"] == br["dependent_count"]  # python → shim language
+
+
+def test_blast_radius_does_not_count_noncall_execution_edges_as_callers():
+    g = _two_cluster_graph()
+    g.add_node(
+        "framework.py::binding",
+        node_type="symbol",
+        kind="function",
+        name="binding",
+        file_path="framework.py",
+    )
+    g.add_edge(
+        "framework.py::binding",
+        "big.py::alpha_0",
+        edge_type="framework_binds",
+        resolution_origin="framework",
+    )
+
+    plan = _detect(g, "big.py")[0]
+    assert "framework.py" not in plan.blast_radius["dependent_files"]
+
+
+def test_go_split_needs_no_import_rewrites():
+    out = _detect(_two_cluster_graph("pkg/big.go"), "pkg/big.go", language="go")
+    assert len(out) == 1
+    assert out[0].plan["shim_required"] is False
+    assert out[0].blast_radius["import_rewrites"] == 0
+
+
+def test_shared_helper_groups_callers_together():
+    # Two pairs of functions, each pair bound only by a shared local helper
+    # (no direct A<->B call), plus a separate cohesive cluster. The shared
+    # helper should pull each pair together.
+    g = nx.DiGraph()
+    h1 = _add_func(g, "f.py", "shared_one")
+    a1 = _add_func(g, "f.py", "uses_one_a")
+    a2 = _add_func(g, "f.py", "uses_one_b")
+    _call(g, a1, h1)
+    _call(g, a2, h1)
+    h2 = _add_func(g, "f.py", "shared_two")
+    b1 = _add_func(g, "f.py", "uses_two_a")
+    b2 = _add_func(g, "f.py", "uses_two_b")
+    _call(g, b1, h2)
+    _call(g, b2, h2)
+    # pad to clear the symbol floor with a third cohesive cluster
+    c = [_add_func(g, "f.py", f"gamma_{i}") for i in range(2)]
+    _call(g, c[0], c[1])
+    _call(g, c[1], c[0])
+    out = _detect(g, "f.py")
+    assert len(out) == 1
+    # uses_one_a and uses_one_b end up in the same group.
+    groups = [set(grp["symbols"]) for grp in out[0].plan["groups"]]
+    assert any({"uses_one_a", "uses_one_b"} <= grp for grp in groups)
+
+
+def test_dominant_token_helper():
+    # Plurality vote: one outlier doesn't kill the shared token.
+    assert _dominant_token(["filter_dicts", "filter_path", "filter_rows", "is_excluded"]) == "filter"
+    # Stopword verbs and short tokens don't win.
+    assert _dominant_token(["get_repo", "get_spec"]) == ""
+    # No token shared by >= 2 symbols.
+    assert _dominant_token(["alpha", "beta"]) == ""
+
+
+def test_shim_required_helper():
+    assert _shim_required("go") is False
+    assert _shim_required("golang") is False
+    assert _shim_required("python") is True
+    assert _shim_required("typescript") is True
+    assert _shim_required(None) is True
+
+
+def _disconnected_blocks(file_path: str = "big.py") -> nx.DiGraph:
+    """Eight top-level functions with NO call edges and distinct 10-line ranges.
+    On its own this yields no split (every node is its own community); the
+    co-change / import-name signals are what create the partition."""
+    g = nx.DiGraph()
+    for i in range(8):
+        _add_func(g, file_path, f"fn_{i}", start=10 * i + 1, end=10 * i + 10)
+    return g
+
+
+def test_cochange_edge_groups_commit_coupled_symbols():
+    # No call edges; the only cohesion is git co-change. Lines of fn_0..3 are
+    # all touched by commit "ca", fn_4..7 by "cb" -> two co-change cliques.
+    g = _disconnected_blocks()
+    blame = _blame_index(
+        [(10 * i + 1, 10 * i + 10, "ca" if i < 4 else "cb") for i in range(8)]
+    )
+    out = _detect(g, "big.py", blame_index=blame)
+    assert len(out) == 1
+    s = out[0]
+    assert s.evidence["group_count"] == 2
+    assert s.evidence["cochange_edges"] > 0
+    assert "import_edges" not in s.evidence  # no foreign calls in this fixture
+    groups = [set(grp["symbols"]) for grp in s.plan["groups"]]
+    block_a = {f"fn_{i}" for i in range(4)}
+    block_b = {f"fn_{i}" for i in range(4, 8)}
+    assert any(grp == block_a for grp in groups)
+    assert any(grp == block_b for grp in groups)
+
+
+def test_cochange_absent_without_blame_index():
+    # Same graph, no blame index -> no co-change edges -> nothing to partition.
+    assert _detect(_disconnected_blocks(), "big.py") == []
+
+
+def test_cochange_floor_suppresses_weak_coupling():
+    # Each symbol shares only a minority (Jaccard well below 0.5) of its commit
+    # set with the others -> incidental coupling, below the floor -> no edges ->
+    # nothing to partition. Guards against same-file co-change densifying the
+    # graph into a uniform glue.
+    g = _disconnected_blocks()
+    blame = _blame_from_sets(
+        {i: ["shared", f"own_{i}_a", f"own_{i}_b", f"own_{i}_c"] for i in range(8)}
+    )
+    # Every symbol's set is {shared, own_i_a, own_i_b, own_i_c}; any two overlap
+    # on just {shared} -> Jaccard = 1/7 < 0.5.
+    assert _detect(g, "big.py", blame_index=blame) == []
+
+
+def test_import_name_signal_separates_distinct_dependencies():
+    # fn_0..3 lean on ext/a.py, fn_4..7 on ext/b.py. Both foreign files map to
+    # the SAME module label, so the old foreign-module proxy would glue all
+    # eight together; the imported-name surface (distinct names per file)
+    # correctly keeps the two dependency clusters apart.
+    g = _disconnected_blocks()
+    for i in range(4):
+        _add_foreign_call(g, f"big.py::fn_{i}", "ext/a.py", "alpha_dep")
+    for i in range(4, 8):
+        _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
+    _imports(g, "big.py", "ext/a.py", ["alpha_dep"])
+    _imports(g, "big.py", "ext/b.py", ["beta_dep"])
+    community_label_map = {"ext/a.py": "extpkg", "ext/b.py": "extpkg"}
+    out = _detect(g, "big.py", community_label_map=community_label_map)
+    assert len(out) == 1
+    s = out[0]
+    assert s.evidence["group_count"] == 2
+    assert s.evidence["import_edges"] > 0
+    groups = [set(grp["symbols"]) for grp in s.plan["groups"]]
+    assert any(grp == {f"fn_{i}" for i in range(4)} for grp in groups)
+    assert any(grp == {f"fn_{i}" for i in range(4, 8)} for grp in groups)
+
+
+def test_foreign_module_proxy_is_used_when_imported_names_empty():
+    # Lightweight-tier shape: foreign calls but the import edges carry no names.
+    # The detector degrades to the foreign-module affinity proxy (today's
+    # behavior) -> the two distinct-module clusters still separate.
+    g = _disconnected_blocks()
+    for i in range(4):
+        _add_foreign_call(g, f"big.py::fn_{i}", "ext/a.py", "alpha_dep")
+    for i in range(4, 8):
+        _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
+    community_label_map = {"ext/a.py": "moda", "ext/b.py": "modb"}
+    out = _detect(g, "big.py", community_label_map=community_label_map)
+    assert len(out) == 1
+    s = out[0]
+    assert s.evidence["group_count"] == 2
+    assert "import_edges" not in s.evidence  # proxy fired, not the name signal
+
+
+def test_signals_are_deterministic():
+    g = _disconnected_blocks()
+    blame = _blame_index(
+        [(10 * i + 1, 10 * i + 10, "ca" if i < 4 else "cb") for i in range(8)]
+    )
+    first = _detect(g, "big.py", blame_index=blame)
+    second = _detect(g, "big.py", blame_index=blame)
+    assert first[0].plan["groups"] == second[0].plan["groups"]
+    assert first[0].evidence == second[0].evidence
+
+
+def test_cochange_unions_a_classes_methods():
+    # Each class collects the commit sets of the methods inside its span, so
+    # the co-change edge sees the class even though no row is keyed by it.
+    g = nx.DiGraph()
+    for i in range(8):
+        _add_class(g, "big.py", f"Cls{i}", start=10 * i + 1, end=10 * i + 10)
+    functions = [
+        SimpleNamespace(name=f"m{i}", start_line=10 * i + 2, end_line=10 * i + 5) for i in range(8)
+    ]
+    ctx = RefactoringContext(
+        file_path="big.py",
+        language="python",
+        nloc=600,
+        graph=g,
+        commit_spans=commit_spans(
+            functions,
+            [(f"m{i}", 10 * i + 2, 10 * i + 5, ["ca" if i < 4 else "cb"]) for i in range(8)],
+        ),
+    )
+    detector = SplitFileDetector()
+    nodes = [f"big.py::Cls{i}" for i in range(8)]
+    sets = detector._commit_sets(ctx, detector._defined_symbols(g, "big.py"), nodes)
+    assert sets["big.py::Cls0"] == {"ca"}
+    assert sets["big.py::Cls7"] == {"cb"}
+
+
+def test_stored_commit_sets_split_like_the_blame_index():
+    # A re-score reads the stored rows instead of a blame index; the plan must
+    # be the one the full index produced.
+    g = _disconnected_blocks()
+    blame = _blame_index(
+        [(10 * i + 1, 10 * i + 10, "ca" if i < 4 else "cb") for i in range(8)]
+    )
+    live = _detect(g, "big.py", blame_index=blame)
+    stored = [
+        s
+        for s in detect_refactorings(
+            RefactoringContext(
+                file_path="big.py",
+                language="python",
+                nloc=600,
+                graph=g,
+                commit_spans=[
+                    (10 * i + 1, 10 * i + 10, frozenset({"ca" if i < 4 else "cb"}))
+                    for i in range(8)
+                ],
+            )
+        )
+        if s.refactoring_type == "split_file"
+    ]
+    assert live and stored
+    assert stored[0].plan == live[0].plan
+    assert stored[0].evidence == live[0].evidence
+
+
+def test_empty_blame_index_is_silent():
+    # An empty index (the documented "no signal" outcome) must not raise and
+    # must not invent co-change edges.
+    assert _detect(_disconnected_blocks(), "big.py", blame_index=BlameIndex()) == []
+
+
+# --- group labels and symbol lists (#2885) -----------------------------------
+
+_CPP = "src/Workspaces/AppUtils.cpp"
+
+
+def _two_cpp_clusters(header: str, names: list[str] | None = None) -> nx.DiGraph:
+    """Two call cliques of four functions with no shared name token, every
+    function calling into the precompiled *header*."""
+    g = nx.DiGraph()
+    names = names or [f"fn_{i}" for i in range(8)]
+    sids = [_add_func(g, _CPP, name, start=10 * i + 1, end=10 * i + 10) for i, name in enumerate(names)]
+    for cluster in (sids[:4], sids[4:]):
+        for src in cluster:
+            for dst in cluster:
+                if src != dst:
+                    _call(g, src, dst)
+    for sid in sids:
+        _add_foreign_call(g, sid, f"src/Workspaces/{header}", "precompiled")
+    return g
+
+
+@pytest.mark.parametrize("header", ["pch.h", "pch.hpp", "stdafx.h", "StdAfx.h", "precomp.h"])
+def test_a_precompiled_header_never_names_a_group(header):
+    out = _detect(_two_cpp_clusters(header), _CPP, language="cpp")
+    assert len(out) == 1
+    groups = out[0].plan["groups"]
+    assert len(groups) == 2
+    # Nothing else is called, so there is no honest name: the surface asks.
+    assert [g["name"] for g in groups] == [None, None]
+    assert [g["suggested_file"] for g in groups] == [None, None]
+
+
+@pytest.mark.parametrize("header", ["pch.h", "pch.hpp", "stdafx.h", "StdAfx.h"])
+def test_a_group_takes_the_next_most_called_module_over_the_precompiled_header(header):
+    g = _two_cpp_clusters(header)
+    # Three of four, so the header (four of four) still wins the vote.
+    for i in range(3):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/registry.h", "open_key")
+    for i in range(4, 7):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/layout.h", "arrange")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["name"] == "registry"
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/registry.cpp"
+    assert by_first["fn_4"]["name"] == "layout"
+    assert by_first["fn_4"]["suggested_file"] == "src/Workspaces/layout.cpp"
+
+
+def test_overloads_are_listed_once_in_a_group():
+    g = _two_cpp_clusters("pch.h", ["GetApp", *(f"fn_{i}" for i in range(1, 8))])
+    # A second overload: its own node id, the same bare name.
+    overload = f"{_CPP}::GetApp#2"
+    g.add_node(
+        overload,
+        node_type="symbol",
+        kind="function",
+        name="GetApp",
+        file_path=_CPP,
+        start_line=81,
+        end_line=90,
+        parent_name=None,
+    )
+    g.add_edge(_CPP, overload, edge_type="defines")
+    for i in range(1, 4):
+        _call(g, overload, f"{_CPP}::fn_{i}")
+        _call(g, f"{_CPP}::fn_{i}", overload)
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    symbols = next(grp["symbols"] for grp in out[0].plan["groups"] if "GetApp" in grp["symbols"])
+    assert symbols == ["GetApp", "fn_1", "fn_2", "fn_3"]
+
+
+def test_overloads_are_listed_once_in_the_residual():
+    g = _two_cpp_clusters("pch.h")
+    # Two overloads nothing in the file is tied to: neither joins a group.
+    for sid, start in ((f"{_CPP}::Trim", 81), (f"{_CPP}::Trim#2", 91)):
+        g.add_node(
+            sid,
+            node_type="symbol",
+            kind="function",
+            name="Trim",
+            file_path=_CPP,
+            start_line=start,
+            end_line=start + 9,
+            parent_name=None,
+        )
+        g.add_edge(_CPP, sid, edge_type="defines")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    assert out[0].plan["residual"] == {"symbols": ["Trim"]}
+
+
+def test_direct_call_edges_are_added_in_sorted_order():
+    # A set of pairs iterates in hash order, and the community partitioner reads
+    # edges in insertion order, so the order must not follow the hash seed.
+    signals = _CallSignals()
+    for pair in [("z", "a"), ("m", "a"), ("c", "a"), ("q", "a"), ("x", "a")]:
+        signals.add_local_call(*pair)
+    wg, _ = _weighted_graph(["a", "c", "m", "q", "x", "z"], set(), signals, {})
+    assert list(wg.adj["a"]) == ["c", "m", "q", "x", "z"]
+
+
+def test_a_two_area_community_label_never_names_a_group():
+    foreign_of = {"a": {"tpl, resources"}, "b": {"tpl, resources", "path/to/layout.go"}}
+    assert _module_label(foreign_of, ["a"], set()) == ""
+    assert _module_label(foreign_of, ["a", "b"], set()) == "layout"
+
+
+# --- a module label two groups share names neither (#2933) --------------------
+
+
+def _names(out: list) -> list[tuple[str | None, str | None]]:
+    return [(grp["name"], grp["suggested_file"]) for grp in out[0].plan["groups"]]
+
+
+@pytest.mark.parametrize("header", ["utils.h", "common.h", "types.h", "platform.h"])
+def test_a_module_every_group_calls_names_none_of_them(header):
+    out = _detect(_two_cpp_clusters(header), _CPP, language="cpp")
+    assert len(out) == 1
+    assert _names(out) == [(None, None), (None, None)]
+
+
+def test_groups_sharing_a_top_module_take_their_next_one():
+    g = _two_cpp_clusters("utils.h")
+    for i in range(3):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/registry.h", "open_key")
+    for i in range(4, 7):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/layout.h", "arrange")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/registry.cpp"
+    assert by_first["fn_4"]["suggested_file"] == "src/Workspaces/layout.cpp"
+
+
+def test_a_second_shared_module_is_dropped_too():
+    g = _two_cpp_clusters("utils.h")
+    # Both groups' runner-up is the same module as well.
+    for i in (0, 1, 2, 4, 5, 6):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/common.h", "helper")
+    for i in (0, 1):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/registry.h", "open_key")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/registry.cpp"
+    assert by_first["fn_4"]["suggested_file"] is None
+    assert not any("_2" in (grp["suggested_file"] or "") for grp in out[0].plan["groups"])
+
+
+def test_a_module_only_one_group_leans_on_still_names_it():
+    g = _two_cpp_clusters("pch.h")
+    for i in range(4):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/utils.h", "trim")
+    for i in range(4, 8):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/layout.h", "arrange")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/utils.cpp"
+    assert by_first["fn_4"]["suggested_file"] == "src/Workspaces/layout.cpp"

@@ -1,0 +1,76 @@
+"""Filter selection — pure functions mapping (command, output) to a filter.
+
+Command matching wins over content sniffing: when the caller knows what ran,
+trust it. Content sniffing is the fallback for surfaces that only see bytes.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable
+
+from repowise.core.distill.filters.base import OutputFilter
+from repowise.core.distill.registry import filter_registry
+
+# Wrapper prefixes that mask the real command. Stripped repeatedly so
+# "uv run python -m pytest" normalizes down to "pytest ...".
+_WRAPPER_RE = re.compile(
+    r"^(?:"
+    r"uv run|uvx|npx|pnpm exec|pnpm dlx|yarn dlx|poetry run|pipenv run|hatch run|"
+    r"python3? -m|py -m|"
+    r"cmd(?:\.exe)? /c"
+    r")\s+",
+    re.IGNORECASE,
+)
+
+# Leading POSIX-style env assignments: FOO=bar BAZ=1 cmd ...
+_ENV_ASSIGN_RE = re.compile(r"^\w+=\S+\s+")
+
+# A command that is one whole quoted string — the typical remainder after
+# stripping a ``cmd /c "dir /s /b ..."`` wrapper.
+_WHOLE_QUOTED_RE = re.compile(r'^"([^"]*)"$')
+
+# Path prefix on the executable: .venv\Scripts\pytest.exe → pytest
+_EXE_PATH_RE = re.compile(r'^(?:"[^"]*[\\/]|\S*[\\/])(?P<exe>[\w.-]+?)(?:\.exe)?(?:")?(?=\s|$)')
+
+
+def normalize_command(command: str) -> str:
+    """Lowercased command with wrappers, env assignments, and exe paths stripped."""
+    cmd = command.strip()
+    for _ in range(4):
+        previous = cmd
+        cmd = _ENV_ASSIGN_RE.sub("", cmd)
+        # Strip the exe path *inside* the loop and before the wrapper table:
+        # a wrapper invoked by path (".venv/Scripts/python.exe -m pytest")
+        # only looks like a wrapper once the path is gone. Running this once
+        # at the end left "python -m pytest", which no family matches and
+        # which the hook's ignore-list then bails on outright.
+        cmd = _EXE_PATH_RE.sub(lambda m: m.group("exe"), cmd)
+        cmd = _WRAPPER_RE.sub("", cmd)
+        quoted = _WHOLE_QUOTED_RE.match(cmd)
+        if quoted:
+            cmd = quoted.group(1).strip()
+        if cmd == previous:
+            break
+    return cmd.lower()
+
+
+def select_filter(
+    command: str = "",
+    output: str = "",
+    *,
+    disabled: Iterable[str] = (),
+) -> OutputFilter | None:
+    """Pick the filter for *command*/*output*, or None when nothing applies."""
+    disabled_set = set(disabled)
+    candidates = [f for f in filter_registry.filters() if f.name not in disabled_set]
+    normalized = normalize_command(command) if command else ""
+    if normalized:
+        for f in candidates:
+            if f.matches_command(normalized):
+                return f
+    if output:
+        for f in candidates:
+            if f.matches_content(output):
+                return f
+    return None

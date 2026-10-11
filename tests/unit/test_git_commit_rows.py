@@ -1,0 +1,394 @@
+"""Unit tests for per-commit row collection + change-risk building.
+
+Covers the ``commit_sink`` collector on the commit-index walk and the pure
+``build_commit_rows`` transform (Kamei features, in-memory author experience,
+just-in-time change-risk, ordering, truncation).
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
+
+from repowise.core.ingestion.git_commit_index import load_commit_index
+from repowise.core.ingestion.git_indexer.commit_rows import (
+    build_commit_file_rows,
+    build_commit_rows,
+)
+
+
+def _iso_from_ts(ts: int) -> str:
+    """Render a git ``%cI`` value (strict ISO-8601 with a numeric offset)."""
+    return datetime.fromtimestamp(int(ts), UTC).isoformat()
+
+
+def _build_log(commits: list[dict]) -> str:
+    lines: list[str] = []
+    for c in commits:
+        lines.append(
+            "\x00"
+            + c["sha"]
+            + "\x1f"
+            + c["an"]
+            + "\x1f"
+            + c["ae"]
+            + "\x1f"
+            + c.get("cn", c["an"])
+            + "\x1f"
+            + c.get("ce", c["ae"])
+            + "\x1f"
+            + str(c["ct"])
+            + "\x1f"
+            + _iso_from_ts(c["ct"])
+            + "\x1f"
+            + c.get("parents", "")
+            + "\x1f"
+            + c["subj"]
+            + "\x1f"
+            + c.get("body", "")
+        )
+        for added, deleted, path in c["files"]:
+            lines.append(f"{added}\t{deleted}\t{path}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# commit_sink on load_commit_index
+# ---------------------------------------------------------------------------
+
+
+def test_commit_sink_collects_full_footprint_including_non_indexable() -> None:
+    """The sink records every file in the commit, not just the indexable set,
+    so change diffusion is measured against the real footprint."""
+    now = int(time.time())
+    raw = _build_log(
+        [
+            {
+                "sha": "aaa",
+                "an": "Alice",
+                "ae": "a@x.com",
+                "ct": now,
+                "subj": "feat: thing",
+                # src/a.py is indexable; docs/x.md and gen.lock are NOT.
+                "files": [(5, 1, "src/a.py"), (3, 0, "docs/x.md"), (9, 9, "gen.lock")],
+            },
+        ]
+    )
+    repo = MagicMock()
+    repo.git.log.return_value = raw
+
+    sink: list[dict] = []
+    index = load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink)
+
+    # Bucket still only carries the indexable file (unchanged behaviour).
+    assert set(index.keys()) == {"src/a.py"}
+    # Sink carries the commit with ALL three files.
+    assert len(sink) == 1
+    assert sink[0]["sha"] == "aaa"
+    assert sorted(p for p, _a, _d in sink[0]["changes"]) == [
+        "docs/x.md",
+        "gen.lock",
+        "src/a.py",
+    ]
+
+
+def _mock_repo(commits: list[dict]):
+    """A repo whose ``git log`` answers both passes the loader makes.
+
+    With ``since_ts`` the loader first asks for ``%ct`` only, to learn how deep
+    the surviving prefix goes, and only then asks for the numstat block bounded
+    to that depth. A mock that returned the same string to both would let the
+    bound go untested.
+    """
+    repo = MagicMock()
+    calls: list[tuple] = []
+
+    def log(*args, **kwargs):
+        calls.append(args)
+        depth = int(str(args[0]).lstrip("-"))
+        if "--format=%ct" in args:
+            return "\n".join(str(c["ct"]) for c in commits[:depth])
+        return _build_log(commits[:depth])
+
+    repo.git.log.side_effect = log
+    repo._log_calls = calls
+    return repo
+
+
+def test_commit_sink_since_ts_drops_old_commits() -> None:
+    """``since_ts`` filters the sink to commits strictly newer than the bound —
+    the incremental capture path's freshness guarantee."""
+    commits = [
+        {"sha": "new", "an": "A", "ae": "a@x", "ct": 3000, "subj": "new",
+         "files": [(1, 0, "src/a.py")]},
+        {"sha": "mid", "an": "A", "ae": "a@x", "ct": 2000, "subj": "mid",
+         "files": [(1, 0, "src/a.py")]},
+        {"sha": "old", "an": "A", "ae": "a@x", "ct": 1000, "subj": "old",
+         "files": [(1, 0, "src/a.py")]},
+    ]
+    repo = _mock_repo(commits)
+    sink: list[dict] = []
+    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=1500)
+    # Only commits with ts > 1500 survive (3000, 2000).
+    assert sorted(c["sha"] for c in sink) == ["mid", "new"]
+
+    repo2 = _mock_repo(commits)
+    sink2: list[dict] = []
+    load_commit_index(repo2, 100, {"src/a.py"}, commit_sink=sink2, since_ts=3000)
+    assert sink2 == []
+
+
+def test_since_ts_bounds_the_numstat_walk_to_the_surviving_prefix() -> None:
+    """The expensive pass must not diff commits the ts filter would drop.
+
+    Without this the loader can ask git to produce ``--numstat`` for the whole
+    window and throw it away, which is invisible to every behavioural test
+    above: the returned rows are identical either way.
+    """
+    commits = [
+        {"sha": f"c{i}", "an": "A", "ae": "a@x", "ct": 5000 - i * 100, "subj": f"c{i}",
+         "files": [(1, 0, "src/a.py")]}
+        for i in range(20)
+    ]
+    repo = _mock_repo(commits)
+    sink: list[dict] = []
+    # ts > 4800 keeps c0..c1 (5000, 4900); c2 is exactly 4800 and is excluded.
+    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=4800)
+
+    assert sorted(c["sha"] for c in sink) == ["c0", "c1"]
+    numstat_calls = [c for c in repo._log_calls if "--numstat" in c]
+    assert len(numstat_calls) == 1
+    assert numstat_calls[0][0] == "-2"
+
+
+def test_since_ts_newer_than_every_commit_skips_the_numstat_walk() -> None:
+    commits = [
+        {"sha": "only", "an": "A", "ae": "a@x", "ct": 1000, "subj": "x",
+         "files": [(1, 0, "src/a.py")]}
+    ]
+    repo = _mock_repo(commits)
+    sink: list[dict] = []
+    assert load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=9999) == {}
+    assert sink == []
+    assert [c for c in repo._log_calls if "--numstat" in c] == []
+
+
+def test_commit_sink_default_none_is_noop() -> None:
+    """Without a sink the return value and behaviour are unchanged."""
+    raw = _build_log(
+        [
+            {
+                "sha": "aaa",
+                "an": "A",
+                "ae": "a@x",
+                "ct": 1000,
+                "subj": "x",
+                "files": [(1, 0, "src/a.py")],
+            }
+        ]
+    )
+    repo = MagicMock()
+    repo.git.log.return_value = raw
+    index = load_commit_index(repo, 100, {"src/a.py"})
+    assert set(index.keys()) == {"src/a.py"}
+
+
+# ---------------------------------------------------------------------------
+# build_commit_rows
+# ---------------------------------------------------------------------------
+
+
+def test_build_commit_rows_features_and_ordering() -> None:
+    # newest-first input (as the walk yields).
+    parsed = [
+        {
+            "sha": "newer",
+            "author_name": "Ann",
+            "author_email": "ann@x",
+            "ts": 2000,
+            "subject": "feat: add",
+            "changes": [("pkg/a.py", 5, 5)],
+        },
+        {
+            "sha": "older",
+            "author_name": "Ann",
+            "author_email": "ann@x",
+            "ts": 1000,
+            "subject": "fix: bug",
+            "changes": [("pkg/a.py", 10, 2), ("pkg/sub/b.py", 3, 0)],
+        },
+    ]
+    rows = build_commit_rows(parsed)
+
+    # Order preserved (newest-first).
+    assert [r["sha"] for r in rows] == ["newer", "older"]
+
+    older = next(r for r in rows if r["sha"] == "older")
+    assert older["lines_added"] == 13
+    assert older["lines_deleted"] == 2
+    assert older["files_changed"] == 2
+    assert older["dirs_changed"] == 2  # "pkg" and "pkg/sub"
+    assert older["subsystems_changed"] == 1  # top-level "pkg"
+    assert older["is_fix"] is True
+    assert 0.0 <= older["change_risk_score"] <= 10.0
+    assert older["change_risk_level"] in {"low", "moderate", "high"}
+
+    newer = next(r for r in rows if r["sha"] == "newer")
+    assert newer["is_fix"] is False
+
+
+def test_build_commit_rows_author_experience_is_cumulative() -> None:
+    """Experience = the author's prior-commit count, oldest→newest."""
+    parsed = [
+        {
+            "sha": "c3",
+            "author_name": "Ann",
+            "author_email": "ann@x",
+            "ts": 3000,
+            "subject": "x",
+            "changes": [("a.py", 1, 0)],
+        },
+        {
+            "sha": "c2",
+            "author_name": "Ann",
+            "author_email": "ann@x",
+            "ts": 2000,
+            "subject": "x",
+            "changes": [("a.py", 1, 0)],
+        },
+        {
+            "sha": "c1",
+            "author_name": "Ann",
+            "author_email": "ann@x",
+            "ts": 1000,
+            "subject": "x",
+            "changes": [("a.py", 1, 0)],
+        },
+        {
+            "sha": "b1",
+            "author_name": "Bob",
+            "author_email": "bob@x",
+            "ts": 1500,
+            "subject": "x",
+            "changes": [("a.py", 1, 0)],
+        },
+    ]
+    rows = build_commit_rows(parsed)
+    by_sha = {r["sha"]: r for r in rows}
+    # Ann's three commits have exp 0,1,2 in time order; Bob's single commit 0.
+    # The persisted author_experience is the in-memory cumulative prior count.
+    assert by_sha["c1"]["author_experience"] == 0
+    assert by_sha["c2"]["author_experience"] == 1
+    assert by_sha["c3"]["author_experience"] == 2
+    assert by_sha["b1"]["author_experience"] == 0
+    # Lower experience ⇒ higher risk (exp coefficient is protective).
+    assert by_sha["c1"]["change_risk_score"] >= by_sha["c3"]["change_risk_score"]
+
+
+def test_build_commit_rows_truncates_subject() -> None:
+    parsed = [
+        {
+            "sha": "a",
+            "author_name": "A",
+            "author_email": "a@x",
+            "ts": 1000,
+            "subject": "z" * 5000,
+            "changes": [("a.py", 1, 0)],
+        },
+    ]
+    rows = build_commit_rows(parsed)
+    assert len(rows[0]["subject"]) == 500
+
+
+def test_build_commit_rows_handles_empty_and_no_changes() -> None:
+    assert build_commit_rows([]) == []
+    rows = build_commit_rows(
+        [
+            {
+                "sha": "a",
+                "author_name": "A",
+                "author_email": "a@x",
+                "ts": 1000,
+                "subject": "merge artifact",
+                "changes": [],
+            }
+        ]
+    )
+    assert rows[0]["files_changed"] == 0
+    assert rows[0]["lines_added"] == 0
+    assert 0.0 <= rows[0]["change_risk_score"] <= 10.0
+
+
+def test_build_commit_rows_committed_at_parsed() -> None:
+    rows = build_commit_rows(
+        [
+            {
+                "sha": "a",
+                "author_name": "A",
+                "author_email": "a@x",
+                "ts": 1_700_000_000,
+                "subject": "x",
+                "changes": [("a.py", 1, 0)],
+            }
+        ]
+    )
+    assert rows[0]["committed_at"] is not None
+    assert rows[0]["committed_at"].year == 2023
+    # ts <= 0 → None (no fabricated timestamp).
+    rows0 = build_commit_rows(
+        [
+            {
+                "sha": "b",
+                "author_name": "A",
+                "author_email": "a@x",
+                "ts": 0,
+                "subject": "x",
+                "changes": [("a.py", 1, 0)],
+            }
+        ]
+    )
+    assert rows0[0]["committed_at"] is None
+
+
+def test_build_commit_file_rows_keeps_the_detail_the_aggregates_drop():
+    rows = build_commit_file_rows(
+        [{"sha": "a" * 40, "changes": [("pkg/a.py", 10, 2), ("pkg/b.py", 0, 5)]}]
+    )
+
+    assert [r["file_path"] for r in rows] == ["pkg/a.py", "pkg/b.py"]
+    assert rows[0] == {
+        "sha": "a" * 40,
+        "file_path": "pkg/a.py",
+        "lines_added": 10,
+        "lines_deleted": 2,
+    }
+    # 0/0-style rows are real: a binary file is touched, size unknown.
+    assert rows[1]["lines_added"] == 0
+
+
+def test_build_commit_file_rows_folds_a_repeated_path():
+    """numstat can emit a path twice; (sha, path) is the natural key."""
+    rows = build_commit_file_rows(
+        [{"sha": "a" * 40, "changes": [("pkg/a.py", 10, 2), ("pkg/a.py", 3, 3)]}]
+    )
+
+    assert len(rows) == 1
+
+
+def test_build_commit_file_rows_skips_records_without_a_sha():
+    rows = build_commit_file_rows([{"changes": [("x.py", 1, 1)]}, {"sha": "", "changes": []}])
+
+    assert rows == []
+
+
+def test_build_commit_file_rows_covers_exactly_the_commits_it_was_given():
+    commits = [
+        {"sha": "a" * 40, "changes": [("a.py", 1, 1)]},
+        {"sha": "b" * 40, "changes": [("b.py", 2, 0)]},
+    ]
+
+    file_rows = build_commit_file_rows(commits)
+    commit_rows = build_commit_rows(commits)
+
+    assert {r["sha"] for r in file_rows} == {r["sha"] for r in commit_rows}

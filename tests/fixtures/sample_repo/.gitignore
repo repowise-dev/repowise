@@ -1,0 +1,27 @@
+# Build outputs
+dist/
+build/
+target/
+*.o
+*.a
+*.so
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.DS_Store

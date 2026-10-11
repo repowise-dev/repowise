@@ -1,0 +1,84 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { X } from "lucide-react";
+import { Callout } from "@repowise-dev/ui/shared/callout";
+import useSWR from "swr";
+import { getMetaVersion } from "@/lib/api/meta";
+import { useTranslations } from "next-intl";
+
+const STORAGE_PREFIX = "repowise:reindex-hint-dismissed:";
+
+export interface ReindexHintBannerProps {
+  repoId: string;
+}
+
+/**
+ * Per-repo notice shown only when the store format of this repo is behind the
+ * running build in a way that recommends a reindex. We recommend, never force:
+ * this is purely informational and dismissible. Renders nothing in the common
+ * case (store compatible) or if the check fails.
+ */
+export function ReindexHintBanner({ repoId }: ReindexHintBannerProps) {
+  const t = useTranslations("shell");
+  const tc = useTranslations("common");
+  const { data: meta } = useSWR(
+    ["meta-version", repoId],
+    () => getMetaVersion(repoId),
+    { revalidateOnFocus: false, revalidateOnReconnect: false },
+  );
+  const [dismissed, setDismissed] = useState(true);
+
+  const recommended = meta?.reindex_recommended === true;
+  const command = meta?.reindex_command ?? null;
+
+  useEffect(() => {
+    if (!recommended || typeof window === "undefined") return;
+    try {
+      setDismissed(!!window.localStorage.getItem(STORAGE_PREFIX + repoId));
+    } catch {
+      setDismissed(false);
+    }
+  }, [recommended, repoId]);
+
+  if (!recommended || dismissed) return null;
+
+  const dismiss = () => {
+    try {
+      window.localStorage.setItem(STORAGE_PREFIX + repoId, "1");
+    } catch {
+      /* localStorage unavailable - hide for this session only. */
+    }
+    setDismissed(true);
+  };
+
+  return (
+    <div className="px-3 pt-2 sm:px-[var(--page-pad)]">
+      <Callout
+        tone="warning"
+        label={t("reindexHint.label")}
+        className="py-1.5"
+        action={
+          <button
+            type="button"
+            onClick={dismiss}
+            aria-label={tc("dismiss")}
+            className="rounded p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        }
+      >
+        {t("reindexHint.body")}
+        {command && (
+          <>
+            {" "}
+            <code className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs">
+              {command}
+            </code>
+          </>
+        )}
+      </Callout>
+    </div>
+  );
+}

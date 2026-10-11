@@ -1,0 +1,305 @@
+{
+  "silos": [
+    {
+      "file_path": "src/db.py",
+      "owner_email": "alice@example.com",
+      "owner_pct": 0.99,
+      "commit_count_90d": 30,
+      "is_hotspot": true
+    },
+    {
+      "file_path": "src/core.py",
+      "owner_email": "bob@example.com",
+      "owner_pct": 0.85,
+      "commit_count_90d": 30,
+      "is_hotspot": true
+    },
+    {
+      "file_path": "src/cli.py",
+      "owner_email": "carol@example.com",
+      "owner_pct": 0.81,
+      "commit_count_90d": 12,
+      "is_hotspot": false
+    },
+    {
+      "file_path": "src/api.py",
+      "owner_email": "alice@example.com",
+      "owner_pct": 0.95,
+      "commit_count_90d": 4,
+      "is_hotspot": false
+    },
+    {
+      "file_path": "src/old.py",
+      "owner_email": "",
+      "owner_pct": 1.0,
+      "commit_count_90d": 0,
+      "is_hotspot": false
+    }
+  ],
+  "onboarding_targets": [
+    {
+      "path": "src/m07.py",
+      "pagerank": 0.08,
+      "doc_words": 0
+    },
+    {
+      "path": "src/m06.py",
+      "pagerank": 0.07,
+      "doc_words": 0
+    },
+    {
+      "path": "src/m05.py",
+      "pagerank": 0.06,
+      "doc_words": 0
+    },
+    {
+      "path": "src/m04.py",
+      "pagerank": 0.05,
+      "doc_words": 0
+    },
+    {
+      "path": "src/m03.py",
+      "pagerank": 0.04,
+      "doc_words": 0
+    },
+    {
+      "path": "src/m02.py",
+      "pagerank": 0.03,
+      "doc_words": 0
+    },
+    {
+      "path": "src/m01.py",
+      "pagerank": 0.02,
+      "doc_words": 0
+    },
+    {
+      "path": "src/m00.py",
+      "pagerank": 0.01,
+      "doc_words": 0
+    },
+    {
+      "path": "src/m11.py",
+      "pagerank": 0.3,
+      "doc_words": 6
+    },
+    {
+      "path": "src/m10.py",
+      "pagerank": 0.2,
+      "doc_words": 1
+    }
+  ],
+  "knowledge_map": {
+    "top_owners": [
+      {
+        "email": "alice@example.com",
+        "name": "Alice",
+        "files_owned": 2,
+        "percentage": 25.0
+      },
+      {
+        "email": "bob@example.com",
+        "name": "Bob",
+        "files_owned": 2,
+        "percentage": 25.0
+      },
+      {
+        "email": "carol@example.com",
+        "name": "Carol",
+        "files_owned": 1,
+        "percentage": 12.5
+      },
+      {
+        "email": "dan@example.com",
+        "name": "Dan",
+        "files_owned": 1,
+        "percentage": 12.5
+      }
+    ],
+    "knowledge_silos": [
+      {
+        "file_path": "src/api.py",
+        "owner_email": "alice@example.com",
+        "owner_pct": 0.95
+      },
+      {
+        "file_path": "src/cli.py",
+        "owner_email": "carol@example.com",
+        "owner_pct": 0.81
+      },
+      {
+        "file_path": "src/core.py",
+        "owner_email": "bob@example.com",
+        "owner_pct": 0.85
+      },
+      {
+        "file_path": "src/db.py",
+        "owner_email": "alice@example.com",
+        "owner_pct": 0.99
+      },
+      {
+        "file_path": "src/old.py",
+        "owner_email": "",
+        "owner_pct": 1.0
+      }
+    ],
+    "onboarding_targets": [
+      {
+        "path": "src/m07.py",
+        "pagerank": 0.08,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m06.py",
+        "pagerank": 0.07,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m05.py",
+        "pagerank": 0.06,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m04.py",
+        "pagerank": 0.05,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m03.py",
+        "pagerank": 0.04,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m02.py",
+        "pagerank": 0.03,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m01.py",
+        "pagerank": 0.02,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m00.py",
+        "pagerank": 0.01,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m11.py",
+        "pagerank": 0.3,
+        "doc_words": 6
+      },
+      {
+        "path": "src/m10.py",
+        "pagerank": 0.2,
+        "doc_words": 1
+      }
+    ]
+  },
+  "endpoint": {
+    "top_owners": [
+      {
+        "email": "alice@example.com",
+        "name": "Alice",
+        "files_owned": 2,
+        "percentage": 25.0
+      },
+      {
+        "email": "bob@example.com",
+        "name": "Bob",
+        "files_owned": 2,
+        "percentage": 25.0
+      },
+      {
+        "email": "carol@example.com",
+        "name": "Carol",
+        "files_owned": 1,
+        "percentage": 12.5
+      },
+      {
+        "email": "dan@example.com",
+        "name": "Dan",
+        "files_owned": 1,
+        "percentage": 12.5
+      }
+    ],
+    "knowledge_silos": [
+      {
+        "file_path": "src/api.py",
+        "owner_email": "alice@example.com",
+        "owner_pct": 0.95
+      },
+      {
+        "file_path": "src/cli.py",
+        "owner_email": "carol@example.com",
+        "owner_pct": 0.81
+      },
+      {
+        "file_path": "src/core.py",
+        "owner_email": "bob@example.com",
+        "owner_pct": 0.85
+      },
+      {
+        "file_path": "src/db.py",
+        "owner_email": "alice@example.com",
+        "owner_pct": 0.99
+      },
+      {
+        "file_path": "src/old.py",
+        "owner_email": "",
+        "owner_pct": 1.0
+      }
+    ],
+    "onboarding_targets": [
+      {
+        "path": "src/m07.py",
+        "pagerank": 0.08,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m06.py",
+        "pagerank": 0.07,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m05.py",
+        "pagerank": 0.06,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m04.py",
+        "pagerank": 0.05,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m03.py",
+        "pagerank": 0.04,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m02.py",
+        "pagerank": 0.03,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m01.py",
+        "pagerank": 0.02,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m00.py",
+        "pagerank": 0.01,
+        "doc_words": 0
+      },
+      {
+        "path": "src/m11.py",
+        "pagerank": 0.3,
+        "doc_words": 6
+      },
+      {
+        "path": "src/m10.py",
+        "pagerank": 0.2,
+        "doc_words": 1
+      }
+    ]
+  }
+}

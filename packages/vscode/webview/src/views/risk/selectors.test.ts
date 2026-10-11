@@ -1,0 +1,82 @@
+import { describe, it, expect } from "vitest";
+import { selectDirectRisks } from "./selectors";
+import type { ChangeImpactReport } from "../../../../src/shared/webviewMessages";
+import type { DirectRiskEntry } from "@repowise-dev/types/blast-radius";
+
+function report(direct_risks: DirectRiskEntry[] = [], blast = true): ChangeImpactReport {
+  return {
+    changed: direct_risks.map((d) => d.path),
+    stagedCount: 0,
+    workingCount: 0,
+    scope: "branch",
+    reviewers: [],
+    gitUnavailable: false,
+    blast: blast
+      ? {
+          direct_risks,
+          transitive_affected: [],
+          cochange_warnings: [],
+          recommended_reviewers: [],
+          test_gaps: [],
+          structural_impact_score: 0,
+          structural_impact_band: "localized",
+          structural_impact_scale: {
+            field: "structural_impact_score",
+            kind: "heuristic_structural_score",
+            unit: "normalized_points",
+            range: { minimum: 0, maximum: 10 },
+            measures: "indexed structural exposure",
+            deterministic: true,
+            calibration: { status: "uncalibrated", source: null },
+            authoritative_for_change_review: false,
+            runtime_breakage_probability: false,
+          },
+          overall_risk_score: 0,
+          overall_risk_score_compatibility: {
+            deprecated: true,
+            replacement: "structural_impact_score",
+            equivalent_value: true,
+            historical_meaning: "uncalibrated structural heuristic",
+          },
+        }
+      : null,
+  };
+}
+
+describe("selectDirectRisks", () => {
+  it("ranks riskiest first with shares relative to the set maximum", () => {
+    const out = selectDirectRisks(
+      report([
+        { path: "a.ts", structural_score: 0.005, risk_score: 0.005, temporal_hotspot: 0, churn_percentile: 0, is_hotspot: false, centrality: 0.005 },
+        { path: "b.ts", structural_score: 0.02, risk_score: 0.02, temporal_hotspot: 0, churn_percentile: 0, is_hotspot: false, centrality: 0.02 },
+      ]),
+    );
+    expect(out.map((r) => r.path)).toEqual(["b.ts", "a.ts"]);
+    expect(out[0]?.share).toBe(1);
+    expect(out[1]?.share).toBeCloseTo(0.25);
+  });
+
+  // The marker reads the index's verdict, not a raw churn number that grows
+  // with how fast the repository commits.
+  it("takes the hotspot marker from the index", () => {
+    const out = selectDirectRisks(
+      report([
+        { path: "hot.ts", structural_score: 0.01, risk_score: 0.01, temporal_hotspot: 0.9, churn_percentile: 0.92, is_hotspot: true, centrality: 0.005 },
+        { path: "quiet.ts", structural_score: 0.01, risk_score: 0.01, temporal_hotspot: 0.2, churn_percentile: 0.4, is_hotspot: false, centrality: 0.005 },
+      ]),
+    );
+    expect(out.find((r) => r.path === "hot.ts")?.hotspot).toBe(true);
+    expect(out.find((r) => r.path === "quiet.ts")?.hotspot).toBe(false);
+  });
+
+  it("serves zero shares when every risk score is zero", () => {
+    const out = selectDirectRisks(
+      report([{ path: "a.ts", structural_score: 0, risk_score: 0, temporal_hotspot: 0, churn_percentile: 0, is_hotspot: false, centrality: 0 }]),
+    );
+    expect(out[0]?.share).toBe(0);
+  });
+
+  it("returns nothing when there is no blast payload", () => {
+    expect(selectDirectRisks(report([], false))).toEqual([]);
+  });
+});

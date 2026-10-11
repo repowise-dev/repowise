@@ -1,0 +1,1355 @@
+"""Confidence calibration gates for get_answer.
+
+Covers the three A-series gates that ground confidence in answer *content*
+rather than retrieval scores alone:
+
+  * expanded hedge markers ("do not include", "can't enumerate", …)
+  * value-grounding gate — numbers asserted on value-shaped questions must
+    appear in the retrieved material, else confidence caps at low
+  * citation-source gate — high confidence requires ≥1 cited page that
+    contributed actual source (hydrated symbols), not just summaries
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import ClassVar
+
+import pytest
+
+from repowise.server.mcp_server.tool_answer.confidence import (
+    _answer_is_hedged,
+    _distinctive_terms,
+    _frame_term_grounding,
+    _is_value_question,
+    _ungrounded_numbers,
+)
+
+# ---------------------------------------------------------------------------
+# Pure-predicate unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestHedgeMarkers:
+    def test_do_not_include_detected(self) -> None:
+        assert _answer_is_hedged("The provided wiki excerpts do not include the source body.")
+
+    def test_cannot_enumerate_detected(self) -> None:
+        assert _answer_is_hedged("I can't enumerate the exact callers from the excerpts.")
+
+    def test_unable_to_determine_detected(self) -> None:
+        assert _answer_is_hedged("The exact default is unable to determine from this material.")
+
+    def test_marker_late_in_answer_detected(self) -> None:
+        long_preamble = "The module handles ingestion. " * 40
+        assert _answer_is_hedged(long_preamble + "However, the excerpts do not include the value.")
+
+    def test_evidence_that_names_no_answer_detected(self) -> None:
+        assert _answer_is_hedged("The evidence does not identify which caller sets it.")
+        assert _answer_is_hedged("The material does not show the retry count.")
+        assert _answer_is_hedged("The evidence does not specify which default ports it drops.")
+
+    def test_behaviour_described_with_the_same_verbs_not_hedged(self) -> None:
+        assert not _answer_is_hedged("The validator does not show an error on empty input.")
+        assert not _answer_is_hedged("The caller does not specify a timeout, so 5s applies.")
+
+    def test_direct_answer_not_hedged(self) -> None:
+        assert not _answer_is_hedged("The default is 2, set in git_indexer/_constants.py.")
+
+    def test_curly_apostrophe_hedge_detected(self) -> None:
+        # LLMs routinely emit the curly U+2019; the markers use plain ASCII.
+        # Without normalization this hedged answer rides through as high.
+        assert _answer_is_hedged(
+            "I can\u2019t determine why the threshold is 1.2 from the excerpts."
+        )
+
+
+class TestValueQuestionShape:
+    def test_default_question_is_value_shaped(self) -> None:
+        assert _is_value_question("What is the default value of _MIN_COUNT?")
+
+    def test_threshold_question_is_value_shaped(self) -> None:
+        assert _is_value_question("what threshold gates the dominance ratio")
+
+    def test_how_many_is_value_shaped(self) -> None:
+        assert _is_value_question("How many retrieval hits are returned?")
+
+    def test_mechanism_question_is_not(self) -> None:
+        assert not _is_value_question("How does the ingestion pipeline parse imports?")
+
+
+class TestUngroundedNumbers:
+    HITS: ClassVar[list[dict]] = [
+        {
+            "title": "constants",
+            "summary": "Co-change tuning constants.",
+            "snippet": "",
+            "symbols": [
+                {
+                    "name": "_DEFAULT_CO_CHANGE_MIN_COUNT",
+                    "signature": "_DEFAULT_CO_CHANGE_MIN_COUNT = 2",
+                    "docstring": "",
+                }
+            ],
+        }
+    ]
+
+    def test_invented_number_is_ungrounded(self) -> None:
+        assert _ungrounded_numbers("The default minimum count is 3.", self.HITS) == ["3"]
+
+    def test_number_present_in_signature_is_grounded(self) -> None:
+        assert _ungrounded_numbers("The default minimum count is 2.", self.HITS) == []
+
+    def test_file_line_citations_are_not_value_assertions(self) -> None:
+        text = "The default is 2 (git_indexer/_constants.py:114)."
+        assert _ungrounded_numbers(text, self.HITS) == []
+
+    def test_no_numbers_in_answer_is_grounded(self) -> None:
+        assert _ungrounded_numbers("It reads the tuning constant from config.", self.HITS) == []
+
+    def test_underscore_separated_constant_is_grounded(self) -> None:
+        # Source ``MAX = 100_000`` and an answer that says "100000" are the
+        # same value — the digit-separator strip must keep this grounded.
+        hits = [{"symbols": [{"name": "MAX", "signature": "MAX = 100_000", "docstring": ""}]}]
+        assert _ungrounded_numbers("The cap is 100000 tokens.", hits) == []
+
+    def test_comma_grouped_answer_is_grounded(self) -> None:
+        # Prose commas (``100,000``) must not split into 100 and 000 and read
+        # as ungrounded against ``100_000`` in source.
+        hits = [{"symbols": [{"name": "MAX", "signature": "MAX = 100_000", "docstring": ""}]}]
+        assert _ungrounded_numbers("The cap is 100,000 tokens.", hits) == []
+
+
+class TestDistinctiveTerms:
+    def test_camelcase_kept(self) -> None:
+        assert "PageRank" in _distinctive_terms("ordered by the PageRank centrality score")
+
+    def test_snake_case_kept(self) -> None:
+        assert "apply_pagerank_bias" in _distinctive_terms("calls apply_pagerank_bias on the set")
+
+    def test_plain_lowercase_dropped(self) -> None:
+        # Common technical English is too broad to gate on.
+        assert _distinctive_terms("the centrality computation caps neighbors") == set()
+
+    def test_capitalized_prose_dropped(self) -> None:
+        # Sentence-initial / markdown-header words are prose, not mechanisms.
+        # A leading capital alone must not register as a frame term (the live
+        # over-fire that flagged Because/Determine/Mechanism/Short/Since/What).
+        assert (
+            _distinctive_terms(
+                "## What happens. Because the Mechanism is Short, Determine it Since When."
+            )
+            == set()
+        )
+
+    def test_internal_caps_and_acronyms_kept(self) -> None:
+        terms = _distinctive_terms("It wraps WikiSymbol over an HTTP transport.")
+        assert "WikiSymbol" in terms
+        assert "HTTP" in terms  # >=4-char all-caps acronym (internal upper)
+
+    def test_short_tokens_dropped(self) -> None:
+        assert _distinctive_terms("py id db v2") == set()  # all <4 chars
+
+    def test_citation_path_yields_no_term(self) -> None:
+        # A lowercase dotted filename is not a distinctive mechanism term.
+        assert _distinctive_terms("see pkg/alpha/one.py for details") == set()
+
+
+class TestFrameTermGrounding:
+    HITS: ClassVar[list[dict]] = [
+        {
+            "title": "enrichment",
+            "summary": "Caller/callee rollup for symbol context.",
+            "snippet": "",
+            "target_path": "mcp/enrichment.py",
+            "symbols": [
+                {
+                    "name": "_count_call_neighbors",
+                    "signature": "def _count_call_neighbors(...)",
+                    "docstring": "Counts distinct caller neighbors above confidence.",
+                }
+            ],
+        }
+    ]
+
+    def test_foreign_frame_term_is_ungrounded(self) -> None:
+        ungrounded, grounded = _frame_term_grounding(
+            "The caller list is limited because the PageRank cap bounds neighbors.",
+            "why is the caller list limited",
+            self.HITS,
+        )
+        assert ungrounded == ["PageRank"]
+        assert grounded == 0
+
+    def test_grounded_frame_term_is_not_flagged(self) -> None:
+        ungrounded, grounded = _frame_term_grounding(
+            "The list is bounded by _count_call_neighbors (mcp/enrichment.py).",
+            "why is the caller list limited",
+            self.HITS,
+        )
+        assert ungrounded == []
+        assert grounded == 1
+
+    def test_question_named_term_is_excluded(self) -> None:
+        # Echoing the user's own framing is not an invented frame.
+        ungrounded, _ = _frame_term_grounding(
+            "It uses PageRank ordering.",
+            "why does the caller list use PageRank ordering",
+            self.HITS,
+        )
+        assert ungrounded == []
+
+
+class TestLeanHigh:
+    """REPOWISE_ANSWER_LEAN_HIGH strips re-read evidence from mainline
+    high-confidence answers only — never grounded fast paths, never <high,
+    and only when the flag is on."""
+
+    from repowise.server.mcp_server.tool_answer.answer import _LEAN_HIGH_DROP_KEYS
+
+    def _payload(self, **over) -> dict:
+        base = {
+            "answer": "Retries are gated by MIN_COUNT.",
+            "citations": ["pkg/alpha/one.py"],
+            "confidence": "high",
+            "fallback_targets": ["pkg/alpha/two.py"],
+            "note": "High confidence.",
+            "symbol_bodies": [{"path": "pkg/alpha/one.py", "source": "..."}],
+            "quotes": [{"path": "pkg/alpha/one.py", "quote": "MIN_COUNT = 2"}],
+            "flow_path": ["a", "b"],
+            "best_guesses": [{"file": "pkg/alpha/one.py"}],
+            "code_rationale": [{"path": "pkg/alpha/one.py", "comment": "why"}],
+        }
+        base.update(over)
+        return base
+
+    _HOW_Q = "How does retry gating work?"
+    _WHY_Q = "Why are retries gated by MIN_COUNT?"
+
+    def test_flag_on_high_strips_evidence_keeps_core(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k not in out
+        for k in ("answer", "citations", "confidence", "fallback_targets", "note"):
+            assert k in out
+
+    def test_grounded_fast_path_untouched(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(grounding="exact_symbol"), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+    def test_why_question_untouched(self, monkeypatch) -> None:
+        # A why-answer's rationale is grounded in the very evidence lean-high
+        # would strip, so why-questions are exempt even at high confidence.
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(), self._WHY_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+    def test_medium_untouched(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(confidence="medium"), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+    def test_flag_off_untouched(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.delenv("REPOWISE_ANSWER_LEAN_HIGH", raising=False)
+        out = _apply_lean_high(self._payload(), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+
+# ---------------------------------------------------------------------------
+# End-to-end gate behaviour through get_answer
+# ---------------------------------------------------------------------------
+
+_SYMBOL = {
+    "name": "MIN_COUNT",
+    "kind": "constant",
+    "signature": "MIN_COUNT = 2",
+    "docstring": "",
+    "start_line": 10,
+    "end_line": 10,
+    "_matched": True,
+}
+
+# Function-kind variant: matched, but not extractable by the C1 fast path —
+# used by tests that must reach the synthesis gates on value questions.
+_FN_SYMBOL = {
+    "name": "min_count_policy",
+    "kind": "function",
+    "signature": "def min_count_policy() -> int",
+    "docstring": "Returns the default minimum count, 2.",
+    "start_line": 10,
+    "end_line": 14,
+    "_matched": True,
+}
+
+
+def _patch_pipeline(monkeypatch, answer_mod, *, with_symbols: bool, symbol: dict | None = None):
+    async def _fake_retrieve(question, ctx):
+        return [
+            {"page_id": "file_page:pkg/alpha/one.py", "score": 5.0},
+            {"page_id": "file_page:pkg/alpha/two.py", "score": 4.0},
+        ]
+
+    async def _fake_hydrate(hits, ctx, *, scope=None):
+        for i, h in enumerate(hits):
+            h["target_path"] = h["page_id"].removeprefix("file_page:")
+            h["title"] = h["target_path"]
+            h["summary"] = "Auth service summary."
+            h["snippet"] = ""
+            h["page_type"] = "file_page"
+            if with_symbols and i == 0:
+                h["symbols"] = [dict(symbol or _SYMBOL)]
+        return hits
+
+    monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
+    monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
+
+
+def _patch_provider(monkeypatch, answer_mod, content: str):
+    class _Provider:
+        provider_name = "mock"
+        model_name = "mock-1"
+
+        async def generate(self, **kwargs):
+            return SimpleNamespace(content=content)
+
+    monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _p: _Provider())
+
+
+@pytest.mark.asyncio
+async def test_ungrounded_value_caps_confidence_low(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The default of min_count_policy is 3 (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("What is the default value of min_count_policy?")
+    assert result["confidence"] == "low"
+    assert "3" in result["note"]
+    assert "next_action_hint" in result
+
+
+@pytest.mark.asyncio
+async def test_grounded_value_keeps_high_confidence(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The default of min_count_policy is 2 (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("What is the default value of min_count_policy?")
+    assert result["confidence"] == "high"
+    assert "High confidence" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_derived_value_softens_to_medium_not_low(setup_mcp, monkeypatch):
+    """Grounded 2 plus a computed 6 softens to medium.
+
+    ``test_ungrounded_value_caps_confidence_low`` is the negative control: a
+    lone invented value with no grounded sibling still caps at low.
+    """
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "min_count_policy returns 2, and the three retry tiers "
+        "multiply it to 6 (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("What is the default value of min_count_policy?")
+    assert result["confidence"] == "medium"
+    # Still told to verify: the note and hint key off ungrounded_values, not tier.
+    assert "6" in result["note"]
+    assert "next_action_hint" in result
+
+
+@pytest.mark.asyncio
+async def test_high_confidence_requires_source_backed_citation(setup_mcp, monkeypatch):
+    """No cited page contributed symbols → high is downgraded to medium."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=False)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "Auth flows through middleware into the service (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("how does the auth flow work end to end")
+    assert result["confidence"] == "medium"
+
+
+@pytest.mark.asyncio
+async def test_expanded_hedge_marker_downgrades_through_pipeline(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The provided excerpts do not include the body of min_count_policy.",
+    )
+
+    result = await get_answer("What is the default value of min_count_policy?")
+    assert result["confidence"] == "low"
+    # A hedge now hands the agent the ranked candidates to read instead of an
+    # empty block: the whole point of the call is to say WHERE the answer is when
+    # the prose could not ground it. The list stays lean (no per-hit docstring
+    # dump) so the token cost the empty payload was protecting is preserved.
+    assert result["retrieval"], "hedged answer should still surface its ranked hits"
+    assert all("path" in h for h in result["retrieval"])
+
+
+@pytest.mark.asyncio
+async def test_value_question_uses_extraction_fast_path(setup_mcp, monkeypatch):
+    """C1: matched constant + value question → verbatim line, no LLM call."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+
+    def _no_provider(_p):
+        raise AssertionError("fast path must not resolve a provider")
+
+    monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", _no_provider)
+
+    result = await get_answer("What is the default value of MIN_COUNT?")
+    assert result["grounding"] == "extracted"
+    assert result["confidence"] == "high"
+    assert "MIN_COUNT = 2" in result["answer"]
+    assert "pkg/alpha/one.py:10" in result["answer"]
+    assert result["citations"] == ["pkg/alpha/one.py"]
+    assert "retrieval" not in result
+
+
+@pytest.mark.asyncio
+async def test_mechanism_question_skips_fast_path(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(monkeypatch, answer_mod, "MIN_COUNT gates retries (pkg/alpha/one.py).")
+
+    result = await get_answer("How does MIN_COUNT influence the retry loop?")
+    assert "grounding" not in result
+
+
+@pytest.mark.asyncio
+async def test_synthesized_answer_carries_grounded_quotes(setup_mcp, monkeypatch):
+    """C2: symbols named in the answer attach {path, lines, quote}."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(monkeypatch, answer_mod, "Retries are gated by MIN_COUNT (pkg/alpha/one.py).")
+
+    result = await get_answer("How does the retry gating mechanism work here?")
+    assert result.get("quotes"), "answer naming MIN_COUNT must carry a quote"
+    [q] = result["quotes"]
+    assert q["path"] == "pkg/alpha/one.py"
+    assert q["lines"][0] == 10
+    assert "MIN_COUNT = 2" in q["quote"]
+    # A constant's body IS its one-line assignment — it belongs in `quotes`,
+    # never the `symbol_bodies` definition block.
+    assert not result.get("symbol_bodies")
+
+
+_FN_BODY_SYMBOL = {
+    "name": "min_count_policy",
+    "kind": "function",
+    "signature": "def min_count_policy() -> int",
+    "docstring": "Returns the default minimum count.",
+    "start_line": 10,
+    "end_line": 12,
+    "_matched": True,
+    "source_excerpt": "def min_count_policy() -> int:\n    # gate retries\n    return MIN_COUNT",
+}
+
+
+@pytest.mark.asyncio
+async def test_named_function_carries_inline_body(setup_mcp, monkeypatch):
+    """A named function symbol surfaces its full body in symbol_bodies so the
+    agent skips the get_symbol follow-up."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_BODY_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "min_count_policy gates the retry loop (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("How does min_count_policy work?")
+    bodies = result.get("symbol_bodies")
+    assert bodies, "a named function symbol must carry an inline body"
+    [b] = bodies
+    assert b["path"] == "pkg/alpha/one.py"
+    assert b["name"] == "min_count_policy"
+    assert "return MIN_COUNT" in b["source"]
+    assert b["lines"] == [10, 12]
+    # Body served whole → no continuation pointer.
+    assert "truncated" not in b
+
+
+@pytest.mark.asyncio
+async def test_inline_body_truncation_emits_continuation(setup_mcp, monkeypatch):
+    """When the indexed body is longer than the hydrated excerpt, the body
+    block names the exact range read for the remainder."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    big = dict(_FN_BODY_SYMBOL, end_line=60)  # excerpt covers 10-12, body ends at 60
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=big)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "min_count_policy gates the retry loop (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("How does min_count_policy work?")
+    [b] = result["symbol_bodies"]
+    assert b["truncated"] is True
+    assert b["continuation"] == "pkg/alpha/one.py:13-60"
+
+
+# ---------------------------------------------------------------------------
+# Hedge + served named-symbol body — a hedge downgrades the PROSE, but when the
+# exact symbol the question named is inlined as a live body, the answer's ground
+# truth is already served. The response must not read "low, go Read" (which
+# contradicts the payload); it holds at medium with grounding="symbol_body".
+# ---------------------------------------------------------------------------
+
+
+def _patch_anchor(monkeypatch, answer_mod, anchored: dict):
+    """Force symbol anchoring to attach ``anchored`` to the top hit, as if the
+    question named an indexed symbol whose defining file got promoted."""
+
+    async def _fake_anchor(session, repo_id, question_ids, hits, **kwargs):
+        if hits:
+            hits[0]["_anchor_symbols"] = [anchored]
+        return hits, {"union": {}, "qualified_miss": []}
+
+    monkeypatch.setattr(answer_mod, "_anchor_symbol_hits", _fake_anchor)
+
+
+@pytest.mark.asyncio
+async def test_hedged_but_named_body_served_holds_medium(setup_mcp, monkeypatch, tmp_path):
+    """Hedged synthesis + the exact question-named symbol inlined as a live body
+    → medium with grounding='symbol_body', not low. The 'low → Read' hint the
+    body makes unnecessary must not fire."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text(
+        "def min_count_policy() -> int:\n    # gate retries at the floor\n    return MIN_COUNT\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_anchor(
+        monkeypatch,
+        answer_mod,
+        {
+            "name": "min_count_policy",
+            "kind": "function",
+            "start_line": 1,
+            "end_line": 3,
+        },
+    )
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The provided excerpts do not include the full body of min_count_policy.",
+    )
+
+    result = await get_answer("How does min_count_policy work?")
+    assert result["confidence"] == "medium"
+    assert result["grounding"] == "symbol_body"
+    [b] = result["symbol_bodies"]
+    assert b["name"] == "min_count_policy"
+    assert "return MIN_COUNT" in b["source"]
+    assert "cite that directly" in result["note"]
+    # The low-confidence "Read the fallback_targets" hint must be gone.
+    assert "Low confidence" not in (result["_meta"].get("hint") or "")
+
+
+@pytest.mark.asyncio
+async def test_hedged_without_named_body_stays_low(setup_mcp, monkeypatch):
+    """The same hedge, but no anchored body is served → still low (the negative
+    control for the grounding bump)."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The provided excerpts do not include the full body of min_count_policy.",
+    )
+
+    result = await get_answer("How does min_count_policy work?")
+    assert result["confidence"] == "low"
+    assert "grounding" not in result
+
+
+# ---------------------------------------------------------------------------
+# Symbol anchoring — force the defining file of a question-named symbol into
+# the candidate set when fuzzy retrieval missed it.
+# ---------------------------------------------------------------------------
+
+
+class _Sym:
+    def __init__(
+        self,
+        name,
+        file_path,
+        kind="method",
+        parent_name=None,
+        qualified_name=None,
+        start_line=1,
+        end_line=10,
+    ):
+        self.name = name
+        self.file_path = file_path
+        self.kind = kind
+        self.parent_name = parent_name
+        self.qualified_name = qualified_name or name
+        self.start_line = start_line
+        self.end_line = end_line
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeSession:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def execute(self, *a, **k):
+        return _FakeResult(self._rows)
+
+
+@pytest.mark.asyncio
+async def test_anchor_injects_defining_file_as_dominant_hit():
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym(
+            "extract_all",
+            "core/decisions/extractor.py",
+            parent_name="DecisionExtractor",
+            qualified_name="DecisionExtractor.extract_all",
+        )
+    ]
+    hits = [{"target_path": "core/pipeline/incremental.py", "score": 3.6}]
+    out, homonyms = await _anchor_symbol_hits(
+        _FakeSession(rows), "repo1", {"extract_all", "DecisionExtractor"}, hits
+    )
+    assert out[0]["target_path"] == "core/decisions/extractor.py"
+    assert out[0]["_symbol_anchored"] is True
+    assert out[0]["score"] > 3.6  # dominates the fuzzy top hit
+    assert not homonyms["union"]  # single resolved def, no union
+
+
+@pytest.mark.asyncio
+async def test_anchor_skips_a_symbol_with_no_file_path():
+    """A pathless symbol must not become a hit."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym(
+            "extract_all",
+            "",
+            parent_name="DecisionExtractor",
+            qualified_name="DecisionExtractor.extract_all",
+        )
+    ]
+    hits = [{"target_path": "core/pipeline/incremental.py", "score": 3.6}]
+    out, _ = await _anchor_symbol_hits(
+        _FakeSession(rows), "repo1", {"extract_all", "DecisionExtractor"}, hits
+    )
+    assert all(h.get("target_path") for h in out)
+    assert out[0]["target_path"] == "core/pipeline/incremental.py"
+
+
+@pytest.mark.asyncio
+async def test_anchor_unresolvable_homonym_becomes_union():
+    """A bare homonym (no qualifier) is not injected as a hit — its full def
+    set is returned in homonyms['union'] for the answer-by-union path."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="A", qualified_name="A.extract_all"),
+        _Sym("extract_all", "b/y.py", parent_name="B", qualified_name="B.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    out, homonyms = await _anchor_symbol_hits(_FakeSession(rows), "r", {"extract_all"}, hits)
+    assert all(not h.get("_symbol_anchored") for h in out)
+    assert out[0]["target_path"] == "c/z.py"  # nothing injected into hits
+    assert {d["file_path"] for d in homonyms["union"]["extract_all"]} == {"a/x.py", "b/y.py"}
+    assert not homonyms["qualified_miss"]
+
+
+@pytest.mark.asyncio
+async def test_anchor_qualified_miss_records_not_found():
+    """The question qualifies the name (Foo.extract_all) but no def sits under
+    Foo — record a qualified miss instead of guessing another Parent's def."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="A", qualified_name="A.extract_all"),
+        _Sym("extract_all", "b/y.py", parent_name="B", qualified_name="B.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    out, homonyms = await _anchor_symbol_hits(
+        _FakeSession(rows), "r", {"extract_all", "Foo.extract_all", "Foo"}, hits
+    )
+    assert homonyms["qualified_miss"] == ["extract_all"]
+    assert not homonyms["union"]  # a qualified miss must NOT fall back to a union
+    assert all(not h.get("_symbol_anchored") for h in out)
+
+
+def _spy_repo_reads(monkeypatch) -> list[str]:
+    from repowise.server.mcp_server.tool_answer import symbols
+
+    reads: list[str] = []
+    real = symbols._read_repo_text
+
+    def _spy(repo_root, file_path):
+        reads.append(file_path)
+        return real(repo_root, file_path)
+
+    monkeypatch.setattr(symbols, "_read_repo_text", _spy)
+    return reads
+
+
+@pytest.mark.asyncio
+async def test_anchor_bare_homonym_union_drops_a_pathless_row(monkeypatch, tmp_path):
+    """A pathless def must not reach the bare-homonym union: it would be read
+    at an empty path and named in the reply as a file to open (#2346)."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    reads = _spy_repo_reads(monkeypatch)
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="A", qualified_name="A.extract_all"),
+        _Sym("extract_all", "b/y.py", parent_name="B", qualified_name="B.extract_all"),
+        _Sym("extract_all", "", parent_name="C", qualified_name="C.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    _, homonyms = await _anchor_symbol_hits(
+        _FakeSession(rows), "r", {"extract_all"}, hits, repo_root=tmp_path
+    )
+    assert {d["file_path"] for d in homonyms["union"]["extract_all"]} == {"a/x.py", "b/y.py"}
+    assert "" not in reads
+
+
+@pytest.mark.asyncio
+async def test_anchor_narrowed_union_drops_a_pathless_row(monkeypatch, tmp_path):
+    """Same guard on the narrowed branch: the qualifier matches several defs,
+    one of them pathless."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    reads = _spy_repo_reads(monkeypatch)
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym("extract_all", "a/w.py", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym("extract_all", "", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym("extract_all", "b/y.py", parent_name="Beta", qualified_name="Beta.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    _, homonyms = await _anchor_symbol_hits(
+        _FakeSession(rows), "r", {"extract_all", "Alpha"}, hits, repo_root=tmp_path
+    )
+    assert {d["file_path"] for d in homonyms["union"]["extract_all"]} == {"a/x.py", "a/w.py"}
+    assert "" not in reads
+
+
+@pytest.mark.asyncio
+async def test_anchor_homonym_with_one_pathless_twin_anchors_the_real_def():
+    """Once the pathless row is dropped, the one def left is not a homonym: it
+    anchors like any single def instead of forming a union of one real body
+    and one empty path."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="A", qualified_name="A.extract_all"),
+        _Sym("extract_all", "", parent_name="B", qualified_name="B.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    out, homonyms = await _anchor_symbol_hits(_FakeSession(rows), "r", {"extract_all"}, hits)
+    assert not homonyms["union"]
+    assert out[0]["target_path"] == "a/x.py"
+    assert out[0]["_symbol_anchored"] is True
+
+
+@pytest.mark.asyncio
+async def test_anchor_disambiguates_homonym_by_named_parent():
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym(
+            "extract_all",
+            "b/y.py",
+            parent_name="DecisionExtractor",
+            qualified_name="DecisionExtractor.extract_all",
+        ),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    out, homonyms = await _anchor_symbol_hits(
+        _FakeSession(rows), "r", {"extract_all", "DecisionExtractor"}, hits
+    )
+    assert out[0]["target_path"] == "b/y.py"
+    assert not homonyms["union"]
+
+
+@pytest.mark.asyncio
+async def test_anchor_boosts_existing_hit_without_duplicating():
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [_Sym("get_symbol", "mcp/tool_symbol.py", kind="function", qualified_name="get_symbol")]
+    hits = [
+        {"target_path": "mcp/tool_symbol.py", "score": 9.4},
+        {"target_path": "other.py", "score": 7.9},
+    ]
+    out, _homonyms = await _anchor_symbol_hits(_FakeSession(rows), "r", {"get_symbol"}, hits)
+    paths = [h["target_path"] for h in out]
+    assert paths.count("mcp/tool_symbol.py") == 1  # boosted, not duplicated
+    anchored = next(h for h in out if h["target_path"] == "mcp/tool_symbol.py")
+    assert anchored["_symbol_anchored"] is True
+    assert anchored["score"] >= 9.4
+
+
+def _write(tmp_path, rel, body):
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body, encoding="utf-8")
+    return rel
+
+
+def test_union_bodies_inlines_all_defs_under_budget(tmp_path):
+    """Answer-by-union renders every def body (Read-parity) when they fit."""
+    from repowise.server.mcp_server.tool_answer.symbols import build_homonym_union_bodies
+
+    a = _write(tmp_path, "a/x.py", "def _sev(op):\n    return op > 3\n")
+    b = _write(tmp_path, "b/y.py", "def _sev(corr):\n    return corr < 0.1\n")
+    union = {
+        "_sev": [
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": a,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": b,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
+        ]
+    }
+    bodies, more = build_homonym_union_bodies(tmp_path, union)
+    assert len(bodies) == 2 and not more
+    assert {e["path"] for e in bodies} == {a, b}
+    assert "op > 3" in bodies[0]["source"] and "corr < 0.1" in bodies[1]["source"]
+    assert bodies[0]["lines"] == [1, 2]
+
+
+def test_union_bodies_overflow_lists_remainder_as_pointers(tmp_path):
+    """Under a tiny budget, first def always renders; the rest go to
+    more_definitions with a do-NOT-Read get_symbol redirect."""
+    from repowise.server.mcp_server.tool_answer.symbols import build_homonym_union_bodies
+
+    a = _write(tmp_path, "a/x.py", "def _sev(op):\n    return op > 3\n")
+    b = _write(tmp_path, "b/y.py", "def _sev(corr):\n    return corr < 0.1\n")
+    union = {
+        "_sev": [
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": a,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": b,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
+        ]
+    }
+    bodies, more = build_homonym_union_bodies(tmp_path, union, char_budget=5)
+    assert len(bodies) == 1  # first always renders even over budget
+    assert len(more) == 1
+    assert more[0]["symbol_id"] == f"{b}::_sev"
+    assert "do NOT Read" in more[0]["hint"]
+
+
+# ---------------------------------------------------------------------------
+# Answer-by-union incidental gate — a prose question that merely MENTIONS a
+# many-def generic method (to_dict x33) must not dump every unrelated body as a
+# confidence=high answer; it falls through to synthesis. A small genuine union
+# (_severity_for x4) and an explicit bare-symbol lookup still answer by union.
+# ---------------------------------------------------------------------------
+
+
+def _union(name: str, n: int) -> dict:
+    return {name: [{"file_path": f"pkg/f{i}.py", "name": name} for i in range(n)]}
+
+
+def test_union_defers_only_when_prose_and_many_defs():
+    from repowise.server.mcp_server.tool_answer.symbols import union_defers_to_synthesis
+
+    q_prose = "How does a wiki page get its provider_name during indexing?"
+    # Prose + many defs → defer to synthesis.
+    assert union_defers_to_synthesis(q_prose, {"provider_name"}, _union("provider_name", 12))
+    # Small genuine union stays (the _severity_for x4 case) even in prose.
+    assert not union_defers_to_synthesis(
+        "How does _severity_for compute a severity level?",
+        {"_severity_for"},
+        _union("_severity_for", 4),
+    )
+    # Bare symbol lookup (prose does not dominate) still unions at any count.
+    assert not union_defers_to_synthesis(
+        "provider_name", {"provider_name"}, _union("provider_name", 12)
+    )
+    # No union → nothing to defer.
+    assert not union_defers_to_synthesis(q_prose, {"provider_name"}, {})
+
+
+def test_union_defer_ceiling_is_inclusive():
+    from repowise.server.mcp_server.tool_answer.config import _HOMONYM_UNION_PROSE_DEF_CEILING
+    from repowise.server.mcp_server.tool_answer.symbols import union_defers_to_synthesis
+
+    q = "How is a parsed record serialized with widget_dump before it is stored?"
+    ids = {"widget_dump"}
+    at = _HOMONYM_UNION_PROSE_DEF_CEILING
+    # At the ceiling: still a handful, keep the union.
+    assert not union_defers_to_synthesis(q, ids, _union("widget_dump", at))
+    # One past it: a generic method, defer.
+    assert union_defers_to_synthesis(q, ids, _union("widget_dump", at + 1))
+
+
+def _patch_anchor_union(monkeypatch, answer_mod, union_groups: dict):
+    """Force _anchor_symbol_hits to report a homonym union (no hit boost)."""
+
+    async def _fake_anchor(session, repo_id, question_ids, hits, **kwargs):
+        return hits, {"union": union_groups, "qualified_miss": []}
+
+    monkeypatch.setattr(answer_mod, "_anchor_symbol_hits", _fake_anchor)
+
+
+@pytest.mark.asyncio
+async def test_prose_mention_of_generic_method_synthesizes(setup_mcp, monkeypatch):
+    """A prose question naming a 12-def generic method falls through to synthesis
+    instead of returning grounding='exact_symbol' with a wall of unrelated bodies."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=False)
+    _patch_anchor_union(monkeypatch, answer_mod, _union("to_dict", 12))
+    _patch_provider(monkeypatch, answer_mod, "The page is serialized in pkg/alpha/one.py.")
+
+    result = await get_answer(
+        "How is a parsed file turned into a dict with to_dict before it is stored?"
+    )
+    assert result.get("grounding") != "exact_symbol"
+    assert "symbol_bodies" not in result or len(result.get("symbol_bodies") or []) < 12
+
+
+@pytest.mark.asyncio
+async def test_small_union_still_answers_by_union(setup_mcp, monkeypatch, tmp_path):
+    """A small genuine parallel-impl union (3 defs, under the ceiling) still
+    short-circuits to grounding='exact_symbol' — the gate must not over-suppress."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    (tmp_path / "pkg").mkdir(parents=True)
+    defs = []
+    for i in range(3):
+        (tmp_path / "pkg" / f"f{i}.py").write_text(
+            f"class C:\n    def render_widget(self):\n        return {i}\n",
+            encoding="utf-8",
+        )
+        defs.append(
+            {"file_path": f"pkg/f{i}.py", "name": "render_widget", "start_line": 2, "end_line": 3}
+        )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=False)
+    _patch_anchor_union(monkeypatch, answer_mod, {"render_widget": defs})
+    _patch_provider(monkeypatch, answer_mod, "unused — union short-circuits before synthesis")
+
+    # A naming/lookup question ("what are the definitions") is exactly what the
+    # union-of-bodies reply is for; it must still short-circuit.
+    result = await get_answer("What are the definitions of render_widget in this repo?")
+    assert result.get("grounding") == "exact_symbol"
+    assert len(result["symbol_bodies"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_mechanism_question_defers_union_to_synthesis(setup_mcp, monkeypatch, tmp_path):
+    """A "how does X work" question that merely NAMES a small-union symbol defers
+    to synthesis instead of dumping bodies with grounding=exact_symbol — the
+    mechanism it asks about may live in a different file the union never sees."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    (tmp_path / "pkg").mkdir(parents=True)
+    defs = []
+    for i in range(3):
+        (tmp_path / "pkg" / f"f{i}.py").write_text(
+            f"class C:\n    def render_widget(self):\n        return {i}\n",
+            encoding="utf-8",
+        )
+        defs.append(
+            {"file_path": f"pkg/f{i}.py", "name": "render_widget", "start_line": 2, "end_line": 3}
+        )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    # Same question is asked twice (flag on then off); bypass the answer cache
+    # so the second call re-synthesizes under the flipped flag instead of
+    # replaying the first call's cached payload.
+    monkeypatch.setenv("REPOWISE_ANSWER_DISABLE_CACHE", "on")
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=False)
+    _patch_anchor_union(monkeypatch, answer_mod, {"render_widget": defs})
+    _patch_provider(monkeypatch, answer_mod, "render_widget builds output by returning an index.")
+
+    result = await get_answer("How does render_widget build its output?")
+    # Deferred: synthesis ran, so grounding is NOT the exact_symbol union dump.
+    assert result.get("grounding") != "exact_symbol"
+
+    # Flag off restores the legacy union short-circuit for the same question.
+    monkeypatch.setenv("REPOWISE_ANSWER_UNION_MECHANISM_DEFER", "off")
+    result_off = await get_answer("How does render_widget build its output?")
+    assert result_off.get("grounding") == "exact_symbol"
+
+
+# ---------------------------------------------------------------------------
+# code_rationale — the T4 lever: in-code rationale recovered when the wiki /
+# decision corpus could not ground the question (low-confidence exits).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hedged_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
+    """Hedged synthesis → mine the cited source for the rationale comment."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The provided excerpts do not include the body of min_count_policy.",
+    )
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text(
+        "# min_count_policy defaults to 2 because the retry budget assumes\n"
+        "# at least two attempts before giving up.\n"
+        "MIN_COUNT = 2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    result = await get_answer("What is the default value of min_count_policy?")
+    assert result["confidence"] == "low"
+    assert "code_rationale" in result
+    assert any("retry budget" in r["comment"] for r in result["code_rationale"])
+    assert result["code_rationale"][0]["path"] == "pkg/alpha/one.py"
+
+
+@pytest.mark.asyncio
+async def test_non_dominant_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
+    """Ambiguous retrieval → synthesize AND fold in mined source rationale.
+
+    Under the always-synthesize default a non-dominant retrieval no longer
+    abstains: synthesis runs (capped at medium), and the ambiguous-retrieval
+    fold-in still mines the candidate source for the rationale comment.
+    """
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    # Two near-tied hits (4.0 vs 3.8) → non-dominant → medium ceiling + evidence.
+    async def _fake_retrieve(question, ctx):
+        return [
+            {"page_id": "file_page:pkg/alpha/one.py", "score": 4.0},
+            {"page_id": "file_page:pkg/alpha/two.py", "score": 3.8},
+        ]
+
+    async def _fake_hydrate(hits, ctx, *, scope=None):
+        for h in hits:
+            h["target_path"] = h["page_id"].removeprefix("file_page:")
+            h["title"] = h["target_path"]
+            h["summary"] = "Module summary."
+            h["snippet"] = ""
+            h["page_type"] = "file_page"
+        return hits
+
+    monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
+    monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
+    _patch_provider(monkeypatch, answer_mod, "Uploads chunk at 8MB (pkg/alpha/one.py).")
+
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text(
+        "# We chunk uploads at 8MB instead of streaming because the gateway\n"
+        "# buffers the whole body and OOMs on larger payloads.\n"
+        "CHUNK = 8\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    result = await get_answer("why do uploads chunk at 8mb")
+    assert result["confidence"] == "medium"  # non-dominant ceiling
+    assert result["answer"], "non-dominant retrieval now carries synthesized prose"
+    assert "best_guesses" in result  # ambiguous-retrieval evidence folded in
+    assert "code_rationale" in result
+    assert any("OOMs" in r["comment"] for r in result["code_rationale"])
+
+
+@pytest.mark.asyncio
+async def test_non_dominant_best_guesses_carry_candidate_excerpts(setup_mcp, monkeypatch, tmp_path):
+    """Ambiguous-retrieval evidence carries page content inline, not just pointers.
+
+    A pointers-only reply makes the agent re-acquire all content natively
+    (observed as an 8-15 call Grep/Read spree in agent transcripts), so the
+    non-dominant reply ships the top candidates' actual page content beside
+    the synthesized prose.
+
+    **Once, not twice.** ``best_guesses`` and ``retrieval`` used to slice the
+    same 1,500-character page excerpt for the same file — 21.3% of one measured
+    payload, duplicated byte for byte — so the guess copy is dropped wherever
+    ``retrieval`` already carries it. The content requirement above is
+    unchanged and is what the second half of this test pins: the excerpt is
+    still in the response, in exactly one place.
+    """
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    async def _fake_retrieve(question, ctx):
+        return [
+            {"page_id": "file_page:pkg/alpha/one.py", "score": 4.0},
+            {"page_id": "file_page:pkg/alpha/two.py", "score": 3.8},
+        ]
+
+    async def _fake_hydrate(hits, ctx, *, scope=None):
+        for h in hits:
+            h["target_path"] = h["page_id"].removeprefix("file_page:")
+            h["title"] = h["target_path"]
+            h["summary"] = "Module summary."
+            h["snippet"] = ""
+            h["page_type"] = "file_page"
+        return hits
+
+    async def _fake_excerpts(hits, ctx=None):
+        for h in hits:
+            h["excerpt"] = f"Page content for {h['target_path']}: chunking rationale..."
+        return 0
+
+    monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
+    monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
+    monkeypatch.setattr(answer_mod, "_attach_page_excerpts", _fake_excerpts)
+    _patch_provider(monkeypatch, answer_mod, "Uploads chunk at 8MB (pkg/alpha/one.py).")
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text("CHUNK = 8\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    result = await get_answer("why do uploads chunk at 8mb")
+    assert result["confidence"] == "medium"  # non-dominant ceiling
+    assert result["answer"]
+    top = result["best_guesses"][0]
+    assert top["file"] == "pkg/alpha/one.py"
+    assert top["why_relevant"]
+    # The content is in the response exactly once. The medium projection keeps
+    # the actionable best_guess and drops the duplicate retrieval row.
+    assert top["excerpt"].startswith("Page content for pkg/alpha/one.py")
+    assert "retrieval" not in result
+    # The reply names the ambiguity and points at best_guesses to verify.
+    assert "best_guesses" in result["note"]
+    assert "ambiguous" in result["note"]
+
+
+# ---------------------------------------------------------------------------
+# Frame-grounding gate — a why-answer naming a mechanism term absent from the
+# retrieved source is downgraded from high to medium (conflated rationale).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_why_answer_with_unsupported_frame_downgrades_to_medium(setup_mcp, monkeypatch):
+    """High-dominance why-answer whose 'because X' names a term retrieval never
+    showed → medium, not high."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The caller list is limited because the PageRank centrality cap "
+        "bounds neighbors (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("why is the caller list limited the way it is")
+    assert result["confidence"] == "medium"
+    assert "PageRank" in result["note"]
+    assert "Claim-support gate" in result["note"]
+    assert "next_action_hint" in result
+
+
+@pytest.mark.asyncio
+async def test_why_answer_with_grounded_frame_stays_high(setup_mcp, monkeypatch):
+    """The same why-shape, but the named mechanism (MIN_COUNT) IS in the
+    retrieved symbols → confidence stays high."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The caller list is limited because MIN_COUNT bounds the retries (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("why is the caller list limited the way it is")
+    assert result["confidence"] == "high"
+    assert "High confidence" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_claim_support_gate_covers_mechanism_questions(setup_mcp, monkeypatch):
+    """The claim-support gate covers "how" mechanism questions, not only "why".
+    A mechanism answer that names an ungrounded term (PageRank, absent from every
+    retrieved excerpt) is downgraded high→medium — the "right file, wrong function
+    inside it" failure. Flag off restores the why-only scope (question stays
+    high)."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    monkeypatch.setenv("REPOWISE_ANSWER_DISABLE_CACHE", "on")
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The caller list is bounded by the PageRank centrality cap (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("how does the caller list get bounded")
+    assert result["confidence"] == "medium"
+    assert "PageRank" in result["note"]
+
+    monkeypatch.setenv("REPOWISE_ANSWER_CLAIM_SUPPORT_GATE", "off")
+    result_off = await get_answer("how does the caller list get bounded")
+    assert result_off["confidence"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_frame_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
+    """When the frame gate trips, mine the candidate source for the real
+    rationale comment so the downgrade ships a lead."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The caller list is limited because the PageRank cap applies (pkg/alpha/one.py).",
+    )
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text(
+        "# The caller list is limited to 50 because beyond that the rollup\n"
+        "# floods the synthesis context and the agent loses the signal.\n"
+        "CALLER_LIMIT = 50\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    result = await get_answer("why is the caller list limited the way it is")
+    assert result["confidence"] == "medium"
+    assert "code_rationale" in result
+    assert any("floods the synthesis context" in r["comment"] for r in result["code_rationale"])
+
+
+# ---------------------------------------------------------------------------
+# Page-content excerpt enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestPageExcerptEnrichment:
+    """_attach_page_excerpts must run its real query against the real Page
+    model — a silently-swallowed AttributeError here shipped pointers-only
+    gated payloads and re-opened the 8-15 call fallback spree the excerpts
+    exist to prevent."""
+
+    async def test_excerpts_attached_from_real_page_rows(self, factory, populated_db):
+        from repowise.server.mcp_server.tool_answer.retrieval import (
+            _attach_page_excerpts,
+        )
+
+        hits = [{"page_id": "repo_overview:test-repo", "score": 1.0}]
+        ctx = SimpleNamespace(session_factory=factory)
+        missing = await _attach_page_excerpts(hits, ctx)
+        assert hits[0].get("excerpt", "").startswith("# Test Repo")
+        assert missing == 0

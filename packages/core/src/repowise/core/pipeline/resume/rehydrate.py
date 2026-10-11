@@ -1,0 +1,225 @@
+"""Reconstruct phase *inputs* from persisted DB rows for a resumed run.
+
+The graph is rehydrated by the existing :func:`rehydrate_graph_builder`
+(re-exported here for a single resume import surface). This module adds the
+git side: turning persisted ``git_metadata`` rows back into the
+``git_meta_map`` dict that the analysis phases consume.
+
+Caveat — the transient per-line ``BlameIndex`` is intentionally never
+persisted (see ``phases/git.py: drop_transient_git_signals``), so a
+rehydrated ``git_meta_map`` carries every durable signal but no
+``blame_index``. Blame-dependent biomarkers treat its absence as "no
+signal" — which is exactly the case for FAST/ESSENTIAL-tier runs that
+never computed blame in the first place. Split File's per-function commit sets
+are the exception: :func:`attach_stored_commit_shas` puts the stored ones back.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import structlog
+
+from ..upgrade import rehydrate_graph_builder
+
+logger = structlog.get_logger(__name__)
+
+__all__ = [
+    "attach_commit_set_blame",
+    "attach_stored_commit_shas",
+    "rehydrate_dead_code_report",
+    "rehydrate_decision_report",
+    "rehydrate_git_meta_map",
+    "rehydrate_graph_builder",
+]
+
+
+def _git_metadata_to_dict(row: Any) -> dict[str, Any]:
+    """Project a ``GitMetadata`` ORM row to the dict shape analysis expects.
+
+    Uses column introspection so every persisted signal is carried faithfully
+    and the keys match the column names the fresh git indexer writes (the
+    upsert path sets attributes by matching dict keys to columns). JSON
+    columns stay as their stored strings — consumers (e.g. the duplication
+    co-change scorer) ``json.loads`` them on demand.
+    """
+    out: dict[str, Any] = {}
+    for col in row.__table__.columns:
+        name = col.name
+        if name in ("id", "repository_id"):
+            continue
+        out[name] = getattr(row, name)
+    return out
+
+
+async def rehydrate_git_meta_map(session: Any, repo_id: str) -> dict[str, dict[str, Any]]:
+    """Rebuild ``{file_path -> git metadata dict}`` from persisted rows.
+
+    Returns an empty dict when nothing was persisted (so a caller can detect
+    "git was never indexed" and fall back to recomputing).
+    """
+    from repowise.core.persistence import get_all_git_metadata
+
+    try:
+        rows = await get_all_git_metadata(session, repo_id)
+    except Exception as exc:
+        logger.debug("rehydrate_git_meta_failed", error=str(exc))
+        return {}
+    return {path: _git_metadata_to_dict(row) for path, row in rows.items()}
+
+
+async def attach_stored_commit_shas(
+    session: Any, repo_id: str, git_meta_map: dict[str, dict[str, Any]]
+) -> None:
+    """Put each file's stored per-function commit sets under
+    ``"function_commit_shas"``, where a score without a blame index reads them.
+
+    Only files already in *git_meta_map* get them. Best effort: a failed read
+    leaves the map as it was.
+    """
+    from repowise.core.persistence.crud import get_function_commit_shas
+
+    try:
+        stored = await get_function_commit_shas(session, repo_id)
+    except Exception as exc:
+        logger.debug("stored_commit_shas_failed", error=str(exc))
+        return
+    for path, entries in stored.items():
+        meta = git_meta_map.get(path)
+        if meta is not None:
+            meta["function_commit_shas"] = entries
+
+
+def attach_commit_set_blame(
+    repo_path: Any,
+    git_meta_map: dict[str, dict[str, Any]],
+    parsed_files: list[Any],
+    *,
+    git_tier: str | None,
+) -> int:
+    """Blame the Split File candidates that have no stored commit sets, under
+    ``"commit_set_blame"``, so a re-score mints their plans as a full index
+    would. Returns the number of files blamed.
+
+    Rows written before the sets existed carry none, so without this the first
+    re-score after an upgrade mints ids that move again at the next index. Only
+    what an index would have blamed qualifies: a FULL-tier repo, a file with
+    enough commits to keep its blame index, and one Split File could act on.
+    Once the rows are written back the files are skipped, so the cost is paid
+    once.
+    """
+    from repowise.core.analysis.health.refactoring.split_file import may_split
+    from repowise.core.ingestion.git_indexer import GitIndexer
+    from repowise.core.ingestion.git_indexer.function_blame import _MIN_COMMITS_FOR_BLAME
+    from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
+
+    try:
+        if git_tier and not GitIndexTier(git_tier).includes_blame:
+            return 0
+    except ValueError:
+        pass
+    paths: list[str] = []
+    for pf in parsed_files:
+        path = pf.file_info.path
+        meta = git_meta_map.get(path)
+        if (
+            meta is None
+            or "function_commit_shas" in meta
+            or (meta.get("commit_count_total") or 0) < _MIN_COMMITS_FOR_BLAME
+        ):
+            continue
+        top_level = sum(
+            1 for s in pf.symbols if s.kind in ("class", "function") and not s.parent_name
+        )
+        try:
+            line_count = Path(pf.file_info.abs_path).read_bytes().count(b"\n") + 1
+        except OSError:
+            continue
+        if may_split(path, pf.file_info.language, line_count, top_level):
+            paths.append(path)
+    try:
+        blamed = GitIndexer(repo_path).blame_indexes(paths)
+    except Exception as exc:
+        logger.debug("commit_set_blame_failed", error=str(exc))
+        return 0
+    for path, idx in blamed.items():
+        git_meta_map[path]["commit_set_blame"] = idx
+    return len(blamed)
+
+
+# ---------------------------------------------------------------------------
+# Analysis reports (generation INPUT only — never re-persisted)
+# ---------------------------------------------------------------------------
+#
+# These thin views carry exactly the fields the page generator reads off a
+# dead-code / decision report (see ``page_generator/helpers.py``:
+# ``build_dead_code_map`` / ``build_decision_maps``) — nothing more. They are
+# deliberately *not* the analysis dataclasses: a resumed run feeds them into
+# generation but must never write them back (the persisted rows are already
+# authoritative), so they skip ``deletable_lines`` / ``by_source`` and the
+# other persist/summary-only fields a faithful round-trip would need.
+
+
+async def rehydrate_dead_code_report(session: Any, repo_id: str) -> Any:
+    """Rebuild a generation-shaped dead-code report from persisted findings.
+
+    Returns a namespace with a ``findings`` list (empty when the completed
+    analysis legitimately found none). Raises on a DB error so the caller can
+    fall back to recomputing.
+    """
+    from repowise.core.persistence.crud import get_dead_code_findings
+
+    rows = await get_dead_code_findings(session, repo_id, status="open")
+    findings = [
+        SimpleNamespace(
+            file_path=r.file_path,
+            symbol_name=r.symbol_name,
+            symbol_kind=r.symbol_kind,
+            kind=r.kind,  # stored as the clean string label, e.g. "unused_export"
+            reason=r.reason,
+            confidence=r.confidence,
+            safe_to_delete=r.safe_to_delete,
+        )
+        for r in rows
+    ]
+    return SimpleNamespace(findings=findings)
+
+
+async def rehydrate_decision_report(session: Any, repo_id: str) -> Any:
+    """Rebuild a generation-shaped decision report from persisted records.
+
+    Returns a namespace with a ``decisions`` list (empty when none were
+    recorded). Raises on a DB error so the caller can fall back to recomputing.
+    """
+    from repowise.core.persistence.crud import list_decisions
+
+    rows = await list_decisions(session, repo_id, limit=100_000)
+    decisions = []
+    for r in rows:
+        try:
+            affected = json.loads(r.affected_files_json or "[]")
+        except Exception:
+            affected = []
+        decisions.append(
+            SimpleNamespace(
+                title=r.title,
+                decision=r.decision,
+                rationale=r.rationale,
+                source=r.source,
+                confidence=r.confidence,
+                evidence_file=r.evidence_file,
+                affected_files=affected,
+                # Carried so the resumed run ranks and filters decisions the
+                # same way a fresh one does. Without it every rehydrated
+                # record read as a proposal, including the accepted ones.
+                status=r.status,
+                # Same reason: the per-file index reads this and fails
+                # open without it, so a resumed run would differ from a fresh
+                # one.
+                scope_basis=r.scope_basis,
+            )
+        )
+    return SimpleNamespace(decisions=decisions)

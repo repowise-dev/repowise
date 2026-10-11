@@ -1,0 +1,253 @@
+"use client";
+
+import { useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Trash2,
+  Users,
+  FileWarning,
+  Lightbulb,
+  Activity,
+  ShieldAlert,
+  FileText,
+  Wrench,
+} from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Badge } from "../ui/badge";
+import { stripMarkdown } from "../lib/format";
+import { EmptyState } from "../shared/empty-state";
+import { fileEntityPath } from "../shared/entity/routes";
+import { AiPromptButton } from "../health/ai-prompt-button";
+import { AiPromptModal } from "../health/ai-prompt-modal";
+import { buildWorkQueueAiPrompt } from "../health/ai-prompt-builder";
+
+// Re-exported so existing importers of this module keep working; the
+// definitions live in a plain module because server components need them too
+// and a `"use client"` file cannot hand a callable function to the server.
+export { getDefaultHref } from "./attention-href";
+export type { AttentionItem, AttentionItemType } from "./attention-href";
+import { ATTENTION_TYPE_LABEL, getDefaultHref } from "./attention-href";
+import type { AttentionItem, AttentionItemType, AttentionSeverity } from "./attention-href";
+
+const ICON_MAP: Record<AttentionItemType, typeof AlertTriangle> = {
+  stale_decision: AlertTriangle,
+  knowledge_silo: Users,
+  ungoverned_hotspot: FileWarning,
+  dead_code: Trash2,
+  proposed_decision: Lightbulb,
+  health_finding: Activity,
+  security_finding: ShieldAlert,
+  doc_drift: FileText,
+  refactoring: Wrench,
+};
+
+/**
+ * Severity ramp for the row icons. Only `high` earns a hue — a column of
+ * saturated triangles reads as uniform noise and stops meaning "urgent". The
+ * lower two steps encode severity by *emphasis* (primary vs tertiary text)
+ * rather than colour, so all three stay distinguishable while red keeps its
+ * meaning by being rare.
+ */
+const SEVERITY_COLORS: Record<AttentionSeverity, string> = {
+  // Critical shares the error colour with high rather than adding a fourth
+  // step. The point of the ramp is that red is rare; a second red defeats it.
+  critical: "text-[var(--color-error)]",
+  high: "text-[var(--color-error)]",
+  medium: "text-[var(--color-text-secondary)]",
+  low: "text-[var(--color-text-tertiary)]",
+};
+
+interface AttentionPanelProps {
+  items: AttentionItem[];
+  repoId: string;
+  linkPrefix?: string;
+  /** Initial preview window; expanding the panel reveals all items. */
+  previewCount?: number;
+  /** Shown next to the title of the generated work-queue prompt. */
+  repoName?: string;
+}
+
+/**
+ * Round-robin one item from each type before taking a second from any, so the
+ * preview window shows a spread instead of whatever category happens to be
+ * biggest.
+ *
+ * The server sorts strictly by severity, which sounds right and isn't: the
+ * categories are wildly different sizes (hotspots / silos / dead code are each
+ * capped at 10, decisions are not), so a strict sort lets one type monopolise
+ * the window and the other four never surface at all. Buckets are walked in
+ * first-appearance order, and the incoming list is severity-sorted, so the
+ * most severe type still leads — each type just gets a voice before any type
+ * gets a second row.
+ */
+function diversifyByType(items: AttentionItem[], count: number): AttentionItem[] {
+  const buckets = new Map<AttentionItemType, AttentionItem[]>();
+  for (const item of items) {
+    const bucket = buckets.get(item.type);
+    if (bucket) bucket.push(item);
+    else buckets.set(item.type, [item]);
+  }
+
+  const queues = [...buckets.values()];
+  const out: AttentionItem[] = [];
+  let cursor = 0;
+  while (out.length < count && queues.some((q) => q.length > 0)) {
+    const queue = queues[cursor % queues.length]!;
+    const next = queue.shift();
+    if (next) out.push(next);
+    cursor++;
+  }
+  return out;
+}
+
+export function AttentionPanel({
+  items,
+  repoId,
+  linkPrefix,
+  previewCount = 8,
+  repoName,
+}: AttentionPanelProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
+  const [expanded, setExpanded] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
+
+  // Auto-proposed decisions are a review inbox, not a health signal: they are
+  // suggestions *we* generated, and they routinely outnumber everything else by
+  // two orders of magnitude (1,066 of 1,107 on this repo). Mixing them in made
+  // the panel a backlog dump and the count read as "your repo has 1,107
+  // problems". They collapse to a single row pointing at the Decisions page,
+  // where reviewing them in bulk actually belongs.
+  const proposed = items.filter((i) => i.type === "proposed_decision");
+  const triage = items.filter((i) => i.type !== "proposed_decision");
+
+  // Preview samples across types; expanding falls back to the server's
+  // severity order, which is the right read once you are actually triaging.
+  const visible = expanded ? triage : diversifyByType(triage, previewCount);
+
+  if (triage.length === 0 && proposed.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-2">
+          <EmptyState
+            icon={<CheckCircle2 className="h-8 w-8 text-[var(--color-success)]" />}
+            title="Nothing needs attention"
+            description="No hotspots, risky files, or stale docs right now."
+          />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-[var(--color-warning)]" />
+            Attention Needed
+          </span>
+          <span className="flex items-center gap-2">
+            <AiPromptButton
+              label="Hand queue to AI"
+              onClick={() => setPromptOpen(true)}
+            />
+            {/* Counts the triage queue only. Including the proposed-decision
+                inbox here made the badge read as a problem count when it was
+                mostly our own un-reviewed suggestions. */}
+            <Badge variant="outline" className="text-[10px] h-5 tabular-nums">
+              {triage.length}
+            </Badge>
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="space-y-1">
+          {visible.map((item) => {
+            const Icon = ICON_MAP[item.type];
+            const href = item.href ?? getDefaultHref(item, prefix);
+            return (
+              <a
+                key={item.id}
+                href={href}
+                className="flex items-start gap-2.5 p-2 -mx-2 rounded-md hover:bg-[var(--color-bg-elevated)] transition-colors group"
+              >
+                <Icon
+                  className={`h-3.5 w-3.5 mt-0.5 shrink-0 ${SEVERITY_COLORS[item.severity]}`}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-[var(--color-text-primary)] truncate group-hover:text-[var(--color-accent-primary)] transition-colors">
+                      {stripMarkdown(item.title)}
+                    </span>
+                    <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
+                      {ATTENTION_TYPE_LABEL[item.type]}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--color-text-tertiary)] truncate">
+                    {item.description}
+                  </p>
+                </div>
+              </a>
+            );
+          })}
+          {triage.length > previewCount && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="block w-full text-xs text-[var(--color-accent-primary)] hover:underline text-center pt-1"
+            >
+              {expanded
+                ? "Show fewer"
+                : `+${triage.length - previewCount} more items — show all`}
+            </button>
+          )}
+
+          {proposed.length > 0 && (
+            <a
+              // Plain /decisions: the page lists proposals inline and has no
+              // URL-driven status filter to deep-link into yet.
+              href={`${prefix}/decisions`}
+              className="group mt-1 flex items-center gap-2.5 rounded-md border-t border-[var(--color-border-default)] p-2 -mx-2 pt-2.5 transition-colors hover:bg-[var(--color-bg-elevated)]"
+            >
+              <Lightbulb className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
+              <span className="min-w-0 flex-1 text-xs text-[var(--color-text-secondary)]">
+                <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
+                  {proposed.length.toLocaleString()}
+                </span>{" "}
+                auto-proposed decision{proposed.length === 1 ? "" : "s"} awaiting review
+              </span>
+              <span className="shrink-0 text-xs text-[var(--color-accent-primary)] group-hover:underline">
+                Review →
+              </span>
+            </a>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+    <AiPromptModal
+      open={promptOpen}
+      onOpenChange={setPromptOpen}
+      getPrompt={(flavor) =>
+        buildWorkQueueAiPrompt({
+          // Triage only, matching the panel: handing an agent 1,000+ decisions
+          // we auto-proposed as a "prioritized worklist" buries the handful of
+          // real items and asks it to do review work it cannot judge.
+          items: triage.map((it) => ({
+            type: it.type,
+            title: it.title,
+            description: it.description,
+            severity: it.severity,
+            target_id: it.target_id ?? null,
+          })),
+          flavor,
+          ...(repoName ? { repoName } : {}),
+        })
+      }
+      title="AI work queue"
+      description="A ready-to-paste prompt that hands your AI agent this repo's Attention Needed backlog as a prioritized worklist."
+    />
+    </>
+  );
+}

@@ -1,0 +1,40 @@
+{
+  "ref": "HEAD",
+  "status": "nothing_to_score",
+  "warning": "No counted file changes in 'HEAD' (check the revspec, extensions, or exclusion filters).",
+  "scored_repo": {
+    "root": "C:\\work\\requests",
+    "head": "3bb56ba566ce783ebdc4e61929522fd1648c2527"
+  },
+  "_meta": {
+    "contract_version": 2,
+    "timing_ms": 640.7,
+    "index_age_days": 49,
+    "indexed_commit": "4ed3d1b3204c",
+    "live_head": "3bb56ba566ce",
+    "index_behind": true,
+    "stale_warning": "Index is behind live HEAD — run `repowise update`.",
+    "index_scope": {
+      "version": 1,
+      "projection": "compact",
+      "run_mode": "standard",
+      "content_provenance": "template",
+      "git_tier": "full",
+      "status": "unknown",
+      "fingerprint": "118fda63ca3a",
+      "full": "get_overview()"
+    },
+    "embedder": "mock",
+    "embedder_degraded": false,
+    "semantic_search": false,
+    "source": "live_git",
+    "response_budget": {
+      "limit_chars": 24000,
+      "tier": "default",
+      "serialized_chars": 893
+    },
+    "completeness": {
+      "capped": false
+    }
+  }
+}

@@ -1,0 +1,190 @@
+"""Façade-parity + characterization tests for the split ``cli/ui`` package.
+
+Guards the extraction of the former ``ui.py`` monolith into the ``ui/`` package:
+the façade must still expose every public name, and the decomposed
+``interactive_advanced_config`` must return the same dict shape it always did.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+
+import pytest
+
+import repowise.cli.ui as ui
+from repowise.cli.ui import mode_selection
+from repowise.cli.ui.repo_scanner import RepoScanInfo
+from repowise.core.generation.styles import DEFAULT_STYLE
+
+
+def test_facade_reexports_public_surface() -> None:
+    expected = {
+        "BRAND",
+        "BRAND_STYLE",
+        "MaybeCountColumn",
+        "RichProgressCallback",
+        "RepoScanInfo",
+        "load_dotenv",
+        "interactive_provider_select",
+        "interactive_advanced_config",
+        "interactive_mode_select",
+        "interactive_fast_mode_offer",
+        "interactive_repo_select",
+        "interactive_primary_select",
+        "should_offer_fast_mode",
+        "print_banner",
+        "print_phase_header",
+        "print_scan_summary",
+        "print_index_only_intro",
+        "quick_repo_scan",
+        "print_analysis_summary",
+        "build_completion_panel",
+        "build_contextual_next_steps",
+        "build_status_notes",
+        "format_bytes",
+        "format_elapsed",
+        "LARGE_REPO_FILE_THRESHOLD",
+        # owl mascot additions (additive — everything above is the original surface)
+        "banner_text",
+        "mini",
+        "OWL_SPINNER",
+        "THINKING_FRAMES",
+    }
+    missing = {name for name in expected if not hasattr(ui, name)}
+    assert not missing
+
+
+def test_format_elapsed_unchanged() -> None:
+    assert ui.format_elapsed(5.0) == "5.0s"
+    assert ui.format_elapsed(125.0) == "2m 5s"
+
+
+def test_format_bytes() -> None:
+    assert ui.format_bytes(0) == "0 B"
+    assert ui.format_bytes(512) == "512 B"
+    assert ui.format_bytes(1536) == "1.5 KB"
+    assert ui.format_bytes(1_048_576) == "1.0 MB"
+    assert ui.format_bytes(-1) == "—"
+
+
+def test_should_offer_fast_mode_threshold() -> None:
+    assert ui.should_offer_fast_mode(None) is False
+    assert ui.should_offer_fast_mode(RepoScanInfo(total_files=100)) is False
+    big = RepoScanInfo(total_files=ui.LARGE_REPO_FILE_THRESHOLD + 1)
+    assert ui.should_offer_fast_mode(big) is True
+
+
+def _drive_advanced_config(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    scan: RepoScanInfo | None,
+    allow_fast: bool,
+    generate_docs: bool = True,
+) -> dict:
+    """Run interactive_advanced_config with all prompts answered by their defaults."""
+
+    # click.confirm -> always its `default`; click.prompt -> always its `default`.
+    monkeypatch.setattr(mode_selection.click, "confirm", lambda *a, **k: k.get("default", False))
+
+    # First positional arg of prompt is the empty-exclude case which returns ""
+    # to break the loop; all others return their `default`.
+    def _prompt(text, *a, **k):
+        return k.get("default", "")
+
+    monkeypatch.setattr(mode_selection.click, "prompt", _prompt)
+
+    class _NullConsole:
+        def print(self, *a, **k) -> None:
+            pass
+
+    return mode_selection.interactive_advanced_config(
+        _NullConsole(), scan=scan, allow_fast=allow_fast, generate_docs=generate_docs
+    )
+
+
+def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = _drive_advanced_config(monkeypatch, scan=None, allow_fast=False)
+    assert result == {
+        "generate_docs": True,
+        "skip_tests": False,
+        "skip_infra": False,
+        "include_submodules": False,
+        "run_mode": "standard",
+        "exclude": (),
+        "commit_limit": 500,
+        "follow_renames": False,
+        # No scan, so the repo cannot be shown to be large: no cap, no question.
+        "max_file_pages": None,
+        "concurrency": 10,
+        "reasoning": "auto",
+        "embedder": "mock",
+        "test_run": False,
+        "onboarding": True,
+        "wiki_style": DEFAULT_STYLE,
+        "language": "en",
+    }
+
+
+def test_advanced_config_index_only_omits_generation_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """generate_docs=False gathers indexing knobs only — no LLM-only keys.
+
+    ``embedder`` is the exception and is asked for: an index-only run renders a
+    template wiki, and those pages embed like any other, so the choice is real.
+    It defaults to the mock because this mode promises no spend.
+    """
+    result = _drive_advanced_config(monkeypatch, scan=None, allow_fast=False, generate_docs=False)
+    assert result == {
+        "generate_docs": False,
+        "skip_tests": False,
+        "skip_infra": False,
+        "include_submodules": False,
+        "run_mode": "standard",
+        "exclude": (),
+        "commit_limit": 500,
+        "follow_renames": False,
+        # Asked in this branch too: an index-only run renders file pages as well.
+        "max_file_pages": None,
+        "embedder": "mock",
+    }
+    # The knobs that only shape a model's writing must not appear.
+    for key in ("concurrency", "reasoning", "onboarding", "wiki_style"):
+        assert key not in result
+
+
+def test_advanced_config_allow_fast_small_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    scan = RepoScanInfo(total_files=100)
+    result = _drive_advanced_config(monkeypatch, scan=scan, allow_fast=True)
+    # Small repo: run mode defaults to standard.
+    assert result["run_mode"] == "standard"
+    assert result["commit_limit"] == 1000  # <500 files -> deeper history default
+    assert result["concurrency"] == 12  # <200 files -> higher concurrency default
+
+
+def test_lazy_facade_imports_no_heavy_modules() -> None:
+    """Importing the façade (or a cheap submodule) must not pull core.ingestion.
+
+    Importing ``ui.brand`` used to run the package ``__init__``, which eagerly
+    imported every interactive submodule -> ``core.ingestion`` -> networkx +
+    tree-sitter (~1.1s on a cold process), the dominant startup floor for cheap
+    commands like ``status``/``coverage`` (issue #1712). The façade is now lazy,
+    so a fresh interpreter that touches the cheap surface must not load those.
+    """
+    probe = (
+        "import sys; "
+        "from repowise.cli.ui.brand import format_bytes; "
+        "print(format_bytes(1536)); "
+        "heavy = sorted(m for m in sys.modules "
+        "if m.startswith(('repowise.core.ingestion', 'networkx', 'tree_sitter', "
+        "'lancedb', 'scipy'))); "
+        "print(heavy)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    lines = out.stdout.strip().splitlines()
+    assert lines[-2] == "1.5 KB"
+    assert lines[-1] == "[]", f"facade import pulled heavy modules: {lines[-1]}"
+

@@ -1,0 +1,56 @@
+{
+ "repo": "cowlib",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 95% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "asciidoc": {
+    "edges_per_file": 0.0,
+    "files": 7,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 7,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "erlang": {
+    "edges_per_file": 1.66,
+    "files": 29,
+    "import_edges": 48,
+    "import_support": "partial",
+    "orphan_files": 2,
+    "orphan_ratio": 0.069,
+    "resolution_rate": 0.896
+   }
+  },
+  "dominant_language": "erlang",
+  "entry_points": [],
+  "modules": {
+   "count": 1,
+   "max_size": 39,
+   "min_size": 39,
+   "names": [
+    "Application"
+   ]
+  },
+  "tour_paths": [
+   "README.asciidoc",
+   "src/cow_http_hd.erl",
+   "include/cow_inline.hrl",
+   "include/cow_parse.hrl",
+   "src/cow_date.erl",
+   "src/cow_http2.erl",
+   "src/cow_cookie.erl",
+   "src/cow_http_struct_hd.erl",
+   "src/cow_link.erl",
+   "src/cow_http.erl",
+   "src/cow_http1.erl",
+   "src/cow_hpack_dec_huffman_lookup.hrl"
+  ]
+ }
+}

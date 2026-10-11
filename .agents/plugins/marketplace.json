@@ -1,0 +1,20 @@
+{
+  "name": "repowise",
+  "interface": {
+    "displayName": "Repowise"
+  },
+  "plugins": [
+    {
+      "name": "codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

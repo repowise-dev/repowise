@@ -1,0 +1,240 @@
+"""Tests for /api/repos endpoints."""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from httpx import AsyncClient
+
+from tests.unit.server.conftest import create_test_repo
+
+
+@pytest.mark.asyncio
+async def test_create_repo(client: AsyncClient) -> None:
+    repo_dir = Path(tempfile.mkdtemp()) / "my-repo"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    resp = await client.post(
+        "/api/repos",
+        json={
+            "index": False,
+            "name": "my-repo",
+            "local_path": str(repo_dir),
+            "url": "https://github.com/example/my-repo",
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["name"] == "my-repo"
+    assert data["url"] == "https://github.com/example/my-repo"
+    assert data["default_branch"] == "main"
+    assert "id" in data
+
+
+@pytest.mark.asyncio
+async def test_list_repos_empty(client: AsyncClient) -> None:
+    resp = await client.get("/api/repos")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_repos_with_data(client: AsyncClient) -> None:
+    await create_test_repo(client)
+    resp = await client.get("/api/repos")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "test-repo"
+
+
+@pytest.mark.asyncio
+async def test_get_repo_by_id(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.get(f"/api/repos/{repo['id']}")
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "test-repo"
+
+
+@pytest.mark.asyncio
+async def test_get_repo_not_found(client: AsyncClient) -> None:
+    resp = await client.get("/api/repos/nonexistent")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_repo(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}",
+        json={"name": "updated-name"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "updated-name"
+
+
+@pytest.mark.asyncio
+async def test_update_repo_accepts_known_wiki_style(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}",
+        json={"settings": {"wiki_style": "caveman"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["settings"]["wiki_style"] == "caveman"
+
+
+@pytest.mark.asyncio
+async def test_update_repo_rejects_unknown_wiki_style(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}",
+        json={"settings": {"wiki_style": "bogus"}},
+    )
+    assert resp.status_code == 400
+    assert "wiki_style" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_sync_repo_returns_202(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    with patch("repowise.server.routers.repos.execute_job", new_callable=AsyncMock):
+        resp = await client.post(f"/api/repos/{repo['id']}/sync")
+    assert resp.status_code == 202
+    data = resp.json()
+    assert "job_id" in data
+    assert data["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_sync_repo_not_found(client: AsyncClient) -> None:
+    resp = await client.post("/api/repos/nonexistent/sync")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_full_resync_returns_202(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    with patch("repowise.server.routers.repos.execute_job", new_callable=AsyncMock):
+        resp = await client.post(f"/api/repos/{repo['id']}/full-resync")
+    assert resp.status_code == 202
+    data = resp.json()
+    assert "job_id" in data
+
+
+@pytest.mark.asyncio
+async def test_sync_duplicate_returns_409(client: AsyncClient) -> None:
+    """A second sync while one is pending/running returns 409."""
+    repo = await create_test_repo(client)
+
+    # Mock execute_job to prevent actual background pipeline run during tests
+    with patch("repowise.server.routers.repos.execute_job", new_callable=AsyncMock):
+        resp1 = await client.post(f"/api/repos/{repo['id']}/sync")
+        assert resp1.status_code == 202
+
+        # Second sync should be rejected (job is still pending/running)
+        resp2 = await client.post(f"/api/repos/{repo['id']}/sync")
+        assert resp2.status_code == 409
+        assert "already in progress" in resp2.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_full_resync_duplicate_returns_409(client: AsyncClient) -> None:
+    """A second full-resync while one is pending/running returns 409."""
+    repo = await create_test_repo(client)
+
+    with patch("repowise.server.routers.repos.execute_job", new_callable=AsyncMock):
+        resp1 = await client.post(f"/api/repos/{repo['id']}/full-resync")
+        assert resp1.status_code == 202
+
+        resp2 = await client.post(f"/api/repos/{repo['id']}/full-resync")
+        assert resp2.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delete_repo_success(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.delete(f"/api/repos/{repo['id']}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+
+    # Verify repo is gone
+    resp = await client.get(f"/api/repos/{repo['id']}")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_repo_not_found(client: AsyncClient) -> None:
+    resp = await client.delete("/api/repos/nonexistent")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_export_wiki_not_found(client: AsyncClient) -> None:
+    resp = await client.get("/api/repos/nonexistent/export")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_export_wiki_returns_zip(client: AsyncClient, session) -> None:
+    import zipfile
+    from io import BytesIO
+
+    from repowise.core.persistence.crud import upsert_page, upsert_repository
+    from tests.unit.persistence.helpers import make_page_kwargs
+
+    repo = await upsert_repository(session, name="export-test", local_path="/tmp/export-test")
+    await upsert_page(session, **make_page_kwargs(repo.id))
+    await session.commit()
+
+    resp = await client.get(f"/api/repos/{repo.id}/export")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+
+    zf = zipfile.ZipFile(BytesIO(resp.content))
+    names = zf.namelist()
+    assert len(names) == 1
+    assert names[0].startswith("wiki/")
+    assert names[0].endswith(".md")
+
+
+@pytest.mark.asyncio
+async def test_stats_file_count_excludes_symbol_nodes(client: AsyncClient, session) -> None:
+    """`file_count` must count files, not every `graph_nodes` row.
+
+    Symbol nodes share the table. Counting them made the field report ~10x
+    the real figure, which both the multi-repo dashboard and the chat empty
+    state printed verbatim as "N files".
+    """
+    from repowise.core.persistence.crud import upsert_repository
+    from repowise.core.persistence.models import GraphNode
+
+    repo = await upsert_repository(session, name="counts", local_path="/tmp/counts")
+    for i in range(2):
+        session.add(
+            GraphNode(
+                repository_id=repo.id,
+                node_id=f"src/mod{i}.py",
+                node_type="file",
+                symbol_count=5,
+            )
+        )
+        for j in range(5):
+            session.add(
+                GraphNode(
+                    repository_id=repo.id,
+                    node_id=f"src/mod{i}.py::sym{j}",
+                    node_type="symbol",
+                )
+            )
+    await session.commit()
+
+    data = (await client.get(f"/api/repos/{repo.id}/stats")).json()
+
+    assert data["file_count"] == 2  # not 12
+    assert data["symbol_count"] == 10

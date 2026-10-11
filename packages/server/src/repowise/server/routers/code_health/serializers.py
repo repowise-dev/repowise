@@ -1,0 +1,179 @@
+"""Pure wire-shape helpers: ORM rows / dataclasses -> JSON-able dicts."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from repowise.core.analysis.finding_registry import verification_label
+from repowise.core.analysis.health.aggregation import (
+    primary_and_magnitude,
+    primary_and_magnitude_by_file,
+)
+from repowise.core.analysis.health.scoring import unclamped_score
+from repowise.core.analysis.health.signals import FileSignals
+from repowise.core.analysis.health.trends import FileTrend
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
+
+
+def _finding_to_dict(f: Any, lower_priority: str | None = None) -> dict:
+    try:
+        details = json.loads(f.details_json) if f.details_json else {}
+    except Exception:
+        details = {}
+    return {
+        "id": f.id,
+        "file_path": f.file_path,
+        "biomarker_type": f.biomarker_type,
+        "severity": f.severity,
+        "function_name": f.function_name,
+        "line_start": f.line_start,
+        "line_end": f.line_end,
+        "health_impact": round(f.health_impact, 3),
+        "reason": f.reason,
+        "details": details,
+        "status": f.status,
+        # Pillar the finding homes under (defect / maintainability / performance)
+        # so the UI can filter findings per dimension. Defaults to defect for
+        # rows that predate the split.
+        "dimension": getattr(f, "dimension", None) or "defect",
+        # "unverified" for a provisional type a caller asked for by name.
+        "verification": verification_label(f.biomarker_type),
+        "lower_priority": LOW_PRIORITY_LABEL.get(lower_priority or ""),
+    }
+
+
+def _round_opt(v: Any) -> float | None:
+    """Round a nullable per-dimension score, preserving ``None`` (not measured)."""
+    return round(v, 2) if v is not None else None
+
+
+# Old names kept for the routes and tests that import them.
+_primary_and_magnitude = primary_and_magnitude
+_leads_by_file = primary_and_magnitude_by_file
+
+
+def _metric_to_dict(
+    m: Any,
+    lead: dict | None = None,
+    *,
+    perf_findings: int = 0,
+    perf_analyzed: bool | None = None,
+    summary: bool = False,
+) -> dict:
+    """One file row. ``summary=True`` omits the keys only the table and drawer read.
+
+    Not "nulled" — **omitted**. Measured over the code-health map's 2,000-row
+    request, the three lead keys and the two detail keys dropped here are
+    432,081 B of a 1,060,095 B payload, and only 177,527 B of that is lead
+    *values*: the key names are the rest, so a row that nulls them saves a
+    fraction of what a row that drops them saves.
+
+    **Exactly the keys already declared optional on ``HealthFileMetric``**, which
+    is the line that keeps this safe rather than a judgement about who reads
+    what: every consumer already handles them absent or null (they *are* null on
+    any row whose findings were not loaded), and the wire type needs no change.
+    ``max_ccn`` / ``max_nesting`` are unread by the map too and stay anyway —
+    they are required on the type, they are 56 KB of the 488 KB, and dropping
+    them would trade the whole safety argument for 5%.
+    """
+    # Built in the historical key order so the full row stays byte-identical.
+    out: dict = {
+        "file_path": m.file_path,
+        # ``None`` for a language health has no dialect for: nothing measured it.
+        "score": _round_opt(m.score),
+        "max_ccn": m.max_ccn,
+        "max_nesting": m.max_nesting,
+    }
+    out["nloc"] = m.nloc
+    out["has_test_file"] = m.has_test_file
+    out["line_coverage_pct"] = m.line_coverage_pct
+    out["module"] = m.module
+    if not summary:
+        out["duplication_pct"] = getattr(m, "duplication_pct", None)
+        # Per-dimension scores from the three-signal split. ``score`` above stays
+        # the overall surfaced number (== defect_score for now).
+        out["defect_score"] = _round_opt(getattr(m, "defect_score", None))
+    # ``performance_score`` is computed but not yet surfaced as its own pillar.
+    out["maintainability_score"] = _round_opt(getattr(m, "maintainability_score", None))
+    out["performance_score"] = _round_opt(getattr(m, "performance_score", None))
+    # Performance lens inputs for the code-health map: the open perf-finding
+    # count colors the heat, and ``perf_analyzed`` (did a detector run on this
+    # language?) separates green ("analyzed, none found") from grey ("never
+    # looked"). Presentation only — the score above is untouched.
+    out["performance_findings"] = perf_findings
+    out["performance_analyzed"] = perf_analyzed
+    if not summary:
+        # The headline's two halves, and the score the file would carry without
+        # the floor. A file pinned at 1.0 reads 1.0 for months while real work
+        # lands on it; the unclamped number is the only place that shows.
+        structure = _round_opt(getattr(m, "structure_deduction", None))
+        history = _round_opt(getattr(m, "history_deduction", None))
+        out["structure_deduction"] = structure
+        out["history_deduction"] = history
+        out["unclamped_score"] = unclamped_score(structure, history)
+        # Dominant-cause lead + pre-clamp magnitude (null when findings weren't
+        # loaded for this row, or the file is clean). Additive; readers degrade.
+        out["primary_biomarker"] = lead.get("primary_biomarker") if lead else None
+        out["primary_reason"] = lead.get("primary_reason") if lead else None
+        out["total_deduction"] = lead.get("total_deduction") if lead else None
+    return out
+
+
+def _file_trend_to_dict(t: FileTrend) -> dict:
+    """Wire shape for ``FileHealthTrend`` (types/health.ts). ``points`` is
+    empty on thin history so the UI shows a "no history yet" state."""
+    return {
+        "file_path": t.file_path,
+        "points": [
+            {
+                "taken_at": p.taken_at.isoformat() if p.taken_at else None,
+                "score": round(p.score, 2),
+                # The score with the floor undone. Equal to ``score`` unless
+                # the snapshot recorded how deep the file actually was, which
+                # only happens once it is sitting on the floor.
+                "unclamped_score": round(p.unclamped_score, 2),
+            }
+            for p in t.points
+        ],
+        "current": t.current,
+        "previous": t.previous,
+        "delta": t.delta,
+        "unclamped_delta": t.unclamped_delta,
+        "declining": t.declining,
+        "snapshot_count": t.snapshot_count,
+    }
+
+
+def _file_signals_to_dict(s: FileSignals) -> dict:
+    """Wire shape for ``FileSignals`` (types/health.ts). Each value is null
+    when its source row is absent so the UI shows "no signal", never a
+    misleading zero. ``change_entropy_pct`` is 0-100 (the column is 0-1)."""
+    return {
+        "prior_defect_count": s.prior_defect_count,
+        "change_entropy_pct": s.change_entropy_pct,
+        "lines_added_90d": s.lines_added_90d,
+        "lines_deleted_90d": s.lines_deleted_90d,
+        "commit_count_90d": s.commit_count_90d,
+        "age_days": s.age_days,
+        "primary_owner_name": s.primary_owner_name,
+        "primary_owner_commit_pct": s.primary_owner_commit_pct,
+        "recent_owner_name": s.recent_owner_name,
+        "recent_owner_commit_pct": s.recent_owner_commit_pct,
+        "in_degree": s.in_degree,
+        "out_degree": s.out_degree,
+        "bug_magnet": s.bug_magnet,
+        "last_fix_at": s.last_fix_at,
+        "fix_symbol_counts": s.fix_symbol_counts,
+    }
+
+
+def _churn_complexity_to_dict(p: Any) -> dict:
+    return {
+        "file_path": p.file_path,
+        "commit_count_90d": p.commit_count_90d,
+        "max_ccn": p.max_ccn,
+        "nloc": p.nloc,
+        "score": p.score,
+        "churn_percentile": p.churn_percentile,
+    }

@@ -1,0 +1,127 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+/lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+# uv
+.uv/
+
+# Testing
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ruff
+.ruff_cache/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Node / Next.js
+node_modules/
+.next/
+.nuxt/
+out/
+.npm
+.eslintcache
+.parcel-cache
+*.tsbuildinfo
+next-env.d.ts
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# repowise runtime data
+.repowise/
+!.repowise/mcp.json.example
+.repowise-workspace/
+.repowise-workspace.yaml
+
+# repowise API keys (local)
+.repowise/.env
+
+# Benchmark output (large-repo scale runs): keep the dir, ignore results
+bench/results/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# LanceDB
+lancedb/
+lancedb_data/
+*.lance
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# Office temp / lock files
+~$*
+
+# Claude Code
+.claude/
+
+# Written by Claude Code into a plugin dir it loads a mod from
+plugins/claude-code/.claude-plugin/types/
+plugins/claude-code/tsconfig.json

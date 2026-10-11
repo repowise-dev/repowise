@@ -1,0 +1,17 @@
+{
+  "name": "sample-typescript-pkg",
+  "version": "1.0.0",
+  "description": "Sample TypeScript package for repowise integration tests",
+  "main": "dist/client.js",
+  "types": "dist/client.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

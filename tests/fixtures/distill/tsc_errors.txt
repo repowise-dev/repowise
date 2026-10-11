@@ -1,0 +1,18 @@
+> repowise-web@0.16.0 type-check
+> tsc --noEmit
+
+src/components/chat/chat-interface.tsx(112,18): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/components/chat/chat-interface.tsx(204,7): error TS2739: Type '{ role: string; }' is missing the following properties from type 'ChatMessage': id, content, createdAt
+src/components/docs/docs-viewer.tsx(88,31): error TS2554: Expected 2 arguments, but got 1.
+src/lib/api/client.ts(41,12): error TS18048: 'response.body' is possibly 'undefined'.
+src/lib/api/client.ts(67,5): error TS2322: Type 'Promise<unknown>' is not assignable to type 'Promise<RepoSummary[]>'.
+src/app/repos/[id]/c4/page.tsx(23,9): error TS2741: Property 'container' is missing in type '{ level: string; }' but required in type 'C4ViewState'.
+
+Found 6 errors in 4 files.
+
+Errors  Files
+     2  src/components/chat/chat-interface.tsx:112
+     1  src/components/docs/docs-viewer.tsx:88
+     2  src/lib/api/client.ts:41
+     1  src/app/repos/[id]/c4/page.tsx:23

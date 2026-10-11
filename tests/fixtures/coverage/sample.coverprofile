@@ -1,0 +1,10 @@
+mode: set
+example.com/mod/pkg/calc.go:3.24,5.2 1 1
+example.com/mod/pkg/calc.go:7.30,8.14 1 0
+example.com/mod/pkg/calc.go:8.14,10.3 1 0
+example.com/mod/pkg/calc.go:10.3,11.1 0 0
+example.com/mod/pkg/calc.go:12.2,14.1 1 0
+example.com/mod/util/str.go:3.30,5.2 2 1
+mode: set
+example.com/mod/pkg/calc.go:7.30,8.14 1 1
+example.com/mod/util/str.go:3.30,5.2 2 0

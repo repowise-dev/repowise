@@ -1,0 +1,448 @@
+"""Index-backed file skeletonization — slice on persisted symbol bounds.
+
+A skeleton is the file with symbol *bodies* elided: imports and module
+docstring kept, every signature kept, bodies replaced by one-line elision
+markers carrying the omitted line range. Because ``WikiSymbol`` rows persist
+``start_line``/``end_line`` at index time, the skeleton is produced by pure
+line slicing — **no parser runs at query time** (~1 ms for a large file).
+
+Two modes:
+
+- ``"signatures"`` — structure only. Every signature present, all bodies
+  elided. The cheapest faithful map of a file. Docstrings are NOT kept here
+  (they push a typical Python file from ~15% to ~20% of full tokens, and the
+  index already serves them via get_context symbol cards).
+- ``"smart"`` — signatures plus docstring summary lines plus the bodies of
+  the most *important* symbols,
+  ranked by caller-provided importance (PageRank), query-name match, with a
+  per-symbol line budget proportional to importance, all under a total token
+  budget. A hotspot file gets a larger budget — high-churn code is where
+  body-level context pays off.
+- ``"plus"``: every line outside a function or method body kept verbatim
+  (imports, constants, class fields, decorators, comments), every signature
+  kept, and each function/method body elided to one marker carrying its line
+  range. Classes are containers: their methods' bodies are elided, the rest
+  of the class stays.
+
+This module is pure: it sees source text and symbol records, never a
+database. Callers (MCP tools, hooks, tests) fetch the rows and pass them in.
+Degradation is graceful by construction — no usable symbols means the source
+is returned untouched (``mode="raw"``), never an error.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
+
+from repowise.core.callable_spans import body_span, signature_end
+from repowise.core.distill.budget import estimate_tokens
+
+__all__ = [
+    "DEFAULT_TOKEN_BUDGET",
+    "SkeletonResult",
+    "SkeletonSymbol",
+    "build_skeleton",
+]
+
+#: Default total token budget for smart mode (signatures + kept bodies).
+DEFAULT_TOKEN_BUDGET = 1800
+
+#: Hotspot files get proportionally more body context.
+_HOTSPOT_BUDGET_FACTOR = 1.25
+
+#: Docstring lines kept directly under a signature before eliding the rest.
+#: One line = the summary; the elision marker right after it signals more.
+_DOCSTRING_KEEP_LINES = 1
+
+#: Module-level gaps (constants, registrations) up to this size are kept
+#: verbatim — an elision marker would not be shorter.
+_GAP_KEEP_LINES = 4
+
+#: Preambles up to this size are kept whole; longer ones are filtered down
+#: to the leading docstring/comment block plus import-shaped lines.
+_PREAMBLE_KEEP_LINES = 60
+
+#: Smart mode keeps at most this many symbol bodies.
+_SMART_MAX_BODIES = 5
+
+#: A kept body always gets at least this many lines (below that, the head
+#: of a function is rarely worth more than its signature).
+_SMART_MIN_BODY_LINES = 4
+
+_IMPORT_RE = re.compile(
+    r"^\s*(import\s|from\s+\S+\s+import\s|use\s|require\s*\(|#include\s|using\s|package\s)"
+)
+
+#: Decorative comment rules (``# ----``, ``// ====``) carry zero information;
+#: they are dropped from the skeleton without a marker.
+_DECOR_RE = re.compile(r"^\s*(?:#|//)\s*[-=~*#_]{4,}\s*$")
+
+_DOCSTRING_DELIMS = ('"""', "'''")
+
+#: Symbol kinds whose body plus mode elides; every other kind is kept whole.
+_CALLABLE_KINDS = frozenset({"function", "method"})
+
+
+@dataclass(frozen=True)
+class SkeletonSymbol:
+    """One indexed symbol, as persisted on a ``WikiSymbol`` row.
+
+    ``importance`` is whatever ranking signal the caller has — symbol-node
+    PageRank in the indexed case, 0.0 when the graph has nothing. The
+    skeleton only compares importances relative to each other.
+
+    ``focus`` marks the symbol the caller asked about: its whole body is kept
+    and no other body is, so the file reads as signatures around one symbol.
+    """
+
+    name: str
+    kind: str
+    start_line: int  # 1-indexed, inclusive
+    end_line: int  # 1-indexed, inclusive
+    signature: str = ""
+    importance: float = 0.0
+    focus: bool = False
+
+
+@dataclass(frozen=True)
+class SkeletonResult:
+    """Outcome of one skeletonization."""
+
+    text: str
+    mode: str  # "smart" | "signatures" | "plus" | "raw"
+    full_tokens: int
+    skeleton_tokens: int
+    symbol_count: int
+    bodies_kept: tuple[str, ...] = field(default=())
+
+    @property
+    def pct_of_full(self) -> float:
+        if self.full_tokens <= 0:
+            return 100.0
+        return self.skeleton_tokens / self.full_tokens * 100.0
+
+
+def build_skeleton(
+    source: str,
+    symbols: Sequence[SkeletonSymbol],
+    *,
+    mode: str = "smart",
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
+    query: str | None = None,
+    hotspot: bool = False,
+) -> SkeletonResult:
+    """Skeletonize *source* by slicing on the persisted bounds in *symbols*.
+
+    Pure line arithmetic — no parsing. When *symbols* is empty or none of the
+    bounds are usable, the source is returned untouched with ``mode="raw"``
+    (the caller's signal that the index could not help here).
+    """
+    full_tokens = estimate_tokens(source)
+    lines = source.splitlines()
+    total = len(lines)
+
+    usable = _sanitize(symbols, total)
+    if not usable:
+        return SkeletonResult(
+            text=source,
+            mode="raw",
+            full_tokens=full_tokens,
+            skeleton_tokens=full_tokens,
+            symbol_count=0,
+        )
+
+    focused = [sym for sym in usable if sym.focus]
+
+    if mode == "plus":
+        keep = [True] * total
+        _elide_callable_bodies(lines, usable, keep)
+        _keep_focus(focused, keep)
+        text = _render(lines, keep)
+        return SkeletonResult(
+            text=text,
+            mode="plus",
+            full_tokens=full_tokens,
+            skeleton_tokens=estimate_tokens(text),
+            symbol_count=len(usable),
+            bodies_kept=tuple(sym.name for sym in focused),
+        )
+
+    keep = [False] * total
+
+    # Preamble: module docstring + imports + leading module code.
+    first_start = usable[0].start_line - 1  # 0-indexed
+    _keep_preamble(lines, first_start, keep)
+
+    # Signatures; smart mode also keeps the docstring summary line under each.
+    smart = mode == "smart"
+    sig_ends: dict[int, int] = {}  # symbol index -> 0-indexed signature end
+    for idx, sym in enumerate(usable):
+        s = sym.start_line - 1
+        e = signature_end(lines, s, sym.end_line - 1)
+        sig_ends[idx] = e
+        for i in range(s, e + 1):
+            keep[i] = True
+        if smart:
+            for i in _docstring_lines(lines, e + 1, sym.end_line - 1):
+                keep[i] = True
+
+    # Small module-level gaps between symbols stay verbatim.
+    _keep_small_gaps(lines, usable, total, keep)
+
+    bodies_kept: tuple[str, ...] = ()
+    if focused:
+        bodies_kept = tuple(sym.name for sym in focused)
+    elif smart:
+        budget = int(token_budget * (_HOTSPOT_BUDGET_FACTOR if hotspot else 1.0))
+        bodies_kept = _keep_smart_bodies(lines, usable, sig_ends, keep, budget, query)
+
+    # Decorative banner comments add bytes, not structure; a focused body
+    # stays whole.
+    in_focus = [False] * total
+    _keep_focus(focused, in_focus)
+    for i in range(total):
+        if keep[i] and not in_focus[i] and _DECOR_RE.match(lines[i]):
+            keep[i] = False
+    _keep_focus(focused, keep)
+
+    text = _render(lines, keep)
+    return SkeletonResult(
+        text=text,
+        mode=mode if mode in ("smart", "signatures") else "signatures",
+        full_tokens=full_tokens,
+        skeleton_tokens=estimate_tokens(text),
+        symbol_count=len(usable),
+        bodies_kept=bodies_kept,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Internals — all 0-indexed line arithmetic from here down
+# ---------------------------------------------------------------------------
+
+
+def _sanitize(symbols: Sequence[SkeletonSymbol], total: int) -> list[SkeletonSymbol]:
+    """Drop synthetic/out-of-range rows; clamp and sort by start line."""
+    out: list[SkeletonSymbol] = []
+    for sym in symbols:
+        if sym.name == "__module__" or sym.kind == "module":
+            continue  # synthetic module-level node, spans nothing real
+        if sym.start_line < 1 or sym.start_line > total:
+            continue
+        end = max(sym.start_line, min(sym.end_line, total))
+        if end != sym.end_line:
+            sym = replace(sym, end_line=end)
+        out.append(sym)
+    out.sort(key=lambda s: (s.start_line, -(s.end_line - s.start_line)))
+    return out
+
+
+def _keep_focus(focused: list[SkeletonSymbol], keep: list[bool]) -> None:
+    """Mark every line of each focused symbol, signature through last line."""
+    for sym in focused:
+        for i in range(sym.start_line - 1, sym.end_line):
+            keep[i] = True
+
+
+def _keep_preamble(lines: list[str], first_start: int, keep: list[bool]) -> None:
+    """Mark the pre-symbol region: whole if small, docstring+imports if not."""
+    if first_start <= 0:
+        return
+    if first_start <= _PREAMBLE_KEEP_LINES:
+        for i in range(first_start):
+            keep[i] = True
+        return
+    # Long preamble: leading docstring/comment block, then import-shaped lines.
+    i = 0
+    in_docstring = False
+    while i < first_start:
+        stripped = lines[i].strip()
+        if i == 0 or in_docstring or stripped.startswith("#") or (not stripped and i < 3):
+            keep[i] = True
+            opens = sum(stripped.count(d) for d in _DOCSTRING_DELIMS)
+            if not in_docstring and any(stripped.startswith(d) for d in _DOCSTRING_DELIMS):
+                in_docstring = opens == 1
+            elif in_docstring and opens:
+                in_docstring = False
+            i += 1
+            continue
+        break
+    for j in range(i, first_start):
+        if _IMPORT_RE.match(lines[j]):
+            keep[j] = True
+
+
+def _elide_callable_bodies(
+    lines: list[str], symbols: list[SkeletonSymbol], keep: list[bool]
+) -> None:
+    """Plus mode: unmark each outermost function/method body below its signature.
+
+    A callable nested in an elided body (a closure) is part of that body.
+    """
+    covered_until = -1
+    for sym in symbols:
+        start, end = sym.start_line - 1, sym.end_line - 1
+        if sym.kind not in _CALLABLE_KINDS or start <= covered_until:
+            continue
+        covered_until = end
+        body_start, body_end = body_span(lines, start, end)
+        for i in range(body_start, body_end + 1):
+            keep[i] = False
+
+
+def _docstring_lines(lines: list[str], start: int, end: int) -> list[int]:
+    """Indices of a docstring block directly under a signature, capped.
+
+    Only triggers when the first non-blank line after the signature opens a
+    triple-quoted string — pure Python convention, harmless elsewhere. Keeps
+    at most ``_DOCSTRING_KEEP_LINES`` lines; the closing delimiter line is
+    always included when within the cap so the skeleton stays well-formed.
+    """
+    i = start
+    while i <= end and not lines[i].strip():
+        i += 1
+    if i > end:
+        return []
+    stripped = lines[i].strip()
+    delim = next((d for d in _DOCSTRING_DELIMS if stripped.startswith(d)), None)
+    if delim is None:
+        return []
+    # Single-line docstring: opener and closer on the same line.
+    if stripped.count(delim) >= 2:
+        return [i]
+    kept = [i]
+    j = i + 1
+    while j <= end and len(kept) < _DOCSTRING_KEEP_LINES:
+        kept.append(j)
+        if delim in lines[j]:
+            return kept
+        j += 1
+    return kept
+
+
+def _keep_small_gaps(
+    lines: list[str],
+    symbols: list[SkeletonSymbol],
+    total: int,
+    keep: list[bool],
+) -> None:
+    """Keep short module-level runs between symbols (constants, registrations)."""
+    # Gap candidates: between each symbol end and the next symbol start; the
+    # last symbol's "next start" is EOF, which covers the trailing region.
+    spans: list[tuple[int, int]] = []
+    starts = sorted(s.start_line - 1 for s in symbols)
+    ends = sorted(s.end_line for s in symbols)  # 0-indexed exclusive
+    for e in ends:
+        nxt = next((st for st in starts if st >= e), total)
+        if e < nxt:
+            spans.append((e, nxt))
+    for a, b in spans:
+        unkept = [i for i in range(a, min(b, total)) if not keep[i]]
+        if 0 < len(unkept) <= _GAP_KEEP_LINES:
+            for i in unkept:
+                keep[i] = True
+
+
+def _query_bonus(name: str, query: str | None) -> float:
+    if not query:
+        return 0.0
+    name_l = name.lower()
+    tokens = [t for t in re.split(r"[^a-z0-9]+", query.lower()) if len(t) >= 3]
+    return 0.75 if any(t in name_l for t in tokens) else 0.0
+
+
+def _keep_smart_bodies(
+    lines: list[str],
+    symbols: list[SkeletonSymbol],
+    sig_ends: dict[int, int],
+    keep: list[bool],
+    token_budget: int,
+    query: str | None,
+) -> tuple[str, ...]:
+    """Mark the bodies of the top-ranked leaf symbols, budget-proportionally."""
+    starts = sorted(s.start_line - 1 for s in symbols)
+
+    # Leaf symbols only: a class body is its methods' signatures, which the
+    # skeleton already shows — keeping it whole would re-inline everything.
+    candidates: list[tuple[float, int]] = []  # (score, symbol index)
+    max_importance = max((s.importance for s in symbols), default=0.0)
+    for idx, sym in enumerate(symbols):
+        body_start = sig_ends[idx] + 1
+        body_end = sym.end_line - 1
+        if body_end - body_start + 1 <= _GAP_KEEP_LINES:
+            continue  # tiny body — render rule keeps short runs anyway
+        if any(body_start <= st <= body_end for st in starts):
+            continue  # contains another symbol — not a leaf
+        norm = sym.importance / max_importance if max_importance > 0 else 0.0
+        score = norm + _query_bonus(sym.name, query)
+        if score <= 0.0:
+            continue
+        candidates.append((score, idx))
+
+    if not candidates:
+        return ()
+
+    candidates.sort(key=lambda t: (-t[0], symbols[t[1]].start_line))
+    top = candidates[:_SMART_MAX_BODIES]
+
+    base_tokens = estimate_tokens(_render(lines, keep))
+    body_budget = max(0, token_budget - base_tokens)
+    if body_budget <= 0:
+        return ()
+    avg_line_tokens = max(1.0, estimate_tokens("\n".join(lines)) / max(1, len(lines)))
+    budget_lines = int(body_budget / avg_line_tokens)
+    if budget_lines < _SMART_MIN_BODY_LINES:
+        return ()
+
+    score_sum = sum(score for score, _ in top) or 1.0
+    kept_names: list[str] = []
+    remaining = budget_lines
+    for score, idx in top:
+        if remaining < _SMART_MIN_BODY_LINES:
+            break
+        sym = symbols[idx]
+        body_start = sig_ends[idx] + 1
+        body_end = sym.end_line - 1
+        body_len = body_end - body_start + 1
+        # Per-symbol line budget proportional to importance share.
+        share = max(_SMART_MIN_BODY_LINES, int(budget_lines * score / score_sum))
+        take = min(body_len, share, remaining)
+        if take < _SMART_MIN_BODY_LINES:
+            continue
+        for i in range(body_start, body_start + take):
+            keep[i] = True
+        remaining -= take
+        kept_names.append(sym.name)
+    return tuple(kept_names)
+
+
+def _render(lines: list[str], keep: list[bool]) -> str:
+    """Emit kept lines verbatim; collapse omitted runs to one marker line.
+
+    Runs of one or two omitted lines are kept verbatim — a marker would not
+    be shorter — unless they are pure blank/decoration, which is dropped
+    silently. The marker carries the 1-indexed range so an agent can jump
+    straight back with a ranged Read.
+    """
+    out: list[str] = []
+    i = 0
+    total = len(lines)
+    while i < total:
+        if keep[i]:
+            out.append(lines[i])
+            i += 1
+            continue
+        j = i
+        while j < total and not keep[j]:
+            j += 1
+        if j - i <= 2:
+            run = lines[i:j]
+            if not all(not ln.strip() or _DECOR_RE.match(ln) for ln in run):
+                out.extend(run)
+        else:
+            indent = re.match(r"[ \t]*", lines[i]).group(0)
+            out.append(f"{indent}... {j - i} lines ({i + 1}-{j})")
+        i = j
+    return "\n".join(out) + ("\n" if out else "")

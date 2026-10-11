@@ -1,0 +1,62 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.5, pytest-9.0.2, pluggy-1.5.0 -- C:\Python313\python.exe
+rootdir: C:\work\repo
+tests\test_lens_squeeze.py::test_fails[3] FAILED [ 95%]
+tests\test_lens_squeeze.py::test_fails[7] FAILED [ 96%]
+tests\test_lens_squeeze.py::test_fails[11] FAILED [ 98%]
+tests\test_lens_squeeze.py::test_fails[19] FAILED [100%]
+================================== FAILURES ===================================
+________________________________ test_fails[3] ________________________________
+
+n = 3
+
+    @pytest.mark.parametrize("n", [3, 7, 11, 19])
+    def test_fails(n):
+>       assert n % 2 == 0, f"{n} is odd"
+E       AssertionError: 3 is odd
+E       assert (3 % 2) == 0
+
+tests\test_lens_squeeze.py:11: AssertionError
+________________________________ test_fails[7] ________________________________
+
+n = 7
+
+    @pytest.mark.parametrize("n", [3, 7, 11, 19])
+    def test_fails(n):
+>       assert n % 2 == 0, f"{n} is odd"
+E       AssertionError: 7 is odd
+E       assert (7 % 2) == 0
+
+tests\test_lens_squeeze.py:11: AssertionError
+_______________________________ test_fails[11] ________________________________
+
+n = 11
+
+    @pytest.mark.parametrize("n", [3, 7, 11, 19])
+    def test_fails(n):
+>       assert n % 2 == 0, f"{n} is odd"
+E       AssertionError: 11 is odd
+E       assert (11 % 2) == 0
+
+tests\test_lens_squeeze.py:11: AssertionError
+_______________________________ test_fails[19] ________________________________
+
+n = 19
+
+    @pytest.mark.parametrize("n", [3, 7, 11, 19])
+    def test_fails(n):
+>       assert n % 2 == 0, f"{n} is odd"
+E       AssertionError: 19 is odd
+E       assert (19 % 2) == 0
+
+tests\test_lens_squeeze.py:11: AssertionError
+=========================== short test summary info ===========================
+FAILED tests\test_lens_squeeze.py::test_fails[3]
+FAILED tests\test_lens_squeeze.py::test_fails[7]
+FAILED tests\test_lens_squeeze.py::test_fails[11]
+FAILED tests\test_lens_squeeze.py::test_fails[19]
+(63 progress lines omitted)
+======================== 4 failed, 60 passed in 13.31s ========================
+
+[repowise#21ece412acd8: 64 lines omitted (~2337 tokens); restore: repowise expand 21ece412acd8]
+

@@ -1,0 +1,89 @@
+{
+ "repo": "fmt",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Test holds 51% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "c": {
+    "edges_per_file": 1.0,
+    "files": 1,
+    "import_edges": 1,
+    "import_support": "full",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 1.0
+   },
+   "cpp": {
+    "edges_per_file": 4.03,
+    "files": 70,
+    "hint_edges": {
+     "header_source_pair": 1
+    },
+    "import_edges": 282,
+    "import_support": "full",
+    "orphan_files": 2,
+    "orphan_ratio": 0.029,
+    "resolution_rate": 1.0
+   },
+   "javascript": {
+    "edges_per_file": 0.0,
+    "files": 1,
+    "import_edges": 0,
+    "import_support": "full",
+    "orphan_files": 1,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "python": {
+    "edges_per_file": 0.5,
+    "files": 6,
+    "import_edges": 3,
+    "import_support": "full",
+    "orphan_files": 2,
+    "orphan_ratio": 0.333,
+    "resolution_rate": 1.0
+   },
+   "shell": {
+    "edges_per_file": 0.0,
+    "files": 1,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 1,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "cpp",
+  "entry_points": [],
+  "modules": {
+   "count": 4,
+   "max_size": 54,
+   "min_size": 15,
+   "names": [
+    "API",
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "src/fmt.cc",
+   "src/os.cc",
+   "include/fmt/args.h",
+   "include/fmt/chrono.h",
+   "src/format.cc",
+   "include/fmt/color.h",
+   "include/fmt/ranges.h",
+   "include/fmt/ostream.h",
+   "include/fmt/compile.h",
+   "include/fmt/std.h",
+   "test/base-test.cc"
+  ]
+ }
+}

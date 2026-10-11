@@ -1,0 +1,96 @@
+{
+ "repo": "pydantic",
+ "smells": [
+  {
+   "code": "module_oversized",
+   "message": "pydantic-core/src has 128 files with subdirs (window 120)",
+   "severity": "WARN"
+  },
+  {
+   "code": "module_oversized",
+   "message": "pydantic-core/tests has 121 files with subdirs (window 120)",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "javascript": {
+    "edges_per_file": 0.0,
+    "files": 5,
+    "import_edges": 0,
+    "import_support": "full",
+    "orphan_files": 5,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "python": {
+    "edges_per_file": 4.03,
+    "files": 402,
+    "import_edges": 1620,
+    "import_support": "full",
+    "orphan_files": 11,
+    "orphan_ratio": 0.027,
+    "resolution_rate": 1.0
+   },
+   "rust": {
+    "edges_per_file": 10.58,
+    "files": 125,
+    "import_edges": 1323,
+    "import_support": "full",
+    "orphan_files": 1,
+    "orphan_ratio": 0.008,
+    "resolution_rate": 0.431
+   },
+   "shell": {
+    "edges_per_file": 0.0,
+    "files": 4,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 4,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "python",
+  "entry_points": [
+   "pydantic/main.py",
+   "pydantic/v1/main.py",
+   "pydantic-core/src/lib.rs"
+  ],
+  "modules": {
+   "count": 14,
+   "max_size": 128,
+   "min_size": 6,
+   "names": [
+    "API",
+    "Application (top-level)",
+    "Config",
+    "Middleware",
+    "Utility",
+    "docs",
+    "pydantic",
+    "pydantic-core",
+    "pydantic-core/src",
+    "pydantic-core/tests",
+    "tests",
+    "tests/benchmarks",
+    "tests/mypy",
+    "tests/typechecking"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "pydantic/main.py",
+   "pydantic/v1/main.py",
+   "pydantic-core/src/errors/mod.rs",
+   "pydantic-core/src/input/mod.rs",
+   "pydantic-core/src/serializers/mod.rs",
+   "pydantic-core/src/validators/mod.rs",
+   "pydantic-core/src/serializers/type_serializers/mod.rs",
+   "pydantic-core/src/common/mod.rs",
+   "pydantic-core/src/validators/shared/mod.rs",
+   "pydantic-core/src/lib.rs",
+   "tests/conftest.py"
+  ]
+ }
+}

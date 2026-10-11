@@ -1,0 +1,143 @@
+; =============================================================================
+; repowise — PHP symbol, import, and call queries
+; tree-sitter-php >= 0.23 (uses language_php())
+; =============================================================================
+
+; ---------------------------------------------------------------------------
+; Symbols
+; ---------------------------------------------------------------------------
+
+(class_declaration
+  name: (name) @symbol.name
+) @symbol.def
+
+(interface_declaration
+  name: (name) @symbol.name
+) @symbol.def
+
+(trait_declaration
+  name: (name) @symbol.name
+) @symbol.def
+
+(enum_declaration
+  name: (name) @symbol.name
+) @symbol.def
+
+(method_declaration
+  (visibility_modifier) @symbol.modifiers
+  name: (name) @symbol.name
+  parameters: (formal_parameters) @symbol.params
+) @symbol.def
+
+; Fallback: methods without explicit visibility (defaults to public in PHP)
+(method_declaration
+  name: (name) @symbol.name
+  parameters: (formal_parameters) @symbol.params
+) @symbol.def
+
+(function_definition
+  name: (name) @symbol.name
+  parameters: (formal_parameters) @symbol.params
+) @symbol.def
+
+; PHP top-level / class-level constant declarations (Q9)
+(const_declaration
+  (const_element
+    (name) @symbol.name
+  )
+) @symbol.def
+
+; PHP class properties (Q9): public $x, private $y, fallback no-modifier
+(property_declaration
+  (property_element
+    (variable_name
+      (name) @symbol.name
+    )
+  )
+) @symbol.def
+
+; ---------------------------------------------------------------------------
+; Imports (use declarations + require/include)
+; ---------------------------------------------------------------------------
+
+(namespace_use_declaration
+  (namespace_use_clause
+    (qualified_name) @import.module
+  )
+) @import.statement
+
+; Grouped form: use App\Models\{User, Post as P}; the parser expands the
+; group into one import per clause.
+(namespace_use_declaration
+  (namespace_name) @import.module
+  (namespace_use_group)
+) @import.statement
+
+; require/include file imports — double-quoted strings are
+; encapsed_string nodes, single-quoted (the common form) are plain
+; string nodes, and the __DIR__ . '<path>' idiom nests either inside a
+; binary_expression. All shapes capture the literal path.
+(require_expression (encapsed_string (string_content) @import.module)) @import.statement
+(require_once_expression (encapsed_string (string_content) @import.module)) @import.statement
+(include_expression (encapsed_string (string_content) @import.module)) @import.statement
+(include_once_expression (encapsed_string (string_content) @import.module)) @import.statement
+(require_expression (string (string_content) @import.module)) @import.statement
+(require_once_expression (string (string_content) @import.module)) @import.statement
+(include_expression (string (string_content) @import.module)) @import.statement
+(include_once_expression (string (string_content) @import.module)) @import.statement
+(require_expression (binary_expression (string (string_content) @import.module))) @import.statement
+(require_once_expression (binary_expression (string (string_content) @import.module))) @import.statement
+(include_expression (binary_expression (string (string_content) @import.module))) @import.statement
+(include_once_expression (binary_expression (string (string_content) @import.module))) @import.statement
+(require_expression (binary_expression (encapsed_string (string_content) @import.module))) @import.statement
+(require_once_expression (binary_expression (encapsed_string (string_content) @import.module))) @import.statement
+(include_expression (binary_expression (encapsed_string (string_content) @import.module))) @import.statement
+(include_once_expression (binary_expression (encapsed_string (string_content) @import.module))) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Function call: func(args)
+(function_call_expression
+  function: (name) @call.target
+  (arguments) @call.arguments
+) @call.site
+
+; Qualified function call: Namespace\func(args)
+(function_call_expression
+  function: (qualified_name
+    (name) @call.target
+  )
+  (arguments) @call.arguments
+) @call.site
+
+; Method call: $obj->method(args). The receiver is a `variable_name` whose own
+; text keeps the sigil (`$this`), which the parser normalises.
+(member_call_expression
+  object: (_) @call.receiver
+  name: (name) @call.target
+  (arguments) @call.arguments
+) @call.site
+
+; Static call: ClassName::method(args). `scope:` is a `relative_scope` for
+; self/static/parent and a `name` for an explicit class.
+(scoped_call_expression
+  scope: (_) @call.receiver
+  name: (name) @call.target
+  (arguments) @call.arguments
+) @call.site
+
+; Constructor: new ClassName(args)
+(object_creation_expression
+  (qualified_name
+    (name) @call.target
+  )
+  (arguments) @call.arguments
+) @call.site
+
+; Constructor (simple name): new ClassName(args)
+(object_creation_expression
+  (name) @call.target
+  (arguments) @call.arguments
+) @call.site

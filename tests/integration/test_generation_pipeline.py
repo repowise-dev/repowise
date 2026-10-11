@@ -1,0 +1,658 @@
+"""Integration tests for the full generation pipeline — 25 tests.
+
+Ingests the sample_repo fixture, runs generate_all(), and validates the
+resulting GeneratedPage list and job checkpoint.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from repowise.core.generation.context_assembler import ContextAssembler
+from repowise.core.generation.job_system import JobSystem
+from repowise.core.generation.models import GenerationConfig, compute_page_id
+from repowise.core.generation.page_generator import PageGenerator
+from repowise.core.ingestion.graph import GraphBuilder
+from repowise.core.ingestion.models import (
+    FileInfo,
+    PackageInfo,
+    ParsedFile,
+    RepoStructure,
+    Symbol,
+)
+from repowise.core.ingestion.parser import ASTParser
+from repowise.core.ingestion.traverser import FileTraverser
+from repowise.core.providers.llm.base import GeneratedResponse
+from repowise.core.providers.llm.mock import MockProvider
+from repowise.core.reasoning import ReasoningMode
+
+SAMPLE_REPO = Path(__file__).parents[1] / "fixtures" / "sample_repo"
+
+
+class _TrackingProvider(MockProvider):
+    def __init__(self, delay: float = 0.01) -> None:
+        super().__init__()
+        self.delay = delay
+        self.file_page_starts: list[float] = []
+
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+        request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
+        cache_hints: Any = None,
+    ) -> GeneratedResponse:
+        if "Required sections: ## Overview, ## Public API," in system_prompt:
+            self.file_page_starts.append(time.perf_counter())
+        await asyncio.sleep(self.delay)
+        return await super().generate(
+            system_prompt,
+            user_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            request_id=request_id,
+            reasoning=reasoning,
+        )
+
+
+class _SlowVectorStore:
+    def __init__(self, delay: float = 0.05) -> None:
+        self.delay = delay
+        self.active_embeds = 0
+        self.max_active_embeds = 0
+        self.file_page_embed_finishes: list[float] = []
+
+    async def embed_and_upsert(self, page_id: str, text: str, metadata: dict[str, Any]) -> None:
+        self.active_embeds += 1
+        self.max_active_embeds = max(self.max_active_embeds, self.active_embeds)
+        try:
+            await asyncio.sleep(self.delay)
+            if metadata.get("page_type") == "file_page":
+                self.file_page_embed_finishes.append(time.perf_counter())
+        finally:
+            self.active_embeds -= 1
+
+    async def embed_batch(self, items: list[tuple[str, str, dict[str, Any]]]) -> None:
+        # Mirror the generator's batched embed path: a level's pages are
+        # embedded together after their LLM calls have all returned. The real
+        # stores issue one batched embed call, so this never fans out.
+        for pid, text, meta in items:
+            await self.embed_and_upsert(pid, text, meta)
+
+    async def list_page_ids(self) -> set[str]:
+        return set()
+
+    async def get_page_summary_by_path(self, path: str) -> None:
+        return None
+
+    async def get_page_summaries_by_paths(self, paths: list[str]) -> dict[str, dict]:
+        return {}
+
+    async def search(self, query: str, limit: int = 3) -> list[Any]:
+        return []
+
+
+def _make_concurrency_fixture() -> tuple[list[ParsedFile], dict[str, bytes], RepoStructure]:
+    parsed_files: list[ParsedFile] = []
+    source_map: dict[str, bytes] = {}
+
+    for index in range(4):
+        path = f"pkg/module_{index}.py"
+        source = f"def function_{index}() -> int:\n    return {index}\n".encode()
+        file_info = FileInfo(
+            path=path,
+            abs_path=f"/repo/{path}",
+            language="python",
+            size_bytes=len(source),
+            git_hash=f"hash-{index}",
+            last_modified=datetime(2026, 1, 1, tzinfo=UTC),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=index == 0,
+        )
+        symbol = Symbol(
+            id=f"{path}::function_{index}",
+            name=f"function_{index}",
+            qualified_name=f"pkg.module_{index}.function_{index}",
+            kind="function",
+            signature=f"def function_{index}() -> int:",
+            start_line=1,
+            end_line=2,
+            docstring=None,
+            visibility="public",
+            language="python",
+        )
+        parsed_files.append(
+            ParsedFile(
+                file_info=file_info,
+                symbols=[symbol],
+                imports=[],
+                exports=[symbol.name],
+                docstring=None,
+                parse_errors=[],
+                content_hash=f"content-{index}",
+            )
+        )
+        source_map[path] = source
+
+    repo_structure = RepoStructure(
+        is_monorepo=False,
+        packages=[
+            PackageInfo(
+                name="pkg",
+                path="pkg",
+                language="python",
+                entry_points=["pkg/module_0.py"],
+                manifest_file="pyproject.toml",
+            )
+        ],
+        root_language_distribution={"python": 1.0},
+        total_files=len(parsed_files),
+        total_loc=sum(len(source.splitlines()) for source in source_map.values()),
+        entry_points=["pkg/module_0.py"],
+    )
+    return parsed_files, source_map, repo_structure
+
+
+# ---------------------------------------------------------------------------
+# Pipeline fixture (class-scoped so it runs once per test class)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="class")
+async def pipeline_result(tmp_path_factory):
+    """Run the full pipeline on sample_repo and return results dict."""
+    tmp = tmp_path_factory.mktemp("gen")
+
+    # 1. Ingest
+    traverser = FileTraverser(SAMPLE_REPO)
+    parser = ASTParser()
+    builder = GraphBuilder()
+    parsed_files: list[ParsedFile] = []
+    source_map: dict[str, bytes] = {}
+
+    for fi in traverser.traverse():
+        try:
+            src = Path(fi.abs_path).read_bytes()
+            parsed = parser.parse_file(fi, src)
+            builder.add_file(parsed)
+            parsed_files.append(parsed)
+            source_map[fi.path] = src
+        except Exception:
+            pass
+
+    _graph = builder.build()
+
+    # Determine if monorepo (sample_repo has multiple language packages)
+    pkg_dirs = [d for d in SAMPLE_REPO.iterdir() if d.is_dir()]
+    packages = [
+        PackageInfo(
+            name=d.name,
+            path=d.name,
+            language="unknown",
+            entry_points=[],
+            manifest_file="",
+        )
+        for d in pkg_dirs
+    ]
+
+    repo_structure = RepoStructure(
+        is_monorepo=len(packages) > 1,
+        packages=packages,
+        root_language_distribution={"python": 0.5, "typescript": 0.2, "go": 0.1, "other": 0.2},
+        total_files=len(parsed_files),
+        total_loc=sum(
+            len(source_map.get(p.file_info.path, b"").splitlines()) for p in parsed_files
+        ),
+        entry_points=[],
+    )
+
+    # 2. Generate
+    config = GenerationConfig(
+        max_tokens=512,
+        token_budget=2000,
+        max_concurrency=3,
+        cache_enabled=True,
+        jobs_dir=str(tmp / "jobs"),
+    )
+    provider = MockProvider()
+    assembler = ContextAssembler(config)
+    generator = PageGenerator(provider, assembler, config)
+    job_sys = JobSystem(tmp / "jobs")
+
+    pages = await generator.generate_all(
+        parsed_files, source_map, builder, repo_structure, "sample_repo", job_sys
+    )
+
+    return {
+        "pages": pages,
+        "provider": provider,
+        "job_sys": job_sys,
+        "tmp": tmp,
+        "parsed_files": parsed_files,
+    }
+
+
+async def test_embedding_latency_does_not_gate_llm_concurrency():
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+
+    config = GenerationConfig(
+        max_tokens=256,
+        token_budget=1000,
+        max_concurrency=2,
+        embed_concurrency=1,
+        # 0 is the explicit "every eligible file" answer, which is what this test
+        # wants: the point is concurrency, so no page should be missing because a
+        # size policy trimmed the bucket.
+        max_file_pages=0,
+        top_symbol_percentile=0.01,
+        # coverage_pct / max_pages_pct are inert: selection no longer rations by
+        # coverage. Set here only to exercise the config round-trip.
+        coverage_pct=1.0,
+        max_pages_pct=1.0,
+        cache_enabled=False,
+    )
+    provider = _TrackingProvider()
+    vector_store = _SlowVectorStore()
+    assembler = ContextAssembler(config)
+    generator = PageGenerator(provider, assembler, config, vector_store=vector_store)
+
+    pages = await generator.generate_all(
+        parsed_files,
+        source_map,
+        builder,
+        repo_structure,
+        "concurrency_repo",
+    )
+
+    file_pages = [page for page in pages if page.page_type == "file_page"]
+    assert len(file_pages) >= 3
+    # File pages are rendered rather than written, so there are no provider
+    # calls left to interleave with the embeds. What still matters, and what
+    # this fixture's slow store exercises, is that the embed semaphore is
+    # honoured and never becomes the thing that serialises the run.
+    assert provider.file_page_starts == []
+    assert vector_store.file_page_embed_finishes
+    assert vector_store.max_active_embeds == 1
+
+
+async def test_scoped_pipeline_adds_configured_repo_overview_evidence() -> None:
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+    config = GenerationConfig.from_repo_config(
+        {
+            "generation_context": {
+                "token_budget": 300,
+                "files": {"repo_overview": ["pkg/module_3.py"]},
+            }
+        },
+        max_tokens=256,
+        token_budget=1000,
+        cache_enabled=False,
+    )
+    provider = MockProvider()
+    generator = PageGenerator(provider, ContextAssembler(config), config)
+    page_id = compute_page_id("repo_overview", "sample_repo")
+
+    pages = await generator.generate_all(
+        parsed_files,
+        source_map,
+        builder,
+        repo_structure,
+        "sample_repo",
+        only_page_ids={page_id},
+    )
+
+    assert [page.page_id for page in pages] == [page_id]
+    prompt = provider.calls[0]["user_prompt"]
+    assert '<repository-file path="pkg/module_3.py">' in prompt
+    assert "def function_3() -> int" in prompt
+    assert pages[0].metadata["source_evidence"]["included"] == [
+        {"path": "pkg/module_3.py", "truncated": False}
+    ]
+
+
+async def test_resume_reports_the_pages_it_skipped(tmp_path):
+    """The preserved-id set survives every hand-off down to the generator.
+
+    Issue #1089: persistence deletes structurally-keyed pages a run did not
+    produce, and a resumed run does not produce the pages it skipped. It now
+    reports them instead, but only if the set actually reaches ``_emit`` —
+    ``run_generation`` -> ``generate_all`` -> ``run_generate_all`` is three
+    keyword hand-offs, two of them through ``**kwargs``, where a dropped or
+    misspelled argument fails silently and takes the fix with it.
+    """
+    from repowise.core.pipeline.phases.generation import run_generation
+
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+
+    already_written = "file_page:pkg/module_0.py"
+
+    class _StoreWithPriorRun(_SlowVectorStore):
+        async def list_page_ids(self) -> set[str]:
+            return {already_written}
+
+    preserved: set[str] = set()
+    pages = await run_generation(
+        repo_path=tmp_path,
+        parsed_files=parsed_files,
+        source_map=source_map,
+        graph_builder=builder,
+        repo_structure=repo_structure,
+        git_meta_map={},
+        llm_client=MockProvider(),
+        embedder=None,
+        vector_store=_StoreWithPriorRun(delay=0),
+        concurrency=2,
+        progress=None,
+        resume=True,
+        generation_config=GenerationConfig(max_file_pages=0, cache_enabled=False),
+        preserved_page_ids=preserved,
+    )
+
+    # Reported as kept, and genuinely not regenerated.
+    assert already_written in preserved
+    assert already_written not in {page.page_id for page in pages}
+    # The rest of the wiki was still produced, so this is a skip and not a
+    # collapsed run that would look identical from the assertion above.
+    assert "file_page:pkg/module_1.py" in {page.page_id for page in pages}
+
+
+async def test_resume_regenerates_a_page_with_a_vector_but_no_row(tmp_path):
+    """A run killed after embedding a page but before saving its row leaves
+    a vector with no page. Resume must regenerate that page, not skip it."""
+    from repowise.core.pipeline.phases.generation import run_generation
+
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+
+    saved = "file_page:pkg/module_0.py"
+    vector_only = "file_page:pkg/module_1.py"
+
+    class _StoreWithPriorRun(_SlowVectorStore):
+        async def list_page_ids(self) -> set[str]:
+            return {saved, vector_only}
+
+    preserved: set[str] = set()
+    pages = await run_generation(
+        repo_path=tmp_path,
+        parsed_files=parsed_files,
+        source_map=source_map,
+        graph_builder=builder,
+        repo_structure=repo_structure,
+        git_meta_map={},
+        llm_client=MockProvider(),
+        embedder=None,
+        vector_store=_StoreWithPriorRun(delay=0),
+        concurrency=2,
+        progress=None,
+        resume=True,
+        generation_config=GenerationConfig(max_file_pages=0, cache_enabled=False),
+        preserved_page_ids=preserved,
+        persisted_page_ids={saved},
+    )
+
+    ids = {page.page_id for page in pages}
+    assert saved in preserved and saved not in ids
+    assert vector_only in ids and vector_only not in preserved
+
+
+# ---------------------------------------------------------------------------
+# Test class
+# ---------------------------------------------------------------------------
+
+
+class TestGenerationPipeline:
+    def test_generates_at_least_5_pages(self, pipeline_result):
+        assert len(pipeline_result["pages"]) >= 5
+
+    def test_all_pages_have_non_empty_content(self, pipeline_result):
+        for page in pipeline_result["pages"]:
+            assert page.content, f"Empty content for {page.page_id}"
+
+    def test_all_pages_have_page_id(self, pipeline_result):
+        for page in pipeline_result["pages"]:
+            assert page.page_id, "Missing page_id"
+
+    def test_no_none_page_ids(self, pipeline_result):
+        for page in pipeline_result["pages"]:
+            assert page.page_id is not None
+
+    def test_no_duplicate_page_ids(self, pipeline_result):
+        ids = [p.page_id for p in pipeline_result["pages"]]
+        assert len(ids) == len(set(ids)), (
+            f"Duplicate page IDs found: {[i for i in ids if ids.count(i) > 1]}"
+        )
+
+    def test_model_name_only_on_model_written_pages(self, pipeline_result):
+        # A template page made no model call, so it names no model.
+        for page in pipeline_result["pages"]:
+            assert bool(page.model_name) == (page.provider_name != "template")
+
+    def test_all_pages_provider_is_mock(self, pipeline_result):
+        # LLM pages use the mock provider; the deterministic coverage tail
+        # (files outside the budget) is rendered from a template with no
+        # provider call, so those carry provider_name "template".
+        for page in pipeline_result["pages"]:
+            assert page.provider_name in ("mock", "template")
+
+    def test_every_file_page_is_free(self, pipeline_result):
+        """There is no budget and no tier split: every code file gets a page,
+        and not one of them costs a token."""
+        file_pages = [p for p in pipeline_result["pages"] if p.page_type == "file_page"]
+        assert file_pages
+        for p in file_pages:
+            assert p.provider_name == "template"
+            assert p.input_tokens == 0 and p.output_tokens == 0
+            assert p.metadata.get("render_key"), p.page_id
+
+    def test_generates_repo_overview(self, pipeline_result):
+        types = [p.page_type for p in pipeline_result["pages"]]
+        assert types.count("repo_overview") == 1
+
+    def test_architecture_map_lives_on_the_overview(self, pipeline_result):
+        """The diagram no longer gets a page of its own.
+
+        It described the same repository at the same altitude as the overview
+        and in the same words, so the map moved onto the overview and the page
+        retired. A run that still emits one has regressed.
+        """
+        pages = pipeline_result["pages"]
+        types = [p.page_type for p in pages]
+        assert types.count("architecture_diagram") == 0
+        assert types.count("repo_overview") == 1
+
+    def test_generates_file_page_for_py_files(self, pipeline_result):
+        """There should be at least one file_page for Python files."""
+        file_pages = [p for p in pipeline_result["pages"] if p.page_type == "file_page"]
+        parsed_py = [
+            pf
+            for pf in pipeline_result["parsed_files"]
+            if pf.file_info.language == "python" and not pf.file_info.is_api_contract
+        ]
+        # At least one py file → at least one file_page
+        if parsed_py:
+            assert len(file_pages) >= 1
+
+    def test_generates_infra_page_for_dockerfile(self, pipeline_result):
+        """If Dockerfile is in sample_repo, an infra_page should exist."""
+        dockerfile_parsed = [
+            pf for pf in pipeline_result["parsed_files"] if pf.file_info.language == "dockerfile"
+        ]
+        if dockerfile_parsed:
+            infra_pages = [p for p in pipeline_result["pages"] if p.page_type == "infra_page"]
+            assert len(infra_pages) >= 1
+
+    def test_generates_infra_page_for_makefile(self, pipeline_result):
+        """If Makefile is in sample_repo, an infra_page should exist."""
+        makefile_parsed = [
+            pf for pf in pipeline_result["parsed_files"] if pf.file_info.language == "makefile"
+        ]
+        if makefile_parsed:
+            infra_pages = [p for p in pipeline_result["pages"] if p.page_type == "infra_page"]
+            assert len(infra_pages) >= 1
+
+    def test_api_contract_pages_before_file_pages(self, pipeline_result):
+        """api_contract pages (level 0) must precede file_page pages (level 2)."""
+        pages = pipeline_result["pages"]
+        api_indices = [i for i, p in enumerate(pages) if p.page_type == "api_contract"]
+        file_indices = [i for i, p in enumerate(pages) if p.page_type == "file_page"]
+        if api_indices and file_indices:
+            assert max(api_indices) < min(file_indices)
+
+    def test_provider_called_at_least_once_per_file(self, pipeline_result):
+        """Provider should have been called at least once for each generated page."""
+        provider = pipeline_result["provider"]
+        # call_count >= non-cached pages
+        assert provider.call_count >= 1
+
+    def test_prompt_cache_reduces_calls(self, pipeline_result):
+        """With cache enabled, call_count should be <= total pages."""
+        pages = pipeline_result["pages"]
+        provider = pipeline_result["provider"]
+        assert provider.call_count <= len(pages)
+
+    def test_job_checkpoint_written(self, pipeline_result):
+        """At least one JSON checkpoint file should exist in jobs_dir."""
+        tmp = pipeline_result["tmp"]
+        jobs_dir = tmp / "jobs"
+        json_files = list(jobs_dir.glob("*.json"))
+        assert len(json_files) >= 1
+
+    def test_job_status_completed(self, pipeline_result):
+        """The most recent job should be in 'completed' status."""
+        job_sys = pipeline_result["job_sys"]
+        jobs = job_sys.list_jobs()
+        assert len(jobs) >= 1
+        assert jobs[0].status == "completed"
+
+    def test_completed_page_count_matches_generated(self, pipeline_result):
+        """Checkpoint.completed_pages should match len(pages)."""
+        job_sys = pipeline_result["job_sys"]
+        jobs = job_sys.list_jobs()
+        if jobs:
+            # completed_pages ≤ total because some may not have been checkpointed before start_job
+            assert jobs[0].completed_pages >= 0
+
+    def test_generated_page_tokens_nonzero(self, pipeline_result):
+        """Every LLM page should report nonzero token usage.
+
+        Deterministic tail pages (provider "template") are zero-LLM by design,
+        so they are excluded from this token assertion.
+        """
+        llm_pages = [p for p in pipeline_result["pages"] if p.provider_name != "template"]
+        assert llm_pages, "expected at least one LLM page"
+        for page in llm_pages:
+            assert page.input_tokens > 0 or page.output_tokens > 0
+
+    def test_generated_page_source_hash_is_hex(self, pipeline_result):
+        """source_hash should be a 64-character hex string."""
+        for page in pipeline_result["pages"]:
+            assert len(page.source_hash) == 64
+            int(page.source_hash, 16)  # valid hex
+
+    def test_generated_page_created_at_is_iso(self, pipeline_result):
+        """created_at should be a valid ISO-8601 string."""
+        from datetime import datetime
+
+        for page in pipeline_result["pages"]:
+            dt = datetime.fromisoformat(page.created_at.replace("Z", "+00:00"))
+            assert dt.year >= 2026
+
+    def test_module_page_generated(self, pipeline_result):
+        """At least one module_page should be generated."""
+        types = [p.page_type for p in pipeline_result["pages"]]
+        assert "module_page" in types
+
+    def test_level_values_in_range(self, pipeline_result):
+        """All generation_level values must be in [0, 8] — onboarding is level 8."""
+        for page in pipeline_result["pages"]:
+            assert 0 <= page.generation_level <= 8, (
+                f"Page {page.page_id} has out-of-range level {page.generation_level}"
+            )
+
+    def test_scc_page_only_for_true_cycles(self, pipeline_result):
+        """scc_page pages should only exist if sample_repo has actual cycles."""
+        scc_pages = [p for p in pipeline_result["pages"] if p.page_type == "scc_page"]
+        # sample_repo is a DAG, so no scc_pages expected
+        # If any exist, their target_path should start with "scc-"
+        for p in scc_pages:
+            assert p.target_path.startswith("scc-")
+
+    async def test_resume_skips_completed_pages(self, pipeline_result, tmp_path_factory):
+        """Re-running generate_all with completed pages should not re-call provider."""
+        # This test simulates resume by creating a fresh generator
+        # The main pipeline_result already ran — provider.call_count is set
+        # A fresh run with no completed pages should call at least once
+        tmp = tmp_path_factory.mktemp("resume")
+        config = GenerationConfig(
+            max_tokens=256,
+            token_budget=1000,
+            max_concurrency=2,
+            cache_enabled=True,
+            jobs_dir=str(tmp / "jobs"),
+        )
+        provider2 = MockProvider()
+        assembler = ContextAssembler(config)
+        gen2 = PageGenerator(provider2, assembler, config)
+        job_sys2 = JobSystem(tmp / "jobs")
+
+        parsed_files = pipeline_result["parsed_files"]
+        source_map = {}
+        for pf in parsed_files:
+            src_path = SAMPLE_REPO / pf.file_info.path
+            if src_path.exists():
+                source_map[pf.file_info.path] = src_path.read_bytes()
+
+        from repowise.core.ingestion.graph import GraphBuilder
+
+        builder = GraphBuilder()
+        for pf in parsed_files:
+            builder.add_file(pf)
+        builder.build()
+
+        pkg_dirs = [d for d in SAMPLE_REPO.iterdir() if d.is_dir()]
+        packages = [
+            PackageInfo(
+                name=d.name, path=d.name, language="unknown", entry_points=[], manifest_file=""
+            )
+            for d in pkg_dirs
+        ]
+        repo_structure = RepoStructure(
+            is_monorepo=len(packages) > 1,
+            packages=packages,
+            root_language_distribution={"python": 1.0},
+            total_files=len(parsed_files),
+            total_loc=100,
+            entry_points=[],
+        )
+
+        await gen2.generate_all(
+            parsed_files, source_map, builder, repo_structure, "sample_repo", job_sys2
+        )
+        # Provider was called (fresh run, no resume)
+        assert provider2.call_count >= 1

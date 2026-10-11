@@ -1,0 +1,625 @@
+{
+ "cc_bad_direction": [
+  200,
+  {
+   "callee_count": 1,
+   "callees": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/b.py",
+     "kind": "function",
+     "name": "leaf",
+     "resolution_origin": "import_scoped",
+     "start_line": 3,
+     "symbol_id": "src/b.py::leaf"
+    }
+   ],
+   "caller_count": 1,
+   "callers": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/a.py",
+     "kind": "function",
+     "name": "main",
+     "resolution_origin": "same_file",
+     "start_line": 3,
+     "symbol_id": "src/a.py::main"
+    }
+   ],
+   "relations": [],
+   "symbol": {
+    "file": "src/a.py",
+    "kind": "function",
+    "name": "helper",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/a.py::helper"
+   },
+   "symbol_id": "src/a.py::helper",
+   "truncated": false
+  }
+ ],
+ "cc_bare_name": [
+  200,
+  {
+   "callee_count": 1,
+   "callees": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/b.py",
+     "kind": "function",
+     "name": "leaf",
+     "resolution_origin": "import_scoped",
+     "start_line": 3,
+     "symbol_id": "src/b.py::leaf"
+    }
+   ],
+   "caller_count": 1,
+   "callers": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/a.py",
+     "kind": "function",
+     "name": "main",
+     "resolution_origin": "same_file",
+     "start_line": 3,
+     "symbol_id": "src/a.py::main"
+    }
+   ],
+   "relations": [],
+   "symbol": {
+    "file": "src/a.py",
+    "kind": "function",
+    "name": "helper",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/a.py::helper"
+   },
+   "symbol_id": "src/a.py::helper",
+   "truncated": false
+  }
+ ],
+ "cc_both": [
+  200,
+  {
+   "callee_count": 1,
+   "callees": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/b.py",
+     "kind": "function",
+     "name": "leaf",
+     "resolution_origin": "import_scoped",
+     "start_line": 3,
+     "symbol_id": "src/b.py::leaf"
+    }
+   ],
+   "caller_count": 1,
+   "callers": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/a.py",
+     "kind": "function",
+     "name": "main",
+     "resolution_origin": "same_file",
+     "start_line": 3,
+     "symbol_id": "src/a.py::main"
+    }
+   ],
+   "relations": [],
+   "symbol": {
+    "file": "src/a.py",
+    "kind": "function",
+    "name": "helper",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/a.py::helper"
+   },
+   "symbol_id": "src/a.py::helper",
+   "truncated": false
+  }
+ ],
+ "cc_callees": [
+  200,
+  {
+   "callee_count": 1,
+   "callees": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/b.py",
+     "kind": "function",
+     "name": "leaf",
+     "resolution_origin": "import_scoped",
+     "start_line": 3,
+     "symbol_id": "src/b.py::leaf"
+    }
+   ],
+   "caller_count": 0,
+   "callers": [],
+   "relations": [],
+   "symbol": {
+    "file": "src/a.py",
+    "kind": "function",
+    "name": "helper",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/a.py::helper"
+   },
+   "symbol_id": "src/a.py::helper",
+   "truncated": false
+  }
+ ],
+ "cc_callers": [
+  200,
+  {
+   "callee_count": 0,
+   "callees": [],
+   "caller_count": 1,
+   "callers": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/a.py",
+     "kind": "function",
+     "name": "main",
+     "resolution_origin": "same_file",
+     "start_line": 3,
+     "symbol_id": "src/a.py::main"
+    }
+   ],
+   "relations": [],
+   "symbol": {
+    "file": "src/a.py",
+    "kind": "function",
+    "name": "helper",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/a.py::helper"
+   },
+   "symbol_id": "src/a.py::helper",
+   "truncated": false
+  }
+ ],
+ "cc_edge_filter_hit": [
+  200,
+  {
+   "callee_count": 0,
+   "callees": [],
+   "caller_count": 0,
+   "callers": [],
+   "relations": [
+    {
+     "direction": "in",
+     "edge_type": "extends",
+     "group": "heritage",
+     "rows": [
+      {
+       "confidence": 0.9,
+       "edge_type": "extends",
+       "file": "src/c.py",
+       "kind": "class",
+       "name": "Child",
+       "resolution_origin": null,
+       "start_line": 3,
+       "symbol_id": "src/c.py::Child"
+      }
+     ],
+     "total": 1
+    }
+   ],
+   "symbol": {
+    "file": "src/c.py",
+    "kind": "class",
+    "name": "Base",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/c.py::Base"
+   },
+   "symbol_id": "src/c.py::Base",
+   "truncated": false
+  }
+ ],
+ "cc_edge_filter_miss": [
+  200,
+  {
+   "callee_count": 0,
+   "callees": [],
+   "caller_count": 0,
+   "callers": [],
+   "relations": [],
+   "symbol": {
+    "file": "src/c.py",
+    "kind": "class",
+    "name": "Base",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/c.py::Base"
+   },
+   "symbol_id": "src/c.py::Base",
+   "truncated": false
+  }
+ ],
+ "cc_file_hint": [
+  200,
+  {
+   "callee_count": 1,
+   "callees": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/b.py",
+     "kind": "function",
+     "name": "leaf",
+     "resolution_origin": "same_file",
+     "start_line": 3,
+     "symbol_id": "src/b.py::leaf"
+    }
+   ],
+   "caller_count": 1,
+   "callers": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/a.py",
+     "kind": "function",
+     "name": "main",
+     "resolution_origin": "import_scoped",
+     "start_line": 3,
+     "symbol_id": "src/a.py::main"
+    }
+   ],
+   "relations": [],
+   "symbol": {
+    "file": "src/b.py",
+    "kind": "method",
+    "name": "helper",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/b.py::Tool.helper"
+   },
+   "symbol_id": "src/b.py::Tool.helper",
+   "truncated": false
+  }
+ ],
+ "cc_file_node": [
+  404,
+  {
+   "detail": "Symbol not found: src/a.py"
+  }
+ ],
+ "cc_hint_miss": [
+  200,
+  {
+   "callee_count": 1,
+   "callees": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/b.py",
+     "kind": "function",
+     "name": "leaf",
+     "resolution_origin": "import_scoped",
+     "start_line": 3,
+     "symbol_id": "src/b.py::leaf"
+    }
+   ],
+   "caller_count": 1,
+   "callers": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/a.py",
+     "kind": "function",
+     "name": "main",
+     "resolution_origin": "same_file",
+     "start_line": 3,
+     "symbol_id": "src/a.py::main"
+    }
+   ],
+   "relations": [],
+   "symbol": {
+    "file": "src/a.py",
+    "kind": "function",
+    "name": "helper",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/a.py::helper"
+   },
+   "symbol_id": "src/a.py::helper",
+   "truncated": false
+  }
+ ],
+ "cc_limit": [
+  200,
+  {
+   "callee_count": 0,
+   "callees": [],
+   "caller_count": 2,
+   "callers": [
+    {
+     "confidence": 0.9,
+     "edge_type": "calls",
+     "file": "src/a.py",
+     "kind": "function",
+     "name": "helper",
+     "resolution_origin": "import_scoped",
+     "start_line": 3,
+     "symbol_id": "src/a.py::helper"
+    }
+   ],
+   "relations": [],
+   "symbol": {
+    "file": "src/b.py",
+    "kind": "function",
+    "name": "leaf",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/b.py::leaf"
+   },
+   "symbol_id": "src/b.py::leaf",
+   "truncated": true
+  }
+ ],
+ "cc_missing": [
+  404,
+  {
+   "detail": "Symbol not found: src/a.py::nope"
+  }
+ ],
+ "cc_relations": [
+  200,
+  {
+   "callee_count": 0,
+   "callees": [],
+   "caller_count": 0,
+   "callers": [],
+   "relations": [
+    {
+     "direction": "in",
+     "edge_type": "extends",
+     "group": "heritage",
+     "rows": [
+      {
+       "confidence": 0.9,
+       "edge_type": "extends",
+       "file": "src/c.py",
+       "kind": "class",
+       "name": "Child",
+       "resolution_origin": null,
+       "start_line": 3,
+       "symbol_id": "src/c.py::Child"
+      }
+     ],
+     "total": 1
+    }
+   ],
+   "symbol": {
+    "file": "src/c.py",
+    "kind": "class",
+    "name": "Base",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/c.py::Base"
+   },
+   "symbol_id": "src/c.py::Base",
+   "truncated": false
+  }
+ ],
+ "cc_relations_callees": [
+  200,
+  {
+   "callee_count": 0,
+   "callees": [],
+   "caller_count": 0,
+   "callers": [],
+   "relations": [],
+   "symbol": {
+    "file": "src/c.py",
+    "kind": "class",
+    "name": "Base",
+    "signature": null,
+    "start_line": 3,
+    "symbol_id": "src/c.py::Base"
+   },
+   "symbol_id": "src/c.py::Base",
+   "truncated": false
+  }
+ ],
+ "flows_empty_repo": [
+  200,
+  {
+   "flows": [],
+   "total_entry_points": 0
+  }
+ ],
+ "flows_entry": [
+  200,
+  {
+   "flows": [
+    {
+     "communities_visited": [
+      1,
+      2
+     ],
+     "crosses_community": true,
+     "depth": 2,
+     "entry_point": "src/a.py::main",
+     "entry_point_name": "main",
+     "entry_point_score": 0.912,
+     "termination": "no_callees",
+     "termination_detail": null,
+     "trace": [
+      "src/a.py::main",
+      "src/a.py::helper",
+      "src/b.py::leaf"
+     ],
+     "trace_via": [
+      "same_file",
+      "import_scoped"
+     ]
+    }
+   ],
+   "total_entry_points": 1
+  }
+ ],
+ "flows_entry_leaf": [
+  200,
+  {
+   "flows": [
+    {
+     "communities_visited": [
+      2
+     ],
+     "crosses_community": false,
+     "depth": 0,
+     "entry_point": "src/b.py::leaf",
+     "entry_point_name": "leaf",
+     "entry_point_score": 0.0,
+     "termination": "no_callees",
+     "termination_detail": null,
+     "trace": [
+      "src/b.py::leaf"
+     ],
+     "trace_via": null
+    }
+   ],
+   "total_entry_points": 1
+  }
+ ],
+ "flows_missing": [
+  404,
+  {
+   "detail": "Entry point not found: src/a.py::nope"
+  }
+ ],
+ "flows_top": [
+  200,
+  {
+   "flows": [
+    {
+     "communities_visited": [
+      1,
+      2
+     ],
+     "crosses_community": true,
+     "depth": 2,
+     "entry_point": "src/a.py::main",
+     "entry_point_name": "main",
+     "entry_point_score": 0.912,
+     "termination": "no_callees",
+     "termination_detail": null,
+     "trace": [
+      "src/a.py::main",
+      "src/a.py::helper",
+      "src/b.py::leaf"
+     ],
+     "trace_via": [
+      "same_file",
+      "import_scoped"
+     ]
+    },
+    {
+     "communities_visited": [
+      1,
+      2
+     ],
+     "crosses_community": true,
+     "depth": 1,
+     "entry_point": "src/a.py::helper",
+     "entry_point_name": "helper",
+     "entry_point_score": 0.4,
+     "termination": "no_callees",
+     "termination_detail": null,
+     "trace": [
+      "src/a.py::helper",
+      "src/b.py::leaf"
+     ],
+     "trace_via": [
+      "import_scoped"
+     ]
+    }
+   ],
+   "total_entry_points": 2
+  }
+ ],
+ "flows_top_one": [
+  200,
+  {
+   "flows": [
+    {
+     "communities_visited": [
+      1
+     ],
+     "crosses_community": false,
+     "depth": 1,
+     "entry_point": "src/a.py::main",
+     "entry_point_name": "main",
+     "entry_point_score": 0.912,
+     "termination": "depth_limit",
+     "termination_detail": null,
+     "trace": [
+      "src/a.py::main",
+      "src/a.py::helper"
+     ],
+     "trace_via": [
+      "same_file"
+     ]
+    }
+   ],
+   "total_entry_points": 1
+  }
+ ],
+ "metrics_file": [
+  200,
+  {
+   "betweenness": 0.2,
+   "betweenness_percentile": 67,
+   "betweenness_scored": false,
+   "community_id": 1,
+   "community_label": null,
+   "entry_point_score": null,
+   "file": null,
+   "in_degree": 0,
+   "is_entry_point": false,
+   "kind": null,
+   "node_type": "file",
+   "out_degree": 1,
+   "pagerank": 0.4,
+   "pagerank_percentile": 67,
+   "target": "src/a.py"
+  }
+ ],
+ "metrics_missing": [
+  404,
+  {
+   "detail": "Node not found: src/nope.py"
+  }
+ ],
+ "metrics_symbol": [
+  200,
+  {
+   "betweenness": 0.15,
+   "betweenness_percentile": 67,
+   "betweenness_scored": true,
+   "community_id": 1,
+   "community_label": "entry",
+   "entry_point_score": 0.91234,
+   "file": "src/a.py",
+   "in_degree": 0,
+   "is_entry_point": true,
+   "kind": "function",
+   "node_type": "symbol",
+   "out_degree": 2,
+   "pagerank": 0.35,
+   "pagerank_percentile": 67,
+   "target": "src/a.py::main"
+  }
+ ]
+}

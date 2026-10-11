@@ -1,0 +1,63 @@
+## Workspace: {{ data.workspace_name }} ({{ data.repos|length }} repo{{ "s" if data.repos|length != 1 else "" }})
+
+> Indexed by [Repowise](https://repowise.dev). Use `repo="all"` for workspace-wide queries, or `repo="alias"` for a specific repo.
+
+### Repositories
+| Repo | Files | Symbols | Hotspots | Role |
+|------|-------|---------|----------|------|
+{% for r in data.repos %}
+| `{{ r.alias }}` | {{ r.file_count }} | {{ r.symbol_count }} | {{ r.hotspot_count }} | {{ "default" if r.alias == data.default_repo else ("primary" if r.is_primary else "") }} |
+{% endfor %}
+
+{% if data.contract_links %}
+### Cross-Repo API Contracts
+{% if data.contracts_by_type %}
+**By type:** {% for ctype, count in data.contracts_by_type.items() %}{{ ctype }}: {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}
+
+{% endif %}
+| Provider | Consumer | Type | Contract |
+|----------|----------|------|----------|
+{% for link in data.contract_links %}
+| `{{ link.provider_repo }}:{{ link.provider_file }}` | `{{ link.consumer_repo }}:{{ link.consumer_file }}` | {{ link.contract_type }} | `{{ link.contract_id }}` |
+{% endfor %}
+{% endif %}
+
+{% if data.co_changes %}
+### Cross-Repo Co-Changes
+Files that frequently change together across repos — consider reviewing both when editing either.
+
+| Source | Target | Co-changes |
+|--------|--------|------------|
+{% for cc in data.co_changes[:10] %}
+| `{{ cc.source_repo }}:{{ cc.source_file }}` | `{{ cc.target_repo }}:{{ cc.target_file }}` | {{ cc.frequency }} |
+{% endfor %}
+{% endif %}
+
+{% if data.package_deps %}
+### Package Dependencies
+{% for dep in data.package_deps %}
+- `{{ dep.source_repo }}` → `{{ dep.target_repo }}` ({{ dep.kind }})
+{% endfor %}
+{% endif %}
+
+{% set repos_with_eps = data.repos | selectattr("entry_points") | list %}
+{% if repos_with_eps %}
+### Per-Repo Entry Points
+{% for r in repos_with_eps %}
+#### `{{ r.alias }}`{% if r.alias == data.default_repo %} (default){% elif r.is_primary %} (primary){% endif %}
+
+{% for ep in r.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endfor %}
+{% endif %}
+
+### Repowise MCP Tools
+
+These tools work across all repos in this workspace. Pass `repo="alias"` to scope, `repo="all"` for cross-repo queries, or omit for the default repo.
+
+- **Trust the index.** `verified: true` and `_meta.complete` mean the bytes were checked against the live tree, so never re-read them. Re-read only what `bounds: "approximate"` or `_meta.stale_warning` names. `confidence` rates the prose, not the evidence: on `low` read the top evidence row or the `candidate_files` the reply names, and run `repowise update` and ask again if `_meta.hint` says the index is behind HEAD. `index_behind: true` alone is informational.
+- **A zero carries its basis.** An empty `callers`/`callees`/`used_by` comes with a `*_basis` saying how much of that language's calls the graph resolved, so read it before concluding nothing calls a symbol. On `get_answer`, `_meta.scope_hint` names the areas the answer did not touch.
+- **Workspace-specific:** `get_overview(repo="all")` returns cross-repo topology (co-changes, package deps, API contracts); `get_risk(changed_files=[...])` picks up cross-repo consumers automatically; `get_blast_radius` / `get_conformance` / `get_architecture` cover cross-repo impact, dependency-rule violations, and coupling.
+
+{{ data.tool_table_md }}

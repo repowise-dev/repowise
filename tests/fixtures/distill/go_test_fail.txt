@@ -1,0 +1,295 @@
+=== RUN   TestParseManifest
+=== RUN   TestParseManifest/npm_basic
+=== RUN   TestParseManifest/npm_workspaces
+=== RUN   TestParseManifest/pypi_requirements
+--- PASS: TestParseManifest (0.02s)
+    --- PASS: TestParseManifest/npm_basic (0.00s)
+    --- PASS: TestParseManifest/npm_workspaces (0.01s)
+    --- PASS: TestParseManifest/pypi_requirements (0.00s)
+=== RUN   TestGraphBuilder
+--- PASS: TestGraphBuilder (0.11s)
+=== RUN   TestResolveImports
+=== RUN   TestResolveImports/relative
+=== RUN   TestResolveImports/aliased
+--- FAIL: TestResolveImports (0.04s)
+    --- FAIL: TestResolveImports/aliased (0.02s)
+        resolver_test.go:84: ResolveImport("@core/graph") = "", want "packages/core/graph.go"
+        resolver_test.go:85: unexpected error: alias map not initialized
+=== RUN   TestParserPython1
+=== RUN   TestParserPython1/basic
+=== RUN   TestParserPython1/edge_cases
+--- PASS: TestParserPython1 (0.08s)
+    --- PASS: TestParserPython1/basic (0.00s)
+    --- PASS: TestParserPython1/edge_cases (0.01s)
+=== RUN   TestParserPython2
+=== RUN   TestParserPython2/basic
+=== RUN   TestParserPython2/edge_cases
+--- PASS: TestParserPython2 (0.08s)
+    --- PASS: TestParserPython2/basic (0.00s)
+    --- PASS: TestParserPython2/edge_cases (0.01s)
+=== RUN   TestParserPython3
+=== RUN   TestParserPython3/basic
+=== RUN   TestParserPython3/edge_cases
+--- PASS: TestParserPython3 (0.08s)
+    --- PASS: TestParserPython3/basic (0.00s)
+    --- PASS: TestParserPython3/edge_cases (0.01s)
+=== RUN   TestParserPython4
+=== RUN   TestParserPython4/basic
+=== RUN   TestParserPython4/edge_cases
+--- PASS: TestParserPython4 (0.08s)
+    --- PASS: TestParserPython4/basic (0.00s)
+    --- PASS: TestParserPython4/edge_cases (0.01s)
+=== RUN   TestParserPython5
+=== RUN   TestParserPython5/basic
+=== RUN   TestParserPython5/edge_cases
+--- PASS: TestParserPython5 (0.08s)
+    --- PASS: TestParserPython5/basic (0.00s)
+    --- PASS: TestParserPython5/edge_cases (0.01s)
+=== RUN   TestParserPython6
+=== RUN   TestParserPython6/basic
+=== RUN   TestParserPython6/edge_cases
+--- PASS: TestParserPython6 (0.08s)
+    --- PASS: TestParserPython6/basic (0.00s)
+    --- PASS: TestParserPython6/edge_cases (0.01s)
+=== RUN   TestParserPython7
+=== RUN   TestParserPython7/basic
+=== RUN   TestParserPython7/edge_cases
+--- PASS: TestParserPython7 (0.08s)
+    --- PASS: TestParserPython7/basic (0.00s)
+    --- PASS: TestParserPython7/edge_cases (0.01s)
+=== RUN   TestParserPython8
+=== RUN   TestParserPython8/basic
+=== RUN   TestParserPython8/edge_cases
+--- PASS: TestParserPython8 (0.08s)
+    --- PASS: TestParserPython8/basic (0.00s)
+    --- PASS: TestParserPython8/edge_cases (0.01s)
+=== RUN   TestParserTypeScript1
+=== RUN   TestParserTypeScript1/basic
+=== RUN   TestParserTypeScript1/edge_cases
+--- PASS: TestParserTypeScript1 (0.03s)
+    --- PASS: TestParserTypeScript1/basic (0.00s)
+    --- PASS: TestParserTypeScript1/edge_cases (0.01s)
+=== RUN   TestParserTypeScript2
+=== RUN   TestParserTypeScript2/basic
+=== RUN   TestParserTypeScript2/edge_cases
+--- PASS: TestParserTypeScript2 (0.03s)
+    --- PASS: TestParserTypeScript2/basic (0.00s)
+    --- PASS: TestParserTypeScript2/edge_cases (0.01s)
+=== RUN   TestParserTypeScript3
+=== RUN   TestParserTypeScript3/basic
+=== RUN   TestParserTypeScript3/edge_cases
+--- PASS: TestParserTypeScript3 (0.03s)
+    --- PASS: TestParserTypeScript3/basic (0.00s)
+    --- PASS: TestParserTypeScript3/edge_cases (0.01s)
+=== RUN   TestParserTypeScript4
+=== RUN   TestParserTypeScript4/basic
+=== RUN   TestParserTypeScript4/edge_cases
+--- PASS: TestParserTypeScript4 (0.03s)
+    --- PASS: TestParserTypeScript4/basic (0.00s)
+    --- PASS: TestParserTypeScript4/edge_cases (0.01s)
+=== RUN   TestParserTypeScript5
+=== RUN   TestParserTypeScript5/basic
+=== RUN   TestParserTypeScript5/edge_cases
+--- PASS: TestParserTypeScript5 (0.03s)
+    --- PASS: TestParserTypeScript5/basic (0.00s)
+    --- PASS: TestParserTypeScript5/edge_cases (0.01s)
+=== RUN   TestParserTypeScript6
+=== RUN   TestParserTypeScript6/basic
+=== RUN   TestParserTypeScript6/edge_cases
+--- PASS: TestParserTypeScript6 (0.03s)
+    --- PASS: TestParserTypeScript6/basic (0.00s)
+    --- PASS: TestParserTypeScript6/edge_cases (0.01s)
+=== RUN   TestParserTypeScript7
+=== RUN   TestParserTypeScript7/basic
+=== RUN   TestParserTypeScript7/edge_cases
+--- PASS: TestParserTypeScript7 (0.03s)
+    --- PASS: TestParserTypeScript7/basic (0.00s)
+    --- PASS: TestParserTypeScript7/edge_cases (0.01s)
+=== RUN   TestParserTypeScript8
+=== RUN   TestParserTypeScript8/basic
+=== RUN   TestParserTypeScript8/edge_cases
+--- PASS: TestParserTypeScript8 (0.03s)
+    --- PASS: TestParserTypeScript8/basic (0.00s)
+    --- PASS: TestParserTypeScript8/edge_cases (0.01s)
+=== RUN   TestParserCSharp1
+=== RUN   TestParserCSharp1/basic
+=== RUN   TestParserCSharp1/edge_cases
+--- PASS: TestParserCSharp1 (0.08s)
+    --- PASS: TestParserCSharp1/basic (0.00s)
+    --- PASS: TestParserCSharp1/edge_cases (0.01s)
+=== RUN   TestParserCSharp2
+=== RUN   TestParserCSharp2/basic
+=== RUN   TestParserCSharp2/edge_cases
+--- PASS: TestParserCSharp2 (0.08s)
+    --- PASS: TestParserCSharp2/basic (0.00s)
+    --- PASS: TestParserCSharp2/edge_cases (0.01s)
+=== RUN   TestParserCSharp3
+=== RUN   TestParserCSharp3/basic
+=== RUN   TestParserCSharp3/edge_cases
+--- PASS: TestParserCSharp3 (0.08s)
+    --- PASS: TestParserCSharp3/basic (0.00s)
+    --- PASS: TestParserCSharp3/edge_cases (0.01s)
+=== RUN   TestParserCSharp4
+=== RUN   TestParserCSharp4/basic
+=== RUN   TestParserCSharp4/edge_cases
+--- PASS: TestParserCSharp4 (0.08s)
+    --- PASS: TestParserCSharp4/basic (0.00s)
+    --- PASS: TestParserCSharp4/edge_cases (0.01s)
+=== RUN   TestParserCSharp5
+=== RUN   TestParserCSharp5/basic
+=== RUN   TestParserCSharp5/edge_cases
+--- PASS: TestParserCSharp5 (0.08s)
+    --- PASS: TestParserCSharp5/basic (0.00s)
+    --- PASS: TestParserCSharp5/edge_cases (0.01s)
+=== RUN   TestParserCSharp6
+=== RUN   TestParserCSharp6/basic
+=== RUN   TestParserCSharp6/edge_cases
+--- PASS: TestParserCSharp6 (0.08s)
+    --- PASS: TestParserCSharp6/basic (0.00s)
+    --- PASS: TestParserCSharp6/edge_cases (0.01s)
+=== RUN   TestParserCSharp7
+=== RUN   TestParserCSharp7/basic
+=== RUN   TestParserCSharp7/edge_cases
+--- PASS: TestParserCSharp7 (0.08s)
+    --- PASS: TestParserCSharp7/basic (0.00s)
+    --- PASS: TestParserCSharp7/edge_cases (0.01s)
+=== RUN   TestParserCSharp8
+=== RUN   TestParserCSharp8/basic
+=== RUN   TestParserCSharp8/edge_cases
+--- PASS: TestParserCSharp8 (0.08s)
+    --- PASS: TestParserCSharp8/basic (0.00s)
+    --- PASS: TestParserCSharp8/edge_cases (0.01s)
+=== RUN   TestParserGo1
+=== RUN   TestParserGo1/basic
+=== RUN   TestParserGo1/edge_cases
+--- PASS: TestParserGo1 (0.04s)
+    --- PASS: TestParserGo1/basic (0.00s)
+    --- PASS: TestParserGo1/edge_cases (0.01s)
+=== RUN   TestParserGo2
+=== RUN   TestParserGo2/basic
+=== RUN   TestParserGo2/edge_cases
+--- PASS: TestParserGo2 (0.04s)
+    --- PASS: TestParserGo2/basic (0.00s)
+    --- PASS: TestParserGo2/edge_cases (0.01s)
+=== RUN   TestParserGo3
+=== RUN   TestParserGo3/basic
+=== RUN   TestParserGo3/edge_cases
+--- PASS: TestParserGo3 (0.04s)
+    --- PASS: TestParserGo3/basic (0.00s)
+    --- PASS: TestParserGo3/edge_cases (0.01s)
+=== RUN   TestParserGo4
+=== RUN   TestParserGo4/basic
+=== RUN   TestParserGo4/edge_cases
+--- PASS: TestParserGo4 (0.04s)
+    --- PASS: TestParserGo4/basic (0.00s)
+    --- PASS: TestParserGo4/edge_cases (0.01s)
+=== RUN   TestParserGo5
+=== RUN   TestParserGo5/basic
+=== RUN   TestParserGo5/edge_cases
+--- PASS: TestParserGo5 (0.04s)
+    --- PASS: TestParserGo5/basic (0.00s)
+    --- PASS: TestParserGo5/edge_cases (0.01s)
+=== RUN   TestParserGo6
+=== RUN   TestParserGo6/basic
+=== RUN   TestParserGo6/edge_cases
+--- PASS: TestParserGo6 (0.04s)
+    --- PASS: TestParserGo6/basic (0.00s)
+    --- PASS: TestParserGo6/edge_cases (0.01s)
+=== RUN   TestParserGo7
+=== RUN   TestParserGo7/basic
+=== RUN   TestParserGo7/edge_cases
+--- PASS: TestParserGo7 (0.04s)
+    --- PASS: TestParserGo7/basic (0.00s)
+    --- PASS: TestParserGo7/edge_cases (0.01s)
+=== RUN   TestParserGo8
+=== RUN   TestParserGo8/basic
+=== RUN   TestParserGo8/edge_cases
+--- PASS: TestParserGo8 (0.04s)
+    --- PASS: TestParserGo8/basic (0.00s)
+    --- PASS: TestParserGo8/edge_cases (0.01s)
+=== RUN   TestParserRust1
+=== RUN   TestParserRust1/basic
+=== RUN   TestParserRust1/edge_cases
+--- PASS: TestParserRust1 (0.06s)
+    --- PASS: TestParserRust1/basic (0.00s)
+    --- PASS: TestParserRust1/edge_cases (0.01s)
+=== RUN   TestParserRust2
+=== RUN   TestParserRust2/basic
+=== RUN   TestParserRust2/edge_cases
+--- PASS: TestParserRust2 (0.06s)
+    --- PASS: TestParserRust2/basic (0.00s)
+    --- PASS: TestParserRust2/edge_cases (0.01s)
+=== RUN   TestParserRust3
+=== RUN   TestParserRust3/basic
+=== RUN   TestParserRust3/edge_cases
+--- PASS: TestParserRust3 (0.06s)
+    --- PASS: TestParserRust3/basic (0.00s)
+    --- PASS: TestParserRust3/edge_cases (0.01s)
+=== RUN   TestParserRust4
+=== RUN   TestParserRust4/basic
+=== RUN   TestParserRust4/edge_cases
+--- PASS: TestParserRust4 (0.06s)
+    --- PASS: TestParserRust4/basic (0.00s)
+    --- PASS: TestParserRust4/edge_cases (0.01s)
+=== RUN   TestParserRust5
+=== RUN   TestParserRust5/basic
+=== RUN   TestParserRust5/edge_cases
+--- PASS: TestParserRust5 (0.06s)
+    --- PASS: TestParserRust5/basic (0.00s)
+    --- PASS: TestParserRust5/edge_cases (0.01s)
+=== RUN   TestParserRust6
+=== RUN   TestParserRust6/basic
+=== RUN   TestParserRust6/edge_cases
+--- PASS: TestParserRust6 (0.06s)
+    --- PASS: TestParserRust6/basic (0.00s)
+    --- PASS: TestParserRust6/edge_cases (0.01s)
+=== RUN   TestParserRust7
+=== RUN   TestParserRust7/basic
+=== RUN   TestParserRust7/edge_cases
+--- PASS: TestParserRust7 (0.06s)
+    --- PASS: TestParserRust7/basic (0.00s)
+    --- PASS: TestParserRust7/edge_cases (0.01s)
+=== RUN   TestParserRust8
+=== RUN   TestParserRust8/basic
+=== RUN   TestParserRust8/edge_cases
+--- PASS: TestParserRust8 (0.06s)
+    --- PASS: TestParserRust8/basic (0.00s)
+    --- PASS: TestParserRust8/edge_cases (0.01s)
+=== RUN   TestPageRankConverges
+--- PASS: TestPageRankConverges (0.31s)
+=== RUN   TestIncrementalUpdate
+--- PASS: TestIncrementalUpdate (0.08s)
+=== RUN   TestBlameIndex
+--- FAIL: TestBlameIndex (0.19s)
+panic: runtime error: index out of range [3] with length 3 [recovered]
+	panic: runtime error: index out of range [3] with length 3
+
+goroutine 41 [running]:
+testing.tRunner.func1.2({0x9f1d40, 0xc0003a4018})
+	/usr/local/go/src/testing/testing.go:1545 +0x238
+testing.tRunner.func1()
+	/usr/local/go/src/testing/testing.go:1548 +0x397
+panic({0x9f1d40?, 0xc0003a4018?})
+	/usr/local/go/src/runtime/panic.go:914 +0x21f
+repowise/internal/git.(*BlameIndex).rollup(...)
+	/home/dev/repowise/internal/git/blame.go:142
+repowise/internal/git.TestBlameIndex(0xc000339520)
+	/home/dev/repowise/internal/git/blame_test.go:57 +0x445
+testing.tRunner(0xc000339520, 0xa41208)
+	/usr/local/go/src/testing/testing.go:1595 +0xff
+created by testing.(*T).Run in goroutine 1
+	/usr/local/go/src/testing/testing.go:1648 +0x3ad
+=== RUN   TestCoChangeWindow
+--- PASS: TestCoChangeWindow (0.05s)
+=== RUN   TestHotspotFloors
+--- PASS: TestHotspotFloors (0.02s)
+=== RUN   TestOwnershipRollup
+--- PASS: TestOwnershipRollup (0.03s)
+=== RUN   TestChurnPercentiles
+--- PASS: TestChurnPercentiles (0.01s)
+FAIL
+exit status 2
+FAIL	repowise/internal/git	1.137s
+ok  	repowise/internal/graph	0.412s
+ok  	repowise/internal/ingestion	0.288s
+ok  	repowise/internal/health	0.157s

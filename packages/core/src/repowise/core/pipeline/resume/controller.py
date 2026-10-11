@@ -1,0 +1,313 @@
+"""The resume coordinator the orchestrator consults at phase boundaries.
+
+Responsibilities, all behind one object so the orchestrator stays
+DB-agnostic:
+
+- decide whether a phase may be **skipped** on a resumed run
+  (:meth:`can_skip`),
+- **persist** a phase's outputs the moment it completes and record the phase
+  in the ledger (:meth:`checkpoint_index`),
+- serve **rehydrated** inputs for skipped phases
+  (:meth:`rehydrate_index`).
+
+A ``None`` controller (the default everywhere) means resume is disabled and
+the pipeline runs exactly as before — no new DB work, no behaviour change.
+Construction requires a repo_id that already exists in the database, which
+is why the CLI creates the repository row *before* starting the pipeline
+(this also fixes the ``pipeline_jobs.repository_id`` FK that the old
+``str(repo_path)`` wiring violated — the id is now the real ``Repository.id``).
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+
+import structlog
+
+from ..persist import persist_analysis, persist_git, persist_ingestion, persist_symbol_analysis
+from ..phase_timing import timed
+from ..progress import emit_warning
+from .ledger import ResumeLedger
+from .phases import RESUME_PHASE_ORDER, ResumePhase
+from .rehydrate import (
+    attach_stored_commit_shas,
+    rehydrate_dead_code_report,
+    rehydrate_decision_report,
+    rehydrate_git_meta_map,
+    rehydrate_graph_builder,
+)
+
+logger = structlog.get_logger(__name__)
+
+
+class ResumeController:
+    """Coordinates skip/persist/rehydrate for one pipeline run."""
+
+    def __init__(
+        self,
+        session_factory: Any,
+        repo_id: str,
+        *,
+        resume: bool,
+    ) -> None:
+        self._sf = session_factory
+        self._repo_id = repo_id
+        self._resume = resume
+        self._ledger = ResumeLedger(session_factory, repo_id)
+        self._completed: set[ResumePhase] | None = None
+        # True once the INDEX phase is provably on disk — either freshly
+        # checkpointed this run or rehydrated from a prior run. The caller
+        # keys its "skip the index in the final persist" decision on this, so
+        # it must NEVER be True unless the index really was persisted (a
+        # best-effort checkpoint failure leaves it False → full persist).
+        self._index_persisted = False
+
+    @property
+    def repo_id(self) -> str:
+        return self._repo_id
+
+    @property
+    def index_persisted(self) -> bool:
+        return self._index_persisted
+
+    # -- skip decisions --------------------------------------------------------
+
+    async def _completed_phases(self) -> set[ResumePhase]:
+        if self._completed is None:
+            self._completed = await self._ledger.completed_phases() if self._resume else set()
+        return self._completed
+
+    async def can_skip(self, phase: ResumePhase) -> bool:
+        """True iff *phase* — and every phase before it — completed previously.
+
+        The prefix requirement means we never skip a phase whose inputs an
+        earlier, unfinished phase would have produced.
+        """
+        if not self._resume:
+            return False
+        done = await self._completed_phases()
+        cutoff = RESUME_PHASE_ORDER.index(phase)
+        return all(p in done for p in RESUME_PHASE_ORDER[: cutoff + 1])
+
+    # -- rehydration -----------------------------------------------------------
+
+    async def rehydrate_index(self, repo_path: Any) -> tuple[Any, dict[str, dict[str, Any]]]:
+        """Rebuild ``(graph_builder, git_meta_map)`` from persisted rows.
+
+        The graph comes back finalized (metrics served from SQL, no centrality
+        kernel re-run); git metadata carries every durable signal. The caller
+        still re-parses source files to obtain ``parsed_files`` — those aren't
+        persisted in reconstructable form, but re-parsing is far cheaper than
+        the git history + centrality work this skips.
+        """
+        from repowise.core.persistence import get_session
+
+        async with get_session(self._sf) as session:
+            graph_builder = await rehydrate_graph_builder(session, self._repo_id, repo_path)
+            git_meta_map = await rehydrate_git_meta_map(session, self._repo_id)
+            # The analysis phase re-scores without a blame index.
+            await attach_stored_commit_shas(session, self._repo_id, git_meta_map)
+        # The index is, by definition, already persisted (we just read it).
+        self._index_persisted = True
+        return graph_builder, git_meta_map
+
+    async def rehydrate_analysis(self) -> tuple[Any, Any]:
+        """Rebuild ``(dead_code_report, decision_report)`` from persisted rows.
+
+        Used **only** as generation input on a resumed run whose ANALYSIS phase
+        already completed — so the resume skips re-running dead-code detection,
+        health scoring and (the costly) decision extraction. The returned views
+        are deliberately thin (just what the page generator reads) and must
+        never be written back: the persisted analysis rows are authoritative.
+        Raises on a DB error so the caller can fall back to recomputing.
+        """
+        from repowise.core.persistence import get_session
+
+        async with get_session(self._sf) as session:
+            dead_code_report = await rehydrate_dead_code_report(session, self._repo_id)
+            decision_report = await rehydrate_decision_report(session, self._repo_id)
+        return dead_code_report, decision_report
+
+    # -- checkpoints -----------------------------------------------------------
+
+    async def checkpoint_index(
+        self,
+        *,
+        parsed_files: list[Any],
+        graph_builder: Any,
+        git_metadata_list: list[dict],
+        git_summary: Any | None = None,
+        external_systems: list[dict] | None = None,
+        execution_flow_report: Any | None = None,
+        source_map: dict[str, bytes] | None = None,
+        progress: Any | None = None,
+    ) -> None:
+        """Persist the INDEX phase (graph + symbols + git) and record it.
+
+        *progress* is taken per call rather than at construction because the
+        controller is built before the CLI opens its progress display.
+
+        Idempotent UPSERTs throughout, so a later full persist that re-writes
+        the same rows (e.g. graph nodes with entry-point scores once execution
+        flow is known) is harmless. Best-effort: a persistence hiccup is logged
+        and swallowed so it can never abort the in-memory run.
+        """
+        from repowise.core.persistence import get_session
+
+        view = SimpleNamespace(
+            parsed_files=parsed_files,
+            graph_builder=graph_builder,
+            git_metadata_list=git_metadata_list,
+            git_summary=git_summary,
+            external_systems=external_systems or [],
+            execution_flow_report=execution_flow_report,
+            # The security scan needs raw bytes; without this the checkpoint
+            # persist degrades to the symbol-name scan and, because the final
+            # persist skips ingestion once the checkpoint marked it done, the
+            # line-pattern scan would silently never run on the init path.
+            source_map=source_map or {},
+        )
+        await self._ledger.mark_started(ResumePhase.INDEX)
+        try:
+            # No progress phase covers this write, and on a large repo it runs
+            # for minutes; without its own timing it is missing from the totals.
+            with timed(getattr(progress, "table", None), "persist.checkpoint"):
+                async with get_session(self._sf) as session:
+                    await persist_ingestion(view, session, self._repo_id)
+                    await persist_git(view, session, self._repo_id)
+        except Exception as exc:
+            logger.warning("resume_checkpoint_index_failed", error=str(exc))
+            # The CLI tells the user their index was saved and that
+            # ``--resume`` will pick it up. When this write fails that promise
+            # is false, and silence is the one outcome that lets them find out
+            # only by paying for the whole index a second time.
+            emit_warning(
+                progress,
+                f"Index checkpoint not saved ({exc}); "
+                "a resumed run will have to recompute it.",
+            )
+            return
+        self._index_persisted = True
+        await self._ledger.mark_completed(ResumePhase.INDEX)
+        logger.info("resume_checkpoint_index", repo_id=self._repo_id)
+
+    async def checkpoint_analysis(
+        self,
+        *,
+        parsed_files: list[Any],
+        dead_code_report: Any | None,
+        health_report: Any | None,
+        decision_report: Any | None,
+        git_metadata_list: list[dict],
+        doc_drift_report: Any | None = None,
+        vector_store: Any | None = None,
+        progress: Any | None = None,
+    ) -> None:
+        """Persist the ANALYSIS phase (dead code + health + decisions) and record it.
+
+        Mirrors :meth:`checkpoint_index`: writing these rows the moment the
+        analysis phase finishes — *before* the long generation phase — is what
+        lets a generation interrupt resume past analysis instead of recomputing
+        it (decision extraction in particular can run for minutes). Best-effort:
+        a persistence hiccup is logged and swallowed, leaving ANALYSIS unmarked
+        so the resumed run simply recomputes it.
+        """
+        from repowise.core.persistence import get_session
+
+        view = SimpleNamespace(
+            dead_code_report=dead_code_report,
+            health_report=health_report,
+            decision_report=decision_report,
+            doc_drift_report=doc_drift_report,
+            git_metadata_list=git_metadata_list,
+            generated_pages=None,
+            vector_store=vector_store,
+        )
+        await self._ledger.mark_started(ResumePhase.ANALYSIS)
+        try:
+            async with get_session(self._sf) as session:
+                await persist_symbol_analysis(session, self._repo_id, parsed_files)
+                await persist_analysis(view, session, self._repo_id)
+        except Exception as exc:
+            logger.warning("resume_checkpoint_analysis_failed", error=str(exc))
+            emit_warning(
+                progress,
+                f"Analysis checkpoint not saved ({exc}); "
+                "a resumed run will have to recompute dead code, health and decisions.",
+            )
+            return
+        extraction_completed = decision_report is not None
+        decisions_count = (
+            len(getattr(decision_report, "decisions", []) or []) if extraction_completed else 0
+        )
+        await self._ledger.mark_completed(
+            ResumePhase.ANALYSIS,
+            metadata={
+                "decision_extraction_completed": extraction_completed,
+                "decisions_count": decisions_count,
+            },
+        )
+        logger.info("resume_checkpoint_analysis", repo_id=self._repo_id)
+
+    async def has_completed_decision_extraction(self) -> bool:
+        """True iff the completed ANALYSIS phase recorded that decision extraction ran."""
+        job = await self._ledger.get_completed_job(ResumePhase.ANALYSIS)
+        if job is None:
+            return False
+        if job.metadata.get("decision_extraction_completed") is True:
+            return True
+        from repowise.core.persistence import get_session
+        from repowise.core.persistence.crud import list_decisions
+
+        try:
+            async with get_session(self._sf) as session:
+                rows = await list_decisions(session, self._repo_id, limit=1)
+                if rows:
+                    return True
+        except Exception as exc:
+            logger.debug("check_decision_records_failed", error=str(exc))
+        return False
+
+    async def checkpoint_decision_backfill(
+        self,
+        decision_report: Any,
+        progress: Any | None = None,
+    ) -> None:
+        """Persist backfilled decisions for a resumed run and record completion."""
+        from repowise.core.persistence import get_session
+
+        view = SimpleNamespace(
+            dead_code_report=None,
+            health_report=None,
+            decision_report=decision_report,
+            doc_drift_report=None,
+            git_metadata_list=[],
+            generated_pages=None,
+            vector_store=None,
+        )
+        try:
+            async with get_session(self._sf) as session:
+                await persist_analysis(view, session, self._repo_id)
+            decisions_count = len(getattr(decision_report, "decisions", []) or [])
+            await self.mark_decision_extraction_completed(count=decisions_count)
+        except Exception as exc:
+            logger.warning("resume_backfill_decision_persist_failed", error=str(exc))
+            emit_warning(
+                progress,
+                f"Backfilled decisions not saved ({exc}); "
+                "a subsequent resumed run will re-run decision extraction.",
+            )
+
+    async def mark_decision_extraction_completed(self, count: int = 0) -> None:
+        """Update the completed ANALYSIS job record to reflect that decision extraction finished."""
+        await self._ledger.mark_completed(
+            ResumePhase.ANALYSIS,
+            metadata={"decision_extraction_completed": True, "decisions_count": count},
+        )
+
+    async def mark_phase_complete(self, phase: ResumePhase) -> None:
+        """Record *phase* as completed (analysis / generation persisted by the
+        normal end-of-run persist; this just stamps the ledger)."""
+        await self._ledger.mark_completed(phase)
+

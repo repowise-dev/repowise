@@ -1,0 +1,260 @@
+"""Per-dimension health scores survive the persistence round trip.
+
+Locks BOTH metric writers - the full-reindex ``save_health_metrics`` and the
+incremental ``upsert_health_metrics`` - plus the findings ``dimension`` column,
+so a future edit to one writer that forgets the new fields is caught.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from repowise.core.analysis.health.models import (
+    HealthFileMetricData,
+    HealthFindingData,
+    Severity,
+)
+from repowise.core.persistence.crud.analysis import (
+    get_health_findings,
+    get_health_metrics,
+    save_health_findings,
+    save_health_metrics,
+    upsert_health_findings,
+    upsert_health_metrics,
+)
+from tests.unit.persistence.helpers import insert_repo
+
+
+def _metric(path: str, **overrides) -> HealthFileMetricData:
+    base = dict(
+        file_path=path,
+        score=7.5,
+        max_ccn=3,
+        max_nesting=2,
+        nloc=120,
+        has_test_file=False,
+        defect_score=7.5,
+        maintainability_score=6.0,
+        performance_score=None,
+    )
+    base.update(overrides)
+    return HealthFileMetricData(**base)
+
+
+@pytest.mark.asyncio
+async def test_save_health_metrics_persists_dimension_scores(async_session):
+    repo = await insert_repo(async_session)
+    await save_health_metrics(async_session, repo.id, [_metric("a.py")])
+    await async_session.commit()
+
+    rows = await get_health_metrics(async_session, repo.id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.score == 7.5
+    assert row.defect_score == 7.5
+    assert row.maintainability_score == 6.0
+    assert row.performance_score is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_health_metrics_persists_dimension_scores(async_session):
+    """The incremental update path must carry the new fields too."""
+    repo = await insert_repo(async_session)
+    # First write via upsert (insert branch).
+    await upsert_health_metrics(async_session, repo.id, [_metric("b.py")])
+    await async_session.commit()
+
+    row = (await get_health_metrics(async_session, repo.id))[0]
+    assert row.defect_score == 7.5
+    assert row.maintainability_score == 6.0
+    assert row.performance_score is None
+
+    # Re-upsert the same path with new values (update branch).
+    await upsert_health_metrics(
+        async_session,
+        repo.id,
+        [_metric("b.py", score=4.0, defect_score=4.0, maintainability_score=2.5)],
+    )
+    await async_session.commit()
+
+    rows = await get_health_metrics(async_session, repo.id)
+    assert len(rows) == 1  # updated in place, not duplicated
+    row = rows[0]
+    assert row.score == 4.0
+    assert row.defect_score == 4.0
+    assert row.maintainability_score == 2.5
+    assert row.performance_score is None
+
+
+@pytest.mark.asyncio
+async def test_both_metric_writers_persist_code_origin(async_session):
+    """``code_origin`` is read off the row, so both writers must store it."""
+    repo = await insert_repo(async_session)
+    await save_health_metrics(
+        async_session,
+        repo.id,
+        [_metric("docs_src/app.py", code_origin="docs_example"), _metric("legacy.py")],
+    )
+    await async_session.commit()
+    rows = {r.file_path: r for r in await get_health_metrics(async_session, repo.id)}
+    assert rows["docs_src/app.py"].code_origin == "docs_example"
+    assert rows["legacy.py"].code_origin is None
+
+    await upsert_health_metrics(
+        async_session, repo.id, [_metric("legacy.py", code_origin="vendored")]
+    )
+    await async_session.commit()
+    rows = {r.file_path: r for r in await get_health_metrics(async_session, repo.id)}
+    assert rows["legacy.py"].code_origin == "vendored"
+
+
+@pytest.mark.asyncio
+async def test_finding_details_round_trip_dispatch_share_and_deprecated(async_session):
+    repo = await insert_repo(async_session)
+    finding = HealthFindingData(
+        biomarker_type="complex_method",
+        severity=Severity.HIGH,
+        file_path="a.py",
+        function_name="visit",
+        line_start=1,
+        line_end=40,
+        details={"ccn": 20, "dispatch_share": 0.85, "deprecated": True},
+        health_impact=1.0,
+    )
+    await save_health_findings(async_session, repo.id, [finding])
+    await async_session.commit()
+
+    row = (await get_health_findings(async_session, repo.id))[0]
+    details = json.loads(row.details_json)
+    assert details["dispatch_share"] == 0.85
+    assert details["deprecated"] is True
+
+
+@pytest.mark.asyncio
+async def test_save_health_findings_persists_dimension(async_session):
+    repo = await insert_repo(async_session)
+    findings = [
+        HealthFindingData(
+            biomarker_type="low_cohesion",
+            severity=Severity.HIGH,
+            file_path="a.py",
+            function_name=None,
+            line_start=1,
+            line_end=10,
+            details={},
+            health_impact=1.2,
+            dimension="maintainability",
+        ),
+        HealthFindingData(
+            biomarker_type="change_entropy",
+            severity=Severity.HIGH,
+            file_path="a.py",
+            function_name=None,
+            line_start=1,
+            line_end=10,
+            details={},
+            health_impact=1.5,
+            dimension="defect",
+        ),
+    ]
+    await save_health_findings(async_session, repo.id, findings)
+    await async_session.commit()
+
+    rows = await get_health_findings(async_session, repo.id)
+    by_type = {r.biomarker_type: r for r in rows}
+    assert by_type["low_cohesion"].dimension == "maintainability"
+    assert by_type["change_entropy"].dimension == "defect"
+
+
+@pytest.mark.asyncio
+async def test_dimension_scoped_upsert_preserves_other_findings(async_session):
+    repo = await insert_repo(async_session)
+    base = [
+        HealthFindingData(
+            biomarker_type="change_entropy",
+            severity=Severity.HIGH,
+            file_path="a.py",
+            function_name=None,
+            line_start=1,
+            line_end=1,
+            details={},
+            health_impact=1.0,
+            dimension="defect",
+        ),
+        HealthFindingData(
+            biomarker_type="io_in_loop",
+            severity=Severity.MEDIUM,
+            file_path="a.py",
+            function_name="run",
+            line_start=2,
+            line_end=2,
+            details={"opportunity_id": "old"},
+            health_impact=0.0,
+            dimension="performance",
+        ),
+    ]
+    await save_health_findings(async_session, repo.id, base)
+    replacement = HealthFindingData(
+        biomarker_type="io_in_loop",
+        severity=Severity.MEDIUM,
+        file_path="a.py",
+        function_name="run",
+        line_start=3,
+        line_end=3,
+        details={"opportunity_id": "new"},
+        health_impact=0.0,
+        dimension="performance",
+    )
+    await upsert_health_findings(
+        async_session,
+        repo.id,
+        [replacement],
+        file_paths=["a.py"],
+        dimension="performance",
+    )
+    await async_session.commit()
+    rows = await get_health_findings(async_session, repo.id)
+    assert {(row.biomarker_type, row.line_start) for row in rows} == {
+        ("change_entropy", 1),
+        ("io_in_loop", 3),
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_health_findings_accepts_comma_separated_biomarker_types(async_session):
+    """One request can pull several biomarker types (the panels batch this way);
+    a single value with no comma still matches exactly."""
+    repo = await insert_repo(async_session)
+    findings = [
+        HealthFindingData(
+            biomarker_type=bt,
+            severity=Severity.HIGH,
+            file_path="a.py",
+            function_name=None,
+            line_start=1,
+            line_end=10,
+            details={},
+            health_impact=1.0,
+            dimension="defect",
+        )
+        for bt in ("function_hotspot", "code_age_volatility", "hidden_coupling", "change_entropy")
+    ]
+    await save_health_findings(async_session, repo.id, findings)
+    await async_session.commit()
+
+    multi = await get_health_findings(
+        async_session,
+        repo.id,
+        biomarker_type="function_hotspot,code_age_volatility,hidden_coupling",
+    )
+    assert {r.biomarker_type for r in multi} == {
+        "function_hotspot",
+        "code_age_volatility",
+        "hidden_coupling",
+    }
+
+    # Single value still behaves as an exact match.
+    single = await get_health_findings(async_session, repo.id, biomarker_type="change_entropy")
+    assert {r.biomarker_type for r in single} == {"change_entropy"}

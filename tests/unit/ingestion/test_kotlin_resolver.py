@@ -1,0 +1,151 @@
+"""Unit tests for the Kotlin Gradle-aware import resolver."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import networkx as nx
+
+from repowise.core.ingestion.resolvers.context import ResolverContext
+from repowise.core.ingestion.resolvers.kotlin import resolve_kotlin_import
+from repowise.core.ingestion.resolvers.kotlin_gradle import build_kotlin_index
+
+
+def _ctx(repo: Path, paths: list[str]) -> ResolverContext:
+    path_set = set(paths)
+    stem_map: dict[str, list[str]] = {}
+    for p in paths:
+        stem = p.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+        stem_map.setdefault(stem, []).append(p)
+    return ResolverContext(
+        path_set=path_set,
+        stem_map=stem_map,
+        graph=nx.DiGraph(),
+        repo_path=repo,
+    )
+
+
+def _make_module(repo: Path, name: str, package: str, class_name: str) -> str:
+    src_dir = repo / name / "src" / "main" / "kotlin" / package.replace(".", "/")
+    src_dir.mkdir(parents=True)
+    file_path = src_dir / f"{class_name}.kt"
+    file_path.write_text(f"package {package}\n\nclass {class_name}\n")
+    return file_path.relative_to(repo).as_posix()
+
+
+class TestKotlinIndex:
+    def test_settings_gradle_subprojects(self, tmp_path: Path) -> None:
+        (tmp_path / "settings.gradle.kts").write_text(
+            'include("app", "core", "feature-foo")\n'
+        )
+        (tmp_path / "build.gradle.kts").write_text("// root\n")
+        # Create app module
+        _make_module(tmp_path, "app", "com.example.app", "MainActivity")
+        _make_module(tmp_path, "core", "com.example.core", "Engine")
+        index = build_kotlin_index(tmp_path)
+        assert "app" in index.modules
+        assert "core" in index.modules
+        assert "com.example.app" in index.package_to_files
+        assert "com.example.core" in index.package_to_files
+
+    def test_resolves_class_to_module_file(self, tmp_path: Path) -> None:
+        (tmp_path / "settings.gradle").write_text('include "core"\n')
+        (tmp_path / "build.gradle").write_text("// root\n")
+        rel = _make_module(tmp_path, "core", "com.example", "Engine")
+        ctx = _ctx(tmp_path, [rel])
+        result = resolve_kotlin_import("com.example.Engine", "main.kt", ctx)
+        assert result == rel
+
+    def test_falls_through_without_gradle(self, tmp_path: Path) -> None:
+        # No build file, no package clause, and a path that does not mirror
+        # the package — neither signal places the file where the import says,
+        # so the name alone must not bind it.
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "Foo.kt").write_text("class Foo\n")
+        ctx = _ctx(tmp_path, ["src/Foo.kt"])
+        result = resolve_kotlin_import("com.example.Foo", "main.kt", ctx)
+        assert result == "external:com.example.Foo"
+
+    def test_falls_through_without_gradle_on_a_matching_path(
+        self, tmp_path: Path
+    ) -> None:
+        # Same shape, still no build file and no package clause, but the path
+        # mirrors the package: the directory fallback answers.
+        src = tmp_path / "src" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "Foo.kt").write_text("class Foo\n")
+        ctx = _ctx(tmp_path, ["src/com/example/Foo.kt"])
+        result = resolve_kotlin_import("com.example.Foo", "main.kt", ctx)
+        assert result == "src/com/example/Foo.kt"
+
+    def test_single_module_root_build_gradle(self, tmp_path: Path) -> None:
+        (tmp_path / "build.gradle.kts").write_text("// single module\n")
+        src = tmp_path / "src" / "main" / "kotlin" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "Util.kt").write_text("package com.example\n\nclass Util\n")
+        ctx = _ctx(tmp_path, ["src/main/kotlin/com/example/Util.kt"])
+        result = resolve_kotlin_import("com.example.Util", "main.kt", ctx)
+        assert result == "src/main/kotlin/com/example/Util.kt"
+
+
+class TestKotlinStdlibFiltering:
+    def test_kotlin_stdlib_dropped(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, [])
+        assert resolve_kotlin_import("kotlin.collections.List", "Main.kt", ctx) is None
+
+    def test_java_stdlib_dropped_for_kotlin(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, [])
+        assert resolve_kotlin_import("java.util.UUID", "Main.kt", ctx) is None
+        assert resolve_kotlin_import("javax.inject.Inject", "Main.kt", ctx) is None
+
+    def test_kotlinx_is_external_not_stdlib(self, tmp_path: Path) -> None:
+        # kotlinx.* is a library namespace, not stdlib — external node wanted.
+        ctx = _ctx(tmp_path, [])
+        result = resolve_kotlin_import("kotlinx.coroutines.launch", "Main.kt", ctx)
+        assert result == "external:kotlinx.coroutines.launch"
+
+    def test_kotlinx_never_stem_matches_local_file(self, tmp_path: Path) -> None:
+        # A repo-local Launch.kt must not capture kotlinx.coroutines.Launch.
+        repo_file = tmp_path / "src" / "Launch.kt"
+        repo_file.parent.mkdir(parents=True)
+        repo_file.write_text("package com.app\n\nclass Launch\n")
+        ctx = _ctx(tmp_path, ["src/Launch.kt"])
+        result = resolve_kotlin_import("kotlinx.coroutines.Launch", "Main.kt", ctx)
+        assert result == "external:kotlinx.coroutines.Launch"
+
+    def test_prefix_match_is_segment_aware(self, tmp_path: Path) -> None:
+        # kotlinutil.* is not kotlin.* — segment-aware prefix matching.
+        repo_file = tmp_path / "src" / "kotlinutil" / "Helper.kt"
+        repo_file.parent.mkdir(parents=True)
+        repo_file.write_text("package kotlinutil\n\nclass Helper\n")
+        ctx = _ctx(tmp_path, ["src/kotlinutil/Helper.kt"])
+        result = resolve_kotlin_import("kotlinutil.Helper", "Main.kt", ctx)
+        assert result == "src/kotlinutil/Helper.kt"
+
+    def test_third_party_import_does_not_take_a_same_named_local_class(
+        self, tmp_path: Path
+    ) -> None:
+        # com.google.* carries no external-namespace short-circuit, so only the
+        # package check stops this binding.
+        repo_file = tmp_path / "src" / "cache" / "CacheStats.kt"
+        repo_file.parent.mkdir(parents=True)
+        repo_file.write_text("package com.acme.cache\n\nclass CacheStats\n")
+        ctx = _ctx(tmp_path, ["src/cache/CacheStats.kt"])
+        result = resolve_kotlin_import(
+            "com.google.common.cache.CacheStats", "Main.kt", ctx
+        )
+        assert result == "external:com.google.common.cache.CacheStats"
+
+    def test_top_level_function_in_the_named_package_still_resolves(
+        self, tmp_path: Path
+    ) -> None:
+        # A file declaring only top-level functions records no type, so the
+        # exact-FQN lookup misses; the package is what identifies the file.
+        # Its path does not mirror the package, so the directory fallback
+        # cannot answer either.
+        repo_file = tmp_path / "src" / "CommentRoutes.kt"
+        repo_file.parent.mkdir(parents=True)
+        repo_file.write_text("package com.acme.domain\n\nfun commentRoutes() {}\n")
+        ctx = _ctx(tmp_path, ["src/CommentRoutes.kt"])
+        result = resolve_kotlin_import("com.acme.domain.commentRoutes", "Main.kt", ctx)
+        assert result == "src/CommentRoutes.kt"

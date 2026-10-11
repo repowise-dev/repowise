@@ -1,0 +1,463 @@
+"""Unit tests for tech stack and build command detection."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from repowise.core.generation.editor_files import tech_stack as tech_stack_mod
+from repowise.core.generation.editor_files.tech_stack import (
+    detect_build_commands,
+    detect_tech_stack,
+)
+
+# ---------------------------------------------------------------------------
+# detect_tech_stack
+# ---------------------------------------------------------------------------
+
+
+def test_empty_directory_returns_empty_list(tmp_path):
+    result = detect_tech_stack(tmp_path)
+    assert result == []
+
+
+def test_detects_python_from_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "myapp"\n', encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "Python" in names
+
+
+def test_detects_fastapi_from_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["fastapi>=0.100"]\n', encoding="utf-8"
+    )
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "FastAPI" in names
+
+
+def test_detects_nodejs_from_package_json(tmp_path):
+    pkg = {"name": "myapp", "engines": {"node": "20"}, "dependencies": {}}
+    (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "Node.js" in names
+
+
+def test_detects_react_from_package_json(tmp_path):
+    pkg = {
+        "name": "myapp",
+        "dependencies": {"react": "^18.0.0", "react-dom": "^18.0.0"},
+    }
+    (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "React" in names
+
+
+def test_detects_typescript_from_tsconfig(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "app", "dependencies": {}}), encoding="utf-8"
+    )
+    (tmp_path / "tsconfig.json").write_text("{}", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "TypeScript" in names
+
+
+def test_detects_typescript_from_workspace_package_tsconfig(tmp_path):
+    # Monorepos often keep tsconfig.json only inside workspace packages.
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "app", "dependencies": {}}), encoding="utf-8"
+    )
+    pkg_dir = tmp_path / "packages" / "ui"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "tsconfig.json").write_text("{}", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "TypeScript" in names
+
+
+def test_node_modules_tsconfig_is_not_typescript_evidence(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "app", "dependencies": {}}), encoding="utf-8"
+    )
+    dep_dir = tmp_path / "node_modules" / "some-dep"
+    dep_dir.mkdir(parents=True)
+    (dep_dir / "tsconfig.json").write_text("{}", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "TypeScript" not in names
+
+
+def test_fixture_csproj_does_not_make_repo_csharp(tmp_path):
+    # A Python repo with .NET solutions under tests/fixtures and vendored
+    # sample repos must not be labelled a C# codebase by its own test data.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    for parent in ("tests/fixtures/dotnet_solution/src/Api", "test-repos/eShop/src/Api"):
+        d = tmp_path / parent
+        d.mkdir(parents=True)
+        (d / "Api.csproj").write_text("<Project></Project>", encoding="utf-8")
+    (tmp_path / "test-repos" / "eShop" / "eShop.sln").write_text("", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "C#" not in names
+    assert ".NET" not in names
+    assert "Python" in names
+
+
+def test_nested_git_repo_csproj_is_not_stack_evidence(tmp_path):
+    # Vendored checkouts (benchmark repos, sibling clones) are separate git
+    # repos — their project files must not define this repo's tech stack.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    nested = tmp_path / "bench-repos" / "nethermind"
+    (nested / ".git").mkdir(parents=True)
+    proj = nested / "tools" / "Evm"
+    proj.mkdir(parents=True)
+    (proj / "Evm.csproj").write_text("<Project></Project>", encoding="utf-8")
+    (nested / "Nethermind.sln").write_text("", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "C#" not in names
+    assert ".NET" not in names
+
+
+def test_real_dotnet_repo_still_detected(tmp_path):
+    d = tmp_path / "src" / "Web"
+    d.mkdir(parents=True)
+    (d / "Web.csproj").write_text(
+        "<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework>"
+        "</PropertyGroup></Project>",
+        encoding="utf-8",
+    )
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "C#" in names
+    assert ".NET" in names
+
+
+def test_detects_rust_from_cargo_toml(tmp_path):
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "myapp"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "Rust" in names
+
+
+def test_detects_go_from_go_mod(tmp_path):
+    (tmp_path / "go.mod").write_text("module myapp\n\ngo 1.22\n", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "Go" in names
+    go_item = next(i for i in items if i.name == "Go")
+    assert go_item.version == "1.22"
+
+
+def test_detects_docker(tmp_path):
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "Docker" in names
+
+
+def test_returns_sorted_by_category_then_name(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["fastapi", "sqlalchemy"]\n', encoding="utf-8"
+    )
+    items = detect_tech_stack(tmp_path)
+    # Verify sort order: categories should be grouped
+    categories = [i.category for i in items]
+    assert categories == sorted(categories) or len(set(categories)) == 1
+
+
+# ---------------------------------------------------------------------------
+# detect_build_commands
+# ---------------------------------------------------------------------------
+
+
+def test_empty_directory_returns_empty_dict(tmp_path):
+    result = detect_build_commands(tmp_path)
+    assert result == {}
+
+
+def test_detects_pytest_from_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths = ['tests']\n", encoding="utf-8"
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert "test" in cmds
+    assert "pytest" in cmds["test"]
+
+
+def test_detects_typo3_from_composer_type(tmp_path):
+    composer = {
+        "name": "vendor/my-ext",
+        "type": "typo3-cms-extension",
+        "require": {"typo3/cms-core": "^13.4"},
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "PHP" in names
+    assert "TYPO3" in names
+
+
+def test_detects_typo3_from_cms_core_require(tmp_path):
+    # Project-mode install: composer.json without `type` but requires typo3/cms-core.
+    composer = {
+        "name": "vendor/my-site",
+        "type": "project",
+        "require": {"typo3/cms-core": "^13.4", "typo3/cms-backend": "^13.4"},
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "TYPO3" in names
+
+
+def test_detects_symfony_from_framework_bundle(tmp_path):
+    composer = {
+        "name": "vendor/app",
+        "require": {"symfony/framework-bundle": "^7.0"},
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "PHP" in names
+    assert "Symfony" in names
+
+
+def test_detects_laravel_from_framework_require(tmp_path):
+    composer = {
+        "name": "vendor/app",
+        "require": {"laravel/framework": "^11.0"},
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "Laravel" in names
+
+
+def test_typo3_takes_precedence_over_symfony_when_both_match(tmp_path):
+    # TYPO3 ships Symfony — extension should still be classified as TYPO3.
+    composer = {
+        "name": "vendor/my-ext",
+        "type": "typo3-cms-extension",
+        "require": {
+            "typo3/cms-core": "^13.4",
+            "symfony/framework-bundle": "*",
+        },
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "TYPO3" in names
+    assert "Symfony" not in names
+
+
+def test_plain_php_library_does_not_match_any_framework(tmp_path):
+    composer = {"name": "vendor/lib", "type": "library", "require": {"psr/log": "^3.0"}}
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "PHP" in names
+    for fw in ("TYPO3", "Symfony", "Laravel"):
+        assert fw not in names
+
+
+def test_malformed_composer_does_not_crash(tmp_path):
+    (tmp_path / "composer.json").write_text("{ not valid json", encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "PHP" in names  # PHP language still added (file existed)
+
+
+@pytest.mark.parametrize(
+    "pkg",
+    [
+        {"main": "index.js", "dependencies": ["react"]},
+        {"main": "index.js", "devDependencies": "react"},
+    ],
+)
+def test_non_object_dependency_table_does_not_crash(tmp_path, pkg):
+    (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "Node.js" in names
+    assert "React" not in names
+
+
+def test_non_string_versions_yield_no_version(tmp_path):
+    pkg = {"engines": {"node": 20}, "dependencies": {"typescript": 5, "react": None}}
+    (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+    versions = {i.name: i.version for i in detect_tech_stack(tmp_path)}
+    assert versions["Node.js"] is None
+    assert versions["TypeScript"] is None
+    assert versions["React"] is None
+
+
+def test_non_utf8_pyproject_does_not_crash(tmp_path):
+    (tmp_path / "pyproject.toml").write_bytes(
+        b'[project]\n# caf\xe9\ndependencies = ["fastapi", "pytest"]\n'
+    )
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "Python" in names
+    assert "FastAPI" in names
+    assert detect_build_commands(tmp_path)["test"] == "pytest"
+
+
+def test_non_utf8_go_mod_does_not_crash(tmp_path):
+    (tmp_path / "go.mod").write_bytes(b"module example.com/caf\xe9\n\ngo 1.22\n")
+    versions = {i.name: i.version for i in detect_tech_stack(tmp_path)}
+    assert versions["Go"] == "1.22"
+
+
+# ---------------------------------------------------------------------------
+# detect_tech_stack memoisation
+# ---------------------------------------------------------------------------
+
+
+def test_a_repeat_scan_of_an_unchanged_tree_does_not_rewalk(tmp_path, monkeypatch):
+    """One ``repowise update`` asks twice; the second must be free.
+
+    The bounded .csproj walk is the whole cost of a scan (0.18s on hugo, 0.47s
+    on PowerToys, measured), and the graph's framework edges and the
+    knowledge-graph refresh both ask for the same repo in the same run.
+    """
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+
+    walks = []
+    real = tech_stack_mod._find_dotnet_projects
+    monkeypatch.setattr(
+        tech_stack_mod,
+        "_find_dotnet_projects",
+        lambda p: (walks.append(p), real(p))[1],
+    )
+
+    first = detect_tech_stack(tmp_path)
+    second = detect_tech_stack(tmp_path)
+
+    assert [i.name for i in first] == [i.name for i in second]
+    assert "Go" in [i.name for i in first]
+    assert len(walks) == 1
+
+
+def test_editing_a_manifest_re_detects(tmp_path):
+    """The memo must not outlive the answer it cached."""
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    assert "Django" not in [i.name for i in detect_tech_stack(tmp_path)]
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["django>=5.0"]\n', encoding="utf-8"
+    )
+    assert "Django" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def test_adding_a_manifest_re_detects(tmp_path):
+    """A root add moves the directory mtime, which is part of the key."""
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+    assert "Docker" not in [i.name for i in detect_tech_stack(tmp_path)]
+
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    assert "Docker" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+@pytest.mark.parametrize("filename", ["App.sln", "Directory.Build.props"])
+def test_a_root_signal_moves_the_key_without_help_from_the_directory_mtime(tmp_path, filename):
+    """Every root path the scan reads must be in the key on its own.
+
+    These two are the ones a fixed name list misses: ``.sln`` is globbed rather
+    than read by name, and ``Directory.Build.props`` was absent from the first
+    version of the key. Either alone makes the scan report C#.
+
+    The directory mtime is restored before re-reading, which is the whole point:
+    that leg is quantized to Windows' ~15.6ms timer tick, so a test that let it
+    change would pass whether or not the signal itself is keyed.
+    """
+    import os
+
+    from repowise.core.generation.editor_files.tech_stack import _manifest_fingerprint
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    before = _manifest_fingerprint(tmp_path)
+    dir_stat = tmp_path.stat()
+
+    (tmp_path / filename).write_text("", encoding="utf-8")
+    os.utime(tmp_path, ns=(dir_stat.st_atime_ns, dir_stat.st_mtime_ns))
+
+    assert _manifest_fingerprint(tmp_path) != before, (
+        f"{filename} is not in the memo key, so a repo that grows one is served "
+        "a stale tech stack"
+    )
+    assert "C#" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def test_the_caller_cannot_corrupt_the_memo(tmp_path):
+    """Callers get their own list, so a mutation cannot poison the next reader."""
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+
+    first = detect_tech_stack(tmp_path)
+    first.clear()
+
+    assert [i.name for i in detect_tech_stack(tmp_path)] == ["Go"]
+
+
+def test_detects_ruff_from_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n", encoding="utf-8")
+    cmds = detect_build_commands(tmp_path)
+    assert "lint" in cmds
+    assert "ruff" in cmds["lint"]
+
+
+def test_a_comment_mentioning_formatter_does_not_prescribe_ruff_format(tmp_path):
+    # issue #2384: ruff configured as a linter only, with "formatter"
+    # appearing solely inside comments, must not emit a format command.
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\n"
+        "line-length = 88  # Ruff - linter + formatter\n"
+        '"E501",  # line too long (handled by formatter)\n',
+        encoding="utf-8",
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert "format" not in cmds
+
+
+def test_a_declared_ruff_format_section_prescribes_ruff_format(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n\n[tool.ruff.format]\n", encoding="utf-8"
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert cmds.get("format") == "ruff format ."
+
+
+def test_a_competing_formatter_suppresses_the_ruff_format_command(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n\n[tool.black]\n", encoding="utf-8"
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert "format" not in cmds
+
+
+def test_detects_npm_scripts(tmp_path):
+    pkg = {
+        "name": "myapp",
+        "scripts": {"build": "tsc", "test": "jest", "lint": "eslint src/"},
+    }
+    (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+    cmds = detect_build_commands(tmp_path)
+    assert "build" in cmds
+    assert "test" in cmds
+    assert "lint" in cmds
+
+
+def test_detects_pnpm_when_lockfile_present(tmp_path):
+    pkg = {"name": "app", "scripts": {"test": "vitest"}}
+    (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    cmds = detect_build_commands(tmp_path)
+    assert cmds.get("test", "").startswith("pnpm")
+
+
+def test_detects_makefile_targets(tmp_path):
+    makefile = "build:\n\tgo build ./...\n\ntest:\n\tgo test ./...\n\nlint:\n\tgolangci-lint run\n"
+    (tmp_path / "Makefile").write_text(makefile, encoding="utf-8")
+    cmds = detect_build_commands(tmp_path)
+    assert "build" in cmds
+    assert cmds["build"] == "make build"
+    assert "test" in cmds

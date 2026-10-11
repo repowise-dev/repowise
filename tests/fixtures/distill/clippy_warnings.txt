@@ -1,0 +1,125 @@
+    Checking gitscan v0.4.2 (C:\src\gitscan)
+warning: unused variable: `depth`
+  --> src/walker.rs:42:9
+   |
+42 |     let depth = opts.depth.unwrap_or(1);
+   |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_depth`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/repo.rs:118:30
+    |
+118 |         let head = resolve(&path);
+    |                              ^^^^ help: change this to: `path`
+    |
+    = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/repo.rs:131:22
+    |
+131 |         let tip = peel(&target);
+    |                          ^^^^^^ help: change this to: `target`
+    |
+    = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: redundant clone
+  --> src/output.rs:55:31
+   |
+55 |     render(rows.clone(), &opts.clone());
+   |                               ^^^^^^^^ help: remove this
+   |
+   = note: `#[warn(clippy::redundant_clone)]` on by default
+
+warning: redundant clone
+  --> src/output.rs:61:18
+   |
+61 |     emit(header.clone());
+   |                 ^^^^^^^^ help: remove this
+   |
+   = note: `#[warn(clippy::redundant_clone)]` on by default
+
+warning: redundant clone
+  --> src/output.rs:74:25
+   |
+74 |     summarize(totals.clone());
+   |                     ^^^^^^^^ help: remove this
+   |
+   = note: `#[warn(clippy::redundant_clone)]` on by default
+
+warning: useless conversion to the same type: `std::string::String`
+  --> src/walker.rs:88:20
+   |
+88 |     let name = String::from(stem.to_string());
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider removing
+   |
+   = note: `#[warn(clippy::useless_conversion)]` on by default
+
+warning: length comparison to zero
+  --> src/repo.rs:140:8
+   |
+140 |     if entries.len() == 0 {
+   |        ^^^^^^^^^^^^^^^^^^ help: using `is_empty` is clearer and more explicit: `entries.is_empty()`
+   |
+   = note: `#[warn(clippy::len_zero)]` on by default
+
+warning: length comparison to zero
+  --> src/walker.rs:103:12
+    |
+103 |     if rows.len() == 0 {
+    |        ^^^^^^^^^^^^^^^ help: using `is_empty` is clearer and more explicit: `rows.is_empty()`
+    |
+    = note: `#[warn(clippy::len_zero)]` on by default
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/walker.rs:117:25
+    |
+117 |         let rel = strip(&base);
+    |                         ^^^^^ help: change this to: `base`
+    |
+    = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/output.rs:101:14
+    |
+101 |     format(&style);
+    |            ^^^^^^ help: change this to: `style`
+    |
+    = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: redundant clone
+  --> src/walker.rs:122:20
+    |
+122 |     queue(entry.clone());
+    |                ^^^^^^^^ help: remove this
+    |
+    = note: `#[warn(clippy::redundant_clone)]` on by default
+
+warning: redundant clone
+  --> src/repo.rs:155:14
+    |
+155 |     push(tag.clone());
+    |             ^^^^^^^^ help: remove this
+    |
+    = note: `#[warn(clippy::redundant_clone)]` on by default
+
+warning: useless conversion to the same type: `std::string::String`
+  --> src/repo.rs:162:16
+    |
+162 |     let id = String::from(oid.to_string());
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider removing
+    |
+    = note: `#[warn(clippy::useless_conversion)]` on by default
+
+error[E0308]: mismatched types
+  --> src/output.rs:93:24
+   |
+93 |     let width: usize = opts.width;
+   |                -----   ^^^^^^^^^^ expected `usize`, found `Option<usize>`
+   |                |
+   |                expected due to this
+   |
+help: consider using `Option::unwrap_or_default` to handle the `None` case
+
+warning: `gitscan` (lib) generated 14 warnings (run `cargo clippy --fix --lib -p gitscan` to apply 11 suggestions)
+error: could not compile `gitscan` (lib) due to 1 previous error; 14 warnings emitted

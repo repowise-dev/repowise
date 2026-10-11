@@ -1,0 +1,62 @@
+{
+ "repo": "alamofire",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 51% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "javascript": {
+    "edges_per_file": 0.0,
+    "files": 6,
+    "import_edges": 0,
+    "import_support": "full",
+    "orphan_files": 6,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "swift": {
+    "edges_per_file": 4.68,
+    "files": 98,
+    "hint_edges": {
+     "same_module": 277
+    },
+    "import_edges": 459,
+    "import_support": "full",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.704
+   }
+  },
+  "dominant_language": "swift",
+  "entry_points": [],
+  "modules": {
+   "count": 4,
+   "max_size": 74,
+   "min_size": 7,
+   "names": [
+    "Application",
+    "Config",
+    "Service",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "Source/Core/Session.swift",
+   "Source/Core/AFError.swift",
+   "Source/Core/Request.swift",
+   "Source/Core/HTTPMethod.swift",
+   "Source/Core/Protected.swift",
+   "Source/Core/URLConvertible+URLRequestConvertible.swift",
+   "Source/Features/RequestInterceptor.swift",
+   "Source/Core/DataRequest.swift",
+   "Source/Features/EventMonitor.swift",
+   "Source/Core/HTTPHeaders.swift",
+   "Tests/AuthenticationInterceptorTests.swift"
+  ]
+ }
+}

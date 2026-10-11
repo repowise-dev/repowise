@@ -1,0 +1,44 @@
+{
+ "repo": "args",
+ "smells": [],
+ "stats": {
+  "by_language": {
+   "dart": {
+    "edges_per_file": 2.4,
+    "files": 25,
+    "import_edges": 60,
+    "import_support": "partial",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.817
+   }
+  },
+  "dominant_language": "dart",
+  "entry_points": [],
+  "modules": {
+   "count": 4,
+   "max_size": 12,
+   "min_size": 4,
+   "names": [
+    "Application",
+    "Config",
+    "Service",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "lib/command_runner.dart",
+   "lib/src/arg_parser.dart",
+   "lib/src/arg_results.dart",
+   "lib/src/arg_parser_exception.dart",
+   "lib/src/utils.dart",
+   "lib/src/help_command.dart",
+   "lib/src/usage_exception.dart",
+   "lib/src/option.dart",
+   "lib/src/parser.dart",
+   "lib/src/allow_anything_parser.dart",
+   "test/allow_anything_test.dart"
+  ]
+ }
+}

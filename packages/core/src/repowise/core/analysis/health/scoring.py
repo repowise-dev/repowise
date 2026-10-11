@@ -1,0 +1,1040 @@
+"""Per-file score aggregation + repo-level KPIs.
+
+Each file starts at 10.0. Biomarker findings deduct; deductions are
+capped per category so no single category can drive the score below the
+cap. Final score is clamped to [1.0, 10.0].
+
+The recalibrated category caps (plan §3.1):
+
+    organizational        -> -3.5   # ceiling; the live cap is history_cap()
+    structural_complexity -> -2.5   # was -3.5
+    test_coverage         -> -2.0
+    size_and_complexity   -> -1.5   # was -2.0
+    duplication           -> -1.0   # was -1.5
+
+Per-biomarker weight multipliers (plan §3.2 Option A) are applied to
+the per-finding raw deduction *before* category capping, so the strongest
+empirical predictors are no longer suppressed by uniform severity values.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
+
+from .models import HealthFileMetricData, HealthFindingData, Severity
+from .rows import field, scored_rows, split_tests, split_unscored
+
+if TYPE_CHECKING:
+    # Annotation-only, and deliberately not imported at runtime: the biomarker
+    # package reaches ingestion and the tree-sitter grammars, which the scoring
+    # tables, the ranking key and the read-model folds have no use for. Keeping
+    # it behind the type gate is what makes those importable on their own.
+    from .biomarkers.base import BiomarkerResult
+
+# The band every dimension's score is clamped into. Named because the floor is
+# lossy — a file 12.9 points deep and one 9.1 points deep both print 1.0 — and
+# the snapshot writer needs the same number to decide whose depth is worth
+# recording. Values unchanged; this only stops them being written out per site.
+SCORE_FLOOR: float = 1.0
+SCORE_MAX: float = 10.0
+# The per-file columns that carry a score or a share of one. All ``None`` on a
+# file health never walked (:func:`file_score_fields`).
+SCORE_FIELDS: tuple[str, ...] = (
+    "score",
+    "defect_score",
+    "maintainability_score",
+    "performance_score",
+    "structure_deduction",
+    "history_deduction",
+)
+
+# Per-category max deduction.
+CATEGORY_CAPS: dict[str, float] = {
+    "organizational": 3.5,
+    "structural_complexity": 2.5,
+    "test_coverage": 2.0,
+    # Continuous coverage-gradient deduction (scales with the uncovered
+    # fraction). Kept in its OWN capped category, separate from the binary
+    # ``test_coverage`` gates, so the additive, monotonic coverage signal is
+    # bounded on its own terms and never squeezed by - or squeezes - the
+    # has-tests / hotspot gates. Calibrated offline: a per-file deduction of
+    # 4.0 x uncovered_fraction (this cap binding at ≥50% uncovered) recovers
+    # +0.043 corpus AUC [95% CI +0.023, +0.061] on the covered subset,
+    # Popt-neutral, and is exactly zero where coverage was never ingested.
+    "test_coverage_gradient": 2.0,
+    "size_and_complexity": 1.5,
+    "duplication": 1.0,
+    # Test-quality smells are mild, advisory signals - a small cap keeps a
+    # noisy test file from dominating its own health score.
+    "test_quality": 0.5,
+    # Error-handling anti-patterns (swallowed catch / bare except / unsafe
+    # unwrap / discarded Go error) are an advisory maintainability signal,
+    # not a calibrated defect predictor (AUC-neutral on the 21-repo T0
+    # benchmark; size-orthogonal, least redundant signal tested). Own
+    # capped category so the bounded deduction can never squeeze - or be
+    # squeezed by - the predictive categories.
+    "error_handling": 0.5,
+}
+
+# The one defect category derived from git rather than from the code itself.
+# Splitting on it is what lets a surface say which half of the score moved: a
+# refactor changes the structure half, and nothing a reader types today changes
+# the history half.
+HISTORY_CATEGORY = "organizational"
+
+# History markers read how a file has been changed, not what it is, so on their
+# own they measure activity: a simple file that changes often is busy, not
+# broken. History therefore amplifies code risk rather than standing alone: its
+# cap is 1.0 plus one point per point of structure deduction (every other defect
+# category, already capped), up to the category's 3.5. A file with no code-shape
+# finding keeps at least 9.0. Checked against the defect benchmark: no
+# measurable predictive cost. The weights are unchanged; fit the base and slope
+# with them in the next calibration pass.
+HISTORY_CAP_BASE: float = 1.0
+HISTORY_CAP_PER_STRUCTURE: float = 1.0
+
+
+def history_cap(structure: float) -> float:
+    """The most git history may deduct from a file whose other defect
+    categories deduct *structure* points."""
+    return min(
+        CATEGORY_CAPS[HISTORY_CATEGORY],
+        HISTORY_CAP_BASE + HISTORY_CAP_PER_STRUCTURE * max(structure, 0.0),
+    )
+
+
+# Per-biomarker deduction by severity. The scorer caps the per-category
+# total at the value in ``CATEGORY_CAPS``.
+_SEVERITY_DEDUCTION: dict[Severity, float] = {
+    Severity.LOW: 0.3,
+    Severity.MEDIUM: 0.7,
+    Severity.HIGH: 1.2,
+    Severity.CRITICAL: 2.0,
+}
+
+# Per-biomarker weight multiplier. Applied to the severity deduction BEFORE
+# category capping, so stronger empirical predictors deduct more without
+# re-tuning the severity table. Unknown biomarkers fall back to 1.0.
+#
+# CALIBRATED OFFLINE (2026-05-29) against a 13-repo, 5-language defect corpus
+# (Python/TS/JS/Rust/Go; 830 files, 216 bug-fix-bearing). Methodology: each
+# file scored at the pre-window commit T0 (no HEAD->window leakage), then an
+# L2-regularized logistic regression of "received a bug-fix in (T0,T1]" on the
+# per-biomarker hits PLUS an explicit NLOC control column - so each weight
+# reflects the biomarker's defect lift *beyond file size*. Cross-project
+# (leave-one-repo-out) pooled OOF AUC ~ 0.70. The fit is reproduced by
+# `local-stash/calibrate_health_weights.py`; the runtime stays pure-
+# deterministic / zero-LLM - only these learned constants ship.
+#
+# Mapping policy ("balanced"): positive, well-measured predictors are scaled
+# into [1.0, 1.8] ∝ coefficient; biomarkers that fired widely but were weak/
+# non-predictive at T0 are floored to 0.5 (kept as mild maintainability/parity
+# signals, not disabled); biomarkers the benchmark could NOT measure (no
+# coverage ingested -> untested_hotspot/coverage_gap; test-only assertion smells;
+# too-rare churn_risk/hidden_coupling; the gate-bound code_age_volatility) keep
+# their prior weight. Top calibrated predictors: co_change_scatter (1.8),
+# change_entropy (1.51), ownership_risk (1.38), nested_complexity (1.34).
+#
+# Governance biomarkers (contradictory_decision, stale_governance,
+# ungoverned_hotspot) are written by the additive governance pass after the
+# per-file score pass, so their weights are documentation-only.
+_BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
+    # --- calibrated predictors (positive lift beyond size) ---
+    "co_change_scatter": 1.8,
+    "change_entropy": 1.51,
+    "ownership_risk": 1.38,
+    "nested_complexity": 1.34,
+    "complex_conditional": 1.33,
+    "large_method": 1.25,
+    "complex_method": 1.21,
+    "function_hotspot": 1.16,
+    "god_class": 1.13,
+    # Prior-defect history (recent bug-fix count). NEUTRAL weight by design, not
+    # a boost: on the 13-repo corpus its calibrated coefficient is ~+0.02 (no lift
+    # beyond size + the existing process signals - it correlates +0.59 with
+    # change_entropy, +0.38 with churn) and the effort-aware Popt gain is +0.01
+    # with bootstrap CIs straddling zero. So it ships as an interpretable,
+    # leakage-free finding ("bug-fixed N times recently" - directly actionable,
+    # and it uniquely flags a handful of files the other signals miss), NOT as a
+    # calibrated predictor. See local-stash/{calibrate_health_weights,
+    # measure_prior_defect,diagnose_prior_defect}.py + the progress doc Phase 8.5.
+    "prior_defect": 1.0,
+    # --- kept at prior: benchmark could not fairly measure these ---
+    "untested_hotspot": 1.3,  # benchmark ingests no coverage (has_test_file fallback only)
+    "churn_risk": 1.2,  # fired in too few repos to calibrate
+    "code_age_volatility": 1.1,  # gate unmet at T0 across the corpus
+    # --- floored: fired widely but weak / non-predictive at T0 ---
+    "developer_congestion": 0.5,  # was 1.5 - the HEAD-leakage hero; weak under T0
+    "low_cohesion": 0.5,
+    "brain_method": 0.5,
+    "bumpy_road": 0.5,
+    "primitive_obsession": 0.5,
+    "dry_violation": 0.5,
+    "knowledge_loss": 0.4,  # confirmed weak-negative since Phase 1
+    # Error-handling anti-patterns: maintainability flag, NOT a fitted
+    # predictor - deliberately excluded from the calibration roster (same
+    # treatment as governance biomarkers). Floored weight + LOW severity
+    # (0.3 x 0.5 = 0.15/finding) + the 0.5 category cap keep the impact
+    # bounded at half a point per file regardless of hit count.
+    "error_handling": 0.5,
+    # (coverage_gap, large_assertion_block, duplicated_assertion_block
+    #  default to 1.0 - kept at prior)
+    # Governance - additive pass, weights are informational
+    "contradictory_decision": 1.0,
+    "stale_governance": 0.9,
+    "ungoverned_hotspot": 0.7,
+}
+
+# Map biomarker name -> category. Kept here (single source of truth)
+# rather than on each biomarker class because some biomarkers naturally
+# span categories and we may want to retune without re-deploying.
+_BIOMARKER_CATEGORY: dict[str, str] = {
+    "brain_method": "structural_complexity",
+    "low_cohesion": "structural_complexity",
+    "god_class": "structural_complexity",
+    "nested_complexity": "structural_complexity",
+    "bumpy_road": "structural_complexity",
+    "complex_conditional": "structural_complexity",
+    "complex_method": "size_and_complexity",
+    "large_method": "size_and_complexity",
+    "primitive_obsession": "size_and_complexity",
+    "dry_violation": "duplication",
+    "untested_hotspot": "test_coverage",
+    "coverage_gap": "test_coverage",
+    "coverage_gradient": "test_coverage_gradient",
+    "developer_congestion": "organizational",
+    "knowledge_loss": "organizational",
+    # Advisory (deducts nothing); kept here so history-grouped surfaces file it.
+    "hidden_coupling": "organizational",
+    "function_hotspot": "organizational",
+    "code_age_volatility": "organizational",
+    "ownership_risk": "organizational",
+    "churn_risk": "organizational",
+    "change_entropy": "organizational",
+    "co_change_scatter": "organizational",
+    "prior_defect": "organizational",
+    "large_assertion_block": "test_quality",
+    "duplicated_assertion_block": "test_quality",
+    # Never reaches a deduction; mapped so category-grouped surfaces do not
+    # file it under the ``size_and_complexity`` default.
+    "assertion_free_test": "test_quality",
+    "mock_saturated_test": "test_quality",
+    "error_handling": "error_handling",
+    # Governance biomarkers - written by the additive governance pass
+    "ungoverned_hotspot": "organizational",
+    "stale_governance": "organizational",
+    "contradictory_decision": "organizational",
+}
+
+
+# ---------------------------------------------------------------------------
+# Per-dimension scoring (defect / maintainability / performance)
+# ---------------------------------------------------------------------------
+#
+# The single surfaced health score is, and remains, the DEFECT score: today's
+# exact weights / categories / caps (the tables above), unchanged. Splitting the
+# score into dimensions is purely additive: ``maintainability`` and
+# ``performance`` are independent, independently-capped signals derived from the
+# SAME biomarker stream, and they NEVER feed back into ``defect``.
+#
+# The load-bearing guarantee (locked by ``tests/unit/health/test_scoring_dimensions``)
+# is that ``score_file(results)["defect"]`` reproduces the pre-split single
+# score byte-for-byte for any input. If that drifts, the split is wrong.
+
+DIMENSIONS: tuple[str, ...] = ("defect", "maintainability", "performance")
+
+# The one dimension that does not score. Deliberately NOT in ``DIMENSIONS``,
+# which is exactly the set ``score_file`` returns a number for: keeping it out
+# means there is no weight, category or cap table it can acquire. A marker homes
+# here when no defect corpus labels what it measures, or when a held-out test
+# found no defect signal in it. It still carries a severity, a reason and a home
+# for display.
+ADVISORY_DIMENSION: str = "advisory"
+
+# Every dimension label a finding may carry, scored or not. Surfaces that filter
+# or display by dimension read this; scoring reads ``DIMENSIONS``.
+ALL_DIMENSIONS: tuple[str, ...] = (*DIMENSIONS, ADVISORY_DIMENSION)
+
+# Findings here carry a zero ``health_impact``, so they must stay out of
+# anything ranked or totalled by impact. ``performance`` deducts on its own
+# pillar only; ``advisory`` does not deduct at all.
+ZERO_IMPACT_DIMENSIONS: frozenset[str] = frozenset({"performance", ADVISORY_DIMENSION})
+
+# Which dimensions each biomarker's deduction feeds. Biomarkers not listed here
+# contribute to ``defect`` only - the historical behaviour, since every
+# biomarker has always counted toward the single score. The maintainability
+# smells the defect calibration floored to 0.5 (because they don't predict bugs)
+# get their full weight back in ``maintainability``; the structural smells are
+# genuine defect predictors AND core maintainability signals, so they count
+# toward both.
+_BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
+    # Floored-in-defect maintainability smells -> full weight in maintainability.
+    "low_cohesion": {"defect", "maintainability"},
+    "brain_method": {"defect", "maintainability"},
+    "primitive_obsession": {"defect", "maintainability"},
+    "dry_violation": {"defect", "maintainability"},
+    "error_handling": {"defect", "maintainability"},
+    # Structural smells: calibrated defect predictors that are ALSO core
+    # maintainability signals - they contribute to both dimensions.
+    "god_class": {"defect", "maintainability"},
+    "large_method": {"defect", "maintainability"},
+    "nested_complexity": {"defect", "maintainability"},
+    # The rest of the pure code-shape markers. Maintainability is the pillar a
+    # refactor is supposed to move, so every marker a reader can fix by
+    # rewriting the code belongs in it - a method too complex to follow is a
+    # maintainability problem whether or not it is also a defect predictor.
+    "complex_method": {"defect", "maintainability"},
+    "complex_conditional": {"defect", "maintainability"},
+    "bumpy_road": {"defect", "maintainability"},
+    # Performance-risk detectors contribute to ``performance`` ONLY. They are
+    # NOT defect predictors and must never move the surfaced (defect) score -
+    # that exclusion is what keeps the defect golden guarantee intact.
+    "io_in_loop": {"performance"},
+    "string_concat_in_loop": {"performance"},
+    "blocking_sync_in_async": {"performance"},
+    # Phase 6 dialect markers (Java/Go/Rust) - performance-only.
+    "regex_compile_in_loop": {"performance"},
+    "defer_in_loop": {"performance"},
+    # Phase 7a loop markers - performance-only, same as the originals.
+    "resource_construction_in_loop": {"performance"},
+    "lock_in_loop": {"performance"},
+    "serial_await_in_loop": {"performance"},
+    "unbounded_read_reduced_in_memory": {"performance"},
+    "lazy_load_in_loop": {"performance"},
+    "membership_test_against_list_in_loop": {"performance"},
+    # Phase 7b centrality-gated moat markers - performance-only.
+    "nested_loop_with_io": {"performance"},
+    "nested_loop_quadratic": {"performance"},
+    "hot_path_sync_io": {"performance"},
+    "blocking_io_under_lock": {"performance"},
+    # Phase 7d language-specific markers - performance-only.
+    "list_insert_zero_in_loop": {"performance"},
+    "pd_concat_in_loop": {"performance"},
+    "pandas_iterrows_in_loop": {"performance"},
+    "json_parse_in_loop": {"performance"},
+    "array_spread_in_reduce": {"performance"},
+    "goroutine_in_unbounded_loop": {"performance"},
+    # SQL markers - uncalibrated by construction (no defect corpus covers
+    # procedural SQL), so they are maintainability/performance-only. Every
+    # sql_* name MUST be listed here: an unlisted biomarker defaults into
+    # ``defect`` and would break the golden guarantee.
+    "sql_high_complexity": {"maintainability"},
+    "sql_select_star": {"maintainability"},
+    "sql_update_delete_without_where": {"maintainability"},
+    "sql_cartesian_join": {"performance"},
+    # Advisory. Must also appear in ``_ADVISORY_HOME``: the two tables are
+    # independent, and a marker in only one of them still deducts from defect.
+    "assertion_free_test": {ADVISORY_DIMENSION},
+    "mock_saturated_test": {ADVISORY_DIMENSION},
+    # Near-chance defect AUC alone, and dropping it was non-inferior on a fresh
+    # 12-repo pre-registered test (docs/architecture/code-health.md).
+    "hidden_coupling": {ADVISORY_DIMENSION},
+}
+
+# Maintainability per-biomarker weight multipliers. Expert-set by definition -
+# the defect calibration does not apply to a non-defect signal. The smells the
+# defect score floors to 0.5 deduct at FULL weight (1.0) here; the structural
+# duals stay at 1.0 too. Tuned only against the maintainability cap budget
+# below, never against the defect corpus. Unknown biomarkers fall back to 1.0.
+_MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
+    "low_cohesion": 1.0,
+    "brain_method": 1.0,
+    "primitive_obsession": 1.0,
+    "dry_violation": 1.0,
+    "error_handling": 1.0,
+    "god_class": 1.0,
+    "large_method": 1.0,
+    "nested_complexity": 1.0,
+    "complex_method": 1.0,
+    "complex_conditional": 1.0,
+    "bumpy_road": 1.0,
+    # SQL smells ship advisory (0.7) pending a precision spot-check on a
+    # migrations-heavy corpus, mirroring how new perf markers land.
+    "sql_high_complexity": 0.7,
+    "sql_select_star": 0.7,
+    "sql_update_delete_without_where": 0.7,
+}
+
+# Maintainability category per biomarker - an OWN table, independent of the
+# defect category map, so the two dimensions can be retuned separately.
+_MAINTAINABILITY_CATEGORY: dict[str, str] = {
+    "brain_method": "structural_complexity",
+    "low_cohesion": "structural_complexity",
+    "god_class": "structural_complexity",
+    "nested_complexity": "structural_complexity",
+    "large_method": "structural_complexity",
+    "complex_conditional": "structural_complexity",
+    "bumpy_road": "structural_complexity",
+    "complex_method": "size_and_complexity",
+    "primitive_obsession": "size_and_complexity",
+    "dry_violation": "duplication",
+    "error_handling": "error_handling",
+    # SQL smells share one capped category so a smell-dense migrations dir
+    # can't dominate the maintainability score.
+    "sql_high_complexity": "sql",
+    "sql_select_star": "sql",
+    "sql_update_delete_without_where": "sql",
+}
+
+# Maintainability per-category caps. Bounded so no single category dominates the
+# maintainability score, mirroring the defect cap discipline but on the
+# maintainability dimension's own budget.
+_MAINTAINABILITY_CATEGORY_CAPS: dict[str, float] = {
+    "structural_complexity": 4.0,
+    "size_and_complexity": 2.0,
+    "duplication": 2.0,
+    "error_handling": 2.0,
+    "sql": 2.0,
+}
+
+# A finding's single "home" dimension, used for display and per-pillar
+# filtering. Biomarkers that exist ONLY as maintainability signals home there;
+# the structural duals and every calibrated predictor home to ``defect`` (their
+# primary, calibrated role). Multi-dimension membership for scoring lives in
+# ``_BIOMARKER_DIMENSIONS`` - this label is just the finding's primary bucket.
+_MAINTAINABILITY_HOME: frozenset[str] = frozenset(
+    {
+        "low_cohesion",
+        "brain_method",
+        "primitive_obsession",
+        "dry_violation",
+        "error_handling",
+        "sql_high_complexity",
+        "sql_select_star",
+        "sql_update_delete_without_where",
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# Performance dimension (PR3). Originally shipped at a small, ADVISORY weight
+# (a single 1.0 category cap), which left the pillar reading near-perfect even
+# on repos dense with open perf findings. With the cross-function pass landed
+# (PR4) and per-marker precision multipliers in place, the cap is raised to
+# 2.0 so open findings visibly move the score - still a deliberately
+# conservative ceiling for this first release (a file loses at most two
+# points regardless of hit count). Raising it further to a co-equal budget
+# waits on corpus precision data for the remaining advisory markers.
+# ---------------------------------------------------------------------------
+
+# Per-biomarker weight on the performance dimension. ``io_in_loop`` is the
+# gate-cleared core (measured 79% precision, Phase 0) and carries full weight;
+# ``string_concat_in_loop`` and ``blocking_sync_in_async`` ride the same pass
+# at a reduced advisory weight pending their own spot-check (see
+# MARKER_BACKLOG.md). Unknown biomarkers fall back to 1.0.
+_PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
+    "io_in_loop": 1.0,
+    "blocking_sync_in_async": 0.7,
+    # PROMOTED 0.5 -> 0.7 (Phase-7d): the reset-per-iteration guard lifted Python
+    # precision to 100% (26/26 on the headroom corpus) by dropping the dominant
+    # FP class (an accumulator re-initialized each iteration is bounded, not
+    # O(n^2)). Clears the 70% bar with comfortable n.
+    "string_concat_in_loop": 0.7,
+    # Phase 7a markers. Ship at advisory weight pending each one's Phase-0 gate
+    # (MARKER_BACKLOG.md); promote to full weight where corpus precision >= 70%.
+    # resource_construction is the highest-confidence (classified constructor),
+    # serial_await the lowest (cannot prove iteration independence).
+    # Phase 6 dialect markers. Both are high-precision syntactic shapes (Go
+    # `go vet`/`gocritic` ship defer-in-loop; the regex marker gates on a static
+    # literal pattern in Java/Go/Rust). Ship advisory pending this session's
+    # test-repo gate; bounded by the perf category cap either way.
+    "regex_compile_in_loop": 0.6,
+    "defer_in_loop": 0.6,
+    "resource_construction_in_loop": 0.7,
+    "lock_in_loop": 0.5,
+    # PROMOTED 0.5 -> 0.7 (Phase-7c): 100% precision across corpora (7a 22/22 +
+    # headroom Python 12/12 = 34/34; list-vs-set gate holds). Clears the 70% bar.
+    "membership_test_against_list_in_loop": 0.7,
+    "serial_await_in_loop": 0.4,
+    # Phase 7b markers. Ship at advisory weight pending each one's Phase-0 gate
+    # (MARKER_BACKLOG.md / PHASE7B_LABELS.md). nested_loop_with_io rides with
+    # io_in_loop (nesting-confident); blocking_io_under_lock is high-confidence
+    # by construction (a sink under a held lock); the centrality-gated pair are
+    # advisory (the gate is precision, but the algorithmic cost is context-bound).
+    "nested_loop_with_io": 0.5,
+    "blocking_io_under_lock": 0.6,
+    "hot_path_sync_io": 0.5,
+    "nested_loop_quadratic": 0.4,
+    # Phase 7d language-specific markers. Ship advisory pending each one's gate
+    # (MARKER_BACKLOG.md / PHASE7D); the two O(n^2)-by-construction Python ones
+    # (front-insert / pd.concat) carry slightly more weight than the moderate-
+    # precision json_parse / goroutine-spawn ones.
+    "list_insert_zero_in_loop": 0.6,
+    "pd_concat_in_loop": 0.6,
+    # ``iterrows`` is a documented pandas anti-pattern, high-precision by the
+    # distinctive method name; advisory pending corpus volume (no pandas in the
+    # OSS gate corpus — by-construction, like pd_concat).
+    "pandas_iterrows_in_loop": 0.6,
+    "array_spread_in_reduce": 0.5,
+    "json_parse_in_loop": 0.4,
+    "goroutine_in_unbounded_loop": 0.4,
+    # SQL comma-join with no predicate: high-precision by AST shape, advisory
+    # weight pending a corpus spot-check like every new perf marker.
+    "sql_cartesian_join": 0.6,
+    # Advisory pending a corpus precision gate, like every new perf marker.
+    "unbounded_read_reduced_in_memory": 0.4,
+    # Advisory for an ORM without a held-out measurement; see the per-ORM table below.
+    "lazy_load_in_loop": 0.4,
+}
+
+# Per-finding weight for a marker whose precision differs by ORM, keyed by the
+# finding's ``details["orm"]``. One marker, one id: the ORM is a fact on the
+# finding, not a second marker. Django measured 29/32 = 90.6% (Wilson LB 75.8%)
+# on a fresh held-out sample (2026-09-26), which clears the 90% bar; SQLAlchemy
+# (20/24, n < 30) has no tier yet and keeps the marker weight above.
+_PERFORMANCE_ORM_WEIGHT: dict[str, dict[str, float]] = {
+    "lazy_load_in_loop": {"django": 0.7},
+}
+
+# All perf biomarkers share one ``performance`` category, so the single cap
+# below bounds the entire dimension's deduction.
+_PERFORMANCE_CATEGORY: dict[str, str] = {
+    "io_in_loop": "performance",
+    "string_concat_in_loop": "performance",
+    "blocking_sync_in_async": "performance",
+    "regex_compile_in_loop": "performance",
+    "defer_in_loop": "performance",
+    "resource_construction_in_loop": "performance",
+    "lock_in_loop": "performance",
+    "serial_await_in_loop": "performance",
+    "membership_test_against_list_in_loop": "performance",
+    "nested_loop_with_io": "performance",
+    "nested_loop_quadratic": "performance",
+    "hot_path_sync_io": "performance",
+    "blocking_io_under_lock": "performance",
+    "list_insert_zero_in_loop": "performance",
+    "pd_concat_in_loop": "performance",
+    "pandas_iterrows_in_loop": "performance",
+    "json_parse_in_loop": "performance",
+    "array_spread_in_reduce": "performance",
+    "goroutine_in_unbounded_loop": "performance",
+    "sql_cartesian_join": "performance",
+    "unbounded_read_reduced_in_memory": "performance",
+    "lazy_load_in_loop": "performance",
+}
+
+# One bounded performance category cap. 2.0 is a deliberately conservative
+# first-release ceiling: enough for open findings to register on the pillar,
+# small enough that an all-advisory marker set cannot crater a file. Upgrade
+# path: raise toward the defect-style multi-point budget once the remaining
+# advisory markers clear their corpus precision gates (MARKER_BACKLOG.md).
+_PERFORMANCE_CATEGORY_CAPS: dict[str, float] = {
+    "performance": 2.0,
+}
+
+# Perf biomarkers home to ``performance`` for display / per-pillar filtering.
+_PERFORMANCE_HOME: frozenset[str] = frozenset(
+    {
+        "io_in_loop",
+        "string_concat_in_loop",
+        "blocking_sync_in_async",
+        "regex_compile_in_loop",
+        "defer_in_loop",
+        "resource_construction_in_loop",
+        "lock_in_loop",
+        "serial_await_in_loop",
+        "membership_test_against_list_in_loop",
+        "nested_loop_with_io",
+        "nested_loop_quadratic",
+        "hot_path_sync_io",
+        "blocking_io_under_lock",
+        "list_insert_zero_in_loop",
+        "pd_concat_in_loop",
+        "pandas_iterrows_in_loop",
+        "json_parse_in_loop",
+        "array_spread_in_reduce",
+        "goroutine_in_unbounded_loop",
+        "sql_cartesian_join",
+        "unbounded_read_reduced_in_memory",
+        "lazy_load_in_loop",
+    }
+)
+
+# The display half of the pairing above; ``test_advisory_dimension.py`` locks
+# the two together for every registered biomarker.
+_ADVISORY_HOME: frozenset[str] = frozenset(
+    {"assertion_free_test", "mock_saturated_test", "hidden_coupling"}
+)
+
+
+def severity_deduction(sev: Severity) -> float:
+    return _SEVERITY_DEDUCTION.get(sev, 0.5)
+
+
+def biomarker_weight(name: str) -> float:
+    """Per-biomarker multiplier; 1.0 for unknown biomarkers."""
+    return _BIOMARKER_WEIGHT_MULTIPLIER.get(name, 1.0)
+
+
+def biomarker_category(name: str) -> str:
+    """Default to ``size_and_complexity`` for unknown biomarkers."""
+    return _BIOMARKER_CATEGORY.get(name, "size_and_complexity")
+
+
+def history_biomarkers() -> frozenset[str]:
+    """Every biomarker in :data:`HISTORY_CATEGORY`, for a query that filters by name."""
+    return frozenset(n for n, c in _BIOMARKER_CATEGORY.items() if c == HISTORY_CATEGORY)
+
+
+def dimensions_for(name: str) -> set[str]:
+    """Dimensions a biomarker's deduction contributes to.
+
+    Unlisted biomarkers default to ``{"defect"}`` (the historical single score).
+    Performance-only detectors map to ``{"performance"}`` and are deliberately
+    excluded from ``defect`` - that exclusion is what keeps the defect golden
+    guarantee intact.
+    """
+    return _BIOMARKER_DIMENSIONS.get(name, {"defect"})
+
+
+def biomarker_dimension(name: str) -> str:
+    """The finding's single 'home' dimension for display / per-pillar filtering."""
+    if name in _ADVISORY_HOME:
+        return ADVISORY_DIMENSION
+    if name in _PERFORMANCE_HOME:
+        return "performance"
+    if name in _MAINTAINABILITY_HOME:
+        return "maintainability"
+    return "defect"
+
+
+def is_advisory(name: str) -> bool:
+    """True when *name* is a non-scoring marker (see ``ADVISORY_DIMENSION``)."""
+    return name in _ADVISORY_HOME
+
+
+def maintainability_weight(name: str) -> float:
+    """Maintainability multiplier; 1.0 for unknown biomarkers."""
+    return _MAINTAINABILITY_WEIGHT_MULTIPLIER.get(name, 1.0)
+
+
+def maintainability_category(name: str) -> str:
+    """Default to ``size_and_complexity`` for unknown biomarkers."""
+    return _MAINTAINABILITY_CATEGORY.get(name, "size_and_complexity")
+
+
+def performance_weight(name: str, orm: str | None = None) -> float:
+    """Performance multiplier; 1.0 for unknown biomarkers.
+
+    *orm* is the finding's ``details["orm"]``: a marker measured per ORM carries
+    that ORM's weight, and falls back to the marker's own for any other.
+    """
+    by_orm = _PERFORMANCE_ORM_WEIGHT.get(name, {})
+    if orm in by_orm:
+        return by_orm[orm]
+    return _PERFORMANCE_WEIGHT_MULTIPLIER.get(name, 1.0)
+
+
+def performance_category(name: str) -> str:
+    """Default to ``performance`` for unknown biomarkers (single capped category)."""
+    return _PERFORMANCE_CATEGORY.get(name, "performance")
+
+
+def _score_dimension(
+    results_list: list[BiomarkerResult],
+    weight_fn: Callable[[BiomarkerResult], float],
+    category_fn: Callable[[str], str],
+    caps: dict[str, float],
+    conditioned_cap: tuple[str, Callable[[float], float]] | None = None,
+) -> tuple[float, list[float]]:
+    """Aggregate one dimension's deductions -> ``(score, per_result_deductions)``.
+
+    The single, shared scoring kernel: weight each finding, accumulate per
+    category, cap each category, clamp to ``[1.0, 10.0]``. Every dimension runs
+    the identical algorithm against its own weight / category / cap tables.
+
+    *conditioned_cap* ``(category, cap_fn)`` replaces that one category's cap
+    with ``cap_fn(sum of every other category's capped total)``; only the
+    defect dimension uses it, for the history category.
+    """
+    raw: dict[str, list[tuple[int, float]]] = {}
+    for idx, r in enumerate(results_list):
+        cat = category_fn(r.biomarker_type)
+        # A continuous ``deduction`` override (e.g. coverage scaled by the
+        # uncovered fraction) takes the place of the discrete severity table;
+        # both paths are then weighted and category-capped identically, so the
+        # per-finding ``health_impact`` stays linear and attributable.
+        base = r.deduction if r.deduction is not None else severity_deduction(r.severity)
+        weighted = base * weight_fn(r)
+        raw.setdefault(cat, []).append((idx, weighted))
+
+    per_result = [0.0] * len(results_list)
+    total = 0.0
+    cap_for: dict[str, float] = {}
+    if conditioned_cap is not None:
+        cond_cat, cap_fn = conditioned_cap
+        others = sum(
+            min(sum(d for _, d in entries), caps.get(cat, 1.0))
+            for cat, entries in raw.items()
+            if cat != cond_cat
+        )
+        cap_for[cond_cat] = cap_fn(others)
+    for cat, entries in raw.items():
+        cap = cap_for.get(cat, caps.get(cat, 1.0))
+        cat_sum = sum(d for _, d in entries)
+        if cat_sum <= cap:
+            for idx, d in entries:
+                per_result[idx] = d
+            total += cat_sum
+        else:
+            # Scale down proportionally so the cap is respected.
+            scale = cap / cat_sum if cat_sum > 0 else 0.0
+            for idx, d in entries:
+                per_result[idx] = d * scale
+            total += cap
+
+    score = max(SCORE_FLOOR, min(SCORE_MAX, SCORE_MAX - total))
+    return score, per_result
+
+
+def remap_severities(
+    results: list[BiomarkerResult],
+    overrides: dict[str, Severity] | None,
+) -> list[BiomarkerResult]:
+    """Return *results* with biomarker severities relabeled per *overrides*.
+
+    A user ``severity_overrides`` map (from ``.repowise/health-rules.json``)
+    relabels a biomarker's severity, which changes its deduction via the fixed
+    ``_SEVERITY_DEDUCTION`` table — the only sanctioned tuning knob. Numeric
+    weight multipliers and category caps are NEVER affected (they are the
+    calibrated constants the benchmark rests on). Findings that carry a
+    continuous ``deduction`` override (``coverage_gradient``) are left
+    untouched: their magnitude does not come from the severity table.
+    """
+    if not overrides:
+        return results
+    out: list[BiomarkerResult] = []
+    for r in results:
+        target = overrides.get(r.biomarker_type)
+        if target is not None and r.deduction is None and target != r.severity:
+            out.append(replace(r, severity=target))
+        else:
+            out.append(r)
+    return out
+
+
+def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | None], list[float]]:
+    """Aggregate biomarker hits into per-dimension scores in ``[1.0, 10.0]``.
+
+    Returns ``(scores, defect_deductions)`` where:
+
+    - ``scores`` maps each dimension in ``DIMENSIONS`` to its score.
+      ``scores["defect"]`` is the historical single score - byte-for-byte
+      identical to the pre-split ``score_file`` (the load-bearing guarantee).
+      ``scores["performance"]`` is now measured (PR3): a file with no perf
+      findings scores 10.0; the perf detectors deduct under a single bounded
+      ``performance`` cap (2.0, a conservative ceiling). It never blends
+      into ``defect``.
+    - ``defect_deductions`` is each finding's contribution to the DEFECT score
+      after category capping, parallel to *results*. It populates
+      ``HealthFindingData.health_impact`` - a defect-pillar quantity - so the
+      surfaced per-finding impact numbers are unchanged.
+    """
+    results_list = list(results)
+
+    # DEFECT: only biomarkers whose dimensions include ``defect`` deduct. EVERY
+    # historical biomarker does (``dimensions_for`` defaults to ``{"defect"}``),
+    # so this reproduces the pre-split single score byte-for-byte; the new
+    # performance-only detectors are excluded and never move the surfaced score.
+    # ``defect_deductions`` stays parallel to the FULL ``results_list`` (perf
+    # findings get 0.0 defect impact) so ``attach_impacts`` can zip 1:1.
+    defect_idx = [
+        i for i, r in enumerate(results_list) if "defect" in dimensions_for(r.biomarker_type)
+    ]
+    defect_results = [results_list[i] for i in defect_idx]
+    defect_score, defect_sub = _score_dimension(
+        defect_results,
+        lambda r: biomarker_weight(r.biomarker_type),
+        biomarker_category,
+        CATEGORY_CAPS,
+        conditioned_cap=(HISTORY_CATEGORY, history_cap),
+    )
+    defect_deductions = [0.0] * len(results_list)
+    for sub_i, orig_i in enumerate(defect_idx):
+        defect_deductions[orig_i] = defect_sub[sub_i]
+
+    maint_results = [
+        r for r in results_list if "maintainability" in dimensions_for(r.biomarker_type)
+    ]
+    maint_score, _ = _score_dimension(
+        maint_results,
+        lambda r: maintainability_weight(r.biomarker_type),
+        maintainability_category,
+        _MAINTAINABILITY_CATEGORY_CAPS,
+    )
+
+    # PERFORMANCE: now that the detectors are registered, every file is measured
+    # - a clean file scores 10.0 (no perf findings), not ``None``.
+    perf_results = [r for r in results_list if "performance" in dimensions_for(r.biomarker_type)]
+    perf_score, _ = _score_dimension(
+        perf_results,
+        lambda r: performance_weight(r.biomarker_type, (r.details or {}).get("orm")),
+        performance_category,
+        _PERFORMANCE_CATEGORY_CAPS,
+    )
+
+    scores: dict[str, float | None] = {
+        "defect": defect_score,
+        "maintainability": maint_score,
+        "performance": perf_score,
+    }
+    return scores, defect_deductions
+
+
+def deduction_split(findings: Iterable[Any]) -> tuple[float, float]:
+    """``(structure, history)`` defect deduction over already-scored findings.
+
+    Reads each finding's stored ``health_impact``, so the two halves sum to the
+    file's total deduction and ``SCORE_MAX`` minus that sum is its unclamped
+    score. Governance findings carry no impact and so fall out on their own.
+    """
+    structure = history = 0.0
+    for f in findings:
+        impact = float(field(f, "health_impact", 0.0) or 0.0)
+        if biomarker_category(field(f, "biomarker_type", "")) == HISTORY_CATEGORY:
+            history += impact
+        else:
+            structure += impact
+    return round(structure, 3), round(history, 3)
+
+
+def _rounded(value: float | None) -> float | None:
+    return round(value, 2) if value is not None else None
+
+
+def file_score_fields(
+    analysed: bool, scores: dict[str, float | None], findings: Iterable[Any]
+) -> dict[str, float | None]:
+    """The score columns one file stores, from its scored findings.
+
+    A file health never walked (*analysed* false: its language has no dialect,
+    see ``has_health_dialect``) gets ``None`` in every one, since a number
+    would be a default dressed as a measurement (a mechanical 10.0). Its
+    findings still stand: the history markers read git rather than the parse.
+    """
+    if not analysed:
+        return dict.fromkeys(SCORE_FIELDS)
+    structure, history = deduction_split(findings)
+    return {
+        "score": _rounded(scores["defect"]),
+        "defect_score": _rounded(scores["defect"]),
+        "maintainability_score": _rounded(scores["maintainability"]),
+        "performance_score": _rounded(scores["performance"]),
+        "structure_deduction": structure,
+        "history_deduction": history,
+    }
+
+
+def unclamped_score(structure: float | None, history: float | None) -> float | None:
+    """The score a file would carry without the floor, or ``None`` if unrecorded.
+
+    The floor is lossy: a file 12.9 points deep and one 9.1 points deep both
+    print 1.0, so neither can show progress until it climbs back over the floor.
+    """
+    if structure is None and history is None:
+        return None
+    return round(SCORE_MAX - (structure or 0.0) - (history or 0.0), 2)
+
+
+def attach_impacts(
+    results: list[BiomarkerResult], deductions: list[float]
+) -> list[HealthFindingData]:
+    """Lift ``BiomarkerResult`` -> ``HealthFindingData`` with impact attached."""
+    out: list[HealthFindingData] = []
+    for r, d in zip(results, deductions, strict=True):
+        out.append(
+            HealthFindingData(
+                biomarker_type=r.biomarker_type,
+                severity=r.severity,
+                file_path="",  # filled by engine
+                function_name=r.function_name,
+                line_start=r.line_start,
+                line_end=r.line_end,
+                details=r.details,
+                health_impact=round(d, 3),
+                reason=r.reason,
+                dimension=biomarker_dimension(r.biomarker_type),
+            )
+        )
+    return out
+
+
+def _weight(row: Any) -> int:
+    """One row's NLOC weight, floored at 1 so no file weighs nothing."""
+    return max(int(field(row, "nloc", 0) or 0), 1)
+
+
+def _row_score(row: Any) -> float:
+    return float(field(row, "score", SCORE_MAX))
+
+
+def nloc_weighted_attr(rows: list[HealthFileMetricData], attr: str) -> float | None:
+    """NLOC-weighted average of one metric attribute, skipping ``None`` values.
+
+    Returns ``None`` when no row carries the attribute (e.g. a repo whose
+    ``maintainability_score`` predates the split) so the KPI reads "not measured"
+    rather than a misleading perfect 10.0.
+    """
+    scored = [r for r in rows if field(r, attr, None) is not None]
+    if not scored:
+        return None
+    total_w = sum(_weight(r) for r in scored)
+    if total_w == 0:
+        return sum(float(field(r, attr)) for r in scored) / len(scored)
+    return sum(float(field(r, attr)) * _weight(r) for r in scored) / total_w
+
+
+def nloc_weighted_score(rows: list[HealthFileMetricData]) -> float:
+    """NLOC-weighted mean of ``score``, weighting each file by ``max(nloc, 1)``.
+
+    Rows with no score (a language health has no dialect for) are left out.
+    Returns 10.0 for an empty input. Callers that can distinguish "nothing to
+    average" from "averaged to a perfect score" should check emptiness first —
+    :func:`hotspot_health` does exactly that.
+    """
+    rows = scored_rows(rows)
+    if not rows:
+        return 10.0
+    total_w = sum(_weight(r) for r in rows)
+    if total_w == 0:
+        return sum(_row_score(r) for r in rows) / len(rows)
+    return sum(_row_score(r) * _weight(r) for r in rows) / total_w
+
+
+def hotspot_health(
+    metrics: list[HealthFileMetricData],
+    hotspot_paths: set[str],
+) -> float | None:
+    """The repo's hotspot health: NLOC-weighted score over its hotspot files.
+
+    **This is the only implementation of that question.** Four places computed
+    it and two more read a persisted copy. Of the four, two averaged the top 25%
+    of files *by NLOC*, which ranks size rather than churn and so answers a
+    different question: measured against this definition across 42 local
+    indexes they differed on all 42, median 2.67 points of 10, worst 6.46, and
+    read *higher* on 31 — the wrong definition was also the flattering one. The
+    other two agreed here and differed only over what to say when a repo has no
+    hotspot files. Anything that wants this number calls here.
+
+    *hotspot_paths* is the set git flagged ``is_hotspot``: top-quartile churn
+    **and** the absolute activity floors from issue #361.
+
+    ``None`` means the repo has no scored hotspot files at all, which is a real answer
+    and not a failure — a repo with no recent churn has nothing to be a hotspot.
+    It is kept distinct from a low score on purpose: averaging an empty set
+    yields 10.0, and reporting that would tell a user their hotspots are perfect
+    when they have none. :func:`compute_kpis` still floors it to 10.0 for the
+    persisted KPI, and says why there.
+    """
+    rows = [m for m in scored_rows(metrics) if field(m, "file_path") in hotspot_paths]
+    if not rows:
+        return None
+    return round(nloc_weighted_score(rows), 2)
+
+
+def _empty_kpis(unanalysed: int) -> dict[str, object]:
+    """KPIs with no scored file: the headline is ``None``, never 10.0.
+
+    Data, markup and config files never get a metric row (``scope.scores_language``),
+    so a repository of only those arrives here with no rows at all, the same as
+    an empty one. Neither has code to score. ``snapshot_fields`` writes no trend
+    point for a ``None`` average, so no column needs a stand-in number."""
+    return {
+        "hotspot_health": None,
+        "average_health": None,
+        "unanalysed_file_count": unanalysed,
+        "worst_performer_path": None,
+        "worst_performer_score": None,
+        "worst_test_path": None,
+        "worst_test_score": None,
+        "file_count": 0,
+        **dict.fromkeys(
+            (
+                "maintainability_average",
+                "maintainability_hotspot",
+                "performance_average",
+                "performance_hotspot",
+                "structure_average",
+                "structure_hotspot",
+                "history_average",
+                "history_hotspot",
+                "production_average",
+            )
+        ),
+        "production_file_count": 0,
+    }
+
+
+def compute_kpis(
+    metrics: list[HealthFileMetricData],
+    hotspot_paths: set[str],
+) -> dict[str, object]:
+    """Repo-level KPIs derived from per-file metrics.
+
+    - ``hotspot_health``: NLOC-weighted average over files in *hotspot_paths*.
+    - ``average_health``: NLOC-weighted average over all files.
+    - ``worst_performer``: lowest-scoring production file + score, and
+      ``worst_test_performer`` the same over test files, reported separately.
+    - ``maintainability_average`` / ``maintainability_hotspot``: the same two
+      NLOC-weighted averages over the per-file ``maintainability_score``, so the
+      maintainability pillar surfaces a repo headline alongside the defect one.
+      ``None`` when no file carries a maintainability score.
+    - ``performance_average`` / ``performance_hotspot``: the same two
+      NLOC-weighted averages over the per-file ``performance_score`` (static
+      performance RISK), so the performance pillar surfaces a repo headline too.
+      ``None`` when no file carries a performance score.
+    - ``structure_average`` / ``history_average`` and their hotspot pair: the
+      headline's two halves, in deduction points, so a surface can say which
+      one is holding the score down. ``None`` until files carry the split.
+    - ``production_average``: ``average_health`` over non-test files, weighted
+      identically, so a narrowed view and a narrowed trend agree.
+    - ``unanalysed_file_count``: files stored with no score because health has
+      no dialect for their language. Every KPI above leaves them out; when no
+      file is scored at all, the two headline averages are ``None``.
+    """
+    metrics, unanalysed = split_unscored(metrics)
+    if not metrics:
+        return _empty_kpis(unanalysed)
+
+    hotspots = [m for m in metrics if field(m, "file_path") in hotspot_paths]
+
+    production, tests = split_tests(metrics)
+    # Production first; a test file names the worst only in a tests-only repo.
+    worst = min(production or metrics, key=_row_score)
+    worst_test = min(tests, key=_row_score) if tests else None
+    maint_avg = nloc_weighted_attr(metrics, "maintainability_score")
+    maint_hotspot = nloc_weighted_attr(hotspots, "maintainability_score")
+    perf_avg = nloc_weighted_attr(metrics, "performance_score")
+    perf_hotspot = nloc_weighted_attr(hotspots, "performance_score")
+    splits = {
+        f"{half}_{scope}": nloc_weighted_attr(rows, f"{half}_deduction")
+        for half in ("structure", "history")
+        for scope, rows in (("average", metrics), ("hotspot", hotspots))
+    }
+    # Floored to 10.0 when the repo has no hotspot files, because this dict is
+    # what ``save_health_snapshot`` persists into a non-nullable column and what
+    # the trend alerts diff against. The floor lives here, at the one point that
+    # needs it, rather than inside the arithmetic — surfaces that can say "no
+    # hotspots" out loud read ``hotspot_health()`` and get ``None``.
+    hotspot_kpi = hotspot_health(metrics, hotspot_paths)
+    return {
+        "hotspot_health": hotspot_kpi if hotspot_kpi is not None else 10.0,
+        "average_health": round(nloc_weighted_score(metrics), 2),
+        "worst_performer_path": field(worst, "file_path"),
+        "worst_performer_score": round(_row_score(worst), 2),
+        "worst_test_path": field(worst_test, "file_path") if worst_test is not None else None,
+        "worst_test_score": round(_row_score(worst_test), 2) if worst_test is not None else None,
+        "file_count": len(metrics),
+        "maintainability_average": round(maint_avg, 2) if maint_avg is not None else None,
+        "maintainability_hotspot": round(maint_hotspot, 2) if maint_hotspot is not None else None,
+        "performance_average": round(perf_avg, 2) if perf_avg is not None else None,
+        "performance_hotspot": round(perf_hotspot, 2) if perf_hotspot is not None else None,
+        **{k: round(v, 2) if v is not None else None for k, v in splits.items()},
+        "production_average": (
+            round(nloc_weighted_score(production), 2) if production else None
+        ),
+        "production_file_count": len(production),
+        "unanalysed_file_count": unanalysed,
+    }

@@ -1,0 +1,532 @@
+"""Unit tests for ASP.NET framework edges and .NET dynamic hints.
+
+These tests cover Batch 4 of the C# Full-tier upgrade:
+
+- ``_add_aspnet_edges`` in ``framework_edges.py`` — Program.cs/Startup.cs
+  to controllers, minimal-API handler resolution, UseMiddleware<T>(),
+  and DbContext → DbSet<T> entity wiring.
+- ``DotNetDynamicHints`` in ``dynamic_hints/dotnet.py`` — DI container
+  registrations, reflection, and InternalsVisibleTo discovery.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+import networkx as nx
+
+from repowise.core.ingestion.dynamic_hints.dotnet import DotNetDynamicHints
+from repowise.core.ingestion.framework_edges import add_framework_edges
+from repowise.core.ingestion.models import FileInfo, ParsedFile
+from repowise.core.ingestion.parser import ASTParser
+from repowise.core.ingestion.resolvers.context import ResolverContext
+
+# ---------------------------------------------------------------------------
+# Framework edges
+# ---------------------------------------------------------------------------
+
+
+def _file_info(path: str, abs_path: str, language: str = "csharp") -> FileInfo:
+    return FileInfo(
+        path=path,
+        abs_path=abs_path,
+        language=language,
+        size_bytes=100,
+        git_hash="",
+        last_modified=datetime.now(),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=path.endswith("Program.cs"),
+    )
+
+
+def _build_parsed_files(repo: Path) -> dict[str, ParsedFile]:
+    """Parse every .cs file under *repo* and return a {rel_path: ParsedFile} map."""
+    parser = ASTParser()
+    out: dict[str, ParsedFile] = {}
+    for cs in repo.rglob("*.cs"):
+        rel = cs.resolve().relative_to(repo.resolve()).as_posix()
+        fi = _file_info(rel, str(cs.resolve()))
+        result = parser.parse_file(fi, cs.read_bytes())
+        out[rel] = result
+    return out
+
+
+def _ctx(repo: Path, parsed: dict[str, ParsedFile]) -> ResolverContext:
+    path_set = set(parsed.keys())
+    stem_map: dict[str, list[str]] = {}
+    for p in path_set:
+        stem = Path(p).stem.lower()
+        stem_map.setdefault(stem, []).append(p)
+    return ResolverContext(
+        path_set=path_set, stem_map=stem_map, graph=nx.DiGraph(), repo_path=repo
+    )
+
+
+class TestAspNetEdges:
+    def test_program_to_controllers(self, tmp_path: Path) -> None:
+        (tmp_path / "Program.cs").write_text(
+            """using Microsoft.AspNetCore.Builder;
+var app = WebApplication.CreateBuilder(args).Build();
+app.MapControllers();
+app.Run();
+"""
+        )
+        (tmp_path / "Controllers").mkdir()
+        (tmp_path / "Controllers" / "UsersController.cs").write_text(
+            """using Microsoft.AspNetCore.Mvc;
+namespace Acme.Api;
+[ApiController]
+[Route("api/users")]
+public class UsersController : ControllerBase {
+    [HttpGet] public IActionResult Get() => Ok();
+}
+"""
+        )
+        parsed = _build_parsed_files(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+
+        count = add_framework_edges(graph, parsed, ctx, tech_stack=["aspnet"])
+        assert count >= 1
+        assert graph.has_edge("Program.cs", "Controllers/UsersController.cs")
+        edge = graph["Program.cs"]["Controllers/UsersController.cs"]
+        assert edge["edge_type"] == "framework"
+
+    def test_dbcontext_to_dbset_entity(self, tmp_path: Path) -> None:
+        (tmp_path / "Domain").mkdir()
+        (tmp_path / "Infra").mkdir()
+        (tmp_path / "Domain" / "User.cs").write_text(
+            "namespace Acme.Domain;\npublic class User { public int Id; }\n"
+        )
+        (tmp_path / "Infra" / "AppDbContext.cs").write_text(
+            """using Microsoft.EntityFrameworkCore;
+namespace Acme.Infra;
+public class AppDbContext : DbContext {
+    public DbSet<User> Users { get; set; }
+}
+"""
+        )
+        # Need a Program.cs or any ASP.NET signal to enable the path; use the
+        # Microsoft.EntityFrameworkCore using directive as the fallback signal.
+        (tmp_path / "Program.cs").write_text(
+            "using Microsoft.AspNetCore.Builder;\nvar app = 1;\n"
+        )
+        parsed = _build_parsed_files(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+
+        add_framework_edges(graph, parsed, ctx, tech_stack=[])
+        assert graph.has_edge("Infra/AppDbContext.cs", "Domain/User.cs")
+
+    def test_map_extension_method_resolves_to_definition(self, tmp_path: Path) -> None:
+        """``app.MapCatalogApi()`` should link Program.cs to the file declaring
+        ``public static IEndpointRouteBuilder MapCatalogApi(this IEndpointRouteBuilder app)``.
+        """
+        (tmp_path / "Program.cs").write_text(
+            """using Microsoft.AspNetCore.Builder;
+var app = WebApplication.CreateBuilder(args).Build();
+app.MapCatalogApi();
+app.Run();
+"""
+        )
+        (tmp_path / "Apis").mkdir()
+        (tmp_path / "Apis" / "CatalogApi.cs").write_text(
+            """using Microsoft.AspNetCore.Routing;
+namespace Acme.Api;
+public static class CatalogApi {
+    public static IEndpointRouteBuilder MapCatalogApi(this IEndpointRouteBuilder app)
+    {
+        return app;
+    }
+}
+"""
+        )
+        parsed = _build_parsed_files(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+
+        add_framework_edges(graph, parsed, ctx, tech_stack=["aspnet"])
+        assert graph.has_edge("Program.cs", "Apis/CatalogApi.cs")
+        assert graph["Program.cs"]["Apis/CatalogApi.cs"]["edge_type"] == "framework"
+
+    def test_add_extension_on_non_aspnet_host_is_ignored(self, tmp_path: Path) -> None:
+        """Generic ``.Map(...)`` on a non-allowlisted host (e.g. ``List``) must
+        not bind to an unrelated extension method definition.
+        """
+        (tmp_path / "Program.cs").write_text(
+            """using Microsoft.AspNetCore.Builder;
+var items = new List<int>();
+items.MapSomething();
+"""
+        )
+        (tmp_path / "Other.cs").write_text(
+            """namespace Acme;
+public static class Helpers {
+    public static List<int> MapSomething(this List<int> xs) => xs;
+}
+"""
+        )
+        parsed = _build_parsed_files(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=["aspnet"])
+        # ``List<int>`` is not in the host allowlist → no edge.
+        assert not graph.has_edge("Program.cs", "Other.cs")
+
+    def test_extension_scan_fires_on_desktop_dotnet(self, tmp_path: Path) -> None:
+        """Map/Add/Use extension scan must run on any C# repo, including
+        desktop .NET projects with no ASP.NET imports (audit item #28).
+        """
+        (tmp_path / "App.xaml.cs").write_text(
+            """namespace Acme;
+public partial class App {
+    public App() {
+        var services = new ServiceCollection();
+        services.AddCatalogServices();
+    }
+}
+"""
+        )
+        (tmp_path / "Catalog.cs").write_text(
+            """using Microsoft.Extensions.DependencyInjection;
+namespace Acme;
+public static class CatalogExtensions {
+    public static IServiceCollection AddCatalogServices(this IServiceCollection services)
+    {
+        return services;
+    }
+}
+"""
+        )
+        parsed = _build_parsed_files(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+
+        # No ASP.NET signal at all — empty tech_stack, no AspNetCore imports.
+        add_framework_edges(graph, parsed, ctx, tech_stack=[])
+        assert graph.has_edge("App.xaml.cs", "Catalog.cs")
+        assert graph["App.xaml.cs"]["Catalog.cs"]["edge_type"] == "framework"
+
+    def test_no_edges_when_no_aspnet_signal(self, tmp_path: Path) -> None:
+        (tmp_path / "Plain.cs").write_text(
+            "namespace Plain;\npublic class Foo {}\n"
+        )
+        parsed = _build_parsed_files(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+
+        count = add_framework_edges(graph, parsed, ctx, tech_stack=[])
+        # Conftest detection runs unconditionally but should produce 0
+        # for a single C# file with no test conventions.
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Dynamic hints
+# ---------------------------------------------------------------------------
+
+
+class TestAssemblyScanDiscovery:
+    """A framework-discovered base plus that framework's registration call."""
+
+    def _edges(self, repo: Path, files: dict[str, str]) -> nx.DiGraph:
+        for rel, text in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(text)
+        parsed = _build_parsed_files(repo)
+        graph = nx.DiGraph()
+        graph.add_nodes_from(parsed)
+        add_framework_edges(graph, parsed, _ctx(repo, parsed), tech_stack=[])
+        return graph
+
+    _CONFIG = (
+        "using Microsoft.EntityFrameworkCore;\n"
+        "public class OrderConfiguration : IEntityTypeConfiguration<Order> {\n"
+        "    public void Configure(EntityTypeBuilder<Order> b) {}\n}\n"
+    )
+
+    def test_ef_configuration_is_wired_from_the_assembly_scan(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Data/AppDbContext.cs": (
+                    "public class AppDbContext : DbContext {\n"
+                    "    protected override void OnModelCreating(ModelBuilder m) =>\n"
+                    "        m.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);\n}\n"
+                ),
+                "Data/Config/OrderConfiguration.cs": self._CONFIG,
+            },
+        )
+        edge = graph.get_edge_data("Data/AppDbContext.cs", "Data/Config/OrderConfiguration.cs")
+        assert edge is not None and edge["edge_type"] == "framework"
+
+    def test_no_registration_call_means_no_edge(self, tmp_path: Path) -> None:
+        """The base alone is not evidence: nothing here scans the assembly."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Data/AppDbContext.cs": "public class AppDbContext : DbContext {}\n",
+                "Data/Config/OrderConfiguration.cs": self._CONFIG,
+            },
+        )
+        assert graph.in_degree("Data/Config/OrderConfiguration.cs") == 0
+
+    def test_fastendpoints_endpoint_and_validator(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.Services.AddFastEndpoints().SwaggerDocument();\n",
+                "Cart/AddToCart.cs": (
+                    "public class AddToCartEndpoint : Endpoint<AddToCartRequest, CartDto> {}\n"
+                    "public class AddToCartValidator : Validator<AddToCartRequest> {}\n"
+                ),
+            },
+        )
+        edge = graph.get_edge_data("Program.cs", "Cart/AddToCart.cs")
+        assert edge is not None
+        assert sorted(edge["imported_names"]) == ["AddToCartEndpoint", "AddToCartValidator"]
+
+    def test_the_edge_names_only_the_discovered_type(self, tmp_path: Path) -> None:
+        """A dead sibling type in a handler's file is not vouched for."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.Services.AddMediator();\n",
+                "Orders/CreateOrder.cs": (
+                    "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
+                    "public class DeadSibling {}\n"
+                ),
+            },
+        )
+        edge = graph.get_edge_data("Program.cs", "Orders/CreateOrder.cs")
+        assert edge is not None and edge["imported_names"] == ["CreateOrderHandler"]
+
+    def test_a_registration_call_in_a_comment_or_string_does_not_count(
+        self, tmp_path: Path
+    ) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": (
+                    "// builder.Services.AddMediator();\n"
+                    'var hint = "call AddMediator() to enable handlers";\n'
+                    'var doc = """\n    services.AddMediator();\n    """;\n'
+                ),
+                "Orders/CreateOrderHandler.cs": (
+                    "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
+                ),
+            },
+        )
+        assert graph.in_degree("Orders/CreateOrderHandler.cs") == 0
+
+    def test_a_project_the_registering_one_cannot_see_is_not_scanned(
+        self, tmp_path: Path
+    ) -> None:
+        sdk = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>{}</ItemGroup></Project>'
+        ref = '<ProjectReference Include="../Core/Core.csproj" />'
+        graph = self._edges(
+            tmp_path,
+            {
+                "App/App.csproj": sdk.format(ref),
+                "Core/Core.csproj": sdk.format(""),
+                "Other/Other.csproj": sdk.format(""),
+                "App/Program.cs": "builder.Services.AddMediator();\n",
+                "Core/CreateOrderHandler.cs": (
+                    "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
+                ),
+                "Other/StrayHandler.cs": (
+                    "public class StrayHandler : IRequestHandler<Stray, int> {}\n"
+                ),
+            },
+        )
+        assert graph.has_edge("App/Program.cs", "Core/CreateOrderHandler.cs")
+        assert graph.in_degree("Other/StrayHandler.cs") == 0
+
+    def test_a_class_named_like_a_handler_is_not_a_handler(self, tmp_path: Path) -> None:
+        """Name patterns do not count; only the declared base does."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.Services.AddMediator();\n",
+                "Orders/CreateOrderHandler.cs": "public class CreateOrderHandler {}\n",
+            },
+        )
+        assert graph.in_degree("Orders/CreateOrderHandler.cs") == 0
+
+
+class TestToolDiscoveredRoots:
+    """A type a tool finds with no call in code: its file is a root, not an edge target."""
+
+    _FACTORY = (
+        "using Microsoft.EntityFrameworkCore.Design;\n"
+        "namespace App.Data;\n"
+        "public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext> {\n"
+        "    public AppDbContext CreateDbContext(string[] args) => null;\n}\n"
+    )
+
+    def _roots(self, repo: Path, files: dict[str, str]) -> set[str]:
+        for rel, text in files.items():
+            (repo / rel).write_text(text)
+        parsed = _build_parsed_files(repo)
+        graph = nx.DiGraph()
+        graph.add_nodes_from(parsed)
+        add_framework_edges(graph, parsed, _ctx(repo, parsed), tech_stack=[])
+        return {p for p, d in graph.nodes(data=True) if d.get("is_reachability_root")}
+
+    def test_design_time_factory_is_a_root(self, tmp_path: Path) -> None:
+        assert self._roots(tmp_path, {"Factory.cs": self._FACTORY}) == {"Factory.cs"}
+
+    def test_design_time_services_is_a_root(self, tmp_path: Path) -> None:
+        text = "public class DesignServices : IDesignTimeServices {}\n"
+        assert self._roots(tmp_path, {"Design.cs": text}) == {"Design.cs"}
+
+    def test_an_ordinary_class_is_not_a_root(self, tmp_path: Path) -> None:
+        assert self._roots(tmp_path, {"Plain.cs": "public class Plain : Base {}\n"}) == set()
+
+    def test_a_dead_sibling_keeps_the_file_judged(self, tmp_path: Path) -> None:
+        text = self._FACTORY + "public class Dead {}\n"
+        assert self._roots(tmp_path, {"Factory.cs": text}) == set()
+
+
+class TestDotNetDynamicHints:
+    def test_di_registration_emits_interface_to_impl(self, tmp_path: Path) -> None:
+        (tmp_path / "IUserService.cs").write_text(
+            "namespace Acme;\npublic interface IUserService { }\n"
+        )
+        (tmp_path / "UserService.cs").write_text(
+            "namespace Acme;\npublic class UserService : IUserService { }\n"
+        )
+        (tmp_path / "Program.cs").write_text(
+            """var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddScoped<IUserService, UserService>();
+"""
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        targets = {(e.source, e.target) for e in edges}
+        # Program.cs registers it (registration site -> impl)
+        assert ("Program.cs", "UserService.cs") in targets
+        # Interface file is recorded as having a real implementation
+        assert ("IUserService.cs", "UserService.cs") in targets
+
+    def test_activator_create_instance_typeof(self, tmp_path: Path) -> None:
+        (tmp_path / "Plugin.cs").write_text(
+            "namespace Acme;\npublic class Plugin { }\n"
+        )
+        (tmp_path / "Loader.cs").write_text(
+            "namespace Acme;\npublic class Loader { void Load() { var p = Activator.CreateInstance(typeof(Plugin)); } }\n"
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        assert any(e.source == "Loader.cs" and e.target == "Plugin.cs" for e in edges)
+
+    def test_type_gettype_string_form(self, tmp_path: Path) -> None:
+        (tmp_path / "Worker.cs").write_text(
+            "namespace Acme;\npublic class Worker { }\n"
+        )
+        (tmp_path / "Boot.cs").write_text(
+            'namespace Acme;\npublic class Boot { void Go() { var t = Type.GetType("Acme.Worker"); } }\n'
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        assert any(e.source == "Boot.cs" and e.target == "Worker.cs" for e in edges)
+
+    def test_nameof_type_emits_dynamic_uses(self, tmp_path: Path) -> None:
+        """``nameof(MySettings)`` must surface as a dynamic edge to the
+        defining file (audit item #26).
+        """
+        (tmp_path / "MySettings.cs").write_text(
+            "namespace Acme;\npublic class MySettings { }\n"
+        )
+        (tmp_path / "Program.cs").write_text(
+            """namespace Acme;
+public class Bootstrap {
+    void Configure() {
+        services.Configure<MySettings>(nameof(MySettings));
+    }
+}
+"""
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        assert any(
+            e.source == "Program.cs"
+            and e.target == "MySettings.cs"
+            and e.hint_source.endswith(":nameof")
+            for e in edges
+        )
+
+    def test_typeof_type_emits_dynamic_uses(self, tmp_path: Path) -> None:
+        """``typeof(MyConverter)`` references must surface as dynamic edges.
+
+        Critical for ``[JsonConverter(typeof(X))]``,
+        ``[TypeConverter(typeof(X))]``, ``DataTemplate.DataType =
+        typeof(X)`` and manual DI registration.
+        """
+        (tmp_path / "BoolConverter.cs").write_text(
+            "namespace Acme;\npublic class BoolConverter { }\n"
+        )
+        (tmp_path / "Settings.cs").write_text(
+            """namespace Acme;
+public class Settings {
+    [JsonConverter(typeof(BoolConverter))]
+    public bool Flag { get; set; }
+}
+"""
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        assert any(
+            e.source == "Settings.cs"
+            and e.target == "BoolConverter.cs"
+            and e.hint_source.endswith(":typeof")
+            for e in edges
+        )
+
+    def test_typeof_lowercase_local_ignored(self, tmp_path: Path) -> None:
+        """``typeof(int)`` and lowercase identifiers must not bind."""
+        (tmp_path / "Foo.cs").write_text(
+            "namespace Acme;\npublic class Foo { void Go() { var t = typeof(int); } }\n"
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        assert not any(e.hint_source.endswith(":typeof") for e in edges)
+
+    def test_nameof_lowercase_member_ignored(self, tmp_path: Path) -> None:
+        """``nameof(someLocal)`` must NOT bind — only type-looking
+        identifiers are scanned to keep noise out.
+        """
+        (tmp_path / "Foo.cs").write_text(
+            'namespace Acme;\npublic class Foo { void Go(int someLocal) { var n = nameof(someLocal); } }\n'
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        assert not any(e.hint_source.endswith(":nameof") for e in edges)
+
+    def test_internals_visible_to_emits_friend_edge(self, tmp_path: Path) -> None:
+        (tmp_path / "AssemblyInfo.cs").write_text(
+            '[assembly: InternalsVisibleTo("Acme.Tests")]\n'
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        assert any(
+            e.source == "AssemblyInfo.cs" and e.target == "external:friend:Acme.Tests"
+            for e in edges
+        )
+
+    def test_skips_bin_obj_directories(self, tmp_path: Path) -> None:
+        (tmp_path / "obj" / "Debug").mkdir(parents=True)
+        (tmp_path / "obj" / "Debug" / "Generated.cs").write_text(
+            'public class Junk { void X() { Activator.CreateInstance(typeof(Plugin)); } }\n'
+        )
+        (tmp_path / "Plugin.cs").write_text("public class Plugin { }\n")
+        edges = DotNetDynamicHints().extract(tmp_path)
+        # No edge should originate from obj/...
+        assert not any("obj/" in e.source for e in edges)

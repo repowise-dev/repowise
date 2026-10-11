@@ -1,0 +1,1840 @@
+"""Unit tests for the Phase-6 perf dialects (Java / Go / C#).
+
+Mirrors ``test_perf_io_in_loop.py`` (Python/TS) but for the three dialects added
+on top of the ``PerfDialect`` registry: each exercises the per-grammar callee
+arm, the execution-sink lexicon + its evidence gates, the new markers
+(``regex_compile_in_loop`` for Java/Go, ``defer_in_loop`` for Go,
+sync-over-async ``blocking_sync_in_async`` for C#), and the precision hazards
+the plan flags (ambiguous ``find``/``get``/``Find`` collisions, in-memory LINQ).
+
+Grammar availability is best-effort: a missing tree-sitter grammar skips the
+case (the walker degrades to "no perf hits", which the registry guarantees).
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+
+import pytest
+
+from repowise.core.analysis.health.complexity import walk_file
+
+_FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
+
+
+def _walk(rel: str, lang: str):
+    path = _FIXTURE_DIR / rel
+    return walk_file(str(path), lang, path.read_bytes())
+
+
+def _kinds(perf_hits) -> Counter:
+    return Counter(h.kind for h in perf_hits)
+
+
+def _hits(lang: str, src: str):
+    fc = walk_file(f"t.{lang}", lang, src.encode())
+    return sorted((h.kind, h.detail) for h in fc.perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# Java
+# ---------------------------------------------------------------------------
+
+
+def test_java_fixture_counts():
+    fc = _walk("java/PerfIoInLoop.java", "java")
+    counts = _kinds(fc.perf_hits)
+    # findByName + executeQuery (db) · Files.readString + new FileInputStream (fs)
+    assert counts["io_in_loop"] == 4
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {"db", "filesystem"}
+    assert counts["regex_compile_in_loop"] == 1
+    assert counts["string_concat_in_loop"] == 1
+    # The hoisted ``Pattern.compile`` and the ``matches()`` / ``length()`` calls
+    # do not fire; the out-of-loop ``executeQuery`` does not fire.
+    assert counts["blocking_sync_in_async"] == 0
+
+
+_JAVA_CASES = [
+    (
+        "class A{void lock(){for(;;){ if(l.tryLock(1,T)) return; l.lock(); }}}",
+        [],
+        "the retry loop inside lock() is the acquisition itself",
+    ),
+    (
+        "class A{void m(java.util.List<String> ks){for(String k:ks){ l.lock(); }}}",
+        [("lock_in_loop", "")],
+        "a lock taken per item in an ordinary method still fires",
+    ),
+    (
+        "class A{void lockAll(java.util.List<Object> ks){for(Object k:ks){ locks.get(k).lock(); }}}",
+        [("lock_in_loop", "")],
+        "a lock() that iterates over items takes a lock per item",
+    ),
+    (
+        "class A{void lock(java.util.List<Object> ks){for(;;){ for(Object k:ks){ locks.get(k).lock(); } return; }}}",
+        [("lock_in_loop", "")],
+        "a per-item loop nested in the spin loop still locks per item",
+    ),
+    (
+        "class A{void m(java.util.List<String> ids){"
+        "for(String id:ids){ this.repo.findById(id); }}}",
+        [("io_in_loop", "db")],
+        "Spring-Data findById derived query (no import needed)",
+    ),
+    (
+        "import java.util.Map;\n"
+        "class A{void m(java.util.List<String> ks, Map<String,String> cache){"
+        "for(String k:ks){ cache.get(k); }}}",
+        [],
+        "ambiguous get() with NO db import is gated out",
+    ),
+    (
+        "import org.springframework.data.jpa.repository.JpaRepository;\n"
+        "class A{void m(java.util.List<String> ks, Repo cache){"
+        "for(String k:ks){ cache.get(k); }}}",
+        [("io_in_loop", "db")],
+        "ambiguous get() WITH a db import passes the file-level gate",
+    ),
+    (
+        "class A{void m(java.util.List<String> ids){for(String id:ids){ helper(id); }}}",
+        [],
+        "a plain helper call in a loop is not a sink",
+    ),
+    (
+        "class A{void m(java.util.List<String> ks, Settings settings){"
+        "for(String k:ks){ settings.getByPrefix(k); }}}",
+        [],
+        "a ...By[A-Z] name on a non-repository receiver is not a derived query",
+    ),
+    (
+        "class A{void m(java.util.List<byte[]> bs){"
+        "for(byte[] b:bs){ java.net.InetAddress.getByAddress(b); }}}",
+        [],
+        "a static factory named like a derived query is not db",
+    ),
+    (
+        "class A{void m(java.util.List<String> ids, UserRepository userRepository){"
+        "for(String id:ids){ userRepository.findByEmail(id); }}}",
+        [("io_in_loop", "db")],
+        "a derived query on a repository-named receiver is db without an import",
+    ),
+    (
+        "import org.springframework.data.jpa.repository.JpaRepository;\n"
+        "class A{void m(java.util.List<String> ids, Users users){"
+        "for(String id:ids){ users.findByEmail(id); }}}",
+        [("io_in_loop", "db")],
+        "a derived query in a file importing Spring Data is db",
+    ),
+    (
+        "import java.sql.JDBCType;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "a type-only java.sql import is not db evidence",
+    ),
+    (
+        "import static java.sql.Types.BIGINT;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "a static-imported java.sql constant is not db evidence",
+    ),
+    (
+        "import java.sql.Statement;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "JDBC evidence does not license get, which JDBC has no verb for",
+    ),
+    (
+        "import java.sql.Statement;\n"
+        "class A{void m(java.util.List<String> qs, Statement st){"
+        "for(String q:qs){ st.execute(q); }}}",
+        [("io_in_loop", "db")],
+        "JDBC evidence licenses execute",
+    ),
+    (
+        "class A{void m(java.util.List<Ctx> cs){for(Ctx c:cs){ executeQuery(c); }}}",
+        [],
+        "a bare executeQuery is the class's own method, not a JDBC statement",
+    ),
+    (
+        "class A{void m(java.util.List<java.lang.module.ModuleFinder> fs){"
+        "for(java.lang.module.ModuleFinder f:fs){ f.findAll(); }}}",
+        [],
+        "a shared repository verb on a non-repository receiver is not db",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _JAVA_CASES, ids=[c[2] for c in _JAVA_CASES])
+def test_java_cases(src, expected, note):
+    assert _hits("java", src) == sorted(expected), note
+
+
+# ---------------------------------------------------------------------------
+# Go
+# ---------------------------------------------------------------------------
+
+
+def test_go_fixture_counts():
+    fc = _walk("go/perf_io_in_loop.go", "go")
+    counts = _kinds(fc.perf_hits)
+    # db (db.Query) · network (http.Get) · filesystem (os.Open x2, incl. the
+    # one in deferInLoop). The constant-bound and out-of-loop queries do not.
+    assert counts["io_in_loop"] == 4
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
+        "db",
+        "network",
+        "filesystem",
+    }
+    assert counts["defer_in_loop"] == 1
+    assert counts["regex_compile_in_loop"] == 1
+    assert counts["string_concat_in_loop"] == 1
+
+
+_GO_CASES = [
+    (
+        'package m\nimport "gorm.io/gorm"\n'
+        "func f(db *gorm.DB, ids []int){ for _, id := range ids { db.Find(id) } }",
+        [("io_in_loop", "db")],
+        "GORM Find with a gorm import fires",
+    ),
+    (
+        "package m\nfunc f(repo Repo, ids []int){ for _, id := range ids { repo.Find(id) } }",
+        [],
+        "ambiguous Find with NO db import is gated out",
+    ),
+    (
+        'package m\nimport "database/sql"\nfunc f(db *sql.DB){ for {} ; db.Query("x") }',
+        [],
+        "clause-less for{} is a real loop but the query is outside it",
+    ),
+    (
+        'package m\nimport "net/http"\n'
+        "func f(urls []string){ for _, u := range urls { http.Get(u) } }",
+        [("io_in_loop", "network")],
+        "net/http Get in a range loop",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _GO_CASES, ids=[c[2] for c in _GO_CASES])
+def test_go_cases(src, expected, note):
+    assert _hits("go", src) == sorted(expected), note
+
+
+def test_go_string_concat_reset_per_iteration_not_flagged():
+    reassigned = (
+        'package p\nfunc f(rows []string){ for _, row := range rows { line = row; line += "," } }\n'
+    )
+    short_declared = 'package p\nfunc f(rows []string){ for _, row := range rows { line := row; line += "," } }\n'
+    var_declared = 'package p\nfunc f(rows []string){ for _, row := range rows { var line string; line += "," } }\n'
+    accumulator = (
+        'package p\nfunc f(rows []string){ out := ""; for _, row := range rows { out += "," } }\n'
+    )
+
+    for source in (reassigned, short_declared, var_declared):
+        assert not any(kind == "string_concat_in_loop" for kind, _ in _hits("go", source))
+    assert ("string_concat_in_loop", "") in _hits("go", accumulator)
+
+
+# ---------------------------------------------------------------------------
+# C#
+# ---------------------------------------------------------------------------
+
+
+def test_csharp_fixture_counts():
+    fc = _walk("csharp/PerfIoInLoop.cs", "csharp")
+    counts = _kinds(fc.perf_hits)
+    # db (ToListAsync, SaveChangesAsync, sync ToList) · network (GetAsync) ·
+    # filesystem (File.ReadAllText) = 5.
+    assert counts["io_in_loop"] == 5
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
+        "db",
+        "network",
+        "filesystem",
+    }
+    assert counts["string_concat_in_loop"] == 1
+    # .Result + .Wait() in async; the awaited ``await task`` does not fire.
+    assert counts["blocking_sync_in_async"] == 2
+
+
+_CSHARP_CASES = [
+    (
+        "using Microsoft.EntityFrameworkCore;\n"
+        "class A{ void M(DbContext ctx, System.Collections.Generic.List<int> ids){"
+        "foreach(var id in ids){ ctx.Users.ToList(); }}}",
+        [("io_in_loop", "db")],
+        "sync ToList WITH an EF import passes the file-level gate",
+    ),
+    (
+        "class A{ void M(System.Collections.Generic.List<int> ids){"
+        "foreach(var id in ids){ ids.ToList(); }}}",
+        [],
+        "in-memory ToList with NO db import is gated out",
+    ),
+    (
+        "class A{ async System.Threading.Tasks.Task M("
+        "System.Collections.Generic.List<int> ids){"
+        "foreach(var id in ids){ await ctx.Set().FirstOrDefaultAsync(); }}}",
+        # Awaited EF query in a loop: io_in_loop + the serial_await co-signal.
+        [("io_in_loop", "db"), ("serial_await_in_loop", "db")],
+        "EF *Async family is unambiguous db (no import gate)",
+    ),
+    (
+        "class A{ void M(System.Collections.Generic.List<int> ids){"
+        "foreach(var id in ids){ _ = SaveChangesAsync(); }}"
+        " System.Threading.Tasks.Task SaveChangesAsync() => null; }",
+        [],
+        "a bare SaveChangesAsync is the class's own method, not a DbContext call",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _CSHARP_CASES, ids=[c[2] for c in _CSHARP_CASES])
+def test_csharp_cases(src, expected, note):
+    assert _hits("csharp", src) == sorted(expected), note
+
+
+# ---------------------------------------------------------------------------
+# Rust
+# ---------------------------------------------------------------------------
+
+
+def test_rust_fixture_counts():
+    fc = _walk("rust/perf_io_in_loop.rs", "rust")
+    counts = _kinds(fc.perf_hits)
+    # db (sqlx fetch_all) · filesystem (std::fs::read + fs::read_to_string) ·
+    # network (reqwest::get) = 4. The constant-range and out-of-loop reads and
+    # the push_str loop (amortized O(1)) do not fire.
+    assert counts["io_in_loop"] == 4
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
+        "db",
+        "filesystem",
+        "network",
+    }
+    # The two awaited sinks (sqlx + reqwest) carry the serial_await co-signal.
+    assert counts["serial_await_in_loop"] == 2
+    assert counts["regex_compile_in_loop"] == 1
+    assert counts["resource_construction_in_loop"] == 1
+    assert counts["blocking_sync_in_async"] == 1
+    # Rust String building is amortized, so string_concat is never a Rust marker.
+    assert counts["string_concat_in_loop"] == 0
+
+
+_RUST_CASES = [
+    (
+        "async fn f(pool: &PgPool, ids: Vec<i32>){ for id in ids { "
+        'let _ = sqlx::query("x").fetch_one(pool).await; } }',
+        [("io_in_loop", "db"), ("serial_await_in_loop", "db")],
+        "a sqlx fetch_one verb in a for loop is an awaited db round-trip",
+    ),
+    (
+        "fn f(paths: Vec<String>){ for p in paths { let _ = std::fs::read(&p); } }",
+        [("io_in_loop", "filesystem")],
+        "std::fs::read keys on the `fs` module qualifier, not the `std` root",
+    ),
+    (
+        "use reqwest;\nasync fn f(urls: Vec<String>){ for u in urls { "
+        "let _ = reqwest::get(&u).await; } }",
+        [("io_in_loop", "network"), ("serial_await_in_loop", "network")],
+        "reqwest::get free function in a loop is a network round-trip",
+    ),
+    (
+        "async fn f(tx: Sender<i32>, n: i32){ for i in 0..n { tx.send(i).await; } }",
+        [],
+        "a channel tx.send(i).await is NOT a reqwest round-trip (no false sink)",
+    ),
+    (
+        'fn f(items: Vec<i32>){ for x in items { let r = Regex::new("^a$"); let _ = r; } }',
+        [("regex_compile_in_loop", "")],
+        "Regex::new with a static literal pattern is hoistable",
+    ),
+    (
+        "fn f(items: Vec<String>){ for x in items { let r = Regex::new(&x); let _ = r; } }",
+        [],
+        "Regex::new with a dynamic arg may vary per iteration — not flagged",
+    ),
+    (
+        "async fn f(urls: Vec<String>){ for u in urls { let _ = PgPool::connect(&u).await; } }",
+        [("resource_construction_in_loop", "")],
+        "a fresh PgPool::connect per iteration is resource construction",
+    ),
+    (
+        "fn f(items: Vec<i32>){ let mut s = String::new(); "
+        "for x in items { s.push_str(&x.to_string()); } let _ = s; }",
+        [],
+        "String::push_str is amortized O(1) — Rust has no string_concat marker",
+    ),
+    (
+        "async fn f(){ let _ = futures::executor::block_on(g()); }",
+        [("blocking_sync_in_async", "block_on")],
+        "block_on inside an async fn blocks the executor",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _RUST_CASES, ids=[c[2] for c in _RUST_CASES])
+def test_rust_cases(src, expected, note):
+    assert _hits("rust", src) == sorted(expected), note
+
+
+def test_rust_execute_gated_on_db_import():
+    """``.execute()`` is ambiguous, so it fires only with file-level db evidence
+    (a ``use sqlx::...`` resolved through the ``use_declaration`` io_names pass)."""
+    with_import = (
+        "use sqlx::PgPool;\nasync fn f(pool: &PgPool, ids: Vec<i32>){ "
+        'for id in ids { let _ = sqlx::query("x").execute(pool).await; } }'
+    )
+    no_import = "async fn f(c: &Conn, ids: Vec<i32>){ for id in ids { c.execute(id); } }"
+    assert ("io_in_loop", "db") in _hits("rust", with_import)
+    assert not any(k == "io_in_loop" for k, _ in _hits("rust", no_import))
+
+
+def test_rust_fs_in_async_blocks():
+    """Sync ``std::fs`` inside an ``async fn`` is executor-blocking; the awaited
+    ``tokio::fs`` equivalent is excluded by the walker's not-awaited gate."""
+    blocking = "async fn f(p: String){ let _ = std::fs::read(&p); }"
+    assert ("blocking_sync_in_async", "fs::read") in _hits("rust", blocking)
+    # tokio::fs::read is always awaited -> never read as a blocking sync call.
+    awaited = "async fn f(p: String){ let _ = tokio::fs::read(&p).await; }"
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", awaited))
+
+
+# ---------------------------------------------------------------------------
+# Phase-7c precision fixes (multi-language corpus FP classes)
+# ---------------------------------------------------------------------------
+
+
+def test_csharp_result_pattern_collision_not_blocking():
+    """``.Result`` on a namespace/Result-DTO path is NOT a Task block.
+
+    Phase-7c C# corpus: 10/12 ``blocking_sync_in_async`` FPs were
+    ``Ardalis.Result.ResultStatus.X`` (``.Result`` as an intermediate namespace
+    segment) + a ``response.Result = ...`` DTO write. Neither blocks a thread.
+    """
+    # Intermediate segment of a qualified name (Ardalis.Result.ResultStatus).
+    assert (
+        _hits(
+            "csharp",
+            "class A{ async System.Threading.Tasks.Task M(){ var s = "
+            "Ardalis.Result.ResultStatus.Error; }}",
+        )
+        == []
+    )
+    # Write to a DTO ``.Result`` property (assignment target, not a read).
+    assert (
+        _hits(
+            "csharp",
+            "class A{ async System.Threading.Tasks.Task M(R response){ response.Result = 1; }}",
+        )
+        == []
+    )
+
+
+def test_csharp_task_result_still_blocks():
+    """A genuine terminal ``task.Result`` read in async still fires."""
+    assert ("blocking_sync_in_async", ".Result") in _hits(
+        "csharp",
+        "class A{ async System.Threading.Tasks.Task M(System.Threading.Tasks.Task<int> t){ "
+        "var x = t.Result; }}",
+    )
+
+
+def test_csharp_task_result_chained_read_still_blocks():
+    """``itemGetTask.Result.CatalogItem`` (camelCase local) still blocks.
+
+    Phase-7c eShopOnWeb: a genuine ``Task.Result`` read FOLLOWED by a member
+    access has the same ``X.Result.Y`` shape as the ``Ardalis.Result.X``
+    namespace FP; the receiver-root casing gate keeps the real one.
+    """
+    assert ("blocking_sync_in_async", ".Result") in _hits(
+        "csharp",
+        "class A{ async System.Threading.Tasks.Task M(){ "
+        "var c = itemGetTask.Result.CatalogItem; }}",
+    )
+
+
+def _csharp_async(body: str) -> list[tuple[str, str]]:
+    src = (
+        "class A{ async System.Threading.Tasks.Task M(bool c){ "
+        "var t = F(); var u = G(); " + body + " }}"
+    )
+    return [h for h in _hits("csharp", src) if h[0] == "blocking_sync_in_async"]
+
+
+_AWAITED_BEFORE_READ = [
+    ("await t; var r = t.Result;", "direct await"),
+    ("await t.ConfigureAwait(false); var r = t.Result;", "ConfigureAwait"),
+    ("await Task.WhenAll(t, u); var r = t.Result;", "WhenAll args"),
+    ("await Task.WhenAll(t, u); var r = t.Result.Items;", "chained read after WhenAll"),
+    (
+        "var l = new List<Task>(); l.Add(t); l.Add(u); await Task.WhenAll(l); var r = t.Result;",
+        "WhenAll over a list the task was added to",
+    ),
+    ("var a = new[] { t, u }; await Task.WhenAll(a); var r = t.Result;", "array initializer"),
+    ("await Task.WhenAll(new[] { t, u }); var r = u.Result;", "inline array"),
+    ("var d = await Task.WhenAny(t, u); var r = d.Result;", "task returned by WhenAny"),
+    ("await Task.WhenAll(t, u); t.GetAwaiter().GetResult();", "GetAwaiter().GetResult()"),
+    ("await t; if (c) { var r = t.Result; }", "read in a branch after a straight-line await"),
+]
+
+
+@pytest.mark.parametrize(
+    "body", [c[0] for c in _AWAITED_BEFORE_READ], ids=[c[1] for c in _AWAITED_BEFORE_READ]
+)
+def test_csharp_result_after_await_not_blocking(body):
+    """A task awaited earlier in the method is complete: ``.Result`` does not block."""
+    assert _csharp_async(body) == []
+
+
+_NOT_AWAITED_BEFORE_READ = [
+    ("var r = t.Result;", "no await at all"),
+    ("if (c) { await t; } var r = t.Result;", "await inside a branch that may not run"),
+    ("await u; var r = t.Result;", "a different task was awaited"),
+    ("await Task.WhenAll(u); var r = t.Result;", "WhenAll without the task"),
+    ("var r = t.Result; await t;", "await after the read"),
+    ("await Task.WhenAny(t, u); var r = t.Result;", "WhenAny argument may still run"),
+    ("System.Action f = async () => await t; var r = t.Result;", "await inside a lambda"),
+]
+
+
+@pytest.mark.parametrize(
+    "body", [c[0] for c in _NOT_AWAITED_BEFORE_READ], ids=[c[1] for c in _NOT_AWAITED_BEFORE_READ]
+)
+def test_csharp_result_without_prior_await_still_blocks(body):
+    assert _csharp_async(body) == [("blocking_sync_in_async", ".Result")]
+
+
+def test_go_sql_rows_scan_not_io_in_loop():
+    """``rows.Scan`` inside ``for rows.Next()`` is a cursor decode, not a sink.
+
+    Phase-7c syft corpus: ``*sql.Rows.Scan`` FP'd ``io_in_loop`` (the query ran
+    once, outside the loop). ``Scan`` is no longer a GORM finisher verb.
+    """
+    src = (
+        'package p\nimport "database/sql"\n'
+        "func f(rows *sql.Rows){ for rows.Next() { var x int; _ = rows.Scan(&x) } }\n"
+    )
+    assert not any(k == "io_in_loop" for k, _ in _hits("go", src))
+
+
+def test_go_gorm_create_still_io_in_loop():
+    """A real GORM finisher (``Create``) in a range loop still fires."""
+    src = (
+        'package p\nimport "gorm.io/gorm"\n'
+        "func f(db *gorm.DB, items []int){ for _, it := range items { db.Create(&it) } }\n"
+    )
+    assert ("io_in_loop", "db") in _hits("go", src)
+
+
+def test_python_asyncio_sleep_not_a_sink():
+    """``await asyncio.sleep(...)`` in a loop is a yield, not network I/O.
+
+    Phase-7c headroom corpus: the awaited-network arm FP'd ``io_in_loop`` /
+    ``serial_await_in_loop`` on every backoff/poll loop.
+    """
+    src = (
+        "import asyncio\nasync def f(items):\n    for x in items:\n        await asyncio.sleep(x)\n"
+    )
+    kinds = {k for k, _ in _hits("python", src)}
+    assert "io_in_loop" not in kinds
+    assert "serial_await_in_loop" not in kinds
+
+
+# ---------------------------------------------------------------------------
+# Phase-7d marker refinements (precision lifts surfaced by the 7c corpus)
+# ---------------------------------------------------------------------------
+
+
+def test_go_regex_dynamic_pattern_not_flagged():
+    """``regexp.MustCompile(pat)`` with a dynamic arg is not hoistable.
+
+    Phase-7c Go corpus: 10 dynamic-arg cases were UNSURE (the pattern may vary
+    per iteration). Only a string-literal pattern is unambiguously hoistable.
+    """
+    dyn = 'package p\nimport "regexp"\nfunc f(ids []string){ for _, id := range ids { regexp.MustCompile(id) } }\n'
+    lit = 'package p\nimport "regexp"\nfunc f(ids []string){ for _, id := range ids { regexp.MustCompile(`^x$`) } }\n'
+    assert not any(k == "regex_compile_in_loop" for k, _ in _hits("go", dyn))
+    assert ("regex_compile_in_loop", "") in _hits("go", lit)
+
+
+def test_python_string_concat_reset_per_iteration_not_flagged():
+    """``buf = seed; ... buf += part`` reset each iteration is bounded, not O(n^2).
+
+    Phase-7c headroom corpus: reset-per-iteration was the dominant Py FP (77.8%).
+    """
+    reset = (
+        "def f(rows):\n"
+        "    for r in rows:\n"
+        "        buf = 'x'\n"
+        "        for c in r:\n"
+        "            buf += 'y'\n"
+    )
+    accum = (
+        "def g(rows):\n    out = ''\n    for r in rows:\n        out += 'line'\n    return out\n"
+    )
+    assert not any(k == "string_concat_in_loop" for k, _ in _hits("python", reset))
+    assert ("string_concat_in_loop", "") in _hits("python", accum)
+
+
+def _ts_concat_lines(src: str) -> list[int]:
+    fc = walk_file("t.ts", "typescript", src.encode())
+    return [h.line for h in fc.perf_hits if h.kind == "string_concat_in_loop"]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # Declared fresh each pass: bounded per iteration.
+        "function f(fs){ for (const f of fs){ let js = read(f);\n js += '\\n//map'; write(f, js) } }",
+        # Declared in the same branch that appends: fresh whenever the append runs.
+        "function f(fs){ for (const f of fs){ if (ok(f)) { let js = read(f); js += '//map'; write(js) } } }",
+        # Reset by a plain assignment inside the loop.
+        "function f(rs){ let v; for (const r of rs){ v = r.style; v += ';'; use(v) } }",
+        # Appended once, right before leaving the loop or the function.
+        "function f(s){ let m=''; for (const c of s){ if (c.stop) { m += ' [cut]'; break } } return m }",
+        "function f(xs){ let m=''; for (const x of xs){ if (x.bad) { m += 'bad'; return m } } }",
+        "function f(xs){ let m='e:'; for (const x of xs){ if (x.bad) { m += 'bad'; throw new Error(m) } } }",
+        # The break leaves the inner loop and the outer loop re-binds the name.
+        "function f(ys){ for (const y of ys){ let s=''; while (more()){ s += 'a'; break } use(s) } }",
+    ],
+)
+def test_ts_string_concat_bounded_per_iteration_not_flagged(src):
+    assert _ts_concat_lines(src) == []
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "function f(xs){ let s=''; for (const x of xs){ s += `${x}\\n` } return s }",
+        # A re-bind that only some passes run is no reset.
+        "function f(xs){ let s=''; for (const x of xs){ if (x.first) { s = 'head' } s += `${x}` } return s }",
+        "function f(xs){ let s=''; for (const x of xs){ for (const y of x){ s = y } s += 'a' } return s }",
+        # ``s = s + ...`` keeps the old value, so it is no reset.
+        "function f(xs){ let s=''; for (const x of xs){ s = s + 'a'; s += 'b' } return s }",
+        # A break that only leaves a switch, or only the inner of two loops.
+        "function f(xs){ let s=''; for (const x of xs){ switch (x.k) { case 1: s += 'a'; break } } return s }",
+        "function f(ys){ let s=''; for (const y of ys){ for (const x of y){ s += 'a'; break } } return s }",
+        # Declared in the outer loop, grown across the inner one.
+        "function f(ys){ for (const y of ys){ let s=''; for (const x of y){ s += 'a' } use(s) } }",
+        # A path to ``continue`` before the exit keeps the loop going.
+        "function f(xs){ let s=''; for (const x of xs){ s += 'a'; if (x) continue; break } return s }",
+        # A subscript target is never re-bound by a declaration.
+        "function f(xs, buf){ for (const x of xs){ buf[0] += ` ${x}` } }",
+    ],
+)
+def test_ts_string_concat_across_iterations_still_flagged(src):
+    assert len(_ts_concat_lines(src)) == 1
+
+
+def test_ts_string_concat_loop_local_and_accumulator_in_one_loop():
+    src = (
+        "function f(xs){ let out='';\n"
+        " for (const x of xs){ let v = x.name;\n"
+        " v += ';';\n"
+        " out += `${v}`; }\n"
+        " return out }"
+    )
+    assert _ts_concat_lines(src) == [4]
+
+
+def test_ts_nested_io_requires_collection_outer_loop():
+    """A ``while`` cursor wrapping an inner ``for ... of`` is io_in_loop, not nested.
+
+    Phase-7c dub corpus: pagination ``while (hasMore) { for (row of chunk) … }``
+    miscounted as ``nested_loop_with_io``; the outer loop must iterate a
+    collection for the O(n*m) round-trip claim to hold.
+    """
+    cursor = (
+        "async function f(prisma){ while (hasMore) { for (const r of chunk) {"
+        " await prisma.user.findMany(); } } }"
+    )
+    nested = (
+        "async function g(prisma, xs, ys){ for (const x of xs) { for (const y of ys) {"
+        " await prisma.user.findMany(); } } }"
+    )
+    assert not any(k == "nested_loop_with_io" for k, _ in _hits("typescript", cursor))
+    assert ("nested_loop_with_io", "db") in _hits("typescript", nested)
+
+
+def test_ts_prisma_verb_is_a_sink_only_as_a_member_call():
+    """A bare ``aggregate(xs)`` is a local function, not a database round trip.
+
+    The prisma lexicon is reached through the client (``prisma.user.aggregate``),
+    so matching the bare name flagged pure arithmetic as an N+1 in a codebase
+    with no database at all.
+    """
+    pure = (
+        "function aggregate(xs){ return xs.reduce(roll); }"
+        " function view(sorted, ratio){ for (const chunk of sorted) {"
+        " const rolled = aggregate(chunk); } }"
+    )
+    assert _hits("typescript", pure) == []
+
+    # The real thing still reports, through the client object.
+    real = (
+        "async function f(prisma, xs){ for (const x of xs) {"
+        " await prisma.user.aggregate({ where: x }); } }"
+    )
+    assert ("io_in_loop", "db") in _hits("typescript", real)
+
+    # And the other bare names the lexicon carries are equally not sinks.
+    for verb in ("groupBy", "upsert", "findMany"):
+        src = f"function {verb}(xs){{ return xs; }} function g(xs){{ for (const x of xs) {{ {verb}(x); }} }}"
+        assert _hits("typescript", src) == [], verb
+
+
+# ---------------------------------------------------------------------------
+# Phase-7d language-specific markers
+# ---------------------------------------------------------------------------
+
+
+def test_go_goroutine_in_range_loop_but_not_accept_loop():
+    spawn = "package m\nfunc f(items []int){ for _, it := range items { go work(it) } }"
+    accept = "package m\nfunc f(){ for { go handle() } }"
+    # Single-variable ``for i := range n`` is a bounded count loop (Go 1.22
+    # range-over-int / a count constant), not a per-element fan-out (Phase-7d).
+    count = "package m\nfunc f(){ for i := range numG { go work(i) } }"
+    assert ("goroutine_in_unbounded_loop", "") in _hits("go", spawn)
+    assert not any(k == "goroutine_in_unbounded_loop" for k, _ in _hits("go", accept))
+    assert not any(k == "goroutine_in_unbounded_loop" for k, _ in _hits("go", count))
+
+
+_GO_SEMAPHORE = (
+    "package p\nfunc f(items []int, n int, cfg Config) {{\n"
+    "\tsem := {make}\n"
+    "\tfor _, it := range items {{\n"
+    "{acquire}"
+    "\t\tgo func() {{ defer func(){{ <-sem }}(); _ = it }}()\n"
+    "\t}}\n}}\n"
+)
+_GO_ACQUIRE = "\t\tsem <- struct{}{}\n"
+
+
+def _go_semaphore_hits(make: str, acquire: str = _GO_ACQUIRE) -> list[tuple[str, str]]:
+    hits = _hits("go", _GO_SEMAPHORE.format(make=make, acquire=acquire))
+    return [hit for hit in hits if hit[0] == "goroutine_in_unbounded_loop"]
+
+
+@pytest.mark.parametrize(
+    "size",
+    ["4", "0x10", "1_000", "n", "nParallel", "cfg.Workers", "runtime.NumCPU()", "n * 2", "int64(n)"],
+)
+def test_go_semaphore_bounds_the_loop_whatever_sizes_it(size):
+    """A semaphore sized from a flag or a config value is the usual form; only
+    an integer literal used to count as a bound (#2966)."""
+    assert _go_semaphore_hits(f"make(chan struct{{}}, {size})") == []
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        "make(chan struct{})",
+        "make(chan struct{}, 0)",
+        "make(chan struct{}, 00)",
+        "make(chan struct{}, 0x0)",
+        "make(chan struct{}, 0b0)",
+        "make(chan struct{}, 0o0)",
+        "make(chan struct{}, 0_0)",
+    ],
+)
+def test_go_unbuffered_channel_is_not_a_semaphore(make):
+    assert _go_semaphore_hits(make) == [("goroutine_in_unbounded_loop", "")]
+
+
+def test_go_semaphore_never_acquired_does_not_bound_the_loop():
+    assert _go_semaphore_hits("make(chan struct{}, n)", acquire="") == [
+        ("goroutine_in_unbounded_loop", "")
+    ]
+
+
+def test_python_list_insert_zero_vs_variable_index():
+    front = "def f(xs):\n    out = []\n    for x in xs:\n        out.insert(0, x)\n"
+    idx = "def f(xs):\n    out = []\n    for i, x in enumerate(xs):\n        out.insert(i, x)\n"
+    # A list re-created fresh each iteration is bounded, not O(n^2) (Phase-7d
+    # reset guard — the same FP class as string_concat).
+    reset = "def f(xs):\n    for x in xs:\n        cand = [x]\n        cand.insert(0, prev)\n"
+    assert ("list_insert_zero_in_loop", "") in _hits("python", front)
+    assert not any(k == "list_insert_zero_in_loop" for k, _ in _hits("python", idx))
+    assert not any(k == "list_insert_zero_in_loop" for k, _ in _hits("python", reset))
+
+
+def test_ts_json_parse_only_deep_clone_idiom():
+    """Bare ``JSON.parse(x.payload)`` of a distinct per-iteration payload is
+    necessary work (Phase-7d: bare parse/stringify was 0% precision)."""
+    bare = "function f(xs){ for (const x of xs) { const c = JSON.parse(x.payload); } }"
+    assert not any(k == "json_parse_in_loop" for k, _ in _hits("typescript", bare))
+
+
+def test_python_pd_concat_in_loop():
+    src = (
+        "import pandas as pd\n"
+        "def f(chunks):\n"
+        "    df = pd.DataFrame()\n"
+        "    for c in chunks:\n"
+        "        df = pd.concat([df, c])\n"
+    )
+    assert ("pd_concat_in_loop", "") in _hits("python", src)
+
+
+def test_python_pandas_iterrows_in_loop():
+    # The iterrows() call lives in the loop HEADER, so the body call-markers
+    # never see it — the loop_iterable_call_marker hook fires on the loop node.
+    # Soft-gated on a pandas import present in the file (a bare .iterrows() with
+    # no pandas import is now treated as a name collision, not a DataFrame).
+    iterrows = "import pandas\ndef f(df):\n    for _, row in df.iterrows():\n        use(row)\n"
+    assert ("pandas_iterrows_in_loop", "") in _hits("python", iterrows)
+    # itertuples is the recommended faster alternative — never flagged.
+    tuples = "def f(df):\n    for row in df.itertuples():\n        use(row)\n"
+    assert not any(k == "pandas_iterrows_in_loop" for k, _ in _hits("python", tuples))
+    # A plain collection iterable is not a header-call smell.
+    plain = "def f(rows):\n    for row in rows:\n        use(row)\n"
+    assert not any(k == "pandas_iterrows_in_loop" for k, _ in _hits("python", plain))
+
+
+def test_python_pathlib_round_trips_are_filesystem_sinks():
+    """``p.read_text()`` in a loop is per-iteration file I/O.
+
+    Python's filesystem lexicon recognised only the bare ``open(...)`` builtin,
+    so the idiom the whole ecosystem actually uses was invisible: a loop full of
+    ``Path.read_text()`` scored a perfect 10/10 on the performance dimension.
+    Matched on the method name alone because only a ``pathlib.Path`` spells
+    these — the receiver is usually a plain local (``src_path.read_text()``),
+    so there is no import to classify.
+    """
+    for method in ("read_text", "read_bytes", "write_text", "write_bytes"):
+        src = f"def f(ps):\n    for p in ps:\n        p.{method}()\n"
+        assert ("io_in_loop", "filesystem") in _hits("python", src), method
+    # The constructor-receiver form resolves the same way.
+    ctor = "from pathlib import Path\ndef f(ps):\n    for p in ps:\n        Path(p).read_text()\n"
+    assert ("io_in_loop", "filesystem") in _hits("python", ctor)
+
+
+def test_python_metadata_syscalls_are_not_filesystem_sinks():
+    """``exists`` / ``stat`` / ``glob`` in a loop are cheap and usually correct.
+
+    The deliberate precision boundary: flagging a metadata probe per iteration
+    is the obvious false-positive class, so only round-trip verbs are sinks.
+    Mirrors the C++ dialect excluding buffered stdio.
+    """
+    for method in ("exists", "is_file", "is_dir", "stat", "glob"):
+        src = f"def f(ps):\n    for p in ps:\n        p.{method}()\n"
+        assert not any(k == "io_in_loop" for k, _ in _hits("python", src)), method
+
+
+def test_python_os_and_shutil_verbs_gated_on_the_module_root():
+    """``os``/``shutil`` verbs need the literal module root, never ``io_names``.
+
+    ``os`` is far too broad to classify wholesale, so the root name plus an
+    explicit verb set is the whole gate — the same shape ``subprocess`` uses.
+    """
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "import os\ndef f(ps):\n    for p in ps:\n        os.listdir(p)\n"
+    )
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "import shutil\ndef f(ps):\n    for p in ps:\n        shutil.rmtree(p)\n"
+    )
+    # Non-I/O members of the same module never fire.
+    assert not any(
+        k == "io_in_loop"
+        for k, _ in _hits(
+            "python", "import os\ndef f(ps):\n    for p in ps:\n        os.getpid()\n"
+        )
+    )
+    # ``remove`` / ``move`` / ``replace`` are ordinary collection verbs off the
+    # module root, so an unrelated receiver must stay silent.
+    for src in (
+        "def f(xs, q):\n    for x in xs:\n        q.remove(x)\n",
+        "def f(xs, q):\n    for x in xs:\n        q.replace(x, 1)\n",
+    ):
+        assert not any(k == "io_in_loop" for k, _ in _hits("python", src))
+
+
+def test_python_chained_os_call_is_not_a_filesystem_sink():
+    """``os.path.join(a, b).replace(...)`` is string work, not file I/O.
+
+    ``callee_root_name`` resolves the LEFTMOST identifier of the whole callee
+    chain, so a call on the *result* of an ``os.*`` expression also arrives at
+    ``sink_kind`` as ``root == "os"``. The canonical Windows path idiom below
+    therefore looked like a filesystem sink, and produced both a bogus
+    ``io_in_loop`` and a bogus (un-gated) ``nested_loop_with_io``. The verb set
+    must hold no name a ``str`` / ``list`` / ``dict`` also answers to.
+    """
+    src = (
+        "import os\n"
+        "def f(top):\n"
+        "    for root, dirs, files in os.walk(top):\n"
+        "        for name in files:\n"
+        "            rel = os.path.join(root, name).replace('\\\\', '/')\n"
+    )
+    hits = _hits("python", src)
+    assert not any(k == "io_in_loop" for k, _ in hits), hits
+    assert not any(k == "nested_loop_with_io" for k, _ in hits), hits
+    # Other chained-root shapes off the same ceiling.
+    for expr in ("os.environ.get(k).replace('a', 'b')", "os.path.relpath(p).replace('a', 'b')"):
+        assert not any(
+            k == "io_in_loop"
+            for k, _ in _hits(
+                "python", f"import os\ndef f(xs):\n    for x in xs:\n        {expr}\n"
+            )
+        ), expr
+    # The genuine two-segment call is unaffected.
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "import os\ndef f(ps):\n    for p in ps:\n        os.rename(p, p)\n"
+    )
+
+
+def test_python_point_reads_do_not_become_hot_path_candidates():
+    """Widening the fs lexicon must not widen ``hot_path_sync_io`` with it.
+
+    That marker fires outside any loop, so it was gated (11/11) on unbounded
+    work: subprocess spawns and whole-tree walks. A single ``p.write_text()``
+    in a hot function is bounded and ordinary. Without the decoupling this
+    change alone added 118 such candidates on the dogfood corpus.
+    """
+
+    def hot_fact(src):
+        fc = walk_file("t.py", "python", src.encode())
+        return [f.blocking_sink_kind for f in fc.perf_fn_facts if f.blocking_sink_kind]
+
+    # Point-sized reads/writes: real sinks, but not hot-path candidates.
+    for method in ("read_text", "read_bytes", "write_text", "write_bytes"):
+        assert hot_fact(f"def f(p):\n    p.{method}()\n") == [], method
+    # Single-inode ``os`` / ``shutil`` work is the same bounded cost class and
+    # must be excluded too — 177 such candidates on the OSS corpus otherwise
+    # came through the door this attribute exists to close.
+    for expr in (
+        "os.remove(p)",
+        "os.unlink(p)",
+        "os.makedirs(p)",
+        "os.mkdir(p)",
+        "os.rmdir(p)",
+        "os.rename(p, p)",
+        "os.listdir(p)",
+        "os.scandir(p)",
+        "shutil.copyfile(p, p)",
+        "shutil.copy(p, p)",
+        "shutil.move(p, p)",
+    ):
+        src = f"import os\nimport shutil\ndef f(p):\n    {expr}\n"
+        assert hot_fact(src) == [], expr
+    # Unbounded work keeps its candidacy, as does the bare ``open`` builtin the
+    # marker was originally calibrated on.
+    for expr in ("os.walk(p)", "shutil.rmtree(p)", "shutil.copytree(p, p)"):
+        src = f"import os\nimport shutil\ndef f(p):\n    {expr}\n"
+        assert hot_fact(src) == ["filesystem"], expr
+    assert hot_fact("def f(p):\n    open(p).read()\n") == ["filesystem"]
+    assert hot_fact("import subprocess\ndef f(p):\n    subprocess.run([p])\n") == ["subprocess"]
+    # Excluding a verb from hot-path candidacy must NOT cost it the bare-sink
+    # fact the cross-function N+1 bridge runs on.
+    fc = walk_file("t.py", "python", b"import os\ndef f(p):\n    os.remove(p)\n")
+    assert [f.bare_sink_kind for f in fc.perf_fn_facts] == ["filesystem"]
+    # Still a per-iteration finding when it IS in a loop.
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "def f(ps):\n    for p in ps:\n        p.write_text('x')\n"
+    )
+
+
+def test_python_filesystem_sink_reaches_the_cross_function_bridge():
+    """A bare fs sink makes its function a cross-function reachability target.
+
+    The shape that motivated this: a per-file loop calls a small reader helper
+    that holds the actual ``read_bytes``. The loop and the I/O are in different
+    functions, so only the ``PerfFnFacts.bare_sink_kind`` fact can carry it.
+    """
+    src = (
+        "from pathlib import Path\n"
+        "def read_source(p):\n"
+        "    return Path(p).read_bytes()\n"
+        "def scan(paths):\n"
+        "    for p in paths:\n"
+        "        read_source(p)\n"
+    )
+    fc = walk_file("t.py", "python", src.encode())
+    facts = {f.function: f for f in fc.perf_fn_facts}
+    assert facts["read_source"].bare_sink_kind == "filesystem"
+    assert "read_source" in dict(facts["scan"].loop_call_targets)
+
+
+def test_ts_json_parse_in_loop():
+    src = "function f(xs){ for (const x of xs) { const c = JSON.parse(JSON.stringify(x)); } }"
+    assert ("json_parse_in_loop", "") in _hits("typescript", src)
+
+
+def test_ts_array_spread_in_reduce_vs_push():
+    spread = "function f(xs){ return xs.reduce((acc, x) => [...acc, x], []); }"
+    push = "function f(xs){ return xs.reduce((acc, x) => { acc.push(x); return acc; }, []); }"
+    assert ("array_spread_in_reduce", "") in _hits("typescript", spread)
+    assert not any(k == "array_spread_in_reduce" for k, _ in _hits("typescript", push))
+
+
+# ---------------------------------------------------------------------------
+# Dart
+# ---------------------------------------------------------------------------
+
+
+def test_dart_fixture_counts():
+    fc = _walk("dart/perf_io_in_loop.dart", "dart")
+    counts = _kinds(fc.perf_hits)
+    assert counts["io_in_loop"] == 3
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
+        "db",
+        "filesystem",
+        "network",
+    }
+    assert counts["serial_await_in_loop"] == 3
+    assert counts["string_concat_in_loop"] == 1
+    assert counts["resource_construction_in_loop"] == 1
+
+
+_DART_CASES = [
+    (
+        "import 'package:http/http.dart' as http;\n"
+        "Future<void> f(List<Uri> urls) async {\n"
+        "  for (final u in urls) { final r = await http.get(u); }\n"
+        "}\n",
+        [("io_in_loop", "network"), ("serial_await_in_loop", "network")],
+        "an awaited http verb in a for-in loop is a serial network round-trip",
+    ),
+    (
+        "Future<void> f(List<dynamic> files) async {\n"
+        "  for (final x in files) { final t = await x.readAsString(); }\n"
+        "}\n",
+        [("io_in_loop", "filesystem"), ("serial_await_in_loop", "filesystem")],
+        "readAsString is a File round-trip regardless of receiver name",
+    ),
+    (
+        "String f(List<String> parts) {\n"
+        "  var s = '';\n"
+        "  for (final p in parts) { s += 'x'; }\n"
+        "  return s;\n"
+        "}\n",
+        [("string_concat_in_loop", "")],
+        "immutable-string += accumulation in a loop is O(n^2)",
+    ),
+    (
+        "void f(List<int> xs) {\n  for (final x in xs) { final d = Dio(); }\n}\n",
+        [("resource_construction_in_loop", "")],
+        "a Dio client constructed per-iteration",
+    ),
+    (
+        "import 'package:http/http.dart' as http;\n"
+        "void f() {\n"
+        "  for (var i = 0; i < 3; i++) { http.get(Uri.parse('u')); }\n"
+        "}\n",
+        [],
+        "a constant-bound loop is not data-dependent N+1",
+    ),
+    (
+        "void f(List<String> parts) {\n"
+        "  var s = '';\n"
+        "  for (final p in parts) { s = ''; s += p; }\n"
+        "}\n",
+        [],
+        "opaque-variable += is not provably string concat (precision-first)",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _DART_CASES, ids=[c[2] for c in _DART_CASES])
+def test_dart_cases(src, expected, note):
+    assert _hits("dart", src) == sorted(expected), note
+
+
+def test_dart_string_concat_reset_per_iteration_not_flagged():
+    # ``name`` is declared fresh inside the loop body, so ``name += '/'``
+    # is not a cross-iteration accumulator (shelf directory_listing FP).
+    src = (
+        "void f(List<String> xs) {\n"
+        "  for (final x in xs) {\n"
+        "    var name = x;\n"
+        "    name += '/';\n"
+        "    use(name);\n"
+        "  }\n"
+        "}\n"
+    )
+    assert not any(k == "string_concat_in_loop" for k, _ in _hits("dart", src))
+
+
+# ---------------------------------------------------------------------------
+# Scala
+# ---------------------------------------------------------------------------
+
+
+def test_scala_fixture_counts():
+    fc = _walk("scala/perf_io_in_loop.scala", "scala")
+    counts = _kinds(fc.perf_hits)
+    # Source.fromFile in readAll + in matrix's inner loop.
+    assert counts["io_in_loop"] == 2
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {"filesystem"}
+    assert counts["nested_loop_with_io"] == 1
+    # ``"a+b".r`` (StringOps) + ``Pattern.compile`` (JVM interop); the hoisted
+    # ``.r`` outside the loop stays quiet.
+    assert counts["regex_compile_in_loop"] == 2
+    assert counts["string_concat_in_loop"] == 1
+    assert counts["lock_in_loop"] == 1
+    assert counts["blocking_sync_in_async"] == 1
+    # The constant-bound ``1 to 3`` loop and the plain helper call do not fire.
+    assert counts["resource_construction_in_loop"] == 0
+
+
+_SCALA_CASES = [
+    (
+        "import slick.jdbc.PostgresProfile.api._\n"
+        "object A { def m(ids: List[Long], db: Database): Unit = {\n"
+        "  for (id <- ids) { db.run(query(id)) }\n"
+        "} }\n",
+        [("io_in_loop", "db")],
+        "Slick db.run WITH a db import passes the file-level gate",
+    ),
+    (
+        "object A { def m(ids: List[Long], job: Runner): Unit = {\n"
+        "  for (id <- ids) { job.run(id) }\n"
+        "} }\n",
+        [],
+        "ambiguous run() with NO db import is gated out",
+    ),
+    (
+        "object A { def m(ids: List[Long], xa: Any): Unit = {\n"
+        "  for (id <- ids) { query(id).transact(xa) }\n"
+        "} }\n",
+        [("io_in_loop", "db")],
+        "doobie .transact is distinctive enough to fire ungated",
+    ),
+    (
+        "import sttp.client3._\n"
+        "object A { def m(reqs: List[Req], backend: Backend): Unit = {\n"
+        "  for (r <- reqs) { r.send(backend) }\n"
+        "} }\n",
+        [("io_in_loop", "network")],
+        "sttp request.send WITH a network import",
+    ),
+    (
+        "object A { def m(msgs: List[Msg], actor: Actor): Unit = {\n"
+        "  for (m <- msgs) { actor.send(m) }\n"
+        "} }\n",
+        [],
+        "generic .send with NO network import is gated out",
+    ),
+    (
+        "object A { def m(paths: List[String]): Unit = {\n  for (p <- paths) { os.read(p) }\n} }\n",
+        [("io_in_loop", "filesystem")],
+        "os-lib os.read is method-gated (no import needed)",
+    ),
+    (
+        "import scala.concurrent.Future\n"
+        "object A { def m(): Future[Int] = {\n"
+        "  Thread.sleep(100)\n"
+        "  Future.successful(1)\n"
+        "} }\n",
+        [("blocking_sync_in_async", "Thread.sleep")],
+        "Thread.sleep inside a Future-returning def",
+    ),
+    (
+        "import scala.concurrent.Await\n"
+        "object A { def m(fut: Fut): Int = {\n"
+        "  Await.result(fut, d)\n"
+        "} }\n",
+        [],
+        "Await.result in a NON-Future def is not sync-over-async",
+    ),
+    (
+        "object A { def m(items: List[String]): String = {\n"
+        '  var acc = ""\n'
+        "  var i = 0\n"
+        "  while (i < items.length) {\n"
+        '    acc = acc + "x"\n'
+        "    i += 1\n"
+        "  }\n"
+        "  acc\n"
+        "} }\n",
+        [("string_concat_in_loop", "")],
+        '`acc = acc + "lit"` reassignment form on a string var',
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _SCALA_CASES, ids=[c[2] for c in _SCALA_CASES])
+def test_scala_cases(src, expected, note):
+    assert _hits("scala", src) == sorted(expected), note
+
+
+def test_scala_same_collection_nested_loop_fact():
+    # Two nested for-comprehensions over the SAME collection record the
+    # centrality-gated ``nested_loop_quadratic`` fact (not a raw hit).
+    src = (
+        "object A { def m(items: List[Int]): Unit = {\n"
+        "  for (a <- items) {\n"
+        "    for (b <- items) {\n"
+        "      combine(a, b)\n"
+        "    }\n"
+        "  }\n"
+        "} }\n"
+    )
+    fc = walk_file("t.scala", "scala", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# Ruby
+# ---------------------------------------------------------------------------
+
+
+def test_ruby_fixture_counts():
+    fc = _walk("ruby/perf_io_in_loop.rb", "ruby")
+    counts = _kinds(fc.perf_hits)
+    # Net::HTTP.get + File.read (map) + Dir.glob + nested File.read +
+    # Order.where + conn.get (require-gated Faraday) + backticks + File.write.
+    assert counts["io_in_loop"] == 8
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
+        "network",
+        "filesystem",
+        "db",
+        "subprocess",
+    }
+    assert counts["nested_loop_with_io"] == 1
+    # In-loop Regexp.new fires; the hoisted one stays quiet.
+    assert counts["regex_compile_in_loop"] == 1
+    # ``out += "<lit>"`` fires; ``buf << line`` and the reset-per-iteration
+    # accumulator do not.
+    assert counts["string_concat_in_loop"] == 1
+    assert counts["resource_construction_in_loop"] == 1
+    assert counts["lock_in_loop"] == 1
+    assert counts["blocking_io_under_lock"] == 1
+    # The constant-bound 3.times / [1, 2].each loops contribute nothing.
+
+
+_RUBY_CASES = [
+    (
+        "def m(ids)\n  ids.each do |id|\n    Order.where(id: id)\n  end\nend\n",
+        [("io_in_loop", "db")],
+        "AR .where on a constant receiver inside .each (the canonical N+1)",
+    ),
+    (
+        "def m(users)\n  users.each do |u|\n    u.posts.find_by(name: u.name)\n  end\nend\n",
+        [("io_in_loop", "db")],
+        "distinctive find_by fires ungated on any member call",
+    ),
+    (
+        "def m(ids, repo)\n  ids.each do |id|\n    repo.find(id)\n  end\nend\n",
+        [],
+        "ambiguous find() with NO db require is gated out",
+    ),
+    (
+        'require "active_record"\n'
+        "def m(ids, repo)\n  ids.each do |id|\n    repo.find(id)\n  end\nend\n",
+        [("io_in_loop", "db")],
+        "ambiguous find() WITH a db require passes the file-level gate",
+    ),
+    (
+        "def m(paths)\n  paths.each do |p|\n    get p\n  end\nend\n",
+        [],
+        "bare get (Sinatra route DSL shape) is not a network sink",
+    ),
+    (
+        'require "faraday"\ndef m(conn, urls)\n  urls.each do |u|\n    conn.get(u)\n  end\nend\n',
+        [("io_in_loop", "network")],
+        "instance client verb WITH a network require",
+    ),
+    (
+        "def m(conn, urls)\n  urls.each do |u|\n    conn.get(u)\n  end\nend\n",
+        [],
+        "instance client verb with NO network require is gated out",
+    ),
+    (
+        "def m(queue)\n  loop do\n    File.read(queue.pop)\n  end\nend\n",
+        [("io_in_loop", "filesystem")],
+        "loop do ... end is an unconditional-repeat loop scope",
+    ),
+    (
+        'def m\n  3.times do\n    File.read("x")\n  end\nend\n',
+        [],
+        "literal-receiver .times is a constant-bound loop",
+    ),
+    (
+        "def m(items)\n  items.map(&:to_s)\n  File.read(items.first.path)\nend\n",
+        [],
+        "a combinator WITHOUT an inline block is not a loop scope",
+    ),
+    (
+        "def m(rows)\n  rows.each do |r|\n    transform(r)\n  end\nend\n",
+        [],
+        "a loop-nested plain helper call is not a sink",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _RUBY_CASES, ids=[c[2] for c in _RUBY_CASES])
+def test_ruby_cases(src, expected, note):
+    assert _hits("ruby", src) == sorted(expected), note
+
+
+def test_ruby_backticks_are_subprocess():
+    src = "def m(names)\n  names.each do |n|\n    `grep #{n} log.txt`\n  end\nend\n"
+    assert _hits("ruby", src) == [("io_in_loop", "subprocess")]
+
+
+def test_ruby_receiver_runs_once():
+    # The receiver chain of an iteration call runs ONCE — only the block body
+    # is per-iteration. ``Order.where(...)`` here must not be io_in_loop.
+    src = "def m\n  Order.where(active: true).each do |o|\n    transform(o)\n  end\nend\n"
+    assert _hits("ruby", src) == []
+
+
+def test_ruby_same_collection_nested_block_loops_fact():
+    # Two nested .each blocks over the SAME collection record the
+    # centrality-gated ``nested_loop_quadratic`` fact (not a raw hit).
+    src = (
+        "def m(items)\n"
+        "  items.each do |a|\n"
+        "    items.each do |b|\n"
+        "      combine(a, b)\n"
+        "    end\n"
+        "  end\n"
+        "end\n"
+    )
+    fc = walk_file("t.rb", "ruby", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# Kotlin
+# ---------------------------------------------------------------------------
+
+_KOTLIN_CASES = [
+    (
+        "fun m(ids: List<Long>) {\n    for (id in ids) {\n        repo.findById(id)\n    }\n}\n",
+        [("io_in_loop", "db")],
+        "Spring-Data derived query in a native for loop",
+    ),
+    (
+        "fun m(ids: List<Long>) {\n    ids.forEach { repo.findById(it) }\n}\n",
+        [("io_in_loop", "db")],
+        "the combinator form is a loop scope (block_loop_body)",
+    ),
+    (
+        "fun m(ids: List<Long>) {\n    ids.map { repo.findById(it) }\n}\n",
+        [("io_in_loop", "db")],
+        "map with a trailing lambda is full iteration",
+    ),
+    (
+        "fun m(x: Foo) {\n    x.let { repo.findById(1) }\n    x.apply { repo.findById(2) }\n}\n",
+        [],
+        "let/apply are scope functions that run once, never loops",
+    ),
+    (
+        "fun m(ids: List<Long>) {\n    ids.firstOrNull { repo.findById(it) != null }\n}\n",
+        [],
+        "an early-exit search is not a full-iteration loop",
+    ),
+    (
+        "fun m() {\n    for (u in repo.findAll()) {\n        use(u)\n    }\n}\n",
+        [],
+        "the loop HEADER runs once - loop_body scoping (grammar has no body field)",
+    ),
+    (
+        "fun m(paths: List<String>) {\n"
+        "    for (p in paths) {\n        File(p).forEachLine { use(it) }\n    }\n}\n",
+        [("io_in_loop", "filesystem")],
+        "File-exclusive kotlin.io extension functions fire ungated",
+    ),
+    (
+        "fun m(frames: List<Frame>) {\n    for (f in frames) {\n        f.readText()\n    }\n}\n",
+        [],
+        "generic stream verbs are reused by kotlinx-io on in-memory buffers",
+    ),
+    (
+        "fun m(hosts: List<String>) {\n"
+        "    for (h in hosts) {\n        InetAddress.getByName(h)\n    }\n}\n",
+        [],
+        "a static factory is not a derived query despite matching ...By[A-Z]",
+    ),
+    (
+        "fun m(ids: List<Long>, userRepository: Repo) {\n"
+        "    for (id in ids) {\n        userRepository.findByEmail(id)\n    }\n}\n",
+        [("io_in_loop", "db")],
+        "a derived query on a repository instance still classifies",
+    ),
+    (
+        "fun m(ks: List<String>, settings: Settings) {\n"
+        "    for (k in ks) {\n        settings.getByPrefix(k)\n    }\n}\n",
+        [],
+        "a lower-case receiver alone does not make a ...By[A-Z] call a derived query",
+    ),
+    (
+        "fun m(texts: List<String>, re: Regex) {\n"
+        "    for (t in texts) {\n        re.findAll(t)\n    }\n}\n",
+        [],
+        "Regex.findAll is not a repository findAll",
+    ),
+    (
+        "fun m(xs: List<String>) {\n"
+        '    for (x in xs) {\n        val r = Regex("\\\\b$x\\\\b")\n    }\n}\n',
+        [],
+        "an interpolated pattern varies per iteration - not hoistable",
+    ),
+    (
+        'fun m() {\n    for (i in 0..9) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [],
+        "a literal range is a constant-bound loop",
+    ),
+    (
+        "fun m() {\n"
+        '    for (i in 0 until 8) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [],
+        "0 until 8 is an infix call, not a range node, but still constant",
+    ),
+    (
+        "fun m() {\n"
+        '    for (i in 8 downTo 0) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [],
+        "downTo is the descending spelling of the same constant bound",
+    ),
+    (
+        "fun m(n: Int) {\n"
+        '    for (i in 0 until n) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [("io_in_loop", "filesystem")],
+        "a variable upper bound is data-dependent, not constant",
+    ),
+    (
+        'fun m() {\n    repeat(3) {\n        File("x").readText()\n    }\n}\n',
+        [],
+        "repeat(<literal>) is the combinator spelling of a constant bound",
+    ),
+    (
+        'fun m(app: Javalin, sizes: List<Int>) {\n    sizes.forEach { s -> app.routes.get("/x") }\n}\n',
+        [],
+        "a bare HTTP verb is the route-registration DSL, not a client call",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    var acc = ""\n    for (x in xs) {\n        acc += "a"\n    }\n}\n',
+        [("string_concat_in_loop", "")],
+        "+= onto a same-file string var accumulates across iterations",
+    ),
+    (
+        "fun m(xs: List<String>) {\n    val out = mutableListOf<String>()\n"
+        '    for (x in xs) {\n        out += "a"\n    }\n}\n',
+        [],
+        "+= onto a MutableList is an amortized append, not a rebuild",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        var part = ""\n'
+        '        part += "a"\n        use(part)\n    }\n}\n',
+        [],
+        "an accumulator declared inside the loop is reset every iteration",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = Regex("^a")\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "Regex(literal) recompiled per iteration",
+    ),
+    (
+        "fun m(xs: List<String>, pat: String) {\n"
+        "    for (x in xs) {\n        val r = Regex(pat)\n    }\n}\n",
+        [],
+        "a dynamic pattern may legitimately vary - not hoistable",
+    ),
+    (
+        "fun m(xs: List<String>) {\n    for (x in xs) {\n        lock.lock()\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "a lock taken every iteration is a contention site",
+    ),
+    (
+        "class A {\n    fun lock() {\n        while (true) {\n"
+        "            if (mutex.tryLock()) return\n            mutex.lock()\n        }\n    }\n}\n",
+        [],
+        "the retry loop inside lock() is the acquisition, not a lock taken per item",
+    ),
+    (
+        "class A {\n    fun lock(ks: List<Any>) {\n        for (k in ks) {\n            locks[k].lock()\n        }\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "an iterating lock() is not a retry loop",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _KOTLIN_CASES, ids=[c[2] for c in _KOTLIN_CASES])
+def test_kotlin_cases(src, expected, note):
+    assert _hits("kotlin", src) == sorted(expected), note
+
+
+def test_kotlin_suspend_is_async_via_modifier_token():
+    # ``suspend`` is a ``function_modifier`` TOKEN, not a node type - the case
+    # ``BasePerfDialect.is_async_fn`` documents.
+    src = "suspend fun m() {\n    Thread.sleep(10)\n    runBlocking { g() }\n}\n"
+    assert _hits("kotlin", src) == [
+        ("blocking_sync_in_async", "Thread.sleep"),
+        ("blocking_sync_in_async", "runBlocking"),
+    ]
+
+
+def test_kotlin_blocking_calls_outside_suspend_are_silent():
+    src = "fun m() {\n    Thread.sleep(10)\n    runBlocking { g() }\n}\n"
+    assert _hits("kotlin", src) == []
+
+
+def test_kotlin_combinator_receiver_runs_once():
+    # Only the lambda is per-iteration; the receiver chain runs once.
+    src = "fun m() {\n    repo.findAll().forEach { use(it) }\n}\n"
+    assert _hits("kotlin", src) == []
+
+
+def test_kotlin_deferred_lambda_in_loop_is_not_per_iteration():
+    # A lambda that is NOT an iteration combinator's body opens a new execution
+    # scope: it is merely DEFINED per iteration, so loop_depth resets there.
+    src = (
+        "fun m(ids: List<Long>) {\n"
+        "    for (id in ids) {\n"
+        "        register { repo.findById(id) }\n"
+        "    }\n"
+        "}\n"
+    )
+    assert _hits("kotlin", src) == []
+
+
+def test_kotlin_same_collection_nested_combinators_fact():
+    src = "fun m(xs: List<Long>) {\n    xs.forEach { a -> xs.forEach { b -> combine(a, b) } }\n}\n"
+    fc = walk_file("t.kt", "kotlin", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# C++
+# ---------------------------------------------------------------------------
+
+_CPP_CASES = [
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        sqlite3_step(stmt);\n    }\n}\n",
+        [("io_in_loop", "db")],
+        "a library-prefixed db round-trip in a range-for",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        '    for (auto x : v) {\n        fopen("a.txt", "r");\n    }\n}\n',
+        [("io_in_loop", "filesystem")],
+        "an unqualified POSIX open in a loop",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        '    for (auto x : v) {\n        std::fprintf(stderr, "%d", x);\n    }\n}\n',
+        [],
+        "buffered stdio is not a round-trip, and std:: is a qualifier",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        json::accept(x);\n    }\n}\n",
+        [],
+        "a namespaced call merely sharing a POSIX name never classifies",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        buf.read();\n        set.remove(x);\n    }\n}\n",
+        [],
+        "member calls are container vocabulary, not I/O",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        std::filesystem::remove(p);\n    }\n}\n",
+        [("io_in_loop", "filesystem")],
+        "std::filesystem free functions key off the qualifier segment",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        '    for (auto x : v) {\n        std::regex re("^a");\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "a regex declaration recompiles the pattern every iteration",
+    ),
+    (
+        "void m(std::vector<int> v, std::string pat) {\n"
+        "    for (auto x : v) {\n        std::regex re(pat);\n    }\n}\n",
+        [],
+        "a dynamic pattern is not provably hoistable",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        std::ifstream in(paths[x]);\n    }\n}\n",
+        [],
+        "a stream over a per-iteration path has nothing to hoist",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        threads.push_back(std::thread(work));\n    }\n}\n",
+        [],
+        "constructing threads in a loop is how a pool is built",
+    ),
+    (
+        "void m(std::vector<int> v) {\n    std::string s;\n"
+        '    for (auto x : v) {\n        s += "a";\n    }\n}\n',
+        [],
+        "std::string += appends in place - amortized O(1), never a rebuild",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        auto* p = new Widget();\n"
+        "        auto q = std::make_unique<Widget>();\n"
+        "    }\n}\n",
+        [],
+        "allocation in a loop is ordinary C++",
+    ),
+    (
+        'void m() {\n    for (int i = 0; i < 8; i++) {\n        fopen("a.txt", "r");\n    }\n}\n',
+        [],
+        "a literal C-style bound is a constant loop",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        std::lock_guard<std::mutex> g(mu);\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "an RAII guard taken every iteration is a contention site",
+    ),
+    (
+        "void m(std::vector<int> v) {\n    for (auto x : v) {\n        mu.lock();\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "the explicit acquire form of the same site",
+    ),
+    (
+        "void m() {\n    for (auto x : load_all()) {\n        use(x);\n    }\n}\n",
+        [],
+        "the range-for header runs once",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        int fd = socket(AF_INET, SOCK_STREAM, 0);\n"
+        "        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));\n"
+        "    }\n}\n",
+        [],
+        "creating and configuring a descriptor puts nothing on the wire",
+    ),
+    (
+        "void m(std::vector<Peer> v) {\n"
+        "    for (auto& p : v) {\n"
+        "        ::sendto(fd, buf, len, 0, p.addr, p.len);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a datagram per element is still a round-trip each",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    while ((r = ::sendto(fd, buf, len, 0, a, l)) == -1 && errno == EINTR)\n"
+        "        ;\n}\n",
+        [],
+        "an EINTR retry repeats one call, it does not walk data",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    while ((r = ::sendto(fd, buf, len, 0, a, l)) == -1 && A2_EINTR == SOCKET_ERRNO)\n"
+        "        ;\n}\n",
+        [],
+        "a project spelling of EINTR is the same retry",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    while (more || errno == EINTR) {\n"
+        "        ::sendto(fd, buf, len, 0, a, l);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "an || condition can repeat for another reason, so it stays a loop",
+    ),
+    (
+        "void m(addrinfo* res) {\n"
+        "    for (addrinfo* rp = res; rp; rp = rp->ai_next) {\n"
+        "        ::sendto(fd, buf, len, 0, rp->ai_addr, rp->ai_addrlen);\n"
+        "    }\n}\n",
+        [],
+        "trying each address one name resolved to is not a data loop",
+    ),
+    (
+        "void m(Node* head) {\n"
+        "    for (Node* n = head; n; n = n->next) {\n"
+        "        ::sendto(fd, buf, len, 0, n->addr, n->len);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "any other linked list is data",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        struct addrinfo hints;\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [],
+        "a numeric-only getaddrinfo parses an address, no lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        if (getaddrinfo(h.c_str(), nullptr, &hints, &res) == 0) continue;\n"
+        "        hints.ai_flags = 0;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "the fallback lookup after the flag is cleared still resolves names",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a getaddrinfo with no numeric flag is a name lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags |= AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [],
+        "ORing the numeric flag in is the same numeric-only parse",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        hints.ai_flags &= ~AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "masking the flag off makes it a lookup again",
+    ),
+    (
+        "void m(std::vector<std::string> v, int f) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = f & ~AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a negated flag is not the flag",
+    ),
+    (
+        "void m(std::vector<std::string> v, bool numeric) {\n"
+        "    for (auto& h : v) {\n"
+        "        if (numeric) hints.ai_flags = AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a flag set on one branch leaves the other a lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        memset(&hints, 0, sizeof(hints));\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a reset of the hints after the flag clears it",
+    ),
+    (
+        "void m(std::vector<Peer> v) {\n"
+        "    for (auto& p : v) {\n"
+        "        int fd = socket(AF_INET, SOCK_STREAM, 0);\n"
+        "        connect(fd, p.addr, p.len);\n"
+        "        send(fd, buf, len, 0);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a socket that connects and sends is a connection per element",
+    ),
+    (
+        "void m(int fd, int n) {\n"
+        "    while (i < n && errno == EINTR) {\n"
+        "        ::sendto(fd, buf, len, 0, a, l);\n"
+        "        i++;\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a counter beside EINTR can keep the loop going",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    do {\n        n = ::recvfrom(fd, buf, len, 0, a, l);\n"
+        "    } while (n < 0 && errno == EINTR);\n}\n",
+        [],
+        "the do-while spelling of an EINTR retry",
+    ),
+    (
+        "void m(addrinfo* res) {\n"
+        "    addrinfo* rp = res;\n"
+        "    while (rp) {\n"
+        "        ::sendto(fd, buf, len, 0, rp->ai_addr, rp->ai_addrlen);\n"
+        "        rp = rp->ai_next;\n"
+        "    }\n}\n",
+        [],
+        "the while spelling of the address-candidate walk",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _CPP_CASES, ids=[c[2] for c in _CPP_CASES])
+def test_cpp_cases(src, expected, note):
+    assert _hits("cpp", src) == sorted(expected), note
+
+
+def test_cpp_implicit_this_socket_verbs_do_not_classify():
+    # In C++ a member call from inside its own class is spelled unqualified, so
+    # ``send(pkt)`` is indistinguishable from POSIX ``send`` (seastar's
+    # ``ipv4::get_packet`` does exactly this).
+    src = (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        send(a, b, c);\n"
+        "        connect(addr);\n"
+        "    }\n"
+        "}\n"
+    )
+    assert _hits("cpp", src) == []
+
+
+def test_cpp_suffixed_socket_verbs_still_classify():
+    src = (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        ::sendmsg(fd, &msg, 0);\n"
+        "    }\n"
+        "}\n"
+    )
+    assert _hits("cpp", src) == [("io_in_loop", "network")]
+
+
+def test_cpp_function_name_resolves_through_the_declarator_chain():
+    src = (
+        "void outer(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        sqlite3_step(stmt);\n"
+        "    }\n"
+        "}\n"
+    )
+    fc = walk_file("t.cpp", "cpp", src.encode())
+    assert [h.function for h in fc.perf_hits] == ["outer"]
+
+
+def test_cpp_same_collection_nested_range_for_fact():
+    src = (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto a : v) {\n"
+        "        for (auto b : v) {\n"
+        "            combine(a, b);\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )
+    fc = walk_file("t.cpp", "cpp", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+def test_python_acquire_spin_vs_per_item():
+    spin = "def acquire(self):\n    while True:\n        if self.flag.acquire(False):\n            return\n"
+    assert _hits("python", spin) == []
+    each = "def acquire(self, items):\n    for i in items:\n        self.locks[i].acquire()\n"
+    assert _hits("python", each) == [("lock_in_loop", "")]

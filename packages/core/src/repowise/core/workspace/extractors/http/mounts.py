@@ -1,0 +1,147 @@
+"""Router mount-prefix resolution shared by the HTTP provider dialects.
+
+A framework's real route path is rarely the string in the decorator alone. It is
+that string stitched onto the prefix of the *router object* it hangs off:
+
+    router = APIRouter(prefix="/snapshots")     # in-file binding
+    @router.get("/{id}/c4")                      # real path: /snapshots/{id}/c4
+
+and, one level up, the mount the router is attached at in a different file:
+
+    include_router(snapshots_router, prefix="/api")   # real: /api/snapshots/{id}/c4
+
+Recovering both is the single highest-leverage recall fix for cross-repo contract
+matching: without it a provider stores ``/{param}/c4`` and never lines up with the
+consumer that calls ``/api/snapshots/{id}/c4``. The helpers here find the in-file
+``var -> prefix`` bindings and compose the segments; cross-file mounts are
+collected per dialect and merged by the orchestrator.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Mapping
+
+from repowise.core.ingestion.framework_routes import GroupMatch
+
+# A ``prefix="..."`` / ``prefix='...'`` keyword argument inside a constructor call.
+_PREFIX_KW_RE = re.compile(r"""prefix\s*=\s*['"]([^'"]+)['"]""")
+
+
+def balanced_args(content: str, open_paren: int) -> str:
+    """Return the text inside the parentheses opened at *open_paren*.
+
+    Scans to the matching close paren so nested calls in the argument list
+    (``dependencies=[Depends(x)]``) don't truncate the span the way a
+    ``[^)]*`` regex would.
+    """
+    depth = 0
+    for i in range(open_paren, len(content)):
+        ch = content[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return content[open_paren + 1 : i]
+    return content[open_paren + 1 :]
+
+
+def router_prefixes(content: str, ctor_pattern: str) -> dict[str, str]:
+    """Map ``var -> prefix`` for in-file ``var = Ctor(...)`` router bindings.
+
+    *ctor_pattern* is a regex alternation of constructor names (e.g.
+    ``APIRouter|FastAPI``). A constructor with no ``prefix=`` keyword maps to the
+    empty string, which still records the variable as a *known* router so its
+    routes are extracted.
+    """
+    out: dict[str, str] = {}
+    for m in re.finditer(rf"(\w+)\s*=\s*(?:{ctor_pattern})\s*\(", content):
+        var = m.group(1)
+        args = balanced_args(content, m.end() - 1)  # m.end()-1 is the '('
+        pm = _PREFIX_KW_RE.search(args)
+        out[var] = pm.group(1) if pm else ""
+    return out
+
+
+def compose_prefix(prefix: str, path: str) -> str:
+    """Stitch a router *prefix* onto a method-level *path*.
+
+    ``("/snapshots", "/{id}/c4")`` -> ``"/snapshots/{id}/c4"``. An empty prefix
+    returns the path unchanged. Normalization (case, trailing slash, param
+    unification) is left to :func:`normalize_http_path` downstream.
+    """
+    if not prefix:
+        return path
+    return "/" + prefix.strip("/") + "/" + path.lstrip("/")
+
+
+def merge_mount_maps(maps: list[dict[str, str]]) -> dict[str, str]:
+    """Merge per-file mount maps into one unambiguous map.
+
+    A key two files give *different* values anywhere in the repo is ambiguous
+    (the common case being a generic router name like ``router`` reused across
+    files), so it is dropped rather than guessed. Only keys with a single
+    distinct value survive. Keys are router variables, and prefixed names for
+    everything else a dialect shares (``laravel-route-file:``, ``nest-prefix:``,
+    ``http-client:``).
+    """
+    collected: dict[str, set[str]] = {}
+    for m in maps:
+        for var, prefix in m.items():
+            collected.setdefault(var, set()).add(prefix)
+    return {var: next(iter(prefixes)) for var, prefixes in collected.items() if len(prefixes) == 1}
+
+
+# Mount values are strings; a declared value this cannot read travels as this.
+_UNREADABLE = "\0"
+# The merge above drops a key two files disagree on. A second key, always the
+# same value, survives it, so a declared-but-dropped value reads as ambiguous
+# (refused) rather than undeclared (the default).
+_DECLARED = "declared:"
+
+
+def declare_mount(key: str, value: str | None) -> dict[str, str]:
+    """The mount entries declaring *key* as *value* (``None``: unreadable)."""
+    return {key: _UNREADABLE if value is None else value, _DECLARED + key: ""}
+
+
+def declared_mount(mounts: Mapping[str, str], key: str) -> tuple[bool, str | None]:
+    """``(declared, value)`` for *key*; ``value`` is ``None`` when unreadable or ambiguous."""
+    if _DECLARED + key not in mounts:
+        return False, None
+    value = mounts.get(key, _UNREADABLE)
+    return True, None if value == _UNREADABLE else value
+
+
+def declared_names(mounts: Mapping[str, str], prefix: str) -> list[str]:
+    """The names declared under *prefix*, agreed on or not."""
+    head = _DECLARED + prefix
+    return [key[len(head) :] for key in mounts if key.startswith(head)]
+
+
+def group_prefixes(groups: Iterable[GroupMatch]) -> dict[str, str]:
+    """Resolve each router-group variable to its transitively composed prefix.
+
+    ``api := r.Group("/api"); v1 := api.Group("/v1")`` gives ``v1 -> /api/v1``.
+    A variable with no binding (the base router) or in a cycle resolves to the
+    empty string, so a route on it keeps its literal path.
+    """
+    edges = {g.var: (g.parent, g.prefix) for g in groups}
+    resolved: dict[str, str] = {}
+
+    def resolve(var: str | None, seen: frozenset[str]) -> str:
+        if var is None:
+            return ""
+        if var in resolved:
+            return resolved[var]
+        if var not in edges or var in seen:
+            return ""
+        parent, segment = edges[var]
+        prefix = compose_prefix(resolve(parent, seen | {var}), segment)
+        resolved[var] = prefix
+        return prefix
+
+    for var in edges:
+        resolve(var, frozenset())
+    return resolved

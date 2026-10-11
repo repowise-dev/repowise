@@ -1,0 +1,8 @@
+{
+  "name": "@org/app",
+  "private": true,
+  "main": "./src/main.ts",
+  "scripts": {
+    "start": "tsx src/main.ts"
+  }
+}

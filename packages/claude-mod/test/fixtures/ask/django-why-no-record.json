@@ -1,0 +1,6 @@
+{
+  "mode": "search",
+  "query": "why does the CSRF middleware rotate the token on login?",
+  "reason": "No recorded rationale: no decision record covers this question. The store holds none carrying its terms, and the closest ones would be noise.",
+  "decisions": []
+}

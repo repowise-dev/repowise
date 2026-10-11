@@ -1,0 +1,311 @@
+"""Heritage (inheritance/implementation) resolution engine.
+
+Resolves HeritageRelation objects (extracted from AST class definitions) to
+concrete symbol node IDs in the graph, producing EXTENDS, IMPLEMENTS, and
+TRAIT_IMPL edges with confidence scores.
+
+Resolution tiers (checked in order, first match wins):
+
+    Tier 1 — Same-file exact match (confidence 0.95)
+        The parent name matches a class/interface/trait in the same file.
+
+    Tier 2a — Named import (confidence 0.90)
+        The file imports the parent name, and that file declares it.
+
+    Tier 2b — Any imported file (confidence 0.85)
+        Some imported file declares the name; sorted-path order, first wins.
+
+    Tier 3 — Global unique match (confidence 0.50)
+        The parent name matches exactly one class/interface/trait globally.
+
+Each resolved relation produces a (child_id, parent_id, edge_type, confidence)
+tuple that the GraphBuilder converts into graph edges.
+
+Chain-walking a resolved relation is :func:`heritage_ancestors`.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from typing import Any, TypeVar
+
+import structlog
+
+from .models import HeritageRelation, ParsedFile, symbol_id_language
+
+log = structlog.get_logger(__name__)
+
+_Anchor = TypeVar("_Anchor")
+
+
+def heritage_ancestors(
+    root: _Anchor,
+    parents_of: Callable[[_Anchor], Iterable[_Anchor]],
+    *,
+    max_expand_depth: int,
+) -> set[_Anchor]:
+    """Every anchor reachable from *root* by following *parents_of*, plus *root*.
+
+    **The anchor must identify a declaration, never a bare type name.** A
+    name-keyed walk unions the parents of every same-named type in the repo and
+    mints edges between unrelated classes, which is precisely the error this
+    exists to make unavailable: pass a symbol id, or a key that is already
+    scoped to one declaration.
+
+    *max_expand_depth* bounds expansion, not reach: an anchor found deeper is
+    returned but not followed. So reach is ``max_expand_depth + 1`` — for
+    ancestors within distance N, pass ``N - 1``.
+
+    An anchor is expanded at most once, which ends cycles but also means a long
+    path reaching it first can truncate what a later short path would have
+    expanded.
+    """
+    reached: set[_Anchor] = set()
+    expanded: set[_Anchor] = set()
+
+    def visit(anchor: _Anchor, depth: int) -> None:
+        reached.add(anchor)
+        if anchor in expanded or depth > max_expand_depth:
+            return
+        expanded.add(anchor)
+        for parent in parents_of(anchor):
+            visit(parent, depth + 1)
+
+    visit(root, 0)
+    return reached
+
+
+# Symbol kinds that can be parents in heritage relationships
+_PARENT_KINDS = frozenset(
+    {
+        "class",
+        "interface",
+        "trait",
+        "struct",
+        "enum",
+        "type_alias",
+        "impl",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedHeritage:
+    """A heritage relation resolved to concrete symbol IDs."""
+
+    child_id: str  # symbol node ID of the child class/struct
+    parent_id: str  # symbol node ID of the parent class/interface/trait
+    edge_type: str  # "extends", "implements", or "trait_impl"
+    confidence: float  # 0.0–1.0
+    line: int  # line of the class definition (for diagnostics)
+
+
+class HeritageResolver:
+    """Resolve raw HeritageRelations to symbol-level edges.
+
+    Constructed once per ``GraphBuilder.build()`` call with the full set
+    of parsed files and import edges. Follows the same architecture as
+    CallResolver for consistency.
+    """
+
+    def __init__(
+        self,
+        parsed_files: dict[str, ParsedFile],
+        import_targets: dict[str, set[str]],
+        *,
+        import_maps: Any | None = None,
+    ) -> None:
+        # Per-file class/interface/trait index: {file: {name: symbol_id}}
+        self._file_types: dict[str, dict[str, str]] = {}
+
+        # Type ids each file declares, for files carrying heritage relations.
+        # Used only to tell whether a composed child id already names a type.
+        self._file_type_ids: dict[str, set[str]] = {}
+
+        # Type names a file declares more than once, in whatever scopes.
+        self._file_ambiguous_types: dict[str, set[str]] = {}
+
+        # Global class/interface/trait index: {name: [symbol_ids]}
+        self._global_types: dict[str, list[str]] = defaultdict(list)
+
+        # Import graph
+        self._import_targets = import_targets
+
+        # Import name mapping — shared with CallResolver (built once per
+        # GraphBuilder.build() and injected; standalone construction builds
+        # it locally).
+        if import_maps is None:
+            from .import_index import build_import_name_maps
+
+            import_maps = build_import_name_maps(parsed_files)
+        self._import_names: dict[str, dict[str, str]] = import_maps.import_names
+
+        # Lazy per-file merged view of imported files' type tables —
+        # Tier-2b lookup; sorted-path merge order, first-wins (see
+        # CallResolver for rationale).
+        self._merged_import_types: dict[str, dict[str, str]] = {}
+
+        # Keep reference for cross-language checks in Tier 3
+        self._parsed_files = parsed_files
+
+        self._build_indices(parsed_files)
+
+    def _build_indices(self, parsed_files: dict[str, ParsedFile]) -> None:
+        """Build type-level lookup indices from parsed file data."""
+        for path, parsed in parsed_files.items():
+            file_types: dict[str, str] = {}
+            ambiguous: set[str] = set()
+
+            for sym in parsed.symbols:
+                if sym.kind in _PARENT_KINDS:
+                    # Distinct ids, not repeat sightings: a type and the `impl`
+                    # block on it are two symbols under one name and one id.
+                    prior = file_types.get(sym.name)
+                    if prior is not None and prior != sym.id:
+                        ambiguous.add(sym.name)
+                    file_types[sym.name] = sym.id
+                    self._global_types[sym.name].append(sym.id)
+
+            self._file_types[path] = file_types
+            # Only the file that owns a relation asks these two, so a file
+            # declaring no heritage never needs them. _file_types stays global:
+            # tiers 2a, 2b and 3 read it for OTHER files.
+            if parsed.heritage:
+                self._file_type_ids[path] = set(file_types.values())
+                self._file_ambiguous_types[path] = ambiguous
+
+    def _merged_types_for(self, file_path: str) -> dict[str, str]:
+        """Merged ``{type_name → symbol_id}`` across every imported file."""
+        merged = self._merged_import_types.get(file_path)
+        if merged is None:
+            merged = {}
+            for imported_file in sorted(self._import_targets.get(file_path, ())):
+                if imported_file.startswith("external:"):
+                    continue
+                for name, sym_id in self._file_types.get(imported_file, {}).items():
+                    merged.setdefault(name, sym_id)
+            self._merged_import_types[file_path] = merged
+        return merged
+
+    def resolve_file(
+        self, file_path: str, relations: list[HeritageRelation]
+    ) -> list[ResolvedHeritage]:
+        """Resolve all heritage relations in a single file."""
+        results: list[ResolvedHeritage] = []
+
+        for rel in relations:
+            resolved = self._resolve_one(file_path, rel)
+            if resolved:
+                results.append(resolved)
+
+        return results
+
+    def _resolve_one(self, file_path: str, rel: HeritageRelation) -> ResolvedHeritage | None:
+        """Resolve a single HeritageRelation through three-tier fallback."""
+        # Tier 1: same-file
+        file_types = self._file_types.get(file_path, {})
+
+        # The declaring file already knows what the child's symbol id is, and
+        # it is not always two segments: a type declared inside a `mod` carries
+        # the module in its id, so composing one from the file and the bare
+        # name anchors the edge to a node that was never emitted.
+        #
+        # A composed id that already names a real symbol is kept, and so is a
+        # name the file declares more than once. The type table is keyed by
+        # bare name and is last-wins, so for an ambiguous name it answers with
+        # whichever declaration came last: an associated `type X = ...` in an
+        # unrelated impl, or a same-named type from a different `mod`. That
+        # would swap an anchor that dangles for one that points confidently at
+        # the wrong node, which is the worse of the two. A child the table
+        # does not carry at all, such as a `where` bound whose child is a
+        # function, also keeps the composed form.
+        #
+        # The first test asks for a TYPE of that id, not any symbol: a file
+        # whose top-level function shares a nested type's bare name would
+        # otherwise capture the anchor and wire the edge to the function.
+        #
+        # Ceiling: it proves the composed id is not dangling, not that it is
+        # the right symbol. A file declaring `Speaker` at top level and another
+        # inside a `mod` anchors the mod's impl to the top-level one, as it did
+        # before this change. Telling those apart needs the relation to carry
+        # the scope it was declared in, which it does not.
+        composed = f"{file_path}::{rel.child_name}"
+        if (
+            composed in self._file_type_ids.get(file_path, ())
+            or rel.child_name in self._file_ambiguous_types.get(file_path, ())
+        ):
+            child_id = composed
+        else:
+            child_id = file_types.get(rel.child_name) or composed
+        parent_name = rel.parent_name
+        edge_type = _heritage_kind_to_edge_type(rel.kind)
+
+        if parent_name in file_types:
+            return ResolvedHeritage(
+                child_id=child_id,
+                parent_id=file_types[parent_name],
+                edge_type=edge_type,
+                confidence=0.95,
+                line=rel.line,
+            )
+
+        # Tier 2a: specific imported name
+        name_to_file = self._import_names.get(file_path, {})
+        if parent_name in name_to_file:
+            source_file = name_to_file[parent_name]
+            source_types = self._file_types.get(source_file, {})
+            if parent_name in source_types:
+                return ResolvedHeritage(
+                    child_id=child_id,
+                    parent_id=source_types[parent_name],
+                    edge_type=edge_type,
+                    confidence=0.90,
+                    line=rel.line,
+                )
+
+        # Tier 2b: all imported files (pre-merged lookup)
+        merged_types = self._merged_types_for(file_path)
+        if parent_name in merged_types:
+            return ResolvedHeritage(
+                child_id=child_id,
+                parent_id=merged_types[parent_name],
+                edge_type=edge_type,
+                confidence=0.85,
+                line=rel.line,
+            )
+
+        # Tier 3: global unique match — only within the same language
+        candidates = self._global_types.get(parent_name, [])
+        if len(candidates) == 1:
+            caller_lang = symbol_id_language(self._parsed_files, child_id)
+            callee_lang = symbol_id_language(self._parsed_files, candidates[0])
+            if caller_lang and callee_lang and caller_lang != callee_lang:
+                return None  # reject cross-language Tier 3 match
+            return ResolvedHeritage(
+                child_id=child_id,
+                parent_id=candidates[0],
+                edge_type=edge_type,
+                confidence=0.50,
+                line=rel.line,
+            )
+
+        return None
+
+
+def _heritage_kind_to_edge_type(kind: str) -> str:
+    """Map HeritageKind to graph edge_type string.
+
+    ``derive`` is named rather than left to the default: ``#[derive(Clone)]``
+    really does implement the trait, and falling through would call it
+    inheritance.
+    """
+    if kind == "implements":
+        return "implements"
+    if kind == "trait_impl":
+        return "implements"
+    if kind == "derive":
+        return "implements"
+    # extends, mixin → extends
+    return "extends"

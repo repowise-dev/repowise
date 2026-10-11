@@ -1,0 +1,132 @@
+"use client";
+
+import { useCallback, useMemo } from "react";
+import useSWR from "swr";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { HealthFileDrawer, useRelatedWork } from "@repowise-dev/ui/health";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import {
+  getPerformanceOpportunities,
+  updateFindingStatus,
+} from "@/lib/api/code-health";
+import {
+  getFileOpportunity,
+  refactoringOpportunityHref,
+} from "@/lib/api/file-opportunity";
+import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
+import { useFileBreakdown } from "./use-file-breakdown";
+import { useTranslations } from "next-intl";
+import type { HealthCounts } from "@repowise-dev/types/health";
+
+/** Causes listed for one file. A file with more than this is its own queue. */
+const FILE_CAUSE_LIMIT = 10;
+
+export function HealthFileDrawerHost({
+  repoId,
+  filePath,
+  onClose,
+  lens,
+  counts,
+}: {
+  repoId: string;
+  filePath: string | null;
+  onClose: () => void;
+  /** The reading the row that opened this drawer was scored under. */
+  counts?: HealthCounts;
+  /** The surface the file was opened from; drives what the drawer leads with. */
+  lens?: string;
+}) {
+  const t = useTranslations("health");
+  const router = useRouter();
+  const { data, isLoading } = useFileBreakdown(repoId, filePath, counts);
+  const prefix = `/repos/${repoId}`;
+  const filePageHref = filePath ? fileEntityPath(prefix, filePath) : undefined;
+
+  // Scoped to the one file, by the server. Fetched only from the performance
+  // lens, so opening a file from anywhere else costs the request it always did.
+  const wantsCauses = lens === "performance" && filePath !== null;
+  const { data: causes, isLoading: causesLoading } = useSWR(
+    wantsCauses ? `file-performance-causes:${repoId}:${filePath}` : null,
+    () =>
+      getPerformanceOpportunities(repoId, {
+        file_paths: [filePath as string],
+        limit: FILE_CAUSE_LIMIT,
+        // Every context. The reader opened this one file, so the question is
+        // what was found in it, not whether it is production code.
+        context: "all",
+      }),
+    { revalidateOnFocus: false },
+  );
+
+  // The file's one refactoring opportunity, so a finding in this drawer can
+  // reach the plan the same analysis wrote for it. Unconditional, unlike the
+  // performance causes above: this is one indexed lookup, and the link is the
+  // drawer's only route out to the plan.
+  const { data: opportunity } = useSWR(
+    filePath ? `file-opportunity:${repoId}:${filePath}` : null,
+    () => getFileOpportunity(repoId, filePath as string),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+
+  // What the other lenses hold for this file. One request, one read per lens.
+  const fetchRelated = useCallback(
+    (paths: string[]) => getRelatedWork(repoId, paths),
+    [repoId],
+  );
+  const related = useRelatedWork(fetchRelated, [filePath]);
+  const toRelated = useMemo(() => relatedWorkHref(repoId), [repoId]);
+
+  return (
+    <HealthFileDrawer
+      open={filePath !== null}
+      opportunity={opportunity}
+      refactoringOpportunityHref={(id) => refactoringOpportunityHref(repoId, id)}
+      related={related?.files?.[0]}
+      relatedWorkHref={toRelated}
+      onNavigate={(href) => router.push(href)}
+      onClose={onClose}
+      loading={isLoading}
+      metric={data?.metric ?? null}
+      breakdown={
+        data?.breakdown
+          ? {
+              score: data.breakdown.score,
+              total_deduction: data.breakdown.total_deduction,
+              categories: data.breakdown.categories,
+            }
+          : null
+      }
+      findings={data?.findings ?? []}
+      suggestions={data?.suggestions ?? {}}
+      trend={data?.trend ?? null}
+      signals={data?.signals ?? null}
+      lens={lens}
+      performance={
+        wantsCauses && causes ? { items: causes.items, total: causes.total } : null
+      }
+      performanceLoading={causesLoading}
+      onOpportunitySelect={(opportunityId) =>
+        router.push(`/repos/${repoId}/code-health?tab=performance&opportunity=${encodeURIComponent(opportunityId)}`)
+      }
+      permalinkHref={filePageHref ? `${filePageHref}?tab=health` : undefined}
+      fileViewHref={filePageHref}
+      onPartnerHref={(path) => fileEntityPath(prefix, path)}
+      onFindingStatusChange={async (findingId, status) => {
+        try {
+          await updateFindingStatus(
+            repoId,
+            findingId,
+            status as Parameters<typeof updateFindingStatus>[2],
+          );
+          toast.success(
+            t("findingMarked", { status: status.replace("_", " ") }),
+          );
+        } catch (err) {
+          toast.error(t("findingStatusFailed"));
+          throw err;
+        }
+      }}
+    />
+  );
+}

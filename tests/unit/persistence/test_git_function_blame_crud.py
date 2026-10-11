@@ -1,0 +1,142 @@
+"""CRUD round-trip tests for the git_function_blame table."""
+
+from __future__ import annotations
+
+import pytest
+
+from repowise.core.persistence.crud import (
+    count_git_function_blame,
+    delete_git_function_blame,
+    get_function_commit_shas,
+    get_git_function_blame,
+    get_git_function_blames,
+    get_git_function_mod_counts,
+    upsert_git_function_blame_bulk,
+)
+from tests.unit.persistence.helpers import insert_repo
+
+
+def _row(symbol_id: str, *, mods: int, **over) -> dict:
+    path, _, name = symbol_id.partition("::")
+    base = {
+        "symbol_id": symbol_id,
+        "file_path": path,
+        "function_name": name,
+        "start_line": 1,
+        "end_line": 10,
+        "line_count": 10,
+        "mod_count": mods,
+        "recent_mod_count": 1,
+        "median_author_time": 1_700_000_000,
+        "owner_name": "Ann",
+        "owner_email": "ann@x",
+        "owner_line_pct": 0.7,
+    }
+    base.update(over)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_upsert_and_rank_by_mods(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(
+        async_session,
+        repo.id,
+        [
+            _row("a.py::foo", mods=2),
+            _row("a.py::bar", mods=9),
+            _row("b.py::baz", mods=5),
+        ],
+    )
+    await async_session.commit()
+
+    assert await count_git_function_blame(async_session, repo.id) == 3
+    ranked = await get_git_function_blames(async_session, repo.id)
+    # Hottest (most-modified) first.
+    assert [r.symbol_id for r in ranked] == ["a.py::bar", "b.py::baz", "a.py::foo"]
+
+
+@pytest.mark.asyncio
+async def test_scope_by_file_path(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(
+        async_session,
+        repo.id,
+        [_row("a.py::foo", mods=2), _row("a.py::bar", mods=3), _row("b.py::baz", mods=5)],
+    )
+    await async_session.commit()
+
+    only_a = await get_git_function_blames(async_session, repo.id, file_path="a.py")
+    assert {r.symbol_id for r in only_a} == {"a.py::foo", "a.py::bar"}
+
+
+@pytest.mark.asyncio
+async def test_get_by_symbol_id_and_idempotent_upsert(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(async_session, repo.id, [_row("a.py::foo", mods=2)])
+    await async_session.commit()
+    # Re-upsert same symbol with new mods → update, not duplicate.
+    await upsert_git_function_blame_bulk(
+        async_session, repo.id, [_row("a.py::foo", mods=7, owner_name="Bob")]
+    )
+    await async_session.commit()
+
+    assert await count_git_function_blame(async_session, repo.id) == 1
+    got = await get_git_function_blame(async_session, repo.id, "a.py::foo")
+    assert got is not None
+    assert got.mod_count == 7
+    assert got.owner_name == "Bob"
+
+
+@pytest.mark.asyncio
+async def test_delete_git_function_blame(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(async_session, repo.id, [_row("a.py::foo", mods=2)])
+    await async_session.commit()
+    await delete_git_function_blame(async_session, repo.id)
+    await async_session.commit()
+    assert await count_git_function_blame(async_session, repo.id) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_git_function_mod_counts_excludes_zero(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(
+        async_session,
+        repo.id,
+        [
+            _row("a.py::foo", mods=1),
+            _row("a.py::bar", mods=4),
+            _row("a.py::baz", mods=4),
+            _row("b.py::qux", mods=5),
+            _row("c.py::nope", mods=0),
+        ],
+    )
+    await async_session.commit()
+
+    counts = await get_git_function_mod_counts(async_session, repo.id)
+    # The persisted rollup only carries functions with mod_count > 0; the
+    # loader that computes the repo-wide p80 from these must not let a zero
+    # row into the distribution (matches the in-memory computation).
+    assert sorted(counts) == [1, 4, 4, 5]
+
+
+@pytest.mark.asyncio
+async def test_function_commit_shas_by_file(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(
+        async_session,
+        repo.id,
+        [
+            _row("a.py::foo", mods=2, commit_shas_json='["s2", "s1"]'),
+            _row("b.py::bar", mods=1, commit_shas_json='["s3"]', start_line=4, end_line=8),
+            # Written before the column existed: no set, so not a co-change source.
+            _row("c.py::old", mods=3),
+        ],
+    )
+    await async_session.commit()
+
+    assert await get_function_commit_shas(async_session, repo.id) == {
+        "a.py": [("foo", 1, 10, ["s2", "s1"])],
+        "b.py": [("bar", 4, 8, ["s3"])],
+    }

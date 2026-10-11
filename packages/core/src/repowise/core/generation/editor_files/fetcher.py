@@ -1,0 +1,656 @@
+"""EditorFileDataFetcher: queries the repowise DB and returns EditorFileData.
+
+All queries operate on already-persisted data — no LLM calls required.
+Uses the existing CRUD layer where possible; raw selects for aggregate queries.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from datetime import UTC, datetime
+from pathlib import Path
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.grading import BAND_LABEL, band_for
+from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
+from repowise.core.analysis.health.rows import scored_rows, split_tests
+from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
+from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
+from repowise.core.entry_candidacy import conventional_entry_stems
+from repowise.core.generation.entry_points import rank_entry_points
+from repowise.core.index_scope import load_index_scope, resolve_index_scope
+from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.models import (
+    DecisionRecord,
+    GitMetadata,
+    GraphNode,
+    HealthFileMetric,
+    HealthFinding,
+    Page,
+)
+
+from .data import (
+    CodeHealthBlock,
+    DecisionSummary,
+    EditorFileData,
+    HotspotFile,
+    KeyModule,
+    KGLayerSummary,
+    KGTourStepSummary,
+)
+from .tech_stack import detect_build_commands, detect_tech_stack
+
+# Maximum items per section to keep CLAUDE.md within ~200 lines
+_MAX_MODULES = 10
+_MAX_ENTRY_POINTS = 10
+_MAX_HOTSPOTS = 5
+_MAX_DECISIONS = 8
+_MAX_FIX_FIRST = 3
+
+
+def _signed_by(signature) -> str:
+    """The mark for a decision a person did not sign, else ``""``.
+
+    An agent reads this block as standing rules, so one it accepted itself has
+    to be legible as that rather than as the team's. A person's acceptance is
+    the ordinary case and is left unmarked, which is also what keeps the line
+    cheap: these files are read into every session.
+    """
+    if signature is None or signature.kind == "person":
+        return ""
+    if signature.kind == "agent":
+        who = signature.accepter or "an agent"
+        return f" [accepted by {who}, not a person]"
+    if signature.kind == "import":
+        return " [accepted by a tracked file]"
+    return " [signer not recorded]"
+
+
+class EditorFileDataFetcher:
+    """Fetches all data needed to render an editor-file template."""
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        repo_id: str,
+        repo_path: Path,
+    ) -> None:
+        self._session = session
+        self._repo_id = repo_id
+        self._repo_path = repo_path
+
+    async def fetch(self) -> EditorFileData:
+        """Run all queries and return a populated EditorFileData."""
+        repo = await crud.get_repository(self._session, self._repo_id)
+        repo_name = repo.name if repo else self._repo_path.name
+
+        kg_layers, kg_tour = await self._get_kg_data()
+
+        # The stamp must report the commit the index was built against, not
+        # the live HEAD: a rebase fires the regeneration hook per replayed
+        # commit while the index underneath is unchanged, so a live-HEAD
+        # stamp walks forward on its own and silently misdates everything
+        # below it. Fall back to the shell-out only when the column is empty
+        # (pre-backfill indexes).
+        stored_commit = ((repo.head_commit or "")[:7]) if repo else ""
+
+        return EditorFileData(
+            repo_name=repo_name,
+            indexed_at=datetime.now(UTC).strftime("%Y-%m-%d"),
+            indexed_commit=stored_commit or _get_head_short_sha(self._repo_path),
+            architecture_summary=await self._get_architecture_summary(),
+            key_modules=await self._get_key_modules(),
+            entry_points=await self._get_entry_points(),
+            tech_stack=detect_tech_stack(self._repo_path),
+            hotspots=await self._get_hotspots(),
+            decisions=await self._get_decisions(),
+            build_commands=detect_build_commands(self._repo_path),
+            avg_confidence=await self._get_avg_confidence(),
+            code_health=await self._get_code_health(),
+            kg_layers=kg_layers,
+            kg_tour=kg_tour,
+            index_scope=self._get_index_scope(),
+        )
+
+    def _get_index_scope(self) -> dict:
+        return load_index_scope(self._repo_path) or resolve_index_scope({})
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    async def _get_architecture_summary(self) -> str:
+        """Extract 2-4 sentences from the repo_overview wiki page."""
+        pages = await crud.list_pages(
+            self._session,
+            self._repo_id,
+            page_type="repo_overview",
+            limit=1,
+        )
+        if not pages:
+            return ""
+        content = pages[0].content or ""
+        return _extract_sentences(content, max_sentences=4)
+
+    async def _get_key_modules(self) -> list[KeyModule]:
+        """Top modules by PageRank with owner from git metadata."""
+        # Fetch module pages sorted by their target_path (proxy for PageRank
+        # ordering is applied by joining with graph_nodes).
+        pages_result = await self._session.execute(
+            select(Page, GraphNode.pagerank, GraphNode.symbol_count)
+            .join(
+                GraphNode,
+                (GraphNode.repository_id == Page.repository_id)
+                & (GraphNode.node_id == Page.target_path),
+                isouter=True,
+            )
+            .where(
+                Page.repository_id == self._repo_id,
+                Page.page_type == "module_page",
+            )
+            .order_by(GraphNode.pagerank.desc().nulls_last())
+            .limit(_MAX_MODULES)
+        )
+        rows = pages_result.all()
+
+        if not rows:
+            return []
+
+        # Build a lookup of primary owners from git_metadata
+        target_paths = [row[0].target_path for row in rows]
+        owner_map = await self._get_owners_for_paths(target_paths)
+
+        modules: list[KeyModule] = []
+        for page, _pagerank, symbol_count in rows:
+            purpose = _extract_sentences(page.content or "", max_sentences=1)
+            # 80 chars cut every purpose mid-thought ("…is the **test-layer
+            # ingestion subsystem** for…"); 140 fits one real clause.
+            purpose = _truncate_at_word(purpose, 140).rstrip(".") if purpose else ""
+            modules.append(
+                KeyModule(
+                    name=page.target_path,
+                    purpose=purpose,
+                    file_count=symbol_count or 0,
+                    owner=owner_map.get(page.target_path),
+                )
+            )
+        return modules
+
+    async def _get_entry_points(self) -> list[str]:
+        """Curated orientation entry points (re-export barrels and sinks demoted).
+
+        Prefers the curated ``kg_project_meta`` list, and falls back to the raw
+        ``is_entry_point`` flag whenever that list is absent or empty — an
+        index written before the curation pass, a run with
+        ``REPOWISE_KG_CURATION=0``, or a repo whose candidates were all
+        filtered out.
+
+        The fallback used to read ``ORDER BY pagerank DESC``, which is the
+        ordering :mod:`repowise.core.generation.entry_points` exists to argue
+        against: centrality rewards fan-in, so a package-root ``types/index.ts``
+        floated above the real front door precisely because everything imports
+        it. It now ranks on execution-start evidence and keeps PageRank as the
+        tiebreak the shared key already defines.
+
+        Ranking has to happen after the read, not in the ``ORDER BY``, so the
+        query is bounded by the flag rather than by ``LIMIT``. Measured over 42
+        local indexes the widest flag set is 9,644 rows of one path and two
+        floats. That is per call, and the call is not once per run: the CLI
+        makes one per editor file, and ``GET /repos/{id}/claude-md`` makes one
+        per request.
+        """
+        meta = await crud.get_kg_project_meta(self._session, self._repo_id)
+        if meta is not None:
+            try:
+                curated = json.loads(meta.entry_points_json or "[]")
+            except (json.JSONDecodeError, TypeError):
+                curated = []
+            if curated:
+                return curated[:_MAX_ENTRY_POINTS]
+
+        result = await self._session.execute(
+            select(GraphNode.node_id, GraphNode.pagerank, GraphNode.betweenness).where(
+                GraphNode.repository_id == self._repo_id,
+                GraphNode.is_entry_point == True,  # noqa: E712
+            )
+        )
+        candidates = [(node_id, pr or 0.0, bt or 0.0) for node_id, pr, bt in result.all()]
+        ranked = rank_entry_points(candidates, conventional_entry_stems())
+        return ranked[:_MAX_ENTRY_POINTS]
+
+    async def _get_hotspots(self) -> list[HotspotFile]:
+        """Top attention-worthy files: bug-fix history first, churn as fallback.
+
+        Two populations, deliberately unioned rather than re-sorted. Ranking by
+        fix mass inside ``is_hotspot`` alone would still be churn-gated: a file
+        fixed four times last month that simply is not busy could never appear.
+        So the filter admits bug magnets too, and the order puts fix evidence
+        ahead of commit counts, because the section's own instruction is to call
+        ``get_risk`` (a defect tool) before editing.
+
+        Churn stays the fallback and the tie-break. A repo whose commit messages
+        do not follow a fix convention has zero fix mass everywhere, and this
+        degrades to exactly the churn ordering it had before rather than to an
+        empty section.
+
+        The fix columns come from the same row the churn columns already did, so
+        this is the same single query it was.
+
+        Filtered to files that exist in the checkout. A ``git_metadata`` row
+        outlives its file when the deleted-file prune refuses a run that looks
+        like a broken checkout, and a fix-heavy file that was deleted would
+        otherwise rank first in "files that need care" forever. The limit is
+        applied after the filter, so a dropped row cannot leave the list short.
+        """
+        result = await self._session.execute(
+            select(
+                GitMetadata.file_path,
+                GitMetadata.churn_percentile,
+                GitMetadata.commit_count_90d,
+                GitMetadata.primary_owner_name,
+                GitMetadata.prior_defect_count,
+                GitMetadata.bug_magnet,
+                GitMetadata.last_fix_at,
+            )
+            .where(
+                GitMetadata.repository_id == self._repo_id,
+                (GitMetadata.is_hotspot == True)  # noqa: E712
+                | (GitMetadata.bug_magnet == True),  # noqa: E712
+            )
+            .order_by(
+                GitMetadata.bug_magnet.desc(),
+                GitMetadata.fix_mass.desc(),
+                GitMetadata.churn_percentile.desc(),
+                GitMetadata.file_path.asc(),  # deterministic tie-break
+            )
+        )
+        now = datetime.now(UTC)
+        hotspots: list[HotspotFile] = []
+        for row in result.all():
+            if len(hotspots) >= _MAX_HOTSPOTS:
+                break
+            if not (self._repo_path / row[0]).exists():
+                continue
+            last_fix_at = row[6]
+            age: str | None = None
+            if isinstance(last_fix_at, datetime):
+                # SQLite hands these back naive; re-attach UTC before subtracting
+                # or the delta is wrong by the local offset (see signals.iso_utc).
+                moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
+                age = _humanize_age(max(0, (now - moment).days))
+            hotspots.append(
+                HotspotFile(
+                    path=row[0],
+                    churn_percentile=round(row[1] * 100, 1),  # stored as 0.0-1.0
+                    commit_count_90d=row[2],
+                    owner=row[3],
+                    fix_count=row[4] or 0,
+                    # Never claim "bug magnet" without an age to anchor it.
+                    bug_magnet=bool(row[5]) and age is not None,
+                    last_fix_age=age,
+                )
+            )
+        return hotspots
+
+    async def _get_decisions(self) -> list[DecisionSummary]:
+        """Accepted decision records, least-stale first.
+
+        An agent reads this block as instructions, so it is the surface where
+        the candidate/decision distinction matters most: acceptance, not a
+        status string a recurrence check wrote, is what earns a line here.
+
+        It is also where an agent can read back its own acceptance as the
+        team's rule, so a line a person did not sign says so.
+        """
+        from repowise.core.exclusion import build_exclude_spec, decision_is_excluded
+        from repowise.core.persistence.crud.authority import (
+            accepted_predicate,
+            decision_signatures,
+        )
+
+        result = await self._session.execute(
+            select(DecisionRecord)
+            .where(
+                DecisionRecord.repository_id == self._repo_id,
+                DecisionRecord.status == "active",
+                accepted_predicate(),
+            )
+            .order_by(DecisionRecord.staleness_score.asc())
+            # Over-fetch: records anchored entirely in excluded paths (vendored
+            # venvs mined before exclude rules changed) are dropped below.
+            .limit(_MAX_DECISIONS * 3)
+        )
+        exclude_spec = build_exclude_spec(self._repo_path)
+        records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)][
+            :_MAX_DECISIONS
+        ]
+        signatures = await decision_signatures(self._session, self._repo_id, records)
+        summaries: list[DecisionSummary] = []
+        for rec in records:
+            summaries.append(
+                DecisionSummary(
+                    title=rec.title,
+                    status=rec.status,
+                    rationale=_truncate_at_word(rec.rationale or "", 100),
+                    decision=_truncate_at_word(rec.decision or "", 120),
+                    signed_by=_signed_by(signatures.get(rec.id)),
+                )
+            )
+        return summaries
+
+    async def _get_avg_confidence(self) -> float:
+        """Average confidence score across all wiki pages for this repo."""
+        result = await self._session.execute(
+            select(func.avg(Page.confidence)).where(
+                Page.repository_id == self._repo_id,
+            )
+        )
+        avg = result.scalar_one_or_none()
+        return round(float(avg), 2) if avg is not None else 0.0
+
+    async def _get_code_health(self) -> CodeHealthBlock | None:
+        """Build the compact code-health block for CLAUDE.md.
+
+        KPIs, then the lead of the Fix-first queue every other surface renders.
+        ``None`` when no health data yet.
+        """
+        # Scored rows only: a file in a language health has no dialect for
+        # carries no score, and a repository of nothing else has no block.
+        metric_rows = scored_rows(
+            (
+                await self._session.execute(
+                    select(HealthFileMetric).where(
+                        HealthFileMetric.repository_id == self._repo_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not metric_rows:
+            return None
+
+        # KPIs. The weighting is the shared one rather than a fourth copy of it:
+        # this reimplemented ``nloc_weighted_score`` exactly, including the
+        # zero-total-weight fallback to a plain mean. The empty case cannot
+        # reach it — ``metric_rows`` is checked above.
+        avg = nloc_weighted_score(metric_rows)
+        # The worst file names a production file: a test is not the file an
+        # agent should be told to handle with care.
+        production, tests = split_tests(metric_rows)
+        worst = min(production or tests, key=lambda m: m.score)
+
+        # Hotspot-flagged paths, and the hotspot KPI over them. Both come from
+        # the shared owners now; this file used to re-derive the same weighted
+        # average inline and the same path query inline, and agreed with the
+        # canonical KPI only by coincidence.
+        hotspot_paths = await crud.get_hotspot_file_paths(self._session, self._repo_id)
+        hotspot_kpi = hotspot_health(metric_rows, hotspot_paths)
+
+        # CEILING: when the repo has no hotspot files the honest answer is "no
+        # hotspots", and every other surface now says so by omitting the number.
+        # This one still substitutes the repo average, because saying nothing
+        # means making the figure optional in ``claude_md.j2`` / ``agents_md.j2``
+        # — and that same template line is the subject of issue #1490, which an
+        # outside contributor has claimed. UPGRADE PATH: once #1490 lands and the
+        # line renders conditionally, drop this fallback and pass ``hotspot_kpi``
+        # straight through. Affects only repos with no recent churn at all.
+        hotspot_for_claude_md = hotspot_kpi if hotspot_kpi is not None else avg
+
+        # Maintainability pillar headline: NLOC-weighted over the per-file
+        # maintainability scores, skipping rows that predate the split. ``None``
+        # when unmeasured so the section omits the line rather than printing 10.0.
+        maint_rows = [
+            m for m in metric_rows if getattr(m, "maintainability_score", None) is not None
+        ]
+        maintainability_average: float | None = None
+        if maint_rows:
+            m_nloc = sum(max(m.nloc, 1) for m in maint_rows)
+            maintainability_average = (
+                sum(m.maintainability_score * max(m.nloc, 1) for m in maint_rows) / m_nloc
+                if m_nloc
+                else sum(m.maintainability_score for m in maint_rows) / len(maint_rows)
+            )
+
+        # Performance pillar headline: same NLOC-weighted average over the
+        # per-file performance scores (static performance RISK). ``None`` when
+        # unmeasured so the section omits the line rather than printing 10.0.
+        perf_rows = [m for m in metric_rows if getattr(m, "performance_score", None) is not None]
+        performance_average: float | None = None
+        if perf_rows:
+            p_nloc = sum(max(m.nloc, 1) for m in perf_rows)
+            performance_average = (
+                sum(m.performance_score * max(m.nloc, 1) for m in perf_rows) / p_nloc
+                if p_nloc
+                else sum(m.performance_score for m in perf_rows) / len(perf_rows)
+            )
+
+        # Honest performance headline: how much of the analyzed code a perf
+        # detector actually ran on. Restricted to real code (LANGUAGE_MAPS), so a
+        # mostly-C++/Kotlin repo reads a low coverage %, never a bare 10/10.
+        lang_by_path = await crud.get_file_language_map(self._session, self._repo_id)
+        perf_coverage = coverage_for_metrics(metric_rows, lang_by_path)
+
+        # Open performance-finding count + density over covered LOC (the honest
+        # headline the diluted /10 hides).
+        performance_findings = (
+            await self._session.execute(
+                select(func.count()).where(
+                    HealthFinding.repository_id == self._repo_id,
+                    HealthFinding.status == "open",
+                    HealthFinding.dimension == "performance",
+                    HealthFinding.biomarker_type.not_in(excluded_types()),
+                )
+            )
+        ).scalar_one()
+        performance_findings_density: float | None = None
+        if perf_coverage.covered_nloc > 0:
+            performance_findings_density = round(
+                10000.0 * performance_findings / perf_coverage.covered_nloc, 2
+            )
+
+
+        # The trend the snapshots record, or nothing: a repository indexed once
+        # has no trend, and the section used to print "stable" for it anyway.
+        history = await crud.list_health_snapshots(
+            self._session, self._repo_id, limit=DECLINE_LOOKBACK + 1
+        )
+
+        return CodeHealthBlock(
+            hotspot_health=round(hotspot_for_claude_md, 2),
+            average_health=round(avg, 2),
+            band=BAND_LABEL[band_for(round(avg, 2))],
+            worst_score=round(worst.score, 2),
+            worst_path=worst.file_path,
+            hotspot_trend=hotspot_trend(history),
+            maintainability_average=(
+                round(maintainability_average, 2) if maintainability_average is not None else None
+            ),
+            performance_average=(
+                round(performance_average, 2) if performance_average is not None else None
+            ),
+            performance_findings=performance_findings,
+            performance_findings_density=performance_findings_density,
+            performance_coverage_pct=(
+                perf_coverage.pct_loc if perf_coverage.analyzed_files else None
+            ),
+            performance_skipped_files=perf_coverage.skipped_files,
+            performance_unsupported_languages=perf_coverage.unsupported_languages,
+            fix_first=await self._get_fix_first(),
+        )
+
+    async def _get_fix_first(self) -> list[dict]:
+        """The queue's top items, or nothing on a store that cannot build it."""
+        try:
+            async with self._session.begin_nested():
+                queue = await load_fix_first(self._session, self._repo_id, limit=_MAX_FIX_FIRST)
+        except Exception:  # an index from before the refactoring or perf tables
+            return []
+        return [
+            {
+                "title": item.title,
+                "where": item.target.file_path
+                + (f":{item.target.line_start}" if item.target.line_start else ""),
+                "why": item.why,
+            }
+            for item in queue.items
+        ]
+
+    async def _get_kg_data(
+        self,
+    ) -> tuple[list[KGLayerSummary], list[KGTourStepSummary]]:
+        """Fetch KG layers and tour steps from the DB."""
+        import json
+
+        db_layers = await crud.get_kg_layers(self._session, self._repo_id)
+
+        layers = [
+            KGLayerSummary(
+                name=layer.name,
+                file_count=len(json.loads(layer.node_ids_json) if layer.node_ids_json else []),
+                description=_truncate_at_word(layer.description or "", 80),
+            )
+            for layer in db_layers
+        ]
+
+        # Guided tour: the overview page's metadata_json carries the
+        # authoritative tour (order/title/target_path) — the same source
+        # the MCP get_overview tool renders. The KG tour-step rows often
+        # persist empty node_ids_json, which used to leave every CLAUDE.md
+        # tour step path-less ("3. **index.ts**" with no way to tell which
+        # of the five index.ts re-export hubs it meant).
+        tour: list[KGTourStepSummary] = []
+        pages = await crud.list_pages(
+            self._session,
+            self._repo_id,
+            page_type="repo_overview",
+            limit=1,
+        )
+        if pages:
+            try:
+                ov_meta = json.loads(pages[0].metadata_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                ov_meta = {}
+            for s in ov_meta.get("guided_tour") or []:
+                tour.append(
+                    KGTourStepSummary(
+                        order=s.get("order") or len(tour) + 1,
+                        title=s.get("title") or "",
+                        primary_file=s.get("target_path") or "",
+                        reason=s.get("reason") or "",
+                    )
+                )
+        if not tour:
+            db_tour = await crud.get_kg_tour_steps(self._session, self._repo_id)
+            for s in db_tour:
+                node_ids = json.loads(s.node_ids_json) if s.node_ids_json else []
+                primary = node_ids[0].removeprefix("file:") if node_ids else ""
+                tour.append(
+                    KGTourStepSummary(
+                        order=s.step_order,
+                        title=s.title,
+                        primary_file=primary,
+                    )
+                )
+
+        return layers, tour
+
+    async def _get_owners_for_paths(self, paths: list[str]) -> dict[str, str]:
+        """Return {path: primary_owner_name} for the given paths."""
+        if not paths:
+            return {}
+        result = await self._session.execute(
+            select(GitMetadata.file_path, GitMetadata.primary_owner_name).where(
+                GitMetadata.repository_id == self._repo_id,
+                GitMetadata.file_path.in_(paths),
+                GitMetadata.primary_owner_name.isnot(None),
+            )
+        )
+        return {row[0]: row[1] for row in result.all()}
+
+
+# ------------------------------------------------------------------
+# Utility
+# ------------------------------------------------------------------
+
+
+def _get_head_short_sha(repo_path: Path) -> str:
+    """Return the short SHA of HEAD, or empty string if not a git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _humanize_age(days: int) -> str:
+    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count.
+
+    Twin of the pre-edit hook's ``decision_inject._humanize_age``, which states
+    why the two are not shared: that module is on a sub-100ms budget and cannot
+    afford to import ``repowise.core``. Keep the phrasing in step by hand.
+    """
+    if days <= 1:
+        return "today" if days <= 0 else "yesterday"
+    if days < 14:
+        return f"{days} days ago"
+    if days < 60:
+        weeks = round(days / 7)
+        return f"{weeks} week{'' if weeks == 1 else 's'} ago"
+    months = round(days / 30)
+    return f"{months} month{'' if months == 1 else 's'} ago"
+
+
+def _extract_sentences(text: str, max_sentences: int) -> str:
+    """Return up to *max_sentences* prose sentences from the start of *text*.
+
+    Strips markdown headers/code fences AND list/table lines so only prose
+    remains. List items rarely end with sentence punctuation, so keeping
+    them used to jam bullets onto the tail of the last real sentence
+    ("...rendered in a web UI. - **Languages**") and leave orphaned
+    fragments like "1. **Inputs**" in the rendered CLAUDE.md.
+    """
+    # Remove markdown headers and code fences
+    text = re.sub(r"^#{1,6}\s+.*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    # Drop list items, table rows, and blockquotes — prose only.
+    # Both "1." and "1)" enumeration styles count as list items.
+    text = re.sub(r"^\s*(?:[-*+]\s|\d+[.)]\s|\||>).*$", "", text, flags=re.MULTILINE)
+    # Drop colon-terminated list lead-ins ("Repowise consumes:") — their list
+    # items were just stripped, so keeping them leaves dangling fragments in
+    # the rendered CLAUDE.md.
+    text = re.sub(r"^.*:\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"`([^`]+)`", r"\1", text)  # strip backticks, keep text
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # links → text
+    text = re.sub(r"\n{2,}", "\n", text).strip()
+
+    # Split on sentence boundaries
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+    return " ".join(sentences[:max_sentences])
+
+
+def _truncate_at_word(text: str, limit: int) -> str:
+    """Truncate *text* to at most *limit* chars without splitting a word.
+
+    Hard ``[:80]`` slices cut mid-word ("classificat", "repowi") which reads
+    as a rendering bug in every generated table. Cutting at the last word
+    boundary and appending an ellipsis keeps the same budget honestly.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(".,;:")
+    return f"{cut}…"

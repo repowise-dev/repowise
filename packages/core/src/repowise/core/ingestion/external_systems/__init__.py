@@ -1,0 +1,150 @@
+"""Manifest-based extraction of external system dependencies.
+
+Public API:
+    extract_external_systems(repo_root, manifest_paths=None) -> list[ExternalSystemRecord]
+
+Each ecosystem-specific parser lives in its own submodule
+(:mod:`.npm`, :mod:`.pypi`, :mod:`.cargo`, :mod:`.go`, :mod:`.nuget`) and
+exposes ``filenames``, ``ecosystem``, and ``parse(manifest_path, repo_root)``.
+
+The extractor walks the repo (or accepts a pre-computed list of manifest
+paths from the traverser) and dispatches to the matching parser. Parsers
+never raise on malformed input.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable
+from contextlib import suppress
+from pathlib import Path
+from types import ModuleType
+
+from ..workspace_members import first_party_package_names
+from . import bazel, cargo, cmake, go, maven, npm, nuget, pypi
+from .base import ExternalSystemRecord, ManifestParser
+
+__all__ = [
+    "ExternalSystemRecord",
+    "ManifestParser",
+    "extract_external_systems",
+    "is_manifest_path",
+]
+
+_PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, cmake, bazel)
+
+# Map exact filename → parser module
+_FILENAME_PARSERS: dict[str, ModuleType] = {
+    fname: parser for parser in _PARSERS for fname in parser.filenames
+}
+
+
+# Filename patterns that match by predicate (pypi requirements*.txt, nuget *.csproj)
+def _matches_pattern(filename: str) -> ModuleType | None:
+    lower = filename.lower()
+    if lower.startswith("requirements") and lower.endswith(".txt"):
+        return pypi
+    if lower.endswith(".csproj"):
+        return nuget
+    return None
+
+
+def _parser_for(path: Path) -> ModuleType | None:
+    parser = _FILENAME_PARSERS.get(path.name)
+    if parser is not None:
+        return parser
+    return _matches_pattern(path.name)
+
+
+def is_manifest_path(path: Path | str) -> bool:
+    """True if ``path``'s filename is a recognised dependency manifest.
+
+    Reuses the exact parser dispatch extraction uses, so the update path's
+    "did a manifest change?" gate can never drift from the set of files the
+    extractor actually parses. Only the basename matters.
+    """
+    return _parser_for(Path(path)) is not None
+
+
+def extract_external_systems(
+    repo_root: Path,
+    manifest_paths: Iterable[Path] | None = None,
+) -> list[ExternalSystemRecord]:
+    """Return the deduplicated list of external systems declared in ``repo_root``.
+
+    If ``manifest_paths`` is provided, only those files are inspected (the
+    traverser already walks the repo and can hand us the manifests it saw).
+    Otherwise the function does its own bounded walk (depth ≤ 4) so it can be
+    called standalone from tests.
+    """
+    candidates = list(manifest_paths) if manifest_paths is not None else _discover(repo_root)
+
+    records: list[ExternalSystemRecord] = []
+    maven_paths: list[Path] = []
+    for path in candidates:
+        parser = _parser_for(path)
+        if parser is None:
+            continue
+        if parser is maven:
+            maven_paths.append(path)
+            continue
+        try:
+            records.extend(parser.parse(path, repo_root))
+        except Exception:  # parser bugs must not break ingestion
+            continue
+    if maven_paths:
+        with suppress(Exception):  # parser bugs must not break ingestion
+            records.extend(maven.parse_many(maven_paths, repo_root))
+    return _deduplicate(_drop_first_party(records, repo_root))
+
+
+def _dist_key(name: str) -> str:
+    """PEP 503 spelling, so ``repowise_core`` and ``repowise-core`` compare equal."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _drop_first_party(
+    records: list[ExternalSystemRecord], repo_root: Path
+) -> list[ExternalSystemRecord]:
+    """Drop deps on the repo's own packages: they are containers, not external systems."""
+    if not records:
+        return records
+    own = {_dist_key(n) for n in first_party_package_names(Path(repo_root))}
+    return [r for r in records if _dist_key(r.name) not in own]
+
+
+def _discover(repo_root: Path) -> list[Path]:
+    """Walk the repo (depth ≤ 4) collecting recognised manifest files."""
+    from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
+
+    seen: list[Path] = []
+    root = Path(repo_root)
+    # The historical depth cap was a *post-hoc* filter on an unbounded
+    # ``rglob("*")`` — the walk itself still descended into everything.
+    # walk_repo prunes junk dirs and nested git repos at traversal time;
+    # clearing ``dirnames`` at depth 3 makes the bound real (files yielded
+    # there have 4 relative parts, matching the old ``len(rel_parts) > 4``).
+    # Historical skip list included target/dist/build — preserve it on top
+    # of the shared never-source set.
+    prune = PRUNED_DIRS | {"target", "dist", "build"}
+    for dirpath, dirnames, filenames in walk_repo(root, prune_dirs=prune):
+        if len(dirpath.relative_to(root).parts) >= 3:
+            dirnames[:] = []
+        for fname in filenames:
+            path = dirpath / fname
+            if _parser_for(path) is not None:
+                seen.append(path)
+    return seen
+
+
+def _deduplicate(records: list[ExternalSystemRecord]) -> list[ExternalSystemRecord]:
+    """Drop duplicates keyed on (name, declared_in). Stable order."""
+    out: list[ExternalSystemRecord] = []
+    seen: set[tuple[str, str]] = set()
+    for rec in records:
+        key = (rec.name, rec.declared_in)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(rec)
+    return out

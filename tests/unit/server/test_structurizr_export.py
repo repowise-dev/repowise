@@ -1,0 +1,1122 @@
+"""Tests for the Structurizr DSL emitter.
+
+The emitter takes dataclasses and returns text, so everything here runs
+without a database. The properties that matter to a user who commits the
+output are determinism and identifier stability — those get their own tests
+rather than being implied by a golden file.
+"""
+
+from __future__ import annotations
+
+import random
+import re
+from dataclasses import replace
+
+import pytest
+
+from repowise.server.services.c4_builder.models import (
+    BoxSignals,
+    C4Model,
+    Component,
+    Container,
+    ExternalSystemView,
+    Person,
+    Relation,
+    System,
+    TourStep,
+)
+from repowise.server.services.c4_builder.structurizr import system_identifier, to_dsl
+from repowise.server.services.c4_builder.structurizr.identifiers import (
+    identifiers_for,
+    sanitize,
+)
+
+
+def _model(**overrides) -> C4Model:
+    core = Container(
+        id="pkg:packages/core",
+        name="core",
+        path="packages/core",
+        language="python",
+        file_count=120,
+        symbol_count=800,
+        hotspot_count=3,
+        dead_count=1,
+    )
+    web = Container(
+        id="pkg:packages/web",
+        name="web",
+        path="packages/web",
+        language="typescript",
+        file_count=40,
+        symbol_count=150,
+    )
+    defaults = dict(
+        system=System(id="sys:repo-1", name="repowise", description="Docs engine"),
+        people=[
+            Person(
+                id="person:cli",
+                name="CLI user",
+                description="Runs commands from a terminal",
+                kind="cli",
+            )
+        ],
+        containers=[core, web],
+        components_by_container={
+            core.id: [
+                Component(
+                    id="cmp:packages/core/ingestion",
+                    name="ingestion",
+                    path="packages/core/ingestion",
+                    container_id=core.id,
+                    file_count=30,
+                    symbol_count=200,
+                ),
+                Component(
+                    id="cmp:packages/core#root",
+                    name="(root)",
+                    path="packages/core",
+                    container_id=core.id,
+                    file_count=2,
+                    symbol_count=4,
+                ),
+            ],
+            web.id: [],
+        },
+        external_systems=[
+            ExternalSystemView(
+                id="ext:fastapi",
+                name="fastapi",
+                display_name="FastAPI",
+                category="framework",
+                ecosystem="pypi",
+                version="0.110",
+            )
+        ],
+        container_relations=[
+            Relation(
+                source_id=web.id,
+                target_id=core.id,
+                label="imports",
+                edge_count=60,
+                edge_types=("imports",),
+                coupling="tight",
+            ),
+            Relation(
+                source_id=core.id,
+                target_id="ext:fastapi",
+                label="imports",
+                edge_count=4,
+                edge_types=("imports",),
+                coupling="loose",
+            ),
+        ],
+        component_relations=[
+            Relation(
+                source_id="cmp:packages/core#root",
+                target_id="cmp:packages/core/ingestion",
+                label="calls",
+                edge_count=12,
+                edge_types=("calls",),
+                coupling="moderate",
+            )
+        ],
+    )
+    defaults.update(overrides)
+    return C4Model(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# Identifiers
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_keeps_only_legal_characters() -> None:
+    assert sanitize("pkg:packages/core") == "pkg_packages_core"
+    assert sanitize("cmp:packages/core#root") == "cmp_packages_core_root"
+    assert sanitize("ext:@scope/pkg") == "ext_scope_pkg"
+
+
+def test_an_identifier_never_starts_with_a_digit() -> None:
+    identifier = sanitize("2fa/handler.py")
+    assert not identifier[0].isdigit()
+
+
+def test_colliding_ids_both_get_a_suffix_derived_from_the_id() -> None:
+    """Not from iteration order — that is what makes re-exports churn."""
+    mapping = identifiers_for(["a/b", "a-b", "a.b"])
+    assert len(set(mapping.values())) == 3
+    # The same set in any order produces the same answer.
+    assert mapping == identifiers_for(["a.b", "a-b", "a/b"])
+    # And nobody keeps the bare slug, so which one "won" cannot change.
+    assert "a_b" not in mapping.values()
+
+
+def test_adding_an_element_never_renames_an_existing_one() -> None:
+    before = identifiers_for(["pkg:packages/core", "pkg:packages/web"])
+    after = identifiers_for(["pkg:packages/core", "pkg:packages/web", "pkg:packages/cli"])
+    for raw, identifier in before.items():
+        assert after[raw] == identifier
+
+
+def test_identifiers_are_unique_across_a_large_scope() -> None:
+    raw = [f"cmp:packages/core/{n}" for n in ("a b", "a-b", "a_b", "a/b", "a.b")]
+    mapping = identifiers_for(raw)
+    assert len(set(mapping.values())) == len(raw)
+
+
+# ---------------------------------------------------------------------------
+# Emission
+# ---------------------------------------------------------------------------
+
+
+def test_fragment_is_a_bare_model_block() -> None:
+    dsl = to_dsl(_model())
+    assert dsl.startswith("#")
+    assert "\nmodel {\n" in dsl
+    # No workspace or views block of its own — only the illustration in the
+    # header comment, which is not code.
+    code = [line for line in dsl.splitlines() if not line.strip().startswith("#")]
+    assert not any("workspace " in line for line in code)
+    assert not any("views {" in line for line in code)
+
+
+def test_fragment_explains_how_to_use_itself() -> None:
+    """Someone who never saw the terminal output still knows what to do."""
+    dsl = to_dsl(_model())
+    assert "!include repowise-model.dsl" in dsl
+    assert "do not hand-edit" in dsl
+    # The include only parses inside the workspace block, so the snippet has
+    # to show that rather than the bare line.
+    assert 'workspace "your name" {' in dsl
+
+
+def test_the_fragment_header_warns_the_web_editor_cannot_resolve_an_include() -> None:
+    """The failure it prevents: paste both files into structurizr.com, get an
+    unresolved include and no diagram."""
+    dsl = to_dsl(_model())
+    assert "structurizr.com" in dsl
+    assert "--standalone" in dsl
+
+
+def test_the_standalone_header_hands_the_file_over_rather_than_locking_it() -> None:
+    """Opposite advice from the fragment on purpose: this one is a starting
+    point the user is meant to edit, so 'do not hand-edit' would be wrong."""
+    dsl = to_dsl(_model(), standalone=True)
+    assert "do not hand-edit" not in dsl
+    assert "yours" in dsl
+    # And it names the escape hatch once they have made it their own.
+    assert "repowise export --format structurizr" in dsl
+    # The include snippet belongs to the fragment; a complete workspace that
+    # tells you to !include itself is nonsense.
+    assert "!include" not in dsl
+
+
+def test_there_is_no_timestamp_in_the_output() -> None:
+    """A timestamp would make every regeneration a diff."""
+    dsl = to_dsl(_model(), standalone=True, include_components=True)
+    assert not re.search(r"\d{4}-\d{2}-\d{2}", dsl)
+    assert not re.search(r"\d{2}:\d{2}:\d{2}", dsl)
+
+
+def _shuffled(model: C4Model, seed: int) -> C4Model:
+    """The same model with every list rebuilt in a different order.
+
+    Nothing here changes what the model *says* — only the order the builder
+    happened to produce its lists in, which is exactly what an emitter must
+    not be sensitive to.
+    """
+    rng = random.Random(seed)
+
+    def _mix(items):
+        out = list(items)
+        rng.shuffle(out)
+        return out
+
+    return replace(
+        model,
+        people=_mix(model.people),
+        containers=_mix(model.containers),
+        external_systems=_mix(model.external_systems),
+        container_relations=_mix(model.container_relations),
+        component_relations=_mix(model.component_relations),
+        components_by_container={
+            cid: _mix(components) for cid, components in model.components_by_container.items()
+        },
+    )
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize("components", [False, True])
+def test_emission_does_not_depend_on_input_order(standalone, components) -> None:
+    """The property a committed file needs: same model in, same bytes out.
+
+    Comparing ``to_dsl(model)`` with itself proves nothing — one object has
+    one list order. Every sort in the emitter could be deleted and that test
+    would still pass. These build the same model several ways round.
+    """
+    base = _signals_model()
+    expected = to_dsl(base, standalone=standalone, include_components=components)
+    for seed in range(5):
+        again = to_dsl(_shuffled(base, seed), standalone=standalone, include_components=components)
+        assert again == expected, seed
+
+
+def test_relations_alike_but_for_coupling_still_have_a_stable_order() -> None:
+    """The sort key left out the one field that changes what is emitted."""
+    pair = [
+        Relation(
+            source_id="pkg:packages/web",
+            target_id="pkg:packages/core",
+            label="imports",
+            edge_count=1,
+            edge_types=("imports",),
+            coupling=coupling,
+        )
+        for coupling in ("tight", "loose")
+    ]
+    assert to_dsl(_model(container_relations=pair)) == to_dsl(
+        _model(container_relations=list(reversed(pair)))
+    )
+
+
+def test_containers_and_externals_are_emitted() -> None:
+    dsl = to_dsl(_model())
+    assert 'container "core" "120 files, 800 symbols" "python"' in dsl
+    assert 'softwareSystem "FastAPI" "framework · pypi · 0.110"' in dsl
+    assert 'tags "External"' in dsl
+    assert 'person "CLI user" "Runs commands from a terminal"' in dsl
+
+
+def test_components_are_off_by_default_and_nest_when_asked_for() -> None:
+    without = to_dsl(_model())
+    assert "component " not in without
+
+    with_components = to_dsl(_model(), include_components=True)
+    assert 'component "ingestion" "30 files, 200 symbols"' in with_components
+    assert 'component "(root)" "2 files, 4 symbols"' in with_components
+
+
+def test_externals_can_be_left_out() -> None:
+    dsl = to_dsl(_model(), include_externals=False)
+    assert "FastAPI" not in dsl
+    # And the relation pointing at it goes too, rather than dangling.
+    assert "ext_fastapi" not in dsl
+
+
+def test_relationships_carry_the_verb_and_the_coupling_tag() -> None:
+    dsl = to_dsl(_model())
+    assert "-> " in dsl
+    assert '"imports"' in dsl
+    assert 'tags "Tight"' in dsl
+    assert 'tags "Loose"' in dsl
+
+
+def test_a_relationship_never_references_an_element_we_did_not_emit() -> None:
+    """A dangling reference is a parse error, not a missing arrow."""
+    dsl = to_dsl(_model(), include_components=False)
+    declared = {line.split(" = ", 1)[0].strip() for line in dsl.splitlines() if " = " in line}
+    for line in dsl.splitlines():
+        stripped = line.strip()
+        if "->" not in stripped or stripped.startswith("#"):
+            continue
+        source, _, rest = stripped.partition(" -> ")
+        target = rest.split(" ", 1)[0].split("{", 1)[0].strip()
+        assert source.strip() in declared, f"undeclared source in: {stripped}"
+        assert target in declared, f"undeclared target in: {stripped}"
+
+
+def test_standalone_wraps_the_model_and_adds_views() -> None:
+    dsl = to_dsl(_model(), standalone=True, include_components=True)
+    assert dsl.count("workspace ") == 1
+    assert "views {" in dsl
+    assert "systemContext " in dsl
+    assert "container " in dsl
+    assert "styles {" in dsl
+    # The fragment's include instruction would be wrong here.
+    assert "!include" not in dsl
+
+
+def test_a_large_component_view_is_capped_and_says_so() -> None:
+    core = Container(
+        id="pkg:packages/big",
+        name="big",
+        path="packages/big",
+        language="python",
+        file_count=500,
+        symbol_count=1,
+    )
+    components = [
+        Component(
+            id=f"cmp:packages/big/mod{n:03d}",
+            name=f"mod{n:03d}",
+            path=f"packages/big/mod{n:03d}",
+            container_id=core.id,
+            file_count=n,
+            symbol_count=n,
+        )
+        for n in range(40)
+    ]
+    dsl = to_dsl(
+        _model(
+            containers=[core],
+            components_by_container={core.id: components},
+            container_relations=[],
+            component_relations=[],
+            external_systems=[],
+        ),
+        standalone=True,
+        include_components=True,
+    )
+    assert "largest of 40 components" in dsl
+
+
+def test_braces_balance() -> None:
+    for standalone in (False, True):
+        for components in (False, True):
+            dsl = to_dsl(_model(), standalone=standalone, include_components=components)
+            body = "\n".join(line for line in dsl.splitlines() if not line.strip().startswith("#"))
+            assert body.count("{") == body.count("}"), (standalone, components)
+
+
+def test_no_line_has_trailing_whitespace() -> None:
+    dsl = to_dsl(_model(), standalone=True, include_components=True)
+    for line in dsl.splitlines():
+        assert line == line.rstrip(), repr(line)
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+def test_an_empty_model_still_emits_valid_structure(standalone: bool) -> None:
+    empty = C4Model(
+        system=System(id="sys:repo-1", name="empty"),
+        people=[],
+        containers=[],
+        components_by_container={},
+        external_systems=[],
+        container_relations=[],
+        component_relations=[],
+    )
+    dsl = to_dsl(empty, standalone=standalone)
+    assert 'softwareSystem "empty"' in dsl
+    body = "\n".join(line for line in dsl.splitlines() if not line.strip().startswith("#"))
+    assert body.count("{") == body.count("}")
+
+
+def test_quoting_survives_a_name_with_quotes_and_newlines() -> None:
+    model = _model(system=System(id="sys:repo-1", name='we"rd', description="line one\nline two"))
+    dsl = to_dsl(model)
+    system_line = next(line for line in dsl.splitlines() if "softwareSystem" in line)
+    assert "\n" not in system_line
+    # Escaped quotes are content, not delimiters, so only the unescaped ones
+    # have to pair up.
+    assert _unescaped_quotes(system_line) % 2 == 0
+    # And the quote survives rather than being rewritten: `\"` is the one escape
+    # the parser honours, at both this level and inside a filter expression.
+    assert 'we\\"rd' in system_line
+
+
+def test_the_system_identifier_does_not_depend_on_the_local_repo_id() -> None:
+    """Two people exporting the same repo must get the same file.
+
+    The system's node id embeds the local repository UUID, which differs on
+    every machine — keying the identifier on it would make every reference in
+    the file differ between teammates.
+    """
+    mine = to_dsl(_model(system=System(id="sys:aaaaaaaa", name="repowise")))
+    theirs = to_dsl(_model(system=System(id="sys:bbbbbbbb", name="repowise")))
+    assert mine == theirs
+    assert "aaaaaaaa" not in mine
+
+
+# ---------------------------------------------------------------------------
+# Health, ownership and layer metadata
+# ---------------------------------------------------------------------------
+
+
+def _signals_model(**overrides) -> C4Model:
+    base = _model()
+    signals = {
+        "pkg:packages/core": BoxSignals(
+            hotspot_count=3,
+            dead_count=1,
+            layers=("Domain", "Ingestion"),
+            primary_owner="Ada Lovelace",
+            primary_owner_pct=62.5,
+            min_bus_factor=1,
+        ),
+        "pkg:packages/web": BoxSignals(),
+        "cmp:packages/core/ingestion": BoxSignals(hotspot_count=2, layers=("Ingestion",)),
+    }
+    defaults = {"box_signals": signals}
+    defaults.update(overrides)
+    return C4Model(**{**vars(base), **defaults})
+
+
+def test_health_rides_along_as_tags() -> None:
+    dsl = to_dsl(_signals_model())
+    assert '"Hotspot"' in dsl
+    assert '"Dead"' in dsl
+
+
+def test_layer_membership_becomes_a_tag() -> None:
+    """The layer grouping is ours; a tag is how it survives into their tool."""
+    dsl = to_dsl(_signals_model())
+    assert '"Layer: Domain"' in dsl
+    assert '"Layer: Ingestion"' in dsl
+
+
+def test_properties_are_namespaced_so_they_cannot_collide() -> None:
+    dsl = to_dsl(_signals_model())
+    for key in ("repowise.hotspots", "repowise.owner", "repowise.minBusFactor"):
+        assert f'"{key}"' in dsl
+    assert '"Ada Lovelace"' in dsl
+
+
+def test_unknown_ownership_is_omitted_not_zeroed() -> None:
+    """An emitted 0 bus factor reads as "nobody owns this", a different claim."""
+    dsl = to_dsl(_signals_model())
+    web_block = dsl.split('container "web"')[1]
+    assert "repowise.owner" not in web_block
+    assert "repowise.minBusFactor" not in web_block
+
+
+def test_counts_are_emitted_even_when_zero() -> None:
+    """We counted; zero is an answer, unlike a missing owner."""
+    dsl = to_dsl(_signals_model())
+    assert '"repowise.hotspots" "0"' in dsl
+
+
+def test_metadata_can_be_turned_off_for_a_plain_c4_model() -> None:
+    dsl = to_dsl(_signals_model(), include_metadata=False)
+    assert "repowise." not in dsl
+    assert "Layer: " not in dsl
+    assert "Hotspot" not in dsl
+
+
+def test_a_box_with_nothing_to_say_stays_a_one_liner() -> None:
+    plain = C4Model(**{**vars(_model()), "box_signals": {}})
+    dsl = to_dsl(plain)
+    assert 'container "core" "120 files, 800 symbols" "python"\n' in dsl
+
+
+def test_the_tour_rides_along_as_a_comment() -> None:
+    """It cannot be a view, but it is one of the few things we know and C4 does not."""
+    model = C4Model(
+        **{
+            **vars(_model()),
+            "tour": [
+                TourStep(
+                    order=1,
+                    title="Start at the CLI",
+                    reason="Every run enters here",
+                    target_path="packages/cli/main.py",
+                ),
+                TourStep(
+                    order=2, title="Then the parser", description="Where files\nbecome symbols"
+                ),
+            ],
+        }
+    )
+    dsl = to_dsl(model)
+    assert "Suggested reading order:" in dsl
+    assert "1. Start at the CLI — packages/cli/main.py" in dsl
+    assert "Every run enters here" in dsl
+    # A description with a newline must not break out of the comment.
+    for line in dsl.splitlines():
+        if "become symbols" in line:
+            assert line.strip().startswith("#")
+
+
+def test_layer_views_are_emitted_for_a_standalone_workspace() -> None:
+    dsl = to_dsl(_signals_model(), standalone=True)
+    assert 'include "element.tag==Layer: Domain"' in dsl
+    assert 'element "Hotspot"' in dsl
+
+
+def test_metadata_does_not_break_brace_balance() -> None:
+    for standalone in (False, True):
+        for components in (False, True):
+            dsl = to_dsl(_signals_model(), standalone=standalone, include_components=components)
+            body = "\n".join(line for line in dsl.splitlines() if not line.strip().startswith("#"))
+            assert body.count("{") == body.count("}"), (standalone, components)
+
+
+def test_two_packages_presenting_as_the_same_name_do_not_collide() -> None:
+    """Structurizr rejects two top-level elements sharing a name.
+
+    Real case: `react`, `@xyflow/react` and `@radix-ui/react-dialog` all
+    present as "React" in the index's display names, so the emitted file was
+    rejected outright by the parser.
+    """
+
+    def _ext(node_id: str, name: str, display: str) -> ExternalSystemView:
+        return ExternalSystemView(
+            id=node_id,
+            name=name,
+            display_name=display,
+            category="library",
+            ecosystem="npm",
+        )
+
+    dsl = to_dsl(
+        _model(
+            external_systems=[
+                _ext("ext:react", "react", "React"),
+                _ext("ext:@xyflow/react", "@xyflow/react", "React"),
+                _ext("ext:vite", "vite", "Vite"),
+            ],
+            container_relations=[],
+            component_relations=[],
+        )
+    )
+    declared = [
+        line.split("softwareSystem ", 1)[1].split('"')[1]
+        for line in dsl.splitlines()
+        if "= softwareSystem " in line
+    ]
+    assert len(declared) == len(set(declared)), declared
+    # The unique one keeps its pretty name; the colliding pair falls back to
+    # the package name, which is unique by construction.
+    assert "Vite" in declared
+    assert "react" in declared
+    assert "@xyflow/react" in declared
+
+
+def test_an_external_stays_connected_when_components_are_on() -> None:
+    """Structurizr derives a container edge from a component one, an external one it cannot.
+
+    With components on, only the container edges touching a componentless
+    container survive — and an external system is never componentless, so
+    ``pkg:core -> ext:fastapi`` disappeared and FastAPI was declared with
+    nothing pointing at it.
+    """
+    dsl = to_dsl(_model(component_relations=[]), include_components=True)
+    assert "-> ext_fastapi" in dsl, dsl
+
+
+def test_layer_views_are_not_emitted_when_metadata_is_off() -> None:
+    """The tags they filter on are gone, so every one of them selects nothing."""
+    dsl = to_dsl(_signals_model(), standalone=True, include_metadata=False)
+    assert "Layer: " not in dsl
+    assert '"layer_' not in dsl
+
+
+def test_every_person_is_connected_to_the_system() -> None:
+    """An unconnected person is left out of the context view entirely.
+
+    ``systemContext ... { include * }`` pulls in the system plus what is
+    related to it, so a person nothing points at is simply not drawn — while
+    the product's own L1 view shows the same actor connected.
+    """
+    model = _model(
+        actor_relations=[
+            Relation(
+                source_id="person:cli",
+                target_id="sys:repo-1",
+                label="uses",
+                edge_count=1,
+                edge_types=(),
+                coupling="",
+            )
+        ]
+    )
+    for components in (False, True):
+        dsl = to_dsl(model, include_components=components)
+        system_ref = system_identifier(model, include_components=components)
+        assert f"person_cli -> {system_ref}" in dsl, components
+
+
+def test_a_comment_can_never_span_lines() -> None:
+    """A tour title is curated prose, so it can carry a newline.
+
+    Written into a comment as-is, everything after the newline lands in the
+    file as a bare token and the parser stops there.
+    """
+    dsl = to_dsl(
+        _model(
+            tour=[
+                TourStep(
+                    order=1,
+                    title="Start here\nnot a comment",
+                    description="",
+                    reason="because\r\nof reasons",
+                    target_path="packages/core/a.py\nb.py",
+                )
+            ]
+        )
+    )
+    header, _, body = dsl.partition("\nmodel {")
+    assert body, dsl
+    for line in header.splitlines():
+        assert not line or line.startswith("#"), line
+    assert "Start here not a comment" in header
+
+
+def test_the_include_snippet_keeps_the_indentation_it_is_pasted_with() -> None:
+    """The header shows a nested block, so folding must not touch indentation.
+
+    Only line breaks are unsafe in a comment; a run of spaces is what makes the
+    snippet readable and pasteable.
+    """
+    dsl = to_dsl(_model())
+    assert "#         !include " in dsl, dsl.split("\nmodel {")[0]
+
+
+def test_a_system_name_with_a_newline_cannot_break_the_header() -> None:
+    dsl = to_dsl(_model(system=System(id="sys:x", name="repo\nwise")))
+    header = dsl.split("\nmodel {")[0]
+    for line in header.splitlines():
+        assert not line or line.startswith("#"), line
+
+
+#: One DSL string literal: quoted, with ``\"`` allowed inside it.
+_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _dsl_strings(line: str) -> list[str]:
+    """Every string literal on *line*, decoded the way the parser reads them.
+
+    Splitting on ``"`` is what these helpers used to do, and it stops working
+    the moment a value legitimately contains an escaped quote — which is how
+    the emitter now spells one, because the parser supports it.
+    """
+    return [match.replace('\\"', '"') for match in _STRING.findall(line)]
+
+
+def _unescaped_quotes(line: str) -> int:
+    """How many quotes actually open or close a string on *line*."""
+    return len(re.findall(r'(?<!\\)"', line))
+
+
+def _layer_view_keys(dsl: str) -> list[str]:
+    return [
+        _dsl_strings(line)[0]
+        for line in dsl.splitlines()
+        if line.strip().startswith("container ") and '"layer_' in line
+    ]
+
+
+def _layer_filters(dsl: str) -> list[str]:
+    return [
+        value.split("element.tag==", 1)[1]
+        for line in dsl.splitlines()
+        if "element.tag==" in line
+        for value in _dsl_strings(line)
+        if value.startswith("element.tag==")
+    ]
+
+
+def _emitted_tags(dsl: str) -> set[str]:
+    tags: set[str] = set()
+    for line in dsl.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("tags "):
+            tags.update(_dsl_strings(stripped))
+    return tags
+
+
+def test_two_layer_names_that_slug_alike_get_different_view_keys() -> None:
+    """A view key must be unique; the layer name it comes from need not be.
+
+    ``Data Access`` and ``Data-Access`` both reduced to ``layer_Data_Access``,
+    and Structurizr rejects a workspace with two views under one key.
+    """
+    dsl = to_dsl(
+        _signals_model(
+            box_signals={
+                "pkg:packages/core": BoxSignals(layers=("Data Access",)),
+                "pkg:packages/web": BoxSignals(layers=("Data-Access",)),
+            }
+        ),
+        standalone=True,
+    )
+    keys = _layer_view_keys(dsl)
+    assert len(keys) == 2, keys
+    assert len(set(keys)) == 2, keys
+
+
+def test_a_layer_name_with_a_quote_cannot_break_the_filter() -> None:
+    """The filter is a string literal, so an *unescaped* quote ends it early.
+
+    The tag inside it is a string within a string, and the escape survives both
+    levels — verified against the parser — so the quote is kept rather than
+    substituted away.
+    """
+    dsl = to_dsl(
+        _signals_model(box_signals={"pkg:packages/core": BoxSignals(layers=('Data "Access"',))}),
+        standalone=True,
+    )
+    # Scoped to `include`: the SystemContext view carries an `exclude` filter
+    # of its own, which is not what this is about.
+    filter_lines = [
+        line for line in dsl.splitlines() if line.strip().startswith('include "element.tag==')
+    ]
+    assert len(filter_lines) == 1
+    assert _unescaped_quotes(filter_lines[0]) == 2, filter_lines[0]
+    assert 'Data \\"Access\\"' in filter_lines[0]
+
+
+def test_a_comma_in_a_layer_name_does_not_split_it_into_two_tags() -> None:
+    """Structurizr splits the `tags` argument on commas *inside* the quotes, so
+    `tags "Layer: Docs, Rendering"` stores `Layer: Docs` and a bare `Rendering`
+    — a tag that has escaped the namespace the prefix exists to enforce."""
+    dsl = to_dsl(
+        _signals_model(box_signals={"pkg:packages/core": BoxSignals(layers=("Coupling, Tight",))}),
+        standalone=True,
+    )
+    tag_lines = [line.strip() for line in dsl.splitlines() if line.strip().startswith("tags ")]
+    assert tag_lines
+    for line in tag_lines:
+        assert "," not in line, line
+    # The layer survives as one namespaced tag rather than two, the second of
+    # which would have been a bare `Tight` colliding with the coupling style.
+    assert '"Layer: Coupling Tight"' in dsl
+
+
+def test_a_trailing_backslash_cannot_run_a_string_past_its_closing_quote() -> None:
+    """A backslash introduces an escape, so a value ending in one would eat its
+    own terminator and swallow the rest of the line."""
+    dsl = to_dsl(
+        _signals_model(box_signals={"pkg:packages/core": BoxSignals(layers=("Windows C:\\",))}),
+        standalone=True,
+    )
+    # It cannot be escaped either — `\\` is not an escape, backslashes pass
+    # through literally — so the only safe thing is to drop the trailing one.
+    assert "Layer: Windows C:" in dsl
+    assert "C:\\" not in dsl
+    # Every quoted line still closes: an even number of *unescaped* quotes.
+    for line in dsl.splitlines():
+        if line.strip().startswith("#"):
+            continue
+        assert _unescaped_quotes(line) % 2 == 0, line
+
+
+def test_the_context_view_leaves_out_the_dependency_wall() -> None:
+    """Structurizr promotes container→external edges to the system level, so
+    `include *` alone puts every npm package in the one diagram meant to fit on
+    a slide."""
+    dsl = to_dsl(_model(), standalone=True)
+    context = dsl.split("systemContext ")[1].split("}")[0]
+    assert 'exclude "element.tag==External"' in context
+
+
+def test_a_layer_view_is_labelled_with_the_curated_name() -> None:
+    """The key is slugged for uniqueness; the description is what a reader sees
+    in the view picker."""
+    dsl = to_dsl(
+        _signals_model(
+            box_signals={"pkg:packages/core": BoxSignals(layers=("Ingestion and Reasoning",))}
+        ),
+        standalone=True,
+    )
+    assert '"Ingestion and Reasoning"' in dsl
+
+
+def test_a_layer_filter_matches_the_tag_that_was_actually_emitted() -> None:
+    """Quoting rewrites the tag, so the filter has to be rewritten identically.
+
+    Otherwise a layer name carrying a quote yields a view that parses and then
+    selects nothing, which is worse than failing.
+    """
+    dsl = to_dsl(
+        _signals_model(
+            box_signals={
+                "pkg:packages/core": BoxSignals(layers=('Data "Access"', "Multi   spaced"))
+            }
+        ),
+        standalone=True,
+    )
+    emitted = _emitted_tags(dsl)
+    for selector in _layer_filters(dsl):
+        assert selector in emitted, (selector, emitted)
+
+
+def _declared(dsl: str, keyword: str) -> list[str]:
+    """The display names of every element declared with *keyword*."""
+    return [
+        _dsl_strings(line.split(f"{keyword} ", 1)[1])[0]
+        for line in dsl.splitlines()
+        if f"= {keyword} " in line
+    ]
+
+
+def test_two_containers_with_the_same_basename_do_not_collide() -> None:
+    """A container name only has to be unique inside its software system.
+
+    Container names are the leaf directory, so any monorepo holding both
+    ``apps/api`` and ``services/api`` produced two ``container "api"`` blocks —
+    which Structurizr rejects outright, the same way it rejects two externals
+    sharing a name.
+    """
+
+    def _container(path: str, language: str) -> Container:
+        return Container(
+            id=f"pkg:{path}",
+            name=path.split("/")[-1],
+            path=path,
+            language=language,
+            file_count=3,
+            symbol_count=1,
+        )
+
+    dsl = to_dsl(
+        _model(
+            containers=[
+                _container("apps/api", "typescript"),
+                _container("services/api", "go"),
+                _container("apps/web", "typescript"),
+            ],
+            components_by_container={},
+            container_relations=[],
+            component_relations=[],
+        )
+    )
+    declared = _declared(dsl, "container")
+    assert len(declared) == len(set(declared)), declared
+    # The unique one keeps the short name; the colliding pair falls back to the
+    # path, which is unique by construction.
+    assert "web" in declared
+    assert "apps/api" in declared
+    assert "services/api" in declared
+
+
+def test_two_components_in_one_container_with_the_same_basename_do_not_collide() -> None:
+    """``src`` and ``lib`` are both pass-through directories.
+
+    So ``packages/ui/src/health`` and ``packages/ui/lib/health`` both name a
+    component "health" inside one container, which the parser rejects.
+    """
+    container = Container(
+        id="pkg:packages/ui",
+        name="ui",
+        path="packages/ui",
+        language="typescript",
+        file_count=4,
+        symbol_count=2,
+    )
+
+    def _component(path: str) -> Component:
+        return Component(
+            id=f"cmp:{path}",
+            name=path.split("/")[-1],
+            path=path,
+            container_id=container.id,
+            file_count=2,
+            symbol_count=1,
+        )
+
+    dsl = to_dsl(
+        _model(
+            containers=[container],
+            components_by_container={
+                container.id: [
+                    _component("packages/ui/src/health"),
+                    _component("packages/ui/lib/health"),
+                    _component("packages/ui/src/costs"),
+                ]
+            },
+            container_relations=[],
+            component_relations=[],
+        ),
+        include_components=True,
+    )
+    declared = _declared(dsl, "component")
+    assert len(declared) == len(set(declared)), declared
+    assert "costs" in declared
+    assert "src/health" in declared
+    assert "lib/health" in declared
+
+
+def test_the_same_component_name_in_two_containers_is_left_alone() -> None:
+    """A component name only has to be unique inside its own container.
+
+    Disambiguating across containers would churn names for no reason, and the
+    long form is worse to read.
+    """
+
+    def _container(path: str) -> Container:
+        return Container(
+            id=f"pkg:{path}",
+            name=path.split("/")[-1],
+            path=path,
+            language="python",
+            file_count=2,
+            symbol_count=1,
+        )
+
+    one, two = _container("packages/core"), _container("packages/server")
+
+    def _component(container: Container, leaf: str) -> Component:
+        path = f"{container.path}/{leaf}"
+        return Component(
+            id=f"cmp:{path}",
+            name=leaf,
+            path=path,
+            container_id=container.id,
+            file_count=2,
+            symbol_count=1,
+        )
+
+    dsl = to_dsl(
+        _model(
+            containers=[one, two],
+            components_by_container={
+                one.id: [_component(one, "health")],
+                two.id: [_component(two, "health")],
+            },
+            container_relations=[],
+            component_relations=[],
+        ),
+        include_components=True,
+    )
+    assert _declared(dsl, "component") == ["health", "health"]
+
+
+def test_an_external_sharing_the_repo_name_is_disambiguated() -> None:
+    dsl = to_dsl(
+        _model(
+            system=System(id="sys:abc", name="react"),
+            external_systems=[
+                ExternalSystemView(
+                    id="ext:react",
+                    name="react",
+                    display_name="react",
+                    category="library",
+                    ecosystem="npm",
+                )
+            ],
+            container_relations=[],
+            component_relations=[],
+        )
+    )
+    declared = [
+        line.split("softwareSystem ", 1)[1].split('"')[1]
+        for line in dsl.splitlines()
+        if "= softwareSystem " in line
+    ]
+    assert len(declared) == len(set(declared)), declared
+
+
+# ---------------------------------------------------------------------------
+# The degenerate inputs. Each of these reached the emitter untested, and each
+# writes something a parser has to accept.
+# ---------------------------------------------------------------------------
+
+
+def test_a_single_non_ascii_name_still_gets_a_usable_identifier() -> None:
+    """Sanitising a non-ASCII name leaves nothing, so the allocator carries it.
+
+    With two such names the hash suffixes make them unique; with *one* there is
+    no collision to resolve, and it is declared under the bare fallback.
+    """
+    identifier = sanitize("\u6a21\u5757")
+    assert identifier and not identifier[0].isdigit()
+    mapping = identifiers_for(["pkg:\u6a21\u5757", "pkg:\u30d1\u30c3\u30b1\u30fc\u30b8"])
+    assert len(set(mapping.values())) == 2, mapping
+
+
+def test_an_external_with_nothing_to_say_still_parses() -> None:
+    """No category, ecosystem or version — the description literal is empty."""
+    dsl = to_dsl(
+        _model(
+            external_systems=[
+                ExternalSystemView(
+                    id="ext:bare", name="bare", display_name="bare", category="", ecosystem=""
+                )
+            ],
+            container_relations=[],
+            component_relations=[],
+        )
+    )
+    assert 'softwareSystem "bare" ""' in dsl
+    body = "\n".join(line for line in dsl.splitlines() if not line.strip().startswith("#"))
+    assert body.count('"') % 2 == 0
+
+
+def test_a_relation_with_no_label_falls_back_to_a_verb() -> None:
+    """An unlabelled edge still needs a description; the slot is not optional."""
+    dsl = to_dsl(
+        _model(
+            container_relations=[
+                Relation(
+                    source_id="pkg:packages/web",
+                    target_id="pkg:packages/core",
+                    label="",
+                    edge_count=1,
+                    edge_types=(),
+                    coupling="",
+                )
+            ],
+            component_relations=[],
+        )
+    )
+    assert '"depends on"' in dsl
+
+
+def test_a_container_edge_a_component_already_implies_is_not_repeated() -> None:
+    """Structurizr derives the container edge from the component one.
+
+    The derivation walks up both ends' parents, so it applies to an edge
+    leaving our system too. Emitting ours alongside it is a duplicate the
+    parser rejects — this repo's own export died on exactly that, with the
+    root container and a package both reaching one npm dependency.
+    """
+    core = Container(
+        id="pkg:packages/core",
+        name="core",
+        path="packages/core",
+        language="python",
+        file_count=5,
+        symbol_count=9,
+    )
+    ingestion = Component(
+        id="cmp:packages/core/ingestion",
+        name="ingestion",
+        path="packages/core/ingestion",
+        container_id=core.id,
+        file_count=5,
+        symbol_count=9,
+    )
+    to_external = Relation(source_id=ingestion.id, target_id="ext:fastapi", label="imports")
+    dsl = to_dsl(
+        _model(
+            containers=[core],
+            components_by_container={core.id: [ingestion]},
+            # The same dependency, seen at both levels — which is what the
+            # builder produces for any container whose files import it.
+            container_relations=[
+                Relation(source_id=core.id, target_id="ext:fastapi", label="imports")
+            ],
+            component_relations=[to_external],
+        ),
+        include_components=True,
+    )
+
+    pairs = re.findall(r"^\s*([\w.]+) -> ([\w.]+)", dsl, re.M)
+    assert len(pairs) == len(set(pairs)), [p for p in pairs if pairs.count(p) > 1]
+    # The component keeps the edge; the container's copy of it is dropped
+    # because Structurizr will derive it.
+    assert ("cmp_packages_core_ingestion", "ext_fastapi") in pairs
+    assert ("pkg_packages_core", "ext_fastapi") not in pairs
+
+
+def test_a_container_edge_nothing_derives_is_kept() -> None:
+    """A container with no components has nothing to carry its edges."""
+    core = Container(
+        id="pkg:packages/core",
+        name="core",
+        path="packages/core",
+        language="python",
+        file_count=1,
+        symbol_count=1,
+    )
+    model = _model(
+        containers=[core],
+        components_by_container={core.id: []},
+        container_relations=[Relation(source_id=core.id, target_id="ext:fastapi", label="imports")],
+        component_relations=[],
+    )
+    dsl = to_dsl(model, include_components=True)
+    assert "pkg_packages_core -> ext_fastapi" in dsl
+    # And the external it points at is still declared.
+    assert "= softwareSystem" in dsl and "FastAPI" in dsl

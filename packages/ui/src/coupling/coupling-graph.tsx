@@ -1,0 +1,518 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { cluster, hierarchy, type HierarchyNode } from "d3-hierarchy";
+import { curveBundle, lineRadial } from "d3-shape";
+// Value imports must come from the package root, not the `/coupling` subpath:
+// the vite/rollup base alias clobbers subpath value resolution. Type-only
+// subpath imports are fine (erased before resolution).
+import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
+import {
+  HEALTH_BAND_LABEL,
+  HEALTH_BAND_ORDER,
+  HEALTH_BAND_RANGE_LABEL,
+  formatScore,
+} from "@repowise-dev/types/health";
+import { healthBandNodeFill, healthNodeFill } from "../health/tokens";
+import { disambiguateBasenames } from "../lib/format";
+import { isSamePair, pairHas, type CouplingPair } from "./claim";
+
+export interface CouplingGraphProps {
+  nodes: CouplingNode[];
+  edges: CouplingEdge[];
+  /** Pre-cap edge count, for the honest "showing N of M" line. */
+  totalEdges?: number;
+  /**
+   * Effective focus — the file whose couplings are lit and whose neighbors stay
+   * bright. The host passes `hover ?? pinned` so a transient hover peeks over a
+   * sticky pin. Falls back to internal hover/pin when uncontrolled.
+   */
+  focusedPath?: string | null;
+  /** The sticky selection (persistent ring). Falls back to internal pin. */
+  pinnedPath?: string | null;
+  /**
+   * A focused *pair* rather than a single file — what a table row selects,
+   * since a coupling is about two files and neither of them owns it. When set
+   * it wins over `focusedPath`: the one arc between the two is lit and every
+   * other arc dims, instead of the whole fan of one end.
+   */
+  focusedPair?: CouplingPair | null;
+  /** The sticky pair selection (persistent rings on both ends). */
+  pinnedPair?: CouplingPair | null;
+  /** Transient hover peek — mouse enters a dot, or leaves the canvas (null). */
+  onHover?: (path: string | null) => void;
+  /** Sticky selection changed — click a dot toggles it, click empty space clears it. */
+  onPinToggle?: (path: string | null) => void;
+  /**
+   * DOM id of the table that lists the same couplings. The ring is not
+   * keyboard-operable, so it points at its accessible equivalent instead of
+   * pretending to be one.
+   */
+  tableId?: string;
+  /** Square render size in px (viewBox edge). */
+  size?: number;
+}
+
+/* A file with no health metric resolves to neutral. SVG stroke/fill accept
+ * `var()`, so the band ink goes in raw. */
+const NEUTRAL_INK = "var(--color-text-tertiary)";
+
+function inkFor(score: number | null): string {
+  return score == null ? NEUTRAL_INK : healthNodeFill(score);
+}
+
+/** Shared empty neighbor set so the no-focus path allocates nothing. */
+const EMPTY_SET: ReadonlySet<string> = new Set<string>();
+
+/** A leaf in the radial cluster: a file, plus its layout angle/radius. */
+interface TreeDatum {
+  name: string; // path segment (display)
+  path?: string; // full original file_path (leaves only)
+  node?: CouplingNode;
+  children?: TreeDatum[];
+}
+
+/**
+ * Strip the longest path-segment prefix shared by every file so the radial
+ * dendrogram branches on the segments that actually differ (otherwise a deep
+ * monorepo prefix like `packages/core/src/...` wastes the whole inner radius on
+ * a single unbranching chain). The arc-group labels then read as real modules.
+ */
+function stripCommonPrefix(paths: string[]): { stripped: string[]; prefix: string[] } {
+  if (paths.length === 0) return { stripped: [], prefix: [] };
+  const split = paths.map((p) => p.split("/"));
+  const first = split[0]!;
+  let common = 0;
+  for (let i = 0; i < first.length - 1; i++) {
+    const seg = first[i];
+    if (split.every((s) => s.length > i + 1 && s[i] === seg)) common++;
+    else break;
+  }
+  return {
+    stripped: split.map((s) => s.slice(common).join("/")),
+    prefix: first.slice(0, common),
+  };
+}
+
+/** Build a nested folder tree from file paths (leaves carry the node datum). */
+function buildTree(nodes: CouplingNode[]): TreeDatum {
+  const { stripped } = stripCommonPrefix(nodes.map((n) => n.file_path));
+  const root: TreeDatum = { name: "", children: [] };
+  nodes.forEach((node, i) => {
+    const segs = stripped[i]!.split("/");
+    let cursor = root;
+    segs.forEach((seg, depth) => {
+      const isLeaf = depth === segs.length - 1;
+      if (isLeaf) {
+        (cursor.children ??= []).push({ name: seg, path: node.file_path, node });
+        return;
+      }
+      let child = cursor.children?.find((c) => c.name === seg && c.path === undefined);
+      if (!child) {
+        child = { name: seg, children: [] };
+        (cursor.children ??= []).push(child);
+      }
+      cursor = child;
+    });
+  });
+  return root;
+}
+
+/** Polar -> cartesian, with 0 rad at 12 o'clock (matches d3 cluster + lineRadial). */
+function project(angle: number, radius: number): [number, number] {
+  const a = angle - Math.PI / 2;
+  return [Math.cos(a) * radius, Math.sin(a) * radius];
+}
+
+/**
+ * Hierarchical edge-bundling view of change coupling. Files sit on a ring,
+ * grouped by their directory hierarchy; an arc between two files means they are
+ * frequently committed together. Edges are bundled through the folder tree so
+ * the picture reads as module-to-module flow rather than a hairball. Dots are
+ * colored by health band; hovering a file lifts its couplings (colored by the
+ * partner's health) and dims the rest, and clicking a file pins that view so it
+ * survives the mouse leaving the canvas.
+ *
+ * Co-change is a temporal hint, not a verified dependency; edge thickness/
+ * opacity encode the decay-weighted strength, never a fabricated trend.
+ */
+export function CouplingGraph({
+  nodes,
+  edges,
+  totalEdges,
+  focusedPath,
+  pinnedPath,
+  focusedPair,
+  pinnedPair,
+  onHover,
+  onPinToggle,
+  tableId,
+  size = 760,
+}: CouplingGraphProps) {
+  // Internal fallback for uncontrolled use (tests, standalone). When the host
+  // wires onHover/onPinToggle + focusedPath/pinnedPath these stay unused.
+  const [internalHover, setInternalHover] = useState<string | null>(null);
+  const [internalPin, setInternalPin] = useState<string | null>(null);
+
+  const pinned = pinnedPath !== undefined ? pinnedPath : internalPin;
+  const focus =
+    focusedPath !== undefined ? focusedPath : (internalHover ?? internalPin);
+
+  const hover = (p: string | null) => {
+    if (onHover) onHover(p);
+    else setInternalHover(p);
+  };
+  const togglePin = (p: string | null) => {
+    const next = p == null || p === pinned ? null : p;
+    if (onPinToggle) onPinToggle(next);
+    else setInternalPin(next);
+  };
+
+  const layout = useMemo(() => {
+    if (nodes.length < 2 || edges.length === 0) return null;
+    const radius = size / 2 - 96; // leave room for arc labels
+    const root = hierarchy<TreeDatum>(buildTree(nodes), (d) => d.children);
+    root.sort((a, b) => (a.data.name < b.data.name ? -1 : a.data.name > b.data.name ? 1 : 0));
+    cluster<TreeDatum>().size([2 * Math.PI, radius])(root);
+
+    const leaves = root.leaves();
+    const leafByPath = new Map<string, HierarchyNode<TreeDatum>>();
+    for (const leaf of leaves) if (leaf.data.path) leafByPath.set(leaf.data.path, leaf);
+
+    // O(1) lookups for the render/hover paths: file_path -> node, and a
+    // symmetric adjacency map built once from the edge list. These replace the
+    // former O(N) `nodes.find(...)` per edge and the O(E) per-focus rescan.
+    const nodeByPath = new Map<string, CouplingNode>();
+    for (const n of nodes) nodeByPath.set(n.file_path, n);
+    const adjacency = new Map<string, Set<string>>();
+    for (const e of edges) {
+      (adjacency.get(e.source) ?? adjacency.set(e.source, new Set()).get(e.source)!).add(e.target);
+      (adjacency.get(e.target) ?? adjacency.set(e.target, new Set()).get(e.target)!).add(e.source);
+    }
+
+    const line = lineRadial<HierarchyNode<TreeDatum>>()
+      .curve(curveBundle.beta(0.82))
+      .radius((d) => d.y!)
+      .angle((d) => d.x!);
+
+    // `reduce`, not a spread: an uncapped payload can carry tens of thousands
+    // of edges, and spreading that many arguments overflows the stack.
+    const maxStrength = edges.reduce((m, e) => Math.max(m, e.strength), 1);
+    const drawn = edges
+      .map((e) => {
+        const s = leafByPath.get(e.source);
+        const t = leafByPath.get(e.target);
+        if (!s || !t) return null;
+        return { edge: e, d: line(s.path(t)) ?? "" };
+      })
+      .filter((x): x is { edge: CouplingEdge; d: string } => x !== null);
+
+    // Degree per file -> dot radius emphasis for highly-coupled hubs.
+    const degree = new Map<string, number>();
+    for (const e of edges) {
+      degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+      degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+    }
+    const maxNloc = nodes.reduce((m, n) => Math.max(m, n.nloc), 1);
+
+    // Arc groups: the first stripped segment of each leaf (the module band).
+    const groups = new Map<string, { a0: number; a1: number }>();
+    for (const leaf of leaves) {
+      const top = leaf.ancestors().reverse()[1]; // child of root
+      const name = top?.data.name ?? "";
+      if (!name) continue;
+      const g = groups.get(name);
+      if (!g) groups.set(name, { a0: leaf.x!, a1: leaf.x! });
+      else {
+        g.a0 = Math.min(g.a0, leaf.x!);
+        g.a1 = Math.max(g.a1, leaf.x!);
+      }
+    }
+
+    return {
+      radius,
+      leaves,
+      leafByPath,
+      nodeByPath,
+      adjacency,
+      drawn,
+      degree,
+      maxNloc,
+      maxStrength,
+      groups,
+    };
+  }, [nodes, edges, size]);
+
+  // Before the early return below: hooks may not sit behind a conditional.
+  const ringLabels = useMemo(
+    () => disambiguateBasenames(nodes.map((n) => n.file_path)),
+    [nodes],
+  );
+
+  if (!layout) {
+    // `size` is the diagram's coordinate space, not the viewport's, so scaling
+    // the empty box by it fills most of a phone screen with nothing.
+    return (
+      <div
+        className="flex items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] p-4 text-center text-sm text-[var(--color-text-tertiary)]"
+        style={{ minHeight: `min(${size * 0.6}px, 40vh)` }}
+      >
+        Not enough shared git history to map coupling yet. Files need to have
+        been committed together.
+      </div>
+    );
+  }
+
+  const { radius, leaves, nodeByPath, adjacency, drawn, degree, maxNloc, maxStrength, groups } =
+    layout;
+  const c = size / 2;
+
+  // Top-degree hubs are always labelled; the rest reveal on hover. This replaces
+  // the all-or-nothing 36-node gate with a curated set that stays legible even
+  // on a dense ring.
+  const TOP_HUB_LABELS = 14;
+  const hubPaths = new Set(
+    [...degree.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOP_HUB_LABELS)
+      .map(([path]) => path),
+  );
+
+  // Shared with the table so both name a file the same way.
+  const labelFor = (full: string) => ringLabels.get(full) ?? full;
+
+  // Sized from the arc each leaf owns, so targets grow on a sparse ring and
+  // never overlap on a dense one.
+  const hitRadius = Math.min(14, ((2 * Math.PI * radius) / Math.max(leaves.length, 1)) / 2);
+
+  // Neighbors of the focused file, for dimming + dot emphasis. A focused pair
+  // has no fan to light, so it takes none.
+  const neighbors =
+    (focusedPair == null && focus ? adjacency.get(focus) : undefined) ?? EMPTY_SET;
+  // Something is selected — either one file's whole fan, or one arc.
+  const anyFocus = focusedPair != null || focus != null;
+
+  const dotR = (n: CouplingNode) =>
+    2 + Math.sqrt(n.nloc / maxNloc) * 2.4 + Math.min((degree.get(n.file_path) ?? 0) / 6, 2.6);
+
+  return (
+    <div>
+      {/* Decorative, not operable: the ring is mouse-only, and the table
+          below holds the same data in a form a keyboard can drive. */}
+      <svg
+        viewBox={`0 0 ${size} ${size}`}
+        width="100%"
+        aria-hidden="true"
+        focusable="false"
+        onMouseLeave={() => hover(null)}
+      >
+        {/* Background target: entering empty canvas drops the hover peek so the
+            lit edges clear immediately, and clicking it clears the pin. Kept
+            transparent and behind everything; dot clicks stopPropagation. */}
+        <rect
+          x={0}
+          y={0}
+          width={size}
+          height={size}
+          fill="transparent"
+          onMouseEnter={() => hover(null)}
+          onClick={() => togglePin(null)}
+        />
+        <g transform={`translate(${c},${c})`}>
+          {/* Module arc bands + labels around the perimeter. Tiny (≈single
+              file) arcs are left unlabelled so their names don't pile up near
+              12 o'clock; the remaining module labels are angularly well spread. */}
+          {[...groups.entries()].map(([name, g]) => {
+            const mid = (g.a0 + g.a1) / 2;
+            const [lx, ly] = project(mid, radius + 34);
+            const [x0, y0] = project(g.a0 - 0.012, radius + 12);
+            const [x1, y1] = project(g.a1 + 0.012, radius + 12);
+            const large = g.a1 - g.a0 > Math.PI ? 1 : 0;
+            const span = g.a1 - g.a0;
+            return (
+              <g key={name}>
+                <path
+                  d={`M ${x0} ${y0} A ${radius + 12} ${radius + 12} 0 ${large} 1 ${x1} ${y1}`}
+                  fill="none"
+                  stroke="currentColor"
+                  className="text-[var(--color-border-hover)]"
+                  strokeOpacity={0.5}
+                  strokeWidth={1.5}
+                  strokeLinecap="round"
+                />
+                {span >= 0.07 && (
+                  <text
+                    x={lx}
+                    y={ly}
+                    fontSize={11}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    className="fill-[var(--color-text-secondary)] font-medium uppercase tracking-wider"
+                  >
+                    {name}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+
+          {/* Edges. Quiet hairlines by default; on focus, the focused file's
+              couplings resolve to the partner's health color and the rest fade. */}
+          <g fill="none">
+            {drawn.map(({ edge, d }) => {
+              const incident = focusedPair
+                ? isSamePair(edge, focusedPair)
+                : focus === edge.source || focus === edge.target;
+              const dim = anyFocus && !incident;
+              // One file focused: the partner's health. A pair focused: the
+              // worse of the two, since neither end is "the other" one.
+              const partnerPath = focus === edge.source ? edge.target : edge.source;
+              const scores = focusedPair
+                ? [nodeByPath.get(edge.source)?.score, nodeByPath.get(edge.target)?.score].filter(
+                    (s): s is number => typeof s === "number",
+                  )
+                : [nodeByPath.get(partnerPath)?.score].filter(
+                    (s): s is number => typeof s === "number",
+                  );
+              const strengthFrac = edge.strength / maxStrength;
+              const stroke = incident
+                ? inkFor(scores.length ? Math.min(...scores) : null)
+                : NEUTRAL_INK;
+              return (
+                <path
+                  key={`${edge.source}|${edge.target}`}
+                  d={d}
+                  stroke={stroke}
+                  strokeWidth={incident ? 1.1 + strengthFrac * 2.4 : 0.7 + strengthFrac * 0.8}
+                  strokeOpacity={incident ? 0.9 : dim ? 0.04 : 0.1 + strengthFrac * 0.14}
+                  style={{ transition: "stroke-opacity 160ms ease, stroke-width 160ms ease" }}
+                />
+              );
+            })}
+          </g>
+
+          {/* File dots + (focused) labels. */}
+          {leaves.map((leaf) => {
+            const n = leaf.data.node;
+            if (!n) return null;
+            const [x, y] = project(leaf.x!, leaf.y!);
+            const isFocus = focusedPair
+              ? pairHas(focusedPair, n.file_path)
+              : focus === n.file_path;
+            const isPinned = pinnedPair
+              ? pairHas(pinnedPair, n.file_path)
+              : pinned === n.file_path;
+            const isNeighbor = neighbors.has(n.file_path);
+            const dim = anyFocus && !isFocus && !isNeighbor;
+            const isHub = hubPaths.has(n.file_path);
+            // Focus grows the labelled set rather than swapping it out, so
+            // the ring keeps the identity the reader oriented on.
+            const showLabel = isFocus || isNeighbor || isHub;
+            // Labels radiate along each file's own spoke so angularly-adjacent
+            // hubs fan out instead of stacking on a shared baseline. Flip the
+            // left half so the text never renders upside-down.
+            const onLeft = leaf.x! >= Math.PI;
+            const labelRot = (leaf.x! * 180) / Math.PI - 90;
+            const r = dotR(n);
+            return (
+              <g
+                key={n.file_path}
+                style={{ transition: "opacity 160ms ease", opacity: dim ? 0.18 : 1 }}
+                onMouseEnter={() => hover(n.file_path)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePin(n.file_path);
+                }}
+                className="cursor-pointer"
+              >
+                {/* Invisible tap target: the painted dot is a few viewBox units,
+                    which is 1-3 CSS px on a phone. Without this a tap misses it,
+                    hits the background rect, and clears the trace. */}
+                <circle cx={x} cy={y} r={Math.max(r, hitRadius)} fill="transparent" />
+
+                {/* Persistent ring on the pinned file so the sticky selection
+                    stays readable even while hovering elsewhere. */}
+                {isPinned && (
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={r * 1.5 + 3}
+                    fill="none"
+                    stroke="var(--color-accent-primary)"
+                    strokeWidth={1.5}
+                    strokeOpacity={0.9}
+                  />
+                )}
+                <circle
+                  cx={x}
+                  cy={y}
+                  r={r * (isFocus ? 1.5 : 1)}
+                  fill={inkFor(n.score)}
+                  fillOpacity={0.92}
+                  stroke="var(--color-bg-surface)"
+                  strokeWidth={isFocus ? 1.6 : 1}
+                >
+                  <title>{`${n.file_path}${n.score != null ? ` · score ${formatScore(n.score)}` : ""} · ${degree.get(n.file_path) ?? 0} couplings`}</title>
+                </circle>
+                {showLabel ? (
+                  <text
+                    transform={`rotate(${labelRot}) translate(${leaf.y! + 8},0)${onLeft ? " rotate(180)" : ""}`}
+                    dy="0.31em"
+                    fontSize={11.5}
+                    textAnchor={onLeft ? "end" : "start"}
+                    className={
+                      isFocus || isHub
+                        ? "fill-[var(--color-text-primary)] font-medium"
+                        : "fill-[var(--color-text-secondary)]"
+                    }
+                    style={{ pointerEvents: "none" }}
+                  >
+                    {labelFor(n.file_path)}
+                  </text>
+                ) : null}
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+
+      {/* Legend */}
+      <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
+        {HEALTH_BAND_ORDER.map((band) => (
+          <span key={band} className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ backgroundColor: healthBandNodeFill(band) }}
+            />{" "}
+            {HEALTH_BAND_LABEL[band]}{" "}
+            <span className="tabular-nums opacity-70">{HEALTH_BAND_RANGE_LABEL[band]}</span>
+          </span>
+        ))}
+        {/* `min-w-0` so this can shrink and wrap rather than force the row
+            wider than the viewport; right-aligned only once there is room. */}
+        <span className="min-w-0 basis-full sm:basis-auto sm:ml-auto">
+          {totalEdges && totalEdges > drawn.length
+            ? `showing ${drawn.length} of ${totalEdges} couplings · `
+            : `${drawn.length} couplings · `}
+          dot size = lines + couplings · line opacity = strength
+        </span>
+      </div>
+
+      {/* The accessible equivalent, named and linked. */}
+      <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+        The diagram is a visual summary.{" "}
+        {tableId ? (
+          <a
+            href={`#${tableId}`}
+            className="underline decoration-dotted underline-offset-2 hover:text-[var(--color-text-secondary)]"
+          >
+            The table below
+          </a>
+        ) : (
+          "The table below"
+        )}{" "}
+        lists the same couplings and is the keyboard-accessible version of it.
+      </p>
+    </div>
+  );
+}

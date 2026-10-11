@@ -1,0 +1,107 @@
+"""Health-trend rendering from the SQLite snapshot history."""
+
+from __future__ import annotations
+
+import json
+
+import click
+from rich.table import Table
+
+from repowise.cli.helpers import console, run_async
+
+# Rich style, mark and label per alert kind. ``history_drag`` is a fall the
+# code shape did not cause, so it reads as information rather than a warning.
+_ALERT_STYLE = {
+    "declining": ("red", "⚠", "declining"),
+    "predicted_decline": ("yellow", "⚠", "predicted decline"),
+    "history_drag": ("dim", "ℹ", "change history"),
+}
+
+
+def _render_trend(repo_path: object, *, fmt: str) -> None:
+    """Print the last 10 health snapshots straight from SQLite history.
+
+    Reads through the existing CLI db-url helper so this works on
+    workspace and single-repo indexes alike. When no snapshots exist
+    (e.g. health was never run), prints a friendly hint.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
+    from repowise.core.analysis.health.trends import diff_snapshots, recent_kpis
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+    )
+    from repowise.core.persistence.crud import (
+        get_repository_by_path,
+        list_health_snapshots,
+    )
+
+    async def _fetch() -> tuple[list[dict], object]:
+        url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return [], None
+            snaps = await list_health_snapshots(session, repo.id)
+            return recent_kpis(snaps, limit=10, doc_drift=True), diff_snapshots(snaps)
+
+    rows, summary = run_async(_fetch())
+    if not rows:
+        console.print(
+            "[yellow]No health snapshots yet. Run `repowise init` or `repowise health "
+            "--recompute` to populate history.[/yellow]"
+        )
+        return
+
+    if fmt == "json":
+        click.echo(
+            json.dumps(
+                {
+                    "recent": rows,
+                    "alerts": [
+                        {
+                            "kind": a.kind,
+                            "metric": a.metric,
+                            "current": a.current,
+                            "baseline": a.baseline,
+                            "delta": a.delta,
+                            "message": a.message,
+                            "driver": a.driver,
+                            "structure_delta": a.structure_delta,
+                            "history_delta": a.history_delta,
+                        }
+                        for a in (summary.alerts if summary else [])
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return
+
+    table = Table(title="Code-health snapshots (newest first)")
+    table.add_column("Taken at")
+    table.add_column("Hotspot", justify="right")
+    table.add_column("Average", justify="right")
+    table.add_column("Worst", justify="right")
+    table.add_column("Worst file", style="dim")
+    table.add_column("Doc drift", justify="right")
+    for r in rows:
+        table.add_row(
+            (r["taken_at"] or "—")[:19],
+            f"{r['hotspot_health']:.2f}",
+            f"{r['average_health']:.2f}",
+            f"{r['worst_performer_score']:.2f}" if r["worst_performer_score"] is not None else "—",
+            r["worst_performer_path"] or "—",
+            str(r["doc_drift_count"]) if r["doc_drift_count"] is not None else "—",
+        )
+    console.print(table)
+
+    if summary and summary.alerts:
+        console.print()
+        for a in summary.alerts:
+            style, mark, label = _ALERT_STYLE.get(a.kind, ("yellow", "⚠", a.kind))
+            console.print(f"[{style}]{mark} {label}[/{style}]: {a.message}")

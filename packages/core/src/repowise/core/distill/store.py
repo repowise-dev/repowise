@@ -1,0 +1,312 @@
+"""OmissionStore — durable stash of content dropped by distillation.
+
+Lives in its own SQLite sidecar (``.repowise/omissions/omissions.db``, WAL)
+rather than wiki.db so hook-time writes never contend with indexing. Rows are
+keyed by a 12-hex truncated SHA-256 of the content, the same ref embedded in
+omission markers, so ``expand`` resolves markers from any surface against one
+store. Durable across sessions by design (an agent resuming work can still
+expand yesterday's markers); pruning is TTL + size-cap based, applied
+opportunistically on write.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import sqlite3
+import time
+import zlib
+from collections.abc import Sequence
+from pathlib import Path
+
+import structlog
+
+from repowise.core.distill import tracking
+from repowise.core.distill.markers import REF_LENGTH, is_valid_ref
+from repowise.core.savings import schema as savings_schema
+from repowise.core.savings.repository import SavingsRepository
+from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
+
+logger = structlog.get_logger(__name__)
+
+OMISSIONS_DIRNAME = "omissions"
+OMISSIONS_DB_FILENAME = "omissions.db"
+
+#: Rows older than this are pruned.
+DEFAULT_TTL_DAYS = 7
+#: Compressed-content size cap; oldest rows pruned first when exceeded.
+DEFAULT_MAX_MB = 50
+
+#: Retry window for a contended open, in milliseconds.
+_BUSY_TIMEOUT_MS = 5000
+
+
+def default_store_path(start: Path | None = None) -> Path:
+    """Resolve the omissions DB path for the repo containing *start*.
+
+    Walks upward looking for an existing ``.repowise/`` directory (stopping at
+    the user's home directory) and falls back to ``~/.repowise/`` — the same
+    fallback convention as the wiki database. Never creates ``.repowise/`` in
+    a repo that has not opted in via ``repowise init``.
+    """
+    current = (start or Path.cwd()).resolve()
+    home = Path.home().resolve()
+    for candidate in (current, *current.parents):
+        if candidate == home:
+            break
+        if (candidate / ".repowise").is_dir():
+            return candidate / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
+    return home / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
+
+
+#: Kept under SQLite's 999-variable ceiling with room to spare.
+_REF_QUERY_BATCH = 400
+
+
+def omission_sources(conn: sqlite3.Connection, refs: Sequence[str]) -> dict[str, str]:
+    """``ref -> source`` for the refs *conn* still holds, batched.
+
+    ``source`` reads ``"<origin>:<filter>"`` -- ``cli:git_diff``,
+    ``hook-codex:test_output`` -- and is the only record of which filter
+    produced a ref. Rows are TTL-pruned, so a ref may legitimately be absent.
+    """
+    found: dict[str, str] = {}
+    for start in range(0, len(refs), _REF_QUERY_BATCH):
+        batch = refs[start : start + _REF_QUERY_BATCH]
+        placeholders = ",".join("?" for _ in batch)
+        found.update(
+            (ref, str(source))
+            for ref, source in conn.execute(
+                f"SELECT ref, source FROM omissions WHERE ref IN ({placeholders})",
+                list(batch),
+            )
+        )
+    return found
+
+
+def content_ref(content: str) -> str:
+    """Stable 12-hex ref for *content* (truncated SHA-256)."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:REF_LENGTH]
+
+
+class OmissionStore:
+    """Synchronous SQLite store for omitted content and the savings ledger.
+
+    Synchronous on purpose: callers are CLI commands and (later) hook scripts
+    where an asyncio loop is pure overhead.
+    """
+
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        ttl_days: float = DEFAULT_TTL_DAYS,
+        max_mb: float = DEFAULT_MAX_MB,
+    ) -> None:
+        self.db_path = db_path
+        self.ttl_days = ttl_days
+        self.max_mb = max_mb
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(db_path, isolation_level=None)
+        try:
+            apply_sqlite_pragmas(self._conn, _BUSY_TIMEOUT_MS)
+            savings_schema.initialize_savings_schema(self._conn)
+        except BaseException:
+            # A corrupt file fails here; the caller never gets a store to close.
+            self._conn.close()
+            raise
+
+    @classmethod
+    def open_default(cls, start: Path | None = None) -> OmissionStore:
+        """Open the store for the repo containing *start* (default: cwd)."""
+        return cls(default_store_path(start))
+
+    # -- omissions ---------------------------------------------------------
+
+    def put(
+        self,
+        content: str,
+        *,
+        source: str,
+        original_tokens: int,
+        kept_tokens: int,
+    ) -> str:
+        """Store *content* and return its marker ref. Idempotent per content."""
+        ref = content_ref(content)
+        blob = zlib.compress(content.encode("utf-8"))
+        self._conn.execute(
+            """
+            INSERT INTO omissions
+                (ref, content, source, created_at, original_tokens, kept_tokens)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(ref) DO UPDATE SET created_at = excluded.created_at
+            """,
+            (ref, blob, source, time.time(), original_tokens, kept_tokens),
+        )
+        self._conn.commit()
+        self.prune()
+        return ref
+
+    def get(self, ref: str, *, query: str | None = None) -> str | None:
+        """Return the stored content for *ref*, or None when unknown/expired.
+
+        With *query*, returns only the lines matching it (regex when it
+        compiles, plain substring otherwise) — cheap search-within-original.
+        """
+        record = self.get_record(ref, query=query)
+        return record["content"] if record is not None else None
+
+    def get_record(self, ref: str, *, query: str | None = None) -> dict | None:
+        """Like :meth:`get` but with the row's provenance metadata.
+
+        Returns ``{content, source, created_at, original_tokens, kept_tokens}``
+        or ``None`` when the ref is unknown/expired. *query* filters the
+        content lines exactly as in :meth:`get`.
+        """
+        from repowise.core.distill.markers import normalize_ref
+
+        ref = normalize_ref(ref) or ""
+        if not is_valid_ref(ref):
+            return None
+        row = self._conn.execute(
+            "SELECT content, source, created_at, original_tokens, kept_tokens "
+            "FROM omissions WHERE ref = ?",
+            (ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        self._conn.execute(
+            "UPDATE omissions SET access_count = access_count + 1 WHERE ref = ?", (ref,)
+        )
+        self._conn.commit()
+        content = zlib.decompress(row[0]).decode("utf-8")
+        if query is not None:
+            content = _filter_lines(content, query)
+        return {
+            "content": content,
+            "source": row[1],
+            "created_at": row[2],
+            "original_tokens": row[3],
+            "kept_tokens": row[4],
+        }
+
+    def prune(self) -> None:
+        """Drop rows past TTL, then oldest-first until under the size cap."""
+        cutoff = time.time() - self.ttl_days * 86400
+        self._conn.execute("DELETE FROM omissions WHERE created_at < ?", (cutoff,))
+        max_bytes = int(self.max_mb * 1024 * 1024)
+        while True:
+            total, rows = self._conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(content)), 0), COUNT(*) FROM omissions"
+            ).fetchone()
+            # Never evict the last row: it may be the one just written, and a
+            # marker must not dangle the moment it is rendered.
+            if total <= max_bytes or rows <= 1:
+                break
+            self._conn.execute(
+                """
+                DELETE FROM omissions WHERE ref IN (
+                    SELECT ref FROM omissions ORDER BY created_at ASC
+                    LIMIT MIN(16, (SELECT COUNT(*) - 1 FROM omissions))
+                )
+                """
+            )
+        self._conn.commit()
+
+    # -- machine-joinable evidence references -----------------------------
+
+    def put_evidence_reference(self, ref: str, content: str, *, repository: str) -> None:
+        """Persist one exact evidence object under its canonical public id."""
+
+        blob = zlib.compress(content.encode("utf-8"))
+        self._conn.execute(
+            """
+            INSERT INTO evidence_references (ref, content, repository, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(ref) DO UPDATE SET
+                content = excluded.content,
+                repository = excluded.repository,
+                created_at = excluded.created_at
+            """,
+            (ref, blob, repository, time.time()),
+        )
+        self._conn.commit()
+
+    def get_evidence_reference(self, ref: str) -> dict[str, str] | None:
+        """Return one exact persisted evidence object, if present."""
+
+        row = self._conn.execute(
+            "SELECT content, repository FROM evidence_references WHERE ref = ?",
+            (ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "content": zlib.decompress(row[0]).decode("utf-8"),
+            "repository": row[1],
+        }
+
+    # -- savings ledger ----------------------------------------------------
+
+    def record_saving(
+        self,
+        *,
+        filter_name: str,
+        source: str,
+        command: str | None,
+        raw_tokens: int,
+        distilled_tokens: int,
+    ) -> None:
+        """Append one distillation event to the savings ledger."""
+        tracking.record_saving(
+            self._conn,
+            filter_name=filter_name,
+            source=source,
+            command=command,
+            raw_tokens=raw_tokens,
+            distilled_tokens=distilled_tokens,
+        )
+
+    def savings_summary(self, *, since: float | None = None) -> dict:
+        """Aggregate ledger totals, overall and per filter."""
+        return tracking.savings_summary(self._conn, since=since)
+
+    def savings_rollup(self, *, by: str = "filter", since: float | None = None) -> list[dict]:
+        """Grouped ledger totals (see :func:`tracking.savings_rollup`)."""
+        return tracking.savings_rollup(self._conn, by=by, since=since)
+
+    def omission_sources(self, refs: Sequence[str]) -> dict[str, str]:
+        """``ref -> source`` for the refs still held. Pruned refs are absent."""
+        return omission_sources(self._conn, refs)
+
+    def savings(self) -> SavingsRepository:
+        """The canonical event ledger, sharing this store's connection.
+
+        The event tables live in this same file, installed by the same schema
+        upgrade the constructor runs, so they are reached through the store that
+        already owns the connection rather than by opening a second one.
+        """
+        return SavingsRepository(self._conn)
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> OmissionStore:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
+def _filter_lines(content: str, query: str) -> str:
+    """Lines of *content* matching *query* (regex if valid, else substring)."""
+    import re
+
+    try:
+        pattern = re.compile(query)
+    except re.error:
+        matched = [line for line in content.splitlines() if query in line]
+    else:
+        matched = [line for line in content.splitlines() if pattern.search(line)]
+    return "\n".join(matched)

@@ -1,0 +1,137 @@
+"""Per-function blame rollup → ``git_function_blame`` rows.
+
+Turns the in-memory per-line :class:`BlameIndex` (built once per file during
+FULL-tier health analysis) plus the walker's per-function line ranges into one
+persisted rollup row per *modified* function. The biomarkers
+(``function_hotspot``/``code_age_volatility``) already project the same blame
+index onto each function's range and then discard it; this captures that work so
+a function-level health surface can read it without re-blaming.
+
+The transform is pure (no git, no I/O) — it only reads the already-materialised
+blame index and the walker output — so it is cheap and unit-testable. Only
+functions with ``mod_count > 0`` are emitted, bounding the table to genuinely
+churned functions (the "no signal" convention used by the biomarkers).
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable
+from typing import Any
+
+from ...ingestion.git_indexer.function_blame import (
+    BlameIndex,
+    blame_as_of,
+    distinct_commits_in_range,
+    median_author_time_in_range,
+    owner_in_range,
+    recent_commits_in_range,
+    recent_distinct_commits_in_range,
+)
+
+# Recent-modification window for the rollup. Broader than the 30-day window
+# ``code_age_volatility`` uses for its finding gate — the persisted row is a
+# general-purpose signal, so a 90-day window matches the rest of the git data.
+_RECENT_WINDOW_DAYS = 90
+
+# Commits kept per function for Split File's co-change edge. Blame credits each
+# line to one commit, so a function's set is already bounded by its length; on
+# this repository 99.96% of modified functions have 50 or fewer, and the cap
+# keeps the persisted column small for the rest.
+COMMIT_SET_LIMIT = 50
+
+# One function's bounded commit set: ``(name, start_line, end_line, shas)``.
+CommitEntry = tuple[str, int, int, list[str]]
+# What Split File reads: ``(start_line, end_line, shas)`` per function.
+CommitSpan = tuple[int, int, frozenset[str]]
+
+
+def build_function_blame_rows(
+    walked: list[tuple[Any, Any]],
+    git_meta_map: dict[str, dict],
+    *,
+    now_ts: int | None = None,
+    recent_window_days: int = _RECENT_WINDOW_DAYS,
+) -> list[dict]:
+    """Build ``git_function_blame`` row dicts from walked files + blame indexes.
+
+    *walked* is the engine's ``[(parsed_file, FileComplexity)]`` list; each
+    file's blame index is looked up in *git_meta_map* under ``"blame_index"``
+    (the FULL-tier git tier attaches it there). *now_ts* anchors the recent
+    window (unix seconds); ``None`` uses each blame index's own anchor.
+    """
+    rows: list[dict] = []
+
+    for pf, fcx in walked:
+        path = pf.file_info.path
+        meta = git_meta_map.get(path) or {}
+        # ``commit_set_blame``: a re-score's blame for a file stored without sets.
+        idx = meta.get("blame_index") or meta.get("commit_set_blame")
+        if not isinstance(idx, BlameIndex) or not idx.lines:
+            continue
+        since = (now_ts if now_ts is not None else blame_as_of(idx)) - recent_window_days * 86400
+        for fc in fcx.functions:
+            start, end = fc.start_line, fc.end_line
+            mod_count = len(distinct_commits_in_range(idx, start, end))
+            if mod_count == 0:
+                # No blame coverage / unmodified — the "no signal" outcome.
+                continue
+            recent_mod = len(recent_commits_in_range(idx, start, end, since_unix_ts=since))
+            median_ts = median_author_time_in_range(idx, start, end)
+            owner_name, owner_email, owner_pct = owner_in_range(idx, start, end)
+            shas = recent_distinct_commits_in_range(idx, start, end, limit=COMMIT_SET_LIMIT)
+            rows.append(
+                {
+                    "symbol_id": f"{path}::{fc.name}",
+                    "file_path": path,
+                    "function_name": fc.name,
+                    "start_line": start,
+                    "end_line": end,
+                    "line_count": max(0, end - start + 1),
+                    "mod_count": mod_count,
+                    "recent_mod_count": recent_mod,
+                    "median_author_time": median_ts,
+                    "owner_name": owner_name,
+                    "owner_email": owner_email,
+                    "owner_line_pct": owner_pct,
+                    "commit_shas_json": json.dumps(shas),
+                }
+            )
+    return rows
+
+
+def blame_commit_entries(functions: Iterable[Any], idx: Any) -> list[CommitEntry]:
+    """Each modified function's bounded commit set, read off a live blame index.
+
+    The same projection ``build_function_blame_rows`` persists, so a re-score
+    reading the stored rows sees what a full index saw.
+    """
+    if not isinstance(idx, BlameIndex) or not idx.lines:
+        return []
+    entries: list[CommitEntry] = []
+    for fc in functions:
+        shas = recent_distinct_commits_in_range(
+            idx, fc.start_line, fc.end_line, limit=COMMIT_SET_LIMIT
+        )
+        if shas:
+            entries.append((fc.name, fc.start_line, fc.end_line, shas))
+    return entries
+
+
+def commit_spans(functions: Iterable[Any], entries: Iterable[CommitEntry]) -> list[CommitSpan]:
+    """The commit sets of *functions*, from live or stored *entries*.
+
+    Rows are keyed by ``path::name``, so of two same-named functions only the
+    last one is stored; the live path keeps the last one too. An entry whose
+    span no longer matches a walked function is a stale row and is dropped.
+    """
+    by_name: dict[str, CommitEntry] = {}
+    for entry in entries:
+        by_name[entry[0]] = entry
+    walked = {(fc.name, fc.start_line, fc.end_line) for fc in functions}
+    spans = [
+        (start, end, frozenset(shas))
+        for name, start, end, shas in by_name.values()
+        if shas and (name, start, end) in walked
+    ]
+    return sorted(spans, key=lambda span: (span[0], span[1]))

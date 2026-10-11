@@ -1,0 +1,264 @@
+"""Distill's engine — the orchestration around the pure filter pieces.
+
+Lives here rather than in ``distill/__init__.py`` so that importing any
+*other* distill submodule (notably :mod:`repowise.core.distill.skeleton`, on
+the PostToolUse Read hook path) does not run the engine's import graph.
+``__init__`` re-exports everything below lazily; see its docstring.
+
+The engine owns the safety guarantees the filters rely on:
+
+- **fallback-to-raw**: any filter exception, storage failure, or
+  non-improvement returns the original output untouched;
+- **reversibility**: the full raw output is persisted before a marker is
+  emitted, so ``repowise expand <ref>`` always round-trips;
+- **net-positive only**: distilled text (marker included) must actually be
+  smaller than the raw output, with a small floor so trivial wins don't
+  litter markers everywhere.
+"""
+
+from __future__ import annotations
+
+import contextlib
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+import structlog
+
+from repowise.core.distill.budget import estimate_tokens, savings_pct
+from repowise.core.distill.markers import render_marker
+from repowise.core.distill.router import select_filter
+from repowise.core.distill.store import OmissionStore
+
+__all__ = [
+    "HOST_OUTPUT_CAP_CHARS",
+    "MIN_SAVED_TOKENS",
+    "DistillResult",
+    "distill_output",
+]
+
+logger = structlog.get_logger(__name__)
+
+#: Distillation must save at least this many tokens to be worth a marker.
+MIN_SAVED_TOKENS = 40
+
+#: How much of one command's output an agent host actually delivers. Claude
+#: Code truncates a Bash/PowerShell tool result at 30,000 characters, so
+#: everything past this was never going to reach the model and distilling it
+#: away saves nothing.
+#:
+#: Applied to every source here, which is the *smallest* known host cap and
+#: so an undersell for the others rather than an overclaim: a human at a real
+#: terminal has no cap at all, and Codex's own measured cap is 40,000
+#: characters. This path cannot do better, deliberately -- it records
+#: ``agent: "unknown"`` because knowing the rewrite hook's shell is not
+#: knowing which agent ran it, and the contract says an unknown field stays
+#: unknown rather than being filled with the likeliest answer. Choosing a cap
+#: per agent here would be exactly that guess.
+#:
+#: The transcript backfill *does* know the harness, having read that
+#: harness's own file, so it applies a per-agent cap
+#: (``savings/transcript.py:_HARNESS_OUTPUT_CAP_TOKENS``). The two therefore
+#: disagree by at most 2,500 tokens for one Codex result distilled live
+#: versus recovered from a transcript. Recorded rather than hidden; closing
+#: it needs an agent identity this path has decided not to invent.
+HOST_OUTPUT_CAP_CHARS = 30_000
+
+
+@dataclass(frozen=True)
+class DistillResult:
+    """Outcome of one distillation attempt."""
+
+    text: str
+    distilled: bool
+    filter_name: str | None
+    ref: str | None
+    raw_tokens: int
+    distilled_tokens: int
+
+    @property
+    def savings_pct(self) -> float:
+        return savings_pct(self.raw_tokens, self.distilled_tokens)
+
+
+def _record_event(
+    store: OmissionStore,
+    *,
+    source: str,
+    filter_name: str,
+    ref: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+) -> None:
+    """Record the canonical savings event beside the legacy ledger row.
+
+    Written through the store already open here rather than by reopening the
+    sidecar, and never raising: this sits inside the block whose failure mode is
+    "fall back to raw output", and a ledger problem must not cost the user their
+    distillation.
+
+    The repository is derived from the store's own path, which is the only
+    source available here: ``distill_output`` is reached from callers that do
+    not all know a repository root.
+
+    That derivation is only valid for a repo-local sidecar.
+    ``OmissionStore.open_default`` falls back to ``~/.repowise`` when there is
+    no repository, and the same arithmetic would then call the user's home
+    directory a repository -- merging every uninitialized directory on the
+    machine into one ledger keyed on ``/home/<user>``, which is precisely what
+    the recorder exists to prevent. So a store that is not
+    ``<root>/.repowise/omissions/omissions.db`` records nothing. An event
+    attributed to the wrong repository is worse than one not recorded.
+
+    Attribution stays ``unknown``. The source distinguishes the CLI from the
+    rewrite hook's shell, which is not the same thing as knowing which agent ran
+    it, and the contract says an unknown field stays unknown rather than being
+    filled with the likeliest answer.
+    """
+    from repowise.core.savings import recorder
+    from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
+    from repowise.core.savings.pricing import resolve_pricing_snapshot
+
+    try:
+        repo_root = store.db_path.parents[2]
+        if store.db_path != recorder.sidecar_path(repo_root) or repo_root == Path.home():
+            return
+        event_id = new_event_id()
+        surface = "hook" if source.startswith("hook") else "distill"
+        # A hook-sourced run is not a CLI command a human typed: the rewrite
+        # hook turns the agent's own Bash call into `repowise distill`, so this
+        # runs synchronously inside that tool call. Detecting the model scans
+        # the local transcripts -- seconds, on a repository with no Codex
+        # history -- so the hook reads the cache and never fills it, exactly as
+        # the PostToolUse hook does. A direct `repowise distill` may scan.
+        pricing = resolve_pricing_snapshot(repo_root, allow_scan=surface != "hook")
+        recorder.record_event_in(
+            store,
+            repo_root,
+            {
+                "event_id": event_id,
+                "idempotency_key": scoped_idempotency_key(str(repo_root), "distill", event_id),
+                "occurred_at": datetime.now(UTC),
+                # The rewrite hook tags its shell; everything else is the CLI.
+                "surface": surface,
+                "integration": "unknown",
+                "agent": "unknown",
+                "operation": filter_name,
+                "evidence_kind": "measured",
+                "estimator": "chars_per_token_floor_v1",
+                "token_unit": "estimated_tokens",
+                "result_state": "success",
+                "is_usable": True,
+                # Host-capped, because bytes past the host's own truncation were
+                # never going to reach the model and cannot be claimed.
+                "baseline_input_tokens": raw_tokens,
+                "pre_budget_input_tokens": raw_tokens,
+                "delivered_input_tokens": distilled_tokens,
+                "omission_refs": (ref,),
+                **(pricing.as_payload() if pricing else {}),
+            },
+        )
+    except Exception:
+        logger.debug("distill savings event failed", exc_info=True)
+
+
+def distill_output(
+    output: str,
+    *,
+    command: str = "",
+    exit_code: int = 0,
+    source: str = "cli",
+    store: OmissionStore | None = None,
+    store_start: Path | None = None,
+    disabled_filters: tuple[str, ...] = (),
+) -> DistillResult:
+    """Distill *output*, falling back to the raw text on any failure.
+
+    When *store* is None one is opened at the default sidecar location for
+    *store_start* (default: cwd) and closed before returning.
+    """
+    stored_tokens = estimate_tokens(output)
+    # The saving is what the agent would otherwise have *received*, which is
+    # not the whole of a large output: the host truncates a tool result long
+    # before the model sees it, so bytes past the cap were never going to
+    # cost anything and cannot be claimed. Measured on this repo's ledger,
+    # one row was inflated ~5,859 tokens this way.
+    raw_tokens = estimate_tokens(output[:HOST_OUTPUT_CAP_CHARS])
+    raw = DistillResult(
+        text=output,
+        distilled=False,
+        filter_name=None,
+        ref=None,
+        raw_tokens=raw_tokens,
+        distilled_tokens=raw_tokens,
+    )
+
+    try:
+        chosen = select_filter(command, output, disabled=disabled_filters)
+    except Exception:
+        logger.debug("distill filter selection failed", exc_info=True)
+        return raw
+    if chosen is None:
+        return raw
+    if len(output.splitlines()) < chosen.min_lines:
+        return raw
+
+    try:
+        kept = chosen.distill(output, command=command, exit_code=exit_code)
+    except Exception:
+        logger.debug("distill filter failed; falling back to raw", filter=chosen.name)
+        return raw
+
+    kept_tokens = estimate_tokens(kept)
+    omitted_lines = max(0, len(output.splitlines()) - len(kept.splitlines()))
+
+    owns_store = store is None
+    try:
+        if owns_store:
+            store = OmissionStore.open_default(store_start)
+        ref = store.put(
+            output,
+            source=f"{source}:{chosen.name}",
+            # The artifact's own size, uncapped: `repowise expand` restores
+            # all of it, so this is not a savings claim and must not be one.
+            original_tokens=stored_tokens,
+            kept_tokens=kept_tokens,
+        )
+        marker = render_marker(ref, omitted_lines, max(0, stored_tokens - kept_tokens))
+        text = kept.rstrip("\n") + "\n\n" + marker + "\n"
+        distilled_tokens = estimate_tokens(text)
+        # Net-positive guarantee, marker included.
+        if distilled_tokens >= raw_tokens - MIN_SAVED_TOKENS:
+            return raw
+        store.record_saving(
+            filter_name=chosen.name,
+            source=source,
+            command=command or None,
+            raw_tokens=raw_tokens,
+            distilled_tokens=distilled_tokens,
+        )
+        _record_event(
+            store,
+            source=source,
+            filter_name=chosen.name,
+            ref=ref,
+            raw_tokens=raw_tokens,
+            distilled_tokens=distilled_tokens,
+        )
+        return DistillResult(
+            text=text,
+            distilled=True,
+            filter_name=chosen.name,
+            ref=ref,
+            raw_tokens=raw_tokens,
+            distilled_tokens=distilled_tokens,
+        )
+    except Exception:
+        # Raw output is never recoverable without a successful store write,
+        # so a storage failure means we must not drop anything.
+        logger.debug("omission store unavailable; falling back to raw", exc_info=True)
+        return raw
+    finally:
+        if owns_store and store is not None:
+            with contextlib.suppress(Exception):
+                store.close()

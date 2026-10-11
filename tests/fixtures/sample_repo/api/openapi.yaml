@@ -1,0 +1,127 @@
+openapi: "3.0.3"
+info:
+  title: Sample Calculator API
+  version: "1.0.0"
+  description: >
+    A simple arithmetic API used as a fixture for repowise ingestion tests.
+    Supports four operations: add, subtract, multiply, divide.
+
+paths:
+  /calculate:
+    post:
+      operationId: calculate
+      summary: Perform a single arithmetic calculation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalculationRequest'
+      responses:
+        '200':
+          description: Successful calculation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalculationResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '422':
+          description: Division by zero
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /history:
+    get:
+      operationId: getHistory
+      summary: Retrieve calculation history
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 0
+        - in: query
+          name: page_size
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Paginated history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalculationHistory'
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: API health check
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+components:
+  schemas:
+    CalculationRequest:
+      type: object
+      required: [operation, x, y]
+      properties:
+        operation:
+          type: string
+          enum: [add, subtract, multiply, divide]
+        x:
+          type: number
+        y:
+          type: number
+
+    CalculationResponse:
+      type: object
+      properties:
+        operation:
+          type: string
+        x:
+          type: number
+        y:
+          type: number
+        result:
+          type: number
+
+    CalculationHistory:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalculationResponse'
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+
+    ApiError:
+      type: object
+      properties:
+        status:
+          type: integer
+        message:
+          type: string
+        detail:
+          type: string

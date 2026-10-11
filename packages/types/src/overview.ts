@@ -1,0 +1,269 @@
+/**
+ * Overview-summary contract — the one-call payload behind the repo
+ * Overview page (`GET /api/repos/{id}/overview-summary`). Mirrors the
+ * server's `routers/overview.py` response shape.
+ */
+
+import type { Hotspot } from "./git.js";
+import type { DefectAccuracy, HealthSeverity } from "./health.js";
+import type { QueueCounts } from "./queue.js";
+
+export interface OverviewRepoMeta {
+  id: string;
+  name: string;
+  local_path: string;
+  default_branch: string;
+  head_commit: string | null;
+  updated_at: string | null;
+  /** GitHub owner/login. Hosted-only — lets surfaces like the MCP connect
+   *  card build the `owner/name` server URL without resolving the repo
+   *  through the viewer's own repo list (so it works on public shares for
+   *  non-owners). Absent/`""` for the OSS CLI, which has no remote owner. */
+  owner?: string;
+  /** Whether the repo is publicly browsable. Hosted-only; drives the
+   *  public/private connect copy. Defaults to public when absent. */
+  is_public?: boolean;
+  /** Git remote, from the stored repo URL or `.git/config`'s origin. Used
+   *  only to resolve a repo avatar, so a null (no remote, or a host we do not
+   *  recognise) simply falls back to initials. */
+  remote_url?: string | null;
+}
+
+export interface OverviewStatDeltas {
+  average_health: number | null;
+  hotspot_health: number | null;
+  file_count: number | null;
+}
+
+export interface OverviewStats {
+  file_count: number;
+  symbol_count: number;
+  entry_point_count: number;
+  /**
+   * Total generated wiki pages. Optional: a server that predates this field
+   * omits it, and hosted bumps the ui/types packages independently of its
+   * backend deploy — treat absent as unknown rather than rendering NaN.
+   */
+  doc_page_count?: number;
+  /**
+   * Of `doc_page_count`, how many carry model-written prose rather than being
+   * assembled deterministically from the index. The two are different products
+   * — deterministic pages are free and always current, prose pages cost a model
+   * call and can go stale — so the Overview reports them separately instead of
+   * behind one total. Optional: a server predating the field omits it, and the
+   * UI then shows the flat total rather than inventing a split.
+   */
+  doc_prose_page_count?: number;
+  doc_coverage_pct: number;
+  freshness_score: number;
+  dead_export_count: number;
+  hotspot_count: number;
+  silo_count: number;
+  module_count: number;
+  /**
+   * Total non-comment lines of code, summed from the per-file health metrics.
+   * Optional: a server predating the field omits it and the caller then has no
+   * lines figure rather than rendering a zero it did not measure.
+   */
+  total_nloc?: number;
+  deltas: OverviewStatDeltas;
+}
+
+export interface OverviewHealthHistoryPoint {
+  taken_at: string | null;
+  average_health: number;
+  hotspot_health: number;
+}
+
+export interface OverviewHealth {
+  average_health: number | null;
+  /** Backtested precision of the defect ranking — the "can you trust this
+   *  score?" panel on the health card. Optional so an older server payload
+   *  simply omits the panel. */
+  defect_accuracy?: DefectAccuracy | null;
+  hotspot_health: number | null;
+  worst_performer_path: string | null;
+  worst_performer_score: number | null;
+  open_findings: number;
+  /** The findings' count vocabulary; the same numbers the Code Health page shows. */
+  finding_counts?: QueueCounts;
+  /** Co-equal maintainability pillar headline (NLOC-weighted). `null` when no
+   *  file carries a maintainability score yet. */
+  maintainability_average?: number | null;
+  /** Co-equal performance pillar headline: static performance RISK (I/O-in-loop
+   *  / N+1). `null` when not yet measured. */
+  performance_average?: number | null;
+  /** Open findings homing under the performance pillar — the actionable count. */
+  performance_findings?: number;
+  /** Lowest-scoring file by performance risk, surfaced only when score < 10. */
+  worst_performance_path?: string | null;
+  worst_performance_score?: number | null;
+  severity_breakdown: Record<string, number>;
+  last_indexed_at: string | null;
+  snapshot_count: number;
+  history: OverviewHealthHistoryPoint[];
+}
+
+export interface OverviewLanguage {
+  language: string;
+  file_count: number;
+}
+
+export type OverviewAttentionType =
+  | "stale_decision"
+  | "proposed_decision"
+  | "ungoverned_hotspot"
+  | "knowledge_silo"
+  | "dead_code"
+  | "health_finding"
+  | "security_finding"
+  | "doc_drift"
+  | "refactoring";
+
+export interface OverviewAttentionItem {
+  id: string;
+  type: OverviewAttentionType;
+  title: string;
+  description: string;
+  /**
+   * The four-level ladder shared with `HealthSeverity`, rather than the three
+   * levels this used to declare. Sources that publish their own severity are
+   * passed through unchanged; the two that genuinely have none (dead code and
+   * documentation drift carry a confidence float instead) are bucketed onto it
+   * server-side. See `core/analysis/attention/compose.py`.
+   */
+  severity: HealthSeverity;
+  /** Decision id, file path, … — what the item points at. */
+  target_id: string;
+  /**
+   * The finding's own kind within its source: a `biomarker_type` for a health
+   * finding, a scanner kind for security, a drift kind. Optional because the
+   * decision and silo sources have no sub-kind.
+   *
+   * Sent raw so the UI can resolve it through the biomarker glossary it
+   * already owns, rather than the server holding a second copy of that
+   * vocabulary and the two drifting.
+   */
+  subtype?: string;
+}
+
+/**
+ * How much each source holds, beside the capped list in `attention`.
+ *
+ * Every source is capped so no single store floods the merged list, which
+ * means `attention.length` is not a total and never was safe to render as one.
+ */
+export type OverviewAttentionArea =
+  | "security"
+  | "health"
+  | "refactoring"
+  | "doc_drift"
+  | "decisions"
+  | "ownership"
+  | "dead_code";
+
+/**
+ * One area of work, with the worst thing in it named.
+ *
+ * Six ranked findings out of sixteen thousand is a sample, not triage, and it
+ * lets one store own every visible row. An area row reports how much that area
+ * holds and leads with the single item that topped it, so the list stays a
+ * fixed, scannable seven rows whatever the underlying volume.
+ */
+export interface OverviewAttentionAreaRow {
+  key: OverviewAttentionArea;
+  /** Everything this area holds, not what is displayed. */
+  total: number;
+  /** Severity of the lead, i.e. the worst thing in the area. */
+  severity: HealthSeverity;
+  /**
+   * What the count is made of, where one number over several lanes would
+   * misstate it — "365 awaiting review · 699 hotspots ungoverned" rather than
+   * a bare 1,064. Empty string for an area with a single lane.
+   */
+  detail?: string;
+  /** Absent only if the area reports a count with no item behind it. */
+  lead: {
+    title: string;
+    description: string;
+    type: OverviewAttentionType;
+    target_id?: string | null;
+    subtype?: string;
+    severity: HealthSeverity;
+  } | null;
+}
+
+export interface OverviewAttentionSummary {
+  total: number;
+  /** Keyed by attention type, plus `decisions` for the three decision lanes. */
+  by_source: Record<string, number>;
+  /** Optional: a server predating the area rows omits it. */
+  areas?: OverviewAttentionAreaRow[];
+}
+
+export interface OverviewOnboardingTarget {
+  path: string;
+  pagerank: number;
+  doc_words: number;
+}
+
+export interface OverviewDecisionSlim {
+  id: string;
+  title: string;
+  status: string;
+  source: string | null;
+  created_at: string | null;
+  staleness_score: number;
+}
+
+/**
+ * The savings headline on the overview payload.
+ *
+ * A strict subset of the full savings report, from the same core report
+ * service, so the overview and the Costs page cannot disagree. The
+ * measured/inferred and priced/unpriced splits travel with the total because a
+ * lone headline reads as one confident number and the evidence is not uniform.
+ *
+ * `available: false` means nothing has been measured in this repository, which
+ * is not the same as a measured zero.
+ */
+export interface OverviewSavings {
+  available: boolean;
+  saved_input_tokens?: number;
+  measured_saved_input_tokens?: number;
+  inferred_saved_input_tokens?: number;
+  priced_saved_input_tokens?: number;
+  unpriced_saved_input_tokens?: number;
+  estimated_usd_saved?: number;
+  mcp_queries_answered?: number;
+  last_event_at?: string | null;
+}
+
+export interface OverviewSyncStatus {
+  last_sync_at: string | null;
+  last_resync_at: string | null;
+  last_sync_model: string | null;
+  active_job_id: string | null;
+  page_count: number;
+  /** Total on-disk size of the repo's `.repowise/` directory (bytes). */
+  index_storage_bytes?: number;
+}
+
+export interface OverviewSummaryResponse {
+  repo: OverviewRepoMeta;
+  stats: OverviewStats;
+  health: OverviewHealth;
+  /** Code languages only. */
+  languages: OverviewLanguage[];
+  /** Config, markup and data formats, kept apart from `languages`. */
+  docs_config_languages?: OverviewLanguage[];
+  attention: OverviewAttentionItem[];
+  /** Optional: a server predating the merged attention list omits it, and the
+   *  UI then falls back to counting the rows it was given. */
+  attention_summary?: OverviewAttentionSummary;
+  onboarding_targets: OverviewOnboardingTarget[];
+  top_hotspots: Hotspot[];
+  recent_decisions: OverviewDecisionSlim[];
+  savings: OverviewSavings;
+  sync: OverviewSyncStatus;
+}

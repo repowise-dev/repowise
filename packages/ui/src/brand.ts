@@ -1,0 +1,96 @@
+/**
+ * Canonical brand constants — for surfaces that cannot resolve CSS variables
+ * (OG image routes, transactional emails, badge SVGs, terminal output).
+ *
+ * Values mirror styles/globals.css, the single source of truth for the token
+ * system; in-app UI must keep using `var(--color-*)` tokens. This module is
+ * deliberately dependency-free (no imports at all) so edge runtimes and email
+ * renderers can pull it in without dragging any UI weight.
+ */
+
+/** Brand identity. */
+export const BRAND = {
+  /** Accent orange — the brand fill (CTAs, owl eyes, highlights). */
+  accent: "#f59520",
+  /** Accent text on light surfaces (darkened for 4.5:1 contrast). */
+  accentTextLight: "#a16215",
+  /** Brand plum — logo strokes on light surfaces, secondary accent. */
+  plum: "#473659",
+  /** Plum near-black — primary ink on warm paper. */
+  ink: "#241b2c",
+  /** Warm paper — the light-mode page background. */
+  paper: "#fbf6f1",
+  /** Cream — the logo stroke color on dark surfaces. */
+  cream: "#fce9dd",
+} as const;
+
+/** Light-mode surface/text values (the product default). */
+export const LIGHT = {
+  bgRoot: "#fbf6f1",
+  bgSurface: "#ffffff",
+  bgElevated: "#f7f4f1",
+  bgInset: "#f0ebe6",
+  textPrimary: "#241b2c",
+  textSecondary: "#5e5360",
+  textTertiary: "#8c7f88",
+  accentPrimary: "#a16215",
+  accentFill: "#f59520",
+  accentSecondary: "#58436c",
+  success: "#1d8155",
+  warning: "#856700",
+  error: "#b23a2e",
+} as const;
+
+/** Dark-mode surface/text values. */
+export const DARK = {
+  bgRoot: "#0e0e0f",
+  bgSurface: "#141416",
+  bgElevated: "#191a1c",
+  bgInset: "#0a0a0b",
+  textPrimary: "#f2f2f3",
+  textSecondary: "#b4b4b9",
+  textTertiary: "#7c7c82",
+  accentPrimary: "#f59520",
+  accentFill: "#f59520",
+  accentSecondary: "#a98fc4",
+  success: "#34d399",
+  warning: "#e8b339",
+  error: "#e06a5a",
+} as const;
+
+/**
+ * Dark-theme canvas colors: the health node ramp (`--color-node-*`) and the
+ * caution tone (`--color-caution`) from the `.dark` block. The ramp is deeper
+ * and less saturated than the semantic colors so a field of nodes reads as
+ * pigment rather than light. Dark only; there is no light counterpart here.
+ */
+export const DARK_CANVAS = {
+  nodeAtRisk: "#b0544b",
+  nodeNeedsWork: "#bd7c42",
+  nodeFair: "#a89453",
+  nodeGood: "#42906f",
+  nodeExcellent: "#5cb389",
+  nodeNeutral: "#333336",
+  caution: "#d9b04a",
+} as const;
+
+/**
+ * Dark canvas node color per health band. Keys are the `HealthBand` values
+ * from `@repowise-dev/types` (`bandForScore`), spelled out because this
+ * module stays import-free.
+ */
+export const DARK_CANVAS_BAND = {
+  excellent: DARK_CANVAS.nodeExcellent,
+  good: DARK_CANVAS.nodeGood,
+  fair: DARK_CANVAS.nodeFair,
+  needs_work: DARK_CANVAS.nodeNeedsWork,
+  at_risk: DARK_CANVAS.nodeAtRisk,
+} as const;
+
+/** Signature gradients (CSS gradient strings) for hero/OG canvases. */
+export const GRADIENTS = {
+  sunset: "linear-gradient(135deg, #58436c 0%, #f59520 55%, #f7a94d 100%)",
+  ember: "linear-gradient(135deg, #f59520 0%, #f7a94d 100%)",
+  peach: "linear-gradient(160deg, #ffc4b1 0%, #f59520 100%)",
+  warm: "linear-gradient(135deg, #f59520 0%, #ffd9b0 100%)",
+} as const;

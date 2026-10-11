@@ -1,0 +1,302 @@
+import type {
+  ChatContext,
+  ChatContextKind,
+  ChatSuggestion,
+} from "@repowise-dev/types/chat";
+
+export type {
+  ChatContext,
+  ChatContextKind,
+  ChatContextTargetKind,
+} from "@repowise-dev/types/chat";
+
+export interface ChatContextPresentation {
+  placeholder: string;
+  suggestions: readonly ChatSuggestion[];
+}
+
+/** The copy tables below stay plain strings so they read as copy. This is the
+ *  one place they become the static tier. */
+interface PresentationCopy {
+  placeholder: string;
+  suggestions: readonly string[];
+}
+
+function toPresentation(copy: PresentationCopy): ChatContextPresentation {
+  return {
+    placeholder: copy.placeholder,
+    suggestions: copy.suggestions.map((text) => ({
+      text,
+      source: "static" as const,
+    })),
+  };
+}
+
+// Homomorphic so a partial copy table stays partial: the collection tier
+// deliberately covers only the kinds that read differently without a target.
+function toPresentations<T extends Record<string, PresentationCopy | undefined>>(
+  table: T,
+): { [K in keyof T]: ChatContextPresentation } {
+  return Object.fromEntries(
+    Object.entries(table)
+      .filter((entry): entry is [string, PresentationCopy] => entry[1] !== undefined)
+      .map(([kind, copy]) => [kind, toPresentation(copy)]),
+  ) as { [K in keyof T]: ChatContextPresentation };
+}
+
+const PRESENTATION_COPY: Record<ChatContextKind, PresentationCopy> = {
+  repository: {
+    placeholder: "Ask about this repository, or paste a file path",
+    suggestions: [
+      "Give me an overview of this codebase",
+      "Which files have the worst code health?",
+      "What architectural decisions have been made?",
+      "What dead code can be safely removed?",
+    ],
+  },
+  overview: {
+    placeholder: "Ask about this repository overview",
+    suggestions: [
+      "Explain the main architectural boundaries",
+      "Which parts of this repository deserve attention first?",
+      "Where should a new contributor start?",
+    ],
+  },
+  documentation: {
+    placeholder: "Ask about the documentation on this page",
+    suggestions: [
+      "Explain this section using the source code",
+      "Which source files support this documentation?",
+      "What important details or limitations should I know?",
+    ],
+  },
+  architecture: {
+    placeholder: "Ask about this architecture view",
+    suggestions: [
+      "Explain the main component boundaries",
+      "Which dependencies create the most coupling?",
+      "Trace a request through this architecture",
+    ],
+  },
+  graph: {
+    placeholder: "Ask about relationships in this graph",
+    suggestions: [
+      "Explain the most important relationships shown here",
+      "Which nodes have the widest structural impact?",
+      "What is omitted or capped in this view?",
+    ],
+  },
+  health: {
+    placeholder: "Ask about these code health findings",
+    suggestions: [
+      "Which finding should I address first and why?",
+      "Explain the evidence behind the highest-risk finding",
+      "Propose a safe refactoring sequence",
+    ],
+  },
+  refactoring: {
+    placeholder: "Ask about this repository's refactoring targets",
+    suggestions: [
+      "Turn this into a safe refactoring plan",
+      "Which refactoring opportunity is safest to start with?",
+      "Which refactoring targets affect the most dependents?",
+    ],
+  },
+  file: {
+    placeholder: "Ask about this file",
+    suggestions: [
+      "Explain this file's responsibility",
+      "Who calls into this file and what does it depend on?",
+      "What is risky about changing this file?",
+    ],
+  },
+  symbol: {
+    placeholder: "Ask about this symbol",
+    suggestions: [
+      "Explain what this symbol does",
+      "Show its callers and important dependencies",
+      "What behavior should tests protect here?",
+    ],
+  },
+  module: {
+    placeholder: "Ask about this module",
+    suggestions: [
+      "Explain this module's responsibilities",
+      "Which modules depend on it?",
+      "Where are its highest-risk boundaries?",
+    ],
+  },
+  commit: {
+    placeholder: "Ask about this commit",
+    suggestions: [
+      "Summarize the intent and impact of this commit",
+      "Which files in this change deserve the closest review?",
+      "What tests should validate this change?",
+    ],
+  },
+  contributor: {
+    placeholder: "Ask about this contributor's ownership context",
+    suggestions: [
+      "Summarize this contributor's ownership areas",
+      "Where is knowledge concentrated around their work?",
+      "Which files have the lowest ownership resilience?",
+    ],
+  },
+  decision: {
+    placeholder: "Ask about this architectural decision",
+    suggestions: [
+      "Explain why this decision was made",
+      "Show the evidence and affected code",
+      "Has later work superseded or conflicted with it?",
+    ],
+  },
+  risk: {
+    placeholder: "Ask about the risk evidence on this page",
+    suggestions: [
+      "Explain the highest-risk result in plain language",
+      "Which tests reduce the most uncertainty?",
+      "Propose the safest order for these changes",
+    ],
+  },
+  "dead-code": {
+    placeholder: "Ask about this dead-code result",
+    suggestions: [
+      "Is this safe to remove, and what still reaches it?",
+      "Explain the evidence behind this result",
+      "What should I check before deleting it?",
+    ],
+  },
+  "blast-radius": {
+    placeholder: "Ask about the reach of this change",
+    suggestions: [
+      "What breaks if I change this?",
+      "Which dependents deserve the closest review?",
+      "Which tests cover this reach?",
+    ],
+  },
+  security: {
+    placeholder: "Ask how this repository tracks security evidence",
+    suggestions: [
+      "How does this repository detect and track security findings?",
+      "Explain the evidence without overstating certainty",
+    ],
+  },
+  usage: {
+    // Usage and billing figures live on the page, not behind any chat tool.
+    placeholder: "Ask about this repository (usage figures are on the page)",
+    suggestions: [
+      "Give me an overview of this codebase",
+      "Which files have the worst code health?",
+      "What dead code can be safely removed?",
+    ],
+  },
+  settings: {
+    placeholder: "Ask about this repository configuration",
+    suggestions: [
+      "Explain the settings on this page",
+      "Which settings affect indexing quality?",
+      "What should I verify before changing this configuration?",
+    ],
+  },
+  chat: {
+    placeholder: "Ask a follow-up, or paste a file path",
+    suggestions: [
+      "Give me an overview of this codebase",
+      "Which files have the worst code health?",
+      "Score the change risk of HEAD",
+      "What architectural decisions have been made?",
+    ],
+  },
+};
+
+const COLLECTION_PRESENTATION_COPY: Partial<
+  Record<ChatContextKind, PresentationCopy>
+> = {
+  documentation: {
+    placeholder: "Ask about this repository's documentation",
+    suggestions: [
+      "Which documentation should I read first?",
+      "Where should a new contributor start?",
+    ],
+  },
+  file: {
+    placeholder: "Ask about files in this repository",
+    suggestions: [
+      "Which files are the main entry points?",
+      "Which files have the worst code health?",
+    ],
+  },
+  symbol: {
+    placeholder: "Ask about symbols in this repository",
+    suggestions: [
+      "Which symbols have the widest impact?",
+      "Show the most important public interfaces",
+    ],
+  },
+  module: {
+    placeholder: "Ask about modules in this repository",
+    suggestions: [
+      "Explain the main module boundaries",
+      "Which modules are most tightly coupled?",
+      "Where should a new feature live?",
+    ],
+  },
+  commit: {
+    placeholder: "Ask about repository history",
+    suggestions: [
+      "Review the risk of the latest commit",
+      "Which files have the most bug-fix history?",
+      "Find the history behind an architectural choice",
+    ],
+  },
+  contributor: {
+    placeholder: "Ask about ownership and contributors",
+    suggestions: [
+      "Where is repository knowledge concentrated?",
+      "Which areas have the lowest ownership resilience?",
+      "Who knows the highest-risk files best?",
+    ],
+  },
+  decision: {
+    placeholder: "Ask about architectural decisions",
+    suggestions: [
+      "Summarize the active architectural decisions",
+      "Which decisions affect the most code?",
+      "Find conflicting or superseded decisions",
+    ],
+  },
+};
+
+const PRESENTATIONS = toPresentations(PRESENTATION_COPY);
+const COLLECTION_PRESENTATIONS = toPresentations(COLLECTION_PRESENTATION_COPY);
+
+export function getChatContextPresentation(
+  context?: ChatContext,
+): ChatContextPresentation {
+  if (context && !context.target) {
+    const collectionPresentation = COLLECTION_PRESENTATIONS[context.kind];
+    if (collectionPresentation) return collectionPresentation;
+  }
+  return PRESENTATIONS[context?.kind ?? "repository"];
+}
+
+const LEGACY_ARTIFACT_TYPE_BY_TOOL: Readonly<Record<string, string>> = {
+  get_overview: "overview",
+  get_context: "wiki_page",
+  get_risk: "risk_report",
+  get_change_risk: "risk_report",
+  get_why: "decisions",
+  search_codebase: "search_results",
+  get_dead_code: "dead_code",
+  get_dependency_path: "graph",
+  get_architecture_diagram: "diagram",
+};
+
+/**
+ * Restores artifact affordances for stored conversations whose legacy wire
+ * shape persisted only the tool name and result. Unknown tools deliberately
+ * use the generic renderer so evidence remains inspectable.
+ */
+export function getLegacyChatArtifactType(toolName: string): string {
+  return LEGACY_ARTIFACT_TYPE_BY_TOOL[toolName] ?? "generic";
+}

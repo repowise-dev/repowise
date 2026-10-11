@@ -1,0 +1,140 @@
+; =============================================================================
+; repowise — Kotlin symbol, import, and call queries
+; tree-sitter-kotlin >= 1.0
+; =============================================================================
+
+; ---------------------------------------------------------------------------
+; Symbols
+; ---------------------------------------------------------------------------
+
+(function_declaration
+  (modifiers)? @symbol.modifiers
+  (identifier) @symbol.name
+  (function_value_parameters) @symbol.params
+) @symbol.def
+
+(class_declaration
+  (identifier) @symbol.name
+) @symbol.def
+
+(object_declaration
+  (identifier) @symbol.name
+) @symbol.def
+
+; typealias Foo = Bar (Q2)
+(type_alias
+  (identifier) @symbol.name
+) @symbol.def
+
+; Top-level / class-level val/var properties (Q3) — excludes locals inside functions
+(source_file
+  (property_declaration
+    (variable_declaration
+      (identifier) @symbol.name
+    )
+  ) @symbol.def
+)
+
+(class_body
+  (property_declaration
+    (variable_declaration
+      (identifier) @symbol.name
+    )
+  ) @symbol.def
+)
+
+; ---------------------------------------------------------------------------
+; Imports
+; ---------------------------------------------------------------------------
+
+(import
+  (qualified_identifier) @import.module
+) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple call: foo(args)
+(call_expression
+  (identifier) @call.target
+  (value_arguments) @call.arguments
+) @call.site
+
+; Member call: obj.method(args) — and self-dispatch: this.method(args).
+; See typescript.scm for why ``this`` rides an alternation in the receiver slot
+; instead of a second pattern.
+(call_expression
+  (navigation_expression
+    [(identifier) (this_expression)] @call.receiver
+    (identifier) @call.target
+  )
+  (value_arguments) @call.arguments
+) @call.site
+
+; ---------------------------------------------------------------------------
+; Callable references — a function named without being called
+; ---------------------------------------------------------------------------
+; The operator is matched literally because the installed grammar gives
+; ``Foo::bar`` and ``Foo.bar`` the same node shape, and the token is the only
+; thing separating them. ``::`` also precedes a property (``Foo::name``) and
+; the reserved ``::class``; neither is filtered here, because the symbol kind
+; settles it at resolution and no symbol is ever named ``class``.
+
+; Qualified: list.map(Foo::bar), register(A::process)
+(navigation_expression
+  (identifier) @reference.receiver
+  "::"
+  (identifier) @reference.name
+)
+
+; Bound to the enclosing instance: val f = this::handle
+(navigation_expression
+  (this_expression) @reference.receiver
+  "::"
+  (identifier) @reference.name
+)
+
+; Unqualified: list.map(::transform). Also catches a qualified spelling whose
+; receiver the grammar parsed as a type rather than an expression, which then
+; arrives receiver-less and so reaches only top-level functions. A ceiling in
+; the safe direction: it costs an edge, it cannot invent one.
+(callable_reference
+  (identifier) @reference.name
+)
+
+; ---------------------------------------------------------------------------
+; Type references — drive file-level ``type_use`` edges
+; ---------------------------------------------------------------------------
+; Kotlin types appear in primary-ctor positions (``class Foo(val x: Bar)``),
+; function parameter / return positions, and property declarations — none
+; of which carry an import statement of their own. The single
+; ``@param.type`` capture is reused across languages
+; (see parser._extract_type_refs); the Kotlin head extractor in
+; lang_helpers/type_heads.py unwraps ``Foo?`` / ``List<Foo>`` / dotted ``ns.Foo`` and
+; filters the kotlin-stdlib ubiquitous types.
+
+; Function parameter: fun f(x: Bar) — `(user_type)` and `(nullable_type)`
+; cover Foo and Foo?.
+(parameter (user_type) @param.type)
+(parameter (nullable_type) @param.type)
+
+; Primary-constructor parameter: class Foo(val b: Bar, c: Baz?)
+(class_parameter (user_type) @param.type)
+(class_parameter (nullable_type) @param.type)
+
+; Property type annotation: val p: Bar = TODO()
+(variable_declaration (user_type) @param.type)
+(variable_declaration (nullable_type) @param.type)
+
+; Function / property return type
+(function_declaration (user_type) @param.type)
+(function_declaration (nullable_type) @param.type)
+
+; Class heritage / interface implementation: class Foo : Bar, IBaz
+(delegation_specifier (user_type) @param.type)
+
+; Generic type arguments — inside ``Map<String, Foo>`` the inner
+; ``user_type`` for Foo is wrapped in ``type_projection``.
+(type_projection (user_type) @param.type)
+(type_projection (nullable_type) @param.type)

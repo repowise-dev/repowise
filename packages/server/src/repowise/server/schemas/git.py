@@ -1,0 +1,460 @@
+"""Git-intelligence response models."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel
+
+from repowise.core.co_change import parse_partners
+from repowise.server.schemas.risk_semantics import RiskAuthority
+
+
+class GitMetadataResponse(BaseModel):
+    file_path: str
+    commit_count_total: int
+    commit_count_90d: int
+    commit_count_30d: int
+    first_commit_at: datetime | None
+    last_commit_at: datetime | None
+    primary_owner_name: str | None
+    primary_owner_email: str | None
+    primary_owner_commit_pct: float | None
+    # The primary (blame) owner's share of current lines; None without blame.
+    primary_owner_line_pct: float | None = None
+    recent_owner_name: str | None
+    recent_owner_commit_pct: float | None
+    top_authors: list[dict]
+    significant_commits: list[dict]
+    co_change_partners: list[dict]
+    is_hotspot: bool
+    is_stable: bool
+    churn_percentile: float
+    age_days: int
+    bus_factor: int
+    contributor_count: int
+    lines_added_90d: int
+    lines_deleted_90d: int
+    avg_commit_size: float
+    commit_categories: dict
+    merge_commit_count_90d: int
+    # Change-complexity + defect-history signals (computed every index, newly
+    # surfaced). change_entropy_pct is normalized 0-100 like churn_percentile.
+    change_entropy: float = 0.0
+    change_entropy_pct: float = 0.0
+    prior_defect_count: int = 0
+    # Fix-event rollup. ``fix_symbol_counts`` maps WikiSymbol.symbol_id to how
+    # many counted fixes landed in that symbol, so a caller holding this row can
+    # answer "was THIS function bug-fixed?" without a second request.
+    # ``last_fix_at`` travels with it because a fix count without recency reads
+    # the same at two weeks and two years. Empty/None on a pre-rollup index.
+    fix_symbol_counts: dict = {}
+    bug_magnet: bool = False
+    last_fix_at: datetime | None = None
+    temporal_hotspot_score: float | None = None
+    commit_count_capped: bool = False
+    # Rename lineage: the file's path before its most recent move, if any.
+    original_path: str | None = None
+    test_gap: bool | None = None
+    # Agent-provenance rollup: share of the file's indexed commits that are
+    # agent-attributed (deterministic local-git channels), with the autonomy-
+    # tier breakdown ({"1": n, "2": n, "3": n}). agent_authored_pct is None
+    # for rows persisted before the provenance-aware index ran.
+    agent_commit_count: int = 0
+    agent_authored_pct: float | None = None
+    agent_tier_counts: dict = {}
+
+    @classmethod
+    def from_orm(cls, obj: object) -> GitMetadataResponse:
+        return cls(
+            file_path=obj.file_path,  # type: ignore[attr-defined]
+            commit_count_total=obj.commit_count_total,  # type: ignore[attr-defined]
+            commit_count_90d=obj.commit_count_90d,  # type: ignore[attr-defined]
+            commit_count_30d=obj.commit_count_30d,  # type: ignore[attr-defined]
+            first_commit_at=obj.first_commit_at,  # type: ignore[attr-defined]
+            last_commit_at=obj.last_commit_at,  # type: ignore[attr-defined]
+            primary_owner_name=obj.primary_owner_name,  # type: ignore[attr-defined]
+            primary_owner_email=obj.primary_owner_email,  # type: ignore[attr-defined]
+            primary_owner_commit_pct=obj.primary_owner_commit_pct,  # type: ignore[attr-defined]
+            primary_owner_line_pct=getattr(obj, "primary_owner_line_pct", None),
+            recent_owner_name=obj.recent_owner_name,  # type: ignore[attr-defined]
+            recent_owner_commit_pct=obj.recent_owner_commit_pct,  # type: ignore[attr-defined]
+            top_authors=json.loads(obj.top_authors_json),  # type: ignore[attr-defined]
+            significant_commits=json.loads(obj.significant_commits_json),  # type: ignore[attr-defined]
+            co_change_partners=[
+                p.record
+                for p in parse_partners(obj.co_change_partners_json)  # type: ignore[attr-defined]
+            ],
+            is_hotspot=obj.is_hotspot,  # type: ignore[attr-defined]
+            is_stable=obj.is_stable,  # type: ignore[attr-defined]
+            # Normalize 0-1 -> 0-100 to match the rest of the HTTP API.
+            churn_percentile=(obj.churn_percentile or 0.0) * 100.0,  # type: ignore[attr-defined]
+            age_days=obj.age_days,  # type: ignore[attr-defined]
+            bus_factor=obj.bus_factor or 0,  # type: ignore[attr-defined]
+            contributor_count=obj.contributor_count or 0,  # type: ignore[attr-defined]
+            lines_added_90d=obj.lines_added_90d or 0,  # type: ignore[attr-defined]
+            lines_deleted_90d=obj.lines_deleted_90d or 0,  # type: ignore[attr-defined]
+            avg_commit_size=obj.avg_commit_size or 0.0,  # type: ignore[attr-defined]
+            commit_categories=json.loads(obj.commit_categories_json)
+            if obj.commit_categories_json
+            else {},  # type: ignore[attr-defined]
+            merge_commit_count_90d=obj.merge_commit_count_90d or 0,  # type: ignore[attr-defined]
+            change_entropy=obj.change_entropy or 0.0,  # type: ignore[attr-defined]
+            # Normalize 0-1 -> 0-100 to match churn_percentile's contract.
+            change_entropy_pct=(obj.change_entropy_pct or 0.0) * 100.0,  # type: ignore[attr-defined]
+            prior_defect_count=obj.prior_defect_count or 0,  # type: ignore[attr-defined]
+            fix_symbol_counts=json.loads(getattr(obj, "fix_symbol_counts_json", None) or "{}"),
+            bug_magnet=bool(getattr(obj, "bug_magnet", False)),
+            last_fix_at=getattr(obj, "last_fix_at", None),
+            temporal_hotspot_score=obj.temporal_hotspot_score,  # type: ignore[attr-defined]
+            commit_count_capped=bool(obj.commit_count_capped),  # type: ignore[attr-defined]
+            original_path=obj.original_path,  # type: ignore[attr-defined]
+            agent_commit_count=getattr(obj, "agent_commit_count", 0) or 0,
+            agent_authored_pct=getattr(obj, "agent_authored_pct", None),
+            agent_tier_counts=json.loads(getattr(obj, "agent_tier_counts_json", None) or "{}"),
+        )
+
+
+class HotspotResponse(BaseModel):
+    file_path: str
+    commit_count_total: int = 0
+    commit_count_90d: int
+    commit_count_30d: int
+    churn_percentile: float
+    temporal_hotspot_score: float | None = None
+    primary_owner: str | None
+    primary_owner_commit_pct: float | None = None
+    recent_owner_name: str | None = None
+    recent_owner_commit_pct: float | None = None
+    is_hotspot: bool
+    is_stable: bool
+    bus_factor: int
+    contributor_count: int
+    lines_added_90d: int
+    lines_deleted_90d: int
+    avg_commit_size: float
+    commit_categories: dict
+    merge_commit_count_90d: int = 0
+    commit_count_capped: bool = False
+    age_days: int = 0
+    last_commit_at: datetime | None = None
+    # Change-complexity + defect-history signals.
+    change_entropy: float = 0.0
+    change_entropy_pct: float = 0.0
+    prior_defect_count: int = 0
+    # ``last_fix_at`` travels with ``bug_magnet`` because a magnet flag with no
+    # age describes "fixed 4x last month" and "fixed 4x two years ago"
+    # identically. Consumers drop the flag when the timestamp is missing.
+    bug_magnet: bool = False
+    last_fix_at: datetime | None = None
+    original_path: str | None = None
+
+
+class OwnershipEntry(BaseModel):
+    module_path: str
+    primary_owner: str | None
+    owner_pct: float | None
+    file_count: int
+    is_silo: bool
+
+
+class GitSummaryResponse(BaseModel):
+    total_files: int
+    hotspot_count: int
+    stable_count: int
+    average_churn_percentile: float
+    top_owners: list[dict]
+
+
+class CommitResponse(BaseModel):
+    """One per-commit row from the ``git_commits`` table.
+
+    Carries the stored raw change-risk plus a **repo-relative** normalization
+    (``risk_percentile`` + ``review_priority``). The raw ``change_risk_level``
+    is the absolute calibration band — kept for transparency but de-emphasized
+    in the UI, because it skews high on repos with large typical commits. The
+    review-priority queue ranks on ``risk_percentile`` instead.
+    """
+
+    sha: str
+    short_sha: str
+    author_name: str
+    author_email: str
+    committed_at: datetime | None
+    subject: str
+    lines_added: int
+    lines_deleted: int
+    files_changed: int
+    dirs_changed: int
+    subsystems_changed: int
+    entropy: float
+    is_fix: bool
+    #: Supporting 0-10 calibrated diff-size/spread score; not a probability.
+    change_risk_score: float | None
+    #: Absolute per-commit compatibility band; prefer ``review_priority``.
+    change_risk_level: str | None
+    # Repo-relative normalization (the portable signal).
+    #: Repo-relative percentile rank, 0-100.
+    risk_percentile: float
+    #: Authoritative repo-relative review-priority tercile.
+    review_priority: str
+    # The dominant risk driver, surfaced on rows so reviewers don't have to
+    # open every detail sheet. Recomputed deterministically from the stored
+    # Kamei features; None when the commit was never risk-scored.
+    top_driver: str | None = None
+    # Cumulative prior-commit count at commit time, counted over the indexed
+    # history. A change-risk feature, so it is reported as-is; it is not a
+    # verdict on the author, since the window's oldest commits necessarily
+    # start everyone near zero.
+    author_experience: int | None = None
+    # How many commits this author has in the indexed history, total. Unlike
+    # author_experience this does not depend on where in the window the commit
+    # sits, which is what makes it safe to draw a "new contributor" conclusion
+    # from. Identities are folded, so noreply variants of one person count once.
+    author_commit_count: int | None = None
+    # Agent provenance (deterministic local-git attribution channels).
+    # agent_name is None for human-authored commits.
+    agent_name: str | None = None
+    agent_autonomy_tier: int | None = None
+    agent_confidence: str | None = None
+
+
+class RiskDriverResponse(BaseModel):
+    """One feature's signed contribution to a commit's change-risk logit."""
+
+    feature: str
+    value: float | None
+    contribution: float
+    label: str
+
+
+class CommitHealthFindingResponse(BaseModel):
+    """One thing a commit introduced or worsened."""
+
+    change_kind: str
+    dimension: str
+    biomarker_type: str
+    severity: str
+    #: Only set on ``worsened``: what the severity was before the commit.
+    severity_before: str | None = None
+    path: str
+    symbol: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    #: How directly the commit is responsible, from ``added_lines`` down to
+    #: ``unknown``. Lets a reader separate what a change wrote from what it
+    #: merely touched.
+    attribution_basis: str
+    reason: str
+
+
+class CommitHealthResponse(BaseModel):
+    """What a commit did to code health, as computed at index time.
+
+    Absent on the commit, rather than empty, when the commit was never
+    scanned — the scan is bounded, so older commits routinely have no row and
+    that is not the same claim as "changed nothing".
+    """
+
+    #: ``available`` when every changed file was compared, ``partial`` when
+    #: some were skipped (unsupported language, binary, unreadable).
+    status: str
+    introduced_count: int
+    worsened_count: int
+    resolved_count: int
+    files_analyzed: int
+    files_skipped: int
+    #: Worst first, capped. ``introduced_count + worsened_count`` is the true
+    #: total, so a shorter list means the rest was not stored.
+    findings: list[CommitHealthFindingResponse] = []
+
+
+class CommitDetailResponse(CommitResponse):
+    """A single commit with its full, attributable risk-driver breakdown."""
+
+    drivers: list[RiskDriverResponse] = []
+    agent_channel: str | None = None
+    #: Files this commit touched, biggest churn first. Empty on an index
+    #: written before per-commit files were captured — re-index to fill it.
+    files: list[CommitFileResponse] = []
+    #: What the commit did to health. ``None`` when it was never scanned.
+    health: CommitHealthResponse | None = None
+
+
+class AgentTrendBucket(BaseModel):
+    """One month of agent-vs-human commit volume."""
+
+    month: str  # "YYYY-MM"
+    total_commits: int
+    agent_commits: int
+    agent_pct: float  # 0-100
+    tier_counts: dict = {}
+
+
+class AgentTrendResponse(BaseModel):
+    """Monthly agent-share trend across the indexed commit window."""
+
+    buckets: list[AgentTrendBucket]
+    total_commits: int
+    agent_commits: int
+    agent_pct: float  # 0-100 across the whole window
+    agent_names: list[dict] = []  # [{name, count}] descending
+
+
+class CommitEvolutionBucket(BaseModel):
+    """One time bucket of commit-category counts for the Code Evolution timeline.
+
+    ``counts`` keys are drawn from
+    :data:`repowise.core.ingestion.git_indexer._constants.EVOLUTION_CATEGORIES`;
+    a category is omitted when its count is zero in this bucket.
+    """
+
+    period: str  # "YYYY-MM" (monthly) or "YYYY-Wnn" (weekly)
+    start: str  # ISO date of the bucket's first day, for axis ordering/tooltips
+    total: int
+    counts: dict[str, int] = {}
+
+
+class CommitEvolutionResponse(BaseModel):
+    """Commit-category mix over time — the repo's development "story arc".
+
+    Each commit is classified into exactly one category (feature/fix/refactor/
+    docs/test/deps/chore/other) from its subject and bucketed by ``granularity``.
+    The UI renders ``buckets`` as a stacked area (share or volume).
+    """
+
+    buckets: list[CommitEvolutionBucket]
+    categories: list[str]  # categories present across the window, in canonical order
+    totals: dict[str, int] = {}  # window-wide count per category
+    total_commits: int
+    granularity: str  # "month" | "week"
+    first_commit_at: str | None = None
+    last_commit_at: str | None = None
+
+
+class ChangeFeaturesResponse(BaseModel):
+    """The Kamei change-shape features the risk model scores."""
+
+    la: int
+    ld: int
+    nf: int
+    nd: int
+    ns: int
+    entropy: float
+    exp: int | None
+
+
+class CommitFileResponse(BaseModel):
+    """One file a commit touched, with what it cost and what it carries."""
+
+    path: str
+    lines_added: int
+    lines_deleted: int
+    #: Bug-fix commits recorded against this path. ``None`` when the file is no
+    #: longer tracked, which is not the same claim as "never fixed".
+    prior_fixes: int | None = None
+
+
+class FixHistoryFileResponse(BaseModel):
+    """One changed file's recency-weighted bug-fix record."""
+
+    path: str
+    churn: int
+    fix_pressure: float
+
+
+class FixHistoryResponse(BaseModel):
+    """Bug-fix history of the files a change touches.
+
+    The size-orthogonal half of the answer: unlike ``score``, none of this grows
+    with the diff. ``density`` is the churn-weighted mean fix pressure of the
+    touched files; ``percentile`` ranks it against the same measure over the
+    repository's own recent commits, and is ``None`` when there is no sample to
+    rank against.
+    """
+
+    #: False when the history walk could not run — distinguishes "no fixes
+    #: here" from "we could not look".
+    available: bool
+    density: float
+    percentile: float | None
+    files: list[FixHistoryFileResponse]
+
+
+class RiskRangeResponse(BaseModel):
+    """Change-risk report for a live ``base..head`` git range.
+
+    Scored on demand from the working tree rather than the indexed commit
+    table, so it works for ranges that haven't been indexed yet (an open PR
+    branch). Mirrors ``repowise risk <base>..<head> --format json`` field for
+    field.
+    """
+
+    base: str
+    head: str
+    #: Separate historical evidence about where the change lands; it is not
+    #: folded into the authoritative percentile/classification.
+    fix_history: FixHistoryResponse
+    risk_authority: RiskAuthority
+    score: float
+    #: What ``score`` measures. It tracks diff size and spread, not danger.
+    score_measures: str
+    #: The unit ``score`` is calibrated on. A range is several commits' worth
+    #: of diff, so it reads high against a single-commit scale.
+    score_unit: str
+    risk_percentile: float | None
+    review_priority: str | None
+    classification: str | None
+    #: Absolute model-score band, present only when there was no baseline to
+    #: rank against — so it is not a peer of ``review_priority``.
+    fallback_band: str | None
+    is_fix: bool
+    features: ChangeFeaturesResponse
+    drivers: list[RiskDriverResponse]
+
+
+class RiskHistogramBucket(BaseModel):
+    """One bin of the repo's supporting 0-10 diff-shape score distribution."""
+
+    start: float  # bin lower bound on the 0-10 raw score axis (inclusive)
+    end: float  # bin upper bound (exclusive, except the final bin)
+    count: int  # commits whose stored score falls in the bin
+
+
+class CommitStatsResponse(BaseModel):
+    """Repo-wide commit aggregates for the commits-page headline stat cards.
+
+    Computed over **all** indexed commits, not the loaded page — the paginated
+    feed only returns a window, so client-side reductions over it under-count
+    (e.g. a risk-sorted first page is all top-tercile). These are the honest
+    totals for the whole repository.
+    """
+
+    total_commits: int
+    high_priority_count: int  # commits in the repo-relative top risk tercile
+    fix_commit_count: int  # subjects classified as bug-fixes
+    agent_commit_count: int  # agent-attributed commits
+    avg_entropy: float  # mean change-diffusion across all commits
+
+    # The distribution behind the tercile banding. Binned on the *raw* score
+    # rather than the percentile, because percentile ranks are uniform by
+    # construction — only the raw axis has a shape worth drawing.
+    risk_histogram: list[RiskHistogramBucket] = []
+    moderate_cut: float | None = None  # raw score at the low/moderate boundary
+    high_cut: float | None = None  # raw score at the moderate/high boundary
+
+
+class CoChangeResponse(BaseModel):
+    """Files that historically change together with one file.
+
+    Partners are the verbatim persisted records, not a projection: the
+    indexer writes fields this layer does not model, and a closed row model
+    would drop them.
+    """
+
+    file_path: str
+    co_change_partners: list[dict[str, Any]] = []
+    #: Partners meeting ``min_count`` shared commits.
+    total: int = 0

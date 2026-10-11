@@ -1,0 +1,48 @@
+{
+ "repo": "slim",
+ "smells": [],
+ "stats": {
+  "by_language": {
+   "php": {
+    "edges_per_file": 4.3,
+    "files": 125,
+    "import_edges": 537,
+    "import_support": "full",
+    "orphan_files": 6,
+    "orphan_ratio": 0.048,
+    "resolution_rate": 0.546
+   }
+  },
+  "dominant_language": "php",
+  "entry_points": [
+   "Slim/App.php"
+  ],
+  "modules": {
+   "count": 6,
+   "max_size": 55,
+   "min_size": 4,
+   "names": [
+    "API",
+    "Application",
+    "Config",
+    "Middleware",
+    "Test",
+    "Types"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "Slim/App.php",
+   "Slim/Interfaces/CallableResolverInterface.php",
+   "Slim/Interfaces/RouteCollectorInterface.php",
+   "Slim/Interfaces/RouteResolverInterface.php",
+   "Slim/Interfaces/MiddlewareDispatcherInterface.php",
+   "Slim/Middleware/RoutingMiddleware.php",
+   "Slim/Routing/RouteResolver.php",
+   "Slim/Routing/RouteCollectorProxy.php",
+   "Slim/Middleware/BodyParsingMiddleware.php",
+   "Slim/Handlers/Strategies/RequestResponse.php",
+   "tests/AppTest.php"
+  ]
+ }
+}

@@ -1,0 +1,595 @@
+"""C4 diagram builder service.
+
+Public API
+----------
+``build_l1(session, repo)`` returns System Context (system + external systems).
+``build_l2(session, repo)`` returns Container view + cross-container edges
+    + edges to external systems.
+``build_l3(session, repo, container_id)`` returns Component view for one
+    container + its in/out edges to other containers and external systems.
+
+All three reuse the same persisted graph (``graph_nodes``, ``graph_edges``)
+and the ``external_systems`` table populated during ingestion. No on-disk
+re-scan is performed at request time; only the L1 system description reads
+the root manifest and README.
+"""
+
+from __future__ import annotations
+
+import json
+from collections import defaultdict
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from repowise.core.analysis.c4.actors import derive_actors
+from repowise.core.exclusion import is_excluded
+from repowise.core.ids import ExternalSystemId, SystemId, file_path_of, parse, render
+from repowise.core.ingestion.workspace_members import root_description
+from repowise.core.persistence import ExternalSystem, Repository
+from repowise.core.persistence.crud import (
+    code_file_rows,
+    get_kg_layers,
+    get_kg_project_meta,
+    get_kg_tour_steps,
+)
+from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
+from repowise.core.support_paths import is_support_path
+from repowise.core.test_paths import is_test_related_path
+
+from .components import detect_components, detect_components_for_all
+from .containers import container_id, detect_containers
+from .models import (
+    C4L1,
+    C4L2,
+    C4L3,
+    C4Model,
+    Component,
+    Container,
+    ExternalSystemView,
+    Person,
+    Relation,
+    System,
+    TourStep,
+)
+from .relations import aggregate_relations, external_node_to_system_id, load_edges
+from .signals import build_box_signals, count_box_signals
+
+__all__ = [
+    "C4L1",
+    "C4L2",
+    "C4L3",
+    "C4Model",
+    "Component",
+    "Container",
+    "ExternalSystemView",
+    "Person",
+    "Relation",
+    "System",
+    "build_architecture_view",
+    "build_l1",
+    "build_l2",
+    "build_l3",
+    "build_model",
+    "container_dependencies",
+    "container_id",
+    "load_repo",
+]
+
+
+async def load_repo(session: AsyncSession, repo_id: str) -> Repository | None:
+    result = await session.execute(select(Repository).where(Repository.id == repo_id))
+    return result.scalar_one_or_none()
+
+
+#: What a System Context shows: runtime services and frameworks. Libraries
+#: and tools are implementation detail and stay on L2/L3.
+_CONTEXT_CATEGORIES = ("service", "framework")
+
+
+async def _external_views(
+    session: AsyncSession, repo_id: str, *, context_only: bool = False
+) -> tuple[list[ExternalSystemView], dict[str, str]]:
+    """Return the deduplicated list of ExternalSystemView (one per name) and
+    a map from each name → ``ext:<name>`` id.
+
+    Multi-manifest deps collapse: we pick the highest-category entry
+    (framework > service > tool > library) so the UI shows the most
+    interesting label. ``context_only`` keeps the non-dev service and
+    framework rows an L1 shows, declared by the system itself rather than
+    its tests, examples or docs site.
+    """
+    query = select(ExternalSystem).where(ExternalSystem.repository_id == repo_id)
+    if context_only:
+        query = query.where(
+            ExternalSystem.is_dev_dep.is_(False),
+            ExternalSystem.category.in_(_CONTEXT_CATEGORIES),
+        )
+    result = await session.execute(query)
+    rows = list(result.scalars())
+    if context_only:
+        rows = [
+            r for r in rows
+            if not (is_support_path(r.declared_in) or is_test_related_path(r.declared_in))
+        ]
+    priority = {"framework": 3, "service": 2, "tool": 1, "library": 0}
+    by_name: dict[str, ExternalSystem] = {}
+    for row in rows:
+        prev = by_name.get(row.name)
+        if prev is None or priority.get(row.category, 0) > priority.get(prev.category, 0):
+            by_name[row.name] = row
+
+    views: list[ExternalSystemView] = []
+    name_to_id: dict[str, str] = {}
+    for name in sorted(by_name):
+        row = by_name[name]
+        view_id = render(ExternalSystemId(name))
+        views.append(
+            ExternalSystemView(
+                id=view_id,
+                name=name,
+                display_name=row.display_name or name,
+                category=row.category,
+                ecosystem=row.ecosystem,
+                version=row.version,
+                io_kind=row.io_kind,
+            )
+        )
+        name_to_id[name] = view_id
+    return views, name_to_id
+
+
+def _is_external_box(box_id: str) -> bool:
+    """True if a relation endpoint is an external-system box rather than ours."""
+    return isinstance(parse(box_id), ExternalSystemId)
+
+
+def _system_for(repo: Repository | None, repo_id: str) -> System:
+    if repo is None:
+        return System(id=render(SystemId(repo_id)), name=repo_id)
+    return System(
+        id=render(SystemId(repo.id)),
+        name=repo.name,
+        description=_system_description(repo.local_path),
+    )
+
+
+def _system_description(local_path: str | None) -> str:
+    """The root manifest's description, else the README's first prose paragraph."""
+    if not local_path:
+        return ""
+    root = Path(local_path)
+    text = root_description(root)
+    if text:
+        return text
+    # Lazy: the generation package is heavy to import for one file read.
+    from repowise.core.generation.context.readme_digest import readme_opening
+
+    return readme_opening(root)
+
+
+# ---------------------------------------------------------------------------
+# Builders
+# ---------------------------------------------------------------------------
+
+
+async def _actors_for(
+    session: AsyncSession, repo_id: str, system: System
+) -> tuple[list[Person], list[Relation]]:
+    """The actor set and its edges into the system.
+
+    The two travel together on purpose. A person with no edge to the system is
+    an orphan: Structurizr's context view includes the system plus what is
+    related to it, so an unconnected actor is simply not drawn, and the batched
+    build used to produce exactly that by deriving the people alone.
+
+    Actors are derived from how the system is actually entered (CLI user, API
+    client, scheduled job …) rather than a lone hardcoded "User".
+    """
+    actors = derive_actors(await _curated_entry_points(session, repo_id))
+    people = [
+        Person(id=a.id, name=a.name, description=a.description, kind=a.kind) for a in actors
+    ]
+    relations = [Relation(source_id=a.id, target_id=system.id, label=a.verb) for a in actors]
+    return people, relations
+
+
+async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
+    repo = await load_repo(session, repo_id)
+    system = _system_for(repo, repo_id)
+    externals, _ = await _external_views(session, repo_id, context_only=True)
+
+    people, relations = await _actors_for(session, repo_id, system)
+    for ext in externals:
+        relations.append(
+            Relation(source_id=system.id, target_id=ext.id, label=ext.category)
+        )
+    return C4L1(
+        system=system,
+        people=people,
+        external_systems=externals,
+        relations=relations,
+    )
+
+
+async def build_l2(
+    session: AsyncSession, repo_id: str, *, include_co_changes: bool = False
+) -> C4L2:
+    """Container view; ``include_co_changes`` overlays co-change relations."""
+    repo = await load_repo(session, repo_id)
+    containers = await _detect_containers(session, repo_id, repo)
+    externals, _ = await _external_views(session, repo_id)
+
+    file_to_container = await _file_to_container_map(session, repo_id, containers)
+    file_to_external = await external_node_to_system_id(session, repo_id)
+
+    containers = await _annotate_container_signals(
+        session, repo_id, containers, file_to_container
+    )
+
+    relations = await aggregate_relations(
+        session,
+        repo_id,
+        file_to_box=file_to_container,
+        file_to_external=file_to_external,
+        include_co_changes=include_co_changes,
+    )
+
+    # Only surface externals actually depended on by at least one container.
+    used_external_ids = {r.target_id for r in relations if _is_external_box(r.target_id)}
+    pruned_externals = [e for e in externals if e.id in used_external_ids]
+    return C4L2(containers=containers, external_systems=pruned_externals, relations=relations)
+
+
+async def container_dependencies(
+    session: AsyncSession, repo_id: str, *, exclude_spec: Any = None
+) -> tuple[list[Container], list[Relation]]:
+    """Containers and the relations between them: :func:`build_l2`'s boxes and
+    roll-up, without externals or box signals.
+
+    Files matching *exclude_spec* map to no box, so their edges never land.
+    """
+    repo = await load_repo(session, repo_id)
+    containers = await _detect_containers(session, repo_id, repo)
+    file_to_container = {
+        path: box
+        for path, box in (await _file_to_container_map(session, repo_id, containers)).items()
+        if not is_excluded(path, exclude_spec)
+    }
+    relations = await aggregate_relations(session, repo_id, file_to_box=file_to_container)
+    return containers, relations
+
+
+async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str) -> C4L3 | None:
+    """Return L3 view for one container, or ``None`` if it doesn't exist."""
+    repo = await load_repo(session, repo_id)
+    containers = await _detect_containers(session, repo_id, repo)
+    container = next((c for c in containers if c.id == container_id_value), None)
+    if container is None:
+        return None
+
+    # Files owned by sibling containers must not be re-bucketed as this
+    # container's components (matters for a root/catch-all container).
+    sibling_roots = [c.path for c in containers if c.id != container.id and c.path]
+    components, in_container_index = await detect_components(
+        session,
+        repo_id,
+        container.path,
+        sibling_roots=sibling_roots,
+    )
+
+    # Annotate the focused container with its hotspot / dead-code counts so the
+    # header card matches what L2 shows.
+    full_file_to_container = await _file_to_container_map(session, repo_id, containers)
+    container = (
+        await _annotate_container_signals(
+            session, repo_id, [container], full_file_to_container
+        )
+    )[0]
+
+    # Files outside this container map to their owning container so cross-
+    # container edges show as component → other-container. Built from the
+    # all-container map so a root ("") container, which matches every path,
+    # cannot claim this container's files; component mappings go on last.
+    file_to_box: dict[str, str] = {
+        path: cid for path, cid in full_file_to_container.items() if cid != container.id
+    }
+    file_to_box.update(in_container_index)
+
+    file_to_external = await external_node_to_system_id(session, repo_id)
+    relations = await aggregate_relations(
+        session,
+        repo_id,
+        file_to_box=file_to_box,
+        file_to_external=file_to_external,
+    )
+
+    relevant_box_ids = {c.id for c in components} | {container.id}
+    relations = [
+        r for r in relations
+        if r.source_id in relevant_box_ids or r.target_id in relevant_box_ids
+    ]
+
+    externals_all, _ = await _external_views(session, repo_id)
+    used_external_ids = {r.target_id for r in relations if _is_external_box(r.target_id)}
+    used_external_ids |= {r.source_id for r in relations if _is_external_box(r.source_id)}
+    externals = [e for e in externals_all if e.id in used_external_ids]
+
+    return C4L3(
+        container=container,
+        components=components,
+        external_systems=externals,
+        relations=relations,
+    )
+
+
+async def build_model(
+    session: AsyncSession, repo_id: str, *, include_components: bool = True
+) -> C4Model:
+    """Build every C4 level in one pass, for callers that need the whole model.
+
+    ``build_l3`` re-reads the graph per container, which is correct for a
+    dashboard showing one at a time and quadratic-feeling for anything walking
+    all of them. Here the file table and the edge table are each read once and
+    sliced in Python.
+
+    Set ``include_components=False`` to stop after containers — the component
+    level is the expensive half and an export may not want it.
+    """
+    repo = await load_repo(session, repo_id)
+    system = _system_for(repo, repo_id)
+    containers = await _detect_containers(session, repo_id, repo)
+    externals_all, _ = await _external_views(session, repo_id)
+
+    people, actor_relations = await _actors_for(session, repo_id, system)
+
+    file_to_container = await _file_to_container_map(session, repo_id, containers)
+    file_to_external = await external_node_to_system_id(session, repo_id)
+    containers = await _annotate_container_signals(
+        session, repo_id, containers, file_to_container
+    )
+
+    edges = await load_edges(session, repo_id)
+    container_relations = await aggregate_relations(
+        session,
+        repo_id,
+        file_to_box=file_to_container,
+        file_to_external=file_to_external,
+        edges=edges,
+    )
+
+    components_by_container: dict[str, list[Component]] = {}
+    component_relations: list[Relation] = []
+    file_to_component: dict[str, str] = {}
+    if include_components:
+        detected = await detect_components_for_all(session, repo_id, containers)
+        for cid, (components, file_index) in detected.items():
+            components_by_container[cid] = components
+            file_to_component.update(file_index)
+        component_relations = await aggregate_relations(
+            session,
+            repo_id,
+            file_to_box=file_to_component,
+            file_to_external=file_to_external,
+            edges=edges,
+        )
+
+    # An external nobody depends on is noise in every view that shows it.
+    used = {r.target_id for r in container_relations if _is_external_box(r.target_id)}
+    used |= {r.source_id for r in container_relations if _is_external_box(r.source_id)}
+    used |= {r.target_id for r in component_relations if _is_external_box(r.target_id)}
+    used |= {r.source_id for r in component_relations if _is_external_box(r.source_id)}
+    externals = [e for e in externals_all if e.id in used]
+
+    # Every per-file signal is read once here and rolled up to both levels, so
+    # the metadata costs a fixed number of queries rather than one per box.
+    per_file = await _per_file_signals(session, repo_id)
+    box_signals = build_box_signals(file_to_container, **per_file)
+    if file_to_component:
+        box_signals.update(build_box_signals(file_to_component, **per_file))
+
+    return C4Model(
+        system=system,
+        people=people,
+        containers=containers,
+        components_by_container=components_by_container,
+        external_systems=externals,
+        container_relations=container_relations,
+        component_relations=component_relations,
+        actor_relations=actor_relations,
+        box_signals=box_signals,
+        tour=await _tour_steps(session, repo_id),
+    )
+
+
+async def _per_file_signals(session: AsyncSession, repo_id: str) -> dict[str, dict]:
+    """Read the per-file health, ownership and layer sources, once each."""
+    git_rows = (
+        await session.execute(
+            select(
+                GitMetadata.file_path,
+                GitMetadata.is_hotspot,
+                GitMetadata.primary_owner_name,
+                GitMetadata.bus_factor,
+            ).where(code_file_rows(repo_id))
+        )
+    ).all()
+    hotspot_paths = [row[0] for row in git_rows if row[1]]
+    file_owners = {row[0]: row[2] for row in git_rows if row[2]}
+    # A real bus factor is at least 1 — the indexer seeds the column with 0 and
+    # only overwrites it for files that have commit history, so 0 means "not
+    # known". Emitting it would read as "nobody owns this", which is a much
+    # louder claim than the gap it actually is.
+    file_bus_factors = {row[0]: row[3] for row in git_rows if row[3]}
+
+    dead_paths = [
+        row[0]
+        for row in (
+            await session.execute(
+                select(DeadCodeFinding.file_path).where(
+                    DeadCodeFinding.repository_id == repo_id,
+                    DeadCodeFinding.status == "open",
+                    DeadCodeFinding.kind == "unreachable_file",
+                )
+            )
+        ).all()
+    ]
+
+    # Layer membership is curated per file; a box inherits the layers of the
+    # files it holds. Layer node ids carry the KG "file:" prefix, the graph
+    # does not, so they are converted rather than compared raw.
+    file_layers: dict[str, str] = {}
+    for layer in await get_kg_layers(session, repo_id):
+        try:
+            node_ids = json.loads(layer.node_ids_json or "[]")
+        except (ValueError, TypeError):
+            continue
+        # Only a decode failure was guarded, but a column holding a valid JSON
+        # string or object parses fine and then iterates: a bare `"abc"` would
+        # yield the file paths "a", "b", "c", and an object its keys.
+        if not isinstance(node_ids, list):
+            continue
+        for node_id in node_ids:
+            path = file_path_of(str(node_id))
+            if path:
+                file_layers.setdefault(path, layer.name)
+
+    return {
+        "hotspot_paths": hotspot_paths,
+        "dead_paths": dead_paths,
+        "file_layers": file_layers,
+        "file_owners": file_owners,
+        "file_bus_factors": file_bus_factors,
+        # No git metadata at all means churn was never measured — every
+        # indexed repo with history has rows here. Without this an
+        # index-only run would report every box as hotspot-free.
+        "churn_measured": bool(git_rows),
+    }
+
+
+async def _tour_steps(session: AsyncSession, repo_id: str) -> list[TourStep]:
+    """The curated reading order, if this repo has one."""
+    layer_names = {
+        layer.layer_id: layer.name for layer in await get_kg_layers(session, repo_id)
+    }
+    steps = await get_kg_tour_steps(session, repo_id)
+    return [
+        TourStep(
+            order=step.step_order,
+            title=step.title,
+            description=step.description or "",
+            reason=step.reason or "",
+            target_path=step.target_path,
+            layer_name=layer_names.get(step.layer_id or ""),
+        )
+        for step in sorted(steps, key=lambda s: s.step_order)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _detect_containers(
+    session: AsyncSession, repo_id: str, repo: Repository | None
+) -> list[Container]:
+    return await detect_containers(
+        session,
+        repo_id,
+        root_name=repo.name if repo else None,
+        local_path=repo.local_path if repo else None,
+    )
+
+
+async def _curated_entry_points(session: AsyncSession, repo_id: str) -> list[str]:
+    """Return the curated entry-point paths persisted at index time.
+
+    These are the ranked, cleaned execution starts (Phase 1) — not the raw
+    ingestion ``is_entry_point`` flags, which still include shallow barrels and
+    test/example paths. Candidacy drops configs and deep glue leaves at
+    ingestion now; the curator owns the layer/support and barrel exclusions
+    that need a layer map or parsed files.
+    """
+    project_meta = await get_kg_project_meta(session, repo_id)
+    if not project_meta:
+        return []
+    try:
+        return list(json.loads(project_meta.entry_points_json or "[]"))
+    except (ValueError, TypeError):
+        return []
+
+
+async def _annotate_container_signals(
+    session: AsyncSession,
+    repo_id: str,
+    containers: list[Container],
+    file_to_container: dict[str, str],
+) -> list[Container]:
+    """Populate each container's ``hotspot_count`` / ``dead_count`` from the
+    persisted git-metadata hotspots and open unreachable-file findings."""
+    hotspot_paths = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(GitMetadata.file_path).where(
+                    GitMetadata.repository_id == repo_id,
+                    GitMetadata.is_hotspot.is_(True),
+                )
+            )
+        ).all()
+    }
+    dead_paths = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(DeadCodeFinding.file_path).where(
+                    DeadCodeFinding.repository_id == repo_id,
+                    DeadCodeFinding.status == "open",
+                    DeadCodeFinding.kind == "unreachable_file",
+                )
+            )
+        ).all()
+    }
+    counts = count_box_signals(file_to_container, hotspot_paths, dead_paths)
+    annotated: list[Container] = []
+    for c in containers:
+        hot, dead = counts.get(c.id, (0, 0))
+        annotated.append(replace(c, hotspot_count=hot, dead_count=dead))
+    return annotated
+
+
+async def _file_to_container_map(
+    session: AsyncSession,
+    repo_id: str,
+    containers: list[Container],
+) -> dict[str, str]:
+    """Map every file path to its owning container id, longest-prefix wins."""
+    from repowise.core.persistence import GraphNode
+
+    result = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
+            # External / unresolved-import targets are not source files.
+            ~GraphNode.node_id.like("external:%"),
+        )
+    )
+    paths = [row[0] for row in result.all()]
+    sorted_containers = sorted(containers, key=lambda c: len(c.path), reverse=True)
+    out: dict[str, str] = {}
+    bucket: dict[str, list[str]] = defaultdict(list)
+    for path in paths:
+        for c in sorted_containers:
+            if not c.path:
+                bucket[c.id].append(path)
+                out[path] = c.id
+                break
+            if path == c.path or path.startswith(c.path + "/"):
+                bucket[c.id].append(path)
+                out[path] = c.id
+                break
+    return out

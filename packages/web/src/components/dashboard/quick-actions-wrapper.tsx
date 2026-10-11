@@ -1,0 +1,176 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import {
+  QuickActions as QuickActionsShell,
+  DEFAULT_QUICK_ACTIONS,
+  type CostPer1k,
+  type QuickActionKey,
+} from "@repowise-dev/ui/dashboard/quick-actions";
+import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
+import { listJobs } from "@/lib/api/jobs";
+import { analyzeDeadCode } from "@/lib/api/dead-code";
+import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
+
+interface Props {
+  repoId: string;
+  repoName?: string;
+  pageCount?: number;
+  modelName?: string;
+  costPer1k?: CostPer1k | null;
+  lastSyncAt?: string | null;
+  lastResyncAt?: string | null;
+  /** Button arrangement — see `QuickActionsProps.variant`. Overview passes
+   *  `header` so sync is the one primary action. */
+  variant?: "row" | "header";
+}
+
+/** Human label for an action key, for toast copy. */
+function labelFor(key: QuickActionKey): string {
+  return DEFAULT_QUICK_ACTIONS.find((a) => a.key === key)?.label ?? key;
+}
+
+export function QuickActionsWrapper({
+  repoId,
+  repoName,
+  pageCount = 0,
+  modelName = "",
+  costPer1k,
+  lastSyncAt,
+  lastResyncAt,
+  variant,
+}: Props) {
+  const t = useTranslations("dashboard");
+  const router = useRouter();
+  /** Action labels in the active locale, for toast copy. */
+  const actionLabel = (key: QuickActionKey): string =>
+    key === "sync"
+      ? t("quickActions.sync")
+      : key === "resync"
+        ? t("quickActions.resync")
+        : key === "dead-code"
+          ? t("quickActions.deadCode")
+          : labelFor(key);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  // Which action started the job on screen, so its completion can be reported
+  // and refreshed in its own terms rather than as a generic doc generation.
+  const [activeKey, setActiveKey] = useState<QuickActionKey | null>(null);
+
+  // Hydrate from any in-flight job so refreshes don't lose progress visibility.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [running, pending] = await Promise.all([
+          listJobs({ repo_id: repoId, status: "running", limit: 1 }),
+          listJobs({ repo_id: repoId, status: "pending", limit: 1 }),
+        ]);
+        if (cancelled) return;
+        const inflight = running[0] ?? pending[0];
+        if (inflight) setActiveJobId(inflight.id);
+      } catch {
+        // best-effort
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId]);
+
+  function startWatching(jobId: string, key: QuickActionKey | null) {
+    setActiveJobId(jobId);
+    setActiveKey(key);
+  }
+
+  function handleJobDone(status: "completed" | "failed" | "cancelled") {
+    const key = activeKey;
+    setActiveJobId(null);
+    setActiveKey(null);
+    if (key === "dead-code") {
+      if (status === "completed") toast.success(t("quickActions.deadCodeFinished"));
+      else if (status === "failed") toast.error(t("quickActions.deadCodeFailed"));
+    }
+    // This page is server-rendered: without a refresh the "Dead Exports" tile
+    // the scan exists to move keeps showing its pre-scan number, and the same
+    // goes for every stat a sync, re-index or bulk generate just changed.
+    if (status === "completed") router.refresh();
+  }
+
+  async function handleAction(key: QuickActionKey) {
+    try {
+      if (key === "sync") {
+        const job = await syncRepo(repoId);
+        startWatching(job.id, key);
+        toast.info(
+          t("quickActions.syncStarted", {
+            name: repoName ? ` — ${repoName}` : "",
+          }),
+        );
+      } else if (key === "resync") {
+        const job = await fullResyncRepo(repoId);
+        startWatching(job.id, key);
+        toast.info(
+          t("quickActions.resyncStarted", {
+            name: repoName ? ` — ${repoName}` : "",
+          }),
+        );
+      } else if (key === "dead-code") {
+        const { job_id } = await analyzeDeadCode(repoId);
+        startWatching(job_id, key);
+        toast.info(t("quickActions.deadCodeStarted"));
+      }
+    } catch (e) {
+      const msg = toFriendlyMessage(e);
+      if (/already in progress/i.test(msg)) {
+        try {
+          const [running, pending] = await Promise.all([
+            listJobs({ repo_id: repoId, status: "running", limit: 1 }),
+            listJobs({ repo_id: repoId, status: "pending", limit: 1 }),
+          ]);
+          const inflight = running[0] ?? pending[0];
+          if (inflight) {
+            // Someone else's job: watch it, but do not claim it as this action.
+            startWatching(inflight.id, null);
+            toast.info(t("quickActions.inFlight"));
+            return;
+          }
+        } catch {
+          // fall through
+        }
+      }
+      toast.error(t("quickActions.actionFailed", { action: actionLabel(key) }), {
+        description: msg,
+      });
+    }
+  }
+
+  const activeSlot = activeJobId ? (
+    <GenerationProgressWrapper
+      jobId={activeJobId}
+      repoName={repoName}
+      // A dead-code scan runs the index-only pipeline, so the generic
+      // "Documentation updated - 0 pages generated" toast would describe it
+      // wrongly. It reports itself below instead.
+      quiet={activeKey === "dead-code"}
+      onDone={handleJobDone}
+    />
+  ) : null;
+
+  return (
+    <QuickActionsShell
+      actions={DEFAULT_QUICK_ACTIONS}
+      onAction={handleAction}
+      lastSyncAt={lastSyncAt}
+      lastResyncAt={lastResyncAt}
+      pageCount={pageCount}
+      modelName={modelName}
+      costPer1k={costPer1k}
+      activeJobSlot={activeSlot}
+      variant={variant}
+    />
+  );
+}

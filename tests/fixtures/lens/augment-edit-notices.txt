@@ -1,0 +1,3 @@
+[repowise] src/core/auth.py is governed by a standing decision: Use JWT auth because session cookies broke the mobile clients (confirmed across 2 sessions).
+[repowise] src/core/parser.py has a decision recorded in it, mined but not reviewed: Keep the parser allocation-free because reuse the buffer.
+[repowise] src/core/pipeline.py has been bug-fixed 5x in the last 6 months, last 2 weeks ago (bug magnet); mostly in run_pipeline.

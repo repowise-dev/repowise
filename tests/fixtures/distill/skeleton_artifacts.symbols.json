@@ -1,0 +1,110 @@
+{
+  "file_path": "packages/ui/src/chat/artifacts.tsx",
+  "pinned_commit": "4dc36271d1a91125df977de200d4a5b5e1cf1b8a",
+  "symbols": [
+    {
+      "name": "StatRow",
+      "kind": "function",
+      "signature": "function StatRow({ label, value }: { label: string; value: React.ReactNode })",
+      "start_line": 42,
+      "end_line": 51,
+      "pagerank": 0.00010408759789114238
+    },
+    {
+      "name": "SectionTitle",
+      "kind": "function",
+      "signature": "function SectionTitle({\r\n  icon: Icon,\r\n  children,\r\n}: {\r\n  icon: React.ComponentType<{ className?: string }>;\r\n  children: React.ReactNode;\r\n})",
+      "start_line": 53,
+      "end_line": 66,
+      "pagerank": 0.0002378230601578749
+    },
+    {
+      "name": "FilePathChip",
+      "kind": "function",
+      "signature": "function FilePathChip({ path }: { path: string })",
+      "start_line": 68,
+      "end_line": 77,
+      "pagerank": 8.625620292224473e-05
+    },
+    {
+      "name": "OverviewRenderer",
+      "kind": "function",
+      "signature": "function OverviewRenderer({ data }: { data: OverviewArtifactData })",
+      "start_line": 83,
+      "end_line": 139,
+      "pagerank": 6.259485891679677e-05
+    },
+    {
+      "name": "ContextRenderer",
+      "kind": "function",
+      "signature": "function ContextRenderer({ data }: { data: ContextArtifactData })",
+      "start_line": 145,
+      "end_line": 173,
+      "pagerank": 6.259485891679677e-05
+    },
+    {
+      "name": "RiskReportRenderer",
+      "kind": "function",
+      "signature": "function RiskReportRenderer({ data }: { data: RiskReportArtifactData })",
+      "start_line": 179,
+      "end_line": 232,
+      "pagerank": 6.259485891679677e-05
+    },
+    {
+      "name": "SearchResultsRenderer",
+      "kind": "function",
+      "signature": "function SearchResultsRenderer({\r\n  data,\r\n}: {\r\n  data: SearchResultsArtifactData;\r\n})",
+      "start_line": 238,
+      "end_line": 282,
+      "pagerank": 6.259485891679677e-05
+    },
+    {
+      "name": "GraphPathRenderer",
+      "kind": "function",
+      "signature": "function GraphPathRenderer({ data }: { data: GraphPathArtifactData })",
+      "start_line": 288,
+      "end_line": 323,
+      "pagerank": 6.259485891679677e-05
+    },
+    {
+      "name": "DecisionsRenderer",
+      "kind": "function",
+      "signature": "function DecisionsRenderer({ data }: { data: DecisionsArtifactData })",
+      "start_line": 329,
+      "end_line": 417,
+      "pagerank": 6.259485891679677e-05
+    },
+    {
+      "name": "DeadCodeRenderer",
+      "kind": "function",
+      "signature": "function DeadCodeRenderer({ data }: { data: DeadCodeArtifactData })",
+      "start_line": 423,
+      "end_line": 460,
+      "pagerank": 6.259485891679677e-05
+    },
+    {
+      "name": "DeadCodeRow",
+      "kind": "function",
+      "signature": "function DeadCodeRow({\r\n  finding,\r\n  showLines = false,\r\n}: {\r\n  finding: {\r\n    file_path: string;\r\n    symbol_name?: string | null;\r\n    kind: string;\r\n    confidence: number;\r\n    reason: string;\r\n    lines?: number;\r\n    safe_to_delete?: boolean;\r\n  };\r\n  showLines?: boolean;\r\n})",
+      "start_line": 462,
+      "end_line": 499,
+      "pagerank": 6.842480795334707e-05
+    },
+    {
+      "name": "DiagramRenderer",
+      "kind": "function",
+      "signature": "function DiagramRenderer({ data }: { data: DiagramArtifactData })",
+      "start_line": 505,
+      "end_line": 523,
+      "pagerank": 6.259485891679677e-05
+    },
+    {
+      "name": "GenericJsonRenderer",
+      "kind": "function",
+      "signature": "function GenericJsonRenderer({\r\n  data,\r\n}: {\r\n  data: Record<string, unknown>;\r\n})",
+      "start_line": 529,
+      "end_line": 539,
+      "pagerank": 6.259485891679677e-05
+    }
+  ]
+}

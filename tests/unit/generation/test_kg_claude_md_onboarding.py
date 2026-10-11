@@ -1,0 +1,299 @@
+"""Tests for KG-enriched CLAUDE.md and onboarding pages (Phase 10)."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+from jinja2 import Environment, FileSystemLoader
+
+from repowise.core.generation.editor_files.data import (
+    EditorFileData,
+    KGLayerSummary,
+    KGTourStepSummary,
+)
+from repowise.core.generation.kg_context import KnowledgeGraphContext
+from repowise.core.generation.onboarding.signals import OnboardingSignals
+from repowise.core.generation.onboarding.subkinds.how_it_works import (
+    HowItWorksContext,
+    _build,
+)
+
+# ---------------------------------------------------------------------------
+# Template helpers
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_DIR = (
+    Path(__file__).resolve().parents[3]
+    / "packages"
+    / "core"
+    / "src"
+    / "repowise"
+    / "core"
+    / "generation"
+    / "templates"
+)
+
+
+@pytest.fixture
+def jinja_env():
+    return Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)))
+
+
+@pytest.fixture
+def onboarding_env():
+    return Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR / "onboarding")))
+
+
+# ---------------------------------------------------------------------------
+# CLAUDE.md template tests
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeMdKGSection:
+    """The workflow-first CLAUDE.md deliberately omits the KG layers table and
+    guided tour (onboarding material an agent doing a task never used — it
+    lives in get_overview). Key modules render as a compact list."""
+
+    def _data(self, **kwargs):
+        return EditorFileData(
+            repo_name="test",
+            indexed_at="2026-05-25",
+            indexed_commit="abc123",
+            architecture_summary="",
+            **kwargs,
+        )
+
+    def test_layers_are_not_rendered(self, jinja_env):
+        tmpl = jinja_env.get_template("claude_md.j2")
+        data = self._data(
+            kg_layers=[
+                KGLayerSummary(name="CLI", file_count=10, description="Command-line interface"),
+            ]
+        )
+        rendered = tmpl.render(data=data)
+        assert "Architectural Layers" not in rendered
+
+    def test_tour_is_not_rendered(self, jinja_env):
+        tmpl = jinja_env.get_template("claude_md.j2")
+        data = self._data(
+            kg_tour=[
+                KGTourStepSummary(
+                    order=1,
+                    title="Entry Point",
+                    primary_file="src/main.py",
+                    reason="An entry point — execution starts here.",
+                ),
+            ]
+        )
+        rendered = tmpl.render(data=data)
+        assert "Guided Tour" not in rendered
+
+    def test_key_modules_render_as_list(self, jinja_env):
+        from repowise.core.generation.editor_files.data import KeyModule
+
+        tmpl = jinja_env.get_template("claude_md.j2")
+        data = self._data(
+            key_modules=[
+                KeyModule(name="src/api", purpose="API layer", file_count=4, owner=None),
+                KeyModule(name="src/core", purpose="", file_count=9, owner=None),
+            ]
+        )
+        rendered = tmpl.render(data=data)
+        assert "### Key modules" in rendered
+        assert "- `src/api` — API layer" in rendered
+        # No purpose → no dangling separator.
+        assert "- `src/core`\n" in rendered
+
+    def test_workflow_protocol_leads(self, jinja_env):
+        tmpl = jinja_env.get_template("claude_md.j2")
+        rendered = tmpl.render(data=self._data())
+        assert "### How to work in this repo" in rendered
+        # The trust rule survives as a bullet rather than its own section. The
+        # separate "### Trust protocol" heading was five bullets of protocol for
+        # a response shape the agent sees rarely, and it was cut for size; the
+        # load-bearing clause is what has to stay reachable.
+        assert "`verified: true`" in rendered
+        assert "never re-read them" in rendered
+        # `confidence` rates the prose; a low grade points at the evidence the
+        # reply already named rather than at a second round-trip.
+        assert "`candidate_files` the reply names" in rendered
+        # An empty call-graph list is never served without the basis beside it.
+        assert "`*_basis`" in rendered
+        # Pre-edit framing: the mandatory Read of edit targets is conceded.
+        assert "raw Read of any file you will Edit" in rendered
+        # The tool table renders from the single-source module.
+        assert "| Tool | When and why |" in rendered
+        assert "`get_answer(question)`" in rendered
+        # Protocol comes before the repo-facts data blocks. Anchored on the
+        # trust rule rather than on the first heading in the file, which would
+        # be ordered correctly by construction and could not fail.
+        if "Entry points" in rendered:
+            assert rendered.index("`verified: true`") < rendered.index("Entry points")
+
+
+# ---------------------------------------------------------------------------
+# OnboardingSignals tests
+# ---------------------------------------------------------------------------
+
+
+class TestOnboardingSignalsKG:
+    def test_signals_carry_kg_data(self):
+        signals = OnboardingSignals(
+            repo_name="test",
+            repo_structure=MagicMock(),
+            parsed_files=(),
+            source_map={},
+            graph_builder=MagicMock(),
+            pagerank={},
+            betweenness={},
+            community={},
+            sccs=(),
+            kg_layers=({"name": "Core", "nodeIds": ["file:a.py"]},),
+            kg_tour_steps=({"order": 1, "title": "Start", "nodeIds": ["file:a.py"]},),
+        )
+        assert len(signals.kg_layers) == 1
+        assert len(signals.kg_tour_steps) == 1
+
+    def test_signals_default_empty(self):
+        signals = OnboardingSignals(
+            repo_name="test",
+            repo_structure=MagicMock(),
+            parsed_files=(),
+            source_map={},
+            graph_builder=MagicMock(),
+            pagerank={},
+            betweenness={},
+            community={},
+            sccs=(),
+        )
+        assert signals.kg_layers == ()
+        assert signals.kg_tour_steps == ()
+
+
+# ---------------------------------------------------------------------------
+# HowItWorks + tour steps tests
+# ---------------------------------------------------------------------------
+
+
+class TestHowItWorksWithTour:
+    def test_tour_steps_in_context(self):
+        ctx = HowItWorksContext(
+            repo_name="test",
+            archetype="service",
+            kg_tour_steps=[
+                {
+                    "order": 1,
+                    "title": "Entry",
+                    "description": "Start here",
+                    "nodeIds": ["file:src/main.py"],
+                },
+            ],
+        )
+        assert len(ctx.kg_tour_steps) == 1
+
+    def test_template_renders_tour(self, onboarding_env):
+        tmpl = onboarding_env.get_template("how_it_works.j2")
+        ctx = HowItWorksContext(
+            repo_name="test",
+            archetype="service",
+            archetype_evidence=["framework detected"],
+            kg_tour_steps=[
+                {
+                    "order": 1,
+                    "title": "Entry Point",
+                    "description": "Start here",
+                    "nodeIds": ["file:src/main.py"],
+                },
+                {
+                    "order": 2,
+                    "title": "Processing",
+                    "description": "Core logic",
+                    "nodeIds": ["file:src/process.py"],
+                },
+            ],
+        )
+        rendered = tmpl.render(ctx=ctx)
+        assert "## Guided Tour Steps" in rendered
+        assert "Step 1: Entry Point" in rendered
+        assert "`src/main.py`" in rendered
+        assert "Step 2: Processing" in rendered
+
+    def test_template_no_tour_no_flows(self, onboarding_env):
+        tmpl = onboarding_env.get_template("how_it_works.j2")
+        ctx = HowItWorksContext(
+            repo_name="test",
+            archetype="module",
+            archetype_evidence=[],
+        )
+        rendered = tmpl.render(ctx=ctx)
+        assert "Guided Tour Steps" not in rendered
+        assert "No multi-hop execution flow was detected" in rendered
+
+    def test_build_gate_passes_with_tour_only(self):
+        signals = OnboardingSignals(
+            repo_name="test",
+            repo_structure=MagicMock(entry_points=[]),
+            parsed_files=(),
+            source_map={},
+            graph_builder=MagicMock(execution_flows=MagicMock(return_value=None)),
+            pagerank={},
+            betweenness={},
+            community={},
+            sccs=(),
+            external_systems=(),
+            kg_tour_steps=({"order": 1, "title": "Start", "nodeIds": ["file:a.py"]},),
+        )
+        ctx = _build(signals)
+        assert ctx is not None
+        assert len(ctx.kg_tour_steps) == 1
+
+    def test_build_gate_fails_module_no_tour_no_flows(self):
+        repo_structure = MagicMock(entry_points=[], packages=[])
+        signals = OnboardingSignals(
+            repo_name="test",
+            repo_structure=repo_structure,
+            parsed_files=(),
+            source_map={},
+            graph_builder=MagicMock(execution_flows=MagicMock(return_value=None)),
+            pagerank={},
+            betweenness={},
+            community={},
+            sccs=(),
+            external_systems=(),
+        )
+        ctx = _build(signals)
+        assert ctx is None
+
+
+# ---------------------------------------------------------------------------
+# KnowledgeGraphContext.get_tour() tests
+# ---------------------------------------------------------------------------
+
+
+class TestKGContextGetTour:
+    def test_get_tour_returns_tour(self, tmp_path):
+        kg = {
+            "nodes": [{"filePath": "a.py"}],
+            "layers": [],
+            "tour": [
+                {"order": 1, "title": "Start", "nodeIds": ["file:a.py"]},
+                {"order": 2, "title": "Next", "nodeIds": ["file:a.py"]},
+            ],
+            "edges": [],
+        }
+        (tmp_path / "a.py").touch()
+        kg_dir = tmp_path / ".repowise"
+        kg_dir.mkdir()
+        kg_path = kg_dir / "knowledge-graph.json"
+        kg_path.write_text(json.dumps(kg))
+        ctx = KnowledgeGraphContext(kg_path)
+        tour = ctx.get_tour()
+        assert len(tour) == 2
+        assert tour[0]["title"] == "Start"
+
+    def test_get_tour_unavailable(self):
+        ctx = KnowledgeGraphContext(None)
+        assert ctx.get_tour() == []

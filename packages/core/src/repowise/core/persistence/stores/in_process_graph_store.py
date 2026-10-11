@@ -1,0 +1,224 @@
+"""InProcessGraphStore — default :class:`GraphStore` implementation.
+
+Wraps a :class:`networkx.DiGraph` and computes metrics with NetworkX
+algorithms. This matches what the ingestion pipeline does today via
+:class:`repowise.core.ingestion.graph.GraphBuilder`; the GraphBuilder
+continues to be the entry point for the file-aware build logic
+(import resolution, heritage, calls), and an ``InProcessGraphStore``
+can be constructed from a finished builder to expose its graph through
+the pluggable contract::
+
+    builder = GraphBuilder(repo_path)
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+    store = InProcessGraphStore.from_graph(builder._graph)
+
+A future phase replaces this with a SQL-backed materialised view so the
+in-memory graph can be dropped after build; that work fits underneath
+the same ABC by swapping the implementation.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import networkx as nx
+
+from .._interfaces.graph_store import GraphStore
+
+
+class InProcessGraphStore(GraphStore):
+    """In-memory :class:`GraphStore` backed by a NetworkX DiGraph."""
+
+    def __init__(self, graph: nx.DiGraph | None = None) -> None:
+        self._graph: nx.DiGraph = graph if graph is not None else nx.DiGraph()
+        self._built = False
+        self._pagerank_cache: dict[str, float] | None = None
+        self._betweenness_cache: dict[str, float] | None = None
+        self._communities_cache: dict[str, int] | None = None
+
+    @classmethod
+    def from_graph(cls, graph: nx.DiGraph) -> InProcessGraphStore:
+        """Adopt an existing DiGraph (e.g. one produced by ``GraphBuilder``)."""
+        return cls(graph)
+
+    @property
+    def graph(self) -> nx.DiGraph:
+        """Expose the underlying graph for callers that need NetworkX APIs."""
+        return self._graph
+
+    # ------------------------------------------------------------------
+    # Mutation
+    # ------------------------------------------------------------------
+
+    def add_node(self, node_id: str, **attrs: Any) -> None:
+        self._graph.add_node(node_id, **attrs)
+        self._invalidate()
+
+    def add_edge(self, source: str, target: str, **attrs: Any) -> None:
+        self._graph.add_edge(source, target, **attrs)
+        self._invalidate()
+
+    def has_node(self, node_id: str) -> bool:
+        return node_id in self._graph
+
+    def has_edge(self, source: str, target: str) -> bool:
+        return self._graph.has_edge(source, target)
+
+    def remove_node(self, node_id: str) -> None:
+        if node_id in self._graph:
+            self._graph.remove_node(node_id)
+            self._invalidate()
+
+    def remove_edge(self, source: str, target: str) -> None:
+        if self._graph.has_edge(source, target):
+            self._graph.remove_edge(source, target)
+            self._invalidate()
+
+    # ------------------------------------------------------------------
+    # Finalisation
+    # ------------------------------------------------------------------
+
+    def build(self) -> None:
+        self._built = True
+        # Metric caches are filled lazily on first read.
+
+    # ------------------------------------------------------------------
+    # Inspection
+    # ------------------------------------------------------------------
+
+    def node_count(self) -> int:
+        return self._graph.number_of_nodes()
+
+    def edge_count(self) -> int:
+        return self._graph.number_of_edges()
+
+    def get_node_attrs(self, node_id: str) -> dict[str, Any] | None:
+        if node_id not in self._graph:
+            return None
+        return dict(self._graph.nodes[node_id])
+
+    def neighbors(self, node_id: str, *, direction: str = "out") -> list[str]:
+        if node_id not in self._graph:
+            return []
+        if direction == "out":
+            return list(self._graph.successors(node_id))
+        if direction == "in":
+            return list(self._graph.predecessors(node_id))
+        if direction == "both":
+            return list(
+                set(self._graph.successors(node_id))
+                | set(self._graph.predecessors(node_id))
+            )
+        raise ValueError(f"direction must be 'out' | 'in' | 'both', got {direction!r}")
+
+    # ------------------------------------------------------------------
+    # Metrics
+    # ------------------------------------------------------------------
+
+    def pagerank(self) -> dict[str, float]:
+        if self._pagerank_cache is None:
+            file_subgraph = self._centrality_subgraph()
+            if file_subgraph.number_of_nodes() == 0:
+                self._pagerank_cache = {}
+            else:
+                self._pagerank_cache = nx.pagerank(file_subgraph)
+        return dict(self._pagerank_cache)
+
+    def betweenness_centrality(self) -> dict[str, float]:
+        if self._betweenness_cache is None:
+            file_subgraph = self._centrality_subgraph()
+            if file_subgraph.number_of_nodes() == 0:
+                self._betweenness_cache = {}
+            else:
+                self._betweenness_cache = nx.betweenness_centrality(file_subgraph)
+        return dict(self._betweenness_cache)
+
+    def communities(self) -> dict[str, int]:
+        if self._communities_cache is None:
+            file_subgraph = self._file_subgraph().to_undirected()
+            mapping: dict[str, int] = {}
+            if file_subgraph.number_of_nodes():
+                # Use NetworkX's greedy modularity communities: no external
+                # dependency, fine quality at this graph size. Deterministic
+                # only for a fixed node order, which the graph does not
+                # guarantee, so sort the result before numbering it.
+                from networkx.algorithms.community import greedy_modularity_communities
+
+                components = sorted(
+                    (sorted(members) for members in greedy_modularity_communities(file_subgraph)),
+                    key=lambda members: (-len(members), members[0] if members else ""),
+                )
+                for cid, members in enumerate(components):
+                    for node in members:
+                        mapping[node] = cid
+            self._communities_cache = mapping
+        return dict(self._communities_cache)
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _invalidate(self) -> None:
+        self._built = False
+        self._pagerank_cache = None
+        self._betweenness_cache = None
+        self._communities_cache = None
+
+    def _file_subgraph(self) -> nx.DiGraph:
+        """Return the subgraph restricted to file-level nodes.
+
+        Symbol nodes are excluded from file-centric metrics so PageRank
+        reflects module-level importance rather than per-function frequency.
+
+        Kept in step with :meth:`GraphBuilder.file_subgraph`, the other
+        implementation of this same rule: ``external`` nodes are file-level
+        too, and ``co_changes`` is history rather than code, so leaving it in
+        makes every co-change partner contribute PageRank as though it were an
+        import. This body previously claimed to match the builder while doing
+        neither, and only the absence of a production call site kept that from
+        being a live defect — the two would have scored different centrality
+        for one graph.
+
+        That parity covers :meth:`pagerank` and :meth:`betweenness_centrality`,
+        which both sides compute over it minus test-to-test edges. It does *not*
+        make :meth:`communities` agree with the pipeline: that path runs
+        ``detect_file_communities``, which excludes ``external`` deliberately,
+        allowlists ``FILE_DEPENDENCY_EDGE_TYPES`` rather than denying temporal
+        edges, and clusters with Leiden instead of greedy modularity. Only the
+        subgraph rule is shared.
+
+        The import is function-local on purpose: ``ingestion/__init__`` eagerly
+        pulls the tree-sitter parser stack, and ``stores/__init__`` is imported
+        by the job-store path, so a module-level import would make
+        ``repowise upgrade`` load a parser to read a ledger. The two existing
+        persistence → ingestion imports are local for the same reason.
+        """
+        from ...ingestion.models import TEMPORAL_EDGE_TYPES
+
+        file_nodes = [
+            n
+            for n, attrs in self._graph.nodes(data=True)
+            if attrs.get("node_type", "file") in ("file", "external")
+        ]
+        sub = self._graph.subgraph(file_nodes).copy()
+        sub.remove_edges_from(
+            [
+                (u, v)
+                for u, v, attrs in sub.edges(data=True)
+                if attrs.get("edge_type") in TEMPORAL_EDGE_TYPES
+            ]
+        )
+        return sub
+
+    def _centrality_subgraph(self) -> nx.DiGraph:
+        """:meth:`_file_subgraph` minus test-to-test edges, as ``GraphBuilder.centrality_subgraph``."""
+        from ...ingestion.graph._metrics import is_test_to_test_edge
+
+        sub = self._file_subgraph()
+        sub.remove_edges_from([(u, v) for u, v in sub.edges() if is_test_to_test_edge(sub, u, v)])
+        return sub
+
+
+__all__ = ["InProcessGraphStore"]

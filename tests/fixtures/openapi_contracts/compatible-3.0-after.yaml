@@ -1,0 +1,34 @@
+openapi: 3.0.4
+info: {title: Orders, version: '2'}
+paths:
+  /orders:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OrderCreate'}
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+components:
+  schemas:
+    OrderCreate:
+      type: object
+      required: [sku]
+      properties:
+        sku: {type: string}
+        priority: {type: string, enum: [standard, express, bulk]}
+        note: {type: string, nullable: true}
+        coupon: {type: string}
+    Order:
+      type: object
+      required: [id, status]
+      properties:
+        id: {type: string}
+        status: {type: string, enum: [pending]}
+        note: {type: string}
+        traceId: {type: string}

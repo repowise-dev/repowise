@@ -1,0 +1,287 @@
+"""Onboarding subkind: How It Works.
+
+The page that turns the static architecture into a movie — one end-to-end
+trace through the system. The content adapts to repo archetype:
+
+- service / app   → "when a request hits /api/X, here's what happens"
+- library         → "when a consumer calls the public API, here's what runs"
+- CLI tool        → "when you run `tool build`, here's what happens"
+- pipeline        → "input becomes output, phase by phase"
+- module          → generic fallback for utility collections
+
+Gate: at least one execution flow with ≥ 3 hops *or* a detectable
+non-trivial archetype. Skip flat utility-collection repos with no clear
+flow.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal
+
+import structlog
+
+from ...entry_points import orientation_entry_points
+from ..registry import SubkindSpec, register
+from ..signals import OnboardingSignals, file_layer_map
+from ..slots import SLOT_HOW_IT_WORKS, SLOT_TITLES
+
+log = structlog.get_logger(__name__)
+
+Archetype = Literal["service", "cli", "library", "pipeline", "module"]
+
+_MIN_TRACE_HOPS = 3
+_TOP_FLOWS = 3
+_FLOW_CANDIDATE_LIMIT = 24
+_TRACE_DISPLAY_HOPS = 8
+
+# Framework hints by ecosystem — anything matching tilts the archetype.
+_SERVICE_FRAMEWORK_HINTS: frozenset[str] = frozenset(
+    {
+        "fastapi",
+        "flask",
+        "starlette",
+        "django",
+        "uvicorn",
+        "gunicorn",
+        "express",
+        "koa",
+        "hapi",
+        "nestjs",
+        "Microsoft.AspNetCore",
+        "Microsoft.AspNetCore.App",
+        "actix-web",
+        "axum",
+        "rocket",
+        "gin",
+        "echo",
+        "fiber",
+        "spring-boot",
+        "spring-webmvc",
+    }
+)
+_CLI_FRAMEWORK_HINTS: frozenset[str] = frozenset(
+    {
+        "click",
+        "typer",
+        "argparse",
+        "fire",
+        "commander",
+        "yargs",
+        "oclif",
+        "cobra",
+        "urfave/cli",
+        "clap",
+        "structopt",
+    }
+)
+_PIPELINE_HINTS: frozenset[str] = frozenset(
+    {
+        "celery",
+        "airflow",
+        "prefect",
+        "dagster",
+        "apache-beam",
+        "kafka",
+        "rabbitmq",
+    }
+)
+
+
+@dataclass
+class FlowTrace:
+    entry_point: str
+    hops: list[str] = field(default_factory=list)
+    score: float = 0.0
+    lifecycle_breadth: int = 0
+
+
+@dataclass
+class HowItWorksContext:
+    repo_name: str
+    archetype: Archetype
+    archetype_evidence: list[str] = field(default_factory=list)
+    flows: list[FlowTrace] = field(default_factory=list)
+    entry_points: list[str] = field(default_factory=list)
+    kg_tour_steps: list[dict] = field(default_factory=list)
+
+
+def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str]]:
+    """Return the most-likely archetype plus the evidence backing it.
+
+    Heuristic, not authoritative — the LLM is told to treat this as a hint.
+    """
+    evidence: list[str] = []
+    dep_names = {str(s.get("name", "")) for s in signals.external_systems}
+
+    service_hits = dep_names & _SERVICE_FRAMEWORK_HINTS
+    cli_hits = dep_names & _CLI_FRAMEWORK_HINTS
+    pipeline_hits = dep_names & _PIPELINE_HINTS
+
+    api_contract_count = sum(1 for pf in signals.parsed_files if pf.file_info.is_api_contract)
+
+    # Service tilt wins if we have either framework deps or API contract files.
+    if service_hits or api_contract_count > 0:
+        if service_hits:
+            evidence.append(f"service framework(s) detected: {', '.join(sorted(service_hits))}")
+        if api_contract_count:
+            evidence.append(f"{api_contract_count} API contract file(s) (OpenAPI/proto/GraphQL)")
+        return "service", evidence
+
+    if cli_hits:
+        evidence.append(f"CLI framework(s) detected: {', '.join(sorted(cli_hits))}")
+        return "cli", evidence
+
+    if pipeline_hits:
+        evidence.append(f"pipeline framework(s) detected: {', '.join(sorted(pipeline_hits))}")
+        return "pipeline", evidence
+
+    # Entry-point shape — `__main__.py` or `bin/` is CLI-shaped.
+    entry_points = list(getattr(signals.repo_structure, "entry_points", []))
+    if any(
+        ep.endswith("__main__.py") or "/bin/" in ep or ep.startswith("bin/") for ep in entry_points
+    ):
+        evidence.append("entry point shape suggests a CLI (__main__ or bin/)")
+        return "cli", evidence
+
+    # If packages have a clear public API but no service / CLI signal, it's a library.
+    packages = getattr(signals.repo_structure, "packages", []) or []
+    if packages:
+        evidence.append(f"{len(packages)} package(s) with declared public surface")
+        return "library", evidence
+
+    evidence.append("no service / CLI / library signal — treating as module collection")
+    return "module", evidence
+
+
+def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
+    """Pull execution flows from the graph builder (best-effort)."""
+    try:
+        report = signals.graph_builder.execution_flows()
+    except Exception as exc:
+        log.warning(
+            "how_it_works_execution_flows_unavailable",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        return []
+    if not report or not hasattr(report, "flows"):
+        return []
+
+    flows: list[tuple[int, int, int, float, str, FlowTrace]] = []
+    layers = file_layer_map(signals)
+    repo_structure = getattr(signals, "repo_structure", None)
+    declared_entry_points = (
+        set(orientation_entry_points(repo_structure, limit=12))
+        if repo_structure is not None
+        else set()
+    )
+    # ``ExecutionFlow`` names these ``entry_point_id`` and
+    # ``entry_point_score``. Read as ``entry_point`` / ``score`` the getattr
+    # defaults applied instead of raising, so every page ever generated
+    # carried an empty entry point and a zero score on every flow.
+    for flow in getattr(report, "flows", [])[:_FLOW_CANDIDATE_LIMIT]:
+        trace = list(getattr(flow, "trace", []) or [])
+        if len(trace) < _MIN_TRACE_HOPS:
+            continue
+        entry_point = str(getattr(flow, "entry_point_id", ""))
+        entry_path = entry_point.split("::", 1)[0]
+        paths = [str(hop).split("::", 1)[0].removeprefix("file:") for hop in trace]
+        lifecycle_regions = {
+            layers.get(path) or (path.split("/", 1)[0] if "/" in path else "<root>")
+            for path in paths
+            if path
+        }
+        candidate = FlowTrace(
+            entry_point=entry_point,
+            hops=trace[:_TRACE_DISPLAY_HOPS],
+            score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
+            lifecycle_breadth=len(lifecycle_regions),
+        )
+        flows.append(
+            (
+                1 if entry_path in declared_entry_points else 0,
+                candidate.lifecycle_breadth,
+                len(trace),
+                candidate.score,
+                candidate.entry_point,
+                candidate,
+            )
+        )
+    flows.sort(key=lambda item: (-item[0], -item[1], -item[2], -item[3], item[4]))
+    selected = [item[-1] for item in flows[:_TOP_FLOWS]]
+    if selected:
+        log.info(
+            "onboarding.how_it_works_flows_ranked",
+            candidates=len(flows),
+            chosen=[
+                {
+                    "entry_point": flow.entry_point,
+                    "lifecycle_breadth": flow.lifecycle_breadth,
+                    "score": flow.score,
+                }
+                for flow in selected
+            ],
+        )
+    return selected
+
+
+def _normalize_tour_step(step: dict) -> dict:
+    """One template-facing shape for both tour-step generations.
+
+    Legacy steps carry ``nodeIds`` + ``description``; curated steps carry a
+    single ``target_path`` + evidence in ``reason``. The strict template
+    (``step.nodeIds`` / ``step.description``) must never see a missing key.
+    """
+    node_ids = list(step.get("nodeIds") or [])
+    if step.get("target_path"):
+        node_ids.append(f"file:{step['target_path']}")
+    return {
+        "order": step.get("order", 0),
+        "title": step.get("title", ""),
+        "description": step.get("description") or step.get("reason") or "",
+        "nodeIds": node_ids,
+    }
+
+
+def _build(signals: OnboardingSignals) -> HowItWorksContext | None:
+    archetype, evidence = _classify_archetype(signals)
+    flows = _collect_flows(signals)
+
+    kg_tour = [_normalize_tour_step(s) for s in signals.kg_tour_steps or ()]
+
+    # Gate: need either a real trace, tour steps, or a non-trivial archetype.
+    if not flows and not kg_tour and archetype == "module":
+        return None
+
+    return HowItWorksContext(
+        repo_name=signals.repo_name,
+        archetype=archetype,
+        archetype_evidence=evidence,
+        flows=flows,
+        entry_points=orientation_entry_points(signals.repo_structure, limit=5),
+        kg_tour_steps=kg_tour[:8],
+    )
+
+
+def _evidence_references(ctx: object) -> tuple[str, ...]:
+    """Return distinct symbols shown in detected execution flows."""
+    if not isinstance(ctx, HowItWorksContext):
+        return ()
+    references: list[str] = []
+    for flow in ctx.flows:
+        if flow.entry_point:
+            references.append(flow.entry_point)
+        references.extend(hop for hop in flow.hops if hop)
+    return tuple(dict.fromkeys(references))
+
+
+register(
+    SubkindSpec(
+        slot=SLOT_HOW_IT_WORKS,
+        title=SLOT_TITLES[SLOT_HOW_IT_WORKS],
+        template="how_it_works.j2",
+        build_context=_build,
+        evidence_references=_evidence_references,
+    )
+)

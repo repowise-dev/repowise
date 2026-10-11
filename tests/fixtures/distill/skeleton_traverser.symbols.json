@@ -1,0 +1,206 @@
+{
+  "file_path": "packages/core/src/repowise/core/ingestion/traverser.py",
+  "pinned_commit": "4dc36271d1a91125df977de200d4a5b5e1cf1b8a",
+  "symbols": [
+    {
+      "name": "TraversalStats",
+      "kind": "class",
+      "signature": "class TraversalStats",
+      "start_line": 45,
+      "end_line": 62,
+      "pagerank": 6.135283854723637e-05
+    },
+    {
+      "name": "FileTraverser",
+      "kind": "class",
+      "signature": "class FileTraverser",
+      "start_line": 179,
+      "end_line": 498,
+      "pagerank": 0.002082437856532275
+    },
+    {
+      "name": "__init__",
+      "kind": "method",
+      "signature": "def __init__(\r\n        self,\r\n        repo_root: Path,\r\n        *,\r\n        max_file_size_kb: int = 500,\r\n        extra_ignore_filename: str = \".repowiseIgnore\",\r\n        extra_exclude_patterns: list[str] | None = None,\r\n        include_submodules: bool = False,\r\n        include_nested_repos: bool = False,\r\n    ) -> None",
+      "start_line": 202,
+      "end_line": 243,
+      "pagerank": 5.0593412984449395e-05
+    },
+    {
+      "name": "traverse",
+      "kind": "method",
+      "signature": "def traverse(self) -> Iterator[FileInfo]",
+      "start_line": 249,
+      "end_line": 259,
+      "pagerank": 6.493931373483203e-05
+    },
+    {
+      "name": "get_repo_structure",
+      "kind": "method",
+      "signature": "def get_repo_structure(self, files: list[FileInfo] | None = None) -> RepoStructure",
+      "start_line": 261,
+      "end_line": 295,
+      "pagerank": 5.0593412984449395e-05
+    },
+    {
+      "name": "_walk",
+      "kind": "method",
+      "signature": "def _walk(self) -> Iterator[Path]",
+      "start_line": 301,
+      "end_line": 319,
+      "pagerank": 7.823752263705802e-05
+    },
+    {
+      "name": "_get_dir_ignore",
+      "kind": "method",
+      "signature": "def _get_dir_ignore(self, dirpath: Path) -> pathspec.PathSpec",
+      "start_line": 321,
+      "end_line": 343,
+      "pagerank": 9.04658378918325e-05
+    },
+    {
+      "name": "_should_skip_dir",
+      "kind": "method",
+      "signature": "def _should_skip_dir(\r\n        self,\r\n        dirname: str,\r\n        rel_path: Path,\r\n        abs_path: Path,\r\n        dir_ignore: pathspec.PathSpec | None = None,\r\n    ) -> bool",
+      "start_line": 345,
+      "end_line": 374,
+      "pagerank": 8.3820433740602e-05
+    },
+    {
+      "name": "_build_file_info",
+      "kind": "method",
+      "signature": "def _build_file_info(self, abs_path: Path) -> FileInfo | None",
+      "start_line": 380,
+      "end_line": 464,
+      "pagerank": 7.823752263705802e-05
+    },
+    {
+      "name": "_detect_monorepo",
+      "kind": "method",
+      "signature": "def _detect_monorepo(self) -> tuple[list[PackageInfo], bool]",
+      "start_line": 470,
+      "end_line": 498,
+      "pagerank": 6.493931373483203e-05
+    },
+    {
+      "name": "_language_from_name_or_ext",
+      "kind": "function",
+      "signature": "def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None",
+      "start_line": 506,
+      "end_line": 515,
+      "pagerank": 0.00036005438496455113
+    },
+    {
+      "name": "_detect_language",
+      "kind": "function",
+      "signature": "def _detect_language(abs_path: Path) -> LanguageTag",
+      "start_line": 518,
+      "end_line": 523,
+      "pagerank": 0.0007109394479865149
+    },
+    {
+      "name": "_detect_by_shebang",
+      "kind": "function",
+      "signature": "def _detect_by_shebang(abs_path: Path) -> LanguageTag",
+      "start_line": 526,
+      "end_line": 538,
+      "pagerank": 0.00036005438496455113
+    },
+    {
+      "name": "_is_binary",
+      "kind": "function",
+      "signature": "def _is_binary(abs_path: Path) -> bool",
+      "start_line": 541,
+      "end_line": 547,
+      "pagerank": 5.723881713567992e-05
+    },
+    {
+      "name": "_is_generated",
+      "kind": "function",
+      "signature": "def _is_generated(abs_path: Path) -> bool",
+      "start_line": 550,
+      "end_line": 561,
+      "pagerank": 5.723881713567992e-05
+    },
+    {
+      "name": "_is_test_file",
+      "kind": "function",
+      "signature": "def _is_test_file(rel_path: str, filename: str) -> bool",
+      "start_line": 564,
+      "end_line": 571,
+      "pagerank": 5.723881713567992e-05
+    },
+    {
+      "name": "_is_config_file",
+      "kind": "function",
+      "signature": "def _is_config_file(language: LanguageTag) -> bool",
+      "start_line": 574,
+      "end_line": 575,
+      "pagerank": 5.723881713567992e-05
+    },
+    {
+      "name": "_is_api_contract",
+      "kind": "function",
+      "signature": "def _is_api_contract(abs_path: Path, language: LanguageTag) -> bool",
+      "start_line": 578,
+      "end_line": 585,
+      "pagerank": 5.723881713567992e-05
+    },
+    {
+      "name": "_stem_is_entry_point",
+      "kind": "function",
+      "signature": "def _stem_is_entry_point(abs_path: Path) -> bool",
+      "start_line": 588,
+      "end_line": 590,
+      "pagerank": 5.723881713567992e-05
+    },
+    {
+      "name": "_primary_language_in",
+      "kind": "function",
+      "signature": "def _primary_language_in(directory: Path) -> LanguageTag",
+      "start_line": 593,
+      "end_line": 605,
+      "pagerank": 6.902281941952181e-05
+    },
+    {
+      "name": "_find_entry_points_in",
+      "kind": "function",
+      "signature": "def _find_entry_points_in(directory: Path, repo_root: Path) -> list[str]",
+      "start_line": 608,
+      "end_line": 616,
+      "pagerank": 6.902281941952181e-05
+    },
+    {
+      "name": "_is_nested_git_repo",
+      "kind": "function",
+      "signature": "def _is_nested_git_repo(path: Path) -> bool",
+      "start_line": 619,
+      "end_line": 630,
+      "pagerank": 0.00012165941808726602
+    },
+    {
+      "name": "_parse_gitmodules",
+      "kind": "function",
+      "signature": "def _parse_gitmodules(repo_root: Path) -> frozenset[str]",
+      "start_line": 633,
+      "end_line": 650,
+      "pagerank": 6.135283854723637e-05
+    },
+    {
+      "name": "_load_gitignore_spec",
+      "kind": "function",
+      "signature": "def _load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec",
+      "start_line": 653,
+      "end_line": 658,
+      "pagerank": 6.135283854723637e-05
+    },
+    {
+      "name": "_load_extra_ignore_spec",
+      "kind": "function",
+      "signature": "def _load_extra_ignore_spec(repo_root: Path, filename: str) -> pathspec.PathSpec",
+      "start_line": 661,
+      "end_line": 666,
+      "pagerank": 6.135283854723637e-05
+    }
+  ]
+}

@@ -1,0 +1,419 @@
+; =============================================================================
+; repowise — Rust symbol and import queries
+; tree-sitter-rust >= 0.23
+; =============================================================================
+
+; ---------------------------------------------------------------------------
+; Symbols — with visibility modifier (must come before without)
+; ---------------------------------------------------------------------------
+
+; function_item WITH visibility
+(function_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
+; function_item WITHOUT visibility
+(function_item
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
+; function_signature_item WITH visibility -- a bodiless ``fn foo();``. Shared by
+; a trait's undefaulted methods, which may not write a modifier, and an
+; ``extern "C"`` block's declarations, which may and often do.
+(function_signature_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
+; function_signature_item WITHOUT visibility
+(function_signature_item
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
+; struct_item WITH visibility
+(struct_item
+  (visibility_modifier) @symbol.modifiers
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; struct_item WITHOUT visibility
+(struct_item
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; enum_item WITH visibility
+(enum_item
+  (visibility_modifier) @symbol.modifiers
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; enum_item WITHOUT visibility
+(enum_item
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; trait_item WITH visibility
+(trait_item
+  (visibility_modifier) @symbol.modifiers
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; trait_item WITHOUT visibility
+(trait_item
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; impl block — the "type" field identifies what is being implemented
+; impl does NOT need visibility capture (inherits from type/trait)
+(impl_item
+  type: (type_identifier) @symbol.name
+) @symbol.def
+
+; impl with generic type target: impl<T> Foo<T> { }
+(impl_item
+  type: (generic_type
+    type: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; impl with scoped type target: impl Trait for path::Foo
+(impl_item
+  type: (scoped_type_identifier
+    name: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; impl with reference type target: impl Trait for &Foo
+(impl_item
+  type: (reference_type
+    type: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; union_item WITH visibility
+(union_item
+  (visibility_modifier) @symbol.modifiers
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; union_item WITHOUT visibility
+(union_item
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; const_item WITH visibility
+(const_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; const_item WITHOUT visibility
+(const_item
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; type_item WITH visibility
+(type_item
+  (visibility_modifier) @symbol.modifiers
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; type_item WITHOUT visibility
+(type_item
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; mod_item WITH visibility (symbol definition)
+(mod_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; mod_item WITHOUT visibility (symbol definition)
+(mod_item
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; macro_rules! my_macro { ... }
+; Note: macro_definition does not support visibility_modifier in tree-sitter-rust.
+; Visibility for macros is handled via #[macro_export] attribute instead.
+(macro_definition
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; static_item WITH visibility
+(static_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; static_item WITHOUT visibility
+(static_item
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; Enum variants (inherit visibility from parent enum)
+(enum_variant
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; ---------------------------------------------------------------------------
+; Imports
+; ---------------------------------------------------------------------------
+
+(use_declaration
+  argument: (_) @import.module
+) @import.statement
+
+;; mod foo; declarations (without body block) act as imports in Rust
+(mod_item
+  name: (identifier) @import.module
+  !body
+) @import.statement
+
+;; A macro call at the top of a file (`cfg_if! { if #[cfg(unix)] { mod unix; } }`)
+;; can declare child modules in its tokens; the parser reads them out.
+(source_file
+  (macro_invocation (token_tree) @import.module) @import.statement)
+(source_file
+  (expression_statement
+    (macro_invocation (token_tree) @import.module) @import.statement))
+
+;; extern crate foo; / extern crate foo as bar;
+(extern_crate_declaration
+  name: (identifier) @import.module
+) @import.statement
+
+; ---------------------------------------------------------------------------
+; Re-exports (pub use)
+; ---------------------------------------------------------------------------
+
+; pub use path::to::Item
+(use_declaration
+  (visibility_modifier) @reexport.visibility
+  argument: (_) @reexport.source
+) @reexport.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple function call: foo(arg1, arg2)
+(call_expression
+  function: (identifier) @call.target
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Method call: obj.method(args)
+(call_expression
+  function: (field_expression
+    value: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Scoped function call: module::function(args)
+(call_expression
+  function: (scoped_identifier
+    path: (_) @call.receiver
+    name: (identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Chained call: obj.method1().method2(args)
+(call_expression
+  function: (field_expression
+    value: (call_expression)
+    field: (field_identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Method call on self: self.method(args)
+(call_expression
+  function: (field_expression
+    value: (self) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Method call on field access: expr.field.method(args)
+(call_expression
+  function: (field_expression
+    value: (field_expression) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Turbofish function call: foo::<T>(args)
+(call_expression
+  function: (generic_function
+    function: (identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Turbofish method call: obj.method::<T>(args)
+(call_expression
+  function: (generic_function
+    function: (field_expression
+      field: (field_identifier) @call.target
+    )
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Turbofish scoped call: module::func::<T>(args)
+(call_expression
+  function: (generic_function
+    function: (scoped_identifier
+      path: (_) @call.receiver
+      name: (identifier) @call.target
+    )
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Macro invocation: println!(...), vec![...]
+(macro_invocation
+  macro: (identifier) @call.target
+) @call.site
+
+; Scoped macro invocation: module::macro!(...)
+(macro_invocation
+  macro: (scoped_identifier
+    path: (_) @call.receiver
+    name: (identifier) @call.target
+  )
+) @call.site
+
+; Function pointer / callback argument: register(my_handler), vec.iter().map(process)
+; Captures top-level identifier arguments in call expressions as references
+; to prevent false-positive dead code flags on functions passed by name.
+(call_expression
+  arguments: (arguments
+    (identifier) @reference.name
+  )
+)
+
+; Associated function or method as a callback argument: register(Foo::bar),
+; iter.map(Type::method). A separate pattern because the bare one above matches
+; only an (identifier), and this shape is the one that can name a method.
+(call_expression
+  arguments: (arguments
+    (scoped_identifier
+      path: (_) @reference.receiver
+      name: (identifier) @reference.name
+    )
+  )
+)
+
+; Scoped identifier in struct field initializer: Foo { field: module::func }
+; Captures the final identifier as a reference to prevent false dead code flags.
+(field_initializer
+  value: (scoped_identifier
+    path: (_) @reference.receiver
+    name: (identifier) @reference.name
+  )
+)
+
+; Plain identifier in struct field initializer: Foo { field: my_func }
+(field_initializer
+  value: (identifier) @reference.name
+)
+
+; ---------------------------------------------------------------------------
+; Type references — drive file-level ``type_use`` edges
+; ---------------------------------------------------------------------------
+; These positions previously carried ``@call.target``/``@call.site``, which
+; recorded the enclosing function as *calling* the type: ``fn take(x: MyType)``
+; became take -> MyType in the call graph. A type is not callable, so every one
+; of those edges was wrong. The nodes captured are unchanged — only the
+; capture name moves to the cross-language ``@param.type``, which
+; parser._extract_type_refs turns into TypeReference records and
+; type_ref_resolution._resolve_rust_type_refs resolves into ``type_use``
+; edges. The dead-code reference the old captures existed to provide is
+; preserved, because type_use is a file-level use edge.
+;
+; Each pattern captures the parameter/return type node itself (whatever shape
+; it is), not just a bare ``type_identifier``; the Rust head extractor in
+; lang_helpers/type_heads.py unwraps ``&T`` / ``Box<T>`` / ``dyn T`` / ``impl T`` /
+; ``std::io::Error`` down to the head identifier, and filters the 55 rust
+; builtins, so a wrapper capture cannot mint a wrong edge -- it resolves to
+; the same head name a bare capture would, or to nothing.
+
+; Type reference in function parameter: fn foo(x: MyType), fn foo(x: &Foo),
+; fn foo(x: &dyn MyTrait), fn foo(x: impl MyTrait), fn foo(x: std::io::Error)
+(parameter
+  type: (_) @param.type
+)
+
+; Trait bound in generic parameter: fn foo<T: MyTrait>()
+; Also matches where clauses: where T: MyTrait + OtherTrait
+(trait_bounds
+  (type_identifier) @param.type
+)
+
+; Return type reference: fn foo() -> MyType, fn foo() -> &Foo,
+; fn foo() -> std::io::Error
+(function_item
+  return_type: (_) @param.type
+)
+
+; dyn Trait in type arguments: Box<dyn MyTrait>, Arc<dyn MyTrait>
+(type_arguments
+  (dynamic_type
+    (type_identifier) @param.type
+  )
+)
+
+; Type argument in turbofish: func::<MyType>(...), Channel::<MyType>::new()
+(generic_function
+  type_arguments: (type_arguments
+    (type_identifier) @param.type
+  )
+)
+
+; Type argument: Option<MyType>, Vec<super::MyType>, HashMap<K, MyType>.
+; One pattern for every shape: the Rust head extractor unwraps
+; ``scoped_type_identifier`` / ``reference_type`` / ``generic_type`` and
+; filters the builtins, so widening the capture costs nothing.
+(type_arguments
+  (_) @param.type
+)
+
+; Field type: struct Foo { bar: MyType }, including ``&T``, ``super::T`` and
+; ``Option<T>``. ``enum_variant`` reuses ``field_declaration`` for struct-like
+; variant bodies (``Received { state: MyType }``), so this covers those too.
+;
+; Rust intra-crate field references need no ``use`` -- path-qualified or
+; same-module access is legal without importing -- so without this capture the
+; reference never becomes a graph edge and the field's type reads as having no
+; importers.
+(field_declaration
+  type: (_) @param.type
+)
+
+; ---------------------------------------------------------------------------
+; Fields
+; ---------------------------------------------------------------------------
+
+; Struct fields (named) WITH visibility
+(field_declaration
+  (visibility_modifier) @symbol.modifiers
+  name: (field_identifier) @symbol.name
+) @symbol.def
+
+; Struct fields (named) WITHOUT visibility
+(field_declaration
+  name: (field_identifier) @symbol.name
+) @symbol.def

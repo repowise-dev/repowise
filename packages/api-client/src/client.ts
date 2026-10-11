@@ -1,0 +1,260 @@
+/**
+ * Base fetch wrapper for the repowise REST API. Framework-free: the base URL
+ * and auth token are not read from any env var here; a host app calls
+ * `configureApiClient` once, before making requests, to supply them.
+ */
+
+import type { ApiError } from "./types";
+
+/**
+ * `token` may be a literal string, or a resolver called fresh on every
+ * request (e.g. to read a value that can change without a page reload, like
+ * a token stored in localStorage).
+ */
+export interface ApiClientConfig {
+  baseUrl: string;
+  token?: string | null | (() => string | null);
+  fetch?: typeof fetch;
+}
+
+let config: ApiClientConfig = { baseUrl: "" };
+
+/** Sets the base URL / token / fetch implementation used by every request. */
+export function configureApiClient(next: ApiClientConfig): void {
+  config = next;
+  BASE_URL = next.baseUrl;
+}
+
+export function getApiClientConfig(): ApiClientConfig {
+  return config;
+}
+
+// Live binding: reflects whatever `configureApiClient` last set. Kept as a
+// direct export (rather than a getter function) so existing call sites that
+// read `BASE_URL` as a value keep working unchanged.
+export let BASE_URL = "";
+
+function resolveToken(): string | null {
+  const { token } = config;
+  if (typeof token === "function") return token();
+  return token ?? null;
+}
+
+// A plain object rather than `Headers`, so requests also work in runtimes
+// that have no `Headers` global (see createAdapterFetch).
+function requestHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...extra,
+  };
+  const token = resolveToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+function buildHeaders(extra?: Record<string, string>): Headers {
+  return new Headers(requestHeaders(extra));
+}
+
+export class ApiClientError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly detail: string,
+  ) {
+    super(`API error ${status}: ${detail}`);
+    this.name = "ApiClientError";
+  }
+}
+
+/** Flatten a FastAPI error `detail` into a readable string. Plain strings
+ * pass through; 422 validation errors arrive as a list of objects whose
+ * useful text lives in `msg`. */
+function stringifyDetail(detail: unknown): string | null {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) =>
+        d && typeof d === "object" && "msg" in d ? String((d as { msg: unknown }).msg) : null,
+      )
+      .filter((m): m is string => !!m)
+      // Pydantic prefixes custom validator messages with "Value error, ".
+      .map((m) => m.replace(/^Value error, /, ""));
+    if (msgs.length > 0) return msgs.join("; ");
+  }
+  return null;
+}
+
+async function handleResponse<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const json = (await res.json()) as ApiError;
+      detail = stringifyDetail(json.detail) ?? detail;
+    } catch {
+      // response body is not JSON
+    }
+    throw new ApiClientError(res.status, detail);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+export function doFetch(url: string, init: RequestInit): Promise<Response> {
+  return (config.fetch ?? fetch)(url, init);
+}
+
+/** Request a bare HTTP primitive accepts: plain-object headers, string body. */
+export interface MinimalRequestInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+}
+
+/** Response a bare HTTP primitive returns: plain-object headers, text body. */
+export interface MinimalResponse {
+  status: number;
+  ok: boolean;
+  headers: Record<string, string>;
+  text: string;
+}
+
+export type MinimalFetch = (url: string, init: MinimalRequestInit) => Promise<MinimalResponse>;
+
+function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!headers) return out;
+  if (Array.isArray(headers)) {
+    for (const [name, value] of headers) out[name] = value;
+  } else if (typeof (headers as Headers).forEach === "function") {
+    (headers as Headers).forEach((value, name) => {
+      out[name] = value;
+    });
+  } else {
+    Object.assign(out, headers);
+  }
+  return out;
+}
+
+/**
+ * Wraps a minimal HTTP primitive as a `fetch` for `configureApiClient`. Pure:
+ * it never constructs `Headers` or `Response`, so it runs where those globals
+ * do not exist. The returned object carries what this client reads (`ok`,
+ * `status`, `statusText`, `json()`, `text()`). The primitive reports no
+ * status text, so `statusText` is `HTTP <status>`, which is what an error
+ * with a non-JSON body shows as its detail.
+ */
+export function createAdapterFetch(minimal: MinimalFetch): typeof fetch {
+  const adapted = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string" ? input : "href" in input ? input.href : input.url;
+    const body = init?.body;
+    if (body != null && typeof body !== "string") {
+      throw new TypeError("createAdapterFetch only sends string bodies");
+    }
+    const request: MinimalRequestInit = { headers: headersToRecord(init?.headers) };
+    if (init?.method) request.method = init.method;
+    if (body != null) request.body = body;
+    if (init?.signal) request.signal = init.signal;
+    const res = await minimal(url, request);
+    return {
+      ok: res.ok,
+      status: res.status,
+      statusText: `HTTP ${res.status}`,
+      json: async () => JSON.parse(res.text) as unknown,
+      text: async () => res.text,
+    } as unknown as Response;
+  };
+  return adapted as typeof fetch;
+}
+
+export async function apiGet<T>(
+  path: string,
+  params?: Record<string, string | number | boolean | undefined>,
+  fetchOptions?: RequestInit,
+): Promise<T> {
+  const url = new URL(`${BASE_URL}${path}`, typeof window !== "undefined" ? window.location.href : "http://localhost");
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) {
+        url.searchParams.set(k, String(v));
+      }
+    }
+  }
+  const res = await doFetch(url.toString(), {
+    method: "GET",
+    headers: requestHeaders(),
+    ...fetchOptions,
+  });
+  return handleResponse<T>(res);
+}
+
+export async function apiPost<T>(
+  path: string,
+  body?: unknown,
+  fetchOptions?: RequestInit,
+  params?: Record<string, string | number | boolean | undefined>,
+): Promise<T> {
+  const url = new URL(`${BASE_URL}${path}`, typeof window !== "undefined" ? window.location.href : "http://localhost");
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) {
+        url.searchParams.set(k, String(v));
+      }
+    }
+  }
+  const res = await doFetch(url.toString(), {
+    method: "POST",
+    headers: requestHeaders(),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    ...fetchOptions,
+  });
+  return handleResponse<T>(res);
+}
+
+export async function apiPut<T>(
+  path: string,
+  body?: unknown,
+  fetchOptions?: RequestInit,
+): Promise<T> {
+  const url = `${BASE_URL}${path}`;
+  const res = await doFetch(url, {
+    method: "PUT",
+    headers: requestHeaders(),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    ...fetchOptions,
+  });
+  return handleResponse<T>(res);
+}
+
+export async function apiPatch<T>(
+  path: string,
+  body?: unknown,
+  fetchOptions?: RequestInit,
+): Promise<T> {
+  const url = `${BASE_URL}${path}`;
+  const res = await doFetch(url, {
+    method: "PATCH",
+    headers: requestHeaders(),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    ...fetchOptions,
+  });
+  return handleResponse<T>(res);
+}
+
+export async function apiDelete<T>(
+  path: string,
+  fetchOptions?: RequestInit,
+): Promise<T> {
+  const url = `${BASE_URL}${path}`;
+  const res = await doFetch(url, {
+    method: "DELETE",
+    headers: requestHeaders(),
+    ...fetchOptions,
+  });
+  return handleResponse<T>(res);
+}
+
+export { buildHeaders };

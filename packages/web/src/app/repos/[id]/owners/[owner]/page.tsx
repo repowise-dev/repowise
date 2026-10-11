@@ -1,0 +1,94 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { getTranslations } from "next-intl/server";
+import { Users } from "lucide-react";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
+import { OwnerAvatar } from "@repowise-dev/ui/owners/owner-avatar";
+import { OwnerProfileView } from "@repowise-dev/ui/owners/owner-profile";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { formatDate, formatRelativeTimeOrNull } from "@repowise-dev/ui/lib/format";
+import { ApiClientError } from "@/lib/api/client";
+import { getOwnerProfile } from "@/lib/api/owners";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("views.contributors");
+  return { title: t("profileTitle") };
+}
+
+/**
+ * A server component, where this was a client component behind one SWR wave.
+ * The profile is a single fetch and nothing on the page is interactive, so the
+ * whole thing arrives in the initial HTML instead of after a skeleton.
+ *
+ * Drill-ins are hrefs rather than `router.push` handlers, which is what lets
+ * the page render on the server at all, and gives every file and contributor a
+ * URL that survives a middle-click.
+ */
+export default async function OwnerProfilePage({
+  params,
+}: {
+  params: Promise<{ id: string; owner: string }>;
+}) {
+  const { id, owner } = await params;
+  const t = await getTranslations("views.contributors");
+  const base = `/repos/${id}`;
+  const ownerKey = decodeURIComponent(owner);
+
+  // Only a 404 means "no such contributor"; anything else is a failed
+  // request and goes to the route error boundary.
+  const profile = await getOwnerProfile(id, ownerKey).catch((e: unknown) => {
+    if (e instanceof ApiClientError && e.status === 404) return null;
+    throw e;
+  });
+
+  if (!profile) {
+    return (
+      <PageShell
+        icon={<Users />}
+        title={t("profileTitle")}
+      >
+        <EmptyState
+          title={t("profileEmptyTitle")}
+          description={t("profileEmptyDescription")}
+          action={{ label: t("profileBack"), href: `${base}/owners` }}
+        />
+      </PageShell>
+    );
+  }
+
+  const displayName = profile.name || profile.email || t("unknownName");
+  const lastTouched = formatRelativeTimeOrNull(profile.last_commit_at);
+
+  // Tenure as a sentence rather than a "new to this repo" badge. That badge
+  // fired on anyone who joined after the repo's first 90 days, which on a young
+  // repo is most people, and a marker that common marks nothing. A span of
+  // dates says the same thing without dressing it as a verdict.
+  const tenure = [
+    profile.first_commit_at
+      ? t("tenureSince", { date: formatDate(profile.first_commit_at) })
+      : null,
+    lastTouched ? t("tenureLastTouched", { time: lastTouched }) : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  return (
+    <PageShell
+      icon={<OwnerAvatar name={profile.name} email={profile.email} size="md" />}
+      title={displayName}
+      {...(tenure ? { description: tenure } : {})}
+    >
+      <OwnerProfileView
+        owner={profile}
+        base={base}
+        hrefForFile={(path) => fileEntityPath(base, path)}
+        hrefForModule={(mod) => `${base}/modules/${encodeURIComponent(mod)}`}
+        hrefForCoAuthor={(c) =>
+          `${base}/owners/${encodeURIComponent(c.email ?? `name:${c.name}`)}`
+        }
+        LinkComponent={Link}
+      />
+    </PageShell>
+  );
+}

@@ -1,0 +1,262 @@
+"use client";
+
+import { useMemo } from "react";
+import { ChevronRight } from "lucide-react";
+import { getPageTypeIcon } from "../lib/page-types";
+import { filePageId } from "../shared/entity/routes";
+import type { ChatUIToolCall } from "@repowise-dev/types/chat";
+
+export interface SourceReference {
+  id: string;
+  pageId: string;
+  title: string;
+  pageType: string;
+  targetPath: string;
+  /**
+   * Rank-normalized 0–1 confidence, never the raw backend score: embedding
+   * hits are cosine (0–1) but the BM25 fallback is unbounded, so the raw
+   * score has no fixed scale to render as a percentage.
+   */
+  confidence?: number | undefined;
+  toolName: string;
+}
+
+export function extractSources(
+  toolCalls: ChatUIToolCall[],
+  _repoId: string,
+): SourceReference[] {
+  const seen = new Set<string>();
+  const sources: SourceReference[] = [];
+
+  // The scored tools (risk, health, dead code, change risk, one symbol) cite
+  // the files they scored. Without this the claims a reader most needs to
+  // check, a risk score or a health finding, carry no link at all.
+  const pushFile = (toolCallId: string, toolName: string, filePath: unknown) => {
+    if (typeof filePath !== "string" || !filePath) return;
+    const pageId = filePageId(filePath);
+    if (seen.has(pageId)) return;
+    seen.add(pageId);
+    sources.push({
+      id: `${toolCallId}:${pageId}`,
+      pageId,
+      title: filePath.split("/").pop() ?? filePath,
+      pageType: "file_page",
+      targetPath: filePath,
+      toolName,
+    });
+  };
+
+  for (const tc of toolCalls) {
+    if (tc.status !== "done" || !tc.result) continue;
+
+    const result = tc.result;
+
+    if (tc.name === "search_codebase") {
+      const results = (result.results as Array<Record<string, unknown>>) ?? [];
+      for (const r of results) {
+        // `page_id` is `${page_type}:${target_path}`, and the tool now omits it
+        // wherever those two rebuild it. Derive rather than skip: the previous
+        // `const pageId = r.page_id` dropped the whole row — and its citation —
+        // for any result without one. Same fallback the get_context branch uses.
+        // The tool also drops `target_path` where it equals `path`, so fall back
+        // to `path`, the same way the server builds the id it compares against.
+        const pageType = r.page_type as string | undefined;
+        const targetPath =
+          (r.target_path as string | undefined) || (r.path as string | undefined);
+        const pageId =
+          (r.page_id as string | undefined) ??
+          (pageType && targetPath ? `${pageType}:${targetPath}` : "");
+        if (!pageId || seen.has(pageId)) continue;
+        seen.add(pageId);
+        sources.push({
+          id: `${tc.id}:${pageId}`,
+          pageId,
+          title: (r.title as string) ?? pageId,
+          pageType: (r.page_type as string) ?? "file_page",
+          targetPath: targetPath ?? "",
+          confidence: r.confidence_score as number | undefined,
+          toolName: tc.name,
+        });
+      }
+    }
+
+    if (tc.name === "get_context") {
+      const targets = result.targets as Record<string, Record<string, unknown>> | undefined;
+      if (targets) {
+        for (const [target, info] of Object.entries(targets)) {
+          const docs = info.docs as Record<string, unknown> | undefined;
+          if (!docs) continue;
+          const pageId = (docs.page_id as string) ?? filePageId(target);
+          if (seen.has(pageId)) continue;
+          seen.add(pageId);
+          sources.push({
+            id: `${tc.id}:${pageId}`,
+            pageId,
+            title: (docs.title as string) ?? target.split("/").pop() ?? target,
+            pageType: (docs.page_type as string) ?? "file_page",
+            targetPath: target,
+            toolName: tc.name,
+          });
+        }
+      }
+    }
+
+    if (tc.name === "get_overview") {
+      const title = result.title as string;
+      if (title) {
+        const pageId = "repo_overview:";
+        if (!seen.has(pageId)) {
+          seen.add(pageId);
+          sources.push({
+            id: `${tc.id}:overview`,
+            pageId,
+            title: title ?? "Repository Overview",
+            pageType: "repo_overview",
+            targetPath: "",
+            toolName: tc.name,
+          });
+        }
+      }
+    }
+
+    // `targets` is a path-keyed object on the MCP wire and an array on legacy
+    // fixtures; both shapes appear in stored conversations.
+    if (tc.name === "get_risk" || tc.name === "get_change_risk") {
+      const targets = result.targets as Record<string, unknown> | unknown[] | undefined;
+      if (Array.isArray(targets)) {
+        for (const row of targets.slice(0, 8)) {
+          const r = row as Record<string, unknown>;
+          pushFile(tc.id, tc.name, r.file_path ?? r.target);
+        }
+      } else if (targets && typeof targets === "object") {
+        for (const key of Object.keys(targets).slice(0, 8)) pushFile(tc.id, tc.name, key);
+      }
+      const fixHistory = result.fix_history as { files?: Array<{ path?: string }> } | undefined;
+      for (const f of (fixHistory?.files ?? []).slice(0, 5)) pushFile(tc.id, tc.name, f.path);
+    }
+
+    if (tc.name === "get_health") {
+      const findings = (result.findings as Array<Record<string, unknown>>) ?? [];
+      for (const f of findings.slice(0, 8)) pushFile(tc.id, tc.name, f.file_path);
+      const opportunities =
+        (result.refactoring_opportunities as Array<Record<string, unknown>>) ?? [];
+      for (const o of opportunities.slice(0, 5)) pushFile(tc.id, tc.name, o.file_path);
+      const targets = (result.targets as unknown[]) ?? [];
+      for (const t of targets.slice(0, 8)) pushFile(tc.id, tc.name, t);
+    }
+
+    if (tc.name === "get_dead_code") {
+      const tiers = (result.tiers as Record<string, { findings?: Array<Record<string, unknown>> }>) ?? {};
+      const lookup = result.finding as Record<string, unknown> | null | undefined;
+      const rows = [
+        ...(lookup ? [lookup] : []),
+        ...(tiers.high?.findings ?? []),
+        ...(tiers.medium?.findings ?? []),
+      ];
+      for (const r of rows.slice(0, 10)) pushFile(tc.id, tc.name, r.file_path);
+    }
+
+    // get_symbol names the file it verified as `file`, not `file_path`.
+    if (tc.name === "get_symbol") {
+      pushFile(tc.id, tc.name, result.file);
+    }
+
+    if (tc.name === "get_why") {
+      const decisions = (result.decisions as Array<Record<string, unknown>>)
+        ?? (result.matching_decisions as Array<Record<string, unknown>>)
+        ?? [];
+      const stale = (result.stale_decisions as Array<Record<string, unknown>>) ?? [];
+      const rows = [...decisions, ...stale];
+      for (const d of rows) {
+        const affectedFiles = (d.affected_files as string[]) ?? [];
+        for (const filePath of affectedFiles.slice(0, 3)) {
+          const pageId = filePageId(filePath);
+          if (seen.has(pageId)) continue;
+          seen.add(pageId);
+          sources.push({
+            id: `${tc.id}:${pageId}`,
+            pageId,
+            title: filePath.split("/").pop() ?? filePath,
+            pageType: "file_page",
+            targetPath: filePath,
+            toolName: tc.name,
+          });
+        }
+      }
+    }
+  }
+
+  return sources;
+}
+
+function SourceIcon({ pageType, className }: { pageType: string; className?: string }) {
+  const Icon = getPageTypeIcon(pageType);
+  return <Icon {...(className ? { className } : {})} />;
+}
+
+interface SourceCitationsProps {
+  toolCalls: ChatUIToolCall[];
+  repoId: string;
+  linkPrefix?: string;
+  /**
+   * Builds the navigation URL for a citation. Defaults to
+   * `{linkPrefix}/wiki/{pageId}` (or `/repos/{repoId}/wiki/{pageId}`).
+   * Hosted-frontend can supply its own or just pass `linkPrefix`.
+   */
+  buildHref?: (source: SourceReference) => string;
+}
+
+const defaultBuildHref = (s: SourceReference, prefix: string) =>
+  `${prefix}/wiki/${encodeURIComponent(s.pageId)}`;
+
+export function SourceCitations({
+  toolCalls,
+  repoId,
+  linkPrefix,
+  buildHref,
+}: SourceCitationsProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
+  const sources = useMemo(
+    () => extractSources(toolCalls, repoId),
+    [toolCalls, repoId],
+  );
+
+  if (sources.length === 0) return null;
+
+  return (
+    <details className="group/cites">
+      <summary className="inline-flex min-h-8 cursor-pointer list-none items-center gap-1.5 rounded-md text-xs text-[var(--color-text-tertiary)] marker:hidden hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+        <span className="tabular-nums">Sources · {sources.length}</span>
+        <ChevronRight aria-hidden className="h-3 w-3 transition-transform group-open/cites:rotate-90 motion-reduce:transition-none" />
+      </summary>
+      {/* Links, not chips: each goes somewhere, so the accent is earned on
+          hover. Titles wrap rather than truncate. */}
+      <ul className="flex flex-col gap-1 pb-1 pt-1">
+        {sources.map((source) => (
+          <li key={source.id}>
+            <a
+              href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
+              className="group flex min-h-8 w-full min-w-0 flex-wrap items-baseline gap-x-2 rounded-md py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            >
+              <SourceIcon
+                pageType={source.pageType}
+                className="h-3.5 w-3.5 shrink-0 self-center text-[var(--color-text-tertiary)] group-hover:text-[var(--color-accent-primary)] transition-colors"
+              />
+              <span className="min-w-0 [overflow-wrap:anywhere]">{source.title}</span>
+              {source.targetPath && source.targetPath !== source.title && (
+                <span className="min-w-0 font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+                  {source.targetPath}
+                </span>
+              )}
+              {source.confidence != null && (
+                <span className="font-mono text-[var(--color-text-tertiary)] tabular-nums">
+                  {(source.confidence * 100).toFixed(0)}%
+                </span>
+              )}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}

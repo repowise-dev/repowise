@@ -1,0 +1,2 @@
+recursive-include packages/core/src/repowise/core/ingestion/queries *.scm
+recursive-include packages/core/src/repowise/core/generation/templates *.j2

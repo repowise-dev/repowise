@@ -1,0 +1,535 @@
+"""C# ``PerfDialect``.
+
+Two flagship signals:
+
+* **EF Core N+1** — an Entity Framework / Dapper / ADO.NET query inside a
+  ``foreach``. The precision crux is LINQ: ``ToList`` / ``First`` / ``Where``
+  are identical on an ``IQueryable`` (hits the DB) and an ``IEnumerable`` (pure
+  memory). The unambiguous tell is the ``*Async`` family
+  (``ToListAsync`` / ``FirstOrDefaultAsync`` / ``CountAsync`` …), which is
+  EF-only and fires without a gate. Sync LINQ is gated on a file-level db
+  import (MEDIUM precision in v1; receiver ``DbContext``-type binding deferred).
+* **sync-over-async** — ``.Result`` / ``.Wait()`` / ``.GetAwaiter().GetResult()``
+  inside an ``async`` method blocks the thread-pool thread. C# is the one new
+  language with real ``async``/``await``, so ``blocking_sync_in_async`` ports
+  here. ``.Wait()`` / ``.GetResult()`` are invocations (caught by
+  :meth:`blocking_sync_api`); ``.Result`` is a property read — a non-call
+  ``member_access_expression`` — caught by :meth:`async_blocking_member`.
+
+C# call nodes are ``invocation_expression`` -> ``member_access_expression``
+(fields ``expression`` / ``name``); the async marker is a ``modifier`` node
+whose *text* is ``async`` (not a node of type ``async``), so :meth:`is_async_fn`
+is overridden. .NET caches compiled regexes, so ``regex_compile_in_loop`` is
+deliberately absent.
+
+Static-blind, documented non-goal: EF navigation-property *lazy load* fires on
+attribute access (no visible call) and is out of scope — we catch explicit
+query calls in loops.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from .base import BasePerfDialect
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
+
+# The EF ``*Async`` LINQ family — EF-only, so UNAMBIGUOUS db (no gate).
+EF_ASYNC_METHODS: frozenset[str] = frozenset(
+    {
+        "ToListAsync",
+        "ToArrayAsync",
+        "ToDictionaryAsync",
+        "FirstAsync",
+        "FirstOrDefaultAsync",
+        "SingleAsync",
+        "SingleOrDefaultAsync",
+        "LastAsync",
+        "LastOrDefaultAsync",
+        "FindAsync",
+        "AnyAsync",
+        "AllAsync",
+        "CountAsync",
+        "LongCountAsync",
+        "SumAsync",
+        "MinAsync",
+        "MaxAsync",
+        "AverageAsync",
+        "ContainsAsync",
+        "ElementAtAsync",
+    }
+)
+# EF SaveChanges + raw SQL + bulk operations — unambiguous db.
+EF_EXEC_METHODS: frozenset[str] = frozenset(
+    {
+        "SaveChanges",
+        "SaveChangesAsync",
+        "ExecuteSqlRaw",
+        "ExecuteSqlRawAsync",
+        "ExecuteSqlInterpolated",
+        "ExecuteSqlInterpolatedAsync",
+        "FromSqlRaw",
+        "FromSqlInterpolated",
+        "ExecuteUpdate",
+        "ExecuteUpdateAsync",
+        "ExecuteDelete",
+        "ExecuteDeleteAsync",
+    }
+)
+# ADO.NET command execution — unambiguous db.
+ADO_METHODS: frozenset[str] = frozenset(
+    {
+        "ExecuteReader",
+        "ExecuteReaderAsync",
+        "ExecuteNonQuery",
+        "ExecuteNonQueryAsync",
+        "ExecuteScalar",
+        "ExecuteScalarAsync",
+        "OpenAsync",
+    }
+)
+# EF and ADO.NET verbs run on a context, query or command receiver. A bare
+# ``SaveChangesAsync()`` is the enclosing class's own method (a JSON-backed
+# store's save), not a DbContext round-trip.
+_RECEIVER_DB_METHODS: frozenset[str] = EF_ASYNC_METHODS | EF_EXEC_METHODS | ADO_METHODS
+# Dapper extension verbs (collide with EF / plain method names) — gated on db.
+DAPPER_METHODS: frozenset[str] = frozenset(
+    {
+        "Query",
+        "QueryAsync",
+        "QueryFirst",
+        "QueryFirstAsync",
+        "QueryFirstOrDefault",
+        "QueryFirstOrDefaultAsync",
+        "QuerySingle",
+        "QuerySingleAsync",
+        "QueryMultiple",
+        "QueryMultipleAsync",
+        "Execute",
+        "ExecuteAsync",
+    }
+)
+# Sync LINQ — identical on IQueryable (db) vs IEnumerable (memory). Gated on a
+# file-level db import (MEDIUM precision, v1).
+SYNC_LINQ_METHODS: frozenset[str] = frozenset(
+    {
+        "ToList",
+        "ToArray",
+        "First",
+        "FirstOrDefault",
+        "Single",
+        "SingleOrDefault",
+        "Last",
+        "LastOrDefault",
+        "ToDictionary",
+    }
+)
+# HttpClient async round-trips — distinctive by name, unambiguous network.
+HTTP_ASYNC_METHODS: frozenset[str] = frozenset(
+    {
+        "GetAsync",
+        "PostAsync",
+        "PutAsync",
+        "DeleteAsync",
+        "PatchAsync",
+        "SendAsync",
+        "GetStringAsync",
+        "GetByteArrayAsync",
+        "GetStreamAsync",
+    }
+)
+# ``System.IO.File`` static round-trips (gate on the method + ``File`` receiver,
+# NOT on a fs import — ``using System.IO;`` is everywhere).
+FILE_METHODS: frozenset[str] = frozenset(
+    {
+        "ReadAllText",
+        "ReadAllLines",
+        "ReadAllBytes",
+        "ReadAllTextAsync",
+        "ReadAllLinesAsync",
+        "WriteAllText",
+        "WriteAllLines",
+        "WriteAllBytes",
+        "WriteAllTextAsync",
+        "AppendAllText",
+        "Open",
+        "OpenRead",
+        "OpenText",
+        "OpenWrite",
+        "Copy",
+        "Move",
+    }
+)
+
+
+# Heavy clients/connections to hoist out of a ``foreach``. Built via ``new X()``
+# (an ``object_creation_expression``, which C# does NOT route through
+# ``call_kinds``, so it reaches ``loop_stmt_marker``).
+CSHARP_RESOURCE_CTORS: frozenset[str] = frozenset(
+    {"HttpClient", "SqlConnection", "NpgsqlConnection", "MongoClient", "SqlConnectionStringBuilder"}
+)
+
+
+class CSharpPerfDialect(BasePerfDialect):
+    language = "csharp"
+    markers = frozenset(
+        {
+            "io_in_loop",
+            "string_concat_in_loop",
+            "blocking_sync_in_async",
+            "resource_construction_in_loop",
+            "lock_in_loop",
+            "serial_await_in_loop",
+            # Centrality-gated / nesting-confidence markers + the
+            # block-scoped lock→I/O case (``lock (x) {}`` is a held region).
+            "nested_loop_with_io",
+            "nested_loop_quadratic",
+            "hot_path_sync_io",
+            "blocking_io_under_lock",
+        }
+    )
+
+    def is_lock_scope(self, node: Node) -> bool:
+        # ``lock (x) { ... }`` — the body is the held-lock region.
+        return node.type == "lock_statement"
+
+    # ``invocation_expression`` -> ``member_access_expression`` is the call
+    # shape; add it so a member call reads as attribute-style.
+    attribute_callee_kinds = BasePerfDialect.attribute_callee_kinds | frozenset(
+        {"member_access_expression"}
+    )
+    string_literal_kinds = frozenset({"string_literal", "verbatim_string_literal"})
+    aug_assign_kinds = frozenset({"assignment_expression"})
+
+    def callee_method_name(self, call_node: Node) -> str | None:
+        fn = call_node.child_by_field_name("function")
+        if fn is None:
+            return None
+        if fn.type == "member_access_expression":
+            nm = fn.child_by_field_name("name")
+            if nm is not None and nm.text:
+                return nm.text.decode("utf-8", "replace")
+        if fn.type == "identifier" and fn.text:
+            return fn.text.decode("utf-8", "replace")
+        return None
+
+    def sink_kind(
+        self,
+        root: str,
+        method: str,
+        *,
+        awaited: bool,
+        is_attribute: bool,
+        io_names: dict[str, str],
+        has_db_import: bool,
+    ) -> str | None:
+        root_kind = io_names.get(root)
+        db_ev = has_db_import or root_kind == "db"
+
+        if is_attribute and method in _RECEIVER_DB_METHODS:
+            return "db"
+        if method in HTTP_ASYNC_METHODS:
+            return "network"
+        if root == "File" and method in FILE_METHODS:
+            return "filesystem"
+        if root == "Process" and method == "Start":
+            return "subprocess"
+        if is_attribute and db_ev and (method in DAPPER_METHODS or method in SYNC_LINQ_METHODS):
+            return "db"
+        return None
+
+    def is_async_fn(self, node: Node) -> bool:
+        # C# async is a ``modifier`` node whose text is ``async`` (vs Python/TS
+        # where it is a child of *type* ``async``).
+        return any(
+            c.type == "modifier" and (c.text or b"").decode("utf-8", "replace") == "async"
+            for c in node.children
+        )
+
+    def blocking_sync_api(self, root: str, method: str) -> str | None:
+        # The invocation forms of sync-over-async. ``.Result`` (a property read)
+        # is handled by ``async_blocking_member`` instead.
+        if method == "Wait":
+            return ".Wait()"
+        if method == "GetResult":
+            return ".GetResult()"
+        return None
+
+    def async_blocking_member(self, node: Node) -> str | None:
+        if node.type != "member_access_expression":
+            return None
+        nm = node.child_by_field_name("name")
+        if nm is None or not nm.text or nm.text.decode("utf-8", "replace") != "Result":
+            return None
+        # ``.Result`` collides hard with the ubiquitous Result-pattern
+        # (Ardalis.Result / FluentResults / custom ``Result<T>`` DTOs), which is
+        # NOT a ``Task`` and does not block. Two precision-first guards (on a
+        # C# corpus, 10/12 FPs were ``Ardalis.Result.ResultStatus.X``, 1 a write):
+        # NOTE: py-tree-sitter returns fresh Node wrappers per call, so compare
+        # by byte span (``_same_span``), never identity.
+        parent = node.parent
+        # ``Ardalis.Result.ResultStatus`` — ``.Result`` is an INTERMEDIATE segment
+        # of a longer qualified NAMESPACE/TYPE path, not a Task block. The shape
+        # ``X.Result.Y`` is identical to a genuine ``itemGetTask.Result.CatalogItem``
+        # chained read, so we additionally require the receiver root to be
+        # type-like (PascalCase): a Task is virtually always read off a camelCase
+        # local / param / field, while ``Ardalis`` / ``FluentResults`` are
+        # PascalCase namespaces.
+        if (
+            parent is not None
+            and parent.type == "member_access_expression"
+            and self._same_span(parent.child_by_field_name("expression"), node)
+            and self._receiver_root_is_typelike(node)
+        ):
+            return None
+        # ``response.Result = ...`` — a WRITE to a DTO property, not a blocking
+        # read of ``Task.Result``.
+        if (
+            parent is not None
+            and parent.type == "assignment_expression"
+            and self._same_span(parent.child_by_field_name("left"), node)
+        ):
+            return None
+        return ".Result"
+
+    @staticmethod
+    def _same_span(a: Node | None, b: Node | None) -> bool:
+        return (
+            a is not None
+            and b is not None
+            and a.start_byte == b.start_byte
+            and a.end_byte == b.end_byte
+        )
+
+    @staticmethod
+    def _receiver_root_is_typelike(node: Node) -> bool:
+        """True if the receiver of ``.Result`` is a PascalCase qualified-name path.
+
+        Walks the ``expression`` (object) side of the ``.Result`` member access
+        down to its leftmost identifier; returns True only when that root is a
+        plain identifier starting with an uppercase letter (a namespace / type,
+        e.g. ``Ardalis`` in ``Ardalis.Result.ResultStatus``). A method-call
+        receiver (``GetAsync(id).Result``) or a camelCase local
+        (``itemGetTask.Result``) is NOT type-like, so a real ``Task.Result`` read
+        is preserved.
+        """
+        cur = node.child_by_field_name("expression")
+        for _ in range(8):
+            if cur is None:
+                return False
+            if cur.type == "identifier":
+                txt = (cur.text or b"").decode("utf-8", "replace")
+                return bool(txt) and txt[0].isupper()
+            if cur.type == "member_access_expression":
+                cur = cur.child_by_field_name("expression")
+                continue
+            return False  # invocation / element access / this -> not a type path
+        return False
+
+    def task_already_complete(self, node: Node) -> bool:
+        """True if the ``.Result`` / ``.Wait()`` / ``.GetAwaiter().GetResult()``
+        receiver is a local task already awaited earlier in the method.
+
+        ``await Task.WhenAll(a, b); var x = a.Result;`` is the idiomatic way to
+        read results after a fan-out: the task is complete, so nothing blocks.
+        Counted as awaited: ``await t``, ``await Task.WhenAll(..t..)``, a
+        ``WhenAll`` over a collection ``t`` was added to (``c.Add(t)``) or built
+        from (``c = new[] { t }``), and ``var t = await Task.WhenAny(...)``.
+        Only an ``await`` in an earlier plain statement of the same or an
+        enclosing block counts, so one inside an ``if`` / loop / ``try`` that
+        may not run does not suppress the hit.
+        """
+        name = _task_receiver_name(node)
+        if name is None:
+            return False
+        blocks: list[tuple[Node, Node]] = []  # (block, child holding the read)
+        cur = node
+        while cur.parent is not None and cur.type not in _CS_FN_KINDS:
+            if cur.parent.type == "block":
+                blocks.append((cur.parent, cur))
+            cur = cur.parent
+        for block, holder in blocks:
+            for stmt in block.named_children:
+                if stmt.start_byte >= holder.start_byte:
+                    break
+                if stmt.type in _CS_PLAIN_STMTS and _stmt_awaits(stmt, name, cur):
+                    return True
+        return False
+
+    def loop_call_marker(
+        self, root: str, method: str, node: Node, list_names: frozenset[str]
+    ) -> str | None:
+        # ``Monitor.Enter(lock)`` — the call form of lock acquisition (the
+        # ``lock(x){}`` statement form is handled in ``loop_stmt_marker``).
+        if root == "Monitor" and method == "Enter":
+            return "lock_in_loop"
+        return None
+
+    def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
+        # ``new HttpClient()`` per iteration — the canonical C# socket-exhaustion
+        # bug — is an ``object_creation_expression`` (not an invocation).
+        if node.type == "object_creation_expression":
+            t = node.child_by_field_name("type")
+            if t is not None and t.text:
+                name = t.text.decode("utf-8", "replace").split(".")[-1]
+                if name in CSHARP_RESOURCE_CTORS:
+                    return "resource_construction_in_loop"
+            return None
+        # ``lock (gate) { ... }`` taken every iteration is a contention site.
+        if node.type == "lock_statement":
+            return "lock_in_loop"
+        return None
+
+
+# Function-like scopes: an ``await`` outside the one holding the read says
+# nothing about it, and an ``await`` inside a nested lambda may never run.
+_CS_FN_KINDS: frozenset[str] = frozenset(
+    {
+        "method_declaration",
+        "local_function_statement",
+        "lambda_expression",
+        "anonymous_method_expression",
+        "constructor_declaration",
+        "accessor_declaration",
+        "operator_declaration",
+    }
+)
+# Statements that run unconditionally once reached (no nested branch).
+_CS_PLAIN_STMTS: frozenset[str] = frozenset({"expression_statement", "local_declaration_statement"})
+
+
+def _text(node: Node | None) -> str:
+    return (node.text or b"").decode("utf-8", "replace") if node is not None else ""
+
+
+def _member_name(node: Node | None) -> str:
+    if node is None or node.type != "member_access_expression":
+        return ""
+    return _text(node.child_by_field_name("name"))
+
+
+def _member_object(node: Node | None) -> Node | None:
+    return node.child_by_field_name("expression") if node is not None else None
+
+
+def _strip_configure_await(node: Node | None) -> Node | None:
+    # ``await x.ConfigureAwait(false)`` awaits ``x``.
+    if node is not None and node.type == "invocation_expression":
+        fn = node.child_by_field_name("function")
+        if _member_name(fn) == "ConfigureAwait":
+            return _member_object(fn)
+    return node
+
+
+def _task_receiver_name(node: Node) -> str | None:
+    """The local identifier the blocking read/call is made on, else ``None``."""
+    if node.type == "member_access_expression":  # ``t.Result``
+        recv = _member_object(node)
+    elif node.type == "invocation_expression":  # ``t.Wait()`` / ``t.GetAwaiter().GetResult()``
+        fn = node.child_by_field_name("function")
+        recv = _member_object(fn)
+        if (
+            _member_name(fn) == "GetResult"
+            and recv is not None
+            and recv.type == "invocation_expression"
+            and _member_name(recv.child_by_field_name("function")) == "GetAwaiter"
+        ):
+            recv = _member_object(recv.child_by_field_name("function"))
+    else:
+        return None
+    return _text(recv) if recv is not None and recv.type == "identifier" else None
+
+
+def _iter_scope(node: Node):
+    """DFS over *node*'s subtree, not entering nested function scopes."""
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        yield cur
+        stack.extend(c for c in cur.named_children if c.type not in _CS_FN_KINDS)
+
+
+def _mentions(node: Node | None, name: str) -> bool:
+    return node is not None and any(
+        n.type == "identifier" and _text(n) == name for n in _iter_scope(node)
+    )
+
+
+def _collection_holds(scope: Node, coll: str, name: str, before: int) -> bool:
+    """True if collection ``coll`` got task ``name`` before byte *before*.
+
+    Approximation: ``coll.Add(..name..)`` anywhere earlier in the method (even
+    inside a branch), or a ``coll`` declaration / assignment whose right side
+    mentions ``name``. Tighten to straight-line adds if a branch-guarded
+    ``Add`` ever turns out to hide a real block.
+    """
+    for n in _iter_scope(scope):
+        if n.start_byte >= before:
+            continue
+        if n.type == "invocation_expression":
+            fn = n.child_by_field_name("function")
+            if (
+                _member_name(fn) == "Add"
+                and _text(_member_object(fn)) == coll
+                and _mentions(n.child_by_field_name("arguments"), name)
+            ):
+                return True
+        elif n.type == "variable_declarator":
+            if _text(n.child_by_field_name("name")) == coll and any(
+                _mentions(c, name) for c in n.named_children[1:]
+            ):
+                return True
+        elif n.type == "assignment_expression":
+            if _text(n.child_by_field_name("left")) == coll and _mentions(
+                n.child_by_field_name("right"), name
+            ):
+                return True
+    return False
+
+
+def _awaited_operand(node: Node | None) -> Node | None:
+    if node is None or node.type != "await_expression" or not node.named_children:
+        return None
+    return _strip_configure_await(node.named_children[-1])
+
+
+def _stmt_awaits(stmt: Node, name: str, scope: Node) -> bool:
+    """True if plain statement *stmt* completes task ``name`` by awaiting it."""
+    for n in _iter_scope(stmt):
+        if n.type == "variable_declarator" and _text(n.child_by_field_name("name")) == name:
+            # ``var t = await Task.WhenAny(...)``: the returned task is complete.
+            op = _awaited_operand(n.named_children[-1])
+            if (
+                op is not None
+                and op.type == "invocation_expression"
+                and _member_name(op.child_by_field_name("function")) == "WhenAny"
+            ):
+                return True
+        target = _awaited_operand(n)
+        if target is None:
+            continue
+        if target.type == "identifier":
+            if _text(target) == name:
+                return True
+            continue
+        if target.type != "invocation_expression":
+            continue
+        if _member_name(target.child_by_field_name("function")) != "WhenAll":
+            continue
+        args = target.child_by_field_name("arguments")
+        for arg in args.named_children if args is not None else ():
+            expr = arg.named_children[-1] if arg.named_children else None
+            if expr is None:
+                continue
+            if expr.type != "identifier":  # inline ``WhenAll(new[] { a, b })``
+                if _mentions(expr, name):
+                    return True
+                continue
+            if _text(expr) == name or _collection_holds(scope, _text(expr), name, stmt.start_byte):
+                return True
+    return False
+
+
+DIALECT = CSharpPerfDialect()

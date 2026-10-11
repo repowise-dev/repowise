@@ -1,0 +1,184 @@
+"""Symbol-level graph-intelligence extractors for file pages.
+
+Stateless helpers extracted from ContextAssembler — they read only the graph
+and the file path, never the assembler config.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+#: How many entries each extractor returns. Both were bare literals at the
+#: ``return``; naming them lets a caller and a test say which cut it means.
+MAX_CALL_ENTRIES = 15
+MAX_HERITAGE_ENTRIES = 10
+
+
+def build_symbol_index(graph: Any) -> dict[str, list[tuple[Any, dict]]]:
+    """Bucket symbol nodes by ``file_path`` in one pass over the graph.
+
+    ``extract_call_graph`` / ``extract_heritage`` historically scanned every
+    graph node per file — O(files x nodes) across a generation run. Callers
+    that assemble context for many files build this index once and pass it
+    in; per-file extraction becomes a dict lookup. Buckets preserve the
+    graph's node iteration order, so results are byte-identical to the scan —
+    and that is still the reason, not the ranking the extractors now apply:
+    neither sort key is total (heritage ignores ``kind``, the call dedup
+    collapses on names alone), so ties fall back to input order.
+    """
+    index: dict[str, list[tuple[Any, dict]]] = {}
+    try:
+        for node, data in graph.nodes(data=True):
+            if data.get("node_type") != "symbol":
+                continue
+            fp = data.get("file_path")
+            if fp:
+                index.setdefault(fp, []).append((node, data))
+    except Exception:
+        return {}
+    return index
+
+
+def _file_symbol_nodes(
+    file_path: str, graph: Any, symbol_index: dict[str, list[tuple[Any, dict]]] | None
+) -> Any:
+    """This file's symbol nodes — from the index when supplied, else a scan."""
+    if symbol_index is not None:
+        return symbol_index.get(file_path, [])
+    return (
+        (node, data)
+        for node, data in graph.nodes(data=True)
+        if data.get("node_type") == "symbol" and data.get("file_path") == file_path
+    )
+
+
+def extract_call_graph(
+    file_path: str,
+    graph: Any,
+    symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
+) -> list[dict]:
+    """Extract symbol-level call edges for symbols defined in this file."""
+    entries: list[dict] = []
+    try:
+        for node, data in _file_symbol_nodes(file_path, graph, symbol_index):
+            # Outgoing calls from this symbol
+            for _, target, edata in graph.out_edges(node, data=True):
+                if edata.get("edge_type") == "calls":
+                    tdata = graph.nodes.get(target, {})
+                    entries.append(
+                        {
+                            "caller": data.get("name", node),
+                            "callee": tdata.get("name", target),
+                            "callee_file": tdata.get("file_path", ""),
+                            "confidence": edata.get("confidence", 0.0),
+                        }
+                    )
+            # Incoming calls to this symbol
+            for source, _, edata in graph.in_edges(node, data=True):
+                if edata.get("edge_type") == "calls":
+                    sdata = graph.nodes.get(source, {})
+                    entries.append(
+                        {
+                            "caller": sdata.get("name", source),
+                            "callee": data.get("name", node),
+                            "callee_file": file_path,
+                            "caller_file": sdata.get("file_path", ""),
+                            "confidence": edata.get("confidence", 0.0),
+                        }
+                    )
+    except Exception:
+        pass
+    # Rank, then deduplicate, then cap. The cut used to keep whichever 15 the
+    # graph happened to yield first, so a file's most confident call edges
+    # could be dropped in favour of arbitrary ones. ``confidence`` is already
+    # on every entry — it is the resolver's own certainty that this call is
+    # real — so the entries it is least sure about are the ones to lose.
+    # Ranking before the dedup also means a pair kept once is kept at its
+    # highest confidence rather than at whichever copy came first.
+    #
+    # Worth knowing before this is quoted as a user-facing fix: the caller
+    # stores this on ``FilePageContext.call_graph``, and **no template, prompt
+    # or reader consumes that field**. This is one line on the module's public
+    # surface, not a change anyone can see today.
+    entries.sort(key=lambda e: (-float(e.get("confidence") or 0.0), e["caller"], e["callee"]))
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for e in entries:
+        key = f"{e.get('caller')}→{e.get('callee')}"
+        if key not in seen:
+            seen.add(key)
+            unique.append(e)
+    return unique[:MAX_CALL_ENTRIES]
+
+
+def extract_heritage(
+    file_path: str,
+    graph: Any,
+    symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
+) -> list[dict]:
+    """Extract extends/implements edges for symbols in this file."""
+    entries: list[dict] = []
+    # Parallel to ``entries``: the confidence this cut ranks on. Kept beside
+    # the dicts rather than inside them because no caller reads it — the
+    # module page ranks these by the *file's* PageRank when it merges several
+    # files' lists — and a key nothing consumes is a key someone later has to
+    # work out the purpose of.
+    scores: list[float] = []
+    try:
+        for node, data in _file_symbol_nodes(file_path, graph, symbol_index):
+            for _, target, edata in graph.out_edges(node, data=True):
+                etype = edata.get("edge_type", "")
+                if etype in ("extends", "implements"):
+                    tdata = graph.nodes.get(target, {})
+                    entries.append(
+                        {
+                            "child": data.get("name", node),
+                            "parent": tdata.get("name", target),
+                            "kind": etype,
+                            "parent_file": tdata.get("file_path", ""),
+                        }
+                    )
+                    scores.append(float(edata.get("confidence") or 0.0))
+            for source, _, edata in graph.in_edges(node, data=True):
+                etype = edata.get("edge_type", "")
+                if etype in ("extends", "implements"):
+                    sdata = graph.nodes.get(source, {})
+                    entries.append(
+                        {
+                            "child": sdata.get("name", source),
+                            "parent": data.get("name", node),
+                            "kind": etype,
+                            "child_file": sdata.get("file_path", ""),
+                        }
+                    )
+                    scores.append(float(edata.get("confidence") or 0.0))
+    except Exception:
+        pass
+    # Same cut as ``extract_call_graph``, same reason to rank it. The resolver
+    # scores an inheritance edge it matched inside the file well above one it
+    # guessed from a bare name — across the corpus ``extends`` carries 6,726
+    # edges at 0.5 against 5,135 at 0.95 — so the guesses are what a full list
+    # should lose. Names break ties, which ``kind`` deliberately does not join:
+    # two entries alike in confidence, child and parent are the same
+    # relationship reported from both ends.
+    ranked = sorted(
+        zip(scores, entries, strict=True),
+        key=lambda pair: (-pair[0], pair[1]["child"], pair[1]["parent"]),
+    )
+    return [entry for _score, entry in ranked[:MAX_HERITAGE_ENTRIES]]
+
+
+def extract_community_meta(file_path: str, graph: Any) -> tuple[str, float]:
+    """Extract community label and cohesion for a file node."""
+    try:
+        node_data = graph.nodes.get(file_path, {})
+        meta = node_data.get("community_meta_json")
+        if meta:
+            import json as _json
+
+            if isinstance(meta, str):
+                meta = _json.loads(meta)
+            return meta.get("label", ""), meta.get("cohesion", 0.0)
+    except Exception:
+        pass
+    return "", 0.0

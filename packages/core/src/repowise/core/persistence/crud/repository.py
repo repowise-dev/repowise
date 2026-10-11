@@ -1,0 +1,397 @@
+"""CRUD operations for the repository domain (repowise persistence layer).
+
+Split out of the former monolithic ``crud.py``; ``crud/__init__.py`` re-exports
+every public name, so existing imports are unaffected.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models import (
+    GenerationJob,
+    Page,
+    PageVersion,
+    Repository,
+    WebhookEvent,
+    _new_uuid,
+    _now_utc,
+)
+from ._shared import _VALID_JOB_STATUSES
+
+# ---------------------------------------------------------------------------
+# Repository CRUD
+# ---------------------------------------------------------------------------
+
+
+async def upsert_repository(
+    session: AsyncSession,
+    *,
+    name: str,
+    local_path: str,
+    url: str = "",
+    default_branch: str = "main",
+    settings: dict | None = None,
+    head_commit: str | None = None,
+    repo_id: str | None = None,
+) -> Repository:
+    """Create or update a repository record.
+
+    Lookup is by ``local_path`` (the canonical key for local repositories).
+
+    ``repo_id`` fixes the primary key when the row is *created*. The server
+    keeps a registry row for each repo in its primary database and the
+    canonical row in the repo-local ``wiki.db``; both must share one id so
+    per-repo session routing keyed by that id resolves consistently. Ignored
+    when a row for ``local_path`` already exists (the existing id wins).
+
+    ``head_commit`` records the git commit the index was built against — the
+    value the MCP ``_meta`` freshness check compares to the live HEAD. Callers
+    that already know the synced commit may pass it; otherwise it is read from
+    ``local_path``'s git HEAD via plain file I/O (no ``git`` subprocess). This
+    runs at the start of every index/update, so the stored commit tracks each
+    sync and the MCP staleness signal stays calibrated instead of being NULL
+    forever (which silently disabled the preferred HEAD-vs-index comparison).
+    """
+    result = await session.execute(select(Repository).where(Repository.local_path == local_path))
+    repo = result.scalar_one_or_none()
+
+    resolved_head = head_commit or _read_head_commit(local_path)
+
+    if repo is None:
+        repo = Repository(
+            id=repo_id or _new_uuid(),
+            name=name,
+            local_path=local_path,
+            url=url,
+            default_branch=default_branch,
+            settings_json=json.dumps(settings or {}),
+            head_commit=resolved_head,
+        )
+        session.add(repo)
+    else:
+        repo.name = name
+        repo.url = url
+        repo.default_branch = default_branch
+        if settings is not None:
+            repo.settings_json = json.dumps(keep_analysis_ran(repo.settings_json, settings))
+        # Only advance the stamp when we could read a real commit; never blank
+        # out a previously recorded one (e.g. a transient non-checkout path).
+        if resolved_head:
+            repo.head_commit = resolved_head
+        repo.updated_at = _now_utc()
+
+    await session.flush()
+    return repo
+
+
+ANALYSIS_RAN_KEY = "analysis_ran_at"
+
+
+def _settings_dict(raw: str | None) -> dict:
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def keep_analysis_ran(old_json: str | None, new_settings: dict) -> dict:
+    """Carry the stage-completion stamps across a wholesale settings replace."""
+    kept = _settings_dict(old_json).get(ANALYSIS_RAN_KEY)
+    if kept is None or ANALYSIS_RAN_KEY in new_settings:
+        return new_settings
+    return {**new_settings, ANALYSIS_RAN_KEY: kept}
+
+
+async def stamp_analysis_ran(session: AsyncSession, repository_id: str, stage: str) -> None:
+    """Record that *stage* ("security" or "dead_code") just persisted a result.
+
+    Called only on the success path of the stage's own write, so the stamp
+    proves the stage ran, which a completed index job does not.
+    """
+    repo = await session.get(Repository, repository_id)
+    if repo is None:
+        return
+    settings = _settings_dict(repo.settings_json)
+    stamps = settings.get(ANALYSIS_RAN_KEY)
+    if not isinstance(stamps, dict):
+        stamps = {}
+    stamps[stage] = datetime.now(UTC).isoformat()
+    settings[ANALYSIS_RAN_KEY] = stamps
+    repo.settings_json = json.dumps(settings)
+    await session.flush()
+
+
+def _read_head_commit(local_path: str) -> str | None:
+    """Return the repo's current git HEAD SHA via plain file I/O, or None.
+
+    Dependency-free (no ``git`` binary, no gitpython): parse ``.git/HEAD`` and
+    follow at most one ref, falling back to ``packed-refs``. Returns ``None``
+    when *local_path* is not a git checkout (hosted/ephemeral indexes) or the
+    ref can't be resolved. Mirrors the MCP ``_meta`` reader so the value we
+    write is read back the same way — keeping freshness comparisons honest.
+    """
+    try:
+        git_dir = Path(local_path) / ".git"
+        # Linked worktrees use a ``.git`` *file* (gitdir pointer), not a dir;
+        # treated as non-git here on purpose so this stays in lockstep with the
+        # MCP ``_meta.read_live_head`` reader (same is_dir() guard), keeping
+        # the written commit and the read-back comparison symmetric.
+        if not git_dir.is_dir():
+            return None
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if head.startswith("ref: "):
+        ref_rel = head[5:].strip()
+        try:
+            return (git_dir / ref_rel).read_text(encoding="utf-8").strip() or None
+        except OSError:
+            pass
+        try:
+            for raw in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+                if raw.startswith("#") or raw.startswith("^"):
+                    continue
+                sha, _, name = raw.partition(" ")
+                if name.strip() == ref_rel:
+                    return sha.strip() or None
+        except OSError:
+            return None
+        return None
+    return head or None
+
+
+async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:
+    """Store the repo-wide function-mod p80 a full index measured.
+
+    Deliberately not folded into :func:`update_repo_git_totals`: that one
+    carries whole-history git totals (#730), and this is a health quantity that
+    happens to live on the same row. No-ops on a missing repo.
+    """
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        return
+    repo.function_mod_p80 = int(value)
+
+
+async def update_repo_git_totals(
+    session: AsyncSession,
+    repo_id: str,
+    *,
+    total_commit_count: int | None = None,
+    total_merge_commit_count: int | None = None,
+    first_commit_at: datetime | None = None,
+    total_contributor_count: int | None = None,
+    first_commit_author: str | None = None,
+    first_commit_subject: str | None = None,
+    total_lines_added: int | None = None,
+    total_lines_deleted: int | None = None,
+    churn_anchor_sha: str | None = None,
+) -> None:
+    """Store a repo's whole-history git totals, captured at index time (#730).
+
+    The per-commit ``git_commits`` table is bounded to the newest N commits, so
+    the stats page must read true project age / commit / contributor counts from
+    these repo-level fields instead of that sample. Each argument is applied
+    only when non-``None`` so a partial capture never blanks a value a previous
+    index stored. No-ops on a missing repo or all-``None`` input.
+    """
+    updates = {
+        "total_commit_count": total_commit_count,
+        "total_merge_commit_count": total_merge_commit_count,
+        "first_commit_at": first_commit_at,
+        "total_contributor_count": total_contributor_count,
+        "first_commit_author": first_commit_author,
+        "first_commit_subject": first_commit_subject,
+        "total_lines_added": total_lines_added,
+        "total_lines_deleted": total_lines_deleted,
+        # Rides with the churn pair by construction: the capture sets it only
+        # when the walk produced numbers, so "applied only when non-None" keeps
+        # anchor and totals moving together rather than letting one advance
+        # past the other.
+        "churn_anchor_sha": churn_anchor_sha,
+    }
+    if all(v is None for v in updates.values()):
+        return
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        return
+    for attr, value in updates.items():
+        if value is not None:
+            setattr(repo, attr, value)
+    repo.updated_at = _now_utc()
+    await session.flush()
+
+
+async def get_repository(session: AsyncSession, repo_id: str) -> Repository | None:
+    """Return a Repository by primary key, or None."""
+    return await session.get(Repository, repo_id)
+
+
+async def get_repository_by_path(session: AsyncSession, local_path: str) -> Repository | None:
+    """Return a Repository by local_path, or None."""
+    result = await session.execute(select(Repository).where(Repository.local_path == local_path))
+    return result.scalar_one_or_none()
+
+
+async def delete_repository(session: AsyncSession, repo_id: str) -> bool:
+    """Delete a repository and all cascaded children.
+
+    Returns True if deleted, False if not found.
+
+    NOTE: The caller should clean up the FTS index *before* calling this,
+    since the CASCADE will delete Page rows and we lose the page IDs.
+
+    ``PageVersion`` is swept explicitly first. Its ``page_id`` foreign key is
+    declared without ``ondelete="CASCADE"``, so the cascade that removes the
+    repository's ``Page`` rows leaves the snapshots pointing at rows that no
+    longer exist and SQLite aborts the whole statement with ``FOREIGN KEY
+    constraint failed``. The pipeline's page-pruning paths already pre-delete
+    snapshots for exactly this reason; deletion is the one path that did not.
+    """
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        return False
+    await session.execute(delete(PageVersion).where(PageVersion.repository_id == repo_id))
+    await session.delete(repo)
+    await session.flush()
+    return True
+
+
+async def list_page_ids(session: AsyncSession, repository_id: str) -> list[str]:
+    """Return all page IDs for a repository (lightweight, ID-only query)."""
+    result = await session.execute(select(Page.id).where(Page.repository_id == repository_id))
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# GenerationJob CRUD
+# ---------------------------------------------------------------------------
+
+
+async def upsert_generation_job(
+    session: AsyncSession,
+    *,
+    repository_id: str,
+    status: str = "pending",
+    provider_name: str = "",
+    model_name: str = "",
+    total_pages: int = 0,
+    config: dict | None = None,
+    job_id: str | None = None,
+) -> GenerationJob:
+    """Insert a new GenerationJob (jobs are append-only)."""
+    job = GenerationJob(
+        id=job_id or _new_uuid(),
+        repository_id=repository_id,
+        status=status,
+        provider_name=provider_name,
+        model_name=model_name,
+        total_pages=total_pages,
+        config_json=json.dumps(config or {}),
+    )
+    session.add(job)
+    await session.flush()
+    return job
+
+
+async def get_generation_job(session: AsyncSession, job_id: str) -> GenerationJob | None:
+    """Return a GenerationJob by primary key, or None."""
+    return await session.get(GenerationJob, job_id)
+
+
+async def update_job_status(
+    session: AsyncSession,
+    job_id: str,
+    status: str,
+    *,
+    completed_pages: int | None = None,
+    failed_pages: int | None = None,
+    current_level: int | None = None,
+    total_pages: int | None = None,
+    error_message: str | None = None,
+) -> GenerationJob:
+    """Update the mutable fields of a GenerationJob.
+
+    Raises:
+        ValueError: If *status* is not a recognised value.
+        LookupError: If *job_id* does not exist.
+    """
+    if status not in _VALID_JOB_STATUSES:
+        raise ValueError(
+            f"Unknown job status {status!r}. Valid values: {sorted(_VALID_JOB_STATUSES)}"
+        )
+
+    job = await session.get(GenerationJob, job_id)
+    if job is None:
+        raise LookupError(f"No GenerationJob with id={job_id!r}")
+
+    job.status = status
+    job.updated_at = _now_utc()
+
+    if completed_pages is not None:
+        job.completed_pages = completed_pages
+    if failed_pages is not None:
+        job.failed_pages = failed_pages
+    if current_level is not None:
+        job.current_level = current_level
+    if total_pages is not None:
+        job.total_pages = total_pages
+    if error_message is not None:
+        job.error_message = error_message
+
+    if status == "running" and job.started_at is None:
+        job.started_at = _now_utc()
+    if status in ("completed", "failed", "cancelled"):
+        job.finished_at = _now_utc()
+
+    await session.flush()
+    return job
+
+
+# ---------------------------------------------------------------------------
+# WebhookEvent CRUD
+# ---------------------------------------------------------------------------
+
+
+async def store_webhook_event(
+    session: AsyncSession,
+    *,
+    provider: str,
+    event_type: str,
+    payload: dict,
+    repository_id: str | None = None,
+    delivery_id: str = "",
+) -> WebhookEvent:
+    """Append a new WebhookEvent record."""
+    event = WebhookEvent(
+        id=_new_uuid(),
+        repository_id=repository_id,
+        provider=provider,
+        event_type=event_type,
+        delivery_id=delivery_id,
+        payload_json=json.dumps(payload),
+        processed=False,
+    )
+    session.add(event)
+    await session.flush()
+    return event
+
+
+async def mark_webhook_processed(
+    session: AsyncSession, event_id: str, *, job_id: str | None = None
+) -> None:
+    """Mark a WebhookEvent as processed and optionally link it to a job."""
+    event = await session.get(WebhookEvent, event_id)
+    if event is None:
+        raise LookupError(f"No WebhookEvent with id={event_id!r}")
+    event.processed = True
+    if job_id is not None:
+        event.job_id = job_id
+    await session.flush()

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="324" viewBox="0 0 720 324" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" role="img" aria-label="Finding the right files, on 42 sealed instances">
+<rect width="720" height="324" fill="none"/>
+<text x="0" y="20" font-size="15" font-weight="650" fill="#E2E8F0">Finding the right files, on 42 sealed instances</text>
+<text x="0" y="40" font-size="12" fill="#94A3B8">File coverage against gold spans. Higher is better. Deterministic grading, no LLM judge.</text>
+<text x="186" y="78" text-anchor="end" font-size="12.5" font-weight="650" fill="#E2E8F0">repowise  get_answer</text>
+<rect x="196" y="62" width="430" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="62" width="376.7" height="24" rx="3" fill="#F59520"/>
+<text x="716" y="78" text-anchor="end" font-size="12.5" font-weight="650" fill="#E2E8F0">0.876</text>
+<text x="186" y="116" text-anchor="end" font-size="12.5" font-weight="650" fill="#E2E8F0">repowise  search_codebase</text>
+<rect x="196" y="100" width="430" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="100" width="319.1" height="24" rx="3" fill="#B4741F"/>
+<text x="716" y="116" text-anchor="end" font-size="12.5" font-weight="650" fill="#E2E8F0">0.742</text>
+<text x="186" y="154" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">CodeGraph</text>
+<rect x="196" y="138" width="430" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="138" width="262.3" height="24" rx="3" fill="#334155"/>
+<text x="716" y="154" text-anchor="end" font-size="12.5" font-weight="400" fill="#E2E8F0">0.610</text>
+<text x="186" y="192" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">Graphify</text>
+<rect x="196" y="176" width="430" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="176" width="234.8" height="24" rx="3" fill="#334155"/>
+<text x="716" y="192" text-anchor="end" font-size="12.5" font-weight="400" fill="#E2E8F0">0.546</text>
+<text x="186" y="230" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">code-review-graph</text>
+<rect x="196" y="214" width="430" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="214" width="191.3" height="24" rx="3" fill="#334155"/>
+<text x="716" y="230" text-anchor="end" font-size="12.5" font-weight="400" fill="#E2E8F0">0.445</text>
+<text x="186" y="268" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">cocoindex</text>
+<rect x="196" y="252" width="430" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="252" width="155.2" height="24" rx="3" fill="#334155"/>
+<text x="716" y="268" text-anchor="end" font-size="12.5" font-weight="400" fill="#E2E8F0">0.361</text>
+<text x="0" y="316" font-size="11" fill="#94A3B8">n=42 (cocoindex n=41). Sign test vs CodeGraph p = 0.00004. Sealed half, evaluated once.</text>
+</svg>

@@ -1,0 +1,92 @@
+{
+ "repo": "okio",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 71% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "cpp": {
+    "edges_per_file": 0.0,
+    "files": 2,
+    "import_edges": 0,
+    "import_support": "full",
+    "orphan_files": 2,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "java": {
+    "edges_per_file": 8.86,
+    "files": 28,
+    "hint_edges": {
+     "same_package": 1
+    },
+    "import_edges": 248,
+    "import_support": "full",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.363
+   },
+   "kotlin": {
+    "edges_per_file": 6.75,
+    "files": 320,
+    "hint_edges": {
+     "same_package": 177
+    },
+    "import_edges": 2159,
+    "import_support": "full",
+    "orphan_files": 28,
+    "orphan_ratio": 0.087,
+    "resolution_rate": 0.443
+   },
+   "shell": {
+    "edges_per_file": 0.0,
+    "files": 2,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 2,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "kotlin",
+  "entry_points": [],
+  "modules": {
+   "count": 13,
+   "max_size": 106,
+   "min_size": 5,
+   "names": [
+    "Application (top-level)",
+    "Config",
+    "Test",
+    "commonMain",
+    "docs",
+    "jvm/jmh",
+    "jvmMain",
+    "nativeMain",
+    "nonJvmMain",
+    "okio-testing-support",
+    "okio-wasifilesystem",
+    "samples",
+    "zlibMain"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "okio-fakefilesystem/src/commonMain/kotlin/okio/fakefilesystem/FakeFileSystem.kt",
+   "okio/src/commonMain/kotlin/okio/Buffer.kt",
+   "okio/src/appleMain/kotlin/okio/ByteString.kt",
+   "okio/src/commonMain/kotlin/okio/Source.kt",
+   "okio/src/commonMain/kotlin/okio/Sink.kt",
+   "okio/src/commonMain/kotlin/okio/Path.kt",
+   "okio/src/commonMain/kotlin/okio/FileHandle.kt",
+   "okio/src/commonMain/kotlin/okio/FileSystem.kt",
+   "okio/src/commonMain/kotlin/okio/FileMetadata.kt",
+   "okio/src/commonMain/kotlin/okio/Segment.kt",
+   "okio/src/jvmTest/kotlin/okio/FileHandleFileSystemTest.kt"
+  ]
+ }
+}

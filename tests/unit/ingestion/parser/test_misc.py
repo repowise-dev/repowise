@@ -1,0 +1,179 @@
+"""Unit tests for the unified ASTParser.
+
+Tests parse inline byte strings so no filesystem I/O is needed.
+Covers Python, TypeScript, Go, Rust, Java, C++ — one test class per language.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from repowise.core.ingestion.parser import LANGUAGE_CONFIGS, ASTParser
+from tests.unit.ingestion.parser._helpers import _make_file_info
+
+
+class TestUnsupportedLanguage:
+    def test_returns_empty_parsed_file(self, parser: ASTParser) -> None:
+        """Unsupported languages return an empty ParsedFile with no errors
+        (silent passthrough by design — see parser.py line 354)."""
+        fi = _make_file_info("file.xyz", "unknown")
+        fi.language = "unknown"
+        result = parser.parse_file(fi, b"some content here")
+        assert result.symbols == []
+        assert result.imports == []
+        assert result.parse_errors == []
+
+
+class TestContentHash:
+    def test_parse_file_stamps_content_hash(self, parser: ASTParser) -> None:
+        """Every parse path stamps SHA256(raw bytes) — the cross-run page-reuse key."""
+        import hashlib
+
+        source = b"def add(a, b):\n    return a + b\n"
+        fi = _make_file_info("pkg/math.py", "python")
+        result = parser.parse_file(fi, source)
+        assert result.content_hash == hashlib.sha256(source).hexdigest()
+
+    def test_no_grammar_fallback_stamps_content_hash(self, parser: ASTParser) -> None:
+        import hashlib
+
+        source = b"some content here"
+        fi = _make_file_info("file.xyz", "unknown")
+        fi.language = "unknown"
+        result = parser.parse_file(fi, source)
+        assert result.content_hash == hashlib.sha256(source).hexdigest()
+
+    def test_special_handler_stamps_content_hash(self, parser: ASTParser) -> None:
+        """Non-tree-sitter formats (Dockerfile & co) go through parse_special —
+        they must be stamped too."""
+        import hashlib
+
+        source = b"FROM python:3.12\nRUN pip install repowise\n"
+        fi = _make_file_info("Dockerfile", "dockerfile")
+        result = parser.parse_file(fi, source)
+        assert result.content_hash == hashlib.sha256(source).hexdigest()
+
+    def test_empty_file_stamps_content_hash(self, parser: ASTParser) -> None:
+        """sha256(b\"\") is a real, stable hash — empty files reuse like any other."""
+        import hashlib
+
+        fi = _make_file_info("pkg/__init__.py", "python")
+        result = parser.parse_file(fi, b"")
+        assert result.content_hash == hashlib.sha256(b"").hexdigest()
+
+
+class TestLanguageConfigs:
+    def test_all_supported_languages_have_config(self) -> None:
+        expected = {
+            "python",
+            "typescript",
+            "javascript",
+            "go",
+            "rust",
+            "java",
+            "cpp",
+            "c",
+            "kotlin",
+            "ruby",
+            "csharp",
+            "swift",
+            "scala",
+            "php",
+            "luau",
+        }
+        for lang in expected:
+            assert lang in LANGUAGE_CONFIGS, f"Missing config for {lang}"
+
+    def test_each_config_has_symbol_node_types(self) -> None:
+        for lang, config in LANGUAGE_CONFIGS.items():
+            assert len(config.symbol_node_types) > 0, f"{lang} has no symbol_node_types"
+
+    def test_each_config_has_visibility_fn(self) -> None:
+        for lang, config in LANGUAGE_CONFIGS.items():
+            # Must be callable
+            result = config.visibility_fn("MyClass", [])
+            assert result in ("public", "private", "protected", "internal"), (
+                f"{lang} visibility_fn returned unexpected: {result}"
+            )
+
+
+class TestArgumentCount:
+    """``CallSite.argument_count`` counts arguments, not comment tokens."""
+
+    def _calls(self, source: bytes, path: str, language: str) -> dict[str, int | None]:
+        parser = ASTParser()
+        parsed = parser.parse_file(_make_file_info(path, language), source)
+        return {c.target_name: c.argument_count for c in parsed.calls}
+
+    def test_csharp_inline_comments_are_not_arguments(self) -> None:
+        source = b"""\
+public class C
+{
+    void Run()
+    {
+        Target(
+            first,  // Action<A, B> one,
+            second, // Action<C> two,
+            third);
+        Plain(a, b);
+        None();
+    }
+}
+"""
+        counts = self._calls(source, "C.cs", "csharp")
+        assert counts["Target"] == 3
+        assert counts["Plain"] == 2
+        assert counts["None"] == 0
+
+    def test_python_inline_comment_is_not_an_argument(self) -> None:
+        source = b"""\
+def run():
+    target(
+        first,  # one
+        second,
+    )
+"""
+        assert self._calls(source, "m.py", "python")["target"] == 2
+
+
+_MODIFIER_CASES = (
+    (
+        "csharp",
+        "A.cs",
+        b"public static partial class P { [Obsolete] protected override void Impl() { } }",
+        {"P": ("public", "static", "partial"), "Impl": ("protected", "override")},
+    ),
+    (
+        "kotlin",
+        "A.kt",
+        b'open class A {\n  @Deprecated("x") override fun f() {}\n  fun g() {}\n}\n',
+        {"A": ("open",), "f": ("override",), "g": ()},
+    ),
+    (
+        "vbnet",
+        "A.vb",
+        b"Public Class A\n  Public Overrides Function F() As Integer\n    Return 1\n"
+        b"  End Function\nEnd Class\n",
+        {"F": ("public", "overrides")},
+    ),
+    ("typescript", "a.ts", b"class A extends B { override f() {} }", {"f": ("override",)}),
+    # Java writes ``@Override`` as an annotation; it stays a decorator.
+    ("java", "A.java", b"class A { @Override public void f() {} }", {"f": ()}),
+    # Scala access qualifiers name a scope, not a modifier.
+    (
+        "scala",
+        "A.scala",
+        b"class A { protected[this] def f(): Int = 1; override private[pkg] def g() = 2 }",
+        {"f": ("protected",), "g": ("override", "private")},
+    ),
+)
+
+
+@pytest.mark.parametrize(("language", "path", "source", "expected"), _MODIFIER_CASES)
+def test_declared_modifiers(
+    parser: ASTParser, language: str, path: str, source: bytes, expected: dict
+) -> None:
+    """Keyword modifiers land on ``Symbol.modifiers``; annotations do not."""
+    result = parser.parse_file(_make_file_info(path, language), source)
+    got = {s.name: s.modifiers for s in result.symbols if s.name in expected}
+    assert got == expected

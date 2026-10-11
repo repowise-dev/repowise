@@ -1,0 +1,306 @@
+"""Tests for dead code endpoints."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+from httpx import AsyncClient
+
+from repowise.core.persistence import crud
+from repowise.core.persistence.database import get_session
+from tests.unit.server.conftest import create_test_repo
+
+
+async def _insert_dead_code(session_factory, repo_id: str) -> str:
+    """Insert test dead code findings and return a finding ID."""
+    async with get_session(session_factory) as session:
+        await crud.save_dead_code_findings(
+            session,
+            repo_id,
+            [
+                {
+                    "kind": "unreachable_file",
+                    "file_path": "src/dead_module.py",
+                    "symbol_name": None,
+                    "symbol_kind": None,
+                    "confidence": 0.9,
+                    "reason": "No imports found",
+                    "lines": 50,
+                    "safe_to_delete": True,
+                    "primary_owner": "Alice",
+                    "age_days": 180,
+                    "last_commit_at": datetime(2026, 1, 5, tzinfo=UTC),
+                    "commit_count_90d": 0,
+                },
+                {
+                    "kind": "unused_export",
+                    "file_path": "src/utils.py",
+                    "symbol_name": "old_helper",
+                    "symbol_kind": "function",
+                    "confidence": 0.5,
+                    "reason": "No callers",
+                    "lines": 10,
+                    "start_line": 42,
+                    "end_line": 51,
+                    "safe_to_delete": False,
+                    "primary_owner": "Bob",
+                    "age_days": 90,
+                    "last_commit_at": datetime(2026, 6, 20, tzinfo=UTC),
+                    "commit_count_90d": 7,
+                },
+            ],
+        )
+
+    # Fetch findings to get the ID
+    async with get_session(session_factory) as session:
+        findings = await crud.get_dead_code_findings(session, repo_id)
+        return findings[0].id
+
+
+@pytest.mark.asyncio
+async def test_list_dead_code_empty(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.get(f"/api/repos/{repo['id']}/dead-code")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_dead_code_with_data(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/dead-code")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_dead_code_surfaces_staleness(client: AsyncClient, app) -> None:
+    """The web surface gets the age signal that used to reach only the agent.
+
+    ``last_commit_at`` is the staleness fact, not ``age_days`` — the latter
+    runs from the file's first commit and answers a different question.
+    """
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    data = (await client.get(f"/api/repos/{repo['id']}/dead-code")).json()
+
+    unreachable = next(f for f in data if f["kind"] == "unreachable_file")
+    assert unreachable["last_commit_at"].startswith("2026-01-05")
+    assert unreachable["commit_count_90d"] == 0
+
+    unused = next(f for f in data if f["kind"] == "unused_export")
+    assert unused["last_commit_at"].startswith("2026-06-20")
+    assert unused["commit_count_90d"] == 7
+
+
+@pytest.mark.asyncio
+async def test_list_dead_code_line_spans(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/dead-code")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    unreachable = next(f for f in data if f["kind"] == "unreachable_file")
+    assert unreachable["start_line"] is None
+    assert unreachable["end_line"] is None
+
+    unused_export = next(f for f in data if f["kind"] == "unused_export")
+    assert unused_export["start_line"] == 42
+    assert unused_export["end_line"] == 51
+
+
+@pytest.mark.asyncio
+async def test_list_dead_code_filter_by_kind(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    resp = await client.get(
+        f"/api/repos/{repo['id']}/dead-code",
+        params={"kind": "unreachable_file"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["kind"] == "unreachable_file"
+
+
+@pytest.mark.asyncio
+async def test_list_dead_code_safe_only(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    resp = await client.get(
+        f"/api/repos/{repo['id']}/dead-code",
+        params={"safe_only": True},
+    )
+    assert resp.status_code == 200
+    # The only stored-safe row is a whole file, which reads back as a review
+    # candidate: file-level findings are never deletion-ready.
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_dead_code_summary(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/dead-code/summary")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_findings"] == 2
+    # The stored-safe row is a whole file, re-derived as review-only.
+    assert data["deletable_lines"] == 0
+    assert "unreachable_file" in data["by_kind"]
+
+
+@pytest.mark.asyncio
+async def test_dead_code_summary_analyzed_at(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    url = f"/api/repos/{repo['id']}/dead-code/summary"
+
+    # Never analyzed: unknown, not fabricated.
+    assert (await client.get(url)).json()["analyzed_at"] is None
+
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+    assert (await client.get(url)).json()["analyzed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_dead_code_summary_analyzed_at_zero_findings(client: AsyncClient, app) -> None:
+    """A stage run that found nothing still reports when it ran."""
+    from repowise.core.persistence.crud import replace_dead_code_findings
+    from repowise.core.persistence.database import get_session
+
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await replace_dead_code_findings(session, repo["id"], [])
+
+    data = (await client.get(f"/api/repos/{repo['id']}/dead-code/summary")).json()
+    assert data["total_findings"] == 0
+    assert data["analyzed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_completed_job_alone_is_not_analyzed(client: AsyncClient, app) -> None:
+    """A finished index job does not prove the stage ran."""
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import GenerationJob
+
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            GenerationJob(
+                repository_id=repo["id"],
+                status="completed",
+                finished_at=datetime(2026, 1, 2, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+
+    data = (await client.get(f"/api/repos/{repo['id']}/dead-code/summary")).json()
+    assert data["analyzed_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_dead_code(client: AsyncClient, monkeypatch) -> None:
+    # Stub the executor: this test covers the endpoint contract, not the pipeline.
+    async def _noop_execute(job_id, app_state, session_factory_override=None):
+        return None
+
+    from repowise.server.routers import repos as repos_module
+
+    monkeypatch.setattr(repos_module, "execute_job", _noop_execute)
+
+    repo = await create_test_repo(client)
+    resp = await client.post(f"/api/repos/{repo['id']}/dead-code/analyze")
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["status"] == "accepted"
+    assert data["job_id"]
+
+    # The analysis runs as an index-only job through the normal job machinery.
+    job_resp = await client.get(f"/api/jobs/{data['job_id']}")
+    assert job_resp.status_code == 200
+    assert job_resp.json()["config"]["mode"] == "index_only"
+
+    # A second trigger while the job is still pending is rejected.
+    resp2 = await client.post(f"/api/repos/{repo['id']}/dead-code/analyze")
+    assert resp2.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_resolve_finding(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    finding_id = await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    resp = await client.patch(
+        f"/api/dead-code/{finding_id}",
+        json={"status": "acknowledged", "note": "Will fix later"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "acknowledged"
+    assert data["note"] == "Will fix later"
+
+
+@pytest.mark.asyncio
+async def test_resolve_finding_not_found(client: AsyncClient) -> None:
+    resp = await client.patch(
+        "/api/dead-code/nonexistent",
+        json={"status": "resolved"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resolve_finding_invalid_status(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    finding_id = await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    resp = await client.patch(
+        f"/api/dead-code/{finding_id}",
+        json={"status": "invalid_status"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_stored_safe_unreachable_file_is_review_only_on_every_surface(
+    client: AsyncClient, app
+) -> None:
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.services.attention import _dead_code_items
+
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            HealthFileMetric(
+                repository_id=repo["id"],
+                file_path="src/dead_module.py",
+                score=9.0,
+                max_ccn=1,
+                max_nesting=1,
+                nloc=50,
+                has_test_file=False,
+                module="src",
+                is_test=False,
+            )
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/files/src/dead_module.py")
+    assert resp.status_code == 200
+    assert [f["safe_to_delete"] for f in resp.json()["dead_code"]] == [False]
+
+    async with get_session(app.state.session_factory) as session:
+        items, total, _ = await _dead_code_items(session, repo["id"])
+    assert (items, total) == ([], 0)

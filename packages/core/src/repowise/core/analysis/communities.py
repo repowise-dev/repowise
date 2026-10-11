@@ -1,0 +1,778 @@
+"""Community detection on dependency graphs.
+
+Uses Leiden (graspologic) when available, falls back to Louvain (networkx).
+Supports both file-level and symbol-level community detection with:
+- Oversized community splitting (second pass on communities >25% of graph)
+- Cohesion scoring (intra-community edge density)
+- Heuristic labeling (dominant directory / keyword analysis)
+"""
+
+from __future__ import annotations
+
+import contextlib
+import inspect
+import io
+import sys
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import PurePosixPath
+from typing import Any
+
+import networkx as nx
+import structlog
+
+from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
+from repowise.core.ids import is_external
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from repowise.core.support_paths import is_example_path
+from repowise.core.test_paths import is_test_related_path
+
+log = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_MAX_COMMUNITY_FRACTION = 0.30
+_MIN_SPLIT_SIZE = 20
+
+# Edge types to include when building file-level community subgraph.
+# Was {imports, framework, dynamic, extends, implements}: "dynamic" matched no
+# real edge, and extends/implements are symbol-to-symbol so they never joined
+# two files.
+_FILE_COMMUNITY_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
+
+# Edge types to include when building symbol-level community subgraph.
+# Containment is kept here on purpose: a class and its methods belong in one
+# community.
+_SYMBOL_COMMUNITY_EDGE_TYPES = SYMBOL_USE_EDGE_TYPES | {"has_method"}
+
+# Generic directory segments excluded from heuristic labeling — the shared
+# organisational-container vocabulary lives in kg_curation next to its
+# data-driven complement (dominant_segments).
+_GENERIC_SEGMENTS = GENERIC_ORG_SEGMENTS
+
+# Keywords checked in filename stems for fallback labeling
+_LABEL_KEYWORDS = (
+    "api", "auth", "model", "service", "handler", "router", "db",
+    "cache", "worker", "util", "test", "config", "middleware", "schema",
+    "controller", "view", "store", "hook", "plugin", "adapter",
+)
+
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CommunityInfo:
+    """Metadata for a single detected community."""
+
+    community_id: int
+    label: str
+    members: list[str]
+    size: int
+    cohesion: float
+    dominant_language: str
+    #: ``cut / (2 * intra + cut)`` over the production members, lower is
+    #: tighter. ``None`` when nothing is linked. Does not decay with size.
+    conductance: float | None = None
+
+
+# ---------------------------------------------------------------------------
+# Output suppression (Windows PowerShell 5.1 ANSI fix)
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _suppress_graspologic_output():
+    """Suppress stdout/stderr during graspologic calls.
+
+    graspologic's leiden() emits ANSI escape sequences that corrupt
+    PowerShell 5.1's scroll buffer on Windows.
+    """
+    old_stderr = sys.stderr
+    try:
+        sys.stderr = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()):
+            yield
+    finally:
+        sys.stderr = old_stderr
+
+
+# ---------------------------------------------------------------------------
+# Partition (Leiden / Louvain)
+# ---------------------------------------------------------------------------
+
+
+def _directory_fallback(nodes: list[str]) -> dict[str, int]:
+    """Group nodes by first-level directory when graph-based community detection fails."""
+    dir_to_id: dict[str, int] = {}
+    result: dict[str, int] = {}
+    next_id = 1
+    for path in nodes:
+        parts = path.split("/")
+        dir_key = parts[0] if len(parts) > 1 else "__root__"
+        if dir_key not in dir_to_id:
+            dir_to_id[dir_key] = next_id
+            next_id += 1
+        result[path] = dir_to_id[dir_key]
+    return result
+
+
+def _partition(graph: nx.Graph) -> tuple[dict, str]:
+    """Run community detection. Returns ({node: community_id}, algorithm_name).
+
+    Tries Leiden (graspologic) first, falls back to Louvain (networkx),
+    then to directory-based grouping as a last resort.
+    """
+    try:
+        from graspologic.partition import leiden
+
+        leiden_kwargs: dict = {}
+        if "random_seed" in inspect.signature(leiden).parameters:
+            leiden_kwargs["random_seed"] = 42  # determinism (matches louvain's seed)
+        with _suppress_graspologic_output():
+            result = leiden(graph, **leiden_kwargs)
+        return result, "leiden"
+    except ImportError:
+        pass
+
+    # Fallback: networkx Louvain
+    try:
+        kwargs: dict = {"seed": 42, "threshold": 1e-4}
+        if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
+            kwargs["max_level"] = 10
+
+        communities = nx.community.louvain_communities(graph, **kwargs)
+        assignment = {node: cid for cid, nodes in enumerate(communities) for node in nodes}
+        return assignment, "louvain"
+    except Exception as exc:
+        log.warning("louvain_failed_using_directory_fallback", error=str(exc))
+
+    # Final fallback: directory-based grouping
+    # Sorted: _directory_fallback numbers directories in first-seen order.
+    return _directory_fallback(sorted(graph.nodes())), "directory"
+
+
+# ---------------------------------------------------------------------------
+# Oversized community splitting
+# ---------------------------------------------------------------------------
+
+
+def _split_community(
+    graph: nx.Graph, nodes: list[str],
+) -> list[list[str]]:
+    """Run a second partition pass on an oversized community subgraph."""
+    subgraph = graph.subgraph(nodes)
+    if subgraph.number_of_edges() == 0:
+        return [[n] for n in sorted(nodes)]
+    try:
+        sub_partition, _ = _partition(subgraph)
+        sub_communities: dict[int, list[str]] = {}
+        for node, cid in sub_partition.items():
+            sub_communities.setdefault(cid, []).append(node)
+        if len(sub_communities) <= 1:
+            return [sorted(nodes)]
+        return [sorted(v) for v in sub_communities.values()]
+    except Exception:
+        return [sorted(nodes)]
+
+
+def _split_oversized(
+    graph: nx.Graph,
+    communities: dict[int, list[str]],
+    max_fraction: float = _MAX_COMMUNITY_FRACTION,
+    min_split_size: int = _MIN_SPLIT_SIZE,
+) -> list[list[str]]:
+    """Split any community exceeding max_fraction of total nodes."""
+    total = sum(len(v) for v in communities.values())
+    max_size = max(min_split_size, int(total * max_fraction))
+
+    result: list[list[str]] = []
+    for nodes in communities.values():
+        if len(nodes) > max_size:
+            result.extend(_split_community(graph, nodes))
+        else:
+            result.append(nodes)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Cohesion scoring
+# ---------------------------------------------------------------------------
+
+
+def _cohesion_score(graph: nx.Graph, community_nodes: list[str]) -> float:
+    """Ratio of actual intra-community edges to maximum possible."""
+    n = len(community_nodes)
+    if n <= 1:
+        return 1.0
+    subgraph = graph.subgraph(community_nodes)
+    actual = subgraph.number_of_edges()
+    possible = n * (n - 1) / 2
+    return round(actual / possible, 4) if possible > 0 else 0.0
+
+
+def _conductance(graph: nx.Graph, community_nodes: list[str]) -> float | None:
+    """Share of the community's edge volume that crosses its boundary.
+
+    ``cohesion`` divides by ``n(n-1)/2`` and so measures size on anything
+    above a few dozen files; this compares edges leaving against edges staying.
+    """
+    members = set(community_nodes)
+    intra = 0
+    cut = 0
+    for node in members:
+        if node not in graph:
+            continue
+        for neighbor in graph.neighbors(node):
+            if neighbor in members:
+                intra += 1  # counted from both ends: 2 * intra
+            else:
+                cut += 1
+    volume = intra + cut  # intra is already doubled
+    if volume == 0:
+        return None
+    return round(cut / volume, 4)
+
+
+# ---------------------------------------------------------------------------
+# Heuristic labeling
+# ---------------------------------------------------------------------------
+
+
+def _collect_path_segments(
+    member_paths: list[str], extra_generic: frozenset[str] = frozenset()
+) -> Counter[str]:
+    """Count non-generic directory segments across all member paths.
+
+    Each path contributes at most once per segment to avoid
+    double-counting files deep in the same directory tree.
+    """
+    counter: Counter[str] = Counter()
+    for path in member_paths:
+        parts = PurePosixPath(path).parts
+        seen: set[str] = set()
+        for part in parts[:-1]:  # exclude filename
+            lower = part.lower()
+            if (
+                lower not in _GENERIC_SEGMENTS
+                and lower not in extra_generic
+                and len(lower) > 1
+                and not lower.startswith(".")
+                and lower not in seen
+            ):
+                counter[lower] += 1
+                seen.add(lower)
+    return counter
+
+
+def _best_sub_label(
+    member_paths: list[str], primary: str, extra_generic: frozenset[str] = frozenset()
+) -> str:
+    """Find the best distinguishing sub-segment within paths that contain *primary*.
+
+    Given a community labeled "web", looks at paths containing "web" and
+    picks the most common *other* non-generic segment (e.g. "components",
+    "api", "hooks") as a sub-label.
+    """
+    sub_counter: Counter[str] = Counter()
+    primary_lower = primary.lower()
+
+    for path in member_paths:
+        parts = PurePosixPath(path).parts
+        # Only consider paths that actually contain the primary segment
+        lowers = [p.lower() for p in parts[:-1]]
+        if primary_lower not in lowers:
+            continue
+        seen: set[str] = set()
+        for part in parts[:-1]:
+            lower = part.lower()
+            if (
+                lower != primary_lower
+                and lower not in _GENERIC_SEGMENTS
+                and lower not in extra_generic
+                and len(lower) > 1
+                and not lower.startswith(".")
+                and lower not in seen
+            ):
+                sub_counter[lower] += 1
+                seen.add(lower)
+
+    if sub_counter:
+        best, best_count = sub_counter.most_common(1)[0]
+        # Require at least 30% of members to share this sub-segment
+        if best_count / max(len(member_paths), 1) >= 0.3:
+            return best
+    return ""
+
+
+def _join_segments(member_paths: list[str], primary: str, sub: str) -> str:
+    """``"a/b"`` with the two segments in the order the paths nest them.
+
+    Frequency picked them, so it says nothing about which is the parent.
+    Ties keep *primary* first.
+    """
+    primary_first = 0
+    sub_first = 0
+    for path in member_paths:
+        lowers = [p.lower() for p in PurePosixPath(path).parts[:-1]]
+        if primary in lowers and sub in lowers:
+            if lowers.index(primary) <= lowers.index(sub):
+                primary_first += 1
+            else:
+                sub_first += 1
+    return f"{sub}/{primary}" if sub_first > primary_first else f"{primary}/{sub}"
+
+
+def _heuristic_label(
+    member_paths: list[str],
+    community_id: int,
+    extra_generic: frozenset[str] = frozenset(),
+) -> str:
+    """Derive a human-readable label from member file paths.
+
+    Produces labels like ``"web/components"`` or ``"core/ingestion"``.
+    When multiple communities share the same top-level segment, the
+    sub-label differentiates them. *extra_generic* carries repo-dominant
+    namespace segments (the repo's own name, ``src``…) that must never
+    become labels.
+    """
+    if not member_paths:
+        return f"cluster_{community_id}"
+
+    # Strategy 1: most common non-generic directory segment
+    seg_counter = _collect_path_segments(member_paths, extra_generic)
+
+    if seg_counter:
+        best_seg, best_count = seg_counter.most_common(1)[0]
+        if best_count / len(member_paths) >= 0.4:
+            # Try to find a distinguishing sub-segment
+            sub = _best_sub_label(member_paths, best_seg, extra_generic)
+            return _join_segments(member_paths, best_seg, sub) if sub else best_seg
+        # Two areas sharing one community: name both rather than fall through
+        # to a filename stem.
+        top = seg_counter.most_common(2)
+        if len(top) == 2 and all(c / len(member_paths) >= 0.2 for _, c in top):
+            return f"{top[0][0]}, {top[1][0]}"
+
+    # Strategy 2: keyword frequency in filenames
+    stem_counter: Counter[str] = Counter()
+    for path in member_paths:
+        stem = PurePosixPath(path).stem.lower()
+        for kw in _LABEL_KEYWORDS:
+            if kw in stem:
+                stem_counter[kw] += 1
+
+    if stem_counter:
+        best_kw, best_kw_count = stem_counter.most_common(1)[0]
+        if best_kw_count / len(member_paths) >= 0.3:
+            return best_kw
+
+    # Strategy 3: most common filename stem (excluding generic names)
+    stem_counter2: Counter[str] = Counter()
+    for path in member_paths:
+        stem = PurePosixPath(path).stem.lower()
+        if (
+            stem not in _GENERIC_SEGMENTS
+            and stem not in extra_generic
+            and len(stem) > 1
+            and not stem.startswith("__")  # __init__, __main__: not a name
+        ):
+            stem_counter2[stem] += 1
+    if stem_counter2:
+        return stem_counter2.most_common(1)[0][0]
+
+    return f"cluster_{community_id}"
+
+
+def _deduplicate_labels(
+    communities_info: dict[int, CommunityInfo],
+    extra_generic: frozenset[str] = frozenset(),
+    label_members: dict[int, list[str]] | None = None,
+) -> None:
+    """Add sub-labels to disambiguate communities that share the same label.
+
+    Mutates *communities_info* in place.  Only touches communities whose
+    label (before the ``/``) duplicates another community. *label_members*
+    narrows the paths a sub-label is drawn from (the production members);
+    without it every member counts.
+    """
+    # Group by base label (part before "/")
+    by_base: dict[str, list[int]] = {}
+    for cid, ci in communities_info.items():
+        base = ci.label.split("/")[0]
+        by_base.setdefault(base, []).append(cid)
+
+    for base, cids in by_base.items():
+        if len(cids) <= 1:
+            continue
+
+        # Multiple communities share the same base — try to differentiate
+        for cid in cids:
+            ci = communities_info[cid]
+            if "/" in ci.label:
+                continue  # already has a sub-label
+
+            paths = label_members.get(cid, ci.members) if label_members else ci.members
+            sub = _best_sub_label(paths, base, extra_generic)
+            if sub:
+                ci.label = _join_segments(paths, base, sub)
+
+        # If duplicates still remain, append the labelled member count
+        def _count(c: int) -> int:
+            return len(label_members[c]) if label_members and c in label_members else communities_info[c].size
+
+        seen_labels: dict[str, int] = {}
+        for cid in sorted(cids, key=lambda c: -_count(c)):
+            ci = communities_info[cid]
+            if ci.label in seen_labels:
+                ci.label = f"{ci.label} ({_count(cid)})"
+            seen_labels[ci.label] = cid
+
+
+def _dominant_language(
+    members: list[str], graph: nx.DiGraph,
+) -> str:
+    """Find the most common language among community members."""
+    lang_counter: Counter[str] = Counter()
+    for node_id in members:
+        data = graph.nodes.get(node_id, {})
+        lang = data.get("language")
+        if lang and lang != "unknown":
+            lang_counter[lang] += 1
+    if lang_counter:
+        return lang_counter.most_common(1)[0][0]
+    return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Test / production separation
+# ---------------------------------------------------------------------------
+
+def _is_test_node(node_id: str, data: dict) -> bool:
+    """Whether a graph file node is test material.
+
+    Reads the flag ingestion stored on the node, which was decided with the
+    file's language in hand. The path rules are the fallback for a node that
+    predates the flag. The regex this replaced matched ``test[s_/]`` unanchored,
+    so ``src/latest/api.py`` and ``protest/main.py`` were pulled out of
+    community assignment as tests (#1103).
+    """
+    if "is_test" in data:
+        return bool(data["is_test"])
+    return is_test_related_path(node_id, data.get("language"))
+
+
+def _is_example_node(node_id: str, data: dict) -> bool:
+    """Whether a graph file node is example, demo, or benchmark code.
+
+    Derived from the path rather than a stored flag. Unlike ``is_test`` there
+    is no ``is_example`` on the node, and the path is the whole signal, so this
+    does not justify a new ``FileInfo`` field and ``GraphNode`` column.
+    """
+    return is_example_path(node_id)
+
+
+def _assign_tests_to_communities(
+    test_nodes: list[str],
+    prod_assignment: dict[str, int],
+    graph: nx.DiGraph,
+) -> dict[str, int]:
+    """Assign each non-core file to the community of a file it links to.
+
+    Falls back to a shared catch-all community when no import link exists.
+    Used for tests and for example/benchmark code alike: both are real files a
+    reader may open, but neither should shape what the production communities
+    are or what they are called.
+    """
+    result: dict[str, int] = {}
+    next_cid = max(prod_assignment.values(), default=-1) + 1
+    test_community_id = next_cid  # shared fallback
+
+    for test_path in test_nodes:
+        # The community most of the linked production files belong to, one
+        # vote per linked file, either direction. Ties break on community id:
+        # edge iteration order is insertion order and varies between runs.
+        votes: Counter[int] = Counter()
+        linked = {t for _, t in graph.out_edges(test_path) if t in prod_assignment}
+        linked |= {s for s, _ in graph.in_edges(test_path) if s in prod_assignment}
+        for prod_path in linked:
+            votes[prod_assignment[prod_path]] += 1
+
+        if votes:
+            result[test_path] = min(votes, key=lambda cid: (-votes[cid], cid))
+        else:
+            result[test_path] = test_community_id
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# File-level community detection
+# ---------------------------------------------------------------------------
+
+
+def detect_file_communities(
+    graph: nx.DiGraph,
+    repo_name: str | None = None,
+) -> tuple[dict[str, int], dict[int, CommunityInfo], str]:
+    """Detect communities among file nodes.
+
+    *repo_name* is a generic segment for labelling: a monorepo repeating
+    ``packages/<x>/src/<repo>`` keeps it under ``dominant_segments``' bar.
+
+    Returns:
+        (file_assignment, communities_info, algorithm_used)
+        - file_assignment: {file_path: community_id}
+        - communities_info: {community_id: CommunityInfo}
+        - algorithm_used: "leiden" or "louvain"
+    """
+    # Extract file nodes (exclude external nodes — they're structural noise)
+    # Sorted: node order seeds the undirected graph's insertion order, and
+    # Louvain/Leiden partitions depend on iteration order even when seeded.
+    file_nodes = sorted(
+        n for n, d in graph.nodes(data=True)
+        if d.get("node_type", "file") == "file"
+    )
+
+    if not file_nodes:
+        return {}, {}, "none"
+
+    # Separate test and example files from production files. Both are clustered
+    # separately then assigned to the community of a production file they link
+    # to, preventing those directories from dominating labels and mixing
+    # unrelated production modules.
+    #
+    # Examples join tests here rather than being dropped: demos import across
+    # the whole system, so left in the partition they merge otherwise-distinct
+    # subsystems into one community and name it after the demo. They keep their
+    # nodes and their assignment, so nothing becomes unreachable.
+    non_core = {
+        n: _is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])
+        for n in file_nodes
+    }
+    prod_nodes = [n for n in file_nodes if not non_core[n]]
+    test_nodes = [n for n in file_nodes if non_core[n]]
+
+    # Build undirected subgraph from production files + relevant edges
+    undirected = nx.Graph()
+    undirected.add_nodes_from(prod_nodes)
+
+    # Sorted for the same reason: edge insertion order shifts the partition
+    # (co-change edges arrive in git-indexer thread-completion order).
+    community_edges = sorted(
+        (u, v)
+        for u, v, d in graph.edges(data=True)
+        if d.get("edge_type", "imports") in _FILE_COMMUNITY_EDGE_TYPES
+        and u in undirected
+        and v in undirected
+    )
+    undirected.add_edges_from(community_edges)
+
+    # Separate isolates
+    isolates = [n for n in undirected.nodes() if undirected.degree(n) == 0]
+    connected = [n for n in undirected.nodes() if undirected.degree(n) > 0]
+
+    raw_communities: dict[int, list[str]] = {}
+    algorithm = "none"
+
+    if connected:
+        connected_subgraph = undirected.subgraph(connected)
+        partition, algorithm = _partition(connected_subgraph)
+
+        for node, cid in partition.items():
+            raw_communities.setdefault(cid, []).append(node)
+
+    # Each isolate gets its own community
+    next_cid = max(raw_communities.keys(), default=-1) + 1
+    for node in isolates:
+        raw_communities[next_cid] = [node]
+        next_cid += 1
+
+    # Split oversized communities
+    split_lists = _split_oversized(undirected, raw_communities)
+
+    # Re-index by size descending. The rank becomes the community id, which
+    # becomes a module page's target_path, so it has to be a total order:
+    # size alone leaves same-size communities in partition-iteration order,
+    # and Leiden (tried before Louvain) returns a partition dict ordered by
+    # its own internals rather than by the node list we sorted above.
+    split_lists.sort(key=lambda members: (-len(members), min(members)))
+
+    # Build production file assignment
+    prod_assignment: dict[str, int] = {}
+    for cid, members in enumerate(split_lists):
+        for node in members:
+            prod_assignment[node] = cid
+
+    # Assign test files to their most-related production community
+    test_assignment = _assign_tests_to_communities(test_nodes, prod_assignment, graph)
+    file_assignment = {**prod_assignment, **test_assignment}
+
+    # Build community info (using all members including tests)
+    community_members: dict[int, list[str]] = {}
+    for node, cid in file_assignment.items():
+        community_members.setdefault(cid, []).append(node)
+
+    communities_info: dict[int, CommunityInfo] = {}
+    # Also build an undirected graph including test edges for cohesion scoring
+    full_undirected = nx.Graph()
+    full_undirected.add_nodes_from(file_nodes)
+    for u, v, d in graph.edges(data=True):
+        edge_type = d.get("edge_type", "imports")
+        if (
+            edge_type in _FILE_COMMUNITY_EDGE_TYPES
+            and u in full_undirected
+            and v in full_undirected
+            and not full_undirected.has_edge(u, v)
+        ):
+            full_undirected.add_edge(u, v)
+
+    # Repo-dominant namespace segments (the repo's own package name, ``src``…)
+    # are noise, not labels — same data-driven stripping as module naming.
+    generic = {s.lower() for s in dominant_segments(sorted(file_nodes))}
+    if repo_name:
+        stem = repo_name.rsplit("/", 1)[-1].lower()
+        generic |= {stem, stem.replace("-", "_"), stem.replace("_", "-")}
+    extra_generic = frozenset(generic)
+
+    # Labels and conductance come from the production members: tests were kept
+    # out of the partition so they would not shape a community, and they must
+    # not name it either. The non-core catch-all is labelled from what it has.
+    #
+    # External and framework nodes are stored as files, so they reach the
+    # partition, but they must not name a community either. They have no
+    # directory, so a big community with no dominant segment fell through to
+    # the filename-stem strategy, where eight `external:rich.*` imports share
+    # the stem `external:rich` and won: this repo's largest community was
+    # labelled after a third-party library that every view hides.
+    label_members: dict[int, list[str]] = {}
+    for cid, members in community_members.items():
+        sorted_members = sorted(members)
+        prod_members = [m for m in sorted_members if not non_core[m]]
+        owned = [m for m in prod_members if not is_external(m)]
+        label_members[cid] = owned or prod_members or sorted_members
+        communities_info[cid] = CommunityInfo(
+            community_id=cid,
+            label=_heuristic_label(label_members[cid], cid, extra_generic),
+            members=sorted_members,
+            size=len(sorted_members),
+            cohesion=_cohesion_score(full_undirected, sorted_members),
+            dominant_language=_dominant_language(sorted_members, graph),
+            conductance=_conductance(undirected, prod_members),
+        )
+
+    # Deduplicate labels — add sub-labels when multiple communities
+    # share the same base (e.g. "web" → "web/components", "web/api")
+    _deduplicate_labels(communities_info, extra_generic, label_members)
+
+    log.info(
+        "file_communities_detected",
+        total_files=len(file_nodes),
+        prod_files=len(prod_nodes),
+        test_files=len(test_nodes),
+        communities=len(communities_info),
+        algorithm=algorithm,
+    )
+
+    return file_assignment, communities_info, algorithm
+
+
+def file_community_labels(graph_builder: Any) -> dict[str, str]:
+    """``{file path: community label}`` off *graph_builder*'s cached file communities.
+
+    The refactoring detectors key foreign modules by this label, so every path
+    that writes refactoring plans (init, update, re-score, ``repowise health``)
+    must pass the same map or the same file gets a different plan. Empty when
+    community detection fails.
+    """
+    try:
+        assignment = graph_builder.community_detection()
+        info = graph_builder.community_info()
+    except Exception as exc:
+        log.debug("file_community_labels_failed", error=str(exc))
+        return {}
+    labels: dict[str, str] = {}
+    for node_id, community_id in assignment.items():
+        label = getattr(info.get(community_id), "label", None)
+        if label:
+            labels[node_id] = label
+    return labels
+
+
+# ---------------------------------------------------------------------------
+# Symbol-level community detection
+# ---------------------------------------------------------------------------
+
+
+def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
+    """Detect communities among symbol nodes using calls/heritage edges.
+
+    Returns {symbol_id: community_id}.
+    """
+    # Sorted for the same reason detect_file_communities sorts its node list:
+    # insertion order seeds the partition, and the graph's is not stable
+    # between runs. This half was left unsorted when the file half was fixed.
+    symbol_nodes = sorted(
+        n for n, d in graph.nodes(data=True)
+        if d.get("node_type") == "symbol"
+    )
+
+    if not symbol_nodes:
+        return {}
+
+    # Build undirected subgraph from call/heritage edges only
+    symbol_set = frozenset(symbol_nodes)
+    undirected = nx.Graph()
+    undirected.add_nodes_from(symbol_nodes)
+
+    community_edges = sorted(
+        (u, v)
+        for u, v, d in graph.edges(data=True)
+        if d.get("edge_type") in _SYMBOL_COMMUNITY_EDGE_TYPES
+        and u in symbol_set
+        and v in symbol_set
+    )
+    undirected.add_edges_from(community_edges)
+
+    # Separate isolates
+    connected = [n for n in undirected.nodes() if undirected.degree(n) > 0]
+
+    if not connected:
+        # No edges — each symbol is its own community
+        return {sym: i for i, sym in enumerate(sorted(symbol_nodes))}
+
+    connected_subgraph = undirected.subgraph(connected)
+    partition, _ = _partition(connected_subgraph)
+
+    # Build communities dict for re-indexing
+    raw: dict[int, list[str]] = {}
+    for node, cid in partition.items():
+        raw.setdefault(cid, []).append(node)
+
+    # Assign isolates
+    next_cid = max(raw.keys(), default=-1) + 1
+    isolates = [n for n in undirected.nodes() if undirected.degree(n) == 0]
+    for node in isolates:
+        raw[next_cid] = [node]
+        next_cid += 1
+
+    # Re-index by size descending, first member breaking ties (same total-order
+    # argument as detect_file_communities).
+    ordered = sorted(raw.values(), key=lambda members: (-len(members), min(members)))
+    result: dict[str, int] = {}
+    for cid, members in enumerate(ordered):
+        for node in members:
+            result[node] = cid
+
+    log.info(
+        "symbol_communities_detected",
+        total_symbols=len(symbol_nodes),
+        connected=len(connected),
+        communities=len(ordered),
+    )
+
+    return result

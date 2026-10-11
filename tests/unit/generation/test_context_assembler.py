@@ -1,0 +1,657 @@
+"""Tests for generation/context_assembler.py."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+
+import networkx as nx
+
+from repowise.core.generation.context_assembler import (
+    ContextAssembler,
+    FilePageContext,
+    SccPageContext,
+)
+from repowise.core.generation.models import GenerationConfig
+from repowise.core.ingestion.models import (
+    ParsedFile,
+)
+
+from .conftest import _make_file_info, _make_symbol
+
+# ---------------------------------------------------------------------------
+# _estimate_tokens
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_tokens_empty_string(sample_config):
+    assembler = ContextAssembler(sample_config)
+    assert assembler._estimate_tokens("") == 0
+
+
+def test_estimate_tokens_known_string(sample_config):
+    assembler = ContextAssembler(sample_config)
+    text = "a" * 400
+    assert assembler._estimate_tokens(text) == 100
+
+
+def test_estimate_tokens_short_string(sample_config):
+    assembler = ContextAssembler(sample_config)
+    assert assembler._estimate_tokens("abcd") == 1
+
+
+# ---------------------------------------------------------------------------
+# _trim_to_budget
+# ---------------------------------------------------------------------------
+
+
+def test_trim_to_budget_long_text_truncated(sample_config):
+    assembler = ContextAssembler(sample_config)
+    long_text = "x" * 10000
+    result = assembler._trim_to_budget(long_text, 10)
+    assert result.endswith("...[truncated]")
+    assert len(result) <= 10 * 4 + len("...[truncated]")
+
+
+def test_trim_to_budget_short_text_unchanged(sample_config):
+    assembler = ContextAssembler(sample_config)
+    short_text = "hello world"
+    result = assembler._trim_to_budget(short_text, 100)
+    assert result == short_text
+
+
+def test_trim_to_budget_zero_remaining(sample_config):
+    assembler = ContextAssembler(sample_config)
+    result = assembler._trim_to_budget("some text", 0)
+    assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# assemble_file_page
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_file_page_returns_context(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    assert isinstance(ctx, FilePageContext)
+    assert ctx.file_path == sample_parsed_file.file_info.path
+    assert ctx.language == "python"
+
+
+def test_assemble_file_page_does_not_retain_source(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics
+):
+    """No field carries the file's source text (issue #1394).
+
+    A run keeps one context per code file alive from level 2 until it ends, so
+    anything on the context is multiplied by the size of the repository. The
+    context used to carry a budget-trimmed copy of the whole file that nothing
+    read, which is what exhausted memory on large repositories. Asserted on the
+    values rather than on a field name so re-introducing the source under any
+    other name fails here too.
+    """
+    # A multi-line slice, because the per-file vocabulary legitimately keeps
+    # single words off the source and would make a one-word sentinel ambiguous.
+    body = "def sentinel_body():\n    return 41 + 1\n"
+    ctx = ContextAssembler(sample_config).assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        f"# header\n{body}".encode(),
+    )
+
+    retained = [
+        f.name
+        for f in dataclasses.fields(ctx)
+        if body in str(getattr(ctx, f.name))
+    ]
+    assert retained == []
+
+
+def test_assemble_file_page_dependents_from_graph(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """dependents = files that have in-edges to this file (files importing it)."""
+    assembler = ContextAssembler(sample_config)
+    # Add a node that imports calculator
+    path = sample_parsed_file.file_info.path
+    graph = sample_graph.copy()
+    graph.add_node("another.py")
+    graph.add_edge("another.py", path)
+    ctx = assembler.assemble_file_page(
+        sample_parsed_file,
+        graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    assert "another.py" in ctx.dependents
+
+
+def test_assemble_file_page_dependencies_from_graph(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """dependencies = files this file imports (out-edges)."""
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    assert "python_pkg/models.py" in ctx.dependencies
+    assert "python_pkg/utils.py" in ctx.dependencies
+
+
+def _semantic_edge_graph(path: str) -> nx.DiGraph:
+    """Every kind of edge a file node carries, structural or not."""
+    graph = nx.DiGraph()
+    file_nodes = (
+        path,
+        "imported.py",
+        "importer.py",
+        "type_provider.py",
+        "framework_entrypoint.py",
+        "historical_dependency.py",
+        "historical_dependent.py",
+        "external_file.py",
+    )
+    graph.add_nodes_from((node, {"node_type": "file"}) for node in file_nodes)
+    graph.add_node(f"{path}::Calculator", node_type="symbol")
+    graph.add_node("external:third-party", node_type="external")
+    graph.nodes["external_file.py"]["language"] = "external"
+
+    graph.add_edge(path, "imported.py", edge_type="imports")
+    graph.add_edge("importer.py", path, edge_type="imports")
+    graph.add_edge(path, "type_provider.py", edge_type="type_use")
+    graph.add_edge("framework_entrypoint.py", path, edge_type="framework")
+    graph.add_edge(path, f"{path}::Calculator", edge_type="defines")
+    graph.add_edge(path, "historical_dependency.py", edge_type="co_changes")
+    graph.add_edge("historical_dependent.py", path, edge_type="co_changes")
+    graph.add_edge(path, "external:third-party", edge_type="imports")
+    graph.add_edge(path, "external_file.py", edge_type="imports")
+    return graph
+
+
+def test_assemble_file_page_filters_dependency_edges_by_semantics(
+    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
+):
+    """Only structural file-to-file edges become dependencies or dependents."""
+    graph = _semantic_edge_graph(sample_parsed_file.file_info.path)
+
+    ctx = ContextAssembler(sample_config).assemble_file_page(
+        sample_parsed_file,
+        graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+
+    assert ctx.dependencies == ["imported.py", "type_provider.py"]
+    assert ctx.dependents == ["importer.py", "framework_entrypoint.py"]
+
+
+def test_assemble_file_page_token_budget_respected(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    assert ctx.estimated_tokens <= sample_config.token_budget
+
+
+def test_assemble_file_page_private_undocumented_dropped_first():
+    """Private undocumented symbols are dropped first when over budget."""
+    tiny_config = GenerationConfig(max_tokens=256, token_budget=5)
+    assembler = ContextAssembler(tiny_config)
+
+    fi = _make_file_info()
+    public_sym = _make_symbol(name="public_func", visibility="public", signature="a" * 100)
+    private_undoc = _make_symbol(
+        name="_private", visibility="private", docstring=None, signature="b" * 100
+    )
+    parsed = ParsedFile(
+        file_info=fi,
+        symbols=[public_sym, private_undoc],
+        imports=[],
+        exports=[],
+        docstring=None,
+        parse_errors=[],
+    )
+    g = nx.DiGraph()
+    g.add_node(fi.path)
+    ctx = assembler.assemble_file_page(parsed, g, {}, {}, {}, b"")
+    symbol_names = [s["name"] for s in ctx.symbols]
+    # Private undocumented should not appear (budget too small)
+    assert "_private" not in symbol_names
+
+
+# ---------------------------------------------------------------------------
+# assemble_symbol_spotlight
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_symbol_spotlight_callers(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics
+):
+    assembler = ContextAssembler(sample_config)
+    symbol = sample_parsed_file.symbols[0]  # Calculator class
+    # Add caller
+    graph = sample_graph.copy()
+    graph.add_edge("caller.py", sample_parsed_file.file_info.path)
+    ctx = assembler.assemble_symbol_spotlight(
+        symbol, sample_parsed_file, graph_metrics["pagerank"], graph
+    )
+    assert "caller.py" in ctx.callers
+
+
+def test_spotlight_importers_match_the_file_page(
+    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
+):
+    """One importer count per file: co-change and containment edges count on neither."""
+    graph = _semantic_edge_graph(sample_parsed_file.file_info.path)
+    assembler = ContextAssembler(sample_config)
+    file_ctx = assembler.assemble_file_page(
+        sample_parsed_file,
+        graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    spot_ctx = assembler.assemble_symbol_spotlight(
+        sample_parsed_file.symbols[0], sample_parsed_file, graph_metrics["pagerank"], graph
+    )
+
+    assert spot_ctx.callers == file_ctx.dependents == ["importer.py", "framework_entrypoint.py"]
+
+
+def test_assemble_symbol_spotlight_no_callers(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics
+):
+    assembler = ContextAssembler(sample_config)
+    symbol = sample_parsed_file.symbols[0]
+    ctx = assembler.assemble_symbol_spotlight(
+        symbol, sample_parsed_file, graph_metrics["pagerank"], sample_graph
+    )
+    # calculator.py is not imported by any file in sample_graph
+    assert isinstance(ctx.callers, list)
+
+
+# ---------------------------------------------------------------------------
+# assemble_module_page
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_module_page_total_symbols(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    assembler = ContextAssembler(sample_config)
+    fc = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    ctx = assembler.assemble_module_page("python_pkg", "python", [fc], sample_graph)
+    assert ctx.total_symbols == len(fc.symbols)
+
+
+def test_assemble_module_page_public_symbols(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    assembler = ContextAssembler(sample_config)
+    fc = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    ctx = assembler.assemble_module_page("python_pkg", "python", [fc], sample_graph)
+    assert ctx.public_symbols >= 0
+
+
+def test_assemble_module_page_ranks_its_entry_points(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """``module_page.j2`` renders these under an "Entry points" heading.
+
+    The input is ``file_contexts`` order — whatever the selector handed over —
+    so without ranking the heading led with whichever entry point happened to
+    be assembled first. Here that is a deep glue leaf.
+    """
+    from dataclasses import replace
+
+    assembler = ContextAssembler(sample_config)
+    base = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    contexts = [
+        replace(base, file_path="src/features/api/index.ts", is_entry_point=True),
+        replace(base, file_path="src/util.py", is_entry_point=False),
+        replace(base, file_path="src/main.py", is_entry_point=True),
+    ]
+    ctx = assembler.assemble_module_page("python_pkg", "python", contexts, sample_graph)
+
+    assert ctx.entry_points == ["src/main.py", "src/features/api/index.ts"]
+
+
+# ---------------------------------------------------------------------------
+# assemble_scc_page
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_scc_page_cycle_description_contains_files(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    assembler = ContextAssembler(sample_config)
+    fc = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    scc_files = [sample_parsed_file.file_info.path, "python_pkg/models.py"]
+    ctx = assembler.assemble_scc_page("scc-0", scc_files, [fc])
+    assert isinstance(ctx, SccPageContext)
+    for f in scc_files:
+        assert f in ctx.cycle_description
+
+
+# ---------------------------------------------------------------------------
+# assemble_repo_overview
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_repo_overview_top_files_sorted(
+    sample_config, sample_graph, sample_repo_structure
+):
+    assembler = ContextAssembler(sample_config)
+    pagerank = {"python_pkg/calculator.py": 0.5, "python_pkg/models.py": 0.3}
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure, pagerank, [], {n: 0 for n in sample_graph.nodes()}
+    )
+    if len(ctx.top_files_by_pagerank) >= 2:
+        assert ctx.top_files_by_pagerank[0].score >= ctx.top_files_by_pagerank[1].score
+
+
+def test_assemble_repo_overview_leaves_out_crates_and_frameworks(
+    sample_config, sample_repo_structure
+):
+    """PageRank is computed over the whole graph, externals included.
+
+    A Rust crate arrives as ``external:serde::Deserialize`` — the separator is
+    part of the crate path, not a symbol — and a framework node as
+    ``framework:typo3-core``. Reading either as one of the repository's own
+    files puts a third-party name at the top of the generated overview.
+    """
+    assembler = ContextAssembler(sample_config)
+    pagerank = {
+        "external:serde::Deserialize": 0.9,
+        "framework:typo3-core": 0.8,
+        "external:react": 0.7,
+        "python_pkg/calculator.py": 0.5,
+    }
+    ctx = assembler.assemble_repo_overview(sample_repo_structure, pagerank, [], {})
+    assert [f.path for f in ctx.top_files_by_pagerank] == ["python_pkg/calculator.py"]
+
+
+def test_assemble_repo_overview_circular_dep_count(
+    sample_config, sample_graph, sample_repo_structure
+):
+    assembler = ContextAssembler(sample_config)
+    # Provide one true SCC (len > 1) and one singleton
+    sccs = [frozenset(["a.py", "b.py"]), frozenset(["c.py"])]
+    ctx = assembler.assemble_repo_overview(sample_repo_structure, {}, sccs, {})
+    assert ctx.circular_dependency_count == 1
+
+
+# ---------------------------------------------------------------------------
+# assemble_api_contract
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_file_page_threads_decision_records(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    assembler = ContextAssembler(sample_config)
+    decisions = [{"title": "Use SQLAlchemy", "decision": "ORM", "rationale": "type-safe"}]
+    ctx = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+        decision_records=decisions,
+    )
+    assert ctx.decision_records == decisions
+
+
+def test_assemble_module_page_threads_phase2_signals(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    assembler = ContextAssembler(sample_config)
+    fc = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    decisions = [{"title": "X", "decision": "Y", "rationale": ""}]
+    dead = [
+        {"symbol_name": "foo", "reason": "no callers", "confidence": 0.9, "safe_to_delete": True}
+    ]
+    externals = [{"name": "fastapi", "category": "framework", "ecosystem": "pypi"}]
+    ctx = assembler.assemble_module_page(
+        "auth/login",
+        "python",
+        [fc],
+        sample_graph,
+        decision_records=decisions,
+        dead_code_findings=dead,
+        external_systems=externals,
+        community_label="auth/login",
+        community_cohesion=0.72,
+    )
+    assert ctx.decision_records == decisions
+    assert ctx.dead_code_findings == dead
+    assert ctx.external_systems == externals
+    assert ctx.community_label == "auth/login"
+    assert ctx.community_cohesion == 0.72
+    # key_files derives from the file contexts we passed in
+    assert ctx.key_files and ctx.key_files[0]["path"] == fc.file_path
+
+
+def test_assemble_repo_overview_threads_external_systems_and_decisions(
+    sample_config, sample_graph, sample_repo_structure
+):
+    assembler = ContextAssembler(sample_config)
+    externals = [{"name": "redis", "category": "datastore", "ecosystem": "pypi"}]
+    decisions = [{"title": "Adopt Redis", "decision": "session cache", "rationale": "low latency"}]
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure,
+        {},
+        [],
+        {},
+        external_systems=externals,
+        decision_records=decisions,
+    )
+    assert ctx.external_systems == externals
+    assert ctx.decision_records == decisions
+
+
+def test_assemble_api_contract_raw_content_budgeted(sample_config, sample_parsed_file):
+    assembler = ContextAssembler(sample_config)
+    huge_bytes = b"x" * 100_000
+    ctx = assembler.assemble_api_contract(sample_parsed_file, huge_bytes)
+    assert assembler._estimate_tokens(ctx.raw_content) <= sample_config.token_budget
+
+
+def test_assemble_api_contract_language_matches(sample_config, sample_parsed_file):
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_api_contract(sample_parsed_file, b"content")
+    assert ctx.language == sample_parsed_file.file_info.language
+
+
+# ---------------------------------------------------------------------------
+# Dependency edges name other files, never this one
+# ---------------------------------------------------------------------------
+
+
+def test_foreign_edge_rejects_this_files_own_symbols():
+    """The graph carries file->symbol edges, so a file is its own successor.
+
+    Left in, those symbol nodes dominated the rendered dependency list: they
+    were 70% of every dependency line on the file pages, and on some pages
+    they were the entire list.
+    """
+    from repowise.core.analysis.dead_code.file_reachability import is_foreign_edge
+
+    path = "pkg/mod.py"
+    assert not is_foreign_edge("pkg/mod.py", path)
+    assert not is_foreign_edge("pkg/mod.py::Thing", path)
+    assert not is_foreign_edge("pkg/mod.py::Thing::method", path)
+    assert not is_foreign_edge("external:requests", path)
+
+
+def test_foreign_edge_keeps_real_neighbours():
+    from repowise.core.analysis.dead_code.file_reachability import is_foreign_edge
+
+    path = "pkg/mod.py"
+    assert is_foreign_edge("pkg/other.py", path)
+    assert is_foreign_edge("pkg/other.py::Thing", path)
+    # A path that merely shares a prefix is a different file.
+    assert is_foreign_edge("pkg/mod_extra.py", path)
+
+
+def test_coupled_modules_name_the_package_not_the_parent_directory(sample_config):
+    """A coupled module must be somewhere a reader can navigate to.
+
+    The parent directory of a coupled file is a location, but on a monorepo it
+    is an arbitrarily deep one that names no subsystem. The package boundary is
+    the unit the rest of the wiki groups by.
+    """
+    assembler = ContextAssembler(sample_config)
+    git_meta_map = {
+        "packages/core/pyproject.toml": {},
+        "packages/ui/package.json": {},
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/deep/nested/widget.ts",
+                        "co_change_count": 5,
+                        "structural": "unexplained",
+                    }
+                ]
+            )
+        },
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, git_meta_map
+    )
+
+    assert coupled_modules == [{"path": "packages/ui", "count": 1}]
+
+
+def test_coupled_modules_survive_a_changed_files_only_git_map(sample_config, tmp_path):
+    """An incremental run passes only the changed files' git metadata.
+
+    Deriving package roots from that map alone finds no manifest, and every
+    coupled partner then falls back to the same top-level bucket. The roots
+    come off the checkout so the answer does not depend on what changed.
+    """
+    (tmp_path / "packages" / "core").mkdir(parents=True)
+    (tmp_path / "packages" / "ui").mkdir(parents=True)
+    (tmp_path / "packages" / "core" / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "packages" / "ui" / "package.json").write_text("{}\n")
+
+    assembler = ContextAssembler(sample_config, repo_path=tmp_path)
+    changed_only = {
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/deep/widget.ts",
+                        "co_change_count": 5,
+                        "structural": "unexplained",
+                    }
+                ]
+            )
+        }
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, changed_only
+    )
+
+    assert coupled_modules == [{"path": "packages/ui", "count": 1}]
+
+
+def test_coupled_modules_exclude_pairs_the_graph_explains(sample_config):
+    """The page says these modules co-change *without* a dependency between
+    them, so a pair the graph accounts for must not be listed."""
+    assembler = ContextAssembler(sample_config)
+    git_meta_map = {
+        "packages/core/pyproject.toml": {},
+        "packages/ui/package.json": {},
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/imported.ts",
+                        "co_change_count": 9,
+                        "structural": "corroborated",
+                    },
+                    {
+                        "file_path": "packages/ui/src/lockfile-ish.json",
+                        "co_change_count": 9,
+                        "structural": "not_applicable",
+                    },
+                ]
+            )
+        },
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, git_meta_map
+    )
+
+    assert coupled_modules == []

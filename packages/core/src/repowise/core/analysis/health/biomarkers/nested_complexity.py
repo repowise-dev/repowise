@@ -1,0 +1,52 @@
+"""Nested Complexity — deeply indented control flow.
+
+Flags functions whose maximum nesting depth exceeds 4. Deep nesting is
+strongly correlated with defect density in published studies.
+"""
+
+from __future__ import annotations
+
+from ..complexity.dispatch import judged_nesting
+from ..models import Severity
+from .base import BiomarkerResult, FileContext
+
+
+class NestedComplexityDetector:
+    name = "nested_complexity"
+    category = "structural_complexity"
+
+    _NESTING_THRESHOLD = 4
+
+    def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
+        out: list[BiomarkerResult] = []
+        for fn in ctx.all_functions:
+            depth = judged_nesting(fn)
+            if depth < self._NESTING_THRESHOLD:
+                continue
+            severity = (
+                Severity.CRITICAL
+                if depth >= 7
+                else Severity.HIGH
+                if depth >= 5
+                else Severity.MEDIUM
+            )
+            out.append(
+                BiomarkerResult(
+                    biomarker_type=self.name,
+                    severity=severity,
+                    function_name=fn.name,
+                    line_start=fn.start_line,
+                    line_end=fn.end_line,
+                    details={
+                        "max_nesting": fn.max_nesting,
+                        "ccn": fn.ccn,
+                        "cognitive": fn.cognitive,
+                        "dispatch_share": fn.dispatch_share,
+                    },
+                    reason=f"{fn.name} nests {fn.max_nesting} levels deep",
+                )
+            )
+        return out
+
+
+BIOMARKER = NestedComplexityDetector()

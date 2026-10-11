@@ -1,0 +1,52 @@
+{
+ "repo": "httpx",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 53% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "python": {
+    "edges_per_file": 2.22,
+    "files": 60,
+    "import_edges": 133,
+    "import_support": "full",
+    "orphan_files": 3,
+    "orphan_ratio": 0.05,
+    "resolution_rate": 1.0
+   }
+  },
+  "dominant_language": "python",
+  "entry_points": [
+   "httpx/_transports/wsgi.py",
+   "httpx/_transports/asgi.py"
+  ],
+  "modules": {
+   "count": 3,
+   "max_size": 52,
+   "min_size": 9,
+   "names": [
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "httpx/_transports/wsgi.py",
+   "httpx/_transports/asgi.py",
+   "httpx/_models.py",
+   "httpx/_types.py",
+   "httpx/_transports/base.py",
+   "httpx/_urls.py",
+   "httpx/_exceptions.py",
+   "httpx/_utils.py",
+   "httpx/_config.py",
+   "httpx/_auth.py",
+   "tests/conftest.py"
+  ]
+ }
+}

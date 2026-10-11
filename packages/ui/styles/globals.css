@@ -1,0 +1,941 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Bind Tailwind's `dark:` variant to next-themes' `.dark` class. Without
+   this, Tailwind v4 defaults `dark:` to prefers-color-scheme — utilities
+   would follow the OS appearance instead of the in-app Light/Dark toggle. */
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * @repowise-dev/ui — canonical design tokens (design tokens).
+ *
+ * Three-tier token model:
+ *   1. Primitives — raw brand ramps (theme-independent), in @theme.
+ *   2. Semantic   — purpose-named tokens; registered in @theme at their
+ *                   LIGHT values (so Tailwind v4 generates utilities and
+ *                   :root defaults to light) and overridden under `.dark`.
+ *   3. Component  — graph / React Flow / data-viz tokens, mostly derived
+ *                   from semantic tokens via var() so they auto-theme.
+ *
+ * Theme contract: `:root` = light (default), `.dark` (class on <html>,
+ * managed by next-themes) = dark overrides. Every theme-switched token has
+ * an explicit value in @theme (light) and a matching override in `.dark`.
+ * Derived tokens reference others via var() and need no override.
+ *
+ * Backward-compat: every token name that existed before the redesign is
+ * preserved (parity-gated). Consumers can still override individual tokens
+ * by declaring their own @theme block after importing this file.
+ *
+ * @source tells Tailwind v4 to scan component source for utility classes
+ * so consumers pick them up without re-declaring the path.
+ */
+
+@source "../src/**/*.{ts,tsx}";
+
+@theme {
+  /* ================================================================== */
+  /* TIER 1 — Primitive ramps (theme-independent; never used directly)  */
+  /* ================================================================== */
+  --color-sunset-50: #fff4ed;
+  --color-sunset-100: #ffe6d5;
+  --color-sunset-200: #ffc4b1;
+  --color-sunset-300: #f7a56e;
+  --color-sunset-400: #f2a03d;
+  --color-sunset-500: #f27f3d;
+  --color-sunset-600: #e0651f;
+  --color-sunset-700: #c04e14;
+  --color-sunset-800: #8c3d35;
+  --color-sunset-900: #5e2a22;
+
+  --color-plum-50: #f4f1f8;
+  --color-plum-100: #e7e1f0;
+  --color-plum-200: #cfc3df;
+  --color-plum-300: #a98fc4;
+  --color-plum-400: #826aa0;
+  --color-plum-500: #58436c;
+  --color-plum-600: #473659;
+  --color-plum-700: #362945;
+  --color-plum-800: #261c32;
+  --color-plum-900: #1a1320;
+
+  --color-clay: #8c3d35;
+  --color-peach: #ffc4b1;
+  --color-cream: #fce9dd;
+  --color-amber: #f2a03d;
+
+  /* ================================================================== */
+  /* TIER 2 — Semantic tokens (LIGHT defaults; `.dark` overrides below) */
+  /* ================================================================== */
+
+  /* Core surfaces — warm paper root / pure-white cards. Elevated and inset
+     are near-neutral so raised rows and wells don't stack peach on peach. */
+  --color-bg-root: #fbf6f1;
+  --color-bg-surface: #ffffff;
+  --color-bg-elevated: #f7f4f1;
+  --color-bg-overlay: #ffffff;
+  --color-bg-inset: #f0ebe6;
+  /* A well measured from the overlay plane rather than from root. Light mode
+     needs no separate value: overlay is white, so the same inset already
+     recesses correctly inside a dialog. See the dark block for why it exists. */
+  --color-bg-inset-on-overlay: #f0ebe6;
+  /* Selected row / tab / chip ground. Neutral ink alpha: orange belongs on
+     the indicator (bar, underline, dot), not on the whole ground. */
+  --color-bg-selected: rgba(36, 27, 44, 0.06);
+  --color-bg-selected-hover: rgba(36, 27, 44, 0.09);
+
+  /* Borders — plum-tinted hairlines */
+  --color-border-default: rgba(88, 67, 108, 0.12);
+  --color-border-hover: rgba(88, 67, 108, 0.22);
+  --color-border-active: rgba(176, 107, 18, 0.9);
+
+  /* Text — plum-near-black on warm paper */
+  --color-text-primary: #241b2c;
+  --color-text-secondary: #5e5360;
+  --color-text-tertiary: #8c7f88;
+  --color-text-inverse: #ffffff;
+  --color-text-on-accent: #241b2c;
+
+  /* Accent — warm orange */
+  --color-accent-primary: #a16215;
+  --color-accent-fill: #f59520;
+  --color-accent-fill-hover: #e0850f;
+  --color-accent-hover: #824f10;
+  --color-accent-muted: rgba(245, 149, 32, 0.07);
+  --color-accent-secondary: #58436c;
+
+  /* Model work — the plum accent doing one named job.
+     `--color-accent-secondary` is also a qualitative chart slot (donut wedges,
+     sigma edge kinds, the category ramp), so it is aliased here rather than
+     used directly: a Generate button and a donut wedge should not be the same
+     token even while they are the same hue, and this is the seam to split them
+     at if the two ever need to diverge.
+
+     Foreground is `--color-text-inverse`, NOT `--color-text-on-accent`. The
+     latter is dark in both themes because it was tuned for the orange fill;
+     on light-mode plum it lands at 1.92:1, a hard AA failure. `text-inverse`
+     flips with the theme and clears AA on both (8.63:1 light, 6.81:1 dark). */
+  --color-model: var(--color-accent-secondary);
+  --color-text-on-model: var(--color-text-inverse);
+  --color-model-hover: var(--color-plum-600);
+  --color-model-muted: color-mix(in srgb, var(--color-accent-secondary) 14%, transparent);
+
+  /* Share steps — the one palette for a share-of-whole bar (ProportionBar):
+     ink stepped toward the well, largest share first, `tail` for the
+     collapsed rest. No hue, so a proportion never reads as navigation (orange),
+     model work (plum) or a health verdict (green/amber/red). Steps 1-5 clear
+     3:1 against the page and a card in both themes; the tail does not and is
+     always named in the legend.
+
+     Per theme because the same mix that holds on cream fades out on
+     near-black. */
+  --color-share-1: color-mix(in srgb, var(--color-text-primary) 86%, var(--color-bg-inset));
+  --color-share-2: color-mix(in srgb, var(--color-text-primary) 74%, var(--color-bg-inset));
+  --color-share-3: color-mix(in srgb, var(--color-text-primary) 63%, var(--color-bg-inset));
+  --color-share-4: color-mix(in srgb, var(--color-text-primary) 54%, var(--color-bg-inset));
+  --color-share-5: color-mix(in srgb, var(--color-text-primary) 47%, var(--color-bg-inset));
+  --color-share-tail: color-mix(in srgb, var(--color-text-primary) 20%, var(--color-bg-inset));
+  /* Supporting cast beside an accent series. Same idea, no hue. */
+  --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
+  --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
+  --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 22%, var(--color-bg-inset));
+
+  /* Confidence system */
+  --color-confidence-fresh: #1d8155;
+  --color-confidence-stale: #856700;
+  --color-confidence-outdated: #b23a2e;
+
+  /* Semantic status */
+  --color-success: #1d8155;
+  /* Yellower than the accent so a warning never reads as a selected state. */
+  --color-warning: #856700;
+  --color-error: #b23a2e;
+  --color-info: #3f6ea5; /* muted blue — distinct from the plum accent-secondary */
+  --color-caution: #a8821f; /* between warning and success; medium severity / fair score band */
+
+  /* Canvas node ramp — the severity ramp as FILL, for the health galaxy's
+     thousands of overlapping discs.
+
+     The semantic vars above are ink: tuned to stay readable as small coloured
+     type against the page. That is a different job, and used as fill they fail
+     differently in each theme. Against the dark root the ink has to be high
+     luminance, so a field of it is emissive rather than printed. Against this
+     cream root `warning` and `caution` land at nearly the same hue and
+     lightness: harmless when the two are never adjacent as type, fatal as
+     neighbouring bands, where it erased the middle of the ramp.
+
+     Same red / amber / gold / green family, chroma and value pulled back
+     together, and the amber and gold steps separated by hue as well as
+     lightness. Fill only: pills, badges and text keep the ink vars, so the
+     map's red is deliberately not byte-identical to the pill's. Excellent
+     and Good separate here by value, because on a canvas two thousand
+     tiles of one green cannot be told apart by a word. */
+  --color-node-at-risk: #9e3226;
+  --color-node-needs-work: #ad5a19;
+  --color-node-fair: #b3872a;
+  --color-node-good: #2a7a54;
+  --color-node-excellent: #17603f;
+  /* No signal under the active lens. This was mixed a third of the way toward
+     the root, which recedes correctly against near-black and washes out to a
+     ghost against cream. One value cannot serve both directions. */
+  --color-node-neutral: #d2cac4;
+
+  /* Refactoring type accents — a qualitative palette (NOT semantic). Five
+     well-separated hues so the types stay distinguishable as dots / rails /
+     chips across the Refactoring surface. Don't fold these back into the
+     amber-family semantic vars (accent-primary / caution / warning) — that is
+     exactly what made extract-class / move-method / break-cycle indistinct. */
+  --color-refactor-extract-class: #b9651b; /* amber */
+  --color-refactor-extract-helper: #1d8155; /* green */
+  --color-refactor-extract-method: #0e7490; /* teal */
+  --color-refactor-move-method: #6d4aa6; /* purple */
+  --color-refactor-break-cycle: #b5396f; /* magenta */
+  --color-refactor-split-file: #3f6ea5; /* blue */
+
+  /* Aliases — short names used in component class strings. Keep in sync. */
+  --color-fresh: var(--color-confidence-fresh);
+  --color-stale: var(--color-confidence-stale);
+  --color-outdated: var(--color-confidence-outdated);
+  --color-accent: var(--color-accent-primary);
+  --color-accent-blue: var(--color-accent-primary);
+  --color-border-accent: var(--color-accent-primary);
+
+  /* ================================================================== */
+  /* TIER 3 — Graph / data-viz (derived; auto-theme via var())          */
+  /* ================================================================== */
+  --color-accent-graph: var(--color-accent-fill);
+  --color-risk-low: var(--color-success);
+  --color-risk-medium: var(--color-warning);
+  --color-risk-high: var(--color-error);
+  --color-node-documented: var(--color-success);
+  --color-node-undocumented: #9a8da0; /* light; overridden in .dark */
+  --viz-node-stroke: rgba(36, 27, 44, 0.25); /* halo so nodes read on bg */
+
+  /* Mermaid / generated diagrams — blueprint look: ink blocks on a faint
+     grid, dashed connectors, brand-orange entry node. */
+  --color-diagram-node-fill: #241b2c; /* ink plum block */
+  --color-diagram-node-fill-2: #4a4152; /* recessed gray-plum ink (supporting cast) */
+  --color-diagram-node-text: #fbf6f1; /* warm paper on ink */
+  --color-diagram-node-border: #241b2c;
+  --color-diagram-edge: #4a3d59; /* plum line, dashed */
+
+  /* KG canvas node faces — light mode is "blueprint drawn ON the paper":
+     warm-white cards with a crisp ink outline (user pick, 2026-06-05);
+     dark mode aliases back to the solid ink blocks. Mermaid keeps using
+     the diagram-node tokens above. */
+  --color-kg-node-fill: #fffdf8; /* warm white card */
+  --color-kg-node-fill-2: #f3ece2; /* cream-taupe supporting card */
+  --color-kg-node-text: #241b2c; /* dark plum ink text */
+  --color-kg-node-border: #241b2c; /* ink outline */
+  --color-kg-node-border-2: #8c7f88; /* faded ink outline (supporting) */
+  --color-diagram-cluster-border: #826aa0; /* plum-400 */
+  --color-diagram-grid: rgba(245, 149, 32, 0.10); /* faint orange grid */
+
+  /* Zoom canvas — premium "floating card" surfaces (Linear/Stripe idiom):
+     clean cards on a faint dot-grid, hairline borders + soft shadow for depth,
+     role shown as a small status dot (not a colored frame). Kept separate from
+     the kg-node "blueprint" tokens so the C4 view that consumes those is
+     untouched. LIGHT: white cards on warm paper; DARK overrides below. */
+  --color-zoom-card-fill: #ffffff; /* leaf (file) card */
+  --color-zoom-card-fill-2: #f7f4f1; /* container (folder/group/layer) card */
+  --color-zoom-card-text: #241b2c;
+  --color-zoom-card-border: rgba(88, 67, 108, 0.14); /* hairline */
+  --color-zoom-card-border-hover: rgba(88, 67, 108, 0.28);
+  --color-zoom-card-shadow: rgba(36, 27, 44, 0.10); /* soft elevation */
+  --color-zoom-edge: rgba(36, 27, 44, 0.20); /* neutral connector */
+  --color-zoom-edge-strong: rgba(36, 27, 44, 0.38); /* tight coupling */
+  --color-zoom-card-rule: rgba(36, 27, 44, 0.05); /* faint notebook ruled lines */
+  /* Wash painted over the shared /kg-card-paper.jpg photo on each card (canvas
+     equivalent of --kg-card-texture). Alpha = 1 - paper strength: at 0.82 the
+     ruled-paper grain shows through ~18%, matching the KG cards' feel. */
+  --color-zoom-card-paper-wash: rgba(255, 255, 255, 0.82);
+  /* Graph-paper backdrop for the canvas: faint minor lines with a slightly
+     firmer major line every few cells, for a premium "designed surface" feel. */
+  --color-zoom-grid: rgba(36, 27, 44, 0.045);
+  --color-zoom-grid-strong: rgba(36, 27, 44, 0.08);
+
+  /* Language colors (canonical brand hues — theme-independent) */
+  --color-lang-python: #3776ab;
+  --color-lang-typescript: #3178c6;
+  --color-lang-go: #00add8;
+  --color-lang-rust: #dea584;
+  --color-lang-java: #ed8b00;
+  --color-lang-cpp: #00599c;
+  --color-lang-config: #6b7280;
+  --color-lang-other: #8b5cf6;
+
+  /* Edge colors (graph edges) — remapped to the new palette */
+  --color-edge-imports: var(--color-accent-fill);
+  --color-edge-calls: var(--color-success);
+  --color-edge-inherits: #826aa0; /* plum-400 */
+  --color-edge-implements: #c85aa0; /* warm magenta */
+  --color-edge-co-change: #7c5cc4;
+
+  /* Community families — 12 warm/plum-anchored hues for graph clustering.
+     LIGHT values are declared in a plain `:root {}` block below (NOT here in
+     @theme) because they are referenced *only* dynamically — getCommunityFamily
+     in shared/use-theme-tokens.ts builds `--color-community-${n}` strings at
+     runtime, so Tailwind v4 (which tree-shakes @theme vars with no static
+     reference) would prune communities 2–12 from the emitted light CSS. The
+     `.dark` overrides live in plain CSS already, which is why dark never broke. */
+
+  /* C4 / graph canvas surfaces — consumed via the `THEME` object in
+     c4/graph-primitives, which can't see component classes. Previously these
+     names were undefined, so the canvas fell back to hardcoded dark navy in
+     BOTH themes; aliasing them to theme-aware surfaces fixes light mode. */
+  --color-bg-canvas: var(--color-bg-inset);
+  --color-canvas-dot: rgba(36, 27, 44, 0.08);
+  /* Graph-paper ground under a node-link canvas. Stronger than canvas-dot,
+     which is a scatter mark: a 1px ring at that alpha is below threshold. */
+  --color-canvas-grid: rgba(36, 27, 44, 0.10);
+  --color-bg-glass: rgba(255, 255, 255, 0.72);
+  /* Neutral hover washes for canvas-adjacent chrome (rows, chips, stubs) —
+     plum-alpha on paper, lavender-alpha on dark (same idiom as canvas-dot). */
+  --color-bg-wash: rgba(36, 27, 44, 0.05);
+  --color-bg-wash-hover: rgba(36, 27, 44, 0.1);
+  /* Faint grounds for a success/error quantity — a filled bar segment, not a
+     status pill (rule 9 killed those). Referenced lazily off the themed
+     --color-success / --color-error, like --color-table-divider, so one
+     definition covers both themes. The churn ledger used to inline these as
+     hardcoded rgba fallbacks behind undefined token names, which meant a
+     paper-theme green sitting on the dark ramp. */
+  --color-success-muted: color-mix(in srgb, var(--color-success) 12%, transparent);
+  --color-error-muted: color-mix(in srgb, var(--color-error) 14%, transparent);
+  --color-warning-muted: color-mix(in srgb, var(--color-warning) 8%, transparent);
+  --color-border-subtle: var(--color-border-default);
+  /* Faint hairline for table row dividers — half the weight of a normal
+     border so rows whisper while the header rule still reads. References the
+     themed --color-border-default lazily, so it adapts in dark mode too. */
+  --color-table-divider: color-mix(in srgb, var(--color-border-default) 50%, transparent);
+  --color-text-muted: var(--color-text-tertiary);
+
+  /* Viz state colors (selection / diff) — brand-aligned + theme-aware */
+  --color-viz-selection: var(--color-accent-fill);
+  --color-viz-diff-changed: var(--color-error);
+  --color-viz-diff-affected: var(--color-warning);
+
+  /* Savings surfaces — two categorical hues distinguishing the distill ledger
+     from MCP-tool answers in the Costs savings card. Plum + brand-orange so the
+     split reads in both themes without a third brand color. */
+  --color-savings-distill: var(--color-accent-fill);
+  --color-savings-mcp: var(--color-accent-secondary);
+
+  /* ================================================================== */
+  /* Signature gradients (theme-independent)                            */
+  /* ================================================================== */
+  --gradient-sunset: linear-gradient(135deg, #58436c 0%, #f59520 55%, #f7a94d 100%);
+  --gradient-ember: linear-gradient(135deg, #f59520 0%, #f7a94d 100%);
+  --gradient-peach: linear-gradient(160deg, #ffc4b1 0%, #f59520 100%);
+  --gradient-plum: linear-gradient(135deg, #362945 0%, #58436c 100%);
+
+  /* Soft saturated -> pale warm gradient (the "smooth two-tone" style):
+     brand orange melting into a warm peach. For brand chips, icon blobs,
+     small accent panels, avatars, selected/active art. Dark text reads on
+     the whole sweep. Product empty states stay on the neutral planes. */
+  --gradient-warm: linear-gradient(135deg, #f59520 0%, #ffd9b0 100%);
+
+  /* ================================================================== */
+  /* Elevation — warm/plum-tinted shadows (LIGHT; `.dark` overrides)    */
+  /* ================================================================== */
+  --shadow-sm: 0 1px 2px rgba(36, 27, 44, 0.06);
+  --shadow-md: 0 2px 8px rgba(36, 27, 44, 0.08), 0 1px 2px rgba(36, 27, 44, 0.06);
+  --shadow-lg: 0 8px 24px rgba(36, 27, 44, 0.1), 0 2px 6px rgba(36, 27, 44, 0.06);
+  --shadow-xl: 0 16px 48px rgba(36, 27, 44, 0.14), 0 4px 12px rgba(36, 27, 44, 0.08);
+  --shadow-button: 0 1px 2px rgba(214, 127, 16, 0.22);
+
+  /* Card elevation dial: cards float on a hairline + soft shadow rather than
+     reading as flat outlined boxes. Kept at `sm` so the lift is felt, not
+     seen — anything heavier turns a dense dashboard into a pile of panels.
+     `.dark` inherits this via its own --shadow-sm override. */
+  --card-shadow: var(--shadow-sm);
+
+  /* ================================================================== */
+  /* Non-color tokens (theme-independent)                               */
+  /* ================================================================== */
+  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", "Fira Code", monospace;
+  /* Serif display face for docs/wiki headings (loaded via next/font as
+     --font-lora; Georgia fallback keeps SSR/storybook surfaces sane). */
+  --font-serif: var(--font-lora), "Lora", Georgia, serif;
+
+  /* Micro sizes for dense chrome: `caption` (10px) for uppercase micro-labels
+     and axis ticks, `2xs` (11px) for secondary metadata one step under xs.
+     Use these instead of arbitrary text-[10px]/text-[11px] brackets.
+     `xs` and `sm` sit on the product scan ladder (52/22/18/15/12/10, see the
+     design language): 12px secondary copy and 15px body. They were 13 and
+     14px, which put every caption and body line off the ladder. */
+  --text-caption: 0.625rem;
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.9375rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
+
+  --leading-tight: 1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.75;
+
+  --spacing-1: 0.25rem;
+  --spacing-2: 0.5rem;
+  --spacing-3: 0.75rem;
+  --spacing-4: 1rem;
+  --spacing-5: 1.25rem;
+  --spacing-6: 1.5rem;
+  --spacing-8: 2rem;
+  --spacing-10: 2.5rem;
+  --spacing-12: 3rem;
+  --spacing-16: 4rem;
+
+  /* Page-level rhythm: outer padding + gap between major sections. */
+  --page-pad: var(--spacing-6);
+  --section-gap: var(--spacing-6);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /*
+   * Stacking order, low to high. Two groups: *surfaces*, which own a region of
+   * the page, and *floating layers*, which are transient and anchored to a
+   * control that already lives on one of those surfaces.
+   *
+   * Floating layers therefore sit above every surface. Radix portals a Select,
+   * Popover and Tooltip to document.body, so inside a Dialog they are siblings
+   * of the dialog portal rather than children of it, and nothing but z-index
+   * decides which paints on top. With --z-dropdown below --z-modal, the wiki
+   * style Select in the Add Repository dialog opened underneath the dialog's
+   * own overlay.
+   *
+   * --z-command is above --z-modal because the command palette opens over
+   * dialogs; note it currently hardcodes calc(var(--z-modal) + 1) instead of
+   * reading this token, so --z-dropdown has to clear that value too.
+   * Toasts stay above everything, floating layers included.
+   */
+  --z-base: 0;
+  --z-elevated: 10;
+  --z-sidebar: 30;
+  --z-modal: 40;
+  --z-command: 50;
+  --z-dropdown: 55;
+  --z-toast: 60;
+
+  --sidebar-width: 260px;
+  --context-panel-width: 280px;
+  --content-max-width: 768px;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-inout: cubic-bezier(0.87, 0, 0.13, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+}
+
+/* -------------------------------------------------------------------- */
+/* DARK overrides — only the theme-switched tokens                       */
+/* -------------------------------------------------------------------- */
+
+.dark {
+  /* Neutral graphite base — a true dark gray (near-zero hue) so nothing reads
+     blue, green, or plum. The surface ramp climbs root -> surface -> elevated
+     -> overlay so the sidebar, breadcrumb bar, cards, tables and modals all
+     read as distinct layers off the same tokens. Light mode is unchanged.
+
+     The whole ramp sits lower than it used to (root was #1a1a1b, surface
+     #232325). Two reasons. Reading surfaces are the base plane, and on the
+     docs page the old values made the reading column the *darkest* of the
+     three panels, recessed between two lighter ones — a trench, which is the
+     opposite of how a reading UI should stack. And near-black gives the accent
+     and the semantic colours somewhere to go: the same #f59520 that looked
+     muddy on graphite carries on this ground.
+
+     Elevated and overlay used to sit at #1c1c1f and #26262a. Overlay four
+     steps clear of root made every dialog and the chat dock read as a light
+     grey card floating on a near-black app rather than as the same material
+     lifted. They are compressed here so the ramp still climbs monotonically
+     but a modal reads as a raised plane, not a different palette.
+
+     `inset` stays below root: a code well recessed into the page is correct,
+     and that is where most of them are. It is wrong only when the well is
+     nested inside a floating panel, where dropping from overlay to #0a0a0b is
+     a cliff and the box reads as pure black. `inset-on-overlay` is that same
+     recess measured from the overlay plane instead of from root; dialogs
+     repoint `--color-bg-inset` at it so a well inside a modal sits just under
+     the modal rather than under the page. */
+  --color-bg-root: #0e0e0f;
+  --color-bg-surface: #141416;
+  --color-bg-elevated: #191a1c;
+  --color-bg-overlay: #1f1f23;
+  --color-bg-inset: #0a0a0b;
+  --color-bg-inset-on-overlay: #141417;
+  --color-bg-selected: rgba(255, 255, 255, 0.06);
+  --color-bg-selected-hover: rgba(255, 255, 255, 0.09);
+
+  /* Neutral hairlines so card / sidebar / table edges read on the gray base.
+     Lighter than before: the same alpha reads considerably louder against
+     near-black, and at 0.10 every border on the page started shouting. */
+  --color-border-default: rgba(255, 255, 255, 0.07);
+  --color-border-hover: rgba(255, 255, 255, 0.15);
+  --color-border-active: rgba(245, 149, 32, 0.55);
+
+  /* Neutral gray text (no plum / blue cast) to match the graphite chrome.
+     Secondary carries body copy and is lifted the most — on the old ground it
+     was grey-on-grey and read flat at any length. */
+  --color-text-primary: #f2f2f3;
+  --color-text-secondary: #b4b4b9;
+  --color-text-tertiary: #7c7c82;
+  --color-text-inverse: #0e0e0f;
+  --color-text-on-accent: #0e0e0f;
+
+  --color-accent-primary: #f59520;
+  --color-accent-fill: #f59520;
+  --color-accent-fill-hover: #f7a94d;
+  --color-accent-hover: #f7a94d;
+  --color-accent-muted: rgba(245, 149, 32, 0.16);
+  --color-accent-secondary: #a98fc4;
+  /* Plum is dark in light mode and light in dark mode, so its hover step has
+     to move the opposite way. `model` and `model-muted` derive through var()
+     and need no override; see the light block for the family. */
+  --color-model-hover: var(--color-plum-200);
+
+  /* Share steps — see the light block. Light ink on near-black stays visible
+     lower down, so the steps spread wider before the 3:1 floor. */
+  --color-share-1: color-mix(in srgb, var(--color-text-primary) 86%, var(--color-bg-inset));
+  --color-share-2: color-mix(in srgb, var(--color-text-primary) 71%, var(--color-bg-inset));
+  --color-share-3: color-mix(in srgb, var(--color-text-primary) 58%, var(--color-bg-inset));
+  --color-share-4: color-mix(in srgb, var(--color-text-primary) 48%, var(--color-bg-inset));
+  --color-share-5: color-mix(in srgb, var(--color-text-primary) 40%, var(--color-bg-inset));
+  --color-share-tail: color-mix(in srgb, var(--color-text-primary) 18%, var(--color-bg-inset));
+  --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 70%, var(--color-bg-inset));
+  --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 45%, var(--color-bg-inset));
+  --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));
+
+  --color-confidence-fresh: #34d399;
+  --color-confidence-stale: #e8b339;
+  --color-confidence-outdated: #e06a5a;
+
+  --color-success: #34d399;
+  --color-warning: #e8b339;
+  --color-error: #e06a5a;
+  --color-info: #7da7d9; /* muted blue — distinct from the plum accent-secondary */
+  --color-caution: #d9b04a;
+
+  /* Canvas node ramp (dark) — see the light block for why this is not the ink.
+     Deeper and less saturated than the semantic vars so a field of thousands
+     reads as pigment rather than as light. */
+  --color-node-at-risk: #b0544b;
+  --color-node-needs-work: #bd7c42;
+  --color-node-fair: #a89453;
+  --color-node-good: #42906f;
+  --color-node-excellent: #5cb389;
+  --color-node-neutral: #333336;
+
+  /* Refactoring type accents — qualitative palette (dark theme, brighter). */
+  --color-refactor-extract-class: #f59520; /* amber */
+  --color-refactor-extract-helper: #34d399; /* green */
+  --color-refactor-extract-method: #22d3ee; /* cyan */
+  --color-refactor-move-method: #b58cf0; /* purple */
+  --color-refactor-break-cycle: #ec6fa6; /* magenta */
+  --color-refactor-split-file: #7da7d9; /* blue */
+
+  --color-node-undocumented: #6f6678;
+  --viz-node-stroke: rgba(222, 210, 235, 0.22);
+
+  /* Mermaid / generated diagrams — dark: raised plum blocks on subtle grid.
+     Border alpha 0.45: the boundary (not the fill) carries the 3:1 non-text
+     separation on the near-black canvas — see contrast_check.py. */
+  --color-diagram-node-fill: #322a3e;
+  --color-diagram-node-fill-2: #261f30; /* recessed ink (supporting cast) */
+  --color-diagram-node-text: #eeeaf4;
+  --color-diagram-node-border: rgba(222, 210, 235, 0.45);
+
+  /* KG node faces — dark keeps the solid ink blocks (alias the ink tokens) */
+  --color-kg-node-fill: var(--color-diagram-node-fill);
+  --color-kg-node-fill-2: var(--color-diagram-node-fill-2);
+  --color-kg-node-text: var(--color-diagram-node-text);
+  --color-kg-node-border: var(--color-diagram-node-border);
+  --color-kg-node-border-2: var(--color-diagram-node-border);
+  --color-diagram-edge: #b3a6c4; /* lavender line, dashed */
+  --color-diagram-cluster-border: #a98fc4;
+  --color-diagram-grid: rgba(222, 210, 235, 0.05);
+
+  /* Zoom canvas — dark: elevated graphite cards on the near-black canvas.
+     These are literals rather than var() references because the canvas
+     renderer reads them into WebGL, but they have to move with the surface
+     ramp or the cards float above a ground that has dropped beneath them. */
+  --color-zoom-card-fill: #191a1c; /* leaf card (bg-elevated) */
+  --color-zoom-card-fill-2: #141416; /* container card (bg-surface) */
+  --color-zoom-card-text: #f2f2f3;
+  --color-zoom-card-border: rgba(255, 255, 255, 0.10);
+  --color-zoom-card-border-hover: rgba(255, 255, 255, 0.20);
+  --color-zoom-card-shadow: rgba(0, 0, 0, 0.45);
+  --color-zoom-edge: rgba(255, 255, 255, 0.16);
+  --color-zoom-edge-strong: rgba(255, 255, 255, 0.30);
+  --color-zoom-card-rule: rgba(255, 255, 255, 0.06);
+  /* Heavier wash in dark (matches the KG dark texture): the light paper photo
+     only reads as ~10% relief so cards stay graphite instead of washing out. */
+  --color-zoom-card-paper-wash: rgba(43, 44, 46, 0.90);
+  --color-zoom-grid: rgba(255, 255, 255, 0.03);
+  --color-zoom-grid-strong: rgba(255, 255, 255, 0.055);
+
+  /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
+     flip on their own; only the explicit rgbas need a dark override). */
+  --color-canvas-dot: rgba(255, 255, 255, 0.05);
+  --color-canvas-grid: rgba(255, 255, 255, 0.10);
+  /* Tracks --color-bg-surface. It was rgba(35,35,37,.72) — the #232325 that
+     bg-surface used to be, left behind when the dark ramp moved in July 2026 —
+     so every glass chip on every canvas was painting a graphite that exists
+     nowhere else in the app, and read as a lighter plane floating over the new
+     near-black. Same alpha, current colour. */
+  --color-bg-glass: rgba(20, 20, 22, 0.72);
+  --color-bg-wash: rgba(255, 255, 255, 0.04);
+  --color-bg-wash-hover: rgba(255, 255, 255, 0.08);
+
+  /* Edge hue that isn't a pure var() derivation gets a dark-legible tweak */
+  --color-edge-inherits: #a98fc4; /* plum-300 reads better on dark */
+
+  /* Community families — dark variants (lifted/desaturated to read on the
+     near-black plum canvas; soft = a deeper in-family tint for satellites). */
+  --color-community-1: #f59520;  --color-community-1-soft: #c97a1a;  /* brand orange */
+  --color-community-2: #a98fc4;  --color-community-2-soft: #7d659c;  /* plum */
+  --color-community-3: #e06a5a;  --color-community-3-soft: #b04c3e;  /* terracotta */
+  --color-community-4: #a9bb6f;  --color-community-4-soft: #7e8f4e;  /* olive/sage */
+  --color-community-5: #d795b1;  --color-community-5-soft: #a86a87;  /* dusty rose */
+  --color-community-6: #8fa3c0;  --color-community-6-soft: #66799a;  /* slate blue */
+  --color-community-7: #d9b04a;  --color-community-7-soft: #a8821f;  /* gold */
+  --color-community-8: #b8a68e;  --color-community-8-soft: #8a7a66;  /* taupe */
+  --color-community-9: #c4708f;  --color-community-9-soft: #94506a;  /* wine */
+  --color-community-10: #eba585; --color-community-10-soft: #c4734f; /* peach */
+  --color-community-11: #6fb3ab; --color-community-11-soft: #4a8780; /* deep teal */
+  --color-community-12: #a79db3; --color-community-12-soft: #786f84; /* charcoal mauve */
+
+  /* Deep shadows with a neutral inset hairline for premium depth */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* -------------------------------------------------------------------- */
+/* Community families (LIGHT) — plain CSS, NOT @theme                     */
+/* -------------------------------------------------------------------- */
+/* These 12 warm/plum-anchored hues are resolved *only* at runtime by
+   getCommunityFamily (shared/use-theme-tokens.ts builds the var names
+   dynamically), so they MUST NOT live in @theme — Tailwind v4 tree-shakes
+   @theme vars that have no static reference, which previously pruned
+   communities 2–12 from light mode. Declaring them in a plain `:root {}`
+   keeps them in the emitted CSS, mirroring how `.dark` declares them.
+   `hub` colors community centroids; `-soft` tints satellites. One cool
+   counterpoint (slate blue / deep teal) is deliberate for 12-way
+   distinguishability. Verified against --color-bg-canvas in
+   docs/design/contrast_check.py. `.dark` overrides above. */
+:root {
+  --color-community-1: #c0641a;  --color-community-1-soft: #f7a94d;  /* brand orange (deepened for 3:1 on warm canvas) */
+  --color-community-2: #58436c;  --color-community-2-soft: #826aa0;  /* plum */
+  --color-community-3: #b23a2e;  --color-community-3-soft: #cf6a55;  /* terracotta */
+  --color-community-4: #6b7a3d;  --color-community-4-soft: #90a05e;  /* olive/sage */
+  --color-community-5: #b06a86;  --color-community-5-soft: #cf93ab;  /* dusty rose */
+  --color-community-6: #4a5d7a;  --color-community-6-soft: #71849f;  /* slate blue */
+  --color-community-7: #a8821f;  --color-community-7-soft: #c9a544;  /* gold */
+  --color-community-8: #8a7a66;  --color-community-8-soft: #a89882;  /* taupe */
+  --color-community-9: #7a2f4a;  --color-community-9-soft: #9e5570;  /* wine */
+  --color-community-10: #b85a38; --color-community-10-soft: #eba585; /* peach (deepened for 3:1 on warm canvas) */
+  --color-community-11: #2f6b66; --color-community-11-soft: #558f89; /* deep teal */
+  --color-community-12: #5e5360; --color-community-12-soft: #84778a; /* charcoal mauve */
+
+  /* KG card texture — ruled-paper photo under a warm translucent wash
+     (keeps text contrast); asset in packages/web/public. Light only; the
+     .dark override resolves to none (solid ink blocks). Plain :root, not
+     @theme: referenced only from inline styles, so Tailwind would
+     tree-shake it out of @theme (same lesson as the community tokens). */
+  --kg-card-texture: linear-gradient(rgba(255, 253, 248, 0.78), rgba(255, 253, 248, 0.78)),
+    url("/kg-card-paper.jpg");
+}
+
+.dark {
+  /* Dark mode keeps the texture too (user pick, 2026-06-05): the same
+     photo under a heavy plum-ink wash — 0.85 alpha of the ink fill
+     (#322a3e), so the crumple/ruled lines read as subtle relief while
+     --color-kg-node-text stays ≥4.5:1 (composite ≈ #4D4658, pair in
+     contrast_check.py). Declared AFTER the :root block so the cascade is
+     unambiguous (same pattern as color-scheme below). */
+  --kg-card-texture: linear-gradient(rgba(50, 42, 62, 0.85), rgba(50, 42, 62, 0.85)),
+    url("/kg-card-paper.jpg");
+}
+
+/* -------------------------------------------------------------------- */
+/* Color-scheme — dynamic, fixes native controls & scrollbars            */
+/* -------------------------------------------------------------------- */
+
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------------------------- */
+/* Base Styles                                                           */
+/* -------------------------------------------------------------------- */
+
+body {
+  background-color: var(--color-bg-root);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* -------------------------------------------------------------------- */
+/* Scrollbar — plum-tinted thumb (light) / warm-white (dark)             */
+/* -------------------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(88, 67, 108, 0.25);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(88, 67, 108, 0.4);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+/* -------------------------------------------------------------------- */
+/* Focus Ring                                                            */
+/* -------------------------------------------------------------------- */
+
+:focus-visible {
+  outline: 2px solid var(--color-accent-fill);
+  outline-offset: 2px;
+}
+
+/* -------------------------------------------------------------------- */
+/* Selection                                                             */
+/* -------------------------------------------------------------------- */
+
+/* Own value rather than accent-muted: that ground is deliberately faint now
+   and a selection has to stay visible over it. */
+::selection {
+  background-color: rgba(245, 149, 32, 0.22);
+  color: var(--color-text-primary);
+}
+
+.dark ::selection {
+  background-color: rgba(245, 149, 32, 0.28);
+}
+
+/* -------------------------------------------------------------------- */
+/* Reduced Motion                                                        */
+/* -------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* -------------------------------------------------------------------- */
+/* Typography: prose overrides for wiki content (token-driven)           */
+/* -------------------------------------------------------------------- */
+
+.prose {
+  --tw-prose-body: var(--color-text-secondary);
+  --tw-prose-headings: var(--color-text-primary);
+  --tw-prose-links: var(--color-accent-primary);
+  --tw-prose-code: var(--color-text-primary);
+  --tw-prose-pre-bg: var(--color-bg-inset);
+  --tw-prose-pre-code: var(--color-text-primary);
+  --tw-prose-bold: var(--color-text-primary);
+  --tw-prose-counters: var(--color-text-tertiary);
+  --tw-prose-bullets: var(--color-text-tertiary);
+  --tw-prose-hr: var(--color-border-default);
+  --tw-prose-quotes: var(--color-text-secondary);
+  --tw-prose-quote-borders: var(--color-border-default);
+  --tw-prose-th-borders: var(--color-border-default);
+  /* Faint row hairlines to match the app-wide table spec; the header rule
+     (th-borders) stays at full weight so the head still separates cleanly. */
+  --tw-prose-td-borders: var(--color-table-divider);
+}
+
+/* Markdown data tables: quiet row hover, square edges (consistent with the
+   app table spec). Header weight + borders come from the prose vars above. */
+.prose tbody tr {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.prose tbody tr:hover {
+  background: var(--color-bg-elevated);
+}
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.prose pre {
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+.prose a {
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.prose a:hover {
+  border-bottom-color: var(--color-accent-primary);
+}
+
+/* -------------------------------------------------------------------- */
+/* Shiki dual themes (light: github-light · dark: vesper)                */
+/* Tokens are emitted as --shiki-light/--shiki-dark CSS vars             */
+/* (defaultColor: false); pick one per theme so code stays readable on   */
+/* warm paper. Backgrounds stay token-driven via the pre wrappers.       */
+/* -------------------------------------------------------------------- */
+
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+  font-style: var(--shiki-light-font-style, inherit);
+  font-weight: var(--shiki-light-font-weight, inherit);
+  text-decoration: var(--shiki-light-text-decoration, inherit);
+}
+
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+  font-style: var(--shiki-dark-font-style, inherit);
+  font-weight: var(--shiki-dark-font-weight, inherit);
+  text-decoration: var(--shiki-dark-text-decoration, inherit);
+}
+
+/* -------------------------------------------------------------------- */
+/* Tabular numbers for data tables                                       */
+/* -------------------------------------------------------------------- */
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------------- */
+/* React Flow theme (token-driven; light default + dark overrides)       */
+/* -------------------------------------------------------------------- */
+
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-minimap-background-color: var(--color-bg-surface);
+  --xy-minimap-mask-background: rgba(36, 27, 44, 0.4);
+  --xy-minimap-mask-stroke: none;
+  --xy-controls-button-background-color: var(--color-bg-elevated);
+  --xy-controls-button-background-color-hover: var(--color-bg-overlay);
+  --xy-controls-button-border-color: var(--color-border-default);
+  --xy-controls-button-color: var(--color-text-secondary);
+  --xy-controls-button-color-hover: var(--color-text-primary);
+  --xy-edge-stroke: rgba(214, 127, 16, 0.35);
+  --xy-edge-stroke-selected: var(--color-accent-graph);
+  --xy-node-border-radius: var(--radius-lg);
+}
+
+.dark .react-flow {
+  --xy-minimap-mask-background: rgba(0, 0, 0, 0.6);
+  --xy-edge-stroke: rgba(245, 149, 32, 0.3);
+}
+
+@keyframes graph-path-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 149, 32, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px rgba(245, 149, 32, 0.2);
+  }
+}
+
+@keyframes graph-marching-ants {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+/* -------------------------------------------------------------------- */
+/* Loading sweep                                                         */
+/* -------------------------------------------------------------------- */
+
+/* The `Skeleton` primitive paints a still fill. Motion belongs to the
+   pending REGION, not to each box: ~190 boxes on their own clocks is what
+   reads as busy. Wrapping a region in `SkeletonRegion` runs one slow pass
+   over every skeleton inside it.
+
+   `background-attachment: fixed` anchors the gradient to the viewport, so
+   every box in the region shows its own slice of ONE moving plane and the
+   highlight travels across the region rather than restarting inside each
+   box. Where a browser degrades fixed attachment to scroll, the sweep falls
+   back to per-box — still one shared clock, just not one shared plane.
+
+   Under reduced motion the global rule near "Reduced Motion" above collapses
+   this to a single 0.01ms pass, leaving the still silhouette. */
+
+:root {
+  /* Light: elevated is warm paper, so the sweep reads as a shadow passing. */
+  --color-skeleton-sweep: var(--color-bg-inset);
+}
+
+.dark {
+  /* Dark: the ground is near-black, so the sweep reads as light passing. */
+  --color-skeleton-sweep: var(--color-bg-overlay);
+}
+
+.skeleton-region [data-skeleton] {
+  background-image: linear-gradient(
+    100deg,
+    transparent 42%,
+    var(--color-skeleton-sweep) 50%,
+    transparent 58%
+  );
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  background-size: 200vw 100%;
+  animation: skeleton-sweep 1.9s ease-in-out infinite;
+}
+
+/* The highlight sits at 50% of a 200vw-wide image, so it lands at viewport
+   x = 100vw + position. Offsetting -120vw..20vw walks it from just off the
+   left edge to just off the right, once per cycle. Anywhere the image does
+   not reach, `no-repeat` leaves the flat fill — which is the resting state,
+   so there is no seam. */
+@keyframes skeleton-sweep {
+  from {
+    background-position: -120vw 0;
+  }
+  to {
+    background-position: 20vw 0;
+  }
+}

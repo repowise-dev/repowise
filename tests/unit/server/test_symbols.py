@@ -1,0 +1,196 @@
+"""Tests for /api/symbols endpoints."""
+
+from __future__ import annotations
+
+import pytest
+from httpx import AsyncClient
+
+from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import WikiSymbol, _new_uuid
+from tests.unit.server.conftest import create_test_repo
+
+
+async def _insert_symbol(session_factory, repo_id: str, **overrides) -> str:
+    """Insert a test symbol and return its DB id."""
+    defaults = {
+        "id": _new_uuid(),
+        "repository_id": repo_id,
+        "file_path": "src/main.py",
+        "symbol_id": "src/main.py::main",
+        "name": "main",
+        "qualified_name": "src.main.main",
+        "kind": "function",
+        "signature": "def main() -> None",
+        "start_line": 1,
+        "end_line": 10,
+        "visibility": "public",
+        "language": "python",
+    }
+    defaults.update(overrides)
+    sym_id = defaults["id"]
+
+    async with get_session(session_factory) as session:
+        session.add(WikiSymbol(**defaults))
+
+    return sym_id
+
+
+@pytest.mark.asyncio
+async def test_search_symbols_empty(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.get("/api/symbols", params={"repo_id": repo["id"]})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 0
+    assert payload["items"] == []
+    assert payload["has_more"] is False
+
+
+@pytest.mark.asyncio
+async def test_search_symbols_by_name(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_symbol(app.state.session_factory, repo["id"])
+
+    resp = await client.get("/api/symbols", params={"repo_id": repo["id"], "q": "main"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    data = payload["items"]
+    assert len(data) == 1
+    assert data[0]["name"] == "main"
+    assert data[0]["kind"] == "function"
+    # New importance enrichment fields should be populated.
+    assert data[0]["importance_score"] is not None
+    assert data[0]["importance_components"] is not None
+
+
+@pytest.mark.asyncio
+async def test_search_symbols_by_kind(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="MyClass",
+        symbol_id="src/main.py::MyClass",
+        kind="class",
+    )
+
+    resp = await client.get("/api/symbols", params={"repo_id": repo["id"], "kind": "class"})
+    assert resp.status_code == 200
+    data = resp.json()["items"]
+    assert len(data) == 1
+    assert data[0]["kind"] == "class"
+
+
+@pytest.mark.asyncio
+async def test_search_symbols_by_file_path(client: AsyncClient, app) -> None:
+    """The ``file_path`` filter scopes results to a single source file —
+    powers the hotspot-row → top-symbols drill-down."""
+    repo = await create_test_repo(client)
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="alpha",
+        symbol_id="src/a.py::alpha",
+        file_path="src/a.py",
+    )
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="beta",
+        symbol_id="src/b.py::beta",
+        file_path="src/b.py",
+    )
+
+    resp = await client.get(
+        "/api/symbols",
+        params={"repo_id": repo["id"], "file_path": "src/a.py"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["name"] == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_name_exact(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_symbol(app.state.session_factory, repo["id"])
+
+    resp = await client.get("/api/symbols/by-name/main", params={"repo_id": repo["id"]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "main"
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_name_fuzzy(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="authenticate_user",
+        symbol_id="src/auth.py::authenticate_user",
+    )
+
+    resp = await client.get("/api/symbols/by-name/auth", params={"repo_id": repo["id"]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) >= 1
+
+
+@pytest.mark.asyncio
+async def test_get_symbol_by_db_id(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    sym_id = await _insert_symbol(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/symbols/{sym_id}")
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "main"
+
+
+@pytest.mark.asyncio
+async def test_get_symbol_not_found(client: AsyncClient) -> None:
+    resp = await client.get("/api/symbols/nonexistent")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_search_symbols_treats_underscore_literally(client: AsyncClient, app) -> None:
+    """``_`` in a query is a character, not a LIKE single-char wildcard.
+
+    Without escaping, searching ``a_b`` also returns ``axb`` — which reads as
+    the search being broken, and is how most Python names are spelled.
+    """
+    repo = await create_test_repo(client)
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="load_config",
+        symbol_id="src/main.py::load_config",
+        qualified_name="src.main.load_config",
+    )
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="loadXconfig",
+        symbol_id="src/main.py::loadXconfig",
+        qualified_name="src.main.loadXconfig",
+    )
+
+    resp = await client.get("/api/symbols", params={"repo_id": repo["id"], "q": "load_config"})
+    assert resp.status_code == 200
+    names = {item["name"] for item in resp.json()["items"]}
+    assert names == {"load_config"}
+
+
+@pytest.mark.asyncio
+async def test_search_symbols_treats_percent_literally(client: AsyncClient, app) -> None:
+    """A bare ``%`` must not turn into "match every symbol"."""
+    repo = await create_test_repo(client)
+    await _insert_symbol(app.state.session_factory, repo["id"])
+
+    resp = await client.get("/api/symbols", params={"repo_id": repo["id"], "q": "%"})
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0

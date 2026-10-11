@@ -1,0 +1,140 @@
+name: Publish to PyPI
+
+on:
+  push:
+    # Match release tags like v0.26.0 but NOT the extension's vscode-v* tags
+    # (which also start with "v"). Requiring a digit right after the "v" keeps
+    # the two tag namespaces from triggering each other.
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: write  # needed for creating GitHub releases
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the Next.js frontend as a standalone tarball
+  # ---------------------------------------------------------------------------
+  build-web:
+    name: Build Web UI
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --workspace packages/web
+
+      - name: Build Next.js (standalone)
+        run: npm run build --workspace packages/web
+        env:
+          NEXT_PUBLIC_REPOWISE_API_URL: ""
+
+      - name: Package standalone output
+        run: |
+          STANDALONE=packages/web/.next/standalone
+          # Copy static assets into standalone (Next.js requirement)
+          cp -r packages/web/.next/static $STANDALONE/packages/web/.next/static
+          [ -d packages/web/public ] && cp -r packages/web/public $STANDALONE/packages/web/public || true
+          # Flatten: move the nested server into a clean directory
+          mkdir -p /tmp/repowise-web
+          cp $STANDALONE/packages/web/server.js /tmp/repowise-web/
+          cp -r $STANDALONE/packages/web/.next /tmp/repowise-web/.next
+          [ -d $STANDALONE/packages/web/public ] && cp -r $STANDALONE/packages/web/public /tmp/repowise-web/public || true
+          cp -r $STANDALONE/node_modules /tmp/repowise-web/node_modules 2>/dev/null || true
+          [ -d $STANDALONE/packages/web/node_modules ] && cp -r $STANDALONE/packages/web/node_modules/* /tmp/repowise-web/node_modules/ 2>/dev/null || true
+          # Create tarball
+          cd /tmp/repowise-web && tar -czf /tmp/repowise-web.tar.gz .
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repowise-web
+          path: /tmp/repowise-web.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Build the Python package
+  # ---------------------------------------------------------------------------
+  build-python:
+    name: Build Python package
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # ---------------------------------------------------------------------------
+  # Create GitHub release with web UI tarball
+  # ---------------------------------------------------------------------------
+  release:
+    name: Create GitHub Release
+    needs: [build-web, build-python]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: repowise-web
+          path: ./artifacts/
+
+      - name: Download Python dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: ./dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/repowise-web.tar.gz
+            dist/*
+          generate_release_notes: true
+
+  # ---------------------------------------------------------------------------
+  # Publish to PyPI
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish to PyPI
+    # Gate PyPI publish on BOTH builds so a web-build failure can never leave a
+    # half-shipped release (wheel on PyPI but no GitHub release / web tarball).
+    needs: [build-web, build-python]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing (OIDC)
+
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

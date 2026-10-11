@@ -1,0 +1,363 @@
+"""Language capability registry — parity goldens and derivation pins.
+
+Per-language knowledge (test filename conventions, entry stems,
+import-support tiers, layer hints) lives on the ``LanguageSpec`` registry;
+``generation/layers.py``, ``generation/tour.py``, the traverser, and
+``analysis/kg_curation.py`` consume registry derivations.
+
+Two kinds of test live here:
+
+1. **Parity goldens** — the derived unions are pinned exactly. Any spec
+   edit that changes a union must update the golden *consciously*: these
+   sets steer test detection, entry scoring, and layer inference globally.
+
+2. **Derivation pins** — constants that used to be drifting hard-coded
+   literals (``_CODE_SUFFIXES``, ``non_code_entry_languages()``) are now registry
+   derivations; the pins assert the derivation relationship and its key
+   membership so a regression back to drift cannot land silently.
+"""
+
+from __future__ import annotations
+
+from repowise.core.analysis.kg_curation import _CODE_SUFFIXES
+from repowise.core.entry_candidacy import non_code_entry_languages
+from repowise.core.generation.tour import _ENTRY_FILENAME_STEMS
+from repowise.core.ingestion.languages.registry import REGISTRY
+
+# ---------------------------------------------------------------------------
+# Parity goldens — derived unions == historical literals
+# ---------------------------------------------------------------------------
+
+
+class TestParityGoldens:
+    def test_entry_filename_stems_match_historical_set(self) -> None:
+        assert frozenset(
+            {
+                "index",
+                "main",
+                "app",
+                "server",
+                "mod",
+                "manage",
+                "wsgi",
+                "asgi",
+                "cli",
+                "__main__",
+                "bootstrap",
+            }
+        ) == _ENTRY_FILENAME_STEMS
+
+    def test_test_stem_prefixes_match_historical_set(self) -> None:
+        assert set(REGISTRY.test_stem_prefixes()) == {"test_"}
+
+    def test_test_stem_suffixes_match_historical_set(self) -> None:
+        # "_unittest" (C/C++ GoogleTest convention) was a conscious
+        # addition to the historical {"_test", "_spec"} union, and so are the
+        # C/C++ test-helper stems (cord_test_helpers.h, log_basic_test_impl.inc).
+        assert set(REGISTRY.test_stem_suffixes()) == {
+            "_test",
+            "_spec",
+            "_unittest",
+            "_test_helper",
+            "_test_helpers",
+            "_test_util",
+            "_test_impl",
+        }
+
+    def test_test_infixes_match_historical_set(self) -> None:
+        # `.test-d.` is the TypeScript type-test infix (`*.test-d.ts`), `.suite.`
+        # a vitest suite module (`*.suite.ts`).
+        assert set(REGISTRY.test_infixes()) == {".test.", ".spec.", ".test-d.", ".suite.", ".e2e."}
+
+    def test_test_fixture_stems_match_historical_set(self) -> None:
+        assert frozenset(
+            {"conftest", "spec_helper", "test_helper"}
+        ) == REGISTRY.test_fixture_stems()
+
+    def test_suite_anchor_stems(self) -> None:
+        # ruby (rspec/minitest helpers) and elixir (ExUnit's
+        # test_helper.exs) join python's conftest as closing-stop anchors.
+        assert REGISTRY.suite_anchor_stems() == frozenset(
+            {"conftest", "spec_helper", "test_helper"}
+        )
+
+    def test_descriptor_filenames(self) -> None:
+        # JPMS/javadoc descriptors: source files that declare, not implement.
+        assert REGISTRY.descriptor_filenames() == frozenset(
+            {"module-info.java", "package-info.java"}
+        )
+
+    def test_layer_dir_hints_by_language(self) -> None:
+        # Per-language hints (consulted after the generic table, only for
+        # the declaring language's files). csharp's project-suffix hints
+        # await verification against a live .NET repo.
+        assert REGISTRY.layer_dir_hints_by_language() == {
+            "go": (("internal", "Service"), ("pkg", "Service")),
+            "rust": (("-cli", "CLI"), ("src/bin", "CLI")),
+            "ruby": (("jobs", "Service"),),
+            "csharp": (
+                (".Api", "API"),
+                (".Domain", "Service"),
+                (".Infrastructure", "Data"),
+            ),
+            # Root-anchored ("/"): only a TOP-LEVEL include/ is a C/C++
+            # library's public API surface (libuv, fmt — validated live).
+            "c": (("/include", "API"),),
+            "cpp": (("/include", "API"),),
+        }
+
+    def test_camel_suffix_extension_map(self) -> None:
+        # Case-sensitive camel-boundary test suffixes per language.
+        camel = REGISTRY.camel_test_res_by_extension()
+        assert set(camel) == {
+            ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
+            ".hs", ".lhs", ".vb", ".m", ".mm",
+        }
+        assert camel[".java"].pattern == r"(?<=[a-z0-9])(?:Tests|Test|IT)$"
+        assert camel[".scala"].pattern == r"(?<=[a-z0-9])(?:Suite|Spec|Test)$"
+
+    def test_camel_prefix_extension_map(self) -> None:
+        # Case-sensitive camel-boundary test prefixes per language -- the
+        # mirror of test_camel_suffix_extension_map for languages whose test
+        # program is named Test<Subject> rather than <Subject>Test.
+        camel = REGISTRY.camel_test_prefix_res_by_extension()
+        assert set(camel) == {".pas", ".pp", ".dpr", ".dpk", ".lpr"}
+        assert camel[".dpr"].pattern == r"^(?:Test)(?=[A-Z])"
+
+    def test_test_dir_paths_union(self) -> None:
+        assert REGISTRY.test_dir_paths() == (
+            # "src/*Test" = Gradle source-set wildcard (src/commonTest,
+            # src/jvmTest, … — okio, validated live).
+            "src/*Test",
+            "src/integrationtest/java",
+            "src/it/java",
+            "src/it/scala",
+            "src/test/java",
+            "src/test/kotlin",
+            "src/test/scala",
+            "src/testfixtures/java",
+            "src/testfixtures/kotlin",
+        )
+
+    def test_test_dir_suffixes_union(self) -> None:
+        # .Specs = BDD-style sibling test projects (Polly, validated live).
+        assert REGISTRY.test_dir_suffixes() == (
+            ".FunctionalTests",
+            ".FuzzTests",
+            ".IntegrationTests",
+            ".Specs",
+            ".Tests",
+            ".UnitTest",
+            ".UnitTests",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Import-support tiers
+# ---------------------------------------------------------------------------
+
+_FULL = {
+    "c",
+    "cpp",
+    "csharp",
+    # dart promoted with the tree-sitter grammar (the regex tier stays as
+    # the no-grammar fallback).
+    "dart",
+    # res:// is an absolute path from the nearest project.godot, so GDScript
+    # import targets resolve exactly rather than through a stem guess.
+    "gdscript",
+    # .tscn/.tres/.escn, project.godot and plugin.cfg name their dependencies
+    # with the same res:// paths and share the same resolver.
+    "godot_resource",
+    "go",
+    "java",
+    "javascript",
+    "kotlin",
+    # php + swift promoted after live validation (Slim, Alamofire).
+    "php",
+    "python",
+    "ruby",
+    "rust",
+    # svelte components resolve through the TS/JS resolver plus the
+    # SvelteKit $lib alias.
+    "svelte",
+    "swift",
+    "typescript",
+    # vue components project to TypeScript through the same SFC pass as
+    # svelte, so their <script> imports are ordinary ESM.
+    "vue",
+    # vbnet resolves Imports through the same DotNetProjectIndex as csharp:
+    # .vbproj / .sln parsing and a RootNamespace-aware namespace map.
+    "vbnet",
+}
+_PARTIAL = {
+    "luau",
+    "scala",
+    # Lightweight regex-tier resolvers (module-name index + import regexes).
+    "elixir",
+    "clojure",
+    "haskell",
+    "lean",
+    "erlang",
+    "fsharp",
+    # dbt ref()/source() lineage (model-name index gated on dbt_project.yml).
+    "sql",
+    # source ./lib.sh + $SCRIPT_DIR / dirname idioms.
+    "shell",
+    # <script src>/<link href> as document-/root-relative asset paths. Partial
+    # rather than full because template dialects (Django, Jinja, Go templates,
+    # ERB, Handlebars) are invisible to an HTML grammar and yield nothing.
+    "html",
+    # import QtQuick / import "components": module specs via the qmldir
+    # index, quoted references relative to the importing file (#727).
+    "qml",
+}
+
+
+class TestAstRegistration:
+    """A non-passthrough code language must be wired all the way through.
+
+    Driving ``ASTParser`` directly in a per-language test proves the query
+    and the config, but not the registration: a spec left
+    ``is_passthrough=True``, a missing ``LANGUAGE_CONFIGS`` entry or a
+    ``scm_file`` naming a file that is not on disk all yield zero symbols
+    *silently* -- the files index, their regex-tier imports resolve, and
+    only ``symbol_count=0`` in the graph says anything is wrong.
+    """
+
+    def test_every_ast_language_has_grammar_config_and_query(self) -> None:
+        from repowise.core.ingestion.language_configs import LANGUAGE_CONFIGS
+        from repowise.core.ingestion.parser import QUERIES_DIR
+
+        code_languages = REGISTRY.code_languages()
+        for spec in REGISTRY.all_specs():
+            if spec.is_passthrough or spec.tag not in code_languages:
+                continue
+            if spec.shares_grammar_with:
+                # C reads C++'s grammar and query; it declares neither.
+                continue
+            assert spec.grammar_package, spec.tag
+            assert spec.scm_file, spec.tag
+            assert (QUERIES_DIR / spec.scm_file).is_file(), spec.tag
+            assert spec.tag in LANGUAGE_CONFIGS, spec.tag
+            assert spec.tag not in REGISTRY.unparseable_or_unknown_languages(), spec.tag
+
+
+class TestImportSupportTiers:
+    def test_every_spec_declares_a_valid_tier(self) -> None:
+        for spec in REGISTRY.all_specs():
+            assert spec.import_support in {"full", "partial", "none"}, spec.tag
+
+    def test_full_tier_membership(self) -> None:
+        support = REGISTRY.import_support_map()
+        assert {t for t, v in support.items() if v == "full"} == _FULL
+
+    def test_partial_tier_membership(self) -> None:
+        support = REGISTRY.import_support_map()
+        assert {t for t, v in support.items() if v == "partial"} == _PARTIAL
+
+    def test_unknown_language_reports_none(self) -> None:
+        assert REGISTRY.import_support_for("klingon") == "none"
+
+    def test_cobol_is_exempt_from_static_dead_code_claims(self) -> None:
+        assert REGISTRY.dead_code_exempt_languages() == frozenset({"cobol"})
+
+
+class TestLanguageTagParity:
+    def test_every_spec_tag_is_a_language_tag(self) -> None:
+        # EXTENSION_TO_LANGUAGE keeps only extensions whose tag is in the
+        # LanguageTag literal, so a spec whose tag is missing there is
+        # registered but never traversed: its files index as nothing while
+        # the parser tests, which bypass the traverser, stay green.
+        from repowise.core.ingestion.models import _LANGUAGE_TAG_VALUES
+
+        spec_tags = {spec.tag for spec in REGISTRY.all_specs()}
+        assert spec_tags == _LANGUAGE_TAG_VALUES
+
+    def test_every_spec_extension_is_routed(self) -> None:
+        from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
+
+        for spec in REGISTRY.all_specs():
+            for ext in spec.extensions:
+                assert EXTENSION_TO_LANGUAGE.get(ext) == spec.tag, (spec.tag, ext)
+
+
+# ---------------------------------------------------------------------------
+# Derivation pins — constants that used to be drifting frozen literals are
+# now registry derivations; pin the relationship, not a literal.
+# ---------------------------------------------------------------------------
+
+# Non-tag defensive aliases inside non_code_entry_languages() (none is a
+# registry tag; they guard against unnormalized language strings).
+_NON_CODE_ALIASES = {
+    "cmake", "css", "csv", "html", "ini", "md", "rst", "svg", "text", "txt",
+    "xml", "yml",
+}  # fmt: skip
+
+# Entry-point conventions per language, including those recovered from the
+# deleted dead LanguageConfig table. "public/index.php" was intentionally
+# dropped: patterns match bare filenames, and "index.php" subsumes it.
+_ENTRY_PATTERNS_BY_LANGUAGE = {
+    "kotlin": ("Main.kt", "Application.kt"),
+    "ruby": ("main.rb", "app.rb", "config.ru"),
+    "swift": ("main.swift", "App.swift"),
+    "scala": ("Main.scala", "App.scala"),
+    "php": ("index.php", "artisan"),
+    "elixir": ("application.ex",),
+    "clojure": ("core.clj", "main.clj"),
+    "dart": ("main.dart",),
+    "haskell": ("Main.hs",),
+    "lean": ("Main.lean",),
+    "ocaml": ("main.ml",),
+    "erlang": ("*_app.erl",),
+    "fsharp": ("Program.fs",),
+    "crystal": ("main.cr",),
+    "nim": ("main.nim",),
+    "dlang": ("app.d",),
+    "elm": ("Main.elm",),
+    "zig": ("main.zig",),
+    "objectivec": ("main.m",),
+}
+
+
+class TestDriftManifests:
+    def test_code_suffixes_are_the_non_infra_code_derivation(self) -> None:
+        assert REGISTRY.non_infra_code_extensions() == _CODE_SUFFIXES
+        # The 32 once-missing extensions are protected now …
+        assert {".dart", ".hs", ".clj", ".erl", ".nim", ".m", ".luau"} <= _CODE_SUFFIXES
+        # … infra languages stay promotable, and the perl orphan is gone.
+        assert {".sh", ".bash", ".zsh", ".tf", ".hcl", ".pl"} & _CODE_SUFFIXES == set()
+
+    def test_non_code_languages_are_config_plus_infra_plus_aliases(self) -> None:
+        assert (
+            REGISTRY.config_languages()
+            | REGISTRY.infra_languages()
+            | frozenset(_NON_CODE_ALIASES)
+        ) == non_code_entry_languages()
+        # The once-missing is_code=False tags and infra tags are covered …
+        assert {
+            "graphql", "openapi", "proto", "sql", "unknown", "xaml",
+            "shell", "terraform", "dockerfile", "makefile",
+        } <= non_code_entry_languages()  # fmt: skip
+        # … and real (Tier-3 included) code languages never are.
+        assert {"python", "elixir", "dart", "haskell", "go"} & non_code_entry_languages() == set()
+
+    def test_merged_entry_patterns_present_on_specs(self) -> None:
+        # Every language with a citable convention declares it. Deliberate
+        # skips: julia (src/<Pkg>.jl is package-named), R (no convention),
+        # PHP bin/console (the bare filename "console" is too generic).
+        for tag, patterns in _ENTRY_PATTERNS_BY_LANGUAGE.items():
+            spec = REGISTRY.get(tag)
+            assert spec is not None, tag
+            assert spec.entry_point_patterns == patterns, tag
+
+    def test_entry_flag_stems_match_historical_traverser_set(self) -> None:
+        # The registry's flag-stem accessor, parity with the historical
+        # hard-coded frozenset (run.py/server.py extras were redundant with the
+        # run/server stems). The traverser now flags on this *unioned* with
+        # conventional_entry_stems(); that union is pinned in
+        # tests/unit/generation/test_entry_points.py. ``entry`` moved here from
+        # the ranking stems, so the union (the traverser's flag) is unchanged.
+        assert REGISTRY.entry_flag_stems() == frozenset(
+            {"main", "index", "app", "run", "server", "start", "entry", "wsgi", "asgi"}
+        )

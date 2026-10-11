@@ -1,0 +1,215 @@
+"""Root test configuration — fixtures available to all test modules."""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_telemetry_network(tmp_path_factory: pytest.TempPathFactory):
+    """Guarantee no test emits telemetry over the network or into real state.
+
+    The MCP instrument seam emits an ``mcp_tool_call`` event via the core
+    emitter's ``_post``; a test that drives the real wrapper with consent
+    enabled would otherwise POST to the production ingest endpoint. Patch that
+    sink to a no-op. Tests that assert emit behaviour re-patch it at function
+    scope and still never touch the network.
+
+    The CLI's ``command_run`` path is not patched here — its tests patch
+    ``PlatformClient.post`` at the class level, so patching the
+    ``default_client`` instance would shadow those patches. Its delivery is
+    already off under pytest (``emitter._under_test``); what this fixture adds
+    is redirecting the event spool, so a test that records an event cannot
+    leave it queued in the real ``~/.repowise`` for a later real invocation to
+    deliver.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    try:
+        from repowise.core.platform import telemetry as _core_telemetry
+
+        mp.setattr(_core_telemetry, "_post", lambda envelope: None, raising=False)
+    except Exception:
+        pass
+    try:
+        from repowise.cli.platform.telemetry import spool as _cli_spool
+
+        spool_path = tmp_path_factory.mktemp("telemetry") / _cli_spool.SPOOL_FILENAME
+        mp.setattr(_cli_spool, "_path", lambda: spool_path)
+    except Exception:
+        pass
+    yield
+    mp.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_real_editor_setup():
+    """Guarantee no test repoints the developer's real global editor config.
+
+    ``repowise init`` (and ``doctor``'s self-heal path) defaults to
+    ``--editor-setup`` on, which rewrites the *global*, machine-wide MCP
+    server registration (e.g. ``~/.claude/settings.json``) to point at
+    whatever repo path was just indexed. A test that drives the real CLI
+    against a ``tmp_path`` fixture repo — e.g.
+    ``tests/integration/test_cli.py``'s lock/watcher tests, which call
+    ``init`` through ``CliRunner`` in-process rather than mocking it out —
+    was doing exactly that: it repointed the developer's actual Claude Code
+    MCP entry at a pytest temp directory that gets wiped on reboot, breaking
+    every other project's ``repowise`` MCP tools until the *next*
+    ``doctor``/``update`` run happened to self-heal it back (and even then,
+    an already-running Claude Code session keeps using the stale spawn
+    command it cached at connect time, since it has no reason to re-read
+    the file mid-session).
+
+    ``REPOWISE_SKIP_EDITOR_SETUP`` is the exact env var editor_setup.py and
+    doctor's self-heal migrations already gate on — set once, for the whole
+    session, so no test (present or future) can hit this by omission the
+    way the lock/watcher tests did.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    mp.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    yield
+    mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_db_url_env():
+    """Stop one test's database URL from redirecting every later test.
+
+    ``resolve_db_url`` checks ``REPOWISE_DB_URL`` / ``REPOWISE_DATABASE_URL``
+    *before* the explicit ``repo_path`` it is handed, so whatever holds those
+    variables decides where every index write in the process lands.
+
+    ``serve_cmd`` assigns ``REPOWISE_DB_URL`` directly on ``os.environ`` when it
+    finds a ``.repowise/`` beside the cwd, which is right for a real ``serve``
+    process and wrong inside pytest: a test that drives the real ``serve``
+    command in-process leaves the *developer's own* database pinned for the
+    rest of the session, and every later test that indexes a ``tmp_path``
+    fixture repo writes its rows there instead of into its own store. That is
+    how a suite run leaves hundreds of ``repo`` rows, pointing at temp
+    directories, in the checkout you are working in.
+
+    Snapshot and restore rather than pin a value: a test that sets its own URL
+    must keep working, and one that sets none must still fall through to
+    ``<repo>/.repowise/wiki.db``. Only the leak across the test boundary is
+    closed.
+    """
+    saved = {k: os.environ.get(k) for k in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")}
+    yield
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _fresh_per_index_caches():
+    """Drop the MCP server's per-index caches before every test.
+
+    Test repositories share one id and one ``updated_at`` and have no state file,
+    so every test's index looks the same to the cache key. Looked up in
+    ``sys.modules`` so a test that never loads the server pays nothing.
+    """
+    for name in ("_basis", "_scope", "_graph_files", "tool_overview.graph"):
+        module = sys.modules.get(f"repowise.server.mcp_server.{name}")
+        if module is not None:
+            module.reset_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_structlog_config():
+    """Restore structlog's global configuration after every test.
+
+    ``configure_cli_logging`` / ``silence_logs_for_machine_output`` install a
+    filtering bound logger at ERROR process-wide and never undo it, so the
+    first test to exercise a CLI command silences every ``info`` and
+    ``warning`` for the rest of the session.
+
+    That is invisible until a test asserts on a log record.
+    ``structlog.testing.capture_logs`` swaps the *processor chain*, not the
+    *wrapper class*, so a filtering logger drops the event before ``LogCapture``
+    ever runs and the test reads an empty list. Tests collected after
+    ``tests/unit/cli`` therefore pass alone and fail in a full run.
+
+    Snapshot and restore rather than reset to defaults: a test that configures
+    structlog on purpose keeps working, and the next test still starts clean.
+    """
+    import structlog
+
+    saved = structlog.get_config()
+    try:
+        yield
+    finally:
+        structlog.configure(**saved)
+
+@pytest.fixture(autouse=True)
+def _isolate_silenced_logger_levels():
+    """Restore stdlib logger levels mutated by silence_logs_for_machine_output.
+
+    That helper also calls ``logging.getLogger(name).setLevel(logging.ERROR)``
+    on ``httpx``, ``httpcore``, ``repowise.core``, and ``repowise.server`` —
+    process-global state that ``_isolate_structlog_config`` (above) does not
+    touch, since it only snapshots structlog's own configuration.
+
+    Without this, a test that exercises any ``--format json``/``--format md``
+    command leaves those loggers raised to ERROR for the rest of the session.
+    A later test asserting a ``caplog`` record from a module under
+    ``repowise.core`` or ``repowise.server`` then reads an empty list: the
+    module's own logger has no level set, so its *effective* level is
+    inherited from the ancestor now pinned at ERROR, and
+    ``logger.warning(...)`` is dropped before any handler — including
+    ``caplog``'s — ever runs. Same failure shape as the structlog case
+    above: passes when the file is run alone, fails only in a full run,
+    depending on whether a machine-output command executed first (#1976).
+
+    Snapshot and restore rather than reset to ``NOTSET``: a test that sets a
+    level on purpose keeps working, and the next test still starts clean.
+    """
+    import logging
+
+    from repowise.cli.helpers import MACHINE_OUTPUT_LOGGER_NAMES
+
+    loggers = [logging.getLogger(name) for name in MACHINE_OUTPUT_LOGGER_NAMES]
+    previous_levels = [logger.level for logger in loggers]
+    try:
+        yield
+    finally:
+        for logger, level in zip(loggers, previous_levels, strict=True):
+            logger.setLevel(level)
+
+@pytest.fixture(scope="session")
+def repo_root() -> Path:
+    """Absolute path to the repository root."""
+    return Path(__file__).parent.parent
+
+
+@pytest.fixture(scope="session")
+def sample_repo_path(repo_root: Path) -> Path:
+    """Path to the multi-language sample repository used in integration tests."""
+    path = repo_root / "tests" / "fixtures" / "sample_repo"
+    assert path.exists(), (
+        f"Sample repo not found at {path}. Run 'make install' to ensure test fixtures are in place."
+    )
+    return path
+
+
+@pytest.fixture(scope="session")
+def fixtures_dir(repo_root: Path) -> Path:
+    """Path to the tests/fixtures/ directory."""
+    return repo_root / "tests" / "fixtures"
+
+
+@pytest.fixture
+def dry_violation_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Show ``dry_violation`` for tests of the clone mechanics the registry hides."""
+    from repowise.core.analysis import finding_registry
+
+    monkeypatch.delitem(finding_registry.REGISTRY, "dry_violation")
