@@ -86,6 +86,61 @@ def test_parser_change_reparses_an_unchanged_checkout(
     assert rescored
 
 
+def test_missing_parser_stamp_reparses_an_unchanged_checkout(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An index written before init stamped the parser re-parses once, then is quiet."""
+    import asyncio
+
+    from repowise.core.persistence import create_engine
+    from repowise.core.persistence.models import Repository
+
+    async def _all_scanned(*_a):
+        return []
+
+    # Isolate the stamp from the test-file scan, the gate's other trigger.
+    monkeypatch.setattr(
+        "repowise.core.analysis.test_reachability.unscanned_test_files", _all_scanned
+    )
+    from repowise.core.pipeline.full_index import index_repo_full
+
+    from .test_update_reconciles_stale_pages import CURRENT_GIT_HISTORY, _repo_at_head
+
+    # Source with edges, so the unstamped store has something to reconcile.
+    repo, c2 = _repo_at_head(tmp_path)
+    asyncio.run(index_repo_full(repo))
+    save_state(
+        repo,
+        {
+            "last_sync_commit": c2,
+            "last_docs_commit": c2,
+            "docs_enabled": False,
+            "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+            **CURRENT_GIT_HISTORY,
+        },
+    )
+    assert not upd_cmd.parser_changed(repo)
+
+    async def _unstamp() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{repo / '.repowise' / 'wiki.db'}")
+        async with engine.begin() as conn:
+            await conn.execute(
+                Repository.__table__.update().values(graph_edges_parser_fingerprint=None)
+            )
+        await engine.dispose()
+
+    asyncio.run(_unstamp())
+    assert upd_cmd.parser_changed(repo)
+
+    out = _invoke_update(repo)
+
+    assert UP_TO_DATE not in out
+    assert "Parser changed" in out
+    assert not upd_cmd.parser_changed(repo)
+    assert load_state(repo)["last_sync_commit"] == c2
+    assert UP_TO_DATE in _invoke_update(repo)
+
+
 @pytest.mark.parametrize("stored", [None, SECURITY_SCANNER_VERSION - 1])
 def test_stale_scanner_rescans_an_unchanged_checkout_without_a_reparse(
     tmp_path, monkeypatch: pytest.MonkeyPatch, stored

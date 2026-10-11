@@ -1821,9 +1821,13 @@ def parser_changed(repo_path: Path) -> bool:
     """Whether the stored graph edges were written by a different parser.
 
     Compares the fingerprint ``persist_incremental_edges`` stamped on the repo
-    row with the running ``parser_fingerprint()``. An unstamped row, or a store
-    that cannot be read, is **not** a change, for the reason
-    :func:`health_analyzer_changed` gives: the next commit's widen stamps it.
+    row with the running ``parser_fingerprint()``. An unstamped row **is** a
+    change: ``init`` stamps a fresh store, so an unstamped one was written
+    before the stamp or re-indexed over older edges, and the re-parse this
+    triggers is the widen that reconciles and stamps it. Reading absence as
+    current let a parser-only release report "already up to date" on a quiet
+    checkout. A store that cannot be read, has no repository row, or has no
+    edges to reconcile, is not.
 
     Also true when a test file was never checked for walking the source tree
     (an index built before that check): selection would run everything until
@@ -1838,26 +1842,33 @@ def parser_changed(repo_path: Path) -> bool:
         get_repository_by_path,
         get_session,
     )
+    from repowise.core.pipeline.persist import has_graph_edges
 
-    async def _stored() -> tuple[str | None, bool]:
+    async def _stored() -> bool:
         engine = create_engine(get_db_url_for_repo(repo_path))
         try:
             sf = create_session_factory(engine)
             async with get_session(sf) as session:
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
-                    return None, False
-                unscanned = bool(await unscanned_test_files(session, repo.id))
-                return repo.graph_edges_parser_fingerprint, unscanned
+                    return False
+                stored = repo.graph_edges_parser_fingerprint
+                if stored is None:
+                    # Unstamped with no edges is a store nothing ever indexed
+                    # into: there is nothing a re-parse could reconcile.
+                    if await has_graph_edges(session, repo.id):
+                        return True
+                elif stored != parser_fingerprint():
+                    return True
+                return bool(await unscanned_test_files(session, repo.id))
         finally:
             await engine.dispose()
 
     try:
-        stored, unscanned = run_async(_stored())
+        return run_async(_stored())
     except Exception as exc:
         log.debug("parser_change_check_failed", error=str(exc))
         return False
-    return unscanned or (stored is not None and stored != parser_fingerprint())
 
 
 def health_analyzer_changed(state: dict) -> bool:
