@@ -118,23 +118,21 @@ def _single_identifier(node: Node | None) -> bytes | None:
 _GO_FN_KINDS: frozenset[str] = frozenset({"function_declaration", "method_declaration", "func_literal"})
 
 
-def _go_binding(node: Node, name: bytes) -> Node | None:
-    """What *node* binds to *name*: ``x := v`` / ``x = v`` / ``var x = v`` (one
-    call answering several names counts for each), or a call filling ``&x``
-    (GORM ``db.Find(&users)``)."""
+def _go_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``x := v`` / ``x = v`` / ``var x = v`` (one call
+    answering several names counts for each), or a read filling ``&x`` (GORM
+    ``db.Find(&users)``)."""
     if node.type in ("short_var_declaration", "assignment_statement"):
         left = node.child_by_field_name("left")
         targets = list(left.named_children) if left is not None else []
-        return _paired(targets, node.child_by_field_name("right"), name)
+        return _paired(targets, node.child_by_field_name("right"))
     if node.type == "var_spec":
-        targets = list(node.children_by_field_name("name"))
-        return _paired(targets, node.child_by_field_name("value"), name)
+        return _paired(list(node.children_by_field_name("name")), node.child_by_field_name("value"))
     if node.type == "call_expression" and _callee_name(node) in GO_READ_INTO:
         args = node.child_by_field_name("arguments")
-        return node if args is not None and any(
-            _address_of(arg) == name for arg in args.named_children
-        ) else None
-    return None
+        filled = [_address_of(arg) for arg in (args.named_children if args is not None else ())]
+        return [(name, node) for name in filled if name]
+    return []
 
 
 def _callee_name(call: Node) -> bytes | None:
@@ -151,16 +149,17 @@ def _address_of(arg: Node) -> bytes | None:
     return operand.text if operand is not None and operand.type == "identifier" else None
 
 
-def _paired(targets: list[Node], right: Node | None, name: bytes) -> Node | None:
+def _paired(targets: list[Node], right: Node | None) -> list[tuple[bytes, Node]]:
     if right is None:
-        return None
+        return []
     values = right.named_children if right.type == "expression_list" else [right]
-    for index, target in enumerate(targets):
-        if target.type == "identifier" and target.text == name:
-            if len(values) == len(targets):
-                return values[index]
-            return values[0] if len(values) == 1 else None
-    return None
+    if len(values) != len(targets) and len(values) != 1:
+        return []
+    return [
+        (target.text, values[index] if len(values) == len(targets) else values[0])
+        for index, target in enumerate(targets)
+        if target.type == "identifier" and target.text
+    ]
 
 
 class GoPerfDialect(IterableSources):
@@ -332,6 +331,14 @@ class GoPerfDialect(IterableSources):
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
 
     function_kinds = _GO_FN_KINDS
+    change_kinds = frozenset({"assignment_statement", "inc_statement", "dec_statement"})
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "expression_switch_statement", "type_switch_statement",
+            "select_statement", "expression_case", "type_case", "default_case",
+            "communication_case", "for_statement",
+        }
+    )
 
     literal_kinds = frozenset({"composite_literal"})
     int_kinds = frozenset({"int_literal"})
@@ -385,8 +392,8 @@ class GoPerfDialect(IterableSources):
             return None
         return node.child_by_field_name("operand")
 
-    def reaching_value(self, loop: Node, name: bytes) -> Node | None:
-        return self.last_binding_before(loop, _go_binding, name)
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _go_bindings(node)
 
     def param_names(self, loop: Node) -> set[bytes]:
         scope = self._scope(loop)

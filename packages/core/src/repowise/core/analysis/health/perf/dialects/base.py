@@ -91,6 +91,11 @@ _ATTRIBUTE_CALLEE_KINDS: frozenset[str] = frozenset(
 )
 
 
+# A result name that holds an error (``err``, ``fetch_error``): a loop that
+# exits on it stops at the first failure, which is no first match.
+_ERROR_NAME = re.compile(rb"(?:^|_)(?:err|error|exc|exception)$|(?:Err|Error)$")
+
+
 class BasePerfDialect:
     """Default ``PerfDialect`` implementation — every method is "no signal".
 
@@ -381,7 +386,7 @@ class BasePerfDialect:
 
     def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
         source = self.loop_source(loop, probe)
-        return source.effective if source is not None else None
+        return source.magnitude if source is not None else None
 
     # The exits that end the loop early (``continue`` and a raise do not stop at a hit).
     _STOPPING_EXITS = frozenset({"break_statement", "return_statement"})
@@ -401,8 +406,10 @@ class BasePerfDialect:
             return None
         body = self.loop_body(loop) or loop
         # Only the call's own result says it answered; a local derived from it
-        # (``ok = check(r)``) may test something else.
-        if self._stops_at_hit(call, loop, body, self._result_names(call, body), loop_kinds):
+        # (``ok = check(r)``) may test something else, and an error it returned
+        # (``if err != nil { return err }``) stops at a failure, not a match.
+        answered = {n for n in self._result_names(call, body) if not _ERROR_NAME.search(n)}
+        if self._stops_at_hit(call, loop, body, answered, loop_kinds):
             return "first_match"
         results = self._result_names(call, body, hops=2)
         # A sequence the results are appended to carries them into the next turn
@@ -464,15 +471,14 @@ class BasePerfDialect:
         """Sequences the body appends *call* or its results to."""
         names: set[bytes] = set()
         for node in self._walk(body, prune=self.scope_kinds):
+            if self.callee_method_name(node) not in self.sequence_appends:
+                continue
             fn = node.child_by_field_name("function")
             receiver = fn.child_by_field_name("object") if fn is not None else None
             args = node.child_by_field_name("arguments")
-            if (
-                receiver is not None
-                and args is not None
-                and self.callee_method_name(node) in self.sequence_appends
-                and (self._within(args, call) or self._reads(args, results))
-            ):
+            if receiver is None or args is None:
+                continue
+            if self._within(args, call) or self._reads(args, results):
                 names |= self._texts(receiver)
         return names
 

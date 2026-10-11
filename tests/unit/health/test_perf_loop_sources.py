@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.analysis.health.complexity import walk_file
-from repowise.core.analysis.health.perf import loop_facts, loop_lexicon
+from repowise.core.analysis.health.perf import loop_lexicon
 from repowise.core.analysis.health.perf.actionability import actionability, assess_fix
 from repowise.core.analysis.health.refactoring.performance_fix import fix_steps
 
@@ -45,13 +45,6 @@ _REGISTERED_ROWS = _REGISTERED_REPOS.replace("repos = ", "rows = ").replace("in 
 
 def test_a_loop_over_the_registered_repos_table_still_grows():
     # Registered repos grow with use: the table's name says what is walked, not how many.
-    facts = _py(_REGISTERED_ROWS)
-    assert facts.iterates == "config_table"
-    assert facts.magnitude == "grows_with_data"
-
-
-def test_with_the_switch_off_the_table_annotates_and_the_query_still_grows(monkeypatch):
-    monkeypatch.setattr(loop_facts, "SOURCE_DECIDES_MAGNITUDE", False)
     facts = _py(_REGISTERED_ROWS)
     assert facts.iterates == "config_table"
     assert facts.magnitude == "grows_with_data"
@@ -418,16 +411,8 @@ def test_a_not_batchable_loop_gets_no_batch_advice():
         cross_function=False,
     )
     assert assessment.fix is None and assessment.refusal == "loop_not_batchable"
-    assert actionability(assessment, "high").state == "investigate"
-
-
-def test_with_its_switch_off_the_fact_changes_nothing(monkeypatch):
-    monkeypatch.setattr(loop_facts, "NOT_BATCHABLE_REFUSES_BATCH", False)
-    assessment = assess_fix(
-        "io_in_loop", ("io_in_loop",), "db", _db_details(loop_not_batchable="turn_loop"),
-        cross_function=False,
-    )
-    assert assessment.fix is not None and assessment.fix.strategy == "batch_or_prefetch_io"
+    # A fact about the code, not a missing proof: nothing to investigate.
+    assert actionability(assessment, "high").state == "expected"
 
 
 def test_one_batchable_member_keeps_the_strategy():

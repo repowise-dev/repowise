@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import builtins
 import re
-from collections.abc import Iterator
 from typing import TYPE_CHECKING, ClassVar
 
 from .. import loop_lexicon as lex
 from ..loop_facts import BatchForm, LoopSource
 from .base import BasePerfDialect
+from .iterables import IterableSources
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -285,7 +285,7 @@ def _module_int_constant(name: Node) -> bool:
         scope = scope.parent
     if scope is None or any(
         n.type == "global_statement" and any(c.text == text for c in n.named_children)
-        for n in _walk_tree(scope)
+        for n in BasePerfDialect._walk(scope)
     ):
         return False
     bound = _bindings(scope, text)
@@ -314,15 +314,7 @@ def _scalar_literal(item: Node) -> bool:
     return item.type in _PY_SCALARS
 
 
-def _walk_tree(node: Node) -> Iterator[Node]:
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        yield current
-        stack.extend(current.children)
-
-
-class PythonPerfDialect(BasePerfDialect):
+class PythonPerfDialect(IterableSources):
     language = "python"
     lock_acquire_functions = frozenset({"acquire", "__enter__"})
     spin_loop_header = re.compile(r"while\s+True\s*:")
@@ -490,7 +482,7 @@ class PythonPerfDialect(BasePerfDialect):
 
     def _bound_locally(self, call: Node, name: bytes) -> bool:
         """*name* is assigned before *call* in its function, or is a parameter of it."""
-        if self._reaching_rhs(call, name) is not None:
+        if self.bindings_before(call, name):
             return True
         scope = call.parent
         while scope is not None and scope.type != "function_definition":
@@ -975,6 +967,31 @@ class PythonPerfDialect(BasePerfDialect):
     scope_kinds = _PY_SCOPES
     sequence_appends = frozenset({"append", "extend", "insert"})
 
+    # -- what a loop walks: the shared reading (perf/dialects/iterables.py) -------
+    function_kinds = _PY_SCOPES
+    member_kinds = frozenset({"attribute"})
+    recursive_listings = _PY_RECURSIVE_LISTINGS
+    recursive_marks = (b"**", b"recursive=True")
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "elif_clause", "else_clause", "for_statement", "while_statement",
+            "try_statement", "except_clause", "match_statement", "case_clause",
+            "conditional_expression", "boolean_operator",
+        }
+    )
+    # The iterable's own syntax (``_magnitude``) says whether a read grows.
+    read_grows = None
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        if node.type == "assignment":
+            target, value = node.child_by_field_name("left"), node.child_by_field_name("right")
+        elif node.type == "named_expression":
+            target, value = node.child_by_field_name("name"), node.child_by_field_name("value")
+        else:
+            return []
+        ok = target is not None and target.type == "identifier" and target.text and value is not None
+        return [(target.text, value)] if ok else []
+
     def loop_source(self, loop: Node, probe: SinkProbe) -> LoopSource | None:
         if loop.type != "for_statement":
             return None
@@ -983,7 +1000,7 @@ class PythonPerfDialect(BasePerfDialect):
         iterates, claim = self._source(right, loop, probe, hop=True)
         if iterates == "unknown" and baseline == "unknown":
             return None
-        return LoopSource(iterates, claim or baseline, baseline)
+        return LoopSource(iterates, claim or baseline)
 
     def _source(self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
         """What *expr* walks, and the magnitude that settles when it differs from
@@ -1024,7 +1041,7 @@ class PythonPerfDialect(BasePerfDialect):
         return "unknown", None
 
     def _name_source(self, name: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
-        rhs = self._reaching_rhs(loop, name.text or b"") if hop else None
+        rhs = self.reaching_value(loop, name.text or b"") if hop else None
         if rhs is not None:
             return self._source(rhs, loop, probe, hop=False)
         fn = loop.parent
@@ -1047,7 +1064,7 @@ class PythonPerfDialect(BasePerfDialect):
         if method in _PY_LISTINGS or method in _PY_STREAMS or (method == "open" and not receiver):
             return self._file_source(call, method, loop)
         if probe(call) in ("db", "network"):
-            return self._query_source(call, loop)
+            return self._query(call, loop)
         if receiver is not None and method in _PY_RESULT_PROJECTIONS:
             return self._source(receiver, loop, probe, hop=hop)
         return "unknown", None
@@ -1090,47 +1107,24 @@ class PythonPerfDialect(BasePerfDialect):
                 return self._source(inner[0], loop, probe, hop=hop)
         return "unknown", None
 
-    def _walks_repo(self, call: Node, method: str, loop: Node) -> bool:
-        """A recursive listing whose path names a repository root (``os.walk(repo_root)``,
-        ``FileTraverser(self._repo_path).traverse()``); any other path proves nothing."""
-        text = call.text or b""
-        recursive = b"**" in text or b"recursive=True" in text
-        if method not in _PY_RECURSIVE_LISTINGS and not recursive:
-            return False
-        names = [n for n in self._walk(call) if n.type in ("identifier", "attribute")]
-        for node in list(names):
-            rhs = self._reaching_rhs(loop, node.text or b"") if node.type == "identifier" else None
-            if rhs is not None:
-                names.extend(n for n in self._walk(rhs) if n.type in ("identifier", "attribute"))
-        return any(lex.names_repo_root(_text(n)) for n in names)
-
-    def _query_source(self, call: Node, loop: Node) -> Source:
-        """A read of a registry or configuration table, of one key, of a rare
-        state, or of rows that grow; the statement may be bound before the loop."""
-        names = [n.text for n in self._walk(call) if n.type == "identifier"]
-        parts = [call, *filter(None, (self._reaching_rhs(loop, name) for name in names))]
-        nodes = [n for part in parts for n in self._walk(part)]
+    def reads_config_table(self, call: Node, nodes: list[Node]) -> bool:
+        """Every SQL text and selected model names a registry or configuration table."""
+        walked = [n for part in nodes for n in self._walk(part)]
         sql = [
             n.text or b""
-            for n in nodes
+            for n in walked
             if n.type == "string" and _PY_SQL_LITERAL_RE.match(_text(n))
         ]
         models = [
             model
-            for n in nodes
+            for n in walked
             if n.type == "call" and self.callee_method_name(n) in ("select", "query")
             for model in self._selected_models(n)
         ]
-        if (
-            (sql or models)
-            and all(lex.is_config_sql(text) for text in sql)
+        return bool(sql or models) and (
+            all(lex.is_config_sql(text) for text in sql)
             and all(lex.is_config_model(model) for model in models)
-        ):
-            return "config_table", None
-        text = b" ".join(part.text or b"" for part in parts)
-        if lex.is_key_lookup(text):
-            return "caller_key", "bounded"
-        return ("rare_subset" if lex.is_rare_filter(text) else "query"), None
+        )
 
     def _selected_models(self, select: Node) -> list[str]:
         """``select(Repository)`` / ``query(Repository.id, Repository.path)`` -> the model
@@ -1154,7 +1148,7 @@ class PythonPerfDialect(BasePerfDialect):
             root = root.parent
         rights = [
             n.child_by_field_name("right")
-            for n in _walk_tree(root)
+            for n in self._walk(root)
             if n.type == "assignment"
             and (left := n.child_by_field_name("left")) is not None
             and left.type == "identifier"
@@ -1181,7 +1175,7 @@ class PythonPerfDialect(BasePerfDialect):
             inner = next((c for c in expr.children if c.is_named), None)
             return self._magnitude(inner, loop, probe, hop=hop)
         if expr.type == "identifier" and hop and expr.text:
-            rhs = self._reaching_rhs(loop, expr.text)
+            rhs = self.reaching_value(loop, expr.text)
             return self._magnitude(rhs, loop, probe, hop=False)
         if expr.type == "subscript":
             return self._slice_magnitude(expr)
@@ -1207,15 +1201,15 @@ class PythonPerfDialect(BasePerfDialect):
             # A read capped in the query is as large as its cap; a statement or result
             # built before the loop (``stmt = ....limit(n)``) is read one assignment back.
             names = [n.text for n in self._walk(expr) if n.type == "identifier"]
-            parts = [expr, *filter(None, (self._reaching_rhs(loop, name) for name in names))]
-            capped = any(self._caps_read(n, loop) for part in parts for n in self._walk(part))
+            parts = [expr, *filter(None, (self.reaching_value(loop, name) for name in names))]
+            capped = any(self.is_cap(n, loop) for part in parts for n in self._walk(part))
             return None if capped else "grows_with_data"
         if member and method in _PY_RESULT_PROJECTIONS:
             receiver = expr.child_by_field_name("function").child_by_field_name("object")
             return self._grows(self._magnitude(receiver, loop, probe, hop=hop))
         return None
 
-    def _caps_read(self, node: Node, loop: Node) -> bool:
+    def is_cap(self, node: Node, loop: Node) -> bool:
         """``.limit(n)`` and peers, a SQL string saying ``LIMIT n``, or ``.in_()`` over
         one chunk of keys."""
         if node.type == "string":
@@ -1276,23 +1270,6 @@ class PythonPerfDialect(BasePerfDialect):
             if same_start and right is not None and right.type == "integer":
                 return "bounded"
         return None
-
-    def _reaching_rhs(self, loop: Node, name: bytes) -> Node | None:
-        """The right side of the last ``name = ...`` before *loop* in its function."""
-        scope = loop.parent
-        while scope is not None and scope.type != "function_definition":
-            scope = scope.parent
-        if scope is None:
-            return None
-        last: Node | None = None
-        for node in self._walk(scope, prune=_PY_SCOPES):
-            if node.type != "assignment" or node.end_byte > loop.start_byte:
-                continue
-            left = node.child_by_field_name("left")
-            named = left is not None and left.type == "identifier" and left.text == name
-            if named and (last is None or node.start_byte > last.start_byte):
-                last = node
-        return last.child_by_field_name("right") if last is not None else None
 
     def batch_form(self, sink: Node, loop: Node, probe: SinkProbe) -> BatchForm | None:
         target = loop.child_by_field_name("left")
@@ -1358,9 +1335,10 @@ class PythonPerfDialect(BasePerfDialect):
         builtin (``str(r.id)``) or a method on a local (``res.first()``)."""
         if not self.callee_is_attribute(call):
             return not (assigned and self.callee_method_name(call) in _PY_BUILTINS)
-        rhs = self._reaching_rhs(call, (self.callee_root_name(call) or "").encode())
-        if rhs is None:
+        before = self.bindings_before(call, (self.callee_root_name(call) or "").encode())
+        if not before:
             return True
+        rhs = before[-1][1]
         return not (assigned or self._rhs_is_list(rhs) or self._rhs_is_nonlist_container(rhs))
 
     def _limited_downstream(self, sink: Node, body: Node) -> bool:

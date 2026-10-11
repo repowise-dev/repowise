@@ -276,13 +276,13 @@ def _is_model_name(node: Node) -> bool:
     )
 
 
-def _rb_binding(node: Node, name: bytes) -> Node | None:
-    """What *node* binds to *name*: ``x = v`` or ``x ||= v``."""
+def _rb_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``x = v`` or ``x ||= v``."""
     if node.type not in ("assignment", "operator_assignment"):
-        return None
-    left = node.child_by_field_name("left")
-    return node.child_by_field_name("right") if left is not None and left.text == name else None
-
+        return []
+    left, right = node.child_by_field_name("left"), node.child_by_field_name("right")
+    ok = left is not None and left.type in ("identifier", "instance_variable") and right is not None
+    return [(left.text or b"", right)] if ok else []
 
 class RubyPerfDialect(IterableSources):
     language = "ruby"
@@ -554,6 +554,15 @@ class RubyPerfDialect(IterableSources):
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
 
     function_kinds = _RB_FN_KINDS
+    change_kinds = frozenset({"assignment", "operator_assignment", "binary"})
+    grow_methods = frozenset({"push", "append", "concat", "insert", "store", "unshift"})
+    conditional_kinds = frozenset(
+        {
+            "if", "unless", "elsif", "else", "case", "when", "in_clause", "while", "until",
+            "for", "begin", "rescue", "if_modifier", "unless_modifier", "while_modifier",
+            "until_modifier", "rescue_modifier", "conditional", "block", "do_block",
+        }
+    )
 
     literal_kinds = frozenset({"array", "string_array", "symbol_array", "hash"})
     int_kinds = frozenset({"integer"})
@@ -625,8 +634,14 @@ class RubyPerfDialect(IterableSources):
             cur = cur.child_by_field_name("receiver")
         return relation and cur is not None and _is_model_name(cur)
 
-    def reaching_value(self, loop: Node, name: bytes) -> Node | None:
-        return self.last_binding_before(loop, _rb_binding, name)
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _rb_bindings(node)
+
+    def mutated_name(self, node: Node) -> bytes | None:
+        # Of the binary operators only ``xs << x`` grows its left side.
+        if node.type == "binary" and _decode(node.child_by_field_name("operator")) != "<<":
+            return None
+        return super().mutated_name(node)
 
     def param_names(self, loop: Node) -> set[bytes]:
         scope = self._scope(loop)

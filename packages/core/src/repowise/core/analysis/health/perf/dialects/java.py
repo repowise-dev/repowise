@@ -235,16 +235,16 @@ _JAVA_SCALARS: frozenset[str] = frozenset(
 _JAVA_TYPE_NAME = re.compile(r"^[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*$")
 
 
-def _java_binding(node: Node, name: bytes) -> Node | None:
-    """What *node* binds to *name*: ``T x = v`` or ``x = v``."""
+def _java_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``T x = v`` or ``x = v``."""
     if node.type == "variable_declarator":
         target, value = node.child_by_field_name("name"), node.child_by_field_name("value")
     elif node.type == "assignment_expression":
         target, value = node.child_by_field_name("left"), node.child_by_field_name("right")
     else:
-        return None
-    return value if target is not None and target.text == name else None
-
+        return []
+    ok = target is not None and target.type == "identifier" and target.text and value is not None
+    return [(target.text, value)] if ok else []
 
 class JavaPerfDialect(IterableSources):
     language = "java"
@@ -395,6 +395,15 @@ class JavaPerfDialect(IterableSources):
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
 
     function_kinds = _JAVA_FN_KINDS
+    change_kinds = frozenset({"assignment_expression", "update_expression"})
+    grow_methods = frozenset({"add", "addAll", "put", "putAll", "push", "offer", "addFirst", "addLast"})
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "switch_expression", "switch_block_statement_group", "switch_rule",
+            "for_statement", "enhanced_for_statement", "while_statement", "do_statement",
+            "try_statement", "catch_clause", "ternary_expression",
+        }
+    )
 
     literal_kinds = frozenset({"array_initializer"})
     int_kinds = frozenset({"decimal_integer_literal", "hex_integer_literal"})
@@ -464,8 +473,8 @@ class JavaPerfDialect(IterableSources):
             return "listing", "grows_with_data" if grows else None
         return None
 
-    def reaching_value(self, loop: Node, name: bytes) -> Node | None:
-        return self.last_binding_before(loop, _java_binding, name)
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _java_bindings(node)
 
     def param_names(self, loop: Node) -> set[bytes]:
         return self.enclosing_params(loop, frozenset({"formal_parameter"}))

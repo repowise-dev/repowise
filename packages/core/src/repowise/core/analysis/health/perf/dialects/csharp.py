@@ -380,6 +380,17 @@ class CSharpPerfDialect(IterableSources):
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
 
     function_kinds = _CS_FN_KINDS
+    change_kinds = frozenset(
+        {"assignment_expression", "postfix_unary_expression", "prefix_unary_expression"}
+    )
+    grow_methods = frozenset({"Add", "AddRange", "Insert", "Push", "Enqueue", "TryAdd"})
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "switch_statement", "switch_section", "switch_expression",
+            "for_statement", "foreach_statement", "while_statement", "do_statement",
+            "try_statement", "catch_clause", "conditional_expression",
+        }
+    )
 
     literal_kinds = frozenset(
         {
@@ -487,8 +498,8 @@ class CSharpPerfDialect(IterableSources):
                 return False
         return hops >= 1 and cur.type == "identifier" and bool(_CS_DB_ROOT.match(_text(cur)))
 
-    def reaching_value(self, loop: Node, name: bytes) -> Node | None:
-        return self.last_binding_before(loop, _cs_binding, name)
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _cs_bindings(node)
 
     def param_names(self, loop: Node) -> set[bytes]:
         return self.enclosing_params(loop, frozenset({"parameter"}))
@@ -547,8 +558,8 @@ def _plain_name(node: Node | None) -> str:
 _CS_DB_ROOT = re.compile(r"^_?(?:\w*db|\w*dbcontext|context|ctx)$", re.IGNORECASE)
 
 
-def _cs_binding(node: Node, name: bytes) -> Node | None:
-    """What *node* binds to *name*: ``var x = v`` or ``x = v``."""
+def _cs_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``var x = v`` or ``x = v``."""
     if node.type == "variable_declarator":
         target = node.child_by_field_name("name")
         value = node.named_children[-1] if node.named_children else None
@@ -557,8 +568,9 @@ def _cs_binding(node: Node, name: bytes) -> Node | None:
     elif node.type == "assignment_expression":
         target, value = node.child_by_field_name("left"), node.child_by_field_name("right")
     else:
-        return None
-    return value if target is not None and target.text == name else None
+        return []
+    ok = target is not None and target.type == "identifier" and target.text and value is not None
+    return [(target.text, value)] if ok else []
 
 
 def _strip_configure_await(node: Node | None) -> Node | None:

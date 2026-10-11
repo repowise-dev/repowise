@@ -11,6 +11,7 @@ stays ``unknown``, which no reader takes as bounded.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
 from .. import loop_lexicon as lex
@@ -18,34 +19,17 @@ from ..loop_facts import LoopSource
 from .base import BasePerfDialect
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from tree_sitter import Node
 
     from ..loop_facts import LoopIterates, LoopMagnitude, SinkProbe
 
     Source = tuple[LoopIterates, LoopMagnitude | None]
-    # The value a statement binds to a name, or ``None`` when it binds none.
-    BindingReader = Callable[[Node, bytes], Node | None]
 
 _UNKNOWN: Source = ("unknown", None)
 _BLOCKS = frozenset({"block", "do_block"})
 _SPLATS = frozenset({"splat_argument", "hash_splat_argument", "variadic_argument"})
 # What a capping call's receiver may be when the cap belongs to a read.
 _READS = frozenset({"unknown", "query", "caller_key", "rare_subset"})
-# Statements that step or grow the name on their left, and methods that grow
-# their receiver.
-_CHANGES = frozenset(
-    {
-        "assignment", "assignment_statement", "assignment_expression", "operator_assignment",
-        "augmented_assignment", "inc_statement", "dec_statement", "update_expression",
-        "postfix_unary_expression", "prefix_unary_expression", "binary",
-    }
-)
-_GROWS = frozenset(
-    {"Add", "AddRange", "add", "addAll", "push", "append", "Push", "insert", "Insert",
-     "concat", "put", "Put", "store", "unshift", "Enqueue", "offer"}
-)
 
 
 def text_of(node: Node | None) -> str:
@@ -59,6 +43,18 @@ def upper_bound(cond: Node | None) -> Node | None:
     if not any(c.type in ("<", "<=") for c in cond.children):
         return None
     return cond.child_by_field_name("right")
+
+
+@dataclass(slots=True)
+class ScopeFacts:
+    """One function's bindings and mutations, read in one pass over its body.
+
+    ``bindings``: name -> ``(statement, value)`` in source order; ``changes``:
+    name -> start offsets of statements that grow or step it.
+    """
+
+    bindings: dict[bytes, list[tuple[Node, Node]]] = field(default_factory=dict)
+    changes: dict[bytes, list[int]] = field(default_factory=dict)
 
 
 class IterableSources(BasePerfDialect):
@@ -91,6 +87,20 @@ class IterableSources(BasePerfDialect):
     # Text that makes a listing recursive (``**``, ``AllDirectories``).
     recursive_marks: ClassVar[tuple[bytes, ...]] = (b"**",)
     recursive_listings: frozenset[str] = frozenset()
+    # Property reads a listing's path may name the repository root through.
+    member_kinds: frozenset[str] = frozenset()
+    # Statements that step or grow the name on their left (``n++``, ``m[k] = v``),
+    # and methods that grow their receiver (``xs.Add(x)``).
+    change_kinds: frozenset[str] = frozenset()
+    grow_methods: frozenset[str] = frozenset()
+    # Nodes whose body may run zero times or one of several ways; a binding
+    # under one does not surely reach code after it (its condition does).
+    conditional_kinds: frozenset[str] = frozenset()
+    # ``None``: a dialect whose own syntax rules size a read (Python, TS).
+    read_grows: LoopMagnitude | None = "grows_with_data"
+
+    # The last scope read, held so its tree (and so the node id in the key) stays live.
+    _facts_cache: tuple[Node, tuple[int, int, int], ScopeFacts] | None = None
 
     # -- hooks -----------------------------------------------------------------
 
@@ -116,9 +126,27 @@ class IterableSources(BasePerfDialect):
         """``(name, object)`` when *node* reads a property (``xs.Count``), else ``None``."""
         return None
 
-    def reaching_value(self, loop: Node, name: bytes) -> Node | None:
-        """The value the last binding of *name* before *loop* gives it."""
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        """``(name, value)`` for each bare name the statement *node* binds."""
+        return []
+
+    def mutated_name(self, node: Node) -> bytes | None:
+        """The name *node* grows or steps (``xs.Add(x)``, ``m[k] = v``, ``n++``)."""
+        if node.type in self.change_kinds and node.named_children:
+            return (node.named_children[0].text or b"").split(b"[", 1)[0]
+        parts = self.call_parts(node) if self.grow_methods else None
+        if parts is not None and parts[0] in self.grow_methods and parts[1] is not None:
+            return parts[1].text
         return None
+
+    def reads_config_table(self, call: Node, nodes: list[Node]) -> bool:
+        """The read names only registry or configuration tables."""
+        return False
+
+    def is_cap(self, node: Node, loop: Node) -> bool:
+        """*node* caps a read at a fixed count (``Limit(10)``, ``setMaxResults(5)``)."""
+        parts = self.call_parts(node)
+        return parts is not None and parts[0] in self.query_caps and bool(parts[2])
 
     def param_names(self, loop: Node) -> set[bytes]:
         """The parameters of the function *loop* sits in."""
@@ -156,9 +184,7 @@ class IterableSources(BasePerfDialect):
             iterates, magnitude = self._iterable(node, loop, probe, hop=True)
         if iterates == "unknown" and magnitude is None:
             return None
-        # Every rule here reads syntax alone, so the claim is its own baseline.
-        claim: LoopMagnitude = magnitude or "unknown"
-        return LoopSource(iterates, claim, claim)
+        return LoopSource(iterates, magnitude or "unknown")
 
     def _unwrap(self, node: Node) -> Node:
         while node.type in self.wrapper_kinds:
@@ -308,22 +334,19 @@ class IterableSources(BasePerfDialect):
         names = [n.text for n in self._walk(call, prune=_BLOCKS) if n.type in self.name_kinds]
         values = [v for name in dict.fromkeys(names) if (v := self.reaching_value(loop, name or b""))]
         nodes = [call, *values]
+        if self.reads_config_table(call, nodes):
+            return "config_table", None
         text = b" ".join([head or b"", *(value.text or b"" for value in values)])
         if lex.is_key_lookup(text):
             return "caller_key", "bounded"
         # The children of one parent (``user_id = ?``) are as many as that parent
         # has, and a capped read is as large as its cap: neither settles a size.
-        capped = lex.has_sql_limit(text) or any(self._caps_read(node) for node in nodes)
+        capped = lex.has_sql_limit(text) or any(
+            self.is_cap(sub, loop) for node in nodes for sub in self._walk(node, prune=_BLOCKS)
+        )
         if capped or lex.is_parent_key_filter(text):
             return "query", None
-        return ("rare_subset" if lex.is_rare_filter(text) else "query"), "grows_with_data"
-
-    def _caps_read(self, node: Node) -> bool:
-        for sub in self._walk(node, prune=_BLOCKS):
-            parts = self.call_parts(sub)
-            if parts is not None and parts[0] in self.query_caps and parts[2]:
-                return True
-        return False
+        return ("rare_subset" if lex.is_rare_filter(text) else "query"), self.read_grows
 
     def _walks_repo(self, call: Node, method: str, loop: Node) -> bool:
         """A recursive listing whose path names a repository root; any other path
@@ -333,11 +356,12 @@ class IterableSources(BasePerfDialect):
             mark in text for mark in self.recursive_marks
         ):
             return False
-        names = [n for n in self._walk(call) if n.type in self.name_kinds]
-        for node in list(names):
+        kinds = self.name_kinds | self.member_kinds
+        names = [n for n in self._walk(call) if n.type in kinds]
+        for node in [n for n in names if n.type in self.name_kinds]:
             value = self.reaching_value(loop, node.text or b"")
             if value is not None:
-                names.extend(n for n in self._walk(value) if n.type in self.name_kinds)
+                names.extend(n for n in self._walk(value) if n.type in kinds)
         return any(lex.names_repo_root(text_of(n)) for n in names)
 
     # -- helpers the dialects share ---------------------------------------------
@@ -348,41 +372,64 @@ class IterableSources(BasePerfDialect):
             scope = scope.parent
         return scope
 
-    def last_binding_before(self, loop: Node, bind: BindingReader, name: bytes) -> Node | None:
-        """The value of the last binding of *name* that ends before *loop*,
-        in the function around it (nested functions skipped)."""
-        scope = self._scope(loop)
+    def scope_facts(self, anchor: Node) -> ScopeFacts | None:
+        """The bindings and mutations of the function around *anchor*, read once
+        per function: every loop and call in it asks the same map."""
+        scope = self._scope(anchor)
         if scope is None:
             return None
-        best: tuple[int, Node] | None = None
+        key = (scope.id, scope.start_byte, scope.end_byte)
+        cached = self._facts_cache
+        if cached is not None and cached[1] == key:
+            return cached[2]
+        facts = ScopeFacts()
         for node in self._walk(scope, prune=self.function_kinds):
-            if node.end_byte > loop.start_byte:
-                continue
-            value = bind(node, name)
-            if value is not None and (best is None or node.start_byte > best[0]):
-                best = (node.start_byte, value)
-        return best[1] if best is not None else None
+            for name, value in self.bindings_of(node):
+                facts.bindings.setdefault(name, []).append((node, value))
+            changed = self.mutated_name(node)
+            if changed:
+                facts.changes.setdefault(changed, []).append(node.start_byte)
+        self._facts_cache = (scope, key, facts)
+        return facts
+
+    def bindings_before(self, anchor: Node, name: bytes) -> list[tuple[Node, Node]]:
+        """Every ``(statement, value)`` binding *name* that ends before *anchor*."""
+        facts = self.scope_facts(anchor)
+        found = facts.bindings.get(name, ()) if facts is not None else ()
+        return [(stmt, value) for stmt, value in found if stmt.end_byte <= anchor.start_byte]
+
+    def reaching_value(self, loop: Node, name: bytes) -> Node | None:
+        """The value *name* surely holds at *loop*: its one binding before the
+        loop, made where the loop also runs. A second binding, or one under a
+        branch or loop the target loop is not in, leaves it unknown."""
+        before = self.bindings_before(loop, name)
+        if len(before) != 1 or not self._surely_reaches(before[0][0], loop):
+            return None
+        return before[0][1]
+
+    def _surely_reaches(self, stmt: Node, loop: Node) -> bool:
+        """Every node between *stmt* and the first one holding *loop* runs
+        whenever that one does (a branch's condition or initializer does)."""
+        prev, cur = stmt, stmt.parent
+        while cur is not None and not (
+            cur.start_byte <= loop.start_byte and loop.end_byte <= cur.end_byte
+        ):
+            if cur.type in self.conditional_kinds and prev not in (
+                cur.child_by_field_name("condition"),
+                cur.child_by_field_name("initializer"),
+            ):
+                return False
+            prev, cur = cur, cur.parent
+        return cur is not None
 
     def _changed_before(self, value: Node, loop: Node, name: bytes) -> bool:
         """*name* is grown or stepped between its binding to *value* and *loop*:
-        ``xs.Add(x)`` / ``xs << x`` / ``m[k] = v`` / ``n++`` / ``n += 1``. A literal
-        it was bound to then says nothing about its size."""
-        scope = self._scope(loop)
-        if scope is None:
+        a literal it was bound to then says nothing about its size."""
+        facts = self.scope_facts(loop)
+        if facts is None:
             return True
-        for node in self._walk(scope, prune=self.function_kinds):
-            if node.start_byte < value.end_byte or node.end_byte > loop.start_byte:
-                continue
-            first = node.named_children[0] if node.named_children else None
-            target = first.text or b"" if first is not None else b""
-            if node.type == "binary" and text_of(node.child_by_field_name("operator")) != "<<":
-                continue
-            if node.type in _CHANGES and (target == name or target.startswith(name + b"[")):
-                return True
-            parts = self.call_parts(node)
-            if parts is not None and parts[0] in _GROWS and text_of(parts[1]).encode() == name:
-                return True
-        return False
+        start, end = value.end_byte, loop.start_byte
+        return any(start <= at < end for at in facts.changes.get(name, ()))
 
     def enclosing_params(self, loop: Node, param_kinds: frozenset[str]) -> set[bytes]:
         """Names the function around *loop* takes as parameters."""
@@ -399,4 +446,4 @@ class IterableSources(BasePerfDialect):
         return names
 
 
-__all__ = ["IterableSources", "text_of", "upper_bound"]
+__all__ = ["IterableSources", "ScopeFacts", "text_of", "upper_bound"]

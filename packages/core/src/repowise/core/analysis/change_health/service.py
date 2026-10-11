@@ -487,6 +487,8 @@ _INHERENT = "Nothing to change: the repetition is inherent or already batched."
 _EXPECTED_TEXT: dict[str | None, str] = {
     "inherent_to_boundary": _INHERENT,
     "loop_already_chunked": _INHERENT,
+    "loop_not_batchable": "Nothing to batch: each call needs the one before, or the loop "
+    "stops at the first that answers.",
     "gated_off": "Nothing to change while a constant-False flag switches this function off.",
     "cold_path": "Runs once per deploy, boot or incident; not worth scheduling.",
     "bounded_loop": "Nothing to change: the loop runs a fixed number of times.",

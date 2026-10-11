@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from .. import loop_lexicon as lex
 from ..loop_facts import BatchForm, LoopSource
+from .iterables import IterableSources
 from .python import HTTP_VERBS
 from .ts_js_markers import TsJsMarkerHooks, first_named_child, identifier_name
 
@@ -252,6 +253,14 @@ def _counted_stop(loop: Node) -> Node | None:
     return cond.child_by_field_name("right")
 
 
+def _fixed_count(stop: Node) -> bool:
+    """``3``, or ``MAX`` that its file binds once to a number."""
+    if stop.type == "number":
+        return True
+    name = identifier_name(stop)
+    return bool(name) and name.isupper() and _module_number_constant(stop.text or b"", stop)
+
+
 def _slice_is_bounded(call: Node) -> bool:
     """``.slice(a, N)`` where N is an integer literal or an ALL_CAPS constant
     its own file binds to one: a constant-width read, not the whole collection.
@@ -290,7 +299,7 @@ def _assigned_value(node: Node, name: bytes) -> Node | None:
     return value
 
 
-class TsJsPerfDialect(TsJsMarkerHooks):
+class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
     language = "typescript"
     markers = frozenset(
         {
@@ -472,16 +481,32 @@ class TsJsPerfDialect(TsJsMarkerHooks):
             return self._grows(self._magnitude_of_expr(_callee_object(call), probe, depth + 1))
         return None
 
-    def _reaching_assignment(self, loop: Node, name: bytes) -> Node | None:
-        """The value of the last ``name = ...`` before *loop* in its function."""
-        last: tuple[int, Node] | None = None
-        for node in self._walk(_enclosing_scope(loop), prune=_FN_KINDS):
-            if node.end_byte > loop.start_byte:
-                continue
-            value = _assigned_value(node, name)
-            if value is not None and (last is None or node.start_byte > last[0]):
-                last = (node.start_byte, value)
-        return last[1] if last is not None else None
+    # -- what a loop walks: the shared reading (perf/dialects/iterables.py) -------
+    function_kinds = _FN_KINDS
+    member_kinds = frozenset({"member_expression"})
+    recursive_listings = frozenset({"walk", "walkSync", "walkFiles"})
+    recursive_marks = (b"**", b"recursive: true")
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "else_clause", "switch_statement", "switch_case", "switch_default",
+            "for_statement", "for_in_statement", "while_statement", "do_statement",
+            "try_statement", "catch_clause", "ternary_expression",
+        }
+    )
+    # The iterable's own syntax (``_magnitude_of_expr``) says whether a read grows.
+    read_grows = None
+
+    def _scope(self, anchor: Node) -> Node | None:
+        # A script's top-level loop reads the bindings around it.
+        return _enclosing_scope(anchor)
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        fields = _ASSIGNMENT_FIELDS.get(node.type)
+        if fields is None:
+            return []
+        target, value = (node.child_by_field_name(field) for field in fields)
+        ok = target is not None and target.type == "identifier" and target.text and value is not None
+        return [(target.text, value)] if ok else []
 
     def loop_source(self, loop: Node, probe: SinkProbe) -> LoopSource | None:
         if loop.type == "for_statement":
@@ -494,7 +519,7 @@ class TsJsPerfDialect(TsJsMarkerHooks):
         iterates, claim = self._source(right, loop, probe, hop=True)
         if iterates == "unknown" and baseline is None:
             return None
-        return LoopSource(iterates, claim or baseline or "unknown", baseline or "unknown")
+        return LoopSource(iterates, claim or baseline or "unknown")
 
     def _expr_magnitude(
         self, expr: Node | None, loop: Node, probe: SinkProbe
@@ -502,7 +527,7 @@ class TsJsPerfDialect(TsJsMarkerHooks):
         """What *expr*'s syntax proves, one step through the name's last assignment."""
         magnitude = self._magnitude_of_expr(expr, probe)
         if magnitude is None and expr is not None and identifier_name(expr):
-            return self._magnitude_of_expr(self._reaching_assignment(loop, expr.text), probe)
+            return self._magnitude_of_expr(self.reaching_value(loop, expr.text), probe)
         return magnitude
 
     def _counted_source(self, loop: Node, probe: SinkProbe) -> Source:
@@ -511,10 +536,7 @@ class TsJsPerfDialect(TsJsMarkerHooks):
         stop = _counted_stop(loop)
         if stop is None:
             return "unknown", None
-        name = identifier_name(stop)
-        if stop.type == "number" or (
-            name and name.isupper() and _module_number_constant(stop.text or b"", stop)
-        ):
+        if _fixed_count(stop):
             return "constant", "bounded"
         prop = stop.child_by_field_name("property") if stop.type == "member_expression" else None
         if prop is not None and prop.text == b"length":
@@ -535,7 +557,7 @@ class TsJsPerfDialect(TsJsMarkerHooks):
             # A registry grows with what users register: the name alone bounds nothing.
             return "config_table", None
         if node.type == "identifier":
-            value = self._reaching_assignment(loop, node.text or b"") if hop else None
+            value = self.reaching_value(loop, node.text or b"") if hop else None
             if value is not None:
                 return self._source(value, loop, probe, hop=False)
             if (node.text or b"") in _param_names(_enclosing_scope(loop)):
@@ -561,7 +583,7 @@ class TsJsPerfDialect(TsJsMarkerHooks):
         if method in _TS_LISTINGS:
             return "listing", "grows_with_data" if self._walks_repo(call, method, loop) else None
         if probe(call) in ("db", "network"):
-            return self._query_source(call)
+            return self._query(call, loop)
         return "unknown", None
 
     def _call_bits(self, call: Node) -> tuple[str, Node | None, Node | None, Node | None]:
@@ -589,33 +611,7 @@ class TsJsPerfDialect(TsJsMarkerHooks):
             return self._source(first, loop, probe, hop=hop)
         return self._source(receiver, loop, probe, hop=hop)
 
-    def _walks_repo(self, call: Node, method: str, loop: Node) -> bool:
-        """A recursive listing whose path names a repository root
-        (``walkFiles(path.join(repoRoot, dir))``); any other path proves nothing."""
-        text = call.text or b""
-        if not (method.startswith("walk") or b"**" in text or b"recursive: true" in text):
-            return False
-        names = [n for n in self._walk(call) if n.type in ("identifier", "member_expression")]
-        for node in list(names):
-            if node.type != "identifier":
-                continue
-            value = self._reaching_assignment(loop, node.text or b"")
-            if value is not None:
-                names.extend(
-                    n for n in self._walk(value) if n.type in ("identifier", "member_expression")
-                )
-        return any(lex.names_repo_root(_text(n)) for n in names)
-
-    def _query_source(self, call: Node) -> Source:
-        """A read of a registry or configuration table (``prisma.repository``, ``FROM
-        repos``), of one key, of a rare state, or of rows that grow."""
-        if self._reads_config_table(call):
-            return "config_table", None
-        if lex.is_key_lookup(call.text or b""):
-            return "caller_key", "bounded"
-        return ("rare_subset" if lex.is_rare_filter(call.text or b"") else "query"), None
-
-    def _reads_config_table(self, call: Node) -> bool:
+    def reads_config_table(self, call: Node, nodes: list[Node]) -> bool:
         """Every table the read names is a registry (``FROM repos``), or with no SQL,
         the delegate does (``prisma.repository.findMany()``)."""
         sql = [n.text or b"" for n in self._walk(call) if n.type in ("string", "template_string")]

@@ -296,3 +296,115 @@ def test_the_children_of_one_parent_are_a_query_of_unknown_size():
     )
     assert rb[3] == ("unknown", "query")
     assert rb[4][0] == "unknown"  # a read's own cap, on a scope we cannot see into
+
+
+def test_a_binding_under_a_branch_leaves_the_loop_unknown():
+    # ``items`` is a read or, on one path, a literal: neither size is sure.
+    go = _loops(
+        "f.go",
+        "go",
+        'package m\nimport "database/sql"\n'
+        "func f(db *sql.DB) {\n"
+        "    var items []Item\n"
+        "    db.Find(&items)\n"
+        "    if len(items) == 0 {\n"
+        '        items = []Item{{Name: "a"}}\n'
+        "    }\n"
+        '    for _, it := range items { db.Exec("x", it) }\n'
+        "    var only []Item\n"
+        "    if ok {\n"
+        '        only = []Item{{Name: "a"}}\n'
+        "    }\n"
+        '    for _, it := range only { db.Exec("x", it) }\n'
+        "}\n",
+    )
+    assert go[9][0] == "unknown"
+    assert go[14][0] == "unknown"
+    java = _loops(
+        "A.java",
+        "java",
+        "class A { void f(boolean ok, UserRepository userRepository) {\n"
+        "  List<String> names = List.of(\"a\", \"b\");\n"
+        "  if (ok) { names = userRepository.findAllNames(); }\n"
+        "  for (String n : names) { userRepository.findByName(n); } } }\n",
+    )
+    assert java[4][0] == "unknown"
+
+
+def test_a_read_in_an_if_initializer_still_reaches_the_loop():
+    go = _loops(
+        "f.go",
+        "go",
+        'package m\nimport "database/sql"\n'
+        "func f(db *sql.DB) error {\n"
+        "    var users []User\n"
+        "    if err := db.Find(&users).Error; err != nil {\n"
+        "        return err\n"
+        "    }\n"
+        '    for _, u := range users { db.Exec("x", u) }\n'
+        "    return nil\n"
+        "}\n",
+    )
+    assert go[8] == ("grows_with_data", "query")
+
+
+@pytest.mark.parametrize(
+    ("path", "language", "src", "line"),
+    [
+        (
+            "a.rb",
+            "ruby",
+            'require "active_record"\ndef f(ids, n)\n'
+            "  ids.first(n).each { |x| Order.find_by(user: x) }\nend\n",
+            3,
+        ),
+        (
+            "A.cs",
+            "csharp",
+            "using Microsoft.EntityFrameworkCore;\nclass A {\n"
+            "  async Task F(List<int> ids, int n) {\n"
+            "    foreach (var x in ids.Take(n)) { await _context.Orders.FirstOrDefaultAsync(o => o.UserId == x); }\n"
+            "  }\n}\n",
+            4,
+        ),
+        (
+            "A.java",
+            "java",
+            "class A { void f(List<Long> ids, int max, UserRepository userRepository) {\n"
+            "  for (Long id : ids.stream().limit(max).toList()) { userRepository.findById(id); } } }\n",
+            2,
+        ),
+    ],
+)
+def test_a_cap_that_is_not_a_literal_bounds_nothing(path, language, src, line):
+    assert _loops(path, language, src)[line][0] == "unknown"
+
+
+def test_returning_the_error_of_a_call_is_no_first_match():
+    hits = walk_file(
+        "f.go",
+        "go",
+        b'package m\nimport "database/sql"\n'
+        b"func f(db *sql.DB, ids []int) error {\n"
+        b"    for _, id := range ids {\n"
+        b'        if _, err := db.Exec("DELETE FROM t WHERE id = ?", id); err != nil {\n'
+        b"            return err\n"
+        b"        }\n"
+        b"    }\n"
+        b"    return nil\n"
+        b"}\n",
+    ).perf_hits
+    go = [h.loop for h in hits if h.kind == "io_in_loop"]
+    assert go and all(f is None or f.not_batchable is None for f in go)
+    hits = walk_file(
+        "f.py",
+        "python",
+        b"import requests\n"
+        b"def push(urls):\n"
+        b"    for url in urls:\n"
+        b"        resp, err = send(requests.post(url))\n"
+        b"        if err:\n"
+        b"            return err\n",
+    ).perf_hits
+    py = [h.loop for h in hits if h.kind == "io_in_loop"]
+    assert py and all(f is None or f.not_batchable is None for f in py)

@@ -44,36 +44,16 @@ LoopIterates = Literal[
 # ``turn_loop`` feeds each call's result into the next call.
 NotBatchable = Literal["first_match", "turn_loop"]
 
-# Whether the new loop-source rules decide the magnitude the queue reads.
-# Off, they annotate (``loop_iterates``) and the magnitude is the one the
-# iterable's syntax alone proves, as before them. Flip it off when a held-out
-# sample shows their ``bounded`` or ``grows`` below its precision bar.
-SOURCE_DECIDES_MAGNITUDE = True
-# Whether a proven first-match or turn loop refuses the batch strategy. Off,
-# the fact is stored and nothing a reader sees changes.
-NOT_BATCHABLE_REFUSES_BATCH = True
-
 # The boundary kind of a call node when it is an I/O sink, else ``None``.
 SinkProbe = Callable[["Node"], str | None]
 
 
 @dataclass(frozen=True, slots=True)
 class LoopSource:
-    """What one loop's iterable is, and how many iterations that proves.
-
-    ``magnitude`` is the dialect's whole claim; ``baseline`` is what the
-    iterable's syntax proved before the source rules existed, kept so the
-    claim can annotate without gating (:data:`SOURCE_DECIDES_MAGNITUDE`).
-    Ceiling: drop ``baseline`` once the claim's bars are confirmed.
-    """
+    """What one loop's iterable is, and how many iterations that proves."""
 
     iterates: LoopIterates = "unknown"
     magnitude: LoopMagnitude = "unknown"
-    baseline: LoopMagnitude = "unknown"
-
-    @property
-    def effective(self) -> LoopMagnitude:
-        return self.magnitude if SOURCE_DECIDES_MAGNITUDE else self.baseline
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,15 +105,13 @@ class LoopFacts:
 def combined_magnitude(sources: list[LoopSource]) -> LoopMagnitude:
     """Grows if any enclosing loop grows; bounded only if every one is, since a
     retry loop inside a loop over rows still runs once per row."""
-    found = {source.effective for source in sources}
+    found = {source.magnitude for source in sources}
     if "grows_with_data" in found:
         return "grows_with_data"
     return "bounded" if found == {"bounded"} else "unknown"
 
 
 __all__ = [
-    "NOT_BATCHABLE_REFUSES_BATCH",
-    "SOURCE_DECIDES_MAGNITUDE",
     "BatchForm",
     "LoopFacts",
     "LoopIterates",
