@@ -99,15 +99,13 @@ function fenced(text: string): string[] {
   return [fence, text, fence];
 }
 
-function extractMethodSteps(plan: RefactoringPlan): string {
-  const em = extractMethodPlan(plan);
-  if (!em.span) return "Extract the indicated slice into a helper method.";
-  const params = em.params.length ? em.params.join(", ") : "(none)";
-  const returns = em.returns.length ? em.returns.join(", ") : "(nothing)";
-  const name = em.suggested_name ?? HELPER_NAME_PLACEHOLDER;
-  const anchors = spanAnchors(plan);
-  const lines = `${em.span.start}–${em.span.end}`;
-  const rendered = [
+/** The anchored span, the helper's shape and the call site, as bullets. */
+function extractMethodBullets(
+  em: ReturnType<typeof extractMethodPlan>,
+  anchors: ReturnType<typeof spanAnchors>,
+  lines: string,
+): string[] {
+  return [
     ...(anchors
       ? [
           "- **The span starts with:**",
@@ -124,6 +122,17 @@ function extractMethodSteps(plan: RefactoringPlan): string {
       : []),
     ...em.notes.map((note) => `- **Note:** ${note}`),
   ];
+}
+
+function extractMethodSteps(plan: RefactoringPlan): string {
+  const em = extractMethodPlan(plan);
+  if (!em.span) return "Extract the indicated slice into a helper method.";
+  const params = em.params.length ? em.params.join(", ") : "(none)";
+  const returns = em.returns.length ? em.returns.join(", ") : "(nothing)";
+  const name = em.suggested_name ?? HELPER_NAME_PLACEHOLDER;
+  const anchors = spanAnchors(plan);
+  const lines = `${em.span.start}–${em.span.end}`;
+  const rendered = extractMethodBullets(em, anchors, lines);
   const what = anchors
     ? `the span of \`${plan.target_symbol}\` that starts and ends with the lines shown (lines ${lines} when planned)`
     : `lines ${lines} of \`${plan.target_symbol}\``;
