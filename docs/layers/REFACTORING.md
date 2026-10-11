@@ -64,8 +64,15 @@ structured plan for an agent. The page never edits code or runs tests on its own
 
 A plan lists the tests closest to the change first: measured coverage, then
 tests named for the file, then the call graph. Tests that reach the file only
-through a widely imported hub module are left out. When no test reaches the
-change, the plan has no command and asks for a characterization test first.
+through a widely imported hub module are left out. When the plan changes known
+functions, it quotes the few test functions nearest each one as runnable
+selectors (`tests/test_orders.py::test_total`), and its command runs only the
+files they live in. When no test reaches the change, the plan has no command and
+asks for a characterization test first; it also asks when tests reach the file
+but none reaches the changed function.
+A JavaScript or TypeScript test runs from the package whose `package.json`
+declares its `test` script (`npm --prefix ui-tui test -- src/a.test.ts`), and a
+test that no package can run gets no command.
 
 In a plan with several steps, such as a performance fix at several call sites,
 plan detail adds a `verify` to each step whose tests differ from the plan's: the
@@ -103,12 +110,16 @@ On an opportunity, each step carries `applicability`: `mechanical` (only
 extractions qualify) or `judgment`, with the facts behind the call. When an
 earlier step moves a symbol to another file, the later step carries
 `relocated_by`: its stored location is where the symbol was before, so find it
-again before applying.
+again before applying. In the plan list a Split File plan stands for the plans
+it relocates in the same file: its row lists them as `relocates`, and they take no
+rows of their own.
 
 Plan detail also lists `risks`, one sentence each, to read before applying the
 plan: an accepted decision that governs the file, callers or importers of what
 the plan moves, a target nothing reaches (delete it instead), and recent commits
-on the same lines. A governed plan's steps are `judgment`, and its
+on the same lines, and a test the plan runs that asserts on the function's own
+source text. When the plan changes a symbol a package exports to its consumers,
+the risk names the file exporting it. A governed plan's steps are `judgment`, and its
 `blast_radius.co_change_partners` names the files that usually change with it.
 A newly accepted decision shows here after the next index or update.
 
@@ -145,8 +156,9 @@ Fix first item leaves it out and says how many steps it held back; the full plan
 keeps them. Code only moves within a language family,
 so Java, Kotlin and Scala are separate. A callback is named after the call it is
 passed to. An Extract Method helper is named from a stage label, a banner comment,
-or `compute_<value>` when the span has no outside effects. A name already taken
-where the helper lands is dropped, so a `null` name means you name the helper.
+or `compute_<value>` when the span has no outside effects; otherwise it is the host
+function's name plus what the span handles, such as `render_card_directive`. A
+name already taken where the helper lands is skipped for the next candidate.
 
 An empty list means no detector found work that clears its gates. It does not mean
 the code needs no attention: check the findings in
@@ -225,13 +237,21 @@ Most plans answer a health finding, so per-path marker rules in
   generated code comes back as a diff.
 - Extract Method offers a span only when it can show the extraction keeps behavior
   (every returned value written on every path, no state carried across loop
-  iterations, no local a closure shares across the span's edge). Spans it cannot
-  prove are dropped, so it under-reports by design. A value the span writes is
-  returned whenever any path can carry it to a later read, including past a later
-  write in an `else` arm or a `try` body that may raise first.
+  iterations, no local a closure shares across the span's edge, no write to a
+  `global` name without its declaration). A staged plan also leaves out a stage
+  whose inputs or outputs depend on a `switch` or `match` arm's write. A span or
+  stage never changes which handler catches an error or what it sees: it is not
+  offered when it would split a `try` from its handlers, write a value a handler
+  or `finally` reads, or move a Go `defer`. Spans it
+  cannot prove are dropped, so it under-reports by design. A value the span writes
+  is returned whenever any path can carry it to a later read, including past a
+  later write in an `else` arm or a `try` body that may raise first.
 - Extract Method skips spans too small to matter and spans that would carry the
   original finding into the helper. A component whose branching is mostly in its
-  markup gets no extraction.
+  markup gets no extraction, and neither does a function that only fills one
+  value field by field behind independent guards (summary rows, query
+  parameters, optional settings), since splitting it simplifies neither half.
+  Its finding records why in `details.extract_method_refused`.
 - An Extract Method span must remove at least two decision points, hold at least
   8 code lines, cover at most 60% of the function's lines, and not start on the
   docstring. When the best span misses one of these, only a span that does not
@@ -250,16 +270,37 @@ Most plans answer a health finding, so per-path marker rules in
   (`receiver_unbound`, `receiver_copy_written`).
 - An Extract Method plan writes out the new helper's header and the line that
   replaces the span, in the file's language, with parameter types where the code
-  declares them. Plan detail shows both with a copy button. Where the code names
-  no helper or type, the text reads `<name>` or `<type>` for you to fill in.
+  declares them. In TypeScript, an optional parameter is written `T | undefined`,
+  and a type an earlier guard narrows (`if (!x) return;`) is written narrowed, or
+  a note asks for the narrowed type. Plan detail shows both with a copy button.
+  Where the code names no helper or type, the text reads `<name>` or `<type>` for
+  you to fill in.
 - A Python, TypeScript or JavaScript function too complex for one helper can
   get a staged plan instead: several helpers the function calls in order, each
   small enough to leave the finding behind. Plan detail lists them as steps,
   with a shared parameter object when many values pass between them, and the
   plan's estimated gain is the whole drop in the function's complexity. The
-  plan's own span, header and call are its first stage. When a function moves
+  plan's own span, header and call are its first stage. When the work sits
+  inside one loop or `if`, the stages are cut from its body and the function
+  keeps the loop and calls them each time round. A stage running across several
+  labelled sections is named after them. When a function moves
   between a single helper and a staged plan, or its stages change, the plan
   gets a new id.
+- Every Extract Method step, and every stage of a staged plan, shows the exact
+  first and last lines of its span, so an agent finds it by its text after
+  earlier stages have moved its lines; the line numbers are only a hint. The
+  plan asks for each stage as a direct edit to the file, one at a time, never a
+  script that rewrites it. A staged plan whose stages cannot all be pinned down
+  that way falls back to a single helper, and a function with neither gets no plan.
+- A staged plan with more than five stages comes in batches of at most five.
+  Each batch names the tests to run before the next one, and a batch whose
+  tests fail stops the plan there. The code runs after every batch, so a
+  failure points at the stages just applied.
+- An Extract Method plan that would still leave the function, or one of its new
+  helpers, above the break-up bar says so, for example "leaves build_from_json
+  at CCN 83, still above the break-up bar; more stages needed". The plan and
+  its file's opportunity rank after the work that finishes the job. The mark is
+  set when the repository is indexed, so a plan ranked live is not marked.
 - Move Method never targets a class the method only instantiates, or an ancestor of
   its own class.
 - Split File works on any language with call resolution and suggests a split only

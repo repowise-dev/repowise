@@ -17,6 +17,7 @@ from repowise.core.analysis.health.dataflow import (
     analyze_function,
     compute_def_use,
     compute_reaching,
+    find_extractions,
 )
 from repowise.core.analysis.health.dataflow.dialects.base import get_defuse_dialect
 
@@ -72,6 +73,61 @@ def test_simple_assignment():
     )
     assert "x" in defs
     assert "a" in uses
+
+
+@pytest.mark.parametrize("loop_head", ["for item in items:", "while items:"])
+def test_python_loop_else_body_contributes_to_dataflow(loop_head):
+    cfg, def_use, reaching = _analyze(
+        f"""
+        def f(items):
+            {loop_head}
+                consume(items)
+            else:
+                done = flush()
+            return done
+        """
+    )
+    assert "done" in {definition.var for definition in def_use.definitions}
+    assert "flush" in {use.name for block in def_use.blocks.values() for use in block.uses}
+    return_block = next(
+        block
+        for block in cfg.blocks
+        if any(statement.kind == "return_statement" for statement in block.statements)
+    )
+    assert "done" in {definition.var for definition in reaching.reaching_in(return_block.id)}
+
+
+def test_loop_else_read_is_returned_by_extract_method():
+    source = """def pick(items, limit, extra):
+    bound = 0
+    for it in extra:
+        if it > limit:
+            bound += 1
+        if it < 0:
+            bound -= 1
+        if it == 0:
+            bound += 2
+        elif it == 1:
+            bound += 3
+    if bound > 3:
+        bound = 3
+    if bound < 0:
+        bound = 0
+    for x in items:
+        if x > limit:
+            break
+    else:
+        use(bound)
+"""
+    result = analyze_file("m.py", "python", source.encode(), flagged_only=False)
+    assert result.functions
+    candidates = [
+        candidate
+        for candidate in find_extractions(result.functions[0], get_language_map("python"))
+        if candidate.end_line == 15
+    ]
+    assert candidates
+    assert all("bound" in candidate.returns for candidate in candidates)
 
 
 def test_augmented_assignment_is_def_and_use():
@@ -336,6 +392,94 @@ def test_handler_assignment_reaches_finally_on_reraise():
     }
 
     assert 7 in reaching_lines
+
+
+def test_a_write_overwritten_later_in_the_try_body_reaches_the_handler():
+    cfg, def_use, reaching = _analyze(
+        """
+        def f():
+            try:
+                x = 1
+                y = g()
+                x = 2
+            except Exception:
+                return x
+            return x + y
+        """
+    )
+    (handler,) = [b for b in cfg.blocks if b.kind == "handler"]
+    # g() can raise after x = 1 and before x = 2.
+    assert {d.line for d in reaching.reaching_in(handler.id) if d.var == "x"} == {4, 6}
+    # The normal path still sees only the last write.
+    after = next(bid for bid, bdu in def_use.blocks.items() if any(u.line == 9 for u in bdu.uses))
+    assert {d.line for d in reaching.reaching_in(after) if d.var == "x"} == {6}
+
+
+def _lines_at(def_use, reaching, var: str, use_line: int) -> set[int]:
+    """Lines of the *var* definitions reaching the block that reads it at *use_line*."""
+    bid = next(b for b, bdu in def_use.blocks.items() if any(u.line == use_line for u in bdu.uses))
+    return {d.line for d in reaching.reaching_in(bid) if d.var == var}
+
+
+def test_handler_and_else_writes_overwritten_mid_block_reach_finally():
+    cfg, def_use, reaching = _analyze(
+        """
+        def f():
+            try:
+                a = g()
+            except Exception:
+                s = 1
+                s = h()
+                s = 2
+                raise
+            else:
+                e = 1
+                e = k()
+                e = 2
+            finally:
+                use(s, e)
+        """
+    )
+    assert cfg.raise_edges
+    assert {6, 8} <= _lines_at(def_use, reaching, "s", 15)
+    assert {11, 13} <= _lines_at(def_use, reaching, "e", 15)
+
+
+def test_an_inner_try_body_write_reaches_the_outer_handler():
+    cfg, def_use, reaching = _analyze(
+        """
+        def f():
+            try:
+                try:
+                    x = 1
+                    g()
+                    x = 2
+                except ValueError:
+                    pass
+            except Exception:
+                return x
+            return x
+        """
+    )
+    assert cfg.raise_edges
+    assert _lines_at(def_use, reaching, "x", 11) == {5, 7}
+
+
+def test_a_write_overwritten_before_the_try_does_not_reach_the_handler():
+    cfg, def_use, reaching = _analyze(
+        """
+        def f():
+            x = 0
+            x = 5
+            try:
+                g()
+            except Exception:
+                return x
+            return x
+        """
+    )
+    assert cfg.raise_edges
+    assert _lines_at(def_use, reaching, "x", 8) == {4}
 
 
 def test_redefinition_kills_earlier_def():

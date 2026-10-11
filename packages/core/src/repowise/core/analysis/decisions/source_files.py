@@ -7,11 +7,13 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
+from repowise.core.ingestion.traverser import is_output_dir
 
-# fs_walk's never-source set plus the two derived-output names the decision
-# walks have always skipped: a bundled ``dist``/``build`` copy of a source file
-# would double every marker it contains.
-_SKIP_DIRS = PRUNED_DIRS | {"dist", "build"}
+# fs_walk's never-source set. The decision walks also pass ``is_output_dir``
+# as ``prune``: a bundled ``dist``/``build`` copy of a source file would double
+# every marker it contains, while a source package with one of those names is
+# indexed and must be read.
+_SKIP_DIRS = PRUNED_DIRS
 
 _BINARY_EXTENSIONS = frozenset(
     {
@@ -102,7 +104,9 @@ def iter_source_files(repo_path: Path) -> Iterator[Path]:
     """
     tracked = tracked_files(repo_path)
 
-    for dirpath, dirnames, filenames in walk_repo(repo_path, prune_dirs=_SKIP_DIRS):
+    for dirpath, dirnames, filenames in walk_repo(
+        repo_path, prune_dirs=_SKIP_DIRS, prune=is_output_dir
+    ):
         # Skip setuptools build metadata: PKG-INFO embeds the README
         # verbatim, so example marker lines in docs become spurious
         # decisions. Same risk for *.dist-info from wheels.

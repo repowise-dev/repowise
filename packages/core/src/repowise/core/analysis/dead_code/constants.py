@@ -590,6 +590,23 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.stories.js",
     "*.stories.jsx",
     "*.stories.mdx",
+    # Storybook config files are loaded by path (main/preview/manager),
+    # not imported. A preview.ts outside .storybook/ stays flaggable.
+    "*.storybook/main.ts",
+    "*.storybook/main.tsx",
+    "*.storybook/main.js",
+    "*.storybook/main.jsx",
+    "*.storybook/main.mdx",
+    "*.storybook/preview.ts",
+    "*.storybook/preview.tsx",
+    "*.storybook/preview.js",
+    "*.storybook/preview.jsx",
+    "*.storybook/preview.mdx",
+    "*.storybook/manager.ts",
+    "*.storybook/manager.tsx",
+    "*.storybook/manager.js",
+    "*.storybook/manager.jsx",
+    "*.storybook/manager.mdx",
     # Benchmarks â€” invoked by vitest/tinybench/bench scripts, not imported.
     "*.bench.ts",
     "*.bench.tsx",
@@ -599,6 +616,9 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*vitest.workspace.*",
     "*vitest.shims.*",
     "*vitest.root.*",
+    # @vscode/test-cli reads its config by this name from the working directory.
+    *(f".vscode-test{ext}" for ext in _JS_TOOL_EXTS),
+    *(f"*/.vscode-test{ext}" for ext in _JS_TOOL_EXTS),
     # Codegen / generated artifacts.
     "*.gen.ts",
     "*.gen.tsx",
@@ -789,6 +809,9 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.task",
     "celery.task",
     "shared_task",
+    # SQLAlchemy, imported bare: stored in the dialect compiler / event registry.
+    "compiles",
+    "listens_for",
     # Click CLI commands â€” registered with the parent group/command.
     "click.command",
     "click.group",
@@ -978,9 +1001,9 @@ _PURE_WRAPPER_DECORATOR_ATTRS: frozenset[str] = frozenset(
 )
 
 # Languages whose idiom is a static holder class the call site never names,
-# because it names only the member (C# extension methods). A set so widening it
-# is a deliberate act.
-_CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
+# because it names only the member (C# extension methods, VB.NET Modules). A
+# set so widening it is a deliberate act.
+_CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp", "vbnet"})
 
 # Languages whose files are run, never imported: a directory holding only these
 # (a ``docker/`` folder of Dockerfiles and an entrypoint script) is not a package

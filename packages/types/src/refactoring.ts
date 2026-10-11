@@ -43,6 +43,10 @@ export interface RecommendationValidation {
   /** Set when no test reaches the change: the step to take before the edit.
    *  Absent on a payload from an older server. */
   prerequisite?: string | null;
+  /** The package directory each shown JS/TS test runs from ("" is the root,
+   *  null when none can run it). Absent when the plan was validated without
+   *  a checkout or names no JS/TS test. */
+  js_packages?: Record<string, string | null>;
 }
 
 /** How a step's tests were found: coverage runs its lines, the graph reaches
@@ -59,9 +63,9 @@ export interface StepVerify {
 }
 
 /** What another layer says to check before applying a plan: a decision that
- *  governs its file, consumers of what it moves, dead code it touches, or
- *  recent commits on its lines. */
-export type PlanRiskKind = "decision" | "public_api" | "active_edit" | "dead_code";
+ *  governs its file, consumers of what it moves, dead code it touches, recent
+ *  commits on its lines, or a test that reads the function's source text. */
+export type PlanRiskKind = "decision" | "public_api" | "active_edit" | "dead_code" | "source_text";
 
 /** One sentence to read before applying the plan. `ref` is the decision id or
  *  the newest commit sha, when the risk has one. */
@@ -122,6 +126,9 @@ export interface RefactoringPlan {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: RecommendationValidation;
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
   /** Plan detail only: ids of the accepted decisions governing the file.
    *  Absent when the plan was never checked (not yet re-indexed). */
   governed_by?: string[];
@@ -207,8 +214,13 @@ export type RecipePreconditionKind =
   | "public_api"
   | "active_edit"
   | "dead_code"
+  | "source_text"
   | "unchecked"
   | "kind_unaudited";
+
+/** Where an Extract Method anchor is unique: the whole file, or only inside
+ *  its function (a text match must then stay inside the host). */
+export type AnchorScope = "file" | "function";
 
 export interface RecipeStep {
   n: number;
@@ -231,6 +243,9 @@ export interface RecipeStep {
     notes: string[];
   };
   call_site?: ExtractCallSite;
+  /** Extract Method: the exact text the span starts and ends with, so the
+   *  step is found by text, not line. */
+  anchors?: { first: string; last: string; unique_in: AnchorScope };
   symbols?: string[];
   to_file?: string | null;
   /** Extract Helper: the directory the shared helper belongs in. */
@@ -271,6 +286,21 @@ export interface RefactoringRecipe {
   >;
   /** `constraint` reads after "Do not"; `reason` says why, when it is not obvious. */
   does_not: Array<{ constraint: string; reason: string | null }>;
+  /** A staged plan over five stages only: its steps in ordered batches of at
+   *  most five, each with the tests to run before the next; a failing batch
+   *  stops the plan. */
+  batches?: RecipeBatch[];
+}
+
+/** One batch of a long staged plan. Mirrors `stage_batches`. */
+export interface RecipeBatch {
+  n: number;
+  /** Recipe step numbers, in order. */
+  steps: number[];
+  stages: { first: number; last: number };
+  tests: string[];
+  commands: string[];
+  text: string;
 }
 
 export interface RefactoringTypeCount {
@@ -364,6 +394,9 @@ export interface OpportunityStep {
   /** Findings this step's cause produced, for a round trip to the diagnosis. */
   finding_ids?: string[];
   validation_profile_id?: string;
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
 }
 
 /** A supporting observation. Never an instruction to change anything. */
@@ -441,6 +474,9 @@ export interface RefactoringOpportunity {
   /** Files importing the lead file. Absent when the store predates the figure. */
   dependents?: number;
   steps?: OpportunityStep[];
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
   steps_total?: number;
   steps_emitted?: number;
   steps_reduced_reason?: string;

@@ -99,6 +99,15 @@ Left out, and counted with a reason:
 - kinds that reviewers found not worth doing
 - code a sure dead-code finding covers (the fix is to delete it)
 - dormant functions, which a constant flag switches off
+- print and prompt flows (status reports, checklists, setup wizards), whose
+  branches choose what to show
+- functions under CCN 80 and 200 lines whose file rarely changes and has no bug
+  fixes; they stay in the refactoring list
+
+Test helpers named for a module's tests (`bot.test-harness.ts`, `card-test-helpers.ts`,
+`test-support.mjs`) count as test support, and bundler output (`*.bundle.js`) as
+generated code, so neither leads Fix first, the refactoring list or the dashboard's
+worst-file lists, which say how many files they left out and why.
 
 A function is dormant when its body opens with `if not FLAG: return ...` (or is one
 `if FLAG:` block) and `FLAG` is a module-level `False`, `0` or `None` (`const FLAG =
@@ -110,7 +119,8 @@ outside with `setattr` or a test's monkeypatch, still reads as off.
 Items rank by value first (how far the code sits past size and complexity bars,
 one step more in a widely imported file), then by tier. Within a value, the
 complexity a fix removes times how widely the file is imported decides, so a
-4,000-line loop outranks a long print routine. A performance fix ranks by what runs
+4,000-line loop outranks a long print routine. A function under a twentieth of a
+very large file counts only its share of that file's importers. A performance fix ranks by what runs
 it: a request or message handler, then a scheduled job, then code with no role
 evidence. No kind takes more than 3 of the first 5 places while another has work
 worth doing.
@@ -121,7 +131,9 @@ worth doing.
 | `next` | Worth doing, needs judgment |
 | `later` | Real but can wait; the reason is shown |
 
-A `now` or `next` item shows its first step and the command that checks it without opening it, on the card, and over MCP for the lead and for each item of an `only=["fix_first"]` page. When no test reaches the code, Verify says to add a characterization test first. An Extract Method step shows the helper's header and the call that replaces the lines, ready to copy.
+A refactoring item is `later` when the plan of any of its steps would still leave a function above the break-up bar: it needs more stages before it is worth starting. When a finding's first step borrows such a plan, the finding keeps its tier and the step says the plan alone leaves the function above the bar.
+
+A `now` or `next` item shows its first step and the command that checks it without opening it, on the card, and over MCP for the lead and for each item of an `only=["fix_first"]` page. When no test reaches the code, Verify says to add a characterization test first. An Extract Method step shows the helper's header and the call that replaces the lines, ready to copy. It finds the lines by the text they start and end with, as the plan does, since line numbers move with the first edit; when that text also appears elsewhere in the file, the step says to keep the edit inside its function.
 
 Findings, performance causes, refactoring plans and Fix first items are counted the
 same way everywhere: open in the inventory, in scope, eligible, due (tier `now` or
@@ -142,6 +154,8 @@ snoozing a row takes effect at once.
 
 A fragile file asks for tests only when no measured coverage and no test in the
 code graph reaches it; otherwise the row asks you to simplify its lead function.
+A folder where bug fixes concentrate names its first step, the most fixed file's,
+or is left out.
 An index with fewer than five commits leaves out the rows ranked by history.
 
 ```bash

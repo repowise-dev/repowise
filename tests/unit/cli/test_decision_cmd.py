@@ -53,11 +53,28 @@ def _seed_wiki_db(repo_root: Path, decisions: list[dict]) -> None:
     asyncio.run(_build())
 
 
+def _create_empty_index(repo_root: Path) -> None:
+    """Create ``.repowise/wiki.db`` with the schema and no rows: an indexed repo.
+
+    ``decision`` commands refuse a checkout with no index, so a repo that is
+    only an empty ``.repowise/`` directory no longer stands in for one.
+    """
+
+    async def _build() -> None:
+        db_path = repo_root / ".repowise" / "wiki.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        await init_db(engine)
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+
 @pytest.fixture
 def indexed_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".repowise").mkdir()
+    _create_empty_index(repo)
     return repo
 
 
@@ -640,3 +657,184 @@ def test_decision_add_stays_silent_when_the_repo_has_no_real_embedder(tmp_path, 
 
     assert built == [], "no store should be built without a real embedder"
     assert not (tmp_path / ".repowise" / "lancedb").exists()
+
+
+# -- index routing: worktrees and unindexed checkouts --------------------------
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.fixture
+def base_checkout(tmp_path: Path) -> Path:
+    base = tmp_path / "base"
+    base.mkdir()
+    _git(["init", "-q", "-b", "main"], base)
+    (base / "a.py").write_text("x = 1\n")
+    _git(["add", "."], base)
+    _git(["commit", "-q", "-m", "init"], base)
+    return base
+
+
+@pytest.fixture
+def linked_worktree(base_checkout: Path, tmp_path: Path) -> Path:
+    wt = tmp_path / "wt"
+    _git(["worktree", "add", "-q", str(wt), "-b", "feature"], base_checkout)
+    return wt
+
+
+def _stored_titles(repo_root: Path) -> list[str]:
+    import sqlite3
+
+    conn = sqlite3.connect(repo_root / ".repowise" / "wiki.db")
+    try:
+        return [r[0] for r in conn.execute("SELECT title FROM decision_records")]
+    finally:
+        conn.close()
+
+
+_ADD = ["decision", "add", "--title", "Use X", "--decision", "We use X"]
+
+
+def test_add_in_an_unindexed_repo_refuses_and_creates_nothing(tmp_path: Path) -> None:
+    repo = tmp_path / "plain"
+    repo.mkdir()
+
+    result = CliRunner().invoke(cli, [*_ADD, str(repo)])
+
+    assert result.exit_code == 1, result.output
+    assert "No index found" in result.output
+    assert "repowise init" in result.output
+    assert not (repo / ".repowise").exists()
+
+
+def test_add_json_in_an_unindexed_repo_emits_a_refusal_document(tmp_path: Path) -> None:
+    repo = tmp_path / "plain"
+    repo.mkdir()
+
+    result = CliRunner().invoke(cli, [*_ADD, str(repo), "--format", "json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["error"] == "no_index"
+    assert payload["remedy"] == "Run `repowise init` first."
+    assert not (repo / ".repowise").exists()
+
+
+def test_add_in_an_unindexed_worktree_of_an_unindexed_base_refuses(
+    base_checkout: Path, linked_worktree: Path
+) -> None:
+    result = CliRunner().invoke(cli, [*_ADD, str(linked_worktree)])
+
+    assert result.exit_code == 1, result.output
+    assert not (linked_worktree / ".repowise").exists()
+    assert not (base_checkout / ".repowise").exists()
+
+
+def test_add_in_an_unindexed_worktree_writes_to_the_base_index(
+    base_checkout: Path, linked_worktree: Path
+) -> None:
+    _create_empty_index(base_checkout)
+
+    result = CliRunner().invoke(cli, [*_ADD, str(linked_worktree), "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert not (linked_worktree / ".repowise").exists()
+    assert _stored_titles(base_checkout) == ["Use X"]
+
+
+def test_add_from_a_worktree_says_where_the_record_went(
+    base_checkout: Path, linked_worktree: Path
+) -> None:
+    _create_empty_index(base_checkout)
+
+    result = CliRunner().invoke(cli, [*_ADD, str(linked_worktree)])
+
+    assert result.exit_code == 0, result.output
+    assert "using the base checkout's" in result.output
+    assert str(base_checkout) in result.output.replace("\n", "")
+
+
+def test_add_json_from_a_worktree_reports_the_base_as_the_repo(
+    base_checkout: Path, linked_worktree: Path
+) -> None:
+    _create_empty_index(base_checkout)
+
+    result = CliRunner().invoke(cli, [*_ADD, str(linked_worktree), "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    # Click 8.1 mixes stderr into the captured stdout and 8.2+ keeps them apart,
+    # so lift the document out of the output instead of assuming either. That
+    # the notice itself goes to stderr under --format json is pinned by
+    # test_notice_console_is_stderr_under_json.
+    output = result.output
+    document, _ = json.JSONDecoder().raw_decode(output[output.index("{") :])
+    assert Path(document["repo"]).resolve() == base_checkout.resolve()
+    assert "using the base checkout's" in output
+
+
+def test_a_worktree_with_its_own_index_keeps_writing_to_it(
+    base_checkout: Path, linked_worktree: Path
+) -> None:
+    _create_empty_index(base_checkout)
+    _create_empty_index(linked_worktree)
+
+    result = CliRunner().invoke(cli, [*_ADD, str(linked_worktree)])
+
+    assert result.exit_code == 0, result.output
+    assert _stored_titles(linked_worktree) == ["Use X"]
+    assert _stored_titles(base_checkout) == []
+
+
+def test_list_in_a_worktree_reads_the_base_index(
+    base_checkout: Path, linked_worktree: Path
+) -> None:
+    _seed_wiki_db(base_checkout, [{"id": "aaaaaaaa11111111", "title": "Base decision"}])
+
+    result = CliRunner().invoke(cli, ["decision", "list", str(linked_worktree)])
+
+    assert result.exit_code == 0, result.output
+    assert "Base decision" in result.output
+    assert not (linked_worktree / ".repowise").exists()
+
+
+def test_list_in_an_unindexed_repo_refuses_instead_of_creating_a_store(tmp_path: Path) -> None:
+    repo = tmp_path / "plain"
+    repo.mkdir()
+
+    result = CliRunner().invoke(cli, ["decision", "list", str(repo)])
+
+    assert result.exit_code == 1, result.output
+    assert not (repo / ".repowise").exists()
+
+
+def test_a_configured_database_counts_as_an_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "plain"
+    repo.mkdir()
+    db = tmp_path / "shared.db"
+    monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite+aiosqlite:///{db.as_posix()}")
+
+    result = CliRunner().invoke(cli, [*_ADD, str(repo)])
+
+    assert result.exit_code == 0, result.output
+    assert db.exists()
+
+
+def test_config_commands_do_not_need_an_index(tmp_path: Path) -> None:
+    repo = tmp_path / "plain"
+    repo.mkdir()
+
+    result = CliRunner().invoke(cli, ["decision", "config", "show", str(repo)])
+
+    assert result.exit_code == 0, result.output
+    assert "No index found" not in result.output

@@ -249,6 +249,20 @@ def test_one_parse_when_promotion_and_extract_method_hit_same_file(tmp_path: Pat
     assert calls["n"] == 1
 
 
+def test_flagged_analyses_are_in_source_order():
+    _require_python()
+
+    def fn(name: str) -> str:
+        body = "".join(f"    if x == {i}:\n        y = {i}\n" for i in range(10))
+        return f"def {name}(x):\n    y = 0\n{body}    return y\n\n"
+
+    source = (fn("first") + fn("second") + fn("third")).encode()
+    flagged = FileDataflow("a.py", "python", source=source).flagged_analyses()
+
+    assert [a.name for a in flagged] == ["first", "second", "third"]
+    assert [a.start_line for a in flagged] == sorted(a.start_line for a in flagged)
+
+
 def test_cache_construction_does_not_touch_the_file(tmp_path: Path):
     fd = FileDataflow(str(tmp_path / "missing.py"), "python")
     # Nothing read or parsed yet; a consumer call on a missing file is silent.

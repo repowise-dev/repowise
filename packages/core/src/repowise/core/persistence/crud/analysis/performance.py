@@ -360,13 +360,14 @@ async def _plan_facts(
     it fell back to an empty profile that read as "no tests" for every plan.
     """
     from ....analysis.health.refactoring.recommendations import steps_with_verify
-    from .refactoring_recommendations import hydrate_recommendations
+    from .refactoring_recommendations import hydrate_recommendations, repository_checkout
 
     if not rows:
         return {}
     facts: dict[str, dict[str, Any]] = {}
+    checkout = await repository_checkout(session, repository_id)
     for recommendation in await hydrate_recommendations(
-        session, repository_id, rows, step_verify=True
+        session, repository_id, rows, step_verify=True, checkout=checkout
     ):
         suggestion = recommendation.suggestion
         facts[suggestion.plan["opportunity_id"]] = {

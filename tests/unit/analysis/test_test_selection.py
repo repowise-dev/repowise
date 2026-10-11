@@ -654,6 +654,24 @@ def test_go_gets_each_package_directory_once() -> None:
     assert runner_args(sel, "go") == [".", "./pkg/x"]
 
 
+def test_go_keeps_ranked_order_of_package_directories() -> None:
+    # --prioritize rewrites test_files in likeliest-to-fail order; the Go
+    # runner must keep that order instead of printing packages alphabetically.
+    sel = _subset(files=("zeta/z_test.go", "alpha/a_test.go", "mid/m_test.go"))
+    assert runner_args(sel, "go") == ["./zeta", "./alpha", "./mid"]
+
+
+def test_go_appends_changed_packages_not_covered_by_test_files() -> None:
+    sel = Selection(
+        run_all=False,
+        reasons=(),
+        tests=("zeta/z_test.go",),
+        test_files=("zeta/z_test.go",),
+        packages=("pkg/q", "zeta"),
+    )
+    assert runner_args(sel, "go") == ["./zeta", "./pkg/q"]
+
+
 def test_go_runs_the_package_of_every_changed_go_file_with_tests() -> None:
     """Same-package tests import nothing, so the graph alone can miss them."""
     tiers = _tiers(

@@ -1217,6 +1217,18 @@ async def _persist_full_update_async(
                 except Exception as exc:
                     _skip("Doc-drift persist", exc)
 
+            # Re-persist graph_nodes so symbol-level PageRank / betweenness /
+            # community ids reflect the current build. Before health, whose
+            # plan annotations read each symbol's ``public_api`` from here; a
+            # failed write leaves them reading the last run's flags.
+            try:
+                from repowise.core.pipeline.persist import persist_graph_nodes
+
+                with timed(timings, "persist.graph_nodes"):
+                    await persist_graph_nodes(session, repo_id, graph_builder)
+            except Exception as exc:
+                _skip("Graph nodes persist", exc)
+
             # Code-health findings + metrics (partial — upsert only).
             if partial_health_report is not None:
                 try:
@@ -1247,16 +1259,6 @@ async def _persist_full_update_async(
                         )
                 except Exception as exc:
                     _skip("Dead-code persist", exc)
-
-            # Re-persist graph_nodes so symbol-level PageRank / betweenness /
-            # community ids reflect the current build.
-            try:
-                from repowise.core.pipeline.persist import persist_graph_nodes
-
-                with timed(timings, "persist.graph_nodes"):
-                    await persist_graph_nodes(session, repo_id, graph_builder)
-            except Exception as exc:
-                _skip("Graph nodes persist", exc)
 
             # Refresh wiki_symbols for the changed files (upsert + within-file
             # prune). Without this, symbol bounds fossilize at the last full
@@ -1310,6 +1312,23 @@ async def _persist_full_update_async(
                     await refresh_external_systems(session, repo_id, repo_path, file_diffs)
             except Exception as exc:
                 _skip("External systems refresh", exc)
+
+            # Last of the store writes, for the reason the index-only path
+            # gives: the steps above upsert rows for deleted paths too.
+            from repowise.core.pipeline.incremental import prune_deleted_files
+
+            await prune_deleted_files(
+                session,
+                repo_id,
+                repo_path,
+                graph_builder,
+                {parsed.file_info.path for parsed in parsed_files or []},
+                health_report=partial_health_report,
+                skip=_skip,
+                log=console.print,
+                degraded=degraded,
+                timings=timings,
+            )
 
             # Record a GenerationJob so the web UI "last synced" timestamp updates.
             try:
@@ -1399,7 +1418,11 @@ async def _persist_full_update_async(
             if timings is not None:
                 timings.stop("persist.fts")
 
-        vector_cleanup_ids = load_cleanup_debt(Path(repo_path))["vectors"]
+        # The union closes the mark_tombstone_pages path: the scope branches
+        # above already drop their ids, but a deleted file's embedding did not.
+        vector_cleanup_ids = (
+            set(tombstoned_page_ids) | load_cleanup_debt(Path(repo_path))["vectors"]
+        )
         if vector_cleanup_ids and decision_vector_store is not None:
             try:
                 await decision_vector_store.delete_many(sorted(vector_cleanup_ids))
@@ -1557,6 +1580,10 @@ async def _rescore_health_from_db(
                 f"[yellow]{len(report.findings)} findings[/yellow]"
             )
 
+            # Graph nodes first: the plan annotations the writer below stores
+            # read each symbol's ``public_api`` from them.
+            await persist_graph_nodes(session, repo_id, graph_builder)
+
             # Same writer the index's analysis phase uses, so a re-score leaves
             # the derived queues agreeing with the findings it just replaced
             # rather than describing the set it deleted. Read HEAD off disk:
@@ -1594,7 +1621,6 @@ async def _rescore_health_from_db(
                     ingested_commit_sha=live_head,
                     provenance=coverage.provenance,
                 )
-            await persist_graph_nodes(session, repo_id, graph_builder)
 
     await _rescore()
 
@@ -1764,12 +1790,27 @@ def health_analyzer_changed(state: dict) -> bool:
 def security_scanner_changed(state: dict) -> bool:
     """Whether the stored security findings were written by a different scanner.
 
-    Mirrors :func:`health_analyzer_changed`: a legacy state file with no stamp
-    is not a change, it picks the stamp up on its first full security rescan
-    (#3072).
+    Unlike :func:`health_analyzer_changed`, a state file with no stamp **is** a
+    change: the stamp arrived after 0.55.0 (#3086), so an unstamped store was
+    written by an older scanner. Reading absence as current would also keep it
+    unstamped forever, since only the rescan this gates writes the stamp.
+    ``init`` stamps every fresh index, so a new install never reads as stale.
     """
-    stored = state.get("security_scanner_version")
-    return stored is not None and stored != SECURITY_SCANNER_VERSION
+    return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
+
+
+def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: list[str]) -> bool:
+    """Full security rescan when the scanner changed, stamping ``state`` on success.
+
+    Returns True only when it rescanned and stamped, so the caller knows
+    ``state`` needs saving. A failed rescan leaves the stamp for a retry.
+    """
+    if not security_scanner_changed(state):
+        return False
+    if not run_full_security_rescan(repo_path, exclude_patterns):
+        return False
+    state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+    return True
 
 
 def full_rescore_due(state: dict, head_ts: float | None) -> bool:

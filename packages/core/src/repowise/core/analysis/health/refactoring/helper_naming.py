@@ -5,13 +5,16 @@ comment over it (the author's own name for the block), and the span's single
 OUT value as ``compute_<out>``. An OUT name describes a value, not an action,
 so it is never given to a span that acts outside itself (``dataflow.effects``);
 nor is a banner that opens with a value verb (``_VALUE_VERBS``). Whatever the
-source, a name a symbol in the helper's scope already uses is dropped. ``None``
-is the honest answer when nothing anchors a name, and every surface asks the
-reader to name the helper then.
+source, a name a symbol in the helper's scope already uses is dropped. Without
+any of them, or when each is taken, the helper is named for its host function
+and the span's subject (:mod:`.span_subject`), so every plan carries a name to
+edit rather than a blank.
 """
 
 from __future__ import annotations
 
+import itertools
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from ..complexity.ast_utils import _find_function_entry_name
@@ -26,6 +29,7 @@ from ..dataflow.effects import (
 )
 from ..dataflow.span import enclosing_with, section_heads, span_statements
 from .naming import banner_words, join_identifier, label_words, split_words
+from .span_subject import host_words, subjects
 
 if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap
@@ -58,6 +62,9 @@ _SNAKE_CASE = "snake_case"
 # Verbs that promise a value. A banner opening with one over a span that acts
 # outside itself names it the way an OUT name would, wrongly.
 _VALUE_VERBS = frozenset({"compute", "calculate", "calc", "derive", "get", "build", "make"})
+
+# Past this a name joining several sections reads as a sentence, not a name.
+_MAX_JOINED_WORDS = 6
 
 # How far below a scope a sibling definition can sit: ``export const f = () =>``
 # is four levels under a TS module, a decorated Python method three under its
@@ -96,14 +103,18 @@ def helper_name(
     lmap: LanguageNodeMap,
     language: str | None,
     modules: frozenset[str] = frozenset(),
+    *,
+    sections: bool = False,
 ) -> str | None:
     """A deterministic starting name for the helper, before the collision
     check, or ``None`` when nothing in the code anchors one. *modules* are the
-    file's imported names (:func:`dataflow.effects.imported_names`)."""
+    file's imported names (:func:`dataflow.effects.imported_names`). With
+    *sections* (a staged plan's stage), a span running across several named
+    sections is named after all of them (:func:`_joined`)."""
     stmts = span_statements(analysis.fn_node, extraction.start_line, extraction.end_line, lmap)
     if not stmts:
         return None
-    words = _anchored_words(stmts, lmap)
+    words = _anchored_words(stmts, lmap, sections=sections)
     own = Ownership(
         owned=owned_names(stmts, lmap),
         declared=declared_names(analysis.fn_node, analysis.def_use, lmap),
@@ -115,20 +126,79 @@ def helper_name(
     return None if effects else out_value_name(analysis, extraction, language)
 
 
-def _anchored_words(stmts: list[Any], lmap: LanguageNodeMap) -> list[str]:
+def helper_names(
+    analysis: FunctionAnalysis,
+    extraction: Extraction,
+    lmap: LanguageNodeMap,
+    language: str | None,
+    modules: frozenset[str] = frozenset(),
+    *,
+    sections: bool = False,
+) -> Iterator[str]:
+    """Starting names, best first: :func:`helper_name`, then the host function
+    qualified by each subject of the span (``render_card_directive``). Lazy, so
+    the subjects are read only when the anchored name is missing or taken.
+    *sections* as for :func:`helper_name`."""
+    anchored = helper_name(analysis, extraction, lmap, language, modules, sections=sections)
+    if anchored:
+        yield anchored
+    stmts = span_statements(analysis.fn_node, extraction.start_line, extraction.end_line, lmap)
+    host = host_words(analysis.name) or ["handle"]
+    for subject in subjects(stmts, extraction.returns, lmap):
+        # ``render_card`` about ``card`` is ``render_card``: the host's own name.
+        rest = subject[_overlap(host, subject) :]
+        if rest:
+            yield join_identifier([*host, *rest], _convention(language))
+    # A span with no subject (it only logs, say) is still a block of the host;
+    # numbered when that is taken too, so every plan ends with a free name.
+    yield join_identifier([*host, "block"], _convention(language))
+    for n in itertools.count(2):
+        yield join_identifier([*host, "block", str(n)], _convention(language))
+
+
+def _overlap(host: list[str], subject: list[str]) -> int:
+    """How many of *subject*'s first words repeat the tail of *host*."""
+    top = min(len(host), len(subject))
+    return next((n for n in range(top, 0, -1) if host[-n:] == subject[:n]), 0)
+
+
+def _anchored_words(stmts: list[Any], lmap: LanguageNodeMap, *, sections: bool = False) -> list[str]:
     """The words of the label or banner naming the span, ``[]`` without one.
 
     The span may be the whole body of ``with timed(...)``; else the label or
     banner heads its first statement. A label or banner names only its own
     section, so one heading a later top-level statement means the span runs
-    across sections, and neither names it.
+    across sections, and neither names it alone: with *sections* the name
+    joins them when the first statement opens a section too, else it is ``[]``.
     """
     wrapper = enclosing_with(stmts, lmap)
     if wrapper is not None and (label := _label(wrapper)):
         return label
     heads = [_label(stmt) or banner_words(comment) for stmt, comment in section_heads(stmts)]
     # A later head means a second section starts inside the span.
-    return heads[0] if heads and not any(heads[1:]) else []
+    if heads and not any(heads[1:]):
+        return heads[0]
+    return _joined([h for h in heads if h]) if sections and heads and heads[0] else []
+
+
+def _joined(heads: list[list[str]]) -> list[str]:
+    """One name for the sections *heads* name: their shared leading words,
+    then each one's own words, the last after ``and`` (``persist_kg_and_git``).
+    ``[]`` when a section adds no words of its own or the name would run past
+    ``_MAX_JOINED_WORDS``."""
+    common = 0
+    while all(len(h) > common and h[common] == heads[0][common] for h in heads):
+        common += 1
+    tails: list[list[str]] = []
+    for head in heads:
+        if head[common:] not in tails:
+            tails.append(head[common:])
+    if any(not tail for tail in tails):
+        return []
+    words = list(heads[0][:common])
+    for n, tail in enumerate(tails):
+        words.extend(["and", *tail] if n and n == len(tails) - 1 else tail)
+    return words if len(words) <= _MAX_JOINED_WORDS else []
 
 
 def _label(stmt: Any) -> list[str]:
@@ -188,8 +258,13 @@ class ScopeNames:
         taken.add(key)
         return name
 
+    def claim_first(self, analysis: FunctionAnalysis, names: Iterable[str]) -> str | None:
+        """The first of *names* free in the helper's scope, claimed; ``None``
+        when every one is taken (:func:`helper_names` never runs out)."""
+        return next((name for name in names if self.claim(analysis, name)), None)
+
     def _scope_names(self, scope: Any) -> set[str]:
-        names = {_key(n) for n in _defined_names(scope, self._lmap)}
+        names = {_key(n) for n in defined_names(scope, self._lmap)}
         if scope.parent is None:
             names |= {_key(n) for n in self.imports(scope)}
         return names
@@ -209,7 +284,7 @@ def _enclosing_scope(fn_node: Any, lmap: LanguageNodeMap) -> Any:
     return node if node is not None else fn_node
 
 
-def _defined_names(scope: Any, lmap: LanguageNodeMap) -> set[str]:
+def defined_names(scope: Any, lmap: LanguageNodeMap) -> set[str]:
     """Functions defined and names assigned directly in *scope* (not in nested
     functions or classes)."""
     fn_kinds = lmap.function_kinds | lmap.lambda_kinds

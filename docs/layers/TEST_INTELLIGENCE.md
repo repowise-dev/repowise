@@ -70,6 +70,13 @@ known direction: a call edge says control *can* reach a file, not that a run
 did. So it is safe as a floor ("something reaches this, do not call it
 untested") and unsafe as a quantity.
 
+Each index also keeps, for every function, the few test functions nearest it in
+the call graph. Refactoring plans quote them as runnable selectors in place of
+whole test files, and they are inferred like the rest of the graph map. A
+function with no resolved caller, or in a language whose tests cannot be told
+apart by name (such as Java's `@Test` or Rust's `#[test]`), is left unknown
+rather than called untested.
+
 Each ingest replaces the previous per-file and per-test rows. Ingest at the
 commit you intend to query so line numbers match. The repo-wide totals of the
 newest 50 ingests are kept as history and drawn as a trend on the Tests tab

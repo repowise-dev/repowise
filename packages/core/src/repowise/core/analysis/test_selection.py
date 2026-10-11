@@ -365,7 +365,8 @@ def file_namers(
             continue
         for f in _named_in(text, path, by_name, exact):
             out.setdefault(f, []).append(path)
-    return {f: n for f, n in out.items() if n}
+    # Sources arrive in set order (#3297): configs first, then code, each by path.
+    return {f: sorted(n, key=lambda p: (is_code_file(p), p)) for f, n in out.items() if n}
 
 
 def _named_in(
@@ -1309,8 +1310,11 @@ def _pytest_args(selection: Selection) -> list[str]:
 
 def _go_args(selection: Selection) -> list[str]:
     go_tests = [f for f in selection.test_files if f.endswith("_test.go")]
-    dirs = {str(PurePosixPath(f).parent) for f in go_tests} | set(selection.packages)
-    return sorted("." if d == "." else f"./{d}" for d in dirs)
+    dirs = list(dict.fromkeys(str(PurePosixPath(f).parent) for f in go_tests))
+    for package in selection.packages:
+        if package not in dirs:
+            dirs.append(package)
+    return ["." if d == "." else f"./{d}" for d in dirs]
 
 
 def _jest_args(selection: Selection) -> list[str]:

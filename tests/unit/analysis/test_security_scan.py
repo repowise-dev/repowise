@@ -100,6 +100,32 @@ class TestScanFile:
         assert findings == []
 
     @pytest.mark.parametrize(
+        "allowed",
+        [
+            'password = "actualcredential123"  # pragma: allowlist secret\n',
+            '# pragma: allowlist nextline secret\npassword = "actualcredential123"\n',
+        ],
+    )
+    def test_detect_secrets_pragmas_exclude_findings_before_storage(self, allowed: str) -> None:
+        source = allowed + 'password = "anothercredential456"\n'
+        findings = scan_source("config.py", source)
+        assert [(f["kind"], f["line"]) for f in findings] == [
+            ("hardcoded_password", len(allowed.splitlines()) + 1)
+        ]
+
+    def test_detect_secrets_pragma_inside_a_string_does_not_allowlist(self) -> None:
+        source = 'password = "actualcredential123 # pragma: allowlist secret"\n'
+        assert [(f["kind"], f["line"]) for f in scan_source("config.py", source)] == [
+            ("hardcoded_password", 1)
+        ]
+
+    def test_detect_secrets_pragma_does_not_hide_non_secret_calls(self) -> None:
+        source = 'password = "actualcredential123"; eval(payload)  # pragma: allowlist secret\n'
+        assert [(f["kind"], f["line"]) for f in scan_source("config.py", source)] == [
+            ("eval_call", 1)
+        ]
+
+    @pytest.mark.parametrize(
         ("source", "expected"),
         [
             ("eval(payload)\n", {"eval_call"}),
@@ -1205,6 +1231,9 @@ class TestSecretPrecision:
             ("README.md", 'export OPENAI_API_KEY="your-key-here"\n'),
             ("README.md", 'API_KEY="sk-<your key>"\n'),
             ("README.md", 'SECRET="$(op read op://vault/app/secret)"\n'),
+            ("deploy.sh", 'TOKEN="$(kubectl get secret app -o jsonpath=\x27{.data.t}\x27 | base64 -d)"\n'),
+            ("src/app.py", 'API_KEY = "prefix-${VAR}-suffix"\n'),
+            ("src/app.py", 'TOKEN = "prefix-{{var}}-suffix"\n'),
             ("src/app.py", 'TOKEN = "xxxxxxxxxxxx"\n'),
         ],
     )
@@ -1247,6 +1276,7 @@ class TestSecretPrecision:
             ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
+            ('password = "plain$password123"\n', "hardcoded_password"),
         ],
     )
     def test_credential_like_values_still_fire(self, source: str, kind: str) -> None:

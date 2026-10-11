@@ -43,6 +43,30 @@ logger = logging.getLogger(__name__)
 # happens to edit.
 SECURITY_SCANNER_VERSION = 2
 
+# detect-secrets allows a marker on the finding's line or the line above.
+_ALLOWLIST_SAME_RE = re.compile(r"(?:#|//|/\*)\s*pragma:\s*allowlist\s+secret\b")
+_ALLOWLIST_NEXT_RE = re.compile(
+    r"(?:#|//|/\*)\s*pragma:\s*allowlist\s+nextline\s+secret\b"
+)
+
+
+def _detect_secrets_allowlisted(
+    lines: list[str], uncommented: list[str], lineno: int
+) -> bool:
+    """Whether a pragma in a comment (not a string) allowlists this line."""
+
+    def marked(index: int, pattern: re.Pattern[str]) -> bool:
+        return any(
+            uncommented[index][m.start() : m.end()] != m.group()
+            for m in pattern.finditer(lines[index])
+        )
+
+    return 0 < lineno <= len(lines) and (
+        marked(lineno - 1, _ALLOWLIST_SAME_RE)
+        or (lineno > 1 and marked(lineno - 2, _ALLOWLIST_NEXT_RE))
+    )
+
+
 _CREDENTIAL_EXACT_PLACEHOLDERS: frozenset[str] = frozenset({"password", "changeit"})
 
 _CREDENTIAL_SUBSTRING_PLACEHOLDERS: tuple[str, ...] = (
@@ -423,9 +447,9 @@ _SECRET_SPECIFICITY: dict[str, int] = {
 # is a key's or marker's name, a constant holding its own name, and a template
 # placeholder or shell substitution is filled in when it runs; none of them is a
 # credential. Letters only: a digit or capital makes it look like a key.
-_TEMPLATE_VALUE = re.compile(r"\{\{.*\}\}|\$\{[^}]*\}|\$\(.*\)")
+_TEMPLATE_VALUE = re.compile(r"\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\)")
 _SCHEME_TEMPLATE_VALUE = re.compile(
-    r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*\}\}|\$\{[^}]*\}|\$\(.*\))"
+    r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\))"
 )
 _OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
 _CONSTANT_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
@@ -474,8 +498,8 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         return False
     # A leading ``--`` is a CSS custom property or a CLI flag, not a key.
     return not (
-        _TEMPLATE_VALUE.fullmatch(value)
-        or _SCHEME_TEMPLATE_VALUE.fullmatch(value)
+        _TEMPLATE_VALUE.search(value)
+        or _SCHEME_TEMPLATE_VALUE.search(value)
         or _is_plain_word(value)
         or value.startswith("--")
     )
@@ -1000,7 +1024,16 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 }
             )
 
-    return findings
+    uncommented = (
+        source_lines(_mask_comments_and_strings(source, strings=False))
+        if "pragma: allowlist" in source
+        else lines
+    )
+    return [
+        f for f in findings
+        if f["kind"] not in SECRET_KINDS
+        or not _detect_secrets_allowlisted(lines, uncommented, f["line"])
+    ]
 
 
 def scan_source_map(

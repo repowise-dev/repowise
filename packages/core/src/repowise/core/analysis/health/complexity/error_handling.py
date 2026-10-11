@@ -31,7 +31,11 @@ _EH_BLOCK_KINDS = frozenset({"block", "statement_block", "compound_statement"})
 _EH_TRIVIAL_STMT = frozenset({"comment", "pass_statement", "line_comment", "block_comment"})
 # Rust: each of these is a latent panic-on-error.
 _RUST_UNWRAP_METHODS = frozenset({"unwrap", "expect", "unwrap_unchecked"})
-_RUST_PANIC_MACROS = frozenset({"panic", "unreachable", "todo", "unimplemented"})
+#: Shared with the dataflow pass's error exits (``dataflow.raises``).
+RUST_PANIC_MACROS = frozenset({"panic", "unreachable", "todo", "unimplemented"})
+#: Python handler types that catch every ordinary exception; only the second
+#: also catches the interpreter's exit signals.
+PY_CATCH_ALL = ("Exception", "BaseException")
 
 
 def _eh_text(node: Node) -> str:
@@ -103,7 +107,7 @@ def _eh_except_catch_all_name(clause: Node) -> tuple[bool, str | None]:
     if first.type == "as_pattern":
         named = [c for c in first.children if c.is_named]
         target = named[0] if named else first
-    if target.type == "identifier" and _eh_text(target) in ("Exception", "BaseException"):
+    if target.type == "identifier" and _eh_text(target) in PY_CATCH_ALL:
         return True, _eh_text(target)
     return False, None
 
@@ -121,7 +125,7 @@ def _eh_catches_base(clause: Node) -> bool:
     provably cannot, so it is *broad* rather than truly catch-all.
     """
     is_catch_all, name = _eh_except_catch_all_name(clause)
-    return is_catch_all and name != "Exception"
+    return is_catch_all and name != PY_CATCH_ALL[0]
 
 
 def _eh_rust_attr_is_test(attr_text: str) -> bool:
@@ -176,7 +180,7 @@ def _eh_rust_hit(node: Node) -> bool:
         return rust_unwrap.method_call_parts(node)[0] in _RUST_UNWRAP_METHODS
     if node.type == "macro_invocation":
         mac = node.child_by_field_name("macro")
-        return mac is not None and _eh_text(mac) in _RUST_PANIC_MACROS
+        return mac is not None and _eh_text(mac) in RUST_PANIC_MACROS
     return False
 
 

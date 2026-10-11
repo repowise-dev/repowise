@@ -44,7 +44,7 @@ _DB_NAMES: frozenset[str] = frozenset({
     "elasticsearch", "neo4j", "sqlmodel", "peewee", "tortoise-orm", "databases",
     "duckdb", "clickhouse-driver", "pyodbc",
     # TS / Node (cassandra-driver above is published in both ecosystems)
-    "ioredis", "mongoose", "mongodb", "@prisma/client", "prisma",
+    "ioredis", "mongoose", "mongodb", "@prisma/client", "prisma", "pg-promise", "redis-om",
     "drizzle-orm", "knex", "pg", "mysql", "mysql2", "sequelize", "typeorm",
     "better-sqlite3", "@elastic/elasticsearch", "@planetscale/database", "kysely",
     # JVM (dotted-prefix or bare-segment keys; the import classifier emits both
@@ -84,7 +84,8 @@ _NETWORK_NAMES: frozenset[str] = frozenset({
     "httpx", "requests", "aiohttp", "urllib3", "websockets", "websocket-client",
     "grpcio", "httpcore", "tornado", "treq", "niquests", "socket",
     # TS / Node
-    "axios", "node-fetch", "got", "superagent", "undici", "ky", "needle",
+    "axios", "node-fetch", "got", "superagent", "undici", "ky", "needle", "cross-fetch",
+    "isomorphic-ws",
     "request", "@grpc/grpc-js", "ws", "socket.io-client", "graphql-request",
     # JVM
     "java.net.http", "okhttp3", "retrofit2", "feign", "org.apache.http",
@@ -186,4 +187,6 @@ def classify_io_kind(name: str) -> str | None:
     """
     if not name:
         return None
-    return _BY_NAME.get(name.strip().lower())
+    key = name.strip().lower()
+    # ``node:http`` is Node's spelling of the ``http`` builtin.
+    return _BY_NAME.get(key) or _BY_NAME.get(key.removeprefix("node:"))

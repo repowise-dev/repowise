@@ -295,6 +295,10 @@ class GraphNode(Base):
     # or runs the project in a child process). "" on a test checked and found
     # ordinary; NULL on a test never checked (an older index) and on non-tests.
     always_run_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a symbol a package exports, the barrel or entry file exporting it
+    # (``analysis.public_api``); "" on one checked and not exported; NULL on
+    # file nodes and on symbols never checked (an older index).
+    public_api: Mapped[str | None] = mapped_column(Text, nullable=True)
     pagerank: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     betweenness: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # The commit ``betweenness`` was last actually computed at. Betweenness is
@@ -2115,6 +2119,10 @@ class FunctionFact(Base):
     nloc: Mapped[int | None] = mapped_column(Integer, nullable=True)
     params: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_nesting: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The nearest test functions (``analysis.function_test_map``), as
+    # ``[[selector, hops], ...]``: ``[]`` when no test reaches the function,
+    # NULL when no run has mapped it. Restamped every run, like the role.
+    tests_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 

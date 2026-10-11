@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import networkx as nx
 
-from repowise.core.generation.context.public_api import (
+from repowise.core.analysis.public_api import (
     _Resolver,
     api_roots,
     compute_public_api,

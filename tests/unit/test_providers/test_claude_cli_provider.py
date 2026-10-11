@@ -393,6 +393,58 @@ def test_parse_result_rejects_empty_output():
         _parse_result("   ")
 
 
+def test_parse_result_reads_result_event_from_verbose_array():
+    """With --verbose the CLI emits an event array, not a single object (#3161)."""
+    events = json.dumps(
+        [
+            {"type": "system", "subtype": "init", "session_id": "abc"},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+            {"type": "result", "subtype": "success", "is_error": False, "result": "hi"},
+        ]
+    )
+    assert _parse_result(events)["result"] == "hi"
+
+
+def test_parse_result_rejects_array_without_result_event():
+    """An event array with no result event must keep the existing failure."""
+    events = json.dumps(
+        [
+            {"type": "system", "subtype": "init"},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+        ]
+    )
+    with pytest.raises(ProviderError, match="could not parse"):
+        _parse_result(events)
+
+
+async def test_verbose_array_nonzero_exit_surfaces_error_and_http_status(claude_on_path, monkeypatch):
+    """A verbose run still reports the API failure carried by its result event."""
+
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(
+            returncode=1,
+            stdout=json.dumps(
+                [
+                    {"type": "system", "subtype": "init"},
+                    {
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "api_error_status": 404,
+                        "result": "There's an issue with the selected model.",
+                    },
+                ]
+            ),
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    with pytest.raises(ProviderError, match="selected model") as caught:
+        await ClaudeCliProvider().generate("sys", "user")
+
+    assert caught.value.status_code == 404
+
+
 async def test_missing_usage_is_flagged_estimated(claude_on_path, monkeypatch):
     async def fake_exec(*_args, **_kwargs):
         return FakeProcess(stdout=json.dumps({"subtype": "success", "result": "hi"}) + "\n")

@@ -115,6 +115,184 @@
       }
     },
     {
+      "name": "extract_method_staged_anchored",
+      "detail": {
+        "id": "refac4_iiiiiiiiiiiiiiiiiiii",
+        "refactoring_type": "extract_method",
+        "file_path": "src/report.py",
+        "target_symbol": "build_report",
+        "line_start": 10,
+        "line_end": 60,
+        "plan": {
+          "span": {
+            "start": 14,
+            "end": 30
+          },
+          "params": [
+            "rows"
+          ],
+          "returns": [
+            "totals"
+          ],
+          "suggested_name": "_sum_rows",
+          "needs_async": false,
+          "new_symbol": {
+            "kind": "function",
+            "async": false,
+            "receiver": null,
+            "uses_receiver": false,
+            "assigns": [],
+            "params": [
+              {
+                "name": "rows",
+                "type": null,
+                "mode": "in"
+              }
+            ],
+            "returns": [
+              {
+                "name": "totals",
+                "type": null
+              }
+            ],
+            "signature_text": "def _sum_rows(rows):",
+            "return_text": "return totals"
+          },
+          "call_site": {
+            "replace_span": {
+              "start": 14,
+              "end": 30
+            },
+            "new_text": "totals = _sum_rows(rows)"
+          },
+          "anchors": {
+            "first": "    for row in rows:",
+            "last": "        totals[row.key] += row.amount"
+          },
+          "stages": [
+            {
+              "span": {
+                "start": 14,
+                "end": 30
+              },
+              "params": [
+                "rows"
+              ],
+              "returns": [
+                "totals"
+              ],
+              "suggested_name": "_sum_rows",
+              "needs_async": false,
+              "new_symbol": {
+                "kind": "function",
+                "async": false,
+                "receiver": null,
+                "uses_receiver": false,
+                "assigns": [],
+                "params": [
+                  {
+                    "name": "rows",
+                    "type": null,
+                    "mode": "in"
+                  }
+                ],
+                "returns": [
+                  {
+                    "name": "totals",
+                    "type": null
+                  }
+                ],
+                "signature_text": "def _sum_rows(rows):",
+                "return_text": "return totals"
+              },
+              "call_site": {
+                "replace_span": {
+                  "start": 14,
+                  "end": 30
+                },
+                "new_text": "totals = _sum_rows(rows)"
+              },
+              "anchors": {
+                "first": "    for row in rows:",
+                "last": "        totals[row.key] += row.amount"
+              },
+              "ccn": 6,
+              "nloc": 12,
+              "context_params": []
+            },
+            {
+              "span": {
+                "start": 32,
+                "end": 51
+              },
+              "params": [
+                "totals"
+              ],
+              "returns": [
+                "out"
+              ],
+              "suggested_name": "_format_totals",
+              "needs_async": false,
+              "new_symbol": {
+                "kind": "function",
+                "async": false,
+                "receiver": null,
+                "uses_receiver": false,
+                "assigns": [],
+                "params": [
+                  {
+                    "name": "totals",
+                    "type": null,
+                    "mode": "in"
+                  }
+                ],
+                "returns": [
+                  {
+                    "name": "out",
+                    "type": null
+                  }
+                ],
+                "signature_text": "def _format_totals(totals):",
+                "return_text": "return out"
+              },
+              "call_site": {
+                "replace_span": {
+                  "start": 32,
+                  "end": 51
+                },
+                "new_text": "out = _format_totals(totals)"
+              },
+              "anchors": {
+                "first": "    if not totals:\n        return None",
+                "last": "        out.append(f\"`{key}`: {value}\")"
+              },
+              "ccn": 6,
+              "nloc": 12,
+              "context_params": []
+            }
+          ],
+          "parameter_object": null,
+          "orchestrator": {
+            "ccn_before": 31,
+            "ccn_after": 19
+          }
+        },
+        "evidence": {
+          "slice_nloc": 24,
+          "ccn_removed": 12
+        },
+        "impact_delta": 0.9,
+        "effort_bucket": "M",
+        "blast_radius": {
+          "scope": "local"
+        },
+        "confidence": "medium",
+        "source_biomarker": "complex_method",
+        "governed_by": [],
+        "risks": []
+      }
+    },
+    {
       "name": "performance_fix_steps",
       "repo_name": null,
       "detail": {

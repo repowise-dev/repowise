@@ -37,7 +37,11 @@ import { CodeBlock } from "./plan-detail";
 import { SourceExcerpt } from "./source-excerpt";
 import { RelatedWork, type RelatedWorkSlotProps } from "../health/related-work";
 import { GenerateCodePanel } from "./generate-code-panel";
-import { extractHelperDetail, extractMethodSignature, stepExcerptRange } from "./types";
+import {
+  RefactoringModelToggle,
+  type RefactoringModelToggleProps,
+} from "./refactoring-settings-card";
+import { extractHelperDetail, extractMethodSignature, formatSpans, stepExcerptRange } from "./types";
 import {
   ORDERING_NOTE,
   STATUS_LABEL,
@@ -85,6 +89,8 @@ export interface OpportunityDrawerProps extends RelatedWorkSlotProps {
   readSource?: ((path: string) => Promise<string>) | undefined;
   /** Opt-in model drafting of one step's diff. Omit when generation is off. */
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  /** Offer the model switch inside steps when code generation is off. */
+  modelSetting?: RefactoringModelToggleProps | undefined;
 }
 
 export function OpportunityDrawer({
@@ -99,6 +105,7 @@ export function OpportunityDrawer({
   fileHref,
   readSource,
   onGenerateCode,
+  modelSetting,
   related,
   relatedWorkHref,
   onNavigate,
@@ -120,6 +127,7 @@ export function OpportunityDrawer({
             fileHref={fileHref}
             readSource={readSource}
             onGenerateCode={onGenerateCode}
+            modelSetting={modelSetting}
             related={related}
             relatedWorkHref={relatedWorkHref}
             onNavigate={onNavigate}
@@ -177,6 +185,7 @@ function DrawerBody({
   fileHref,
   readSource,
   onGenerateCode,
+  modelSetting,
   related,
   relatedWorkHref,
   onNavigate,
@@ -193,6 +202,7 @@ function DrawerBody({
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
   readSource?: ((path: string) => Promise<string>) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
 } & RelatedWorkSlotProps) {
   const meta = typeMeta(detail.lead_refactoring_type || "");
   const plansById = React.useMemo(
@@ -356,6 +366,7 @@ function DrawerBody({
                 fileHref={fileHref}
                 readSource={readSource}
                 onGenerateCode={onGenerateCode}
+                modelSetting={modelSetting}
               />
             ))}
           </ol>
@@ -515,6 +526,7 @@ function StepCard({
   fileHref,
   readSource,
   onGenerateCode,
+  modelSetting,
 }: {
   step: OpportunityStep;
   index: number;
@@ -524,6 +536,7 @@ function StepCard({
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
   readSource?: ((path: string) => Promise<string>) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
 }) {
   const meta = typeMeta(step.refactoring_type);
   const mechanical = step.applicability.classification === "mechanical";
@@ -601,7 +614,13 @@ function StepCard({
         </p>
       ) : null}
 
-      <StepCode step={step} plan={plan} readSource={readSource} onGenerateCode={onGenerateCode} />
+      <StepCode
+        step={step}
+        plan={plan}
+        readSource={readSource}
+        onGenerateCode={onGenerateCode}
+        modelSetting={modelSetting}
+      />
     </li>
   );
 }
@@ -621,18 +640,30 @@ function StepCode({
   plan,
   readSource,
   onGenerateCode,
+  modelSetting,
 }: {
   step: OpportunityStep;
   plan?: RefactoringPlan | undefined;
   readSource?: ((path: string) => Promise<string>) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
 }) {
   const [open, setOpen] = React.useState(false);
   const stored = plan ? extractHelperDetail(plan) : null;
   const range = stepExcerptRange(step, plan);
   const extraction = range?.extraction ?? null;
   const slice = extraction?.span ?? null;
+  const stages = range?.stages ?? [];
   const canRead = Boolean(readSource && range);
+  // One read per file however many stage excerpts ask for it.
+  const readOnce = React.useMemo(() => {
+    if (!readSource) return undefined;
+    const reads = new Map<string, Promise<string>>();
+    return (path: string) => {
+      if (!reads.has(path)) reads.set(path, readSource(path));
+      return reads.get(path)!;
+    };
+  }, [readSource]);
   if (!stored?.snippet && !canRead && !plan) return null;
   return (
     <div className="mt-2">
@@ -646,6 +677,15 @@ function StepCode({
       </button>
       {open ? (
         <div className="mt-2 space-y-3">
+          {stages.length > 0 ? (
+            <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
+              Lines{" "}
+              <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
+                {formatSpans(stages.map((st) => st.span))}
+              </span>{" "}
+              become {stages.length} helpers the function calls in order.
+            </p>
+          ) : null}
           {extraction && slice ? (
             <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
               Lines {slice.start} to {slice.end} become{" "}
@@ -656,16 +696,34 @@ function StepCode({
           ) : null}
           {stored?.snippet ? (
             <CodeBlock code={stored.snippet} startLine={stored.snippetStartLine} />
+          ) : canRead && stages.length > 0 ? (
+            // Each stage on its own: one range from the first stage to the last
+            // would show the lines between them and could cut a later stage.
+            stages.map((st, i) => (
+              <div key={st.span.start} className="space-y-1">
+                <p className="font-mono text-[11px] text-[var(--color-text-tertiary)]">
+                  {`${st.name ?? `Stage ${i + 1}`} · lines ${formatSpans([st.span])}`}
+                </p>
+                <SourceExcerpt
+                  path={step.file_path}
+                  start={st.span.start}
+                  end={st.span.end}
+                  readSource={readOnce!}
+                />
+              </div>
+            ))
           ) : canRead ? (
             <SourceExcerpt
               path={step.file_path}
               start={range!.start}
               end={range!.end}
-              readSource={readSource!}
+              readSource={readOnce!}
             />
           ) : null}
           {plan && onGenerateCode ? (
             <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />
+          ) : plan && modelSetting ? (
+            <RefactoringModelToggle {...modelSetting} />
           ) : plan ? (
             <p className="text-xs text-[var(--color-text-tertiary)]">
               A diff preview is drafted by a model on request. Code generation is off here.

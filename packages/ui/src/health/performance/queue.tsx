@@ -92,7 +92,7 @@ export function OpportunityQueue({
                 {ACTIONABILITY_LABEL[section.state]}
                 {facetTotal(facets, section.state) != null ? (
                   <span className="ml-2 tabular-nums">
-                    {facetTotal(facets, section.state)!.toLocaleString()} in the repository
+                    {facetTotal(facets, section.state)!.toLocaleString()} matching
                   </span>
                 ) : null}
               </h3>
@@ -124,7 +124,12 @@ export function OpportunityQueue({
 
 function StatusMark({ opportunity }: { opportunity: PerformanceOpportunity }) {
   const plan = planPresentation(opportunity);
-  const tone = plan.actionable ? "var(--color-success)" : "var(--color-text-tertiary)";
+  // Green only where the plan is proven safe: an advisory cause can carry a
+  // stored plan while the "Plan ready" count beside the queue reads 0.
+  const tone =
+    plan.actionable && opportunity.actionability_state === "plan_ready"
+      ? "var(--color-success)"
+      : "var(--color-text-tertiary)";
   return (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-[var(--color-text-secondary)]">
       <span
@@ -166,7 +171,7 @@ const OpportunityRow = memo(function OpportunityRow({
       {...clickableRowProps(() => onInspect(opportunity))}
     >
       <span className="mt-0.5 w-7 shrink-0 text-right font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
-        {opportunity.rank_position.toLocaleString()}
+        {(opportunity.rank_position + 1).toLocaleString()}
       </span>
 
       <div className="min-w-0 flex-1">

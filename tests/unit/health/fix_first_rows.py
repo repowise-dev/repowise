@@ -9,14 +9,15 @@ AT = datetime(2026, 9, 30, 12, 0)
 METRICS = [
     {"file_path": "src/core.py", "score": 4.0, "nloc": 300, "is_test": False,
      "commit_count_90d": 12, "dependents": 9, "analyzed_commit": "abc", "updated_at": AT},
+    # Changes often: a moderate function leads only on churn or fix history.
     {"file_path": "src/plain.py", "score": 7.0, "nloc": 80, "is_test": False,
-     "commit_count_90d": 1, "dependents": 1, "analyzed_commit": "abc", "updated_at": AT},
+     "commit_count_90d": 12, "dependents": 1, "analyzed_commit": "abc", "updated_at": AT},
     {"file_path": "src/hist.py", "score": 6.0, "nloc": 50, "is_test": False,
      "commit_count_90d": 3, "dependents": 0, "analyzed_commit": "abc", "updated_at": AT},
     {"file_path": "src/repo.py", "score": 8.0, "nloc": 90, "is_test": False,
      "commit_count_90d": 2, "dependents": 2, "analyzed_commit": "abc", "updated_at": AT},
     {"file_path": "tests/test_core.py", "score": 5.0, "nloc": 90, "is_test": True,
-     "commit_count_90d": 4, "dependents": 0, "analyzed_commit": "abc", "updated_at": AT},
+     "commit_count_90d": 12, "dependents": 0, "analyzed_commit": "abc", "updated_at": AT},
     {"file_path": "scripts/tool.py", "score": 5.0, "nloc": 90, "is_test": False,
      "commit_count_90d": 1, "dependents": 0, "analyzed_commit": "abc", "updated_at": AT},
 ]

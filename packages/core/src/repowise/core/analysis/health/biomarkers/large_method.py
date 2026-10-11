@@ -13,7 +13,7 @@ they don't double-count.
 from __future__ import annotations
 
 from ..models import Severity
-from .base import BiomarkerResult, FileContext
+from .base import BiomarkerResult, FileContext, shape_details
 
 
 class LargeMethodDetector:
@@ -64,7 +64,7 @@ class LargeMethodDetector:
                     details={
                         "nloc": fn.nloc,
                         "ccn": fn.ccn,
-                        "dispatch_share": fn.dispatch_share,
+                        **shape_details(fn),
                     },
                     reason=f"{fn.name} is {fn.nloc} lines long",
                 )

@@ -46,11 +46,13 @@ export const EXCLUSION_LABEL: Record<FixExclusion, string> = {
   gated_off: "switched off by a constant flag",
   cold_path: "run once per deploy, boot or incident",
   unreachable: "in dead code (delete it)",
-  inherent_dispatch: "one long dispatch on a value",
+  inherent_dispatch: "long dispatch on a value",
   small_function: "small functions",
   no_concrete_step: "with no concrete first edit",
   low_value_kind: "of a kind rarely worth doing",
   kind_unaudited: "of a kind not yet audited for this list",
+  terminal_flow: "print and prompt flows",
+  moderate_quiet: "moderate functions that rarely change or break",
 };
 
 const EXCLUSION_ORDER: FixExclusion[] = [
@@ -74,6 +76,8 @@ const EXCLUSION_ORDER: FixExclusion[] = [
   "no_concrete_step",
   "low_value_kind",
   "kind_unaudited",
+  "terminal_flow",
+  "moderate_quiet",
 ];
 
 /**

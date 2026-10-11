@@ -232,6 +232,29 @@ def test_concentration_picks_the_narrow_high_lift_folder() -> None:
     assert set(a.includes) == {f"pkg/cli/update/a{i}.py" for i in range(4)}
 
 
+def test_a_folder_names_its_first_step() -> None:
+    (a,) = _run(code.fix_concentration, _concentration_facts()).actions
+    # Every file here is untested; the most fixed one comes first.
+    assert a.title == (
+        "Stabilise `pkg/cli/update/`: first, add tests around `pkg/cli/update/a0.py` "
+        "before its next change"
+    )
+    assert "10 of the 25 bug-fix commits" in a.impact
+
+
+def test_a_folder_with_no_first_step_is_left_out_and_counted() -> None:
+    facts = _concentration_facts()
+    # No coverage report and no test map: no file can name a step.
+    unknown = {p: replace(f, tests_reaching=None) for p, f in facts.files.items()}
+    out = _run(code.fix_concentration, replace(facts, files=unknown))
+    assert out.actions == ()
+    assert out.reason == "1 folder left out: no file in it names a first step."
+
+
+def test_a_folder_whose_files_fix_first_names_has_no_first_step() -> None:
+    assert code._first_step((), {}) is None
+
+
 def test_engine_drops_fragile_rows_a_folder_absorbed() -> None:
     facts = _concentration_facts()
     # Sanity: on their own, the folder's files are fragile.

@@ -24,6 +24,7 @@ from typing import Any, Literal, get_args
 
 from repowise.core.code_origin import path_origin
 from repowise.core.ingestion.framework_routes import flask_routes, next_app_router_file
+from repowise.core.ingestion.models import REGISTRATION_HINT
 from repowise.core.test_paths import is_test_path
 
 from .execution_graph import ExecutionGraphIndex, file_of_symbol
@@ -215,7 +216,8 @@ def _scan(graph: Any) -> _Scan:
             scan.url_targets.add(target)
         elif edge_type == "framework_binds":
             scan.binds.append((source, target))
-        elif edge_type == "references":
+        # A registry holding the function says nothing about how it runs.
+        elif edge_type == "references" and (data or {}).get("hint_source") != REGISTRATION_HINT:
             scan.references.append((source, target))
             scan.referenced.add(target)
     return scan

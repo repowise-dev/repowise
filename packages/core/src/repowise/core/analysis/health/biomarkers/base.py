@@ -165,6 +165,15 @@ class BiomarkerResult:
     deduction: float | None = None
 
 
+def shape_details(fn: FunctionComplexity) -> dict[str, Any]:
+    """The shape facts every function-size marker stores beside its numbers:
+    the dispatch share always, the terminal share only when there is one."""
+    out: dict[str, Any] = {"dispatch_share": fn.dispatch_share}
+    if fn.terminal_share:
+        out["terminal_share"] = fn.terminal_share
+    return out
+
+
 class Biomarker(Protocol):
     """Detector contract. Each concrete biomarker is a stateless object."""
 

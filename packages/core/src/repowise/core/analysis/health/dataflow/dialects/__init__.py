@@ -15,6 +15,7 @@ def/use pass is silent for it (no dialect = no signal), the safe default.
 from __future__ import annotations
 
 from . import cpp as _cpp
+from . import csharp as _csharp
 from . import go as _go
 from . import java as _java
 from . import python as _python
@@ -44,6 +45,11 @@ _REGISTER: tuple[tuple[str, BaseDefUseDialect], ...] = (
     ("java", _java.DIALECT),
     ("rust", _rust.DIALECT),
     ("cpp", _cpp.DIALECT),
+    ("csharp", _csharp.DIALECT),
+    ("razor", _csharp.DIALECT),
+    # A C parse tree carries no C++-only node (``for_range_loop``, lambdas,
+    # ``co_await``), so the C++ dialect reads it whole.
+    ("c", _cpp.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

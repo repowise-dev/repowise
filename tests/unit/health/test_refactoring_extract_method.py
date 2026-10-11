@@ -20,6 +20,7 @@ from repowise.core.analysis.health.refactoring.extract_method import (
     recovered_share,
 )
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
+from repowise.core.ingestion.parser import _get_language
 
 # A long function whose tail (compute-average loop) is a clean extraction.
 _PROCESS = """
@@ -128,6 +129,54 @@ def test_a_comment_opening_the_else_arm_still_yields_the_same_extraction():
     assert len(best.returns) <= 1
     assert best.ccn_removed >= 1
     assert best.slice_nloc >= 5
+
+
+_JAVA_SWITCH_RULE_YIELD = """
+class A {
+    int pick(int[] xs, int k) {
+        int total = 0;
+        for (int x : xs) {
+            total += x;
+        }
+        int r = switch (k) {
+            case 1 -> {
+                int t = 0;
+                for (int x : xs) {
+                    if (x > 0) {
+                        t += x;
+                    }
+                    if (x > 10) {
+                        t -= 1;
+                    }
+                }
+                yield t;
+            }
+            default -> 0;
+        };
+        return r + total;
+    }
+}
+"""
+
+
+def test_a_java_switch_rule_yield_refuses_spans_that_hold_it():
+    # Lifting a span that contains a switch-rule `yield` into a helper would
+    # move the yield out of the switch rule it belongs to, so the plan cannot
+    # compile. Spans that stop before the yield stay offered.
+    if _get_language("java") is None:
+        pytest.skip("tree-sitter language pack missing for java")
+    res = analyze_file("m.java", "java", _JAVA_SWITCH_RULE_YIELD.encode(), flagged_only=False)
+    if res.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for java")
+    fn = res.functions[0]
+    lmap = get_language_map("java")
+    extractions = find_extractions(fn, lmap)
+    assert extractions, "expected at least one extraction"
+    # The yield is on line 19; no offered span may end on it, and the span
+    # that stops just before it stays the best one.
+    assert all(extraction.end_line != 19 for extraction in extractions)
+    best = extractions[0]
+    assert (best.start_line, best.end_line) == (10, 18)
 
 
 def test_no_extraction_when_every_span_has_a_jump():
@@ -628,6 +677,7 @@ def test_detector_emits_suggestion_for_flagged_function():
         "needs_async",
         "new_symbol",
         "call_site",
+        "anchors",
     }
     assert s.plan["needs_async"] is False
     # A module-level function: the helper is a plain function too.
@@ -990,7 +1040,9 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
 
     trivial = Extraction(10, 17, ("a",), (), slice_nloc=8, ccn_removed=1)
     worth = Extraction(20, 27, ("b",), (), slice_nloc=8, ccn_removed=3)
-    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None: [trivial, worth])
+    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None, _rf=None: [trivial, worth])
+    # No parsed source to anchor against: this pins span choice, not anchoring.
+    monkeypatch.setattr(extract_method, "anchor_plan", lambda _plan, _fn: True)
     fn = _Shape(12, 40)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 50, "ccn": 12, "nloc": 40,
@@ -1203,8 +1255,9 @@ def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
     shrunk = Extraction(2, 55, ("a",), (), slice_nloc=40, ccn_removed=8)  # overlaps it
     disjoint = Extraction(85, 95, ("b",), (), slice_nloc=10, ccn_removed=3)
     monkeypatch.setattr(
-        extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None: [whole, shrunk, disjoint]
+        extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None, _rf=None: [whole, shrunk, disjoint]
     )
+    monkeypatch.setattr(extract_method, "anchor_plan", lambda _plan, _fn: True)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 100, "ccn": 30, "nloc": 90,
                   "fn_node": None}
@@ -1274,4 +1327,26 @@ def test_a_span_holding_an_import_read_after_it_is_refused():
         spans = find_extractions(_first(src), get_language_map("python"))
     found = {(x.start_line, x.end_line): (x.params, x.returns) for x in spans}
     assert (3, 5) not in found
-    assert found[(4, 6)] == (("a", "c"), ("t",))
+    assert (4, 6) not in found
+    assert found[(3, 6)] == (("a", "c"), ("t",))
+
+
+@pytest.mark.parametrize(
+    ("prefix", "inside", "floor", "offered"),
+    [("import json\n", "", 0, True), ("", "    import json\n", 2, False)],
+)
+def test_import_scope_controls_extractability(prefix, inside, floor, offered):
+    src = f"""{prefix}def f(v):
+{inside}    n = 0
+    dump = lambda x: json.dumps(x)
+    if v: n += len(dump(v))
+    if n: n += len(dump(n))
+    return n
+"""
+    with pytest.MonkeyPatch.context() as mp:
+        from repowise.core.analysis.health.dataflow import slice as slicer
+
+        mp.setattr(slicer, "_MAX_BODY_SHARE", float("inf"))
+        mp.setattr(slicer, "_MIN_SLICE_NLOC", 1)
+        spans = find_extractions(_first(src), get_language_map("python"))
+    assert any(floor < x.start_line <= 4 <= x.end_line for x in spans) is offered

@@ -71,7 +71,8 @@ from ...models import (
 )
 from ...read_snapshots import decode_or_none, read_snapshot, refresh_snapshot, snapshot_key
 from ...sql import json_text
-from .refactoring_recommendations import validation_inputs
+from .plain_rows import plain_rows, row_shape
+from .refactoring_recommendations import repository_checkout, validation_inputs
 
 #: Files read for plan-less finding items, by open code-shape deduction.
 #: Ceiling: a file past this rank never becomes a finding item. The queue
@@ -79,22 +80,12 @@ from .refactoring_recommendations import validation_inputs
 FINDING_FILES = 100
 
 
-def _plain(result: Any) -> list[Any]:
-    """Rows as named tuples: the builder reads each field many times, and a
-    tuple attribute is several times cheaper than a SQL row's."""
-    rows = result.all()
-    if not rows:
-        return []
-    shape = namedtuple("Row", rows[0]._fields)  # type: ignore[misc]
-    return [shape(*r) for r in rows]
-
-
 async def _metrics(session: AsyncSession, repo_id: str, paths: set[str] | None) -> list[Any]:
     """The named files' rows; ``None`` reads every file."""
     if paths is not None and not paths:
         return []
     scoped = HealthFileMetric.file_path.in_(paths) if paths is not None else true()
-    return _plain(
+    return plain_rows(
         await session.execute(
             select(
                 HealthFileMetric.file_path,
@@ -226,7 +217,7 @@ async def _findings(
         return []
     f = HealthFinding
     history = history_biomarkers()
-    return _plain(
+    return plain_rows(
         await session.execute(
             select(
                 f.file_path,
@@ -258,7 +249,7 @@ async def _findings(
 
 async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
     o = RefactoringOpportunity
-    return _plain(
+    return plain_rows(
         await session.execute(
             select(
                 o.opportunity_id,
@@ -291,7 +282,7 @@ async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
     # The reason is no column: read for ``expected`` rows only, in SQL, so
     # the default queue counts each expected reason with no decode.
     reason = json_text(p.details_json, "actionability_reason")
-    return _plain(
+    return plain_rows(
         await session.execute(
             select(
                 p.opportunity_id,
@@ -334,7 +325,7 @@ def _sure_dead_code(repo_id: str) -> Any:
 async def _dead_code(session: AsyncSession, repo_id: str) -> list[Any]:
     """Open dead-code findings sure enough to make what they cover ``unreachable``."""
     d = DeadCodeFinding
-    return _plain(
+    return plain_rows(
         await session.execute(
             select(
                 d.kind,
@@ -355,7 +346,7 @@ def _decoded(rows: list[Any]) -> list[Any]:
     if not rows:
         return rows
     fields = [("details" if f == "details_json" else f) for f in rows[0]._fields]
-    shape = namedtuple("Row", fields)  # type: ignore[misc]
+    shape = row_shape(tuple(fields))
     out = []
     for r in rows:
         values = list(r)
@@ -390,7 +381,7 @@ async def _plans(
     wanted = [c for c in (named, extractions, helpers) if c is not None]
     if not wanted:
         return []
-    return _plain(
+    return plain_rows(
         await session.execute(
             select(
                 s.public_id,
@@ -399,6 +390,7 @@ async def _plans(
                 s.target_symbol,
                 s.evidence_json,
                 s.plan_json,
+                s.rank_json,
             ).where(s.repository_id == repo_id, or_(*wanted))
         )
     )
@@ -468,8 +460,13 @@ async def _finding_validator(
     if not spans:
         return lambda *_: None
     suggestions = [_span_suggestion(p, f.function_name, s, e) for (p, s, e), f in spans.items()]
+    # Built once per store write, so the checkout's package.json reads are too.
     inputs = await validation_inputs(
-        session, repo_id, suggestions, sorted({s.file_path for s in suggestions})
+        session,
+        repo_id,
+        suggestions,
+        sorted({s.file_path for s in suggestions}),
+        checkout=await repository_checkout(session, repo_id),
     )
 
     def validate(path: str, function: Any, start: Any, end: Any) -> dict[str, Any] | None:
@@ -663,7 +660,7 @@ async def _write_changed(
 async def _judged_findings(session: AsyncSession, repo_id: str) -> list[Any]:
     """Every finding the queue judges, with what judging reads and its stored judgement."""
     f = HealthFinding
-    return _plain(
+    return plain_rows(
         await session.execute(
             select(
                 f.id,

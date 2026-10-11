@@ -538,8 +538,8 @@ def test_crossfn_hit_carries_the_owning_loops_magnitude(tmp_path):
     count travels with the cross-function hit into the finding."""
     source = _SCHEDULER.replace(
         "        for repo in repos:",
-        "        repos = self.session.execute(select(Repo)).scalars().all()\n"
-        "        for repo in repos:",
+        "        orders = self.session.execute(select(Order)).scalars().all()\n"
+        "        for repo in orders:",
     )
     walked, graph = _build(tmp_path, {"scheduler.py": source})
     (hit,) = [h for hs in collect_crossfn_io_in_loop(walked, graph).values() for h in hs]

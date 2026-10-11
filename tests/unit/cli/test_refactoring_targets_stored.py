@@ -49,8 +49,8 @@ def _finding(path: str, symbol: str) -> dict[str, Any]:
         "function_name": symbol,
         "line_start": 10,
         "line_end": 30,
-        # Past Fix first's size floor, so each opportunity is in the default scope.
-        "details": {"ccn": 16},
+        # Large enough to lead with no history, so each opportunity is in the default scope.
+        "details": {"ccn": 85},
         "health_impact": 3.0,
         "reason": "seeded",
         "dimension": "defect",

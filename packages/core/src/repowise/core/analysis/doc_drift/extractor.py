@@ -88,13 +88,16 @@ def prose_lines(text: str) -> Iterator[tuple[int, str]]:
 
         m = _FENCE_RE.match(line)
         if m:
-            marker = m.group(1)[:3]
+            marker = m.group(1)
             if not in_fence:
                 in_fence, fence_marker = True, marker
-            elif marker == fence_marker:
-                # Only the marker that opened the fence can close it. A ``~~~``
-                # inside a ``` block is content, and treating it as a close
-                # inverts the state for the rest of the document.
+            elif (
+                marker[0] == fence_marker[0]
+                and len(marker) >= len(fence_marker)
+                and not line[m.end():].strip()
+            ):
+                # A closer has the same character, at least the opener's run
+                # length, and no info string. Shorter or tagged runs are content.
                 in_fence, fence_marker = False, ""
             continue
 

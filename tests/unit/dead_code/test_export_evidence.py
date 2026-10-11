@@ -27,6 +27,9 @@ _EXPORTS_ONLY = {
 }
 
 
+_RESOLVED_CALL = {"edge_type": "calls", "resolution_origin": "same_file"}
+
+
 def _sym(name: str, language: str, kind: str = "function") -> dict:
     return {
         "name": name,
@@ -45,6 +48,9 @@ def _export(path: str, language: str, importer_edge: dict | None, kind: str = "f
         "app/main.x": {"language": language, "is_entry_point": True},
     }
     edges = [("app/main.x", path, importer_edge)] if importer_edge is not None else []
+    # One resolved call, so the language's resolution basis is known (the
+    # deletion gate withholds a language with none).
+    edges.append((f"{path}::lonely", f"{path}::used_one", _RESOLVED_CALL))
     report = DeadCodeAnalyzer(_build_graph(nodes, edges)).analyze(dict(_EXPORTS_ONLY))
     [finding] = [
         f for f in report.findings

@@ -1,21 +1,29 @@
-"""The per-function store: one row per function symbol, its role and body facts.
+"""The per-function store: one row per function symbol, its role, body facts and tests.
 
 Facts are pure on a file's bytes, so a run rewrites the rows of the files it
 walked and leaves the rest. A role is not: a seed or a call in another file
-moves it, so every run restamps every row's role from its own role map.
+moves it, so every run restamps every row's role from its own role map. The
+nearest tests move the same way (a test or a caller elsewhere changes), so they
+are restamped with it, and only the rows whose answer changed are written.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....analysis.execution_graph import file_of_symbol
-from ...models import FunctionFact
+from ....analysis.function_test_map import (
+    FunctionTests,
+    MappedTest,
+    decode_tests,
+    encoded_map,
+)
+from ...models import FunctionFact, GraphNode
 
 if TYPE_CHECKING:
     from ....analysis.execution_roles import ExecutionRoles
@@ -26,7 +34,7 @@ _CHUNK = 500
 _RANGES_PER_DELETE = 200
 
 
-def _row(repository_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
+def _row(repository_id: str, row: Mapping[str, Any], tests: Mapping[str, str]) -> dict[str, Any]:
     assigns = row.get("receiver_assigns")
     return {
         "repository_id": repository_id,
@@ -41,6 +49,7 @@ def _row(repository_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
         "nloc": row.get("nloc"),
         "params": row.get("params"),
         "max_nesting": row.get("max_nesting"),
+        "tests_json": tests.get(row["symbol_id"]),
     }
 
 
@@ -94,39 +103,73 @@ async def write_function_facts(
     *,
     file_paths: Iterable[str] | None = None,
     roles: ExecutionRoles | None = None,
+    tests: FunctionTests | None = None,
 ) -> int:
     """Replace the rows of *file_paths* (every row when ``None``) with *rows*,
-    then restamp every row's role from *roles*. Returns the rows written."""
+    then restamp every row's role from *roles* and its tests from *tests*
+    (``analysis.function_test_map``). Returns the rows written."""
     if file_paths is None:
         await session.execute(delete(FunctionFact).where(FunctionFact.repository_id == repository_id))
     else:
         await delete_file_rows(session, repository_id, file_paths)
     # Two walked functions can resolve to one symbol; the first keeps it. Key
     # order fills the clustered pages instead of splitting them half empty.
-    by_symbol = {row["symbol_id"]: _row(repository_id, row) for row in reversed(list(rows))}
+    encoded = encoded_map(tests) if tests is not None else {}
+    by_symbol = {row["symbol_id"]: _row(repository_id, row, encoded) for row in reversed(list(rows))}
     fresh = [by_symbol[symbol] for symbol in sorted(by_symbol)]
     # On the table, not the mapper: the ORM bulk path splits a batch wherever a
     # column flips between NULL and a value, which doubled this write.
     for i in range(0, len(fresh), _CHUNK):
         await session.execute(insert(FunctionFact.__table__), fresh[i : i + _CHUNK])
-    if roles is not None:
-        await _restamp_roles(session, repository_id, roles)
+    if roles is not None or tests is not None:
+        await _restamp(session, repository_id, roles, None if tests is None else encoded)
     return len(fresh)
 
 
-async def _restamp_roles(session: AsyncSession, repository_id: str, roles: ExecutionRoles) -> None:
-    stored = await session.execute(
-        select(FunctionFact.symbol_id, FunctionFact.execution_role).where(
-            FunctionFact.repository_id == repository_id
+async def _restamp(
+    session: AsyncSession,
+    repository_id: str,
+    roles: ExecutionRoles | None,
+    tests: Mapping[str, str] | None,
+) -> None:
+    """Write each row's role and tests where they moved. *tests* is the run's
+    encoded map; a symbol it leaves out stores NULL (never mapped)."""
+    stored = (
+        await session.execute(
+            select(
+                FunctionFact.symbol_id, FunctionFact.execution_role, FunctionFact.tests_json
+            ).where(FunctionFact.repository_id == repository_id)
         )
-    )
-    changed = [
-        {"repository_id": repository_id, "symbol_id": symbol, "execution_role": role}
-        for symbol, current in stored.all()
-        if (role := roles.role_of(symbol, file_of_symbol(symbol))) != current
+    ).all()
+    if roles is not None:
+        await _write_moved(
+            session,
+            repository_id,
+            _moved(stored, 1, "execution_role", lambda s: roles.role_of(s, file_of_symbol(s))),
+        )
+    if tests is not None:
+        await _write_moved(session, repository_id, _moved(stored, 2, "tests_json", tests.get))
+
+
+def _moved(
+    stored: Iterable[Any], at: int, column: str, now: Callable[[str], Any]
+) -> list[dict[str, Any]]:
+    """``{symbol_id, column}`` for each stored row whose *column* (row index
+    *at*) differs from *now*'s answer."""
+    return [
+        {"symbol_id": row[0], column: value}
+        for row in stored
+        if (value := now(row[0])) != row[at]
     ]
+
+
+async def _write_moved(
+    session: AsyncSession, repository_id: str, changed: list[dict[str, Any]]
+) -> None:
+    """One column per batch: the ORM bulk path splits a batch whose rows set different columns."""
     for i in range(0, len(changed), _CHUNK):
-        await session.execute(update(FunctionFact), changed[i : i + _CHUNK])
+        batch = [{"repository_id": repository_id, **row} for row in changed[i : i + _CHUNK]]
+        await session.execute(update(FunctionFact), batch)
 
 
 async def get_function_facts(
@@ -146,10 +189,66 @@ async def get_function_facts(
     return out
 
 
+async def tests_for_functions(
+    session: AsyncSession,
+    repository_id: str,
+    function_ids: Iterable[str],
+    k: int | None = None,
+) -> dict[str, tuple[MappedTest, ...]]:
+    """The stored nearest tests of each of *function_ids*, nearest first, at most *k*.
+
+    An empty tuple is a mapped function no test reaches; an id absent from the
+    result was never mapped (no row, or a run before the map existed).
+    """
+    ids = sorted(set(function_ids))
+    out: dict[str, tuple[MappedTest, ...]] = {}
+    for i in range(0, len(ids), _CHUNK):
+        result = await session.execute(
+            select(FunctionFact.symbol_id, FunctionFact.tests_json).where(
+                FunctionFact.repository_id == repository_id,
+                FunctionFact.symbol_id.in_(ids[i : i + _CHUNK]),
+            )
+        )
+        out.update(_decoded(result.all(), k))
+    return out
+
+
+async def tests_in_files(
+    session: AsyncSession, repository_id: str, paths: Iterable[str]
+) -> dict[str, tuple[MappedTest, ...]]:
+    """:func:`tests_for_functions` for every function in *paths*, in one statement."""
+    files = sorted(set(paths))
+    if not files:
+        return {}
+    result = await session.execute(
+        select(FunctionFact.symbol_id, FunctionFact.tests_json)
+        .join(
+            GraphNode,
+            and_(
+                GraphNode.repository_id == FunctionFact.repository_id,
+                GraphNode.node_id == FunctionFact.symbol_id,
+            ),
+        )
+        .where(FunctionFact.repository_id == repository_id, GraphNode.file_path.in_(files))
+    )
+    return dict(_decoded(result.all(), None))
+
+
+def _decoded(
+    rows: Iterable[tuple[str, str | None]], k: int | None
+) -> Iterator[tuple[str, tuple[MappedTest, ...]]]:
+    for symbol, stored in rows:
+        mapped = decode_tests(stored)
+        if mapped is not None:
+            yield symbol, mapped[:k] if k is not None else mapped
+
+
 __all__ = [
     "delete_file_rows",
     "get_file_facts",
     "get_function_facts",
     "key_range",
+    "tests_for_functions",
+    "tests_in_files",
     "write_function_facts",
 ]

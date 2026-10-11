@@ -43,6 +43,8 @@ FIX_FACT_BASES: tuple[str, ...] = get_args(FixFactBasis)
 # ``expected`` and ``no_strategy`` come from the performance ladder; ``gated_off``
 # also keeps out any other unit in a function a constant-false flag switches
 # off. ``unreachable``: an open dead-code finding covers the target.
+# ``terminal_flow``: a print or prompt flow; ``moderate_quiet``: a function
+# under the large-size bar with no churn or bug-fix history.
 FixExclusion = Literal[
     "test",
     "tooling",
@@ -64,6 +66,8 @@ FixExclusion = Literal[
     "no_concrete_step",
     "low_value_kind",
     "kind_unaudited",
+    "terminal_flow",
+    "moderate_quiet",
 ]
 FIX_EXCLUSIONS: tuple[str, ...] = get_args(FixExclusion)
 

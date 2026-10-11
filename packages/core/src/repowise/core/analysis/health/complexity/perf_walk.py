@@ -20,16 +20,18 @@ registered.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
-from ..perf.loop_facts import LoopFacts
+from ..perf.loop_facts import LoopFacts, LoopSource, combined_magnitude
 from .ast_utils import (
     _dart_signature_sibling,
     _find_function_entry_name,
     _find_name,
+    _node_text,
     is_function_node,
 )
 from .languages import LanguageNodeMap
@@ -253,15 +255,25 @@ def _is_lock_acquire_spin(
 
 
 def _enclosing_loops(
-    node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
+    node: Node,
+    dialect: BasePerfDialect,
+    loop_kinds: frozenset[str],
+    fn_kinds: frozenset[str],
+    block_loops: bool = False,
 ) -> list[Node]:
     """The data-dependent loops around *node* in its function, innermost first;
-    walked up only for hits. A loop whose iterable holds *node* is not one."""
+    walked up only for hits. A loop whose iterable holds *node* is not one. With
+    *block_loops*, a block-iteration call (Ruby ``items.each do``) whose block
+    holds *node* is one."""
     loops: list[Node] = []
     cur = node.parent
     for _ in range(64):
         if cur is None or cur.type in fn_kinds:
             break
+        if block_loops and not dialect.is_constant_loop(cur):
+            block = dialect.block_loop_body(cur)
+            if block is not None and block.start_byte <= node.start_byte < block.end_byte:
+                loops.append(cur)
         if cur.type in loop_kinds and cur.is_named and not dialect.is_constant_loop(cur):
             iterable = dialect.iterable_node(cur)
             # ``for row in result.all():`` runs ``.all()`` once per pass of the loop
@@ -365,8 +377,52 @@ def _strip_call_args(text: str) -> str:
     return "".join(kept)
 
 
+_MEMBERSHIP = "membership_test_against_list_in_loop"
+# A name a plan step can quote: ``out``, ``self.buf``, ``@buf``, ``$acc``.
+_SUBJECT_NAME = re.compile(r"[@$]{0,2}[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*")
+
+
+def _subject_text(node: Node | None) -> str:
+    """*node* as written when it is a plain name or member path, else empty."""
+    text = "".join(_node_text(node).split()) if node is not None else ""
+    return text if len(text) <= _SINK_CALL_MAX and _SUBJECT_NAME.fullmatch(text) else ""
+
+
+def _concat_target(node: Node) -> str:
+    """The string a ``+=`` statement grows: its left side."""
+    left = node.child_by_field_name("left")
+    return _subject_text(left if left is not None else next(iter(node.named_children), None))
+
+
 def _quotable(callee: str) -> bool:
     return bool(callee) and not callee.startswith("(") and len(callee) <= _SINK_CALL_MAX
+
+
+def _quotable_chain(text: str) -> bool:
+    """A chain's text names its links only when it kept the callee: a chain
+    that opens with a parenthesis quotes as its last method alone."""
+    return "." in text
+
+
+def _receiver_chain_calls(
+    call: Node, call_kinds: frozenset[str], access_kinds: frozenset[str]
+) -> Iterator[Node]:
+    """The calls *call* is chained onto, nearest first.
+
+    ``(await session.execute(q)).scalars().all()`` is the ``.all()`` call on the
+    ``.scalars()`` call on the ``session.execute`` call: each receiver is the
+    first named child of the node above it, through member access,
+    parentheses and ``await``. An argument is never on that path, so a call
+    passed to a chained call is not one of its links.
+    """
+    node = call.named_children[0] if call.named_children else None
+    while node is not None:
+        t = node.type
+        if t in call_kinds:
+            yield node
+        elif not (t in access_kinds or "parenthesized" in t or "await" in t):
+            return
+        node = node.named_children[0] if node.named_children else None
 
 
 def _key_unused(hit: PerfHit) -> bool:
@@ -480,7 +536,7 @@ def _collect_perf_hits(
         and _overrides(dialect, "bare_statement_call")
     )
     do_chunked = _overrides(dialect, "is_chunked_loop")
-    do_magnitude = _overrides(dialect, "loop_magnitude")
+    do_magnitude = _overrides(dialect, "loop_source")
     do_batch = _overrides(dialect, "batch_form")
     do_bound = _overrides(dialect, "concurrency_bound")
     do_loop_facts = do_chunked or do_magnitude or do_batch or do_bound
@@ -492,13 +548,14 @@ def _collect_perf_hits(
             call, awaited=dialect.is_awaited(call), io_names=io_names, has_db_import=has_db_import
         )
 
-    def magnitude(loops: list[Node]) -> str:
-        """Grows if any enclosing loop grows; bounded only if every one is, since a
-        retry loop inside a loop over rows still runs once per row."""
-        found = {dialect.loop_magnitude(loop, probe) or "unknown" for loop in loops}
-        if "grows_with_data" in found:
-            return "grows_with_data"
-        return "bounded" if found == {"bounded"} else "unknown"
+    # One answer per loop, however many hits sit in it.
+    sources: dict[tuple[int, int], LoopSource] = {}
+
+    def source(loop: Node) -> LoopSource:
+        key = (loop.start_byte, loop.end_byte)
+        if key not in sources:
+            sources[key] = dialect.loop_source(loop, probe) or LoopSource()
+        return sources[key]
 
     def loop_facts(node: Node, sink: bool, per_call: bool = False) -> LoopFacts | None:
         """Facts of *node*'s innermost loop; batch and bound only mean something at a sink.
@@ -508,20 +565,31 @@ def _collect_perf_hits(
         """
         if not (do_loop_facts or per_call):
             return None
-        loops = _enclosing_loops(node, dialect, loop_kinds, fn_kinds)
+        loops = _enclosing_loops(node, dialect, loop_kinds, fn_kinds, do_block_loop)
         if not loops:
             return None
         loop = loops[0]
         facts = LoopFacts(
             chunked=do_chunked and dialect.is_chunked_loop(loop),
-            magnitude=magnitude(loops) if do_magnitude else "unknown",
+            magnitude=(
+                combined_magnitude([source(lp) for lp in loops]) if do_magnitude else "unknown"
+            ),
             batch=dialect.batch_form(node, loop, probe) if sink and do_batch else None,
             concurrency_bound=dialect.concurrency_bound(node, loop) if sink and do_bound else None,
-            key_unused=per_call and not _loop_key_feeds(node, loop),
+            # Only a native loop header names its key; a block loop (Ruby
+            # ``each do |row|``) claims nothing, as before it carried loop facts.
+            key_unused=per_call and loop.type in loop_kinds and not _loop_key_feeds(node, loop),
+            iterates=source(loop).iterates if do_magnitude else "unknown",
+            not_batchable=dialect.not_batchable(node, loop, loop_kinds) if per_call else None,
         )
         return facts if facts != LoopFacts() else None
 
     hits: list[PerfHit] = []
+    # One query written as a chain is several sink calls. The innermost is the
+    # one that leaves the process and is the hit; each outer link, met first,
+    # leaves here the chain's outermost call and whether any link is awaited.
+    chain_of: dict[int, tuple[Node, bool]] = {}
+    access_kinds = lmap.member_access_kinds
     # Per-enclosing-function accumulators keyed by the function's start line
     # (0 = module scope): ``(name, loop_targets{name->line}, lock_targets{...},
     # [bare_sink], misc)``. loop/lock targets feed the cross-function
@@ -673,17 +741,44 @@ def _collect_perf_hits(
             kind = dialect.call_sink_kind(
                 call_node, awaited=awaited, io_names=io_names, has_db_import=has_db_import
             )
+            chain_top = call_node
+            chain_awaited = awaited
+            is_link = False
             if kind is not None:
+                inner = None
+                for link in _receiver_chain_calls(call_node, call_kinds, access_kinds):
+                    if probe(link) is not None:
+                        inner = link
+                if inner is not None:
+                    # A link: the innermost sink below it is the hit. The
+                    # outermost link is met first and stays the chain's top.
+                    top, link_awaited = chain_of.get(inner.id, (call_node, False))
+                    chain_of[inner.id] = (top, link_awaited or awaited)
+                    is_link = True
+                else:
+                    chain_top, link_awaited = chain_of.pop(call_node.id, (call_node, False))
+                    chain_awaited = awaited or link_awaited
+            if is_link:
+                # Neither a hit nor a helper the loop calls: its chain's sink
+                # speaks for it.
+                pass
+            elif kind is not None:
                 if loop_depth >= 1:
-                    facts = loop_facts(call_node, sink=True, per_call=True)
-                    call = _sink_call_text(call_node, method, dialect)
+                    # The loop's key may feed any link, so the chain's facts are
+                    # read off its outermost call, which holds them all.
+                    facts = loop_facts(chain_top, sink=True, per_call=True)
+                    call = _sink_call_text(
+                        chain_top, dialect.callee_method_name(chain_top) or "", dialect
+                    )
+                    if chain_top is not call_node and not _quotable_chain(call):
+                        call = _sink_call_text(call_node, method, dialect)
                     hits.append(
                         PerfHit(
                             "io_in_loop", line, next_func, kind,
                             func_start=next_start, loop=facts, sink_call=call,
                         )
                     )
-                    if do_serial_await and awaited:
+                    if do_serial_await and chain_awaited:
                         # An *awaited* sink in a loop body is additionally a
                         # missed-concurrency candidate (a serial round-trip that
                         # a ``gather`` / ``Promise.all`` could fan out). Advisory
@@ -759,6 +854,8 @@ def _collect_perf_hits(
                             PerfHit(
                                 marker, line, next_func, "", func_start=next_start,
                                 loop=loop_facts(call_node, sink=False),
+                                # ``arr.includes(x)``: the list is the receiver.
+                                subject=root_name if marker == _MEMBERSHIP else "",
                             )
                         )
                     elif method:
@@ -811,6 +908,7 @@ def _collect_perf_hits(
                             "",
                             func_start=next_start,
                             loop=loop_facts(node, sink=False),
+                            subject=_concat_target(node),
                         )
                     )
                 elif do_loop_stmt_marker:
@@ -828,6 +926,12 @@ def _collect_perf_hits(
                                 "",
                                 func_start=next_start,
                                 loop=loop_facts(node, sink=False),
+                                # ``x in big``: the list is the last operand.
+                                subject=(
+                                    _subject_text(next(iter(reversed(node.named_children)), None))
+                                    if sm == _MEMBERSHIP
+                                    else ""
+                                ),
                             )
                         )
 
@@ -915,10 +1019,11 @@ def _collect_perf_hits(
                     )
                 )
 
-    # Dedup chained sinks: ``result.scalars().all()`` parses as two call nodes
-    # on one line (the ``.scalars()`` sink and the ``.all()`` materializer) —
-    # one logical query, one finding. Collapse per (kind, line, function),
-    # keeping a call the loop's key reaches when one of them does.
+    # One finding per (kind, line, function), keeping a call the loop's key
+    # reaches when one of them does. A chain of sinks is one hit already
+    # (``chain_of`` above); what is left to collapse here is two hits of one
+    # kind that share a line without being one chain, such as two membership
+    # tests in one condition.
     kept: dict[tuple[str, int, str | None], int] = {}
     deduped: list[PerfHit] = []
     for h in _name_lambda_hits(hits, lambda_spans):

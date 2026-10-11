@@ -143,12 +143,21 @@ class TestPruning:
         assert list(iter_glob(tmp_path, "app.py")) == [tmp_path / "Library" / "app.py"]
         assert list(iter_glob(tmp_path, "worker.py")) == [tmp_path / "Logs" / "worker.py"]
 
-    def test_derived_set_prunes_output_dirs(self, tmp_path: Path) -> None:
-        """PRUNED_DIRS_DERIVED (dynamic hints) prunes derived-output names."""
-        _write(tmp_path, "dist/settings.py")
+    def test_derived_set_prunes_out(self, tmp_path: Path) -> None:
+        """PRUNED_DIRS_DERIVED (dynamic hints) prunes ``out`` by name."""
+        _write(tmp_path, "out/settings.py")
         _write(tmp_path, "src/settings.py")
         found = list(iter_glob(tmp_path, "settings.py", prune_dirs=PRUNED_DIRS_DERIVED))
         assert found == [tmp_path / "src" / "settings.py"]
+
+    def test_prune_predicate_decides_per_directory(self, tmp_path: Path) -> None:
+        """``prune`` sees each directory's path, so two dirs with one name can differ."""
+        _write(tmp_path, "a/gen/settings.py")
+        _write(tmp_path, "b/gen/settings.py")
+        found = list(
+            iter_glob(tmp_path, "settings.py", prune=lambda d: d == tmp_path / "a" / "gen")
+        )
+        assert found == [tmp_path / "b" / "gen" / "settings.py"]
 
     def test_default_prune_set_contents(self) -> None:
         """Canary: the dirs behind past incidents stay pruned."""
@@ -156,9 +165,12 @@ class TestPruning:
             assert d in PRUNED_DIRS
         for d in ("Library", "Temp", "Logs", "UserSettings", "MemoryCaptures"):
             assert d not in PRUNED_DIRS
-        for d in ("dist", "build", "out", "coverage"):
+        for d in ("dist", "build", "out", "coverage", "target"):
             assert d not in PRUNED_DIRS  # possible source dirs — derived set only
-            assert d in PRUNED_DIRS_DERIVED
+        # The traverser's is_output_dir decides these per directory.
+        for d in ("dist", "build", "coverage", "target"):
+            assert d not in PRUNED_DIRS_DERIVED
+        assert "out" in PRUNED_DIRS_DERIVED
 
 
 # ---------------------------------------------------------------------------

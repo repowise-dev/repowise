@@ -51,6 +51,19 @@ _IMPORT_KW: frozenset[str] = frozenset(
     }
 )
 _RUST_LOCAL_ROOTS: frozenset[str] = frozenset({"crate", "self", "super"})
+_QUOTED_RE = re.compile(r"""["']([^"']+)["']""")
+# Parts of a TS / JS import statement. The statement names the module, so a part
+# classified alone would read an imported local name (``{ request }``) as a library.
+_ES_IMPORT_PARTS: frozenset[str] = frozenset(
+    {
+        "import_clause",
+        "named_imports",
+        "import_specifier",
+        "namespace_import",
+        "import_require_clause",
+        "import_attribute",
+    }
+)
 
 
 class _NodeLike(Protocol):
@@ -119,9 +132,9 @@ def _classify_import(node: _NodeLike) -> tuple[str | None, list[str]]:
     ``"@prisma/client"``, or a Python/Java dotted module's full path + interior
     segments + progressive prefixes) is tried until one resolves. When it does,
     every importable identifier in the statement is bound to that kind.
-    Over-binding is deliberate and harmless: an imported name only becomes a
-    finding when it is later *called as an execution sink*, which a non-I/O
-    symbol never is.
+    Over-binding is deliberate: an imported name only becomes a finding when it
+    is later *called as an execution sink*. A TS / JS module string is the one
+    exception, since a local named like the package (``ws``) is not the import.
 
     Within one token, the most specific (longest) variant wins; candidates are
     tried in a fixed order so the result never depends on set iteration, which
@@ -131,9 +144,19 @@ def _classify_import(node: _NodeLike) -> tuple[str | None, list[str]]:
     one member's kind onto another (#2894).
     """
     text = _decode(node)
-    # TS / JS module sources are quoted string literals, tried first; then
-    # Python / Java / ... dotted modules and bare identifiers.
-    tokens = re.findall(r"""["']([^"']+)["']""", text) + re.findall(r"[A-Za-z0-9_.:@/]+", text)
+    source = _es_module_source(node)
+    if source is not None:
+        # A TS / JS import names its module once; an import attribute
+        # (``with { type: "json" }``) is not a module. Only the clause before
+        # the module binds: ``import { WebSocket } from "ws"`` leaves ``ws`` unbound.
+        module = _decode(source)
+        tokens = [module.strip("\"'`")]
+        text = text[: text.find(module)]
+    else:
+        # A quoted module (Go / Ruby / Dart) is classified whole: split on its
+        # hyphens it would name libraries it is not (``provider-http`` -> ``http``).
+        # Python / Java / ... dotted modules and bare identifiers otherwise.
+        tokens = _QUOTED_RE.findall(text) or re.findall(r"[A-Za-z0-9_.:@/]+", text)
 
     kind: str | None = None
     for tok in tokens:
@@ -150,6 +173,16 @@ def _classify_import(node: _NodeLike) -> tuple[str | None, list[str]]:
         t for t in re.split(r"[^A-Za-z0-9_]+", text) if t.isidentifier() and t not in _IMPORT_KW
     ]
     return kind, bound
+
+
+def _es_module_source(node: _NodeLike) -> _NodeLike | None:
+    """The module string of a TS / JS import (``from "ws"`` / ``require("ws")``)."""
+    for holder in (node, *(c for c in node.children if c.type == "import_require_clause")):
+        get = getattr(holder, "child_by_field_name", None)
+        source = get("source") if get is not None else None
+        if source is not None:
+            return source
+    return None
 
 
 def _rust_use_argument(node: _NodeLike) -> _NodeLike | None:
@@ -331,7 +364,9 @@ def _io_visit(
                     names.setdefault(name, kind)
     elif node_type == "use_declaration" and language == "rust":
         _bind_rust_use_names(node, names)
-    elif "import" in node_type or node_type in ("using_directive", "use_declaration"):
+    elif (
+        "import" in node_type or node_type in ("using_directive", "use_declaration")
+    ) and node_type not in _ES_IMPORT_PARTS:
         # Classify only the *leaf* import node. A Go grouped
         # ``import ( "database/sql"; "regexp" )`` is an ``import_declaration``
         # wrapping per-line ``import_spec`` leaves; classifying the wrapper

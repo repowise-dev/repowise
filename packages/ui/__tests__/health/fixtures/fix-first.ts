@@ -627,7 +627,9 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
       "small_function": 0,
       "no_concrete_step": 0,
       "low_value_kind": 0,
-      "kind_unaudited": 0
+      "kind_unaudited": 0,
+      "terminal_flow": 0,
+      "moderate_quiet": 0
     },
     "dormant": 0
   },

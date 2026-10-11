@@ -1,6 +1,7 @@
-"""Where an Extract Method helper's ``suggested_name`` comes from, and when it
-has none: a ``timed()`` stage label, a banner comment, or ``compute_<out>`` for
-an effect-free span, never a name a sibling in the helper's scope already uses.
+"""Where an Extract Method helper's ``suggested_name`` comes from: a ``timed()``
+stage label, a banner comment, ``compute_<out>`` for an effect-free span, else
+the host function qualified by the span's subject; never a name a sibling in
+the helper's scope already uses.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import pytest
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import Extraction, analyze_file
 from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
-from repowise.core.analysis.health.refactoring.helper_naming import helper_name
+from repowise.core.analysis.health.refactoring.helper_naming import helper_name, helper_names
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
 
 
@@ -202,7 +203,8 @@ def test_a_timed_stage_label_names_the_helper():
     ],
 )
 def test_a_span_with_outside_effects_is_not_named_compute(effect):
-    assert _name(_py(effect=effect)) is None
+    # Named for its host and the value it produces, never ``compute_``.
+    assert _name(_py(effect=effect)) == "process_average"
 
 
 @pytest.mark.parametrize(
@@ -221,7 +223,7 @@ def test_reads_and_writes_to_what_the_span_owns_keep_the_name(effect):
 @pytest.mark.parametrize("verb", ["Compute", "Build", "Get", "Calculate"])
 def test_a_banner_promising_a_value_does_not_name_a_span_with_effects(verb):
     src = _py(head=f"    # {verb} the totals\n", effect="            print(v)\n")
-    assert _name(src) is None
+    assert _name(src) == "process_average"
 
 
 def test_a_banner_still_names_a_span_with_effects():
@@ -258,7 +260,7 @@ def test_writing_through_self_is_an_effect():
             average = total / count if count else 0
             return average
     """
-    assert _name(src) is None
+    assert _name(src) == "process_average"
 
 
 # -- collisions with the helper's scope ------------------------------------------
@@ -267,14 +269,14 @@ def test_writing_through_self_is_an_effect():
 @pytest.mark.parametrize("sibling", ["compute_average", "_compute_average"])
 def test_a_name_a_sibling_function_already_has_is_dropped(sibling):
     src = _py() + f"\n\ndef {sibling}(values):\n    return sum(values) / len(values)\n"
-    assert _names(src) == [("process", None)]
+    assert _names(src) == [("process", "process_average")]
 
 
 def test_two_plans_in_one_scope_do_not_share_a_name():
     second = textwrap.dedent(_py()).replace("def process(", "def process_again(")
     assert _names(_py() + "\n" + second) == [
         ("process", "compute_average"),
-        ("process_again", None),
+        ("process_again", "process_again_average"),
     ]
 
 
@@ -293,12 +295,12 @@ def test_a_method_does_not_collide_with_a_module_function():
     ],
 )
 def test_module_assignments_and_imports_take_the_name(prefix):
-    assert _names(prefix + _py()) == [("process", None)]
+    assert _names(prefix + _py()) == [("process", "process_average")]
 
 
 def test_the_host_functions_own_parameters_and_locals_take_the_name():
     src = _py().replace("(records, threshold)", "(records, threshold, compute_average=None)")
-    assert _names(src) == [("process", None)]
+    assert _names(src) == [("process", "process_average")]
 
 
 # -- casing --------------------------------------------------------------------
@@ -509,7 +511,7 @@ def test_go_exported_and_unexported_spellings_collide():
     src = _GO.replace("    // Sum values above threshold\n", "") + (
         "\nfunc ComputeAverage(xs []int) int {\n    return 0\n}\n"
     )
-    assert _names(src, "go", "go") == [("process", None)]
+    assert _names(src, "go", "go") == [("process", "processAverage")]
 
 
 def test_a_one_line_jsdoc_is_a_banner_and_a_block_one_is_not():
@@ -615,3 +617,119 @@ def test_rust_deref_writes_and_mut_borrows_are_effects(effect, acts):
     src = _RUST_EFFECT.replace("EFFECT", effect)
     name = _span_name("rust", "rs", src, 2, 10, ["values", "out", "c"], ["total"])
     assert (name is None) is acts
+
+
+# -- the host and the span's subject, when nothing else anchors a name ------------
+
+
+def _span_names(language, ext, src, start, end, returns=()):
+    (fn,) = _functions(language, ext, src)
+    first = fn.start_line - 1
+    extraction = Extraction(first + start, first + end, (), tuple(returns), 8, 2, False)
+    names = []
+    # The candidates never run out; read through the first unnumbered block name.
+    for name in helper_names(fn, extraction, get_language_map(language), language):
+        names.append(name)
+        if name.lower().endswith("block"):
+            return names
+    return names
+
+
+def test_a_branch_body_is_named_for_the_branch_it_handles():
+    src = """
+    def render_plan(p, kind):
+        out = []
+        if kind == "break_cycle":
+            out.append("cycle")
+        elif kind == "split_file":
+            groups = p.get("groups", [])
+            out.append(len(groups))
+        return out
+    """
+    assert _span_names("python", "py", src, 6, 7)[0] == "render_plan_split_file"
+
+
+def test_a_loop_is_named_for_what_it_walks_and_a_write_for_its_field():
+    src = """
+    def cmd_list(state, jobs):
+        for job in jobs:
+            print(job)
+        state.registry = jobs
+    """
+    assert _span_names("python", "py", src, 2, 3) == ["cmd_list_jobs", "cmd_list_job", "cmd_list_block"]
+    assert _span_names("python", "py", src, 4, 4) == ["cmd_list_registry", "cmd_list_block"]
+
+
+def test_a_subject_repeating_the_host_is_not_a_name():
+    src = """
+    def build_rows(rows, limit):
+        for row in rows:
+            print(row)
+    """
+    assert _span_names("python", "py", src, 2, 3) == ["build_rows_row", "build_rows_block"]
+
+
+def test_a_component_host_keeps_its_casing_and_starts_lowercase():
+    src = """
+    function OverviewPage(providers: Providers): number {
+        const active = providers.active;
+        track(active);
+        const costPer1k = active ? active.cost : 0;
+        return costPer1k;
+    }
+    """
+    names = _span_names("typescript", "ts", src, 2, 4, ["costPer1k"])
+    assert names[0] == "overviewPageCostPer1k"
+
+
+def test_a_camel_case_host_follows_the_files_convention():
+    src = """
+    def buildRows(rows, limit):
+        for row in rows:
+            print(row)
+    """
+    assert _span_names("python", "py", src, 2, 3) == ["build_rows_row", "build_rows_block"]
+
+
+def test_a_span_with_no_subject_is_a_block_of_its_host():
+    src = """
+    def report(job):
+        logger.info("start")
+        logger.info("done")
+    """
+    assert _span_names("python", "py", src, 2, 3) == ["report_block"]
+    anonymous = """
+    const run = function () {
+        console.log("start");
+        console.log("done");
+    };
+    """
+    # An unnamed function expression has no host name to qualify.
+    assert _span_names("typescript", "ts", anonymous, 2, 3) == ["handleBlock"]
+
+
+def test_a_numbered_block_name_follows_when_every_candidate_is_taken():
+    from repowise.core.analysis.health.refactoring.helper_naming import ScopeNames
+
+    src = """
+    def report(job):
+        logger.info("start")
+        logger.info("done")
+
+
+    def report_block():
+        return 0
+    """
+    fns = _functions("python", "py", src)
+    (fn,) = [f for f in fns if f.name == "report"]
+    lmap = get_language_map("python")
+    first = fn.start_line - 1
+    extraction = Extraction(first + 2, first + 3, (), (), 8, 2, False)
+    names = ScopeNames(lmap)
+    assert names.claim_first(fn, helper_names(fn, extraction, lmap, "python")) == (
+        "report_block_2"
+    )
+    # The next plan in the same scope takes the next number.
+    assert names.claim_first(fn, helper_names(fn, extraction, lmap, "python")) == (
+        "report_block_3"
+    )

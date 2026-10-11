@@ -103,11 +103,22 @@ describe("PerformanceView queue", () => {
     render(<PerformanceView adapter={adapter()} />);
     const items = await rows();
     expect(items).toHaveLength(3);
-    expect(screen.getByText(/1 in the repository/)).toBeTruthy();
+    expect(screen.getAllByText("1 matching").length).toBeGreaterThan(0);
     const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent ?? "");
     expect(headings[0]).toContain("Plan ready");
     expect(headings[1]).toContain("Advisory");
     expect(headings[2]).toContain("Needs investigation");
+  });
+
+  it("keeps the green mark for a plan proven safe", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    const items = await rows();
+    const dot = (li: HTMLElement) =>
+      (li.querySelector("[aria-hidden='true'].rounded-full") as HTMLElement | null)?.style
+        .backgroundColor;
+    expect(dot(items[0]!)).toBe("var(--color-success)");
+    // Advisory with a stored plan: not proven safe, so not green.
+    expect(dot(items[1]!)).toBe("var(--color-text-tertiary)");
   });
 
   it("shows the cause in words, where in mono, and the sink as separate evidence", async () => {
@@ -214,6 +225,15 @@ describe("PerformanceView states", () => {
 });
 
 describe("PerformanceView drawer", () => {
+  it("numbers the queue from 1 although rank_position is stored 0-based", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    const first = await openFirstRow();
+    expect(within(first).getByText("1")).toBeTruthy();
+    const panel = await screen.findByRole("dialog");
+    expand(panel, "Why it ranks here");
+    expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
+  });
+
   it("separates evidence confidence, actionability, and fix safety", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();

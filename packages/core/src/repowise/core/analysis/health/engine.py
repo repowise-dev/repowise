@@ -45,6 +45,7 @@ from ...installed_components import is_installed_component
 from ...test_paths import paired_test_names
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..execution_roles import ExecutionRoles
+from ..function_test_map import FunctionTests, function_test_map
 from ..graph_view import HasEdge, ImportEdgeView
 from ..test_reachability import files_reached_by_tests, files_with_paired_tests
 from .asserts.lexicon import AssertVocabulary
@@ -867,11 +868,12 @@ class HealthAnalyzer:
         return self._tests_reach_cache
 
     def _paired_tests(self, analyzed_paths: set[str]) -> set[str]:
-        """Analyzed files a test is paired with; see ``files_with_paired_tests``.
+        """Analyzed files a test is paired with; see ``files_with_paired_tests``."""
+        return files_with_paired_tests(self.graph, analyzed_paths, self._all_test_files())
 
-        Test files come from the graph as well as this pass, so an incremental
-        run that re-parses only the changed files still sees every test.
-        """
+    def _all_test_files(self) -> set[str]:
+        """Test files from this pass and the graph, so an incremental run that
+        re-parses only the changed files still sees every test."""
         test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
         if self.graph is not None:
             test_files.update(
@@ -879,7 +881,12 @@ class HealthAnalyzer:
                 for node, data in self.graph.nodes(data=True)
                 if data.get("is_test") and data.get("node_type") != "symbol"
             )
-        return files_with_paired_tests(self.graph, analyzed_paths, test_files)
+        return test_files
+
+    def _function_tests(self) -> FunctionTests | None:
+        """Each function's nearest test functions, over the whole graph."""
+        index = self._execution_graph()
+        return None if index is None else function_test_map(index, self._all_test_files())
 
     def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
         """Package roots for this repo, decided once per analyzer.
@@ -1155,6 +1162,8 @@ class HealthAnalyzer:
         with timed(timings, "analysis.health.finalize"):
             execution_roles = self._mark_perf_entry_reachability(findings)
             suggestions = self._with_performance_plans(run, findings, suggestions)
+        with timed(timings, "analysis.health.function_tests"):
+            function_tests = self._function_tests()
         return HealthReport(
             repo_id="",
             analyzed_at=datetime.now(UTC),
@@ -1164,6 +1173,7 @@ class HealthAnalyzer:
             function_blame_rows=self._function_blame_rows(walked),
             execution_roles=execution_roles,
             function_facts=self._function_fact_rows(walked),
+            function_tests=function_tests,
             repo_function_mod_p80=full_repo_fn_mod_p80,
             refactoring_suggestions=suggestions,
             performance_plan_policy=PerformancePlanPolicy(

@@ -15,7 +15,12 @@ import subprocess
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from repowise.core.analysis.branch_overlap import rank_with_index, scan_branches
+from repowise.core.analysis.branch_overlap import (
+    BranchOverlap,
+    BranchOverlapEntry,
+    rank_with_index,
+    scan_branches,
+)
 from repowise.core.git_refs import ahead_behind_many, files_by_ref
 from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import (
@@ -243,6 +248,15 @@ def test_nothing_shared_gives_the_empty_summary(repo):
 def test_the_summary_counts_the_branches_that_overlap(repo):
     assert _overlap(repo).to_dict()["summary"] == (
         "2 of 5 open branches (5 exist) edit files this change also edits."
+    )
+
+
+def test_the_summary_names_the_sample_and_remainder_when_truncated():
+    entry = BranchOverlapEntry("feature", "2026-01-01", 1700000000, 1, 0, ())
+    overlap = BranchOverlap("main", "cur", (entry,) * 18, scanned=50, total=1649)
+
+    assert overlap.to_dict()["summary"] == (
+        "18 of the 50 newest branches scanned edit files this change also edits (1599 of 1649 not scanned)."
     )
 
 

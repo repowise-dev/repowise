@@ -4,7 +4,8 @@
 it is not garbage collected, runs beside its caller: the caller does not pay
 for it and does not repeat it. Anything less certain reads as the caller's own
 work: a task awaited, gathered, returned or passed on; a container of tasks
-used for anything but adding and removing; a scheduler other than ``asyncio``
+used for anything but adding and removing (publishing it onto an attribute or
+testing it against ``None`` reads no task); a scheduler other than ``asyncio``
 itself (a ``TaskGroup`` the caller waits for looks the same as one it does not).
 
 Read within one function and matched by name, so the answer errs towards
@@ -112,12 +113,15 @@ def _holder(scheduler: Node, src: str) -> tuple[str, str | None]:
 
 
 def _uses(scope: Node, name: str, src: str) -> Iterator[Node]:
-    """Every use of *name* in *scope* except a plain rebinding of it."""
+    """Every use of *name* in *scope* except a plain rebinding of it, and a
+    field that merely shares its name (``state.tasks`` is not ``tasks``)."""
     for node in _walk(scope):
         if node.type not in ("identifier", "attribute") or node_text(node, src) != name:
             continue
         parent = node.parent
         if parent is not None and parent.type == "assignment" and parent.child_by_field_name("left") == node:
+            continue
+        if parent is not None and parent.type == "attribute" and parent.child_by_field_name("attribute") == node:
             continue
         yield node
 
@@ -171,10 +175,30 @@ def _stored_into(node: Node) -> bool:
     )
 
 
+def _published_or_tested(node: Node) -> bool:
+    """``state.tasks = node`` or ``node is None``: neither reads a task.
+
+    Publishing a local container onto an attribute is the same as keeping the
+    tasks in that attribute, which adding to it already is.
+    """
+    parent = node.parent
+    if parent is None:
+        return False
+    if parent.type == "assignment":
+        left = parent.child_by_field_name("left")
+        return parent.child_by_field_name("right") == node and left is not None and left.type == "attribute"
+    return (
+        parent.type == "comparison_operator"
+        and len(parent.children) == 3
+        and parent.children[1].type in ("is", "is not")
+        and parent.children[2].type == "none"
+    )
+
+
 def _only_kept(scope: Node, container: str, src: str) -> bool:
     """Whether *container* is only added to and removed from in *scope*."""
     return all(
-        _method_on(node, _KEEPS, src) or _stored_into(node)
+        _method_on(node, _KEEPS, src) or _stored_into(node) or _published_or_tested(node)
         for node in _uses(scope, container, src)
     )
 

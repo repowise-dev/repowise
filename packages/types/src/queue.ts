@@ -33,6 +33,8 @@ export type QueueReason =
   | "unmeasured_cost"
   | "cold_role"
   | "background_unproven"
+  | "terminal_flow"
+  | "moderate_quiet"
   | "not_judged"
   | "covered_by_plan"
   | "not_file_lead"

@@ -25,6 +25,10 @@ performance signal, never the defect score.
 The loop and the I/O call do not have to be in the same function. Repowise
 follows the resolved call graph up to three hops and attaches the
 caller-to-sink path. Per-function linters cannot see that case.
+An I/O call is recognised by the library its receiver was imported from. In
+TypeScript and JavaScript only the module name counts, so a local variable named
+like a package (`ws`) or a module path that contains a library name
+(`plugin-sdk/provider-http`) is not read as that library.
 
 Performance analysis covers Python, TypeScript/JavaScript (including Vue and
 Svelte scripts), Java, Go, C# (including Razor), Rust, Kotlin, Scala, Ruby, C++,
@@ -47,10 +51,19 @@ Each opportunity gets one state:
 | `expected` | The repetition is real and nothing should change, such as deleting N files, or the function is switched off by a constant flag (reason `gated_off`) or runs once per deploy, boot or incident (reason `cold_path`), or its loop runs a fixed number of times (reason `bounded_loop`) |
 
 A plan lists its edits, one step per call site and loop, each naming the call it
-repeats. When every site reaches one sink, the step that adds a bulk form of that
-sink comes first. The plan also lists tests to run, found from coverage, the call
+repeats and the kind of I/O that call does (database, network, file system or
+subprocess). When every site reaches one sink, the step that adds a bulk form of
+that sink comes first. The plan also lists tests to run, found from coverage, the call
 graph and the import graph. An opportunity with a supported shared fix links to a
 `performance_fix` plan in [REFACTORING.md](REFACTORING.md).
+
+Each loop also says what it walks: rows a query returns, a collection its caller
+passes in, the rows of one key, a registry or configuration table, a fixed set, a
+directory listing or a stream, and plan steps name it. Python, TypeScript/JavaScript,
+Go, Java, C#, Ruby, Rust, Kotlin and C++ loops say whether they grow with the data or are bounded; a
+loop whose size the code does not show stays unknown and is never treated as
+bounded. A loop that stops at the first call that answers, or feeds each call's
+result into the next, gets no batch advice (reason `loop_not_batchable`).
 
 ## The default queue
 
@@ -58,7 +71,7 @@ The default queue holds production opportunities in the `plan_ready` and
 `advisory` states. They are ranked by cost first; state only breaks ties.
 Only opportunities whose cost is measured are in it. A loop whose size nothing measured is `cost_proof = unproven`, never leads, and shows only with the `proof=unproven` filter.
 Each opportunity also says what runs its loop (`execution_role`: request, event consumer, scheduled job, startup, CLI, UI, tooling, test or unknown), and loops run per request rank above the rest. Roles are read for Python and TypeScript/JavaScript; other languages show `unknown`. The `role` filter lists any one role, or `all`.
-Work a request hands to `asyncio.create_task` and never waits for is a background job, not part of the request. An opportunity takes its role and loop size from the same live call sites, so a call site switched off by a constant flag or already chunked never leads it.
+Work a request hands to `asyncio.create_task` and never waits for is a background job, not part of the request, even when the task is kept in a map on shared app state. An opportunity takes its role and loop size from the same live call sites, so a call site switched off by a constant flag or already chunked never leads it.
 
 Everything else is counted by reason, not hidden:
 

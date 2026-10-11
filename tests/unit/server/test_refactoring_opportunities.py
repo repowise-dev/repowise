@@ -71,8 +71,8 @@ def _finding(
         "function_name": function_name,
         "line_start": 10,
         "line_end": 30,
-        # Past Fix first's size floor, so the composed plan is a candidate.
-        "details": {"ccn": 16},
+        # Large enough to lead with no history, so the composed plan is a candidate.
+        "details": {"ccn": 85},
         "health_impact": impact,
         "reason": "seeded",
         "dimension": "defect",

@@ -45,7 +45,8 @@ FINDINGS = [
     # highest of the large functions, which is what used to rank it first.
     _finding("cli/status.py", "show_status", 0.72, ccn=153, nloc=478, max_nesting=6),
     _finding("gateway/config.py", "load_gateway_config", 0.52, ccn=151, nloc=341, max_nesting=6),
-    # Past the bars by less: CCN 45 over 120 lines, in a file nothing imports.
+    # Past the bars by less: CCN 45 over 120 lines, in a file nothing imports
+    # and nobody changed. It leads only on churn or fix history, so it is out.
     _finding("lib/parse.py", "parse_block", 1.6, ccn=45, nloc=120, max_nesting=6),
 ]
 
@@ -65,7 +66,6 @@ GOLDEN = [
     ("show_status", "4", "the wizard: band 4 on size, CCN 153 x reach of only 7 importers"),
     ("perf_req", "4", "request-run growing db loop: top band, worth a CCN 40 x 3 call sites"),
     ("perf_unknown", "2", "the same loop with no role evidence: band 2, worth 103"),
-    ("parse_block", "2", "band 2 on size and gain; worth 45 (no importers) is below 103"),
 ]
 
 
@@ -88,6 +88,17 @@ def test_rank_order_golden() -> None:
     items = _queue().items
     got = [(_key(i), _value(i)) for i in items]
     assert got == [(symbol, band) for symbol, band, _why in GOLDEN]
+
+
+def test_a_moderate_function_with_no_history_is_counted_out() -> None:
+    queue = _queue()
+    assert "parse_block" not in {i.target.symbol for i in queue.items}
+    assert queue.totals.excluded["moderate_quiet"] == 1
+    churned = [{**m, "commit_count_90d": 40} if m["file_path"] == "lib/parse.py" else m
+               for m in METRICS]
+    again = build_fix_first(metrics=churned, findings=FINDINGS, performance=PERFORMANCE,
+                            hot_cuts=_CUTS, limit=None)
+    assert "parse_block" in {i.target.symbol for i in again.items}
 
 
 def test_the_giant_outranks_the_wizard_on_complexity_removed_times_reach() -> None:

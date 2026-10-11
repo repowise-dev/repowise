@@ -96,6 +96,24 @@ def test_a_bare_marker_silences_every_kind_on_its_line(repo):
     (suppressed,) = scan.suppressed
     assert (suppressed["kind"], suppressed["line_number"]) == ("aws_access_key", 1)
 
+def test_detect_secrets_pragmas_do_not_enter_gate_or_suppressed_report(repo):
+    _write(
+        repo,
+        "cfg.py",
+        f"AWS = '{KEY}'; eval(payload)  # pragma: allowlist secret\n"
+        "# pragma: allowlist nextline secret\n"
+        f"AWS = '{KEY}'\n"
+        f"AWS = '{KEY}'\n",
+    )
+    _commit(repo, "add")
+    scan = _scan(repo, patterns=(_pattern(regex=r"AKIA[A-Z]{16}"),))
+    assert [(f["kind"], f["line_number"]) for f in scan.findings] == [
+        ("eval_call", 1),
+        ("aws_access_key", 4),
+        ("custom:internal_token", 4),
+    ]
+    assert scan.suppressed == []
+
 
 def test_a_kind_scoped_marker_silences_only_the_kinds_it_names(repo):
     _write(

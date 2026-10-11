@@ -5,6 +5,7 @@ import { BellOff, Check, PanelRight, X } from "lucide-react";
 import { toast } from "sonner";
 import {
   ACTION_TIER_LABELS,
+  ACTION_TIER_ORDER,
   type ActionHorizonKey,
   type ActionsResponse,
   type ActionStateValue,
@@ -157,7 +158,7 @@ export function NextActions({
           {groupByTier(shown).map(([tier, items]) => (
             <div key={tier} className="flex flex-col">
               <h3 className="pb-1 pt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:pt-0">
-                {ACTION_TIER_LABELS[tier]}
+                {ACTION_TIER_LABELS[tier] ?? tier}
               </h3>
               <ul className="flex flex-col divide-y divide-[var(--color-border-default)]">
                 {items.map((action) => (
@@ -245,14 +246,17 @@ export function actionLocation(action: NextAction): string | null {
   return line ? `${path}:${line}` : path;
 }
 
-function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
-  const out: [ActionTier, NextAction[]][] = [];
+/** One heading per tier in core's order, rank order kept inside each, as the
+ *  CLI groups them. A tier this build does not know trails under its raw name
+ *  rather than dropping its rows. */
+export function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
+  const groups = new Map<ActionTier, NextAction[]>(ACTION_TIER_ORDER.map((t) => [t, []]));
   for (const a of actions) {
-    const last = out[out.length - 1];
-    if (last && last[0] === a.tier) last[1].push(a);
-    else out.push([a.tier, [a]]);
+    const group = groups.get(a.tier);
+    if (group) group.push(a);
+    else groups.set(a.tier, [a]);
   }
-  return out;
+  return [...groups].filter(([, items]) => items.length > 0);
 }
 
 export function ActionRow({

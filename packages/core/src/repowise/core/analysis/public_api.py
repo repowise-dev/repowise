@@ -1,4 +1,4 @@
-"""The Public API of a page's files, computed from manifests and re-exports.
+"""The Public API of a package, computed from manifests and re-exports.
 
 A package's public surface is what a consumer can import from it: whatever its
 manifest names as the start (``package.json`` ``bin``/``main``/``exports["."]``,
@@ -6,16 +6,20 @@ manifest names as the start (``package.json`` ``bin``/``main``/``exports["."]``,
 ``FileInfo.is_manifest_entry``) declares or re-exports through barrels. It is
 read off the parsed imports, never guessed by a model, so a class that nothing
 in the repo imports still appears when the package's front door publishes it.
+
+Two readers share it: a wiki page's Public API section, and the per-symbol
+``public_api`` flag the graph carries (:func:`stamp_public_api`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
-from repowise.core.ingestion.package_roots import module_for
+from repowise.core.ingestion.barrels import BARREL_FILENAMES
+from repowise.core.ingestion.package_roots import module_for, package_roots_from_paths
 from repowise.core.workspace.code_api import dunder_all
 
 # A Rust ``impl`` block is not a name anyone imports.
@@ -187,3 +191,102 @@ def compute_public_api(
             first = first_name.setdefault(key, name)
             api.append(_entry(name, sym, path, "" if first == name else first))
     return api
+
+
+def _is_declared_entry(pf: Any, entries: AbstractSet[str]) -> bool:
+    """Where a manifest says its package starts: a distribution's ``__init__.py``,
+    a ``package.json`` entry or ``exports`` subpath (*entries*). A Python
+    module a console script runs is not one: nothing imports from it."""
+    info = pf.file_info
+    if info.path in entries:
+        return True
+    if not getattr(info, "is_manifest_entry", False):
+        return False
+    return info.language != "python" or PurePosixPath(info.path).name == "__init__.py"
+
+
+def _is_launcher(pf: Any) -> bool:
+    """A Python module a console script runs, which makes its package an application."""
+    info = pf.file_info
+    return (
+        bool(getattr(info, "is_manifest_entry", False))
+        and info.language == "python"
+        and PurePosixPath(info.path).name != "__init__.py"
+    )
+
+
+def _imported_from_other_packages(
+    parsed: Mapping[str, Any], owner: Mapping[str, str | None]
+) -> set[str]:
+    """Files a non-test file of another package imports."""
+    out: set[str] = set()
+    for path, pf in parsed.items():
+        if pf.file_info.is_test:
+            continue
+        for imp in pf.imports:
+            target = imp.resolved_file
+            if target in owner and owner[target] != owner[path]:
+                out.add(target)
+    return out
+
+
+def export_roots(parsed: Mapping[str, Any], entries: AbstractSet[str] = frozenset()) -> list[str]:
+    """The files whose exports reach consumers, never a test file.
+
+    A manifest-declared entry always is. A barrel is when another package in
+    the repository imports through it, or when its package has no consumer
+    here and runs no console script: a library whose consumers live outside.
+    A barrel only its own package reads, in a package other packages consume
+    or in an application, is internal.
+    """
+    packages = package_roots_from_paths(set(parsed))
+    owner = {path: module_for(path, packages) for path in parsed}
+    imported = _imported_from_other_packages(parsed, owner)
+    closed = {owner[path] for path in imported}
+    closed |= {owner[path] for path, pf in parsed.items() if _is_launcher(pf)}
+    roots: list[str] = []
+    for path, pf in sorted(parsed.items()):
+        if pf.file_info.is_test:
+            continue
+        if _is_declared_entry(pf, entries) or (PurePosixPath(path).name in BARREL_FILENAMES and (
+            path in imported or owner[path] not in closed
+        )):
+            roots.append(path)
+    return roots
+
+
+def public_symbols(
+    parsed: Mapping[str, Any], entries: AbstractSet[str] = frozenset()
+) -> dict[str, str]:
+    """``{symbol id: the file that exports it}`` for every symbol consumers can import.
+
+    Exported means a barrel or a package entry publishes it (re-exports and
+    ``__all__`` followed as for :func:`compute_public_api`); a public method
+    of an exported class is exported with it. *entries* are the files a
+    ``package.json`` ``exports`` map names (:func:`export_roots`).
+    """
+    resolver = _Resolver(parsed)
+    out: dict[str, str] = {}
+    for root in export_roots(parsed, entries):
+        for _name, sym, declared_in in resolver.exported(root):
+            if sym is not None and not parsed[declared_in].file_info.is_test:
+                out.setdefault(sym.id, root)
+    for path, pf in parsed.items():
+        for sym in pf.symbols:
+            owner = out.get(f"{path}::{sym.parent_name}") if sym.parent_name else None
+            if owner is not None and sym.visibility == "public":
+                out.setdefault(sym.id, owner)
+    return out
+
+
+def stamp_public_api(graph: Any, parsed: Mapping[str, Any]) -> None:
+    """Set ``public_api`` on every symbol node: the exporting file, or ``""``."""
+    entries = {
+        path for path in parsed if graph.nodes.get(path, {}).get("package_export")
+    }
+    exported = public_symbols(parsed, entries)
+    for pf in parsed.values():
+        for sym in pf.symbols:
+            node = graph.nodes.get(sym.id)
+            if node is not None:
+                node["public_api"] = exported.get(sym.id, "")

@@ -630,6 +630,15 @@ EXECUTION_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES - {"references"}
 REACHABILITY_USE_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES | {"type_use"}
 
 
+# ``hint_source`` of a ``references`` edge from a registering decorator to a
+# function it decorates (see ``python_registrars``). The fact sits on the
+# decorated (target) side, so incremental persistence rewrites these edges by
+# target file, and role seeding skips them: a registry says nothing about how
+# the function runs.
+REGISTRATION_HINT = "decorator_registration"
+TARGET_OWNED_HINTS: frozenset[str] = frozenset({REGISTRATION_HINT})
+
+
 def is_dynamic_edge(edge_type: str | None) -> bool:
     """Whether *edge_type* is a dynamic-dispatch hint.
 
@@ -711,6 +720,9 @@ class ParsedFile:
     # Python only; lets the dead-code unused-export pass rescue symbols whose
     # only use is intra-module. See ``python_local_refs``.
     local_refs: frozenset[str] = field(default_factory=frozenset)
+    # Top-level functions that store and return the function they decorate
+    # (Python only); see ``python_registrars``.
+    registrars: frozenset[str] = field(default_factory=frozenset)
     # C/C++ sites that name a function without calling it: a dispatch table
     # entry, a callback field, an argument to a registration macro. Reuses
     # ``CallSite`` because resolving one is the identical problem — a name, the

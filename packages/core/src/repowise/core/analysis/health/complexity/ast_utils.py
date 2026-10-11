@@ -307,6 +307,32 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
     return out
 
 
+def _nested_function_nodes(
+    collected: list[Node], candidates: list[Node], lmap: LanguageNodeMap
+) -> list[Node]:
+    """The functions and methods defined inside a collected function.
+
+    *collected* is what :func:`_collect_function_nodes` returned and
+    *candidates* every ``function_kinds`` node in the file. That collector
+    stops at the first function or lambda it meets and descends everything
+    else, so a function it did not return sits below one it did: a nested
+    ``def``, a function expression, a local function, a method of a local or
+    anonymous class. Each is a unit of its own, which the enclosing function's
+    walk skips. Lambdas are not candidates; they stay with the function that
+    holds them. A local value that shares a function's node type
+    (``lmap.local_value``) is no unit either.
+    """
+    seen = {node.id for node in collected}
+    local_value = lmap.local_value
+    return [
+        node
+        for node in candidates
+        if node.id not in seen
+        and is_function_node(node, lmap)
+        and not (local_value is not None and local_value(node))
+    ]
+
+
 def _parameter_list(fn_node: Node) -> Node | None:
     """The node holding *fn_node*'s declared parameters, or ``None``."""
     params = fn_node.child_by_field_name("parameters")

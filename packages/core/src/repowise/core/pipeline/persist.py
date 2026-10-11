@@ -23,6 +23,10 @@ from repowise.core.generation.models import (
 
 logger = structlog.get_logger(__name__)
 
+#: Candidate paths per spotlight query: each path is one ``LIKE`` term, and
+#: SQLite caps how deep an expression tree may grow.
+_SPOTLIGHT_PATHS_PER_QUERY = 200
+
 # A second, stdlib logger for the one message here that has to survive
 # ``repowise init``. ``configure_cli_logging`` pins both ``repowise.core`` and
 # structlog to ERROR for the progress-bar commands, so anything below ERROR is
@@ -55,7 +59,8 @@ def tombstone_candidates(file_diffs: list[Any]) -> list[tuple[str, list[str]]]:
 async def mark_tombstone_pages(
     session: Any, repo_id: str, candidates: list[tuple[str, list[str]]]
 ) -> list[str]:
-    """Mark file pages for deleted/renamed files as tombstones.
+    """Mark the pages of deleted/renamed files as tombstones: each file's page
+    and the symbol spotlight pages of the symbols it defined.
 
     A ``freshness_status="fresh"`` page for a file that no longer exists is
     an active trap: retrieval serves it, agents cite it, and the index-age
@@ -73,16 +78,42 @@ async def mark_tombstone_pages(
     """
     if not candidates:
         return []
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
 
     from repowise.core.persistence.models import Page
 
     page_ids = {f"file_page:{path}": (path, successors) for path, successors in candidates}
-    res = await session.execute(
-        select(Page).where(Page.repository_id == repo_id, Page.id.in_(page_ids))
+    pages = list(
+        (
+            await session.execute(
+                select(Page).where(Page.repository_id == repo_id, Page.id.in_(page_ids))
+            )
+        ).scalars()
     )
+    # A symbol spotlight page targets ``<path>::<symbol>``, so its id is never
+    # ``file_page:<path>``; it goes with its file all the same. Matched on the
+    # ``<path>::`` prefix, so a file whose name merely starts with *path* stays.
+    successors_by_path = dict(candidates)
+    paths = list(successors_by_path)
+    for start in range(0, len(paths), _SPOTLIGHT_PATHS_PER_QUERY):
+        chunk = paths[start : start + _SPOTLIGHT_PATHS_PER_QUERY]
+        res = await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.page_type == "symbol_spotlight",
+                or_(*(Page.target_path.startswith(f"{p}::", autoescape=True) for p in chunk)),
+            )
+        )
+        for page in res.scalars():
+            path = (page.target_path or "").split("::", 1)[0]
+            # SQLite LIKE ignores ASCII case, so ``pkg/Foo.py::`` also matches
+            # a live ``pkg/foo.py``; keep only exact path matches.
+            if path not in successors_by_path:
+                continue
+            page_ids[page.id] = (path, successors_by_path.get(path, []))
+            pages.append(page)
     marked: list[str] = []
-    for page in res.scalars().all():
+    for page in pages:
         _, successors = page_ids[page.id]
         page.freshness_status = "tombstone"
         try:
@@ -416,6 +447,7 @@ async def persist_graph_nodes(
     update path can refresh ``graph_nodes`` (including symbol-level
     PageRank / betweenness) without constructing a full ``PipelineResult``.
     """
+    from repowise.core.analysis.communities import stored_community_id
     from repowise.core.persistence import (
         batch_upsert_graph_metrics,
         batch_upsert_graph_node_membership,
@@ -465,7 +497,7 @@ async def persist_graph_nodes(
             # per-symbol UI panel shows real centrality instead of 0.
             "pagerank": pr.get(node_id, sym_pr.get(node_id, 0.0)),
             "betweenness": bc.get(node_id, sym_bc.get(node_id, 0.0)),
-            "community_id": cd.get(node_id, 0),
+            "community_id": stored_community_id(cd, node_id),
         }
 
         # Scored → its commit; in no scoring → NULL, the unscored marker;
@@ -509,6 +541,7 @@ async def persist_graph_nodes(
                     "visibility": data.get("visibility"),
                     "signature": data.get("signature"),
                     "parent_symbol_id": data.get("parent_name"),
+                    "public_api": data.get("public_api"),
                 }
             )
         nodes.append(node_dict)
@@ -634,11 +667,15 @@ def _changed_file_edges(
     """``(reconcile_paths, edges)`` for edges emanating from changed+parsed files.
 
     An edge is attributed to the file that owns its *source* node: a file node
-    is the path itself; a symbol node carries ``file_path``. Restricting to
+    is the path itself; a symbol node carries ``file_path``. An edge whose fact
+    sits at its target (``TARGET_OWNED_HINTS``) belongs to the target's file
+    as well, so editing the decorated file rewrites it. Restricting to
     files that both changed and parsed this run mirrors ``_changed_file_symbols``
     — a changed file that failed to parse keeps its existing edges rather than
     having them wrongly wiped on a transient failure.
     """
+    from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
     changed = set(changed_paths or [])
     parsed = {pf.file_info.path for pf in parsed_files or []}
     reconcile = changed & parsed
@@ -655,9 +692,10 @@ def _changed_file_edges(
 
     edges: list[dict] = []
     for u, v, data in graph.edges(data=True):
-        if owner.get(u) not in reconcile:
-            continue
-        edges.append(_edge_row(u, v, data))
+        if owner.get(u) in reconcile or (
+            data.get("hint_source") in TARGET_OWNED_HINTS and owner.get(v) in reconcile
+        ):
+            edges.append(_edge_row(u, v, data))
     return sorted(reconcile), edges
 
 
@@ -1262,9 +1300,7 @@ async def prune_deleted_file_rows(
     # documents it read, so a deleted one is never in scope and its rows would
     # outlive the file without this. ``_FileLiveness`` asks disk and
     # ``git ls-files`` rather than the parse, so a ``.md`` path is judged
-    # correctly here. Note the LLM-regenerating update path never reaches this
-    # function, so drift rows for a document deleted there wait for a reindex,
-    # as dead-code and health rows already do.
+    # correctly here.
     await _prune_table(DocDriftFinding, DocDriftFinding.file_path, "doc_drift_findings")
     # On the document only. A reference to a deleted *target* is drift, not a
     # dead row: the next pass re-resolves it into a finding, and pruning by
@@ -2009,6 +2045,17 @@ async def save_full_health_report(
                 commit=analyzed_commit,
             ),
         )
+        # No rows means no graph to key them on: the stored ones stay. Before
+        # the finalizers, which read each plan's nearest tests off these rows.
+        fact_rows = getattr(hr, "function_facts", None)
+        if fact_rows is not None:
+            await write_function_facts(
+                session,
+                repo_id,
+                fact_rows,
+                roles=getattr(hr, "execution_roles", None),
+                tests=getattr(hr, "function_tests", None),
+            )
         # Group the stored performance findings into the materialized causal
         # read model, then reconcile lifecycle and plans.
         await finalize_performance_opportunities(
@@ -2022,12 +2069,6 @@ async def save_full_health_report(
         # savepoint because it composes over the stored rows, so it has to see
         # the reconciliation above rather than the detector output.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
-        # No rows means no graph to key them on: the stored ones stay.
-        fact_rows = getattr(hr, "function_facts", None)
-        if fact_rows is not None:
-            await write_function_facts(
-                session, repo_id, fact_rows, roles=getattr(hr, "execution_roles", None)
-            )
 
 
 async def refresh_governance_findings(

@@ -221,7 +221,7 @@ async def _seed_plans(session, rid, plans):
                 "target_symbol": p.get("target_symbol", "authenticate"),
                 "line_start": 10,
                 "line_end": 80,
-                "plan": {"groups": []},
+                "plan": p.get("plan", {"groups": []}),
                 "evidence": {},
                 "impact_delta": p["impact_delta"],
                 "effort_bucket": "S",
@@ -1525,6 +1525,75 @@ async def test_refactoring_plans_follow_the_queue_in_queue_order(setup_mcp, heal
     detail = await get_health(plan_id=every[0]["id"])
     assert detail["plan"]["file_path"] == every[0]["file_path"]
     assert "plan" not in every[0] and "evidence" not in every[0]
+
+
+@pytest.mark.asyncio
+async def test_a_split_stands_for_the_plans_it_relocates(setup_mcp, health_data, session):
+    """The plans after a split work on code it moves: the split's row lists
+    them as ``relocates`` and they take no rows, so one file cannot fill the
+    list. Offsets and the total still count every plan."""
+    from repowise.server.mcp_server import get_health
+
+    await _seed_plans(
+        session,
+        health_data,
+        [
+            {
+                "refactoring_type": "split_file",
+                "file_path": "src/auth/service.py",
+                "target_symbol": "service.py",
+                "plan": {
+                    "groups": [
+                        {"suggested_file": "src/auth/tokens.py", "symbols": ["moved_0"]},
+                        {"suggested_file": "src/auth/login.py", "symbols": ["moved_1"]},
+                    ]
+                },
+                "source_biomarker": "large_file",
+                "impact_delta": 9.0,
+            }
+        ]
+        + [
+            {
+                "file_path": "src/auth/service.py",
+                "target_symbol": f"moved_{i}",
+                "source_biomarker": "complex_method",
+                "impact_delta": 5.0,
+            }
+            for i in range(3)
+        ]
+        + [
+            {
+                "file_path": "src/utils/helpers.py",
+                "target_symbol": f"other_{i}",
+                "source_biomarker": "complex_method",
+                "impact_delta": 0.1,
+            }
+            for i in range(2)
+        ],
+    )
+    asked = {"include": ["refactoring"], "only": ["refactoring_plans"], "refactoring_scope": "all"}
+    first = await get_health(**asked, limit=2)
+    rows = first["refactoring_plans"]
+    assert [r["refactoring_type"] for r in rows] == ["split_file", "extract_method"]
+    assert len(rows[0]["relocates"]) == 3
+    assert rows[1]["file_path"] == "src/utils/helpers.py"
+    assert first["refactoring_plans_total"] == 6
+    # The page covered the split, the three it stands for and one more plan.
+    assert first["recovery"]["refactoring_plans"]["call"].endswith("cursor=5)")
+    rest = (await get_health(**asked, limit=10, cursor=5))["refactoring_plans"]
+    assert [r["target_symbol"] for r in rest] == ["other_1"]
+    detail = await get_health(plan_id=rows[0]["relocates"][0])
+    assert detail["plan"]["target_symbol"].startswith("moved_")
+    # The REST plan list ranks plans one by one and folds nothing.
+    from repowise.server.services.refactoring_health import (
+        PlanListQuery,
+        RefactoringHealthService,
+    )
+
+    ranked = await RefactoringHealthService(session, health_data, "default").ranked_plans(
+        PlanListQuery()
+    )
+    assert {p["target_symbol"] for p in ranked["plans"]} >= {f"moved_{i}" for i in range(3)}
 
 
 @pytest.mark.asyncio

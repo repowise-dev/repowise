@@ -32,6 +32,9 @@ export const ACTION_TIER_LABELS: Record<ActionTier, string> = {
   improve_signal: "Improve what Repowise can see",
 };
 
+/** The order tiers are listed in: core's `TIER_LABELS` order, pinned by the parity test. */
+export const ACTION_TIER_ORDER: readonly ActionTier[] = ["act_now", "plan", "improve_signal"];
+
 /** `unknown` is printed as a fact, never read as zero. */
 export type ActionFactBasis = "measured" | "inferred" | "unknown";
 

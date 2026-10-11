@@ -27,6 +27,7 @@ from repowise.core.analysis.health.queue.counts import NOT_JUDGED
 from repowise.core.analysis.health.queue_rules import keep
 from repowise.core.analysis.health.refactoring.recommendations import (
     PLAN_FILTERS,
+    listed_steps,
     plan_types,
     stored_recommendation,
 )
@@ -229,7 +230,9 @@ class RefactoringHealthService:
         A plan is a step of one opportunity, so the plan list is a view of the
         queue: the same scope, filters and order, paged by plan. One narrow read
         of step counts places the page; only the opportunities it touches are
-        decoded.
+        decoded. A split stands for the steps it relocates (``listed_steps``),
+        so a page that folds some reads on until it holds ``limit`` rows;
+        offsets and the total still count every plan.
         """
         filters, hidden = await self._scope(query, _filters(query))
         counts = await refactoring_step_counts(
@@ -238,25 +241,36 @@ class RefactoringHealthService:
             **filters,
             order=query.resolved_order,
         )
-        window = _plan_window(counts, query.offset, query.limit)
-        rows = await refactoring_opportunities_by_id(
-            self._session, self._repository_id, list(window), status=query.status
-        )
-        # The window is in queue order; the read is not.
-        items = [
-            {**step, "opportunity_id": opportunity_id}
-            for opportunity_id, (start, stop) in window.items()
-            if opportunity_id in rows
-            for step in (detail_map(rows[opportunity_id]).get("steps") or [])[start:stop]
-        ]
+        items: list[dict[str, Any]] = []
+        touched: set[str] = set()
+        position = query.offset
+        # A page of splits standing for many plans costs a read or two more.
+        while len(items) < query.limit:
+            window = _plan_window(counts, position, query.limit - len(items))
+            if not window:
+                break
+            before = position
+            rows = await refactoring_opportunities_by_id(
+                self._session, self._repository_id, list(window), status=query.status
+            )
+            # The window is in queue order; the read is not.
+            for opportunity_id, (start, stop) in window.items():
+                row = rows.get(opportunity_id)
+                steps = (detail_map(row).get("steps") or []) if row is not None else []
+                shown = listed_steps(steps, start, stop)
+                items.extend({**step, "opportunity_id": opportunity_id} for step in shown)
+                position += stop - start
+                touched.add(opportunity_id)
+            if position == before:
+                break
         return RefactoringPlanPage(
             items=items,
             total=sum(steps for _id, steps in counts),
             opportunities_total=len(counts),
-            next_offset=query.offset + sum(stop - start for start, stop in window.values()),
+            next_offset=position,
             scope=query.scope,
             hidden=hidden,
-            counts=await self._counts(query, len(window)),
+            counts=await self._counts(query, len(touched)),
         )
 
     async def _scope(

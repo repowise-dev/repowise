@@ -17,8 +17,9 @@
  * symbol-drawer deep links point at it) but is labelled for what it is.
  *
  * Tabs carry their count where one is cheap to get, so a clean repo says so
- * before you spend a click. Findings rides on the overview request the page
- * already makes and dead code dedupes onto the key its own tab uses. Security
+ * before you spend a click. Dead code dedupes onto the key its own tab uses.
+ * Findings is not numbered: the overview's queue inventory is not the list the
+ * tab opens on, and that list's own total is a multi-second query. Security
  * has no count endpoint (only a findings list), and blast radius is a tool you
  * operate rather than a pile you read, so neither is numbered.
  */
@@ -291,8 +292,7 @@ export default function CodeHealthPage() {
   const selectedPath = searchParams.get("file");
   const opportunityId = searchParams.get("opportunity");
 
-  // Shares the SWR key with TriageView — the meta line and the findings count
-  // cost no extra request.
+  // Shares the SWR key with TriageView, so the meta line costs no extra request.
   const { data: overview } = useSWR<HealthOverviewResponse>(
     `code-health-overview:${repoId}${viewKey}`,
     () => getHealthOverview(repoId, 25, scope, counts),
@@ -427,13 +427,6 @@ export default function CodeHealthPage() {
   );
 
   const badges: Partial<Record<TabId, number | string>> = {};
-  // Performance has its own tab and is out of the findings list, so counting
-  // it here would put a bigger number on the tab than the tab can show.
-  if (overview) {
-    badges.findings =
-      overview.queue_counts?.findings.inventory ??
-      overview.summary.open_findings - (overview.summary.performance_findings ?? 0);
-  }
   if (deadCode) badges["dead-code"] = deadCode.total_findings;
   // No badge when the drift pass has not run: the response carries a cause
   // rather than a summary, and a 0 there would read as clean documentation.

@@ -24,6 +24,9 @@ class _Facts:
     def cloned(self, path, shape):
         return False
 
+    def evidence(self, path, symbol):
+        return True
+
 
 def _cause(**over):
     row = {
@@ -120,6 +123,20 @@ def test_path_verdict_reads_the_stored_origin_first_and_keeps_tests_on_ask() -> 
     assert path_verdict("scripts/build.py", None).reason == "tooling"
     # A root-level file carries no evidence either way and stays in.
     assert path_verdict("run.py", None).eligible
+
+
+def test_a_stored_origin_overrules_a_test_shaped_name() -> None:
+    """The stored origin saw pytest's config: ``core/test_selection.py`` is
+    production there, though its name alone reads as a test."""
+    path = "packages/core/src/pkg/core/test_selection.py"
+    assert path_verdict(path, False, origin="production").eligible
+    # With no stored origin the path decides.
+    assert path_verdict(path, None).reason == "test"
+    assert path_verdict("src/bot.test-harness.ts", None).reason == "test"
+    # A test directory still wins over a stored production origin.
+    assert path_verdict("tests/x.py", False, origin="production").reason == "test"
+    assert path_verdict("src/__mocks__/api.ts", False, origin="production").reason == "test"
+    assert path_verdict("src/app.py", False, origin="test").reason == "test"
 
 
 def test_unit_verdict_ladder_order() -> None:

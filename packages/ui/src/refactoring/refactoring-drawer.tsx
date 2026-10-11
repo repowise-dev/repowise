@@ -31,7 +31,7 @@ import { GenerateCodePanel } from "./generate-code-panel";
 import { RefactoringModelToggle, type RefactoringModelToggleProps } from "./refactoring-settings-card";
 import { PriorityExplanation } from "./priority-explanation";
 import { ValidationSummary } from "./validation-summary";
-import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
+import { CONFIDENCE_LABEL, EFFORT_LABEL, planBlurb, typeMeta } from "./meta";
 import { blastCount, blastFiles, evidenceRows, planWins } from "./types";
 import type {
   Confidence,
@@ -133,6 +133,7 @@ function DrawerBody({
   contextSlot?: ReactNode;
 }) {
   const meta = typeMeta(plan.refactoring_type);
+  const blurb = planBlurb(plan);
   const effort = (plan.effort_bucket || "M") as EffortBucket;
   const confidence = (plan.confidence || "medium") as Confidence;
   const evidence = evidenceRows(plan);
@@ -178,7 +179,7 @@ function DrawerBody({
 
       <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
         {contextSlot}
-        <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">{meta.blurb}</p>
+        <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">{blurb}</p>
 
         {plan.risks && plan.risks.length > 0 ? (
           <section>

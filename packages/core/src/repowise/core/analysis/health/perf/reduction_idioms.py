@@ -122,6 +122,33 @@ def _adds_to(stmts: list[Node], container: str, keys: frozenset[str]) -> bool:
     )
 
 
+def _keeps_every_row(stmts: list[Node], values: frozenset[str]) -> bool:
+    """Whether an unguarded statement stores each iterated row."""
+    nested_loops = frozenset({"for_statement", "while_statement"})
+    guarded = False
+    for stmt in stmts:
+        candidates = walk(stmt, nested_loops) if stmt.type not in nested_loops else ()
+        guarded = guarded or any(n.type == "continue_statement" for n in candidates)
+        if guarded:
+            continue
+        node = next((c for c in stmt.children if c.is_named), stmt)
+        call = _method_call(node)
+        if call and call[1] in ("add", "append", "extend") and any(
+            references(arg, values) for arg in call[2]
+        ):
+            return True
+        left = node.child_by_field_name("left") if node.type == "assignment" else None
+        right = node.child_by_field_name("right") if left is not None else None
+        if (
+            left is not None
+            and right is not None
+            and left.type == "subscript"
+            and references(right, values)
+        ):
+            return True
+    return False
+
+
 def _keeps_first_via_guard(
     stmt: Node, rest: list[Node], rows: frozenset[str], keys: frozenset[str]
 ) -> bool:
@@ -143,7 +170,7 @@ def reduces_per_key(for_stmt: Node) -> bool:
         return False
     stmts = [c for c in body.children if c.is_named]
     keys = _derived(stmts, rows)
-    return any(
+    return not _keeps_every_row(stmts, keys) and any(
         _keeps_first_via_setdefault(stmt, rows, keys)
         or _keeps_first_via_guard(stmt, stmts[index + 1 :], rows, keys)
         for index, stmt in enumerate(stmts)

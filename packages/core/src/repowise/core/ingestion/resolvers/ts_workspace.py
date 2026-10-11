@@ -93,6 +93,7 @@ class _RepoFileScan:
     mdx_files: list[Path] = field(default_factory=list)
     vitest_configs: list[Path] = field(default_factory=list)
     package_jsons: list[Path] = field(default_factory=list)
+    plugin_jsons: list[Path] = field(default_factory=list)
 
 
 def _scan_repo_files(repo_path: Path, *, prune_nested_git: bool = True) -> _RepoFileScan:
@@ -114,6 +115,8 @@ def _scan_repo_files(repo_path: Path, *, prune_nested_git: bool = True) -> _Repo
                 scan.vitest_configs.append(Path(dirpath) / fname)
             elif fname == "package.json":
                 scan.package_jsons.append(Path(dirpath) / fname)
+            elif fname == "plugin.json":
+                scan.plugin_jsons.append(Path(dirpath) / fname)
     return scan
 
 
@@ -1121,6 +1124,44 @@ def find_vitest_include_targets(ctx: ResolverContext) -> set[str]:
                 for candidate in ctx.path_set:
                     if regex.match(candidate):
                         targets.add(candidate)
+    return targets
+
+
+# ---------------------------------------------------------------------------
+# Grafana plugin entry detection
+# ---------------------------------------------------------------------------
+
+_GRAFANA_ENTRY_EXTS: tuple[str, ...] = (
+    ".ts", ".tsx", ".js", ".jsx",
+)
+
+
+def find_grafana_plugin_targets(ctx: ResolverContext) -> set[str]:
+    """Return repo-relative paths for Grafana plugin module entry points.
+
+    Grafana plugins are loaded by convention: Grafana reads ``plugin.json``
+    and loads ``module.ts`` / ``module.tsx`` / ``module.js`` / ``module.jsx``
+    located in the same directory or in a sibling ``src/`` directory.
+    """
+    if ctx.repo_path is None:
+        return set()
+
+    targets: set[str] = set()
+    for plugin_file in _get_repo_scan(ctx).plugin_jsons:
+        try:
+            rel_dir = plugin_file.parent.relative_to(ctx.repo_path).as_posix()
+        except ValueError:
+            continue
+
+        dir_prefix = "" if rel_dir == "." else f"{rel_dir}/"
+        candidate_prefixes = (dir_prefix, f"{dir_prefix}src/")
+
+        for prefix in candidate_prefixes:
+            for ext in _GRAFANA_ENTRY_EXTS:
+                candidate = f"{prefix}module{ext}"
+                if candidate in ctx.path_set:
+                    targets.add(candidate)
+
     return targets
 
 

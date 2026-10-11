@@ -37,6 +37,7 @@ from ..complexity.ast_utils import member_object, self_member_name
 from ..complexity.body_facts import BodyTally, FactKinds, is_exit, step
 from ..complexity.nloc import _code_line_numbers
 from .dialects.base import SUPER, mentions_receiver
+from .raises import exception_flow_refusal
 from .reaching import definitions_at, observed_definitions
 
 if TYPE_CHECKING:
@@ -151,6 +152,7 @@ def find_extractions(
     lmap: LanguageNodeMap,
     receiver: Receiver | None = None,
     prefixes: dict[int, _Prefix] | None = None,
+    refused: set[str] | None = None,
 ) -> list[Extraction]:
     """Return safe Extract Method candidates for *analysis*, best first.
 
@@ -160,6 +162,9 @@ def find_extractions(
     the function's instance (``DefUseDialect.receiver``), None when unknown.
     *prefixes*, when given, receives each walked block's :class:`_Prefix` by
     block id, so a staged plan reads them instead of walking again.
+    *refused*, when given, receives why a span that cleared every other gate
+    was dropped because lifting it would change exception flow
+    (:func:`raises.exception_flow_refusal`).
     """
     fn_node = analysis.fn_node
     if fn_node is None:
@@ -183,12 +188,15 @@ def find_extractions(
     max_slice_nloc = _MAX_BODY_SHARE * _stmts_nloc(body_container.named_children, lines)
 
     def_lines, use_lines = _var_lines(analysis.def_use)
+    import_reads = _import_reads(analysis)
     declared_first = _declared_before_read(analysis.def_use)
     # Built on the first span that clears the cheap gates.
     reads: dict[str, list[tuple[int, frozenset[int]]]] | None = None
     hoisted = _hoisted_bindings(def_lines, use_lines)
     decl_lines = _declaration_lines(analysis.def_use)
     shared = _closure_state(analysis.def_use, def_lines, use_lines)
+    outer = analysis.def_use.outer
+    carry_defs = _rebinding_defs_dropped(analysis, def_lines, lmap)
     scan = _scan_for(lmap, receiver, fn_node)
     scope_kinds = scan.scopes
     free_writes = _free_write_lines(analysis.def_use) if receiver and receiver.implicit else []
@@ -238,6 +246,8 @@ def find_extractions(
                 span = stmts[i : j + 1]
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
+                if any(import_line < s <= use_line <= e for import_line, use_line in import_reads):
+                    continue
                 if reads is None:
                     reads = _reads_observing(analysis, def_lines)
                 params, returns = _infer_in_out(
@@ -249,8 +259,8 @@ def find_extractions(
                     continue
                 if any(s <= first_def <= e and first_use < s for first_def, first_use in hoisted):
                     continue
-                if _declaration_escapes(
-                    s, e, returns, decl_lines, def_lines, use_lines, declared_first
+                if _bindings_escape(
+                    s, e, returns, decl_lines, def_lines, use_lines, declared_first, outer
                 ):
                     continue
                 if pre.nested[j + 1] > pre.nested[i]:
@@ -258,8 +268,13 @@ def find_extractions(
                 if shared is not None and _closure_state_crosses(shared, span, s, e, block, lmap):
                     continue
                 if loop is not None and not _loop_carry_free(
-                    span, loop, s, e, def_lines, use_lines, lmap
+                    span, loop, s, e, carry_defs, use_lines, lmap
                 ):
+                    continue
+                reason = exception_flow_refusal(analysis.cfg, s, e, reads, def_lines)
+                if reason is not None:
+                    if refused is not None:
+                        refused.add(reason)
                     continue
                 uses, assigns = _receiver_facts(receiver, pre, i, j, _count_in(free_writes, s, e))
                 out.append(
@@ -577,6 +592,27 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
     for lines in use_lines.values():
         lines.sort()
     return def_lines, use_lines
+
+
+def _import_reads(analysis: FunctionAnalysis) -> tuple[tuple[int, int], ...]:
+    """Function-local import lines paired with the reads they reach."""
+    imports = {
+        (definition.var, definition.line)
+        for definition in analysis.reaching.definitions
+        if definition.imports
+    }
+    if not imports:
+        return ()
+    import_lines: dict[str, list[int]] = defaultdict(list)
+    for name, line in sorted(imports):
+        import_lines[name].append(line)
+    return tuple(
+        (definition_line, use_line)
+        for name, reads in _reads_observing(analysis, import_lines).items()
+        for use_line, seen in reads
+        for definition_line in seen
+        if (name, definition_line) in imports
+    )
 
 
 def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
@@ -941,6 +977,40 @@ def _declaration_escapes(
     )
 
 
+def _bindings_escape(
+    s: int,
+    e: int,
+    returns: tuple[str, ...],
+    decl_lines: dict[str, frozenset[int]],
+    def_lines: dict[str, list[int]],
+    use_lines: dict[str, list[int]],
+    declared_first: dict[str, frozenset[int]],
+    outer: dict[str, frozenset[int]],
+) -> bool:
+    """A binding the span cannot take along: a declaration the code after it
+    still needs (:func:`_declaration_escapes`), or a ``global`` / ``nonlocal``
+    write whose declaration stays behind (:func:`_outer_write_escapes`)."""
+    return _declaration_escapes(
+        s, e, returns, decl_lines, def_lines, use_lines, declared_first
+    ) or _outer_write_escapes(s, e, outer, def_lines)
+
+
+def _outer_write_escapes(
+    s: int, e: int, outer: dict[str, frozenset[int]], def_lines: dict[str, list[int]]
+) -> bool:
+    """True when the span writes a ``global`` / ``nonlocal`` name it cannot
+    take its declaration along for: one declared outside the span, or also
+    written outside it. In a helper without the declaration the write binds a
+    local and the module value never changes."""
+    for var, declared in outer.items():
+        writes = def_lines.get(var, ())
+        if not any(s <= ln <= e for ln in writes):
+            continue
+        if any(not s <= ln <= e for ln in (*declared, *writes)):
+            return True
+    return False
+
+
 def _needed_after(
     var: str,
     e: int,
@@ -1090,6 +1160,36 @@ def _branch_assigns(node: Node, var: str, defs: list[int], lmap: LanguageNodeMap
         container = _unwrap_container(node, lmap.block_kinds)
         return _stmts_assign(container.named_children, var, defs, lmap)
     return _stmts_assign(list(node.named_children), var, defs, lmap)
+
+
+def _rebinding_defs_dropped(
+    analysis: FunctionAnalysis, def_lines: dict[str, list[int]], lmap: LanguageNodeMap
+) -> dict[str, list[int]]:
+    """*def_lines* without the names exception handlers bind on their head
+    line (``except E as e:``, ``catch (err)``). Such a binding never reaches
+    the next iteration: Python unbinds it at the handler's end and a catch
+    parameter is scoped to its block, so a read of the name elsewhere in the
+    loop is another handler's own."""
+    heads = [
+        st.node
+        for block in analysis.cfg.blocks
+        for st in block.statements
+        if st.is_head and st.kind in lmap.catch_kinds and st.node is not None
+    ]
+    if not heads:
+        return def_lines
+    bound: set[tuple[str, int]] = set()
+    for head in heads:
+        # Only the clause's own binder: before its body, so a one-line body's
+        # write on the same line still counts.
+        body = next((c for c in head.named_children if c.type in lmap.block_kinds), None)
+        end = body.start_point if body is not None else head.end_point
+        bound |= {
+            (d.var, d.line)
+            for d in analysis.def_use.definitions
+            if head.start_point <= (d.line - 1, d.column) < end
+        }
+    return {var: [ln for ln in lines if (var, ln) not in bound] for var, lines in def_lines.items()}
 
 
 def _loop_carry_free(

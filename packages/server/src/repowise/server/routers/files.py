@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals

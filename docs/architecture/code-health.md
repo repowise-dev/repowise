@@ -265,7 +265,10 @@ A single pass over the parsed file list. For each file the analyzer:
    `FileComplexity` of functions and classes. Each `FunctionComplexity` carries
    name, line range, nloc, ccn, max nesting, cognitive complexity, bumps, and
    param count; each `ClassComplexity` carries method count, total nloc, the
-   method list, LCOM4, max method ccn, and field count.
+   method list, LCOM4, max method ccn, and field count. A function or method
+   defined inside another function has a `FunctionComplexity` of its own: its
+   branches are counted there and not in the function around it. A lambda has
+   none and counts toward the function that holds it.
 2. **Populates symbol complexity** (`_populate_symbol_complexity`): writes
    `max(ccn)` into `Symbol.complexity_estimate` as a side effect, so the
    `ContextAssembler` symbol ranker benefits even when a caller never touches
@@ -683,10 +686,13 @@ reason. These reasons and the performance default queue's are decided in one pla
 | `no_concrete_step` | No first edit with a file and line or a named group |
 | `low_value_kind` | Low cohesion (0 of 46 accepted), long method (0 of 10), long parameter lists (0 of 2) |
 | `kind_unaudited` | Plans led by Extract Class (0 of 14 accepted) or Move Method (0 of 34), kept to the full list until each passes a per-language audit |
+| `terminal_flow` | A quarter or more of the function's calls print or prompt (`complexity/terminal.py`): a status report, checklist or setup wizard |
+| `moderate_quiet` | Under CCN 80 and 200 lines, in a file outside the top fifth by churn (or changed once), with no `prior_defect` in the file and no `function_hotspot` on the function |
 
 Order: value first (the larger of health recovered and size: CCN 20/40/80/150,
 lines 100/200/400/800, nesting 5/6/8, a critical or brain-method finding, one step
-more on a hot file); a performance fix's value is its cost, with production,
+more on a hot file, where a function under 5% of its file's lines is credited that
+share of the file's importers); a performance fix's value is its cost, with production,
 entry-reachable, data-growing DB or network calls in the top band. Then tier
 `now` / `next` / `later`, with at most `HEAD_PER_KIND` (3) of the first `HEAD` (5)
 places per kind. `worth.py` decides `later` for every default list: a function
@@ -743,6 +749,11 @@ prerequisite. A loop already walking chunks is `loop_already_chunked`. When
 call site and loop, however many markers saw it, each naming the call it repeats
 (`details.sink_call`, or the helper a cross-function path enters). A step that adds
 a bulk form to the sink comes first only when every site reaches that one sink.
+Building a buffer or a set is one edit however many lines of the loop grow the
+string or probe the list, so `buffer_string_accumulation` and
+`replace_membership_collection` list one step per loop and variable, on the loop's
+line, naming the variable (`details.subject`) where the walk could read it as a
+plain name, and effort counts those steps.
 Plans also list validation tests (coverage, call graph, import graph, then
 `via: "name-match"`). An opportunity links to a `performance_fix` refactoring
 plan only by exact `opportunity_id`.

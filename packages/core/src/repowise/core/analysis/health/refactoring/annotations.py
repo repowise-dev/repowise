@@ -12,9 +12,11 @@ stored with the plan's rank, so plan detail serves it without a query.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy import func, select
@@ -24,12 +26,12 @@ from ....co_change import parse_partners
 from ....persistence.crud.analysis.dead_code import get_dead_code_findings
 from ....persistence.crud.authority import governing_decisions_by_file
 from ....persistence.crud.git import get_git_metadata_bulk
-from ....persistence.models import GitCommit, GitFunctionBlame
+from ....persistence.models import GitCommit, GitFunctionBlame, GraphNode
 from ..queue.eligibility import DeadSpan, dead_spans, dead_target
 from .extract_helper import ACTIVE_CO_CHANGE
 from .models import RefactoringSuggestion
 
-RiskKind = Literal["decision", "public_api", "active_edit", "dead_code"]
+RiskKind = Literal["decision", "public_api", "active_edit", "dead_code", "source_text"]
 
 #: Commits on the target inside this many days before the newest indexed
 #: commit read as someone working on it now.
@@ -40,11 +42,18 @@ ACTIVE_EDIT_MIN_COMMITS = 2
 _HISTORY_WINDOWS = 2
 MAX_CO_CHANGE_PARTNERS = 5
 _MAX_DECISION_RISKS = 3
+#: Exported symbols one risk names before counting the rest.
+_MAX_NAMED = 3
 #: Kinds that move a symbol out of its file, so its consumers see the change.
 _RELOCATING = frozenset({"split_file", "extract_class", "move_method"})
 #: The blast-radius key each file-level builder writes its dependents under.
 _DEPENDENTS_KEY = {"split_file": "dependent_count", "extract_class": "dependents_count"}
 _BATCH = 500
+#: A test reading a function's own source text (``inspect.getsource(m.f)``)
+#: asserts how it is written, which a split changes.
+_GETSOURCE = re.compile(r"\bgetsource(?:lines)?\(\s*([A-Za-z_][\w.]*)\s*\)")
+#: Larger files are not read for it: generated fixtures, not tests.
+_MAX_TEST_BYTES = 1 << 20
 
 FunctionCommits = tuple[int, int, tuple[str, ...]]
 
@@ -111,6 +120,10 @@ class AnnotationFacts:
     (committed_at, author)``; ``None`` when history is too shallow to tell
     recent from all, which is no signal rather than a quiet target. ``dead``
     is the sure dead-code spans by file (:func:`..queue.eligibility.dead_spans`).
+    ``sources_read`` is, per test file the plans run, the ``getsource``
+    arguments it passes (:data:`_GETSOURCE`). ``exported`` is, per file, its
+    symbols a package exports and the file exporting each
+    (``graph_nodes.public_api``).
     """
 
     decisions: Mapping[str, list[tuple[str, str]]] = field(default_factory=dict)
@@ -118,10 +131,15 @@ class AnnotationFacts:
     functions: Mapping[str, list[FunctionCommits]] = field(default_factory=dict)
     recent: Mapping[str, tuple[datetime, str]] | None = None
     dead: Mapping[str, list[DeadSpan]] = field(default_factory=dict)
+    sources_read: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    exported: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
-def annotate(suggestion: RefactoringSuggestion, facts: AnnotationFacts) -> PlanAnnotations:
-    """*suggestion*'s annotations from *facts*. Pure."""
+def annotate(
+    suggestion: RefactoringSuggestion, facts: AnnotationFacts, tests: Sequence[str] = ()
+) -> PlanAnnotations:
+    """*suggestion*'s annotations from *facts*; *tests* are the ones its
+    validation runs. Pure."""
     decisions = list(facts.decisions.get(suggestion.file_path, ()))
     risks = [
         PlanRisk(
@@ -133,8 +151,9 @@ def annotate(suggestion: RefactoringSuggestion, facts: AnnotationFacts) -> PlanA
     ]
     for risk in (
         _dead_code_risk(suggestion, facts.dead),
-        _public_api_risk(suggestion),
+        _public_api_risk(suggestion, facts.exported),
         _active_edit_risk(suggestion, facts),
+        _source_text_risk(suggestion, tests, facts.sources_read),
     ):
         if risk is not None:
             risks.append(risk)
@@ -157,7 +176,20 @@ def _dead_code_risk(
     return PlanRisk("dead_code", f"Nothing reaches {what}; delete it instead of refactoring it.")
 
 
-def _public_api_risk(suggestion: RefactoringSuggestion) -> PlanRisk | None:
+def _public_api_risk(
+    suggestion: RefactoringSuggestion, exported: Mapping[str, Mapping[str, str]]
+) -> PlanRisk | None:
+    """One ``public_api`` risk: callers inside the repo of what the plan moves,
+    then the exported symbols it changes, which code outside the repo may call."""
+    texts = [
+        risk.text
+        for risk in (_relocation_risk(suggestion), _exported_risk(suggestion, exported))
+        if risk is not None
+    ]
+    return PlanRisk("public_api", " ".join(texts)) if texts else None
+
+
+def _relocation_risk(suggestion: RefactoringSuggestion) -> PlanRisk | None:
     """Consumers of a symbol the plan moves out of its file, from its own blast radius."""
     kind = suggestion.refactoring_type
     if kind not in _RELOCATING:
@@ -187,6 +219,32 @@ def _public_api_risk(suggestion: RefactoringSuggestion) -> PlanRisk | None:
     return PlanRisk("public_api", text)
 
 
+def _exported_risk(
+    suggestion: RefactoringSuggestion, exported: Mapping[str, Mapping[str, str]]
+) -> PlanRisk | None:
+    """The symbols the plan changes that a package exports, at most three named."""
+    # Deferred: recommendations imports this module.
+    from .recommendations import target_symbol_ids
+
+    in_file = exported.get(suggestion.file_path) or {}
+    # Spans with no line bounds: only named symbols match, never by enclosing lines.
+    spans = [(symbol_id, 0, 0) for symbol_id in in_file]
+    hits = target_symbol_ids(suggestion, suggestion.file_path, None, spans)
+    if not hits:
+        return None
+    if len(hits) == 1:
+        text = f"{_dotted(hits[0])} is exported from `{in_file[hits[0]]}`; changing its signature"
+    else:
+        named = ", ".join(f"{_dotted(hit)} (from `{in_file[hit]}`)" for hit in hits[:_MAX_NAMED])
+        more = f" and {len(hits) - _MAX_NAMED} more" if len(hits) > _MAX_NAMED else ""
+        text = f"{named}{more} are exported; changing their signatures"
+    return PlanRisk("public_api", f"{text} breaks consumers outside the repo.")
+
+
+def _dotted(symbol_id: str) -> str:
+    return f"`{symbol_id.split('::', 1)[1].replace('::', '.')}`"
+
+
 def _active_edit_risk(suggestion: RefactoringSuggestion, facts: AnnotationFacts) -> PlanRisk | None:
     """Recent commits on the functions the plan's lines sit in. Function blame is
     the finest stored grain, so a span inside a long function counts all of it."""
@@ -212,6 +270,82 @@ def _active_edit_risk(suggestion: RefactoringSuggestion, facts: AnnotationFacts)
     )
 
 
+def _source_text_risk(
+    suggestion: RefactoringSuggestion,
+    tests: Sequence[str],
+    sources_read: Mapping[str, frozenset[str]],
+) -> PlanRisk | None:
+    """A test the plan runs that may read the split function's own source text."""
+    if suggestion.refactoring_type != "extract_method" or not suggestion.target_symbol:
+        return None
+    owners = _owners(suggestion)
+    name = suggestion.target_symbol.rsplit(".", 1)[-1]
+    readers = sorted(
+        path
+        for path in _test_files(tests)
+        if any(_names_target(read, name, owners) for read in sources_read.get(path, ()))
+    )
+    if not readers:
+        return None
+    who = readers[0] if len(readers) == 1 else f"{len(readers)} test files"
+    return PlanRisk(
+        "source_text",
+        f"{who} may read the source text of `{name}`; check what it asserts about that "
+        "text after the split.",
+        readers[0],
+    )
+
+
+def _owners(suggestion: RefactoringSuggestion) -> frozenset[str]:
+    """What may qualify the target in a test: its module's path parts and the
+    classes in its symbol (``CredentialPool`` of ``CredentialPool.refresh``)."""
+    module = Path(suggestion.file_path).with_suffix("").parts
+    return frozenset((*module, *suggestion.target_symbol.split(".")[:-1]))
+
+
+def _names_target(read: str, name: str, owners: frozenset[str]) -> bool:
+    """Whether a ``getsource`` argument (``flow._run_upgrade``) names the
+    target: the same last name, qualified by nothing or by one of *owners*."""
+    *qualifier, last = read.split(".")
+    return last == name and (not qualifier or qualifier[-1] in owners)
+
+
+def _test_files(tests: Iterable[str]) -> list[str]:
+    """The files of test ids (``path::name``), once each, in order."""
+    return list(dict.fromkeys(test.split("::", 1)[0] for test in tests))
+
+
+def _sources_read(root: Path, files: Iterable[str]) -> dict[str, frozenset[str]]:
+    """Per test file under *root* that reads any, the ``getsource``
+    arguments it passes. Read once at finalize; a file outside *root*,
+    missing (a hosted index has no checkout) or too large says nothing."""
+    base = root.resolve()
+    out: dict[str, frozenset[str]] = {}
+    for rel in files:
+        path = (root / rel).resolve()
+        try:
+            if not path.is_relative_to(base) or path.stat().st_size > _MAX_TEST_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        reads = frozenset(_unaliased(m, text) for m in _GETSOURCE.findall(text))
+        if reads:
+            out[rel] = reads
+    return out
+
+
+def _unaliased(read: str, text: str) -> str:
+    """*read* with a leading import alias replaced by the name it stands for
+    (``cl.run`` after ``import agent.conversation_loop as cl`` reads
+    ``conversation_loop.run``)."""
+    head, dot, rest = read.partition(".")
+    if not dot:
+        return read
+    found = re.search(rf"\bimport\s+([\w.]+)\s+as\s+{re.escape(head)}\b", text)
+    return f"{found.group(1).rsplit('.', 1)[-1]}.{rest}" if found else read
+
+
 def _target_functions(
     suggestion: RefactoringSuggestion, functions: Mapping[str, list[FunctionCommits]]
 ) -> list[FunctionCommits]:
@@ -235,9 +369,16 @@ def _s(count: int) -> str:
 
 
 async def load_annotation_facts(
-    session: AsyncSession, repository_id: str, suggestions: Sequence[RefactoringSuggestion]
+    session: AsyncSession,
+    repository_id: str,
+    suggestions: Sequence[RefactoringSuggestion],
+    tests: Iterable[str] = (),
+    *,
+    root: str | None = None,
 ) -> AnnotationFacts:
-    """Every fact :func:`annotate` reads, for the whole plan set at once."""
+    """Every fact :func:`annotate` reads, for the whole plan set at once;
+    *tests* are the ones the Extract Method plans run, and *root* is the
+    checkout the caller already looked up (None reads no test sources)."""
     files = sorted({item.file_path for item in suggestions if item.file_path})
     metadata = await get_git_metadata_bulk(session, repository_id, files)
     dead = await get_dead_code_findings(session, repository_id)
@@ -248,7 +389,29 @@ async def load_annotation_facts(
         functions=await _function_commits(session, repository_id, files) if recent else {},
         recent=recent,
         dead=dead_spans(dead),
+        sources_read=_sources_read(Path(root), _test_files(tests)) if root else {},
+        exported=await _exported_symbols(session, repository_id, files),
     )
+
+
+async def _exported_symbols(
+    session: AsyncSession, repository_id: str, files: Sequence[str]
+) -> dict[str, dict[str, str]]:
+    """Per plan file, its exported symbols and the file exporting each; one
+    query per chunk of files, not per file."""
+    out: dict[str, dict[str, str]] = {}
+    for index in range(0, len(files), _BATCH):
+        rows = await session.execute(
+            select(GraphNode.file_path, GraphNode.node_id, GraphNode.public_api).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.file_path.in_(list(files[index : index + _BATCH])),
+                GraphNode.public_api.is_not(None),
+                GraphNode.public_api != "",
+            )
+        )
+        for path, node_id, root in rows:
+            out.setdefault(path, {})[node_id] = root
+    return out
 
 
 def _partners(meta: Any) -> tuple[tuple[str, int], ...]:

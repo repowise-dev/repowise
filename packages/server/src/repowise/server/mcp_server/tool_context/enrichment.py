@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.communities import has_community
 from repowise.core.analysis.doc_drift.constants import (
     REFERENCE_BASIS,
     UNAVAILABLE_NO_TABLE,
@@ -638,7 +639,7 @@ async def _resolve_community(
     repo_id = repository.id
 
     node = await get_graph_node(session, repo_id, target)
-    if node is None or node.community_id is None:
+    if node is None or not has_community(node.community_id):
         result_data["community"] = None
         return
 

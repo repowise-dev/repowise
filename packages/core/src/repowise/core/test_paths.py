@@ -175,6 +175,16 @@ _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
 )
 
 
+# A source file whose name ends in "test" and a scaffolding word is the support
+# for some module's tests: ``bot.test-harness.ts``, ``card-test-helpers.ts``,
+# ``test-support.mjs``. Words split as directory segments do. Not ``spec``,
+# which ``spec_utils.py`` uses for OpenAPI tooling, and not ``utils``: React
+# and Preact publish ``test-utils.js`` as a package entry.
+_SUPPORT_NAME_WORDS: frozenset[str] = frozenset(
+    {"harness", "support", "helper", "helpers", "mock", "mocks", "fixture", "fixtures", "setup"}
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _Conventions:
     """The registry-declared halves of the rules, resolved once."""
@@ -293,10 +303,23 @@ def _is_support_name(filename: str) -> bool:
         return False
     rules = _conventions()
     lowered = filename.lower()
-    if PurePosixPath(lowered).stem in rules.support_stems:
+    if PurePosixPath(lowered).stem in rules.support_stems or _is_support_compound(filename):
         return True
     camel_re = rules.support_camel_res.get(PurePosixPath(lowered).suffix)
     return camel_re is not None and camel_re.search(PurePosixPath(filename).stem) is not None
+
+
+def _is_support_compound(filename: str) -> bool:
+    """``x.test-harness.ts``: a test name (``test_utils.py``) stays a test."""
+    lowered = PurePosixPath(filename.lower())
+    words = _words(lowered.stem)
+    return (
+        len(words) >= 2
+        and words[-2] == "test"
+        and words[-1] in _SUPPORT_NAME_WORDS
+        and lowered.suffix in _conventions().source_exts
+        and not _is_test_name(filename)
+    )
 
 
 def _is_test_dir(
@@ -485,6 +508,21 @@ def is_test_related_path(
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
     return _classify(path, language, roots) != ""
+
+
+def in_test_tree(path: str, language: str | None = None) -> bool:
+    """Whether a directory alone makes *path* test material, whatever its name.
+
+    ``tests/x.py`` and ``src/__mocks__/api.ts`` are; ``core/test_selection.py``
+    is test-shaped only by name. ``.github/`` makes no test tree.
+    """
+    original, lowered = _parts(path)
+    segments = lowered[:-1]
+    if not segments or _REPO_METADATA_DIR in segments:
+        return False
+    return any(_is_support_anywhere_dir(seg) for seg in segments) or _is_test_dir(
+        segments, original[:-1], "", language
+    )
 
 
 def is_unambiguous_test_path(path: str, language: str | None = None) -> bool:

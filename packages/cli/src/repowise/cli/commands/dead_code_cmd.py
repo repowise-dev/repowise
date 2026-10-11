@@ -352,6 +352,7 @@ def dead_code_command(
                     "risk_factors": f.risk_factors,
                     "lines": f.lines,
                     "primary_owner": f.primary_owner,
+                    "export_only": f.export_only,
                 }
             )
         click.echo(json.dumps(output, indent=2))

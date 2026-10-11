@@ -117,6 +117,12 @@ class BranchOverlap:
                 "No other open branch edits a file this change edits "
                 f"({self.scanned} scanned of {self.total})."
             )
+        if self.scanned < self.total:
+            not_scanned = self.total - self.scanned
+            return (
+                f"{len(self.branches)} of the {self.scanned} newest branches scanned "
+                f"edit files this change also edits ({not_scanned} of {self.total} not scanned)."
+            )
         return (
             f"{len(self.branches)} of {self.scanned} open branches "
             f"({self.total} exist) edit files this change also edits."

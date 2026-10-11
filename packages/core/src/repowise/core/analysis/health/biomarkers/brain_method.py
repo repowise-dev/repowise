@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from ..complexity.dispatch import judged_ccn
 from ..models import Severity
-from .base import BiomarkerResult, FileContext
+from .base import BiomarkerResult, FileContext, shape_details
 
 
 class BrainMethodDetector:
@@ -87,7 +87,7 @@ class BrainMethodDetector:
                         "max_nesting": fn.max_nesting,
                         "dependents_count": ctx.dependents_count,
                         "centrality_floor": floor,
-                        "dispatch_share": fn.dispatch_share,
+                        **shape_details(fn),
                     },
                     reason=(
                         f"Brain Method: {fn.name} is {fn.nloc} lines, CCN {fn.ccn}, "

@@ -26,7 +26,8 @@ Closing that needs glob support in the manifest list, which is its own change.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+import subprocess
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from ..fs_walk import walk_repo
@@ -97,6 +98,49 @@ def scan_package_manifests(
     checkouts, for a traverser opted into indexing them.
     """
     root = Path(repo_root)
+    if is_pruned is not None or not prune_nested_git:
+        return _walk_manifests(root, is_pruned, prune_nested_git)
+    key = (str(root.resolve()), _head_commit(root))
+    if key[1] is None:
+        return _walk_manifests(root, None, True)
+    cached = _SCANS.pop(key, None)
+    if cached is None:
+        cached = _walk_manifests(root, None, True)
+    _SCANS[key] = cached
+    while len(_SCANS) > _SCAN_CACHE_SIZE:
+        del _SCANS[next(iter(_SCANS))]
+    return dict(cached)
+
+
+#: Stock-settings scans by (checkout, HEAD commit), most recent last: health,
+#: the plan finalizers and Fix first share one walk per update, and another
+#: checkout or commit scans again. Ceiling: a manifest added or removed without
+#: a new commit keeps the cached roots until the next commit; upgrade by
+#: keying on the manifests' mtimes if working-tree updates need it.
+_SCANS: dict[tuple[str, str | None], dict[str, frozenset[str]]] = {}
+_SCAN_CACHE_SIZE = 4
+
+
+def _head_commit(root: Path) -> str | None:
+    """The commit *root* is checked out at, or None outside git."""
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    sha = done.stdout.strip()
+    return sha if done.returncode == 0 and sha else None
+
+
+def _walk_manifests(
+    root: Path, is_pruned: Callable[[Path], bool] | None, prune_nested_git: bool
+) -> dict[str, frozenset[str]]:
     names = package_manifest_names()
     prune = is_pruned if is_pruned is not None else _default_prune(root)
     roots: dict[str, frozenset[str]] = {}
@@ -147,6 +191,28 @@ def module_for(rel_path: str, package_roots: set[str]) -> str | None:
                 return candidate
     head = norm.split("/", 1)[0]
     return head or None
+
+
+def owning_package(
+    rel_path: str,
+    manifests: Mapping[str, frozenset[str]],
+    manifest_name: str,
+    accepts: Callable[[str], bool],
+) -> str | None:
+    """The deepest package root above *rel_path* holding *manifest_name* that
+    *accepts* takes, else the repository root (``""``) when it does, else None.
+
+    *manifests* is :func:`scan_package_manifests`'s map, which leaves the root
+    out; *accepts* gets a root directory and reads whatever its language needs
+    from that manifest (a JS test script, say). One lookup for any ecosystem.
+    """
+    roots = {root for root, names in manifests.items() if manifest_name in names}
+    current = rel_path.replace("\\", "/")
+    while (owner := module_for(current, roots)) in roots:
+        if accepts(owner):
+            return owner
+        current = owner
+    return "" if accepts("") else None
 
 
 def package_roots_from_paths(all_paths: set[str]) -> set[str]:

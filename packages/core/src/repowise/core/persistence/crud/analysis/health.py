@@ -47,6 +47,7 @@ from ...models import (
     _now_utc,
 )
 from .._shared import _BATCH_SIZE
+from .plain_rows import plain_rows
 
 
 def _health_finding_row_kwargs(finding: Any, repository_id: str) -> dict:
@@ -715,6 +716,30 @@ def _rounded(value: float | None) -> float | None:
     return round(value, 2) if value is not None else None
 
 
+async def _open_finding_totals_rows(session: AsyncSession, repository_id: str) -> list[Any]:
+    """The open findings :func:`get_health_findings` returns, narrowed to the
+    columns the summary totals read.
+
+    The summary sums and counts these; it never reads their tier, so it skips
+    the details column and the tiering pass over every open row. Impact order
+    is deliberate: per-file deductions are summed in the order the MCP
+    dashboard sums them, so both name the same worst file; ``id`` makes the
+    order total.
+    """
+    rows = await session.execute(
+        select(HealthFinding.file_path, HealthFinding.health_impact, HealthFinding.dimension)
+        .where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.status == "open",
+            HealthFinding.biomarker_type.not_in(excluded_types()),
+        )
+        .order_by(HealthFinding.health_impact.desc(), HealthFinding.id)
+    )
+    return _filter_excluded_paths(
+        plain_rows(rows), await _health_exclude_spec(session, repository_id)
+    )
+
+
 async def get_health_summary(
     session: AsyncSession,
     repository_id: str,
@@ -787,7 +812,7 @@ async def get_health_summary(
             worst_performance_score = round(perf_worst.performance_score, 2)
 
     if findings is None:
-        findings = await get_health_findings(session, repository_id)
+        findings = await _open_finding_totals_rows(session, repository_id)
 
     # Ranked with the same key as ``get_health_metrics``, off the findings this
     # function already holds. Previously a plain ``min`` on the score, which

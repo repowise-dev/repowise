@@ -7,6 +7,7 @@ import copy
 import pytest
 
 from repowise.core.analysis.health.fix_first import FIX_EXCLUSIONS, build_fix_first
+from repowise.core.analysis.health.refactoring.recipe import ELSEWHERE_NOTE
 from tests.unit.health.fix_first_rows import (
     FINDINGS,
     METRICS,
@@ -61,6 +62,8 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "no_concrete_step": 0,
         "low_value_kind": 0,
         "kind_unaudited": 0,
+        "terminal_flow": 0,
+        "moderate_quiet": 0,
     }
     assert queue.totals.dormant == 0
     assert queue.totals.eligible == 3
@@ -387,7 +390,7 @@ def test_a_staged_lead_plan_names_its_helpers_and_stage_one() -> None:
     assert core.title == "Split run into 3 helpers (+1 more step)"
     assert core.action.steps[0].text == (
         "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total "
-        "(the plan splits run into 3 helpers, CCN 44 -> 9)"
+        "(CCN 44 -> 9 after all 3)"
     )
     # Only the staged plan's step says so; the plan's next step reads as before.
     assert core.action.steps[1].text == (
@@ -399,7 +402,9 @@ def test_a_staged_plan_without_its_complexity_figures_leaves_them_out() -> None:
     core = next(
         i for i in _build(plans=_staged_plans(2, orchestrator={})).items if i.kind == "refactor"
     )
-    assert core.action.steps[0].text.endswith("(the plan splits run into 2 helpers)")
+    assert core.action.steps[0].text == (
+        "Stage 1 of 2: Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+    )
 
 
 def test_a_finding_borrowing_a_staged_span_says_it_is_staged() -> None:
@@ -408,7 +413,7 @@ def test_a_finding_borrowing_a_staged_span_says_it_is_staged() -> None:
     lone = _build(plans=plans, refactoring=[], performance=[]).lead
     assert lone.action.steps[0].text == (
         "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total "
-        "(the plan splits run into 3 helpers, CCN 44 -> 9)"
+        "(CCN 44 -> 9 after all 3)"
     )
 
 
@@ -433,7 +438,7 @@ def test_malformed_stages_never_crash_or_say_one_helper(stages, orchestrator) ->
     step = core.action.steps[0].text
     assert "into 1 helpers" not in step and "into 1 helpers" not in core.title
     if step.startswith("Stage 1 of 2"):
-        assert step.endswith("(the plan splits run into 2 helpers)")
+        assert step.endswith("sum_rows(rows, limit) -> total")
     else:
         assert step == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
 
@@ -444,3 +449,106 @@ def test_an_unstaged_plan_reads_as_before() -> None:
         "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows"
     )
     assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+
+
+def _anchored_plans(anchors: dict, staged: bool = False) -> list:
+    plans = _staged_plans() if staged else copy.deepcopy(PLANS)
+    plans[0]["plan"]["anchors"] = anchors
+    return plans
+
+
+def test_an_anchored_step_quotes_the_text_its_span_starts_and_ends_with() -> None:
+    anchors = {"first": "    total = 0", "last": "    return total", "unique_in": "file"}
+    core = next(i for i in _build(plans=_anchored_plans(anchors)).items if i.kind == "refactor")
+    step = core.action.steps[0]
+    assert step.text == (
+        "Extract run from `    total = 0` to `    return total` into sum_rows(rows, limit) -> total"
+    )
+    # The line stays as a hint; the anchors replace the line range in the text.
+    assert step.line == 20 and "lines 20-35" not in step.text
+
+
+def test_a_staged_anchored_step_quotes_its_first_stage_with_the_helper_brief() -> None:
+    plans = _anchored_plans({"first": "a = 1", "last": "b = `x`", "unique_in": "file"}, staged=True)
+    plans[0]["plan"]["new_symbol"] = {"signature_text": "def sum_rows(rows, limit):"}
+    core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
+    # A backtick inside an anchor widens its fence; the text keeps the helper's brief
+    # because a surface that shows only the text has no header beside it.
+    assert core.action.steps[0].text == (
+        "Stage 1 of 3: Extract run from `a = 1` to `` b = `x` `` into "
+        "sum_rows(rows, limit) -> total (CCN 44 -> 9 after all 3)"
+    )
+    assert core.action.steps[0].signature == "def sum_rows(rows, limit):"
+
+
+def test_an_anchor_unique_only_in_its_function_says_so() -> None:
+    anchors = {"first": "x = 1\n    y = 2", "last": "return y", "unique_in": "function"}
+    plans = _anchored_plans(anchors)
+    plans[0].update(file_path="src/core.py", target_symbol="src/core.py::run")
+    lone = _build(plans=plans, refactoring=[], performance=[]).lead
+    # A finding with no plan of its own borrows the span with its anchors.
+    assert lone.action.steps[0].text == (
+        "Extract run from `x = 1\n    y = 2` to `return y` into sum_rows(rows, limit) -> total. "
+        f"{ELSEWHERE_NOTE}"
+    )
+
+
+def test_a_staged_anchor_unique_only_in_its_function_says_so_after_the_stage() -> None:
+    plans = _anchored_plans({"first": "a = 1", "last": "b = 2", "unique_in": "function"}, staged=True)
+    core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
+    assert core.action.steps[0].text == (
+        "Stage 1 of 3: Extract run from `a = 1` to `b = 2` into sum_rows(rows, limit) -> total "
+        f"(CCN 44 -> 9 after all 3). {ELSEWHERE_NOTE}"
+    )
+
+
+def test_malformed_anchors_fall_back_to_lines() -> None:
+    plans = _anchored_plans({"first": "a = 1", "last": None})
+    core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
+    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+
+
+def test_a_plan_that_leaves_its_function_above_the_bar_can_wait() -> None:
+    from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
+
+    rows = copy.deepcopy(REFACTORING)
+    rows[0]["details"]["leaves_above_bar"] = (
+        "leaves run at CCN 41, still above the break-up bar; more stages needed"
+    )
+    core = next(i for i in _build(refactoring=rows).items if i.kind == "refactor")
+    assert core.tier == "later"
+    assert ("tier", LOW_PRIORITY_LABEL["above_bar_after"]) in [
+        (f.factor, f.value) for f in core.why_ranked
+    ]
+    # Without the reason the same plan is worth doing now.
+    assert next(i for i in _build().items if i.kind == "refactor").tier == "now"
+
+
+def test_a_finding_borrowing_a_plan_that_leaves_it_above_the_bar_says_so() -> None:
+    plans = copy.deepcopy(PLANS)
+    plans[0].update(
+        file_path="src/core.py",
+        target_symbol="src/core.py::run",
+        rank_json='{"leaves_above_bar": "leaves run at CCN 41, still above the break-up bar; '
+        'more stages needed"}',
+    )
+    lone = _build(plans=plans, refactoring=[], performance=[]).lead
+    # The finding keeps its tier; only its step says the plan is not the whole fix.
+    assert lone.tier != "later"
+    assert lone.action.steps[0].text == (
+        "Extract lines 20-35 of run into sum_rows(rows, limit) -> total. This plan alone "
+        "leaves run at CCN 41, still above the break-up bar; more stages needed."
+    )
+
+
+def test_plans_without_above_bar_facts_read_as_before() -> None:
+    # No rank facts, or rank facts without the reason: same steps, same tiers.
+    before = _build()
+    plans = copy.deepcopy(PLANS)
+    for plan in plans:
+        plan["rank_json"] = '{"position": 1}'
+    for queue in (_build(plans=plans), _build(plans=copy.deepcopy(PLANS))):
+        assert [(i.id, i.tier, [s.text for s in i.action.steps]) for i in queue.items] == [
+            (i.id, i.tier, [s.text for s in i.action.steps]) for i in before.items
+        ]
+    assert all("This plan alone" not in s.text for i in before.items for s in i.action.steps)

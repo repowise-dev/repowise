@@ -78,6 +78,8 @@ function queue(items: FixItem[]): FixFirstQueue {
         no_concrete_step: 0,
         low_value_kind: 0,
         kind_unaudited: 0,
+        terminal_flow: 0,
+        moderate_quiet: 0,
       },
       dormant: 0,
     },

@@ -14,6 +14,7 @@ import pytest
 
 from repowise.core.ingestion import GraphBuilder
 from repowise.core.ingestion.framework_edges import add_framework_edges
+from repowise.core.ingestion.framework_edges.pytest_edges import _test_class_globs
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -725,3 +726,70 @@ def test_unreadable_test_text_and_unheld_helpers_count_as_hidden(tmp_path: Path)
     _add_fixture_injection_edges(graph, parsed, tmp_path, text, None, lambda p: None)
     hint = graph["tests/test_a.py"]["tests/conftest.py"]["hint_source"]
     assert hint == "pytest_conftest_unrecorded"
+
+
+class TestTestClassGlobs:
+    def test_a_python_classes_key_in_a_foreign_setup_cfg_section_is_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "setup.cfg").write_text("[tool:other]\npython_classes = Widget*\n")
+        assert _test_class_globs(tmp_path) == ("Test*",)
+
+    def test_a_python_classes_key_in_a_foreign_tox_ini_section_is_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "tox.ini").write_text("[flake8]\npython_classes = Foo\n")
+        assert _test_class_globs(tmp_path) == ("Test*",)
+
+    def test_a_python_classes_key_in_a_foreign_pyproject_table_is_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.other]\npython_classes = "Bogus"\n'
+            '[tool.pytest.ini_options]\npython_classes = "Check*"\n'
+        )
+        assert _test_class_globs(tmp_path) == ("Check*",)
+
+    def test_a_python_classes_key_in_a_foreign_pytest_ini_section_is_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pytest.ini").write_text("[other]\npython_classes = Widget*\n")
+        assert _test_class_globs(tmp_path) == ("Test*",)
+
+    def test_a_string_value_in_the_pytest_section_is_read(self, tmp_path: Path) -> None:
+        (tmp_path / "pytest.ini").write_text("[pytest]\npython_classes = Widget*\n")
+        assert _test_class_globs(tmp_path) == ("Widget*",)
+
+    def test_a_toml_list_value_in_the_pytest_table_is_read(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.pytest.ini_options]\npython_classes = ["Check*", "Test*"]\n'
+        )
+        assert _test_class_globs(tmp_path) == ("Check*", "Test*")
+
+    def test_a_pytest_section_without_the_key_falls_through(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n")
+        assert _test_class_globs(tmp_path) == ("Test*",)
+
+    def test_an_unparseable_file_falls_through_to_the_default(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options\n")
+        assert _test_class_globs(tmp_path) == ("Test*",)
+
+    def test_a_non_string_non_list_toml_value_falls_through(
+        self, tmp_path: Path
+    ) -> None:
+        # python_classes = 42 used to crash ingestion with TypeError; a value
+        # pytest itself could not use is ignored instead of breaking the graph.
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.pytest.ini_options]\npython_classes = 42\n"
+        )
+        assert _test_class_globs(tmp_path) == ("Test*",)
+
+    def test_no_config_file_yields_the_default(self, tmp_path: Path) -> None:
+        assert _test_class_globs(tmp_path) == ("Test*",)
+        assert _test_class_globs(None) == ("Test*",)

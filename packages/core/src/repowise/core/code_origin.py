@@ -218,7 +218,7 @@ def _code_suffixes() -> tuple[str, ...]:
 def _generated_suffixes() -> tuple[str, ...]:
     from .ingestion.languages.registry import REGISTRY
 
-    return tuple(sorted(REGISTRY.generated_suffixes()))
+    return tuple(sorted({s.lower() for s in REGISTRY.generated_suffixes()}))
 
 
 @cache
@@ -228,8 +228,19 @@ def _deps_suffixes() -> tuple[str, ...]:
     return tuple(sorted(REGISTRY.extensions_for(_DEPS_LANGUAGES)))
 
 
+# A bundler's output (webpack's ``[name].bundle.js``, an esbuild ``a2ui.bundle.js``).
+# Kept out of the registry's generated suffixes, which ingestion skips: the file
+# stays in the graph and only leaves the fix lists.
+_BUNDLE_SUFFIXES = (".bundle.js", ".bundle.mjs", ".bundle.cjs")
+
+
 def _is_generated_name(name: str) -> bool:
-    return ".generated." in name or name.endswith(_generated_suffixes())
+    lowered = name.lower()
+    return (
+        ".generated." in lowered
+        or lowered.endswith(_generated_suffixes())
+        or lowered.endswith(_BUNDLE_SUFFIXES)
+    )
 
 
 # --------------------------------------------------------------------------

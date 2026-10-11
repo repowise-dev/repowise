@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import posixpath
 
+from ..perf.actionability import BOUNDARY_NOUN
 from ..refactoring.render import brief
 
 TITLE_MAX = 90
@@ -68,13 +69,6 @@ REFACTOR_TITLE: dict[str, str] = {
 
 #: Appended to a why when a duplicate sits in the function being split.
 CLONED = "and part of it is duplicated, so splitting it also removes a copy"
-
-BOUNDARY_NOUN = {
-    "db": "database",
-    "filesystem": "file system",
-    "network": "network",
-    "subprocess": "subprocess",
-}
 
 #: Performance causes whose cost is not a boundary call: (title, problem, gain).
 PERF_SHAPE: dict[str, tuple[str, str, str]] = {

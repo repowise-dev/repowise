@@ -10,7 +10,7 @@ only re-orders units there.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from math import log2
+from math import ceil, log2
 from typing import Any
 
 from ...execution_roles import COLD_ROLES, LEADING_ROLES
@@ -35,6 +35,9 @@ GAIN_CCN = SIZE_CCN[0]
 PERF_CCN = SIZE_CCN[1]
 #: On a file in the top fifth by churn. History re-orders inside a band only.
 CHURN_WEIGHT = 1.25
+#: One change in 90 days is not changing often. Where the top fifth starts
+#: below this (a shallow clone, a young repository), history tells nothing.
+MIN_CHURN_COMMITS = 2
 
 
 def gain_value(gain: float, central: bool) -> int:
@@ -64,6 +67,22 @@ def removed(ccn: int, gain: float) -> float:
 def reach(dependents: int | None) -> float:
     """How far a change reaches: 1 plus log2 of one more than its importers."""
     return 1 + log2(1 + max(dependents or 0, 0))
+
+
+#: A function under this share of its file's code lines gets that share of
+#: the file's importers, not all of them: in a file that holds many modules'
+#: worth of code, the importers come for the rest. Chosen after seeing the
+#: dogfood lists (no own-repo function in them is under 8% of its file).
+HUB_SHARE = 0.05
+
+
+def function_reach(dependents: int | None, function_nloc: int, file_nloc: int | None) -> int | None:
+    """The importers a function is credited with: its file's, or, under
+    :data:`HUB_SHARE` of the file, that share of them, rounded up."""
+    if not dependents or not function_nloc or not file_nloc:
+        return dependents
+    share = function_nloc / file_nloc
+    return dependents if share >= HUB_SHARE else ceil(dependents * share)
 
 
 def worth(removed_ccn: float, dependents: int | None, churning: bool) -> float:
@@ -143,9 +162,12 @@ __all__ = [
     "CHURN_WEIGHT",
     "GAIN_CCN",
     "GAIN_CUTS",
+    "HUB_SHARE",
+    "MIN_CHURN_COMMITS",
     "PERF_CCN",
     "SIZE_SEVERE",
     "VALUE_MAX",
+    "function_reach",
     "gain_value",
     "perf_confidence",
     "perf_ready",

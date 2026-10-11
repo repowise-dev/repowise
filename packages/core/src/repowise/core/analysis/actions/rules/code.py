@@ -387,7 +387,10 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
 
     Told as an area of work rather than a list of files, because that is how a
     lead plans it. The deepest folder that still clears the share wins, so the
-    answer is `update_cmd/`, not `packages/`.
+    answer is `update_cmd/`, not `packages/`. The title names where to start:
+    the first step of its most fixed fragile file. A folder with no such step
+    is left out and counted in the outcome's reason, and its files keep their
+    own rows.
     """
     rule = "fix_concentration"
     if "files" in facts.unavailable:
@@ -438,72 +441,110 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             continue
         chosen.append(folder)
     actions = []
+    no_step = 0
     for folder in chosen[:CONCENTRATION_MAX_ACTIONS]:
         n = len(shas_per_folder[folder])
-        share = round(100 * n / total)
         members = sorted(
             fixed_files[folder], key=lambda p: -production[p].fix_commits_90d
         )
         includes = tuple(
             p for p in members if is_fragile(production[p], ctx) and p not in named
         )
+        first = _first_step(includes, production)
+        if first is None:
+            no_step += 1
+            continue
         actions.append(
-            Action(
-                rule=rule,
-                tier="plan",
-                horizons=("quarter",),
-                severity="high",
-                title=(
-                    f"Stabilise {code(folder + '/')}: {share}% of the bug fixes land in "
-                    f"its {plural(files_per_folder[folder], 'file')}"
-                ),
-                impact=(
-                    f"{n} of the {total} bug-fix commits in the last 90 days touched "
-                    f"this folder, which holds {files_per_folder[folder] / n_prod:.1%} "
-                    "of the production files."
-                ),
-                why=(
-                    WhyFact("share of bug-fix commits", f"{share}%"),
-                    WhyFact("files with repeated fixes", str(len(members))),
-                    WhyFact("most fixed", posixpath.basename(members[0])),
-                ),
-                target_kind="folder",
-                target_path=folder,
-                surface="findings",
-                effort="L",
-                confidence="medium",
-                done_when="Its share of bug-fix commits falls over the next 90 days.",
-                weight=float(n),
-                evidence_total=len(members),
+            _folder_action(
+                folder,
+                first=first,
+                fixes=(n, total),
+                files=(files_per_folder[folder], n_prod),
+                members=[(p, production[p]) for p in members],
                 includes=includes,
-                fingerprint=fingerprint(share // 5),
-                details=tuple(
-                    ActionDetail(
-                        path=p,
-                        reason=(
-                            f"{production[p].fix_commits_90d} bug-fix commits, "
-                            f"{production[p].commits_90d} commits in 90 days"
-                        ),
-                    )
-                    for p in members
-                ),
-                commands=(
-                    ActionCommand.call(
-                        "Bug-fix history and co-change partners for the most fixed files",
-                        "get_risk",
-                        {"targets": members[:5]},
-                        cli="repowise risk " + " ".join(f"-t {p}" for p in members[:5]),
-                    ),
-                    ActionCommand.call(
-                        "Why the folder is shaped this way",
-                        "get_why",
-                        {"targets": [f"{folder}/"]},
-                        cli=f"repowise why {folder}/",
-                    ),
-                ),
             )
         )
-    return RuleOutcome(rule, "evaluated", "", tuple(actions))
+    reason = (
+        f"{plural(no_step, 'folder')} left out: no file in it names a first step."
+        if no_step
+        else ""
+    )
+    return RuleOutcome(rule, "evaluated", reason, tuple(actions))
+
+
+def _folder_action(
+    folder: str,
+    *,
+    first: str,
+    fixes: tuple[int, int],
+    files: tuple[int, int],
+    members: list[tuple[str, FileFacts]],
+    includes: tuple[str, ...],
+) -> Action:
+    """The folder's action: ``fixes`` is (the folder's bug-fix commits, the
+    repository's), ``files`` (its production files, the repository's)."""
+    n, total = fixes
+    share = round(100 * n / total)
+    paths = [p for p, _f in members]
+    return Action(
+        rule="fix_concentration",
+        tier="plan",
+        horizons=("quarter",),
+        severity="high",
+        title=f"Stabilise {code(folder + '/')}: first, {first}",
+        impact=(
+            f"{n} of the {total} bug-fix commits in the last 90 days ({share}%) "
+            f"touched this folder's {plural(files[0], 'file')}, "
+            f"{files[0] / files[1]:.1%} of the production files."
+        ),
+        why=(
+            WhyFact("share of bug-fix commits", f"{share}%"),
+            WhyFact("files with repeated fixes", str(len(members))),
+            WhyFact("most fixed", posixpath.basename(paths[0])),
+        ),
+        target_kind="folder",
+        target_path=folder,
+        surface="findings",
+        effort="L",
+        confidence="medium",
+        done_when="Its share of bug-fix commits falls over the next 90 days.",
+        weight=float(n),
+        evidence_total=len(members),
+        includes=includes,
+        fingerprint=fingerprint(share // 5),
+        details=tuple(
+            ActionDetail(
+                path=p,
+                reason=f"{f.fix_commits_90d} bug-fix commits, {f.commits_90d} commits in 90 days",
+            )
+            for p, f in members
+        ),
+        commands=(
+            ActionCommand.call(
+                "Bug-fix history and co-change partners for the most fixed files",
+                "get_risk",
+                {"targets": paths[:5]},
+                cli="repowise risk " + " ".join(f"-t {p}" for p in paths[:5]),
+            ),
+            ActionCommand.call(
+                "Why the folder is shaped this way",
+                "get_why",
+                {"targets": [f"{folder}/"]},
+                cli=f"repowise why {folder}/",
+            ),
+        ),
+    )
+
+
+def _first_step(includes: tuple[str, ...], production: dict[str, FileFacts]) -> str | None:
+    """The first step of the most fixed file in ``includes`` that has one, as
+    a clause: ``simplify `run` in `a.py```."""
+    for path in includes:
+        step = _fragile_step(production[path])
+        if step is not None:
+            title = step[0].split(": ", 1)[0]
+            return title[0].lower() + title[1:]
+    return None
 
 
 def _ancestors(path: str) -> list[str]:

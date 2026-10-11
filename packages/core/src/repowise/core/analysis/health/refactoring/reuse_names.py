@@ -83,13 +83,19 @@ def read_names(texts: list[str], language: str) -> set[str]:
     string's or template's expressions kept."""
     out: set[str] = set()
     for text in texts:
-        bare = _strip_strings(text, language)
-        bare = re.sub(r"#.*$" if language == "python" else r"//.*$", "", bare)
+        bare = code_only(text, language)
         skip = set(_PY_KWARG.findall(bare)) if language == "python" else set(
             _JS_KEY.findall(bare) + _JSX_ATTR.findall(" " + bare) + _JSX_TAG.findall(bare)
         )
         out |= {n for n in _IDENT.findall(bare) if n not in skip}
     return out - (_PY_WORDS if language == "python" else _JS_WORDS)
+
+
+def code_only(text: str, language: str) -> str:
+    """*text* with string contents and a trailing comment removed (a
+    formatted string's or template's expressions kept)."""
+    bare = _strip_strings(text, language)
+    return re.sub(r"#.*$" if language == "python" else r"//.*$", "", bare)
 
 
 def is_builtin(name: str, language: str) -> bool:
@@ -298,4 +304,12 @@ def module_of(path: str, language: str) -> str:
     return _js_module("./" + posixpath.basename(path), path)
 
 
-__all__ = ["binding_count", "exported_later", "is_builtin", "module_bindings", "module_of", "read_names"]
+__all__ = [
+    "binding_count",
+    "code_only",
+    "exported_later",
+    "is_builtin",
+    "module_bindings",
+    "module_of",
+    "read_names",
+]

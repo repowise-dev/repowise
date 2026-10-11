@@ -10,6 +10,7 @@ from __future__ import annotations
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.perf.opportunities import build_performance_opportunities
 from repowise.core.analysis.health.refactoring.performance_fix import (
+    fix_steps,
     performance_fix_suggestions,
 )
 from tests.unit.health.test_perf_opportunities import _finding
@@ -82,7 +83,16 @@ def test_sites_that_reach_one_sink_keep_the_bulk_form_step_and_every_site() -> N
         ("b.py", 20),
         ("b.py", 25),
     ]
-    assert all("load call" in s["action"] for s in steps[1:])
+    assert all("load database call" in s["action"] for s in steps[1:])
+
+
+def test_each_site_step_names_the_kind_of_io_it_repeats() -> None:
+    network = _steps([_finding("a.py", 10, loop_line=8, sink_call="client.get", boundary="network")])
+    site = [{"file_path": "a.py", "function_name": "run", "line_start": 10, "call": "client.get"}]
+    unknown = fix_steps("batch_or_prefetch_io", "proven", None, None, site)
+
+    assert "per-key client.get network call" in network[-1]["action"]
+    assert "per-key client.get call" in unknown[-1]["action"]
 
 
 def test_direct_calls_with_no_sink_get_no_unnamed_bulk_form_step() -> None:

@@ -229,6 +229,43 @@ class TestProseFlag:
         result = runner.invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
         assert result.exit_code == 0, result.output
 
+    @pytest.mark.parametrize(
+        "flags", [["--no-prose"], ["--index-only"], ["--docs", "deterministic"]]
+    )
+    def test_scripted_structural_init_does_not_auto_detect_a_decision_provider(
+        self, runner, tmp_path, keyless_env, monkeypatch, flags
+    ):
+        from unittest.mock import Mock
+
+        resolver = Mock(return_value=None)
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.command.resolve_provider", resolver
+        )
+        result = runner.invoke(cli, ["init", str(tmp_path), *flags, "--yes"])
+        assert result.exit_code == 0, result.output
+        resolver.assert_not_called()
+
+    @pytest.mark.parametrize("opt_in", ["provider", "key"])
+    def test_structural_init_preserves_explicit_decision_provider_opt_in(
+        self, runner, tmp_path, keyless_env, monkeypatch, opt_in
+    ):
+        from unittest.mock import Mock
+
+        resolver = Mock(return_value=None)
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.command.resolve_provider", resolver
+        )
+        flags = ["--provider", "openai"] if opt_in == "provider" else []
+        if opt_in == "key":
+            monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        result = runner.invoke(
+            cli, ["init", str(tmp_path), "--no-prose", "--yes", *flags]
+        )
+        assert result.exit_code == 0, result.output
+        resolver.assert_called_once_with(
+            "openai" if opt_in == "provider" else None, None, tmp_path
+        )
+
     def test_index_only_prints_deprecation(self, runner, tmp_path, keyless_env):
         """The deprecated alias still works and says so."""
         result = runner.invoke(cli, ["init", str(tmp_path), "--index-only", "--yes"])

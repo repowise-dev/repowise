@@ -67,6 +67,16 @@ def _result_kind(item: dict) -> str:
     return kind if kind in ("symbol", "file") else "page"
 
 
+def _row_title(item: dict) -> str:
+    """The row's title, or the location it names when the server omitted it.
+
+    The server drops a structural title (``File: a.py``) because ``path`` and
+    ``symbol_id`` already say it, so a table that wants a title column reads
+    the location instead.
+    """
+    return item.get("title") or item.get("symbol_id") or item.get("path") or ""
+
+
 def _project_result(item: dict, *, multi: bool) -> dict:
     """One tool result, trimmed to the keys this command has always emitted.
 
@@ -77,12 +87,12 @@ def _project_result(item: dict, *, multi: bool) -> dict:
 
     ==========  ==============================================================
     page        ``score`` (from ``relevance_score``), ``title``, ``page_type``,
-                ``path`` (from ``target_path``), ``snippet``
-    symbol      ``score``, ``name``, ``qualified_name``, ``kind``, ``path``
-                (from ``file``), ``line`` (from ``start_line``), and
+                ``path`` (``target_path`` for a pathless page), ``snippet``
+    symbol      ``score``, ``name``, ``qualified_name``, ``kind``, ``path``,
+                ``line`` (from ``start_line``), and
                 ``symbol_id`` — the id ``repowise symbol`` takes, without
                 which a symbol hit cannot be followed anywhere
-    file        ``score``, ``title``, ``path`` (from ``file``)
+    file        ``score``, ``title``, ``path``
     ==========  ==============================================================
 
     Dropped: ``page_id``, ``sources``, ``confidence_score``, ``end_line``,
@@ -103,31 +113,22 @@ def _project_result(item: dict, *, multi: bool) -> dict:
                 "name": item.get("name") or "",
                 "qualified_name": item.get("qualified_name") or "",
                 "kind": item.get("kind") or "",
-                "path": item.get("path") or item.get("file") or "",
+                "path": item.get("path") or "",
                 "line": item.get("start_line"),
                 "symbol_id": item.get("symbol_id") or "",
             }
         )
     elif kind == "file":
-        path = item.get("path") or item.get("file") or ""
-        out.update({"title": item.get("title") or "", "path": path})
+        out.update({"title": _row_title(item), "path": item.get("path") or ""})
     else:
         out.update(
             {
-                "title": item.get("title") or "",
+                "title": _row_title(item),
                 "page_type": item.get("page_type") or "",
                 "path": item.get("path") or item.get("target_path") or "",
                 "snippet": item.get("snippet") or "",
             }
         )
-        # ``target_path`` on a symbol_spotlight is a page id (``a.py::Foo``),
-        # not something a reader can open, which is why the tool attaches
-        # ``file`` beside it. ``path`` keeps the tool's own value so the
-        # payload stays what it was; ``file`` carries the openable resolution
-        # and appears only when the two differ.
-        file = item.get("file")
-        if file and file != out["path"]:
-            out["file"] = file
     if multi:
         out["repo"] = item.get("repo") or ""
     return out

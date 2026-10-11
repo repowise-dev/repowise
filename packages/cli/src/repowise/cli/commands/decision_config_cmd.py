@@ -252,7 +252,7 @@ def config_show(path: str | None, fmt: str) -> None:
     """Show the resolved capture policy for this repository."""
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     _emit(repo_path, _load(repo_path), fmt)
 
 
@@ -268,7 +268,7 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
     from repowise.core.analysis.decisions.policy import preset_policy
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     # A preset names source membership. The harness list and the two agent
     # switches are not membership, so applying one leaves them as the caller
     # set them.
@@ -317,7 +317,7 @@ def config_discovery(
     """Set the per-update budget for broad session discovery."""
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     fields = {
         key: value
         for key, value in (
@@ -352,7 +352,7 @@ def config_agent_acceptance(
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_agent_acceptance(bool(enabled)), fmt, dry_run)
 
@@ -376,7 +376,7 @@ def config_capture_prompt(
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_capture_prompt(bool(enabled)), fmt, dry_run)
     if dry_run:
@@ -437,7 +437,7 @@ def source_list(path: str | None, fmt: str) -> None:
     """List every capture source with its capabilities and current state."""
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     _emit(repo_path, _load(repo_path), fmt)
 
 
@@ -467,7 +467,7 @@ def source_set(
     if enabled is None and llm is None:
         raise click.ClickException("Pass --on/--off or --llm/--no-llm.")
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_source(source, enabled=enabled, llm=llm), fmt, dry_run)
 
@@ -491,6 +491,6 @@ def llm_command(path: str | None, enabled: bool | None, dry_run: bool, fmt: str)
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_llm(bool(enabled)), fmt, dry_run)

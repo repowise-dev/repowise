@@ -20,6 +20,7 @@ from repowise.core.analysis.health.queue.eligibility import (
     perf_queue_verdict,
     queue_proof,
 )
+from repowise.core.ingestion.models import REGISTRATION_HINT
 
 
 def _graph(*symbols: tuple[str, str, list[str]], start: int = 10) -> nx.DiGraph:
@@ -160,6 +161,19 @@ def test_a_scheduler_import_seeds_only_registered_functions() -> None:
         "server/scheduler.py::sync_repos"
     }
     assert {"tool/cli.py::main", "tool/cli.py::cmd_sync"} <= seeds.by_role["cli"]
+
+
+def test_a_decorator_registry_seeds_no_role() -> None:
+    """``@rule`` storing a function says nothing about how it runs, even beside argparse."""
+    graph = _graph(("tool/rules.py::rule", "python", []), ("tool/rules.py::poll_once", "python", ["@rule"]))
+    _imports(graph, "tool/rules.py", "argparse")
+    graph.add_edge(
+        "tool/rules.py::rule",
+        "tool/rules.py::poll_once",
+        edge_type="references",
+        hint_source=REGISTRATION_HINT,
+    )
+    assert _seed_of(graph, "tool/rules.py::poll_once") is None
 
 
 def test_vscode_activate_is_startup_and_registered_commands_are_cli() -> None:

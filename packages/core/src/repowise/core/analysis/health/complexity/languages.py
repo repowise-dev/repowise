@@ -69,6 +69,12 @@ class LanguageNodeMap:
     # (``a ? x : b ? y : z``, a dispatch) or a choice between markup (JSX).
     # Still a CCN point; no nesting level. Empty keeps every ternary nesting.
     flat_ternary_kinds: frozenset[str] = frozenset()
+    # Some grammars spell a ternary's branches positionally instead of naming
+    # them ``consequence`` / ``alternative`` (Python's ``X if C else Y`` has no
+    # field names: the arms are its first and last named children). For those
+    # the else-arm is the node's last named child, so a chain arm can still be
+    # located by position and recognised as flat.
+    ternary_arms_positional: bool = False
 
     # ------------------------------------------------------------------
     # Class-level analysis (LCOM4 / god-class). All three fields default
@@ -327,6 +333,15 @@ class LanguageNodeMap:
     #     function's body never meet one.
     misread_scope: Callable[[Node], object] | None = None
 
+    # -- Local bindings ------------------------------------------------------
+    #   * ``local_value`` -- truthy for a ``function_kinds`` node that binds a
+    #     value and not a function (F#: ``let v = ...`` shares its node type
+    #     with ``let f x = ...``). Inside a function such a node is no unit of
+    #     its own, so it gets no entry there. None means every function-kind
+    #     node is a function. Checked only for nodes inside a collected
+    #     function; at module level the node keeps the entry it always had.
+    local_value: Callable[[Node], object] | None = None
+
 
 
 # Scalar type names C and C++ share, Win32's typedefs included because C/C++ on
@@ -353,6 +368,11 @@ _PY = LanguageNodeMap(
     # branch kinds. The comprehension ``for`` (``for_in_clause``) is a generator,
     # not a decision, so it is intentionally left out.
     branch_kinds=frozenset({"if_statement", "elif_clause", "conditional_expression", "if_clause"}),
+    # A conditional-expression chain (``1 if a else 2 if b else 3``) reads like
+    # an ``elif`` dispatch: each else-arm chooses rather than nests. The grammar
+    # names no branch fields, so the arm is found positionally.
+    flat_ternary_kinds=frozenset({"conditional_expression"}),
+    ternary_arms_positional=True,
     loop_kinds=frozenset({"for_statement", "while_statement"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"except_clause"}),
@@ -506,6 +526,8 @@ _JAVA = LanguageNodeMap(
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_expression", "switch_statement"}),
     case_kinds=frozenset({"switch_block_statement_group", "switch_rule"}),
+    # A switch-rule ``yield t;`` parses as ``yield_statement`` (tree-sitter-java).
+    yield_kinds=frozenset({"yield_statement"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
     class_kinds=frozenset({"class_declaration"}),
@@ -886,6 +908,19 @@ _CSHARP = LanguageNodeMap(
     # invocations whose callee chain begins with ``Assert``.
     assert_call_kinds=frozenset({"invocation_expression"}),
     call_kinds=frozenset({"invocation_expression"}),
+    # ``x = ...`` and ``x += ...`` are both an ``assignment_expression`` (the
+    # dialect tells them apart by the ``operator`` token, as in Java and Go), so
+    # the augmented set stays empty.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset(
+        {"local_declaration_statement", "using_statement", "variable_declaration"}
+    ),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_statement", "yield_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 
@@ -1146,12 +1181,25 @@ _PASCAL = LanguageNodeMap(
 # until function kinds can carry a text predicate, no entry and no rows.
 
 
+def _fsharp_binds_a_value(node: Node) -> bool:
+    """``let v = ...`` as opposed to ``let f x = ...``: no parameter list."""
+    return node.type == "function_or_value_defn" and not any(
+        child.type == "function_declaration_left" for child in node.children
+    )
+
+
 # Known undercount, in the walker rather than this map: ``walk_file`` walks the
 # body node's children, so a body that IS one expression loses it and
 # ``let f x = if x > 0 then 1 else 2`` scores 1.
+#
+# A second one: a value bound inside a function (``let v = if a then 1 else
+# 2``) is a ``function_or_value_defn`` like a function, so the enclosing
+# function's walk stops at it, and ``local_value`` keeps it from getting an
+# entry of its own. Its branches are counted nowhere.
 _FSHARP = LanguageNodeMap(
     function_kinds=frozenset({"function_or_value_defn", "member_defn"}),
     lambda_kinds=frozenset(),
+    local_value=_fsharp_binds_a_value,
     branch_kinds=frozenset({"if_expression"}),
     loop_kinds=frozenset({"for_expression", "while_expression"}),
     try_kinds=frozenset({"try_expression"}),

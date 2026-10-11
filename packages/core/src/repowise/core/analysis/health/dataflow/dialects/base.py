@@ -77,6 +77,11 @@ class Occurrence:
     #: A name an import statement binds (Python ``import a.b`` binds ``a``).
     #: A lifted span re-imports it rather than pass or return it.
     imports: bool = False
+    #: A write to an existing name that may not happen, inside a statement the
+    #: CFG keeps whole (a ``switch`` / ``match`` arm). The value from before it
+    #: can still be the one a later read sees, so reaching definitions lets it
+    #: add to what reaches and hide nothing.
+    may: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,10 @@ def mentions_receiver(node: Node, names: frozenset[str]) -> bool:
     return re.search(rf"(?<![\w$])(?:{words})(?![\w$])", text) is not None
 
 
+#: ``(types, bound name)`` of an exception handler (:meth:`handler_head`).
+HandlerHead = tuple[tuple[str, ...] | None, str | None]
+
+
 @runtime_checkable
 class DefUseDialect(Protocol):
     """The contract a per-language def/use dialect satisfies."""
@@ -160,6 +169,8 @@ class DefUseDialect(Protocol):
     ) -> StatementDefUse: ...
 
     def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]: ...
+
+    def handler_head(self, handler: Node) -> HandlerHead: ...
 
 
 class BaseDefUseDialect:
@@ -340,7 +351,11 @@ class BaseDefUseDialect:
         loops, decls, outer = self._closure_parts(node, lmap)
         head_writes = self._loop_binder_scopes(loops, lmap, scopes)
         for decl in decls:
-            _add_declaration_scope(decl, writes, lmap, scopes)
+            if decl.type in lmap.catch_kinds:  # a handler's name is its own
+                for d in self.handler_def_use(decl).defs:
+                    scopes.setdefault(d.name, []).append((decl.start_point, decl.end_point))
+            else:
+                _add_declaration_scope(decl, writes, lmap, scopes)
         if not self.closure_writes_outer:
             for w in (*writes, *head_writes):
                 if w.name not in outer:
@@ -353,8 +368,9 @@ class BaseDefUseDialect:
     def _closure_parts(
         self, node: Node, lmap: LanguageNodeMap
     ) -> tuple[list[Node], list[Node], set[str]]:
-        """The loops and declaration statements of nested scope *node* (deeper
-        scopes not entered), and the names it declares outer."""
+        """The loops and declaration statements (exception handlers too) of
+        nested scope *node* (deeper scopes not entered), and the names it
+        declares outer."""
         loops: list[Node] = []
         decls: list[Node] = []
         outer: set[str] = set()
@@ -367,7 +383,7 @@ class BaseDefUseDialect:
                 outer |= {occ.name for occ in _leaf_names(cur, self.identifier_kinds)}
             elif cur.type in lmap.loop_kinds:
                 loops.append(cur)
-            elif cur.type in lmap.local_decl_kinds:
+            elif cur.type in lmap.local_decl_kinds or cur.type in lmap.catch_kinds:
                 decls.append(cur)
             stack.extend(cur.named_children)
         return loops, decls, outer
@@ -452,6 +468,26 @@ class BaseDefUseDialect:
         """Parameter names bound by *fn_node*'s signature, as entry defs.
         Default: none (a language with no override seeds no parameters)."""
         return ()
+
+    def outer_declared(self, node: Node) -> list[Occurrence]:
+        """The names statement *node* declares as the module's or an
+        enclosing function's (Python ``global`` / ``nonlocal``); none in a
+        language without such statements."""
+        if node.type not in self.outer_decl_kinds:
+            return []
+        return _leaf_names(node, self.identifier_kinds)
+
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """What an exception handler's head reads and binds (the CFG records
+        it as the handler block's first statement). Default: nothing, the
+        reading every language had before handler heads were recorded."""
+        return StatementDefUse(defs=(), uses=())
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """The exception types a handler clause names, as written (None: it
+        catches everything), and the name it binds. Default: types no raise
+        can be matched against, so nothing is counted as caught."""
+        return (), None
 
     def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """The instance *fn_node* runs on (:class:`Receiver`), ``NO_RECEIVER``
@@ -541,12 +577,13 @@ class BaseDefUseDialect:
         Each def found within is recorded as a def AND a use: the may-def keeps
         the variable in every "written in this region" set while its paired use
         stays upward-exposed, so a downstream must-def proof can only get more
-        conservative, never less. The paired use is marked :attr:`Occurrence.echo`.
+        conservative, never less. The paired use is marked :attr:`Occurrence.echo`
+        and the def :attr:`Occurrence.may` (:func:`may_defs`).
         """
         inner_defs: list[Occurrence] = []
         for child in node.named_children:  # not the node itself: no re-dispatch
             self._process(child, inner_defs, uses)
-        defs.extend(inner_defs)
+        defs.extend(may_defs(inner_defs))
         uses.extend(echoes(inner_defs))
 
 
@@ -617,6 +654,16 @@ def _leaf_names(node: Node, kinds: frozenset[str]) -> list[Occurrence]:
 def echoes(defs: list[Occurrence]) -> list[Occurrence]:
     """The may-def uses paired with *defs* (see :attr:`Occurrence.echo`)."""
     return [replace(occ, echo=True) for occ in defs]
+
+
+def may_defs(defs: list[Occurrence]) -> list[Occurrence]:
+    """*defs* as writes that may not happen (see :attr:`Occurrence.may`).
+
+    A name the arm declares itself (``declares``) is left as it is: it is a
+    new binding for the rest of the arm, not a write to the variable the code
+    before it set, and arms reuse such names freely.
+    """
+    return [occ if occ.declares else replace(occ, may=True) for occ in defs]
 
 
 def _written_before_read(writes: list[Occurrence], reads: list[Occurrence]) -> set[str]:

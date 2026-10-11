@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ActionsResponse, NextAction } from "@repowise-dev/types/actions";
 
-import { NextActions } from "../../src/overview/next-actions.js";
+import { NextActions, groupByTier } from "../../src/overview/next-actions.js";
 import { actionHref } from "../../src/overview/action-href.js";
 
 function action(overrides: Partial<NextAction> = {}): NextAction {
@@ -332,5 +332,30 @@ describe("host-configurable hints", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).queryByText("repowise get-risk src/a.py")).toBeNull();
     expect(within(dialog).getByText(/get_risk\(src\/a\.py\)/)).toBeInTheDocument();
+  });
+});
+
+describe("groupByTier", () => {
+  it("gives each tier one heading, in tier order, whatever the row order", () => {
+    const rows = [
+      action({ id: "p1", tier: "plan" }),
+      action({ id: "n1", tier: "act_now" }),
+      action({ id: "p2", tier: "plan" }),
+    ];
+    expect(groupByTier(rows).map(([tier, items]) => [tier, items.map((a) => a.id)])).toEqual([
+      ["act_now", ["n1"]],
+      ["plan", ["p1", "p2"]],
+    ]);
+  });
+
+  it("keeps rows of a tier it does not know, in a trailing group", () => {
+    const rows = [
+      action({ id: "x1", tier: "someday" as NextAction["tier"] }),
+      action({ id: "p1", tier: "plan" }),
+    ];
+    expect(groupByTier(rows).map(([tier, items]) => [tier, items.map((a) => a.id)])).toEqual([
+      ["plan", ["p1"]],
+      ["someday", ["x1"]],
+    ]);
   });
 });

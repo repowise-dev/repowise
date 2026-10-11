@@ -11,6 +11,7 @@ import {
   splitResidual,
 } from "./types";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import { ExtractMethodBefore } from "./extract-method-before";
 
 export interface PlanBeforeProps {
   plan: RefactoringPlan;
@@ -158,6 +159,8 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
       </div>
     );
   }
+
+  if (plan.refactoring_type === "extract_method") return <ExtractMethodBefore plan={plan} />;
 
   if (plan.refactoring_type === "move_method") {
     const mv = moveTarget(plan);

@@ -505,3 +505,34 @@ def test_detect_clones_needs_shared_identifier_names(tmp_path: Path):
     report = detect_clones(parsed, window_tokens=20, min_lines=4)
     # Same shape with every name changed is not a copy; a real copy still is.
     assert {(p.file_a, p.file_b) for p in report.pairs} == {("a.py", "c.py")}
+
+
+def _issue_3271_body() -> str:
+    return "".join(
+        f"result{i} = compute(alpha{i}, beta{i})\nname{i} = lookup(result{i}, gamma)\n"
+        f"if name{i} == other:\n    done = finish(name{i}, result{i})\n"
+        for i in range(6)
+    )
+
+
+def test_detect_clones_does_not_pair_across_languages(tmp_path: Path):
+    """Issue #3271: identical token shapes in Python and TypeScript must not cross-pair."""
+    body = _issue_3271_body()
+    a = _write(tmp_path, "a.py", body)
+    b = _write(tmp_path, "b.ts", body)
+    parsed = [
+        _pf("a.py", str(a), "python"),
+        _pf("b.ts", str(b), "typescript"),
+    ]
+    report = detect_clones(parsed, {}, window_tokens=DEFAULT_WINDOW_TOKENS, min_lines=3)
+    cross = {(p.file_a, p.file_b) for p in report.pairs if p.file_a != p.file_b}
+    assert cross == set()
+
+
+def test_detect_clones_still_pairs_same_language_duplicates(tmp_path: Path):
+    body = _issue_3271_body()
+    a = _write(tmp_path, "a.py", body)
+    b = _write(tmp_path, "b.py", body)
+    parsed = [_pf("a.py", str(a)), _pf("b.py", str(b))]
+    report = detect_clones(parsed, {}, window_tokens=DEFAULT_WINDOW_TOKENS, min_lines=3)
+    assert any({p.file_a, p.file_b} == {"a.py", "b.py"} for p in report.pairs)

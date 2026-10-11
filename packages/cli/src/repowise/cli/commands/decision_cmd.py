@@ -28,6 +28,7 @@ from repowise.cli.helpers import (
     run_async,
 )
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
+from repowise.cli.worktree import detect_worktree_base
 from repowise.core.agents.identity import is_agent_slug
 from repowise.core.analysis.decisions.lifecycle import (
     ACCEPTER_SESSION_MAX,
@@ -43,11 +44,15 @@ from repowise.core.precedent.currency import describe_decision_currency
 _SOURCE_CHOICES: tuple[str, ...] = (*LISTABLE_SOURCES, "all")
 
 
-def _resolve_decision_repo(path: str | None, fmt: str = "table"):
+def _resolve_decision_repo(path: str | None, fmt: str = "table", *, needs_store: bool = True):
     """Resolve the repo path for decision subcommands.
 
     Honors workspace auto-detection: in workspace mode without an explicit
     path, targets the primary repo and prints a transparency notice.
+
+    With ``needs_store`` (the default) the returned path is the checkout whose
+    index the command should read and write; see :func:`_checkout_with_index`.
+    Commands that only touch config files pass ``needs_store=False``.
     """
 
     target = resolve_command_target(path=path)
@@ -56,9 +61,38 @@ def _resolve_decision_repo(path: str | None, fmt: str = "table"):
         primary = target.primary_path()
         if primary is None:
             raise click.ClickException("Workspace has no primary repo configured.")
-        return primary
-    assert target.repo_path is not None
-    return target.repo_path
+        repo_path = primary
+    else:
+        assert target.repo_path is not None
+        repo_path = target.repo_path
+    return _checkout_with_index(repo_path, fmt) if needs_store else repo_path
+
+
+def _checkout_with_index(repo_path: Path, fmt: str) -> Path:
+    """The checkout whose index a decision command should use.
+
+    A linked worktree that was never indexed answers to its base checkout,
+    the way ``init`` and ``update`` already treat it; otherwise the record
+    lands in a fresh store nothing else reads and is lost with the worktree.
+    With no index anywhere the command refuses instead of creating one.
+    """
+    from repowise.core.persistence.database import has_db_store
+
+    if has_db_store(repo_path):
+        return repo_path
+    base = detect_worktree_base(repo_path)
+    if base is not None and has_db_store(base):
+        notice_console(fmt).print(
+            f"[dim]No index in this worktree; using the base checkout's at {base}.[/dim]"
+        )
+        return base
+    emit_refusal(
+        "no_index",
+        f"No index found at {repo_path}.",
+        fmt,
+        remedy="Run `repowise init` first.",
+    )
+    raise click.exceptions.Exit(1)  # emit_refusal already exits; keeps the return type honest
 
 
 def _describe_signature(acceptance) -> dict[str, str] | None:
