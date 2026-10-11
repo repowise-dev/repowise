@@ -346,17 +346,18 @@ def test_an_extract_method_step_carries_the_helper_header_and_call() -> None:
     assert lone.action.steps[0].signature == "def _sum_rows(rows, limit):"
 
 
-def test_an_unnamed_helper_reads_as_the_placeholder_in_titles() -> None:
+def test_an_unnamed_helper_is_left_out_of_titles() -> None:
+    """A title never reads "<name>": the step already says to name the helper."""
     plans = copy.deepcopy(PLANS)
     del plans[0]["plan"]["suggested_name"]
     core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
-    assert core.title == "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into <name>"
+    assert core.title == "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35"
     small = [{**FINDINGS[1], "details": {"ccn": 12, "nloc": 50}}]
     row = copy.deepcopy(REFACTORING[0])
     row["details"]["steps"] = row["details"]["steps"][:1]
     core = next(i for i in _build(plans=plans, findings=small, refactoring=[row]).items
                 if i.kind == "refactor")
-    assert core.title == "Extract lines 20-35 of run into <name>"
+    assert core.title == "Extract lines 20-35 of run"
 
 
 def test_an_item_no_test_reaches_says_to_pin_its_behaviour_first() -> None:

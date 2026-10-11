@@ -93,7 +93,6 @@ from repowise.core.analysis.health.queue.value import (
     worth,
 )
 from repowise.core.analysis.health.refactoring.recipe import ELSEWHERE_NOTE, plan_anchors
-from repowise.core.analysis.health.refactoring.render import NAME_PLACEHOLDER
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
 from repowise.core.analysis.health.suggestions import suggestion_for
@@ -1024,13 +1023,20 @@ def _refactor_title(plan: _RefactorPlan, lead_plan: Any) -> str:
 
 def _span_title(plan: _RefactorPlan, lead_plan: Any) -> str:
     start, end = _span(lead_plan)
-    name = _plan_body(lead_plan).get("suggested_name") or NAME_PLACEHOLDER
+    # With no suggested name the title drops "into ...": the step already says
+    # to name the helper for what the lines do, and a title never reads "<name>".
+    name = _plan_body(lead_plan).get("suggested_name") or ""
     spanned = plan.lead_type == "extract_method" and bool(start and end)
     if spanned and magnitude(plan.rank.shape) >= SIZE_BREAK_UP:
         return _break_up_title(plan, f"{start}-{end}", name)
-    title = text.REFACTOR_TITLE.get(
+    template = text.REFACTOR_TITLE.get(
         "extract_method_span" if spanned else plan.lead_type, "Refactor {file}"
-    ).format(sym=plan.sym, file=text.basename(plan.path), start=start, end=end, name=name)
+    )
+    if not name:
+        template = template.replace(" into {name}", "")
+    title = template.format(
+        sym=plan.sym, file=text.basename(plan.path), start=start, end=end, name=name
+    )
     return _with_more_steps(plan, title)
 
 
@@ -1047,7 +1053,7 @@ def _break_up_title(plan: _RefactorPlan, span: str, name: str) -> str:
         f"Start breaking up {plan.sym} ({text.size_brief(plan.rank.shape)}): "
         f"first lift lines {span}"
     )
-    into = f" into {name}"
+    into = f" into {name}" if name else ""
     return title + into if len(title + into) <= text.TITLE_MAX else title
 
 
