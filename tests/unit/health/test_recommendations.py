@@ -893,19 +893,19 @@ def test_a_stored_row_without_usable_step_verify_serves_no_step_verify() -> None
     assert ["verify" in step for step in steps] == [True, False, False]
 
 
-def test_a_split_stands_for_the_steps_after_it():
+def test_a_split_stands_for_the_steps_it_relocates():
     steps = [
         {"plan_id": "a", "refactoring_type": "break_cycle"},
         {"plan_id": "s", "refactoring_type": "split_file"},
         {"plan_id": "m1", "refactoring_type": "extract_method", "relocated_by": "s"},
-        {"plan_id": "m2", "refactoring_type": "extract_method", "relocated_by": "s"},
+        {"plan_id": "c", "refactoring_type": "extract_class", "relocated_by": "s"},
+        {"plan_id": "m2", "refactoring_type": "extract_method", "relocated_by": "c"},
     ]
-    rows, end = listed_steps(steps, 0, 2)
+    rows = listed_steps(steps, 0, 2)
     assert [r["plan_id"] for r in rows] == ["a", "s"]
-    assert rows[1]["relocates"] == ["m1", "m2"] and end == 4
-    # A page opening inside the folded steps lists nothing and moves past them.
-    assert listed_steps(steps, 2, 4) == ([], 4)
-    # Without a split, or before it, steps list one by one.
-    assert listed_steps(steps, 0, 1) == ([steps[0]], 1)
+    assert rows[1]["relocates"] == ["m1", "c"]
+    # A step another relocation moves keeps its row; the folded ones do not.
+    assert [r["plan_id"] for r in listed_steps(steps, 2, 5)] == ["m2"]
+    # Without a split, steps list one by one.
     plain = [{"plan_id": "x", "refactoring_type": "extract_method"}] * 2
-    assert listed_steps(plain, 0, 2) == (plain, 2)
+    assert listed_steps(plain, 0, 2) == plain

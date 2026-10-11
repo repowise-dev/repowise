@@ -132,12 +132,14 @@ def helper_names(
     if anchored:
         yield anchored
     stmts = span_statements(analysis.fn_node, extraction.start_line, extraction.end_line, lmap)
-    host = host_words(analysis.name)
+    host = host_words(analysis.name) or ["handle"]
     for subject in subjects(stmts, extraction.returns, lmap):
         # ``render_card`` about ``card`` is ``render_card``: the host's own name.
         rest = subject[_overlap(host, subject) :]
         if rest:
-            yield join_identifier([*(host or ["handle"]), *rest], _convention(language))
+            yield join_identifier([*host, *rest], _convention(language))
+    # A span with no subject (it only logs, say) is still a block of the host.
+    yield join_identifier([*host, "block"], _convention(language))
 
 
 def _overlap(host: list[str], subject: list[str]) -> int:

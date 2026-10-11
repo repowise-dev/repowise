@@ -1273,28 +1273,30 @@ def apply_view(
     return spread
 
 
-def listed_steps(
-    steps: Sequence[Mapping[str, Any]], start: int, stop: int
-) -> tuple[list[dict[str, Any]], int]:
-    """Steps ``[start, stop)`` of one opportunity as the plan list shows them,
-    and the step index the list resumes at.
+def listed_steps(steps: Sequence[Mapping[str, Any]], start: int, stop: int) -> list[dict[str, Any]]:
+    """Steps ``[start, stop)`` of one opportunity as the plan list shows them.
 
-    Every step after a ``split_file`` step works on code the split moves
-    (``relocated_by``), so the split stands for them: it lists their plan ids
-    as ``relocates``, they get no rows of their own, and the list resumes after
-    the opportunity. Listed one by one, a single file filled the top of the list.
+    A step whose ``relocated_by`` is a ``split_file`` step works on code that
+    split moves, so the split stands for it: the split's row lists its plan id
+    as ``relocates`` and it gets no row of its own. Listed one by one, a single
+    file filled the top of the list. Every other step keeps its row.
     """
-    split = next(
-        (i for i, step in enumerate(steps) if step.get("refactoring_type") == "split_file"),
-        None,
-    )
-    if split is None or split >= stop:
-        return [dict(step) for step in steps[start:stop]], stop
-    rows = [dict(step) for step in steps[start:split]]
-    if split >= start:
-        relocates = [str(step.get("plan_id")) for step in steps[split + 1 :]]
-        rows.append({**steps[split], **({"relocates": relocates} if relocates else {})})
-    return rows, len(steps)
+    splits = {
+        str(step.get("plan_id"))
+        for step in steps
+        if step.get("refactoring_type") == "split_file"
+    }
+    folded: dict[str, list[str]] = {}
+    for step in steps:
+        if step.get("relocated_by") in splits:
+            folded.setdefault(str(step["relocated_by"]), []).append(str(step.get("plan_id")))
+    rows: list[dict[str, Any]] = []
+    for step in steps[start:stop]:
+        if step.get("relocated_by") in splits:
+            continue
+        relocates = folded.get(str(step.get("plan_id")))
+        rows.append({**step, "relocates": relocates} if relocates else dict(step))
+    return rows
 
 
 def _expand_scopes(path: str, reached: ReachedBy, expanded: list[str]) -> ReachedBy:

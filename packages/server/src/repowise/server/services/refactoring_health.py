@@ -230,9 +230,9 @@ class RefactoringHealthService:
         A plan is a step of one opportunity, so the plan list is a view of the
         queue: the same scope, filters and order, paged by plan. One narrow read
         of step counts places the page; only the opportunities it touches are
-        decoded. A split stands for the steps after it (``listed_steps``), so a
-        page that folds some reads on until it holds ``limit`` rows; offsets
-        and the total still count every plan.
+        decoded. A split stands for the steps it relocates (``listed_steps``),
+        so a page that folds some reads on until it holds ``limit`` rows;
+        offsets and the total still count every plan.
         """
         filters, hidden = await self._scope(query, _filters(query))
         counts = await refactoring_step_counts(
@@ -257,9 +257,9 @@ class RefactoringHealthService:
             for opportunity_id, (start, stop) in window.items():
                 row = rows.get(opportunity_id)
                 steps = (detail_map(row).get("steps") or []) if row is not None else []
-                shown, end = listed_steps(steps, start, stop) if steps else ([], stop)
+                shown = listed_steps(steps, start, stop)
                 items.extend({**step, "opportunity_id": opportunity_id} for step in shown)
-                position += end - start
+                position += stop - start
                 touched.add(opportunity_id)
             if position == before:
                 break

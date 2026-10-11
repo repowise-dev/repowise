@@ -104,7 +104,7 @@ extractions qualify) or `judgment`, with the facts behind the call. When an
 earlier step moves a symbol to another file, the later step carries
 `relocated_by`: its stored location is where the symbol was before, so find it
 again before applying. In the plan list a Split File plan stands for the plans
-after it in the same file: its row lists them as `relocates`, and they take no
+it relocates in the same file: its row lists them as `relocates`, and they take no
 rows of their own.
 
 Plan detail also lists `risks`, one sentence each, to read before applying the

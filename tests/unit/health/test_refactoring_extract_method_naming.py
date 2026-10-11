@@ -650,8 +650,8 @@ def test_a_loop_is_named_for_what_it_walks_and_a_write_for_its_field():
             print(job)
         state.registry = jobs
     """
-    assert _span_names("python", "py", src, 2, 3) == ["cmd_list_jobs", "cmd_list_job"]
-    assert _span_names("python", "py", src, 4, 4) == ["cmd_list_registry"]
+    assert _span_names("python", "py", src, 2, 3) == ["cmd_list_jobs", "cmd_list_job", "cmd_list_block"]
+    assert _span_names("python", "py", src, 4, 4) == ["cmd_list_registry", "cmd_list_block"]
 
 
 def test_a_subject_repeating_the_host_is_not_a_name():
@@ -660,7 +660,7 @@ def test_a_subject_repeating_the_host_is_not_a_name():
         for row in rows:
             print(row)
     """
-    assert _span_names("python", "py", src, 2, 3) == ["build_rows_row"]
+    assert _span_names("python", "py", src, 2, 3) == ["build_rows_row", "build_rows_block"]
 
 
 def test_a_component_host_keeps_its_casing_and_starts_lowercase():
@@ -682,4 +682,21 @@ def test_a_camel_case_host_follows_the_files_convention():
         for row in rows:
             print(row)
     """
-    assert _span_names("python", "py", src, 2, 3) == ["build_rows_row"]
+    assert _span_names("python", "py", src, 2, 3) == ["build_rows_row", "build_rows_block"]
+
+
+def test_a_span_with_no_subject_is_a_block_of_its_host():
+    src = """
+    def report(job):
+        logger.info("start")
+        logger.info("done")
+    """
+    assert _span_names("python", "py", src, 2, 3) == ["report_block"]
+    anonymous = """
+    const run = function () {
+        console.log("start");
+        console.log("done");
+    };
+    """
+    # An unnamed function expression has no host name to qualify.
+    assert _span_names("typescript", "ts", anonymous, 2, 3) == ["handleBlock"]
