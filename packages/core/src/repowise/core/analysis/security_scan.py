@@ -156,7 +156,9 @@ _CALL_KINDS = frozenset(kind for _, kind, _ in _CALL_PATTERNS)
 # The dangerous call in JavaScript comes from ``child_process``, so only a call
 # through a name bound to that module counts: a namespace (``cp.exec(``), a named
 # import (``exec(`` after ``import { exec } from "child_process"``) or the
-# ``require`` result itself. A file's own function named ``exec``, or a regex's
+# ``require`` result itself. Only ``exec`` and ``execSync`` run a shell;
+# ``execFile`` passes its arguments as argv, like a Python ``subprocess.run``
+# without ``shell=True``, which does not fire either. A file's own function named ``exec``, or a regex's
 # ``.exec`` next to an unrelated ``spawn`` import, is not a shell. ``eval`` needs
 # no such gate: it is a genuine global there.
 _CP_MODULE = r"""['"](?:node:)?child_process['"]"""
@@ -170,9 +172,9 @@ _CP_NAMED = re.compile(
     rf"|(?:const|let|var)\s*\{{([^}}]*)\}}\s*=\s*require\(\s*{_CP_MODULE}\s*\)"
 )
 _CP_REQUIRE_CALL = re.compile(
-    rf"require\(\s*{_CP_MODULE}\s*\)\s*\.\s*exec(?:File)?(?:Sync)?\s*\("
+    rf"require\(\s*{_CP_MODULE}\s*\)\s*\.\s*exec(?:Sync)?\s*\("
 )
-_EXEC_EXPORT = re.compile(r"exec(?:File)?(?:Sync)?")
+_EXEC_EXPORT = re.compile(r"exec(?:Sync)?")
 
 
 def _child_process_exec_calls(source: str, masked: str) -> list[int]:
@@ -193,7 +195,7 @@ def _child_process_exec_calls(source: str, masked: str) -> list[int]:
     offsets = [m.start() for m in _CP_REQUIRE_CALL.finditer(source) if not masked[m.start()].isspace()]
     names = [re.escape(n) for n in namespaces]
     if names:
-        receiver = rf"(?<![\w$.])(?:{'|'.join(names)})\s*\.\s*exec(?:File)?(?:Sync)?\s*\("
+        receiver = rf"(?<![\w$.])(?:{'|'.join(names)})\s*\.\s*exec(?:Sync)?\s*\("
         offsets += [m.start() for m in re.finditer(receiver, masked)]
     if functions:
         bare = rf"(?<![\w$.])(?:{'|'.join(map(re.escape, functions))})\s*\("
@@ -396,6 +398,89 @@ _MASKED_KINDS = frozenset(
         "reject_unauthorized_false",
     }
 )
+
+# JavaScript sinks. Python has no JSX, template literals, ``new Function`` or
+# Node TLS options, and no bundler reads a ``.py`` file into a client, so a
+# Python file holding one of these is quoting it, most often as a test fixture.
+_JS_ONLY_KINDS = frozenset(
+    {
+        "unsafe_inner_html",
+        "template_literal_sql",
+        "new_function_call",
+        "reject_unauthorized_false",
+        "public_env_secret",
+    }
+)
+
+# ``verify=False`` turns TLS off only when an HTTP client receives it: the
+# requests and httpx calls, a boto3 ``client``/``resource``, or a session's
+# ``verify`` attribute. Any other function is free to name a keyword ``verify``.
+# Ceiling: a project's own wrapper that forwards ``verify`` is not seen.
+_HTTP_CALLS = frozenset(
+    {
+        "get",
+        "post",
+        "put",
+        "patch",
+        "delete",
+        "head",
+        "options",
+        "request",
+        "send",
+        "stream",
+        "urlopen",
+        "Client",
+        "AsyncClient",
+        "Session",
+        "HTTPTransport",
+        "AsyncHTTPTransport",
+        "client",
+        "resource",
+    }
+)
+
+# ``fstring_sql`` asks for a query: ``SELECT`` with its ``FROM``, on the line or
+# the next one (a query split over implicitly joined f-strings).
+_SQL_FROM = re.compile(r"\bFROM\b")
+
+
+def _tls_verify_off_lines(source: str) -> set[int] | None:
+    """Lines where ``verify=False`` reaches an HTTP client; None when *source* does not parse."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else func.id
+                if isinstance(func, ast.Name)
+                else ""
+            )
+            if name in _HTTP_CALLS:
+                found.update(
+                    kw.lineno
+                    for kw in node.keywords
+                    if kw.arg == "verify"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is False
+                )
+        elif (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value is False
+        ):
+            found.update(
+                target.lineno
+                for target in node.targets
+                if isinstance(target, ast.Attribute) and target.attr == "verify"
+            )
+    return found
+
 
 # Prose is documentation, not executable code. Only secret kinds scan it,
 # because a key pasted into a README is still a leak.
@@ -893,6 +978,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     # alike to every lookaround in ``_ANY_PATTERN``, so a file the whole-source
     # search rejects has no matching line, and most files are such.
     is_low_sev_file = _is_low_severity_path(file_path)
+    is_python = file_path.lower().endswith((".py", ".pyi"))
+    tls_lines: list[set[int] | None] = []
     scan_lines = lines if _ANY_PATTERN.search(source) else []
     for lineno, line in enumerate(scan_lines, start=1):
         if not _ANY_PATTERN.search(line):
@@ -904,8 +991,24 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 continue
             if is_prose and kind not in SECRET_KINDS:
                 continue
+            if is_python and kind in _JS_ONLY_KINDS:
+                continue
             if kind in _MASKED_KINDS:
                 match = pattern.search(masked_line(lineno, line))
+                if match and kind == "tls_verify_false" and is_python:
+                    if not tls_lines:
+                        tls_lines.append(_tls_verify_off_lines(source))
+                    if tls_lines[0] is not None and lineno not in tls_lines[0]:
+                        match = None
+            elif kind == "fstring_sql":
+                # The ``f`` must open a literal in code, not sit inside another
+                # string, and the ``SELECT`` must have its ``FROM``.
+                match = _match_starting_in(pattern, line, masked_line(lineno, line))
+                if match and not (
+                    _SQL_FROM.search(line, line.find("SELECT", match.start()))
+                    or (lineno < len(lines) and _SQL_FROM.search(lines[lineno]))
+                ):
+                    match = None
             elif kind in _KEYWORD_KINDS:
                 # ``password = "..."`` in a comment or docstring is an example.
                 match = _match_starting_in(pattern, line, masked_line(lineno, line))

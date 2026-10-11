@@ -49,7 +49,7 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | Kind | Severity | Matches |
 |------|----------|---------|
 | `eval_call` | high | `eval(...)`, including a receiver chain (`vm.eval(`) |
-| `exec_call` | high | `exec(...)`. Outside Python, only a call through a name bound to `child_process` (`exec`, `execFile`, `execSync`) |
+| `exec_call` | high | `exec(...)`. Outside Python, only a call through a name bound to `child_process` (`exec`, `execSync`). `execFile` runs no shell and does not fire |
 | `pickle_loads` | high | `pickle.loads` |
 | `subprocess_shell_true` | high | `subprocess.*` with `shell=True`, also across lines |
 | `os_system` | high | `os.system` |
@@ -66,10 +66,10 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | `private_key_pem` | high | a `-----BEGIN ... PRIVATE KEY-----` header followed by a base64 body line (an escaped `\n` counts) |
 | `public_env_secret` | high | `API_KEY`/`SECRET`/`TOKEN`/`PASSWORD` behind `NEXT_PUBLIC_` or `VITE_`, excluding `..._ANON_...` |
 | `new_function_call` | high | `new Function(...)` |
-| `fstring_sql` | med | a Python f-string with `SELECT` and an interpolation |
+| `fstring_sql` | med | a Python f-string with `SELECT`, an interpolation, and `FROM` on the same or the next line |
 | `concat_sql` | med | `.execute("SELECT ... +` |
 | `template_literal_sql` | med | a JS/TS template literal with `SELECT`+`FROM` or `UPDATE`+`SET` and an interpolation |
-| `tls_verify_false` | med | `verify = False` |
+| `tls_verify_false` | med | `verify=False` passed to an HTTP client call (`requests`, `httpx`, boto3 `client`) or set on a session's `verify` |
 | `reject_unauthorized_false` | med | `rejectUnauthorized: false` |
 | `unsafe_inner_html` | med | `__html:` (React's `dangerouslySetInnerHTML`) assigned a non-literal |
 | `weak_hash` | low | the words `md5` or `sha1` |
@@ -95,13 +95,18 @@ and the in-change commit scan report only these by default.
   comment is still a leak.
 - **Prose files** (`.md`, `.mdx`, `.rst`, `.txt`, `.adoc`) are scanned for the
   secret kinds only.
+- **JavaScript kinds stay in JavaScript.** `unsafe_inner_html`,
+  `template_literal_sql`, `new_function_call`, `reject_unauthorized_false` and
+  `public_env_secret` do not fire in Python files, where such a line can only be
+  quoted text.
 - **Placeholders are skipped**: a keyword value that is elided or templated
   (`...`, `<your key>`, `xxx`, `example`, `placeholder`, `dummy`, `fake`,
   `changeme`, `{{ }}`, `${}`), shorter than eight characters, a short
   single-case word, or a snake_case key name. A value a vendor kind already
   reports is not reported twice.
-- **`weak_hash`, the SQL kinds, the TLS kinds and `unsafe_inner_html`** run on
-  raw source, comments included.
+- **`weak_hash`, `concat_sql`, `template_literal_sql` and `unsafe_inner_html`**
+  run on raw source, comments included. `fstring_sql` needs its `f` prefix in
+  code, so a fixture quoting one inside another string does not fire.
 
 ### Working tree versus history
 

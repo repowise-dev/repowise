@@ -173,13 +173,12 @@ class TestScanFile:
         [
             ('import { exec } from "child_process";\nexec(cmd);\n', {"exec_call"}),
             ('const cp = require("child_process");\ncp.execSync(cmd);\n', {"exec_call"}),
-            (
-                'import { execFile } from "node:child_process";\nexecFile(bin, args);\n',
-                {"exec_call"},
-            ),
+            # execFile passes argv and runs no shell, like subprocess without shell=True.
+            ('import { execFile } from "node:child_process";\nexecFile(bin, args);\n', set()),
             ('import { exec as run } from "child_process";\nrun(cmd);\n', {"exec_call"}),
             ('const { execSync: sh } = require("child_process");\nsh(cmd);\n', {"exec_call"}),
-            ('import * as cp from "node:child_process";\ncp.execFile(bin);\n', {"exec_call"}),
+            ('import * as cp from "node:child_process";\ncp.execFile(bin);\n', set()),
+            ('import * as cp from "node:child_process";\ncp.exec(cmd);\n', {"exec_call"}),
             ('require("child_process").exec(cmd);\n', {"exec_call"}),
             # A regex's ``.exec`` in a file that also spawns is not bound to the module.
             ('require("child_process");\nconst m = /a/.exec(s);\n', set()),
@@ -558,6 +557,56 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("client.py", source, symbols=[]))
         assert bool([f for f in findings if f["kind"] == "tls_verify_false"]) is expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("httpx.Client(\n    base_url=url,\n    verify=False,\n)\n", True),
+            ('boto3.client("s3", verify=False)\n', True),
+            ("session.verify = False\n", True),
+            ("urlopen(req, verify=False)\n", True),
+            # A function of the project's own whose keyword means something else.
+            ("rows = load_fix_first(session, repo_id, verify=False)\n", False),
+            ("check(path, verify=False)\n", False),
+        ],
+    )
+    def test_tls_verify_false_needs_an_http_client(self, source: str, expected: bool) -> None:
+        findings = scan_source("client.py", source)
+        assert bool([f for f in findings if f["kind"] == "tls_verify_false"]) is expected
+
+    def test_tls_verify_false_keeps_the_line_match_when_python_does_not_parse(self) -> None:
+        findings = scan_source("client.py", "def broken(:\nload(x, verify=False)\n")
+        assert [f["line"] for f in findings if f["kind"] == "tls_verify_false"] == [2]
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("rows = con.execute(f\"SELECT id FROM users WHERE name = '{name}'\")\n", True),
+            ('sql = (\n    f"SELECT {cols}, name "\n    f"FROM users WHERE id = {uid}"\n)\n', True),
+            # A message about SQL, with no query in it.
+            ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
+            # Python source quoted inside a string, as a test fixture holds it.
+            ("src = 'q = f\"SELECT * FROM {table} WHERE id = 1\"'\n", False),
+        ],
+    )
+    def test_fstring_sql_needs_a_query_written_in_code(self, source: str, expected: bool) -> None:
+        findings = scan_source("db.py", source)
+        assert bool([f for f in findings if f["kind"] == "fstring_sql"]) is expected
+
+    @pytest.mark.parametrize(
+        ("line", "kind"),
+        [
+            ("<div dangerouslySetInnerHTML={{ __html: markup }} />", "unsafe_inner_html"),
+            ("const q = `SELECT * FROM users WHERE id = ${id}`;", "template_literal_sql"),
+            ("const f = new Function(body);", "new_function_call"),
+            ("const a = new https.Agent({ rejectUnauthorized: false });", "reject_unauthorized_false"),
+            ("const k = process.env.NEXT_PUBLIC_API_KEY;", "public_env_secret"),
+        ],
+    )
+    def test_javascript_kinds_fire_in_javascript_not_python(self, line: str, kind: str) -> None:
+        assert kind in {f["kind"] for f in scan_source("web/app.tsx", line + "\n")}
+        quoted = f"CASE = {line!r}\n"
+        assert kind not in {f["kind"] for f in scan_source("src/check.py", quoted)}
 
 
 class TestPersistSecurityFindings:
