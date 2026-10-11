@@ -1473,14 +1473,9 @@ async def persist_incremental_commits(
         if file_rows:
             await upsert_git_commit_files_bulk(session, repo_id, file_rows)
 
-    # What the new commits did to health. An update is a handful of commits, so
-    # this is seconds; the same budget still applies if a long gap made it many.
-    with timed(timings, "persist.commits.health"):
-        from .commit_health import recent_shas, refresh_commit_health
-
-        await refresh_commit_health(
-            session, repo_id, str(repo_path), recent_shas(rows)
-        )
+    # What the new commits did to health is scanned by the caller once this
+    # transaction commits (commit_health.refresh_commit_health_after_update):
+    # the scan can take minutes and must not hold the write lock.
 
     with timed(timings, "persist.commits.experience"):
         await reconcile_commit_experience(session, repo_id, indexer)
@@ -2271,6 +2266,19 @@ async def persist_incremental_index(
                 degraded=degraded,
                 timings=timings,
             )
+            # The transaction commits as the block exits.
+            if timings is not None:
+                timings.start("persist.commit")
+        if timings is not None:
+            timings.stop("persist.commit")
+
+        if git_meta_map or git_decay_map or full_git_summary is not None:
+            from repowise.core.pipeline.commit_health import (
+                refresh_commit_health_after_update,
+            )
+
+            with timed(timings, "persist.commit_health"):
+                await refresh_commit_health_after_update(sf, repo_id, str(repo_path))
 
         # After the session closes: on SQLite the full-text index shares the
         # database file, so writing to it while the session holds a write lock
