@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
-from ..perf.loop_facts import LoopFacts
+from ..perf.loop_facts import LoopFacts, LoopSource, combined_magnitude
 from .ast_utils import (
     _dart_signature_sibling,
     _find_function_entry_name,
@@ -526,7 +526,7 @@ def _collect_perf_hits(
         and _overrides(dialect, "bare_statement_call")
     )
     do_chunked = _overrides(dialect, "is_chunked_loop")
-    do_magnitude = _overrides(dialect, "loop_magnitude")
+    do_magnitude = _overrides(dialect, "loop_source")
     do_batch = _overrides(dialect, "batch_form")
     do_bound = _overrides(dialect, "concurrency_bound")
     do_loop_facts = do_chunked or do_magnitude or do_batch or do_bound
@@ -538,13 +538,14 @@ def _collect_perf_hits(
             call, awaited=dialect.is_awaited(call), io_names=io_names, has_db_import=has_db_import
         )
 
-    def magnitude(loops: list[Node]) -> str:
-        """Grows if any enclosing loop grows; bounded only if every one is, since a
-        retry loop inside a loop over rows still runs once per row."""
-        found = {dialect.loop_magnitude(loop, probe) or "unknown" for loop in loops}
-        if "grows_with_data" in found:
-            return "grows_with_data"
-        return "bounded" if found == {"bounded"} else "unknown"
+    # One answer per loop, however many hits sit in it.
+    sources: dict[tuple[int, int], LoopSource] = {}
+
+    def source(loop: Node) -> LoopSource:
+        key = (loop.start_byte, loop.end_byte)
+        if key not in sources:
+            sources[key] = dialect.loop_source(loop, probe) or LoopSource()
+        return sources[key]
 
     def loop_facts(node: Node, sink: bool, per_call: bool = False) -> LoopFacts | None:
         """Facts of *node*'s innermost loop; batch and bound only mean something at a sink.
@@ -560,10 +561,14 @@ def _collect_perf_hits(
         loop = loops[0]
         facts = LoopFacts(
             chunked=do_chunked and dialect.is_chunked_loop(loop),
-            magnitude=magnitude(loops) if do_magnitude else "unknown",
+            magnitude=(
+                combined_magnitude([source(lp) for lp in loops]) if do_magnitude else "unknown"
+            ),
             batch=dialect.batch_form(node, loop, probe) if sink and do_batch else None,
             concurrency_bound=dialect.concurrency_bound(node, loop) if sink and do_bound else None,
             key_unused=per_call and not _loop_key_feeds(node, loop),
+            iterates=source(loop).iterates if do_magnitude else "unknown",
+            not_batchable=dialect.not_batchable(node, loop, loop_kinds) if per_call else None,
         )
         return facts if facts != LoopFacts() else None
 

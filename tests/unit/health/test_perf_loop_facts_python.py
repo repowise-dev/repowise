@@ -209,11 +209,12 @@ def test_magnitude_parameter_iterable_is_unknown():
     """Parameters are unknown on purpose — no reaching assignment to resolve."""
     facts = _loop(
         b"from sqlalchemy import select\n"
-        b"async def f(session, repos):\n"
-        b"    for r in repos:\n"
+        b"async def f(session, items):\n"
+        b"    for r in items:\n"
         b"        await session.execute(select(r))\n"
     )
-    assert facts is None  # unknown magnitude + no batch/bound -> no LoopFacts at all
+    assert facts is not None and facts.magnitude == "unknown"
+    assert facts.iterates == "parameter"
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +276,7 @@ def test_batch_none_when_loop_var_used_twice_in_chain():
         b"        await client.table('t').select('*')"
         b".eq('repo_id', r.id).eq('name', r.name).execute()\n"
     )
-    assert facts is None
+    assert facts is None or facts.batch is None
 
 
 def test_batch_supabase_limit_makes_not_equivalent():
@@ -306,7 +307,7 @@ def test_batch_second_sink_in_body_makes_not_equivalent():
         b"        session.execute(select(r))\n"
         b"        await client.table('t').select('*').eq('repo_id', r.id).execute()\n"
     )
-    supabase_hit = next(h for h in hits if h.loop is not None)
+    supabase_hit = next(h for h in hits if h.line == 5)
     assert supabase_hit.loop.batch.equivalent is False
 
 
@@ -330,7 +331,7 @@ def test_batch_none_when_iterable_appended_in_body():
         b"        repos.append(r)\n"
         b"        await client.table('t').select('*').eq('repo_id', r.id).execute()\n"
     )
-    assert facts is None
+    assert facts is None or facts.batch is None
 
 
 def test_batch_none_for_while_loop():
@@ -385,7 +386,7 @@ def test_concurrency_bound_none_when_loop_has_break():
         b"        async with self._sem:\n"
         b"            await session.execute(select(x))\n"
     )
-    assert facts is None
+    assert facts is None or facts.concurrency_bound is None
 
 
 def test_concurrency_bound_none_when_loop_has_return():
@@ -398,7 +399,7 @@ def test_concurrency_bound_none_when_loop_has_return():
         b"        async with self._sem:\n"
         b"            await session.execute(select(x))\n"
     )
-    assert facts is None
+    assert facts is None or facts.concurrency_bound is None
 
 
 def test_concurrency_bound_none_for_sync_with():
@@ -410,7 +411,7 @@ def test_concurrency_bound_none_for_sync_with():
         b"        with self._sem:\n"
         b"            await session.execute(select(x))\n"
     )
-    assert facts is None
+    assert facts is None or facts.concurrency_bound is None
 
 
 def test_batch_none_when_the_key_is_computed_from_the_element():

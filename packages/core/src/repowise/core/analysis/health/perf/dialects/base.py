@@ -78,7 +78,7 @@ if TYPE_CHECKING:
 
     from tree_sitter import Node
 
-    from ..loop_facts import BatchForm, LoopMagnitude, SinkProbe
+    from ..loop_facts import BatchForm, LoopMagnitude, LoopSource, NotBatchable, SinkProbe
 
 # Node types whose callee is a member access (``x.foo()``) rather than a bare
 # identifier call. Covers Python ``attribute``, TS ``member_expression``, C++/
@@ -374,9 +374,140 @@ class BasePerfDialect:
     # Methods that grow a sequence in call order (``append`` / ``push``).
     sequence_appends: frozenset[str] = frozenset()
 
-    def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
-        """Whether the loop's iterable grows with data or has a fixed small bound."""
+    def loop_source(self, loop: Node, probe: SinkProbe) -> LoopSource | None:
+        """What the loop's iterable is and whether it grows with data or has a
+        fixed small bound, or ``None`` when the syntax settles neither."""
         return None
+
+    def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
+        source = self.loop_source(loop, probe)
+        return source.effective if source is not None else None
+
+    # The exits that end the loop early (``continue`` and a raise do not stop at a hit).
+    _STOPPING_EXITS = frozenset({"break_statement", "return_statement"})
+
+    def not_batchable(
+        self, call: Node, loop: Node, loop_kinds: frozenset[str]
+    ) -> NotBatchable | None:
+        """Why *call*, made once per pass of *loop*, cannot become one batch.
+
+        ``first_match``: an exit that ends the loop reads the call's result, so
+        later iterations run only while earlier calls miss. ``turn_loop``: the
+        call (or the loop's condition) reads a name the body binds from an
+        earlier call's result. ``None`` when neither is shown; a dialect that
+        names no binding statements never claims either.
+        """
+        if not self.binding_fields:
+            return None
+        body = self.loop_body(loop) or loop
+        results = self._result_names(call, body)
+        if self._stops_at_hit(call, loop, body, results, loop_kinds):
+            return "first_match"
+        # A sequence the results are appended to carries them into the next turn
+        # (``messages.append(reply)``); capping it (``len(out) >= n``) is no hit.
+        results |= self._appended_to(call, body, results)
+        condition = loop.child_by_field_name("condition")
+        carried = self._reads(call, results) or (
+            condition is not None and self._reads(condition, results)
+        )
+        return "turn_loop" if carried else None
+
+    def _bound_by(self, node: Node) -> tuple[Node | None, Node | None]:
+        """``(target, value)`` of a binding statement that is not a loop header."""
+        field = self.binding_fields.get(node.type)
+        if field is None or "for" in node.type:
+            return None, None
+        value = node.child_by_field_name("right") or node.child_by_field_name("value")
+        return node.child_by_field_name(field), value
+
+    def _texts(self, target: Node) -> set[bytes]:
+        """Names a binding target stores to: ``rec.x`` as a whole, else its identifiers."""
+        if target.type in self.key_hops:
+            return {target.text or b""}
+        if target.child_by_field_name("function") is not None:
+            # ``groups.setdefault(k, []).append(x)`` grows what the call returns, not ``k``.
+            return set()
+        return {n.text for n in self._walk(target) if n.type == "identifier" and n.text}
+
+    def _reads(self, node: Node, names: set[bytes]) -> bool:
+        """*node* reads one of *names*: a bare name, or a whole ``rec.x``."""
+        return bool(names) and any(
+            n.text in names
+            for n in self._walk(node)
+            if n.type == "identifier" or n.type in self.key_hops
+        )
+
+    def _result_names(self, call: Node, body: Node) -> set[bytes]:
+        """Names the body binds from *call*'s result, and one hop through a local
+        that reads them."""
+        bindings = [
+            (target, value)
+            for node in self._walk(body, prune=self.scope_kinds)
+            for target, value in (self._bound_by(node),)
+            if target is not None and value is not None
+        ]
+        names = {
+            t for target, value in bindings if self._within(value, call) for t in self._texts(target)
+        }
+        for _ in range(2):
+            names |= {
+                t
+                for target, value in bindings
+                if self._reads(value, names)
+                for t in self._texts(target)
+            }
+        return names
+
+    def _appended_to(self, call: Node, body: Node, results: set[bytes]) -> set[bytes]:
+        """Sequences the body appends *call* or its results to."""
+        names: set[bytes] = set()
+        for node in self._walk(body, prune=self.scope_kinds):
+            fn = node.child_by_field_name("function")
+            receiver = fn.child_by_field_name("object") if fn is not None else None
+            args = node.child_by_field_name("arguments")
+            if (
+                receiver is not None
+                and args is not None
+                and self.callee_method_name(node) in self.sequence_appends
+                and (self._within(args, call) or self._reads(args, results))
+            ):
+                names |= self._texts(receiver)
+        return names
+
+    def _stops_at_hit(
+        self, call: Node, loop: Node, body: Node, results: set[bytes], loop_kinds: frozenset[str]
+    ) -> bool:
+        """An exit that ends *loop* returns the call's result or sits under a
+        branch whose condition reads it."""
+        for exit_node in self._walk(body, prune=self.scope_kinds):
+            if exit_node.type not in self._STOPPING_EXITS:
+                continue
+            if exit_node.type == "break_statement" and not self._breaks(
+                exit_node, loop, loop_kinds
+            ):
+                continue
+            if self._within(exit_node, call) or self._reads(exit_node, results):
+                return True
+            cur = exit_node.parent
+            while cur is not None and cur != body:
+                condition = (
+                    cur.child_by_field_name("condition") if cur.type in self.branch_kinds else None
+                )
+                if condition is not None and (
+                    self._within(condition, call) or self._reads(condition, results)
+                ):
+                    return True
+                cur = cur.parent
+        return False
+
+    def _breaks(self, exit_node: Node, loop: Node, loop_kinds: frozenset[str]) -> bool:
+        """A ``break`` that leaves *loop* itself, not a nested loop or ``switch``."""
+        cur = exit_node.parent
+        while cur is not None and cur != loop:
+            if cur.type in loop_kinds or cur.type in self.switch_kinds:
+                return False
+            cur = cur.parent
+        return cur is not None
 
     def batch_form(self, sink: Node, loop: Node, probe: SinkProbe) -> BatchForm | None:
         """The bulk counterpart of *sink* when its only varying key is the loop's element."""

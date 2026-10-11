@@ -13,13 +13,16 @@ import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, ClassVar
 
-from ..loop_facts import BatchForm
+from .. import loop_lexicon as lex
+from ..loop_facts import BatchForm, LoopSource
 from .base import BasePerfDialect
 
 if TYPE_CHECKING:
     from tree_sitter import Node
 
-    from ..loop_facts import LoopMagnitude, SinkProbe
+    from ..loop_facts import LoopIterates, LoopMagnitude, SinkProbe
+
+    Source = tuple[LoopIterates, LoopMagnitude | None]
 
 # Network round-trip verbs (shared across languages that name HTTP methods).
 HTTP_VERBS: frozenset[str] = frozenset(
@@ -191,6 +194,31 @@ _PY_BUILTINS: frozenset[str] = frozenset(dir(builtins))
 _PY_SEM_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit)$")
 # A model class is CapWords; an ALL_CAPS constant (``API_URL``) is not.
 _PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
+# Directory listings; the recursive ones walk a whole tree.
+_PY_LISTINGS: frozenset[str] = frozenset(
+    {
+        "glob", "iglob", "rglob", "iterdir", "walk", "listdir", "scandir", "traverse",
+        "iter_glob", "glob_via", "walk_repo", "_rglob",
+    }
+)
+_PY_RECURSIVE_LISTINGS: frozenset[str] = frozenset(
+    {"rglob", "walk", "traverse", "walk_repo", "_rglob"}
+)
+# Reads that yield lines or chunks as they arrive.
+_PY_STREAMS: frozenset[str] = frozenset(
+    {
+        "readlines", "iter_lines", "iter_content", "iter_bytes", "iter_text",
+        "aiter_lines", "aiter_bytes", "aiter_text", "aiter_raw",
+    }
+)
+# Wrappers and chunkers whose first argument is what the loop walks.
+_PY_PASS_THROUGH: frozenset[str] = frozenset(
+    {
+        "enumerate", "sorted", "reversed", "list", "set", "tuple", "iter", "zip",
+        "batched", "chunked", "ichunked", "chunks", "iter_chunks", "grouper",
+    }
+)
+_PY_CONSTANT_RHS: frozenset[str] = frozenset({"list", "tuple", "set", "dictionary"})
 
 
 _PY_DEF_KINDS = frozenset({"function_definition", "lambda", "class_definition"})
@@ -265,6 +293,10 @@ def _module_int_constant(name: Node) -> bool:
         return False
     right = bound[0].parent.child_by_field_name("right")
     return right is not None and right.type == "integer"
+
+
+def _text(node: Node) -> str:
+    return (node.text or b"").decode("utf-8", "replace")
 
 
 def _walk_tree(node: Node) -> Iterator[Node]:
@@ -928,10 +960,168 @@ class PythonPerfDialect(BasePerfDialect):
     scope_kinds = _PY_SCOPES
     sequence_appends = frozenset({"append", "extend", "insert"})
 
-    def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
+    def loop_source(self, loop: Node, probe: SinkProbe) -> LoopSource | None:
         if loop.type != "for_statement":
             return None
-        return self._magnitude(loop.child_by_field_name("right"), loop, probe, hop=True)
+        right = loop.child_by_field_name("right")
+        baseline = self._magnitude(right, loop, probe, hop=True) or "unknown"
+        iterates, claim = self._source(right, loop, probe, hop=True)
+        if iterates == "unknown" and baseline == "unknown":
+            return None
+        return LoopSource(iterates, claim or baseline, baseline)
+
+    def _source(self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        """What *expr* walks, and the magnitude that settles when it differs from
+        what the iterable's syntax alone proves (``None``: keep that).
+
+        *hop* allows one step through the name's last assignment before the loop.
+        """
+        if expr is None:
+            return "unknown", None
+        if expr.type in ("await", "parenthesized_expression"):
+            inner = next((c for c in expr.children if c.is_named), None)
+            return self._source(inner, loop, probe, hop=hop)
+        if expr.type == "boolean_operator" and any(c.type == "or" for c in expr.children):
+            return self._source(expr.child_by_field_name("left"), loop, probe, hop=hop)
+        if expr.type in ("identifier", "attribute") and lex.is_config_name(_text(expr)):
+            return "config_table", "bounded"
+        if expr.type == "identifier":
+            return self._name_source(expr, loop, probe, hop=hop)
+        if expr.type == "attribute":
+            attr = expr.child_by_field_name("attribute")
+            name = (attr.text if attr is not None else b"") or b""
+            if name.decode("utf-8", "replace") in _PY_RESULT_PROJECTIONS:
+                return self._source(expr.child_by_field_name("object"), loop, probe, hop=hop)
+            if self._literal_constant(expr, name):
+                return "constant", "bounded"
+            return "unknown", None
+        if expr.type == "subscript" and self._slice_magnitude(expr) == "bounded":
+            return "constant", "bounded"
+        if expr.type == "call":
+            return self._call_source(expr, loop, probe, hop=hop)
+        return "unknown", None
+
+    def _name_source(self, name: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        rhs = self._reaching_rhs(loop, name.text or b"") if hop else None
+        if rhs is not None:
+            return self._source(rhs, loop, probe, hop=False)
+        fn = loop.parent
+        while fn is not None and fn.type != "function_definition":
+            fn = fn.parent
+        params = fn.child_by_field_name("parameters") if fn is not None else None
+        if params is not None and _text(name) in self._param_names(params):
+            return "parameter", None
+        return "unknown", None
+
+    def _call_source(self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        method = self.callee_method_name(call) or ""
+        fn = call.child_by_field_name("function")
+        is_member = fn is not None and fn.type == "attribute"
+        receiver = fn.child_by_field_name("object") if is_member else None
+        arg_list = call.child_by_field_name("arguments")
+        args = [c for c in arg_list.children if c.is_named] if arg_list is not None else []
+        if lex.is_config_name(self._dotted_path(fn) or "", callee=True):
+            return "config_table", "bounded"
+        if method == "range" and receiver is None:
+            return self._range_source(call, args, loop, probe, hop=hop)
+        if method in _PY_PASS_THROUGH and args and args[0].type != "keyword_argument":
+            return self._source(args[0], loop, probe, hop=hop)
+        if receiver is not None and method in ("items", "values", "keys"):
+            return self._source(receiver, loop, probe, hop=hop)
+        if method in _PY_LISTINGS:
+            return "listing", "grows_with_data" if self._walks_repo(call, method, loop) else None
+        if method in _PY_STREAMS or (method == "open" and receiver is None):
+            return "stream", None
+        if probe(call) in ("db", "network"):
+            return self._query_source(call, loop)
+        if receiver is not None and method in _PY_RESULT_PROJECTIONS:
+            return self._source(receiver, loop, probe, hop=hop)
+        return "unknown", None
+
+    def _range_source(
+        self, call: Node, args: list[Node], loop: Node, probe: SinkProbe, *, hop: bool
+    ) -> Source:
+        """``range(3)`` is a constant; ``range(0, len(ids), N)`` walks ``ids``."""
+        if self._range_magnitude(call, loop, probe, hop=hop) == "bounded":
+            return "constant", "bounded"
+        stop = args[1] if len(args) > 1 else (args[0] if args else None)
+        if stop is not None and stop.type == "call" and self.callee_method_name(stop) == "len":
+            inner = [c for c in stop.child_by_field_name("arguments").children if c.is_named]
+            if len(inner) == 1:
+                return self._source(inner[0], loop, probe, hop=hop)
+        return "unknown", None
+
+    def _walks_repo(self, call: Node, method: str, loop: Node) -> bool:
+        """A recursive listing whose path names a repository root (``os.walk(repo_root)``,
+        ``FileTraverser(self._repo_path).traverse()``); any other path proves nothing."""
+        text = call.text or b""
+        recursive = b"**" in text or b"recursive=True" in text
+        if method not in _PY_RECURSIVE_LISTINGS and not recursive:
+            return False
+        names = [n for n in self._walk(call) if n.type in ("identifier", "attribute")]
+        for node in list(names):
+            rhs = self._reaching_rhs(loop, node.text or b"") if node.type == "identifier" else None
+            if rhs is not None:
+                names.extend(n for n in self._walk(rhs) if n.type in ("identifier", "attribute"))
+        return any(lex.names_repo_root(_text(n)) for n in names)
+
+    def _query_source(self, call: Node, loop: Node) -> Source:
+        """A read of a registry or configuration table, of one key, of a rare
+        state, or of rows that grow; the statement may be bound before the loop."""
+        names = [n.text for n in self._walk(call) if n.type == "identifier"]
+        parts = [call, *filter(None, (self._reaching_rhs(loop, name) for name in names))]
+        nodes = [n for part in parts for n in self._walk(part)]
+        sql = [
+            n.text or b""
+            for n in nodes
+            if n.type == "string" and _PY_SQL_LITERAL_RE.match(_text(n))
+        ]
+        models = [
+            model
+            for n in nodes
+            if n.type == "call" and self.callee_method_name(n) in ("select", "query")
+            for model in self._selected_models(n)
+        ]
+        if (
+            (sql or models)
+            and all(lex.is_config_sql(text) for text in sql)
+            and all(lex.is_config_model(model) for model in models)
+        ):
+            return "config_table", "bounded"
+        text = b" ".join(part.text or b"" for part in parts)
+        if lex.is_key_lookup(text):
+            return "caller_key", "bounded"
+        return ("rare_subset" if lex.is_rare_filter(text) else "query"), None
+
+    def _selected_models(self, select: Node) -> list[str]:
+        """``select(Repository)`` / ``query(Repository.id, Repository.path)`` -> the model
+        names; ``func.count()`` and other expressions name none."""
+        args = select.child_by_field_name("arguments")
+        models: list[str] = []
+        for arg in (c for c in args.children if c.is_named) if args is not None else ():
+            path = self._dotted_path(arg) or ""
+            head = next((seg for seg in path.split(".") if _PY_MODEL_NAME_RE.match(seg)), None)
+            if head is not None:
+                models.append(head)
+        return models
+
+    def _literal_constant(self, expr: Node, name: bytes) -> bool:
+        """``self._TABLES`` where the file binds ``_TABLES`` once, to a literal collection."""
+        text = name.decode("utf-8", "replace")
+        if len(text.strip("_")) < 2 or not text.isupper():
+            return False
+        root = expr
+        while root.parent is not None:
+            root = root.parent
+        rights = [
+            n.child_by_field_name("right")
+            for n in _walk_tree(root)
+            if n.type == "assignment"
+            and (left := n.child_by_field_name("left")) is not None
+            and left.type == "identifier"
+            and left.text == name
+        ]
+        return len(rights) == 1 and rights[0] is not None and rights[0].type in _PY_CONSTANT_RHS
 
     def _magnitude(
         self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool
