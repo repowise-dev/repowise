@@ -450,7 +450,8 @@ def is_test_helper(path: str) -> bool:
 
 def is_runnable_test(
     path: str,
-    roots: PytestRoots | PhpunitRoots | None = None,
+    roots: PytestRoots | None = None,
+    *,
     phpunit_roots: PhpunitRoots | None = None,
 ) -> bool:
     """A test-shaped file name with an extension a runner collects tests from.
@@ -459,10 +460,6 @@ def is_runnable_test(
     (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
     With *phpunit_roots*, a PHP file PHPUnit leaves out of collection is not runnable.
     """
-    if isinstance(roots, PhpunitRoots) and phpunit_roots is None:
-        phpunit_roots = roots
-        roots = None
-
     return (
         _runnable_name(path)
         and (roots is None or is_test_path(path, roots=roots))

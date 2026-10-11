@@ -1192,7 +1192,7 @@ def _collect_console_scripts(
     distribution. Best-effort: unparsable files are skipped. The pytest
     configs (``pytest.ini``, ``tox.ini``, ``setup.cfg`` and the same
     ``pyproject.toml``) and PHPUnit configs (``phpunit.xml``,
-    ``phpunit.xml.dist``, ``phpunit.dist.xml``) come off this one walk.
+    ``phpunit.dist.xml``, ``phpunit.xml.dist``) come off this one walk.
     """
     from repowise.core.fs_walk import iter_glob
 

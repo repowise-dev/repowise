@@ -10,7 +10,7 @@ Pure: callers hand in config text, so ingestion reads each config once in the
 walk it already makes and a server can call this with data it holds.
 
 Each config governs its own directory, nearest first. Precedence within a
-directory: ``phpunit.xml``, ``phpunit.xml.dist``, ``phpunit.dist.xml``.
+directory: ``phpunit.xml``, ``phpunit.dist.xml``, ``phpunit.xml.dist``.
 A nested config's suites are resolved against its own directory and against the
 repository root, and a file any config above it collects counts as collected.
 
@@ -29,8 +29,8 @@ from pathlib import PurePosixPath
 
 PHPUNIT_CONFIG_FILES: tuple[str, ...] = (
     "phpunit.xml",
-    "phpunit.xml.dist",
     "phpunit.dist.xml",
+    "phpunit.xml.dist",
 )
 PHPUNIT_CONFIG_NAMES: frozenset[str] = frozenset(PHPUNIT_CONFIG_FILES)
 _PRECEDENCE = {name: rank for rank, name in enumerate(PHPUNIT_CONFIG_FILES)}

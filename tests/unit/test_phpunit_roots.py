@@ -232,3 +232,51 @@ def test_unreadable_primary_config_in_subdirectory_does_not_fall_back() -> None:
     assert roots.collects("packages/api/src/ApiTest.php") is None
     assert roots.collects("tests/RouterTest.php") is True
 
+
+def test_precedence_dist_files_order() -> None:
+    """phpunit.dist.xml takes precedence over phpunit.xml.dist when both are present."""
+    roots = read_phpunit_roots(
+        [
+            ("phpunit.xml.dist", _LARAVEL_CONFIG),
+            (
+                "phpunit.dist.xml",
+                """
+                <phpunit>
+                    <testsuites>
+                        <testsuite name="DistXml">
+                            <directory>dist_tests</directory>
+                        </testsuite>
+                    </testsuites>
+                </phpunit>
+                """,
+            ),
+        ]
+    )
+    assert roots.collects("dist_tests/SomeTest.php") is True
+    assert roots.collects("tests/RouterTest.php") is False
+
+
+def test_valid_dist_xml_ignores_malformed_xml_dist() -> None:
+    """A valid phpunit.dist.xml wins precedence over a malformed phpunit.xml.dist."""
+    roots = read_phpunit_roots(
+        [
+            ("phpunit.dist.xml", _LARAVEL_CONFIG),
+            ("phpunit.xml.dist", "malformed <xml"),
+        ]
+    )
+    assert roots.collects("tests/RouterTest.php") is True
+    assert roots.collects("src/UnitTest.php") is False
+
+
+def test_malformed_dist_xml_does_not_fall_back_to_xml_dist() -> None:
+    """A broken phpunit.dist.xml does not fall back to phpunit.xml.dist (fail-closed)."""
+    roots = read_phpunit_roots(
+        [
+            ("phpunit.dist.xml", "malformed <xml"),
+            ("phpunit.xml.dist", _LARAVEL_CONFIG),
+        ]
+    )
+    assert roots.collects("tests/RouterTest.php") is None
+    assert roots.collects("src/UnitTest.php") is None
+
+

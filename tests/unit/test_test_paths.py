@@ -443,6 +443,17 @@ def test_phpunit_config_overrules_a_test_shaped_php_name(path: str, expected: st
         assert is_test_related_path(path)
 
 
+def test_phpunit_roots_keyword_only_enforced() -> None:
+    """phpunit_roots cannot be passed positionally, preventing multi-PR argument collisions."""
+    with pytest.raises(TypeError):
+        is_test_path("src/Test.php", "php", None, _PHPUNIT_ROOTS)  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        is_test_support_path("src/Test.php", "php", None, _PHPUNIT_ROOTS)  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        is_test_related_path("src/Test.php", "php", None, _PHPUNIT_ROOTS)  # type: ignore[misc]
+
+
+
 @pytest.mark.parametrize(
     ("test_path", "source", "siblings", "named"),
     [
