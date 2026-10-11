@@ -100,6 +100,7 @@ from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.worth import (
     SIZE_MARKERS,
     WORTH_MAGNITUDE,
+    LowPriority,
     by_function,
     execution_role,
     low_priority,
@@ -610,6 +611,12 @@ def _plan_body(plan: Any) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+def _above_bar(details: Mapping[str, Any]) -> LowPriority | None:
+    """An opportunity one of whose plans, applied as written, still leaves a
+    function above the break-up bar: half a fix, so it can wait."""
+    return "above_bar_after" if details.get("leaves_above_bar") else None
+
+
 def _above_bar_note(step: str, plan: Any) -> str:
     """A finding's borrowed *step*, saying so when the plan, applied as
     written, leaves the function above the break-up bar (its rank facts'
@@ -898,9 +905,7 @@ class _RefactorPlan:
             central,
             files.churning(path),
             cloned=function_size and files.cloned(path, shape),
-            low=low_priority(marker, shape, function_size=function_size)
-            # A plan that still leaves the function at the bar is half a fix.
-            or ("above_bar_after" if details.get("leaves_above_bar") else None),
+            low=low_priority(marker, shape, function_size=function_size) or _above_bar(details),
             gain=gain,
             ccn_removed=sum(_extraction_worth(plans.get(s.get("plan_id")))[0] for s in steps),
             dependents=deps,

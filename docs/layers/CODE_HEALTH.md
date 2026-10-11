@@ -131,7 +131,7 @@ worth doing.
 | `next` | Worth doing, needs judgment |
 | `later` | Real but can wait; the reason is shown |
 
-A refactoring plan that would still leave its function above the break-up bar is `later`: it needs more stages before it is worth starting. When a finding's first step borrows such a plan, the finding keeps its tier and the step says the plan alone leaves the function above the bar.
+A refactoring item is `later` when the plan of any of its steps would still leave a function above the break-up bar: it needs more stages before it is worth starting. When a finding's first step borrows such a plan, the finding keeps its tier and the step says the plan alone leaves the function above the bar.
 
 A `now` or `next` item shows its first step and the command that checks it without opening it, on the card, and over MCP for the lead and for each item of an `only=["fix_first"]` page. When no test reaches the code, Verify says to add a characterization test first. An Extract Method step shows the helper's header and the call that replaces the lines, ready to copy. It finds the lines by the text they start and end with, as the plan does, since line numbers move with the first edit; when that text also appears elsewhere in the file, the step says to keep the edit inside its function.
 

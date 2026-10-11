@@ -88,9 +88,7 @@ LOW_PRIORITY_LABEL: dict[str, str] = {
     "not_production": "lower priority: it runs outside production code",
     "unknown_context": "lower priority: where this code runs is unknown",
     "unreached_call": "lower priority: no entry point is known to reach it",
-    "above_bar_after": (
-        "lower priority: the plan leaves a function above the break-up bar, so it needs more stages"
-    ),
+    "above_bar_after": "lower priority: the plan alone leaves a function above the break-up bar",
 }
 
 #: Findings about one expression or one error site: real, and small to fix.

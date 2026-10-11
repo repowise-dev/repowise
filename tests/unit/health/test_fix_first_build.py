@@ -539,3 +539,16 @@ def test_a_finding_borrowing_a_plan_that_leaves_it_above_the_bar_says_so() -> No
         "Extract lines 20-35 of run into sum_rows(rows, limit) -> total. This plan alone "
         "leaves run at CCN 41, still above the break-up bar; more stages needed."
     )
+
+
+def test_plans_without_above_bar_facts_read_as_before() -> None:
+    # No rank facts, or rank facts without the reason: same steps, same tiers.
+    before = _build()
+    plans = copy.deepcopy(PLANS)
+    for plan in plans:
+        plan["rank_json"] = '{"position": 1}'
+    for queue in (_build(plans=plans), _build(plans=copy.deepcopy(PLANS))):
+        assert [(i.id, i.tier, [s.text for s in i.action.steps]) for i in queue.items] == [
+            (i.id, i.tier, [s.text for s in i.action.steps]) for i in before.items
+        ]
+    assert all("This plan alone" not in s.text for i in before.items for s in i.action.steps)
