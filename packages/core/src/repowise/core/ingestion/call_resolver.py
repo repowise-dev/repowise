@@ -40,6 +40,7 @@ from .call_receiver_typing import (
     ReceiverTypingMixin,
     _store_capped,
 )
+from .decorator_names import decorator_base
 from .language_data import (
     get_builtin_methods,
     get_builtin_types,
@@ -132,7 +133,7 @@ _PROPERTY_ACCESSOR_SUFFIXES = (".setter", ".getter", ".deleter")
 
 def _is_property_accessor(sym: Any) -> bool:
     for decorator in getattr(sym, "decorators", ()) or ():
-        tail = decorator.lstrip("@").strip()
+        tail = decorator_base(decorator)
         if tail in _PROPERTY_DECORATORS or tail.endswith(_PROPERTY_ACCESSOR_SUFFIXES):
             return True
     return False

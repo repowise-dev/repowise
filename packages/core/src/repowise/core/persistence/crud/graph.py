@@ -242,10 +242,14 @@ async def reconcile_edges_for_files(
     symbols the change deleted whose node rows the incremental path never prunes
     — then inserts the fresh set. Edges *into* a changed file from an unchanged
     one are owned by that other file and left untouched, the same file-scoping
-    the symbol reconciler uses; a full reindex reconciles those.
+    the symbol reconciler uses; a full reindex reconciles those. The exception
+    is an edge whose fact sits at its target (``TARGET_OWNED_HINTS``), which
+    the target's file owns too.
 
     Returns the number of deleted rows.
     """
+    from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
     scoped = [p for p in dict.fromkeys(source_file_paths) if p]
     if not scoped:
         return 0
@@ -290,7 +294,13 @@ async def reconcile_edges_for_files(
         res = await session.execute(
             delete(GraphEdge).where(
                 GraphEdge.repository_id == repository_id,
-                GraphEdge.source_node_id.in_(batch),
+                or_(
+                    GraphEdge.source_node_id.in_(batch),
+                    and_(
+                        GraphEdge.hint_source.in_(TARGET_OWNED_HINTS),
+                        GraphEdge.target_node_id.in_(batch),
+                    ),
+                ),
             )
         )
         deleted += res.rowcount or 0

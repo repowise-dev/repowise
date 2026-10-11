@@ -26,6 +26,7 @@ import structlog
 
 from ...code_origin import is_build_file
 from ...entry_candidacy import is_reachability_root
+from ...ingestion.decorator_names import decorator_base as _decorator_base
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ...ingestion.package_roots import package_manifest_names
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
@@ -173,29 +174,6 @@ def _declared_deliberately_unused(decorators: Iterable[str]) -> bool:
             ):
                 return True
     return False
-
-
-def _decorator_base(raw: str) -> str:
-    """Return the normalised base name of a single decorator/annotation token.
-
-    Strips a leading ``@``, trims whitespace, and drops any call-argument
-    ``(â€¦)`` tail.  For multi-word tokens (e.g. a Java modifier blob fragment
-    ``"Deprecated\n    public"``) only the first whitespace-delimited word is
-    kept, so visibility keywords that trail the annotation name are discarded.
-
-    This function handles ONE token.  Callers that receive multi-annotation
-    blobs (Java/Kotlin ``modifiers`` node) must split on ``@`` first.
-    """
-    base = raw.lstrip("@").strip()
-    paren = base.find("(")
-    if paren >= 0:
-        base = base[:paren].strip()
-    else:
-        # Handle trailing visibility keywords in modifier blobs:
-        # "Deprecated\n    public" â†’ "Deprecated"
-        parts = base.split()
-        base = parts[0] if parts else base
-    return base
 
 
 def _is_framework_registered(decorators: list[str]) -> bool:

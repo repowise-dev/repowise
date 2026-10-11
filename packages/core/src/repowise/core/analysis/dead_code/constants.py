@@ -806,9 +806,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.task",
     "celery.task",
     "shared_task",
-    # SQLAlchemy, imported bare (``from sqlalchemy.ext.compiler import
-    # compiles``): each stores the function in the dialect compiler or the
-    # event registry. The dotted spellings are covered by the receiver rule.
+    # SQLAlchemy, imported bare: stored in the dialect compiler / event registry.
     "compiles",
     "listens_for",
     # Click CLI commands â€” registered with the parent group/command.

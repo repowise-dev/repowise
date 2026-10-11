@@ -635,11 +635,15 @@ def _changed_file_edges(
     """``(reconcile_paths, edges)`` for edges emanating from changed+parsed files.
 
     An edge is attributed to the file that owns its *source* node: a file node
-    is the path itself; a symbol node carries ``file_path``. Restricting to
+    is the path itself; a symbol node carries ``file_path``. An edge whose fact
+    sits at its target (``TARGET_OWNED_HINTS``) belongs to the target's file
+    as well, so editing the decorated file rewrites it. Restricting to
     files that both changed and parsed this run mirrors ``_changed_file_symbols``
     — a changed file that failed to parse keeps its existing edges rather than
     having them wrongly wiped on a transient failure.
     """
+    from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
     changed = set(changed_paths or [])
     parsed = {pf.file_info.path for pf in parsed_files or []}
     reconcile = changed & parsed
@@ -656,9 +660,10 @@ def _changed_file_edges(
 
     edges: list[dict] = []
     for u, v, data in graph.edges(data=True):
-        if owner.get(u) not in reconcile:
-            continue
-        edges.append(_edge_row(u, v, data))
+        if owner.get(u) in reconcile or (
+            data.get("hint_source") in TARGET_OWNED_HINTS and owner.get(v) in reconcile
+        ):
+            edges.append(_edge_row(u, v, data))
     return sorted(reconcile), edges
 
 

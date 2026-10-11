@@ -11,8 +11,9 @@ from typing import Any
 
 import structlog
 
+from ..decorator_names import decorator_base
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
-from ..models import CallSite
+from ..models import REGISTRATION_HINT, CallSite, ParsedFile
 
 log = structlog.get_logger(__name__)
 
@@ -772,8 +773,12 @@ class ResolveMixin:
                     total += self._add_reference_edge(rc.caller_id, rc.callee_id, rc)
         log.info("Reference edges resolved", total=total)
 
-    def _add_reference_edge(self, source: str, target: str, rc: Any) -> int:
-        """Add a ``references`` edge unless the pair already has one; 1 when added."""
+    def _add_reference_edge(
+        self, source: str, target: str, rc: Any, hint_source: str | None = None
+    ) -> int:
+        """Add a ``references`` edge between two graph nodes unless the pair has one."""
+        if source not in self._graph or target not in self._graph:
+            return 0
         if self._graph.has_edge(source, target):
             return 0
         self._graph.add_edge(
@@ -782,19 +787,15 @@ class ResolveMixin:
             edge_type="references",
             confidence=rc.confidence,
             resolution_origin=rc.origin,
+            **({"hint_source": hint_source} if hint_source else {}),
         )
         return 1
 
     def _add_registration_edges(self, resolver: Any) -> None:
         """Link each registering decorator to the functions it decorates.
 
-        ``@rule`` over ``def _check`` where ``rule`` appends its argument to a
-        module list: ``_check`` is reached through that list, never by name, so
-        without an edge it reads as unused. The edge runs decorator -> decorated
-        as a ``references`` edge, a mention rather than a call, because running
-        the decorator does not run the function. Which functions register is
-        decided by ``python_registrars``; the decorator name is resolved by the
-        same resolver the calls used, so an imported decorator counts too.
+        The decorated function is reached through the registry, never by name.
+        A mention, not a call: running the decorator does not run the function.
         """
         registrar_ids = {
             f"{path}::{name}"
@@ -812,24 +813,30 @@ class ResolveMixin:
             for rc in resolver.resolve_file(path, sites):
                 if rc.confidence < _MIN_REFERENCE_CONFIDENCE or rc.callee_id not in registrar_ids:
                     continue
-                if rc.caller_id in self._graph:
-                    total += self._add_reference_edge(rc.callee_id, rc.caller_id, rc)
+                total += self._add_reference_edge(
+                    rc.callee_id, rc.caller_id, rc, hint_source=REGISTRATION_HINT
+                )
         log.info("Registration edges resolved", total=total)
 
 
-def _decorator_sites(parsed: Any, names: set[str]) -> list[CallSite]:
-    """One site per decorator of a Python symbol whose name may be a registrar.
+def _decorator_sites(parsed: ParsedFile, registrar_names: set[str]) -> list[CallSite]:
+    """One site per Python decorator that may name a registrar, called from the decorated symbol.
 
-    The site's caller is the decorated symbol, so a resolved site names both
-    ends of the registration edge.
+    A name imported under an alias (``import rule as r``) is matched by its alias;
+    the resolver then binds it back through the same import.
     """
     if parsed.file_info.language != "python":
         return []
+    names = registrar_names | {
+        b.local_name
+        for imp in parsed.imports
+        for b in imp.bindings
+        if b.exported_name in registrar_names
+    }
     sites: list[CallSite] = []
     for sym in parsed.symbols:
         for text in sym.decorators:
-            path = text.lstrip("@").split("(", 1)[0].strip()
-            receiver, _, name = path.rpartition(".")
+            receiver, _, name = decorator_base(text).rpartition(".")
             if name in names:
                 sites.append(
                     CallSite(

@@ -630,6 +630,15 @@ EXECUTION_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES - {"references"}
 REACHABILITY_USE_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES | {"type_use"}
 
 
+# ``hint_source`` of a ``references`` edge from a registering decorator to a
+# function it decorates (see ``python_registrars``). The fact sits on the
+# decorated (target) side, so incremental persistence rewrites these edges by
+# target file, and role seeding skips them: a registry says nothing about how
+# the function runs.
+REGISTRATION_HINT = "decorator_registration"
+TARGET_OWNED_HINTS: frozenset[str] = frozenset({REGISTRATION_HINT})
+
+
 def is_dynamic_edge(edge_type: str | None) -> bool:
     """Whether *edge_type* is a dynamic-dispatch hint.
 
