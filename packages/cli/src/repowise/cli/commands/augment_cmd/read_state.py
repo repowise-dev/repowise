@@ -78,7 +78,7 @@ def _session_state_path(repo_path: Path, session_id: str = "") -> Path:
     """This session's state file. One per session id — see :data:`_STATE_DIR`."""
     import hashlib
 
-    digest = hashlib.sha1(session_id.encode("utf-8", "replace")).hexdigest()[:16]
+    digest = hashlib.sha1(session_id.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
     return Path(repo_path) / ".repowise" / _STATE_DIR / f"{digest}.json"
 
 

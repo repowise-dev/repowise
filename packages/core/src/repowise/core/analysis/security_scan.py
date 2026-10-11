@@ -294,7 +294,27 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
     (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
-    (re.compile(r"\bmd5\b|\bsha1\b"), "weak_hash", "low"),
+    # A weak algorithm put to use, not the word: a call (``md5(``, ``hashlib.sha1(``,
+    # ``DigestUtils.md5Hex(``, ``MD5_Init(``), a type or module function
+    # (``MD5.Create()``, ``md5.Sum(``, ``Sha1::new()``, ``Digest::SHA1``), ``hashlib.md5``
+    # handed over as a digest, or the algorithm named to a hashing call
+    # (``createHash("md5")``, ``getInstance("SHA-1")``). A ``sha1`` variable
+    # holding a commit id, or the word in a comment, is neither.
+    (
+        re.compile(
+            r"(?<![\w$])(?i:md5|sha1)(?i:_?(?:hex|file|hash|digest|init|update|final))?\s*\("
+            r"|(?<![\w$])(?i:md5|sha1)\s*(?:\.|::)\s*"
+            r"(?:New|Sum|Create|new|hexdigest|digest|compute)\b"
+            r"|\b(?:MD5|SHA1)(?:CryptoServiceProvider|Managed)\b"
+            r"|\bDigest::(?:MD5|SHA1)\b"
+            r"|\bhashlib\s*\.\s*(?:md5|sha1)\b"
+            r"|\b(?:new|createHash|createHmac|getInstance|hash|hash_hmac|hash_file|digest|Create)"
+            r"\s*\(\s*['\"](?i:md5|sha-?1)['\"]"
+            r"|\bdigestmod\s*=\s*['\"](?i:md5|sha1)['\"]"
+        ),
+        "weak_hash",
+        "low",
+    ),
     # -- JS/TS patterns (#1935 Tier 1) -------------------------------------
     # Measured on the same 17-repo, 1109-file corpus as the exec_call/secret
     # fixes in #1947. Three of these five needed tightening before they were
@@ -481,6 +501,26 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
             )
     return found
 
+# Python's own declaration that a digest is a checksum or a cache key, not a
+# security control (``hashlib.sha1(data, usedforsecurity=False)``).
+_NOT_FOR_SECURITY = re.compile(r"\busedforsecurity\s*=\s*False\b")
+
+
+def _call_text(lines: list[str], lineno: int, start: int, limit: int = 600) -> str:
+    """The text from *start* on line *lineno* through the first call's closing paren.
+
+    Bounded by *limit* characters; a parenthesis inside a string counts too.
+    """
+    text = "\n".join(lines[lineno - 1 : lineno + 9])[start : start + limit]
+    depth = 0
+    for i, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth <= 0:
+                return text[: i + 1]
+    return text
 
 # Prose is documentation, not executable code. Only secret kinds scan it,
 # because a key pasted into a README is still a leak.
@@ -1008,6 +1048,11 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                     _SQL_FROM.search(line, line.find("SELECT", match.start()))
                     or (lineno < len(lines) and _SQL_FROM.search(lines[lineno]))
                 ):
+                    match = None
+            elif kind == "weak_hash":
+                # Written in code, and not declared a non-security use.
+                match = _match_starting_in(pattern, line, masked_line(lineno, line))
+                if match and _NOT_FOR_SECURITY.search(_call_text(lines, lineno, match.start())):
                     match = None
             elif kind in _KEYWORD_KINDS:
                 # ``password = "..."`` in a comment or docstring is an example.

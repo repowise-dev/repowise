@@ -608,6 +608,35 @@ class TestScanFile:
         quoted = f"CASE = {line!r}\n"
         assert kind not in {f["kind"] for f in scan_source("src/check.py", quoted)}
 
+    @pytest.mark.parametrize(
+        ("path", "source", "expected"),
+        [
+            ("a.py", "digest = hashlib.md5(data).hexdigest()\n", True),
+            ("a.py", "mac = hmac.new(key, msg, hashlib.sha1)\n", True),
+            ("a.py", 'h = hashlib.new("md5")\n', True),
+            ("a.py", "from hashlib import sha1\nkey = sha1(raw)\n", True),
+            ("a.js", 'const h = crypto.createHash("md5");\n', True),
+            ("A.java", 'MessageDigest md = MessageDigest.getInstance("SHA-1");\n', True),
+            ("a.go", "sum := md5.Sum(data)\n", True),
+            ("A.cs", "using var h = MD5.Create();\n", True),
+            ("a.rb", "Digest::SHA1.hexdigest(s)\n", True),
+            ("a.rs", "let d = md5::compute(bytes);\n", True),
+            ("a.php", "$h = md5($password);\n", True),
+            # A commit id named for its algorithm, and the word in prose.
+            ("a.py", 'sha1 = git("rev-parse", "HEAD")\n', False),
+            ("a.py", "assert repo.head_commit == sha1\n", False),
+            ("a.py", "#: A commit id (sha1 or sha256).\n", False),
+            ("a.py", '"weak_hash": "The words md5 or sha1.",\n', False),
+            ("a.py", "_commit(repo, \"h.py\", \"hashlib.md5(b'')\")\n", False),
+            # Declared a checksum, not a security control.
+            ("a.py", "key = hashlib.sha1(text.encode(), usedforsecurity=False).hexdigest()\n", False),
+            ("a.py", "key = hashlib.sha1(\n    text.encode(), usedforsecurity=False\n)\n", False),
+            ("a.py", "key = hashlib.sha1(\n    text.encode()\n)\nok = sha256(b, usedforsecurity=False)\n", True),
+        ],
+    )
+    def test_weak_hash_is_an_algorithm_in_use(self, path: str, source: str, expected: bool) -> None:
+        assert bool([f for f in scan_source(path, source) if f["kind"] == "weak_hash"]) is expected
+
 
 class TestPersistSecurityFindings:
     """The persist.py wiring: source_map in, idempotent rows out."""
@@ -948,7 +977,7 @@ class TestEverySnippetIsMasked:
     @pytest.mark.parametrize(
         ("source", "kind"),
         [
-            (f'API_KEY = "{KEY}"  # md5\n', "weak_hash"),
+            (f'API_KEY = "{KEY}"; h = md5(b)\n', "weak_hash"),
             (f'os.system(cmd); secret = "{KEY}"\n', "os_system"),
             (f'x = eval(y); secret = "{KEY}"\n', "eval_call"),
             (f'subprocess.run(cmd, secret = "{KEY}",\n    shell=True)\n', "subprocess_shell_true"),
@@ -1024,9 +1053,10 @@ class TestEverySnippetIsMasked:
         _assert_no_raw(hit["snippet"], body[::-1])
 
     def test_stray_hit_on_a_pem_body_line_is_masked(self) -> None:
-        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgE+md5/AoIBAQC7VJTUt9Us8cKj"
+        # pragma: allowlist nextline secret
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgE+AKIAQ2Z7RT4WXY5BCDFG/AoIBAQC7VJTUt9Us8cKj"
         source = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\n"
-        (hit,) = [f for f in scan_source("id_rsa", source) if f["kind"] == "weak_hash"]
+        (hit,) = [f for f in scan_source("id_rsa", source) if f["kind"] == "aws_access_key"]
         assert hit["line"] == 2
         _assert_no_raw(hit["snippet"], body)
 

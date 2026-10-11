@@ -91,7 +91,7 @@ def _ledger_key(surface: str, category: str, text: str) -> str:
     """
     import hashlib
 
-    digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    digest = hashlib.sha1(text.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:12]
     return f"{surface}:{category}:{digest}"
 
 

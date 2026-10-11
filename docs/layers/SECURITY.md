@@ -72,7 +72,7 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | `tls_verify_false` | med | `verify=False` passed to an HTTP client call (`requests`, `httpx`, boto3 `client`) or set on a session's `verify` |
 | `reject_unauthorized_false` | med | `rejectUnauthorized: false` |
 | `unsafe_inner_html` | med | `__html:` (React's `dangerouslySetInnerHTML`) assigned a non-literal |
-| `weak_hash` | low | the words `md5` or `sha1` |
+| `weak_hash` | low | MD5 or SHA-1 in use in code: a call (`hashlib.md5(`), a type (`MD5.Create()`) or the algorithm named to a hashing call (`createHash("sha1")`). A call passing `usedforsecurity=False` does not fire |
 | `security_sensitive_symbol` | low | a symbol named with `auth`, `token`, `password`, `jwt`, `session` or `crypto` |
 
 `security_sensitive_symbol` is informational: it marks where security code
@@ -104,9 +104,9 @@ and the in-change commit scan report only these by default.
   `changeme`, `{{ }}`, `${}`), shorter than eight characters, a short
   single-case word, or a snake_case key name. A value a vendor kind already
   reports is not reported twice.
-- **`weak_hash`, `concat_sql`, `template_literal_sql` and `unsafe_inner_html`**
-  run on raw source, comments included. `fstring_sql` needs its `f` prefix in
-  code, so a fixture quoting one inside another string does not fire.
+- **`concat_sql`, `template_literal_sql` and `unsafe_inner_html`** run on raw
+  source, comments included. `fstring_sql` and `weak_hash` need their match to
+  start in code, so a comment or a fixture string quoting one does not fire.
 
 ### Working tree versus history
 
@@ -148,7 +148,7 @@ its first four characters and `****`. The raw value is never stored.
 2. High working-tree kinds, as places to read. The layer found a call; you
    decide whether it is reachable.
 3. `security_sensitive_symbol`, as a map of where auth and crypto code lives.
-4. Low findings last. `weak_hash` is a word match.
+4. Low findings last. `weak_hash` cannot tell a checksum from a password hash.
 
 A low finding count means the registry did not match. On most repos, in most
 languages, that is all it means.
@@ -251,7 +251,8 @@ result with that in mind.
   eight vendor shapes are invisible unless you add custom patterns. Use gitleaks
   or trufflehog for secret scanning proper.
 - **No dependency or CVE scanning.**
-- **False positives happen.** `weak_hash` fires on `md5` in a comment.
+- **False positives happen.** `weak_hash` fires on an MD5 checksum unless the
+  call passes `usedforsecurity=False`.
   `unsafe_inner_html` ships at `med` because it cannot tell a name pointing at
   a pinned constant from a dynamic value.
 - **The five JS/TS kinds were checked by hand** on a 17-repository, 1,109-file
