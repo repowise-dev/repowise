@@ -16,6 +16,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from repowise.core.analysis.function_test_map import MappedTest
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.perf.ranking import _percentile_threshold
 from repowise.core.analysis.health.queue_rules import FilterRule
@@ -327,6 +328,8 @@ class ValidationEvidence:
     ``symbols`` is each file's symbol ids with their line spans, ``symbol_reach``
     how close each test gets to a symbol, and ``imports`` the names each test
     imports from a file. Empty, the order falls back to name and directory.
+    ``function_tests`` is each mapped function's nearest test functions
+    (``function_facts.tests_json``); an absent id was never mapped.
     ``hubs`` are the files no reach walk passes through (:func:`hub_files`), and
     ``siblings`` each directory's files, which decide whose test a name is.
     """
@@ -334,6 +337,7 @@ class ValidationEvidence:
     symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
     symbol_reach: Mapping[str, Mapping[str, ReachDistance]] = field(default_factory=dict)
     imports: Mapping[str, Mapping[str, frozenset[str]]] = field(default_factory=dict)
+    function_tests: Mapping[str, tuple[MappedTest, ...]] = field(default_factory=dict)
     hubs: frozenset[str] = frozenset()
     siblings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
@@ -621,6 +625,32 @@ def _rank_target_tests(
     return out
 
 
+def _nearest_function_tests(
+    ranges: Sequence[tuple[str, set[int] | None]],
+    symbols: Mapping[str, Sequence[str]],
+    evidence: ValidationEvidence,
+) -> list[tuple[MappedTest, str]] | None:
+    """The nearest test functions of the functions the plan changes, nearest first,
+    each with the function it runs. ``None`` unless every file the plan changes
+    names its functions and every one is mapped; ``[]`` when no test reaches any."""
+    picked: dict[str, tuple[MappedTest, str]] = {}
+    for path, _lines in ranges:
+        ids = symbols[path]
+        if not ids or any(symbol not in evidence.function_tests for symbol in ids):
+            return None
+        for symbol in ids:
+            for test in evidence.function_tests[symbol]:
+                held = picked.get(test.selector)
+                if held is None or test.hops < held[0].hops:
+                    picked[test.selector] = (test, symbol)
+    # Stable, so each function's own order holds among tests the same hops away.
+    return sorted(picked.values(), key=lambda pair: pair[0].hops)
+
+
+def _runs_reason(test: MappedTest, symbol: str) -> str:
+    label = _symbol_label(symbol)
+    return f"calls {label}" if test.hops == 1 else f"reaches {label} in {test.hops} calls"
+
 def _characterization_step(suggestion: RefactoringSuggestion) -> str:
     """The step before an edit no test reaches: pin today's behaviour first."""
     symbol = suggestion.target_symbol
@@ -834,20 +864,38 @@ def build_validation_plan(
         if len(target_rows) == 1
         else sum(target.total for target in target_rows)
     )
+    shown = ordered_tests[:cap]
+    reasons = {test: best[test][1] for test in shown}
+    commands = commands_for_tests(shown, total=aggregate_total)
+    # Measured coverage outranks the graph; otherwise the plan quotes the test
+    # functions nearest the functions it changes, as runnable selectors.
+    nearest = (
+        _nearest_function_tests(ranges, symbols, facts) if aggregate_basis != "measured" else None
+    )
+    if nearest:
+        aggregate_basis, aggregate_via, aggregate_total = "inferred", "call-graph", len(nearest)
+        shown = [test.selector for test, _ in nearest[:cap]]
+        reasons = {test.selector: _runs_reason(test, symbol) for test, symbol in nearest[:cap]}
+        # Each quoted test's file, whole: shorter than naming every function,
+        # and it runs at least the tests the plan quotes.
+        commands = commands_for_tests(sorted({test.split("::", 1)[0] for test in shown}))
     files = affected_files(suggestion)
     return ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
         total=aggregate_total,
-        tests=ordered_tests[:cap],
-        truncated=aggregate_total > len(ordered_tests[:cap]),
+        tests=shown,
+        truncated=aggregate_total > len(shown),
         affected_files=files,
         affected_symbols=affected_symbols(suggestion),
-        commands=commands_for_tests(ordered_tests[:cap], total=aggregate_total),
+        commands=commands,
         targets=target_rows,
-        reasons={test: best[test][1] for test in ordered_tests[:cap]} if order_tests else {},
+        reasons=reasons if order_tests else {},
+        # Also when tests reach the file but none reaches a function it changes.
         prerequisite=(
-            _characterization_step(suggestion) if aggregate_basis == "unknown" else None
+            _characterization_step(suggestion)
+            if aggregate_basis == "unknown" or nearest == []
+            else None
         ),
     )
 

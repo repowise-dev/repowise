@@ -1346,6 +1346,20 @@ async def persist_partial_health(
                     commit=analyzed_commit,
                 ),
             )
+        # Facts for the files this run walked; roles and nearest tests for every
+        # stored row, written only where they moved. No rows means no graph to
+        # key them on: the stored ones stay. Before the finalizers, which read
+        # each plan's nearest tests off these rows.
+        fact_rows = getattr(report, "function_facts", None)
+        if fact_rows is not None:
+            await write_function_facts(
+                session,
+                repo_id,
+                fact_rows,
+                file_paths={*changed_paths, *performance_paths},
+                roles=getattr(report, "execution_roles", None),
+                tests=getattr(report, "function_tests", None),
+            )
         # A partial run sees a subset of the findings, so the plans and the
         # queue it would derive are a subset too. Both are rebuilt here instead,
         # from the merged stored rows, by the same writer the full path uses.
@@ -1363,17 +1377,6 @@ async def persist_partial_health(
         # opportunity folds a file's plans, and a file this run did not touch
         # can still lose one when a cross-file plan elsewhere resolves.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
-        # Facts for the files this run walked; roles for every stored row. No
-        # rows means no graph to key them on: the stored ones stay.
-        fact_rows = getattr(report, "function_facts", None)
-        if fact_rows is not None:
-            await write_function_facts(
-                session,
-                repo_id,
-                fact_rows,
-                file_paths={*changed_paths, *performance_paths},
-                roles=getattr(report, "execution_roles", None),
-            )
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).
     fn_blame_rows = getattr(report, "function_blame_rows", None)

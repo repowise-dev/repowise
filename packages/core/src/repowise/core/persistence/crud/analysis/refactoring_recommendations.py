@@ -49,6 +49,7 @@ from repowise.core.analysis.test_reachability import (
 from ...models import GraphMetric, GraphNode, HealthFileMetric
 from ..graph import get_graph_metrics
 from .coverage_map import tests_covering_files
+from .function_facts import tests_in_files
 from .health import get_health_metrics
 
 
@@ -213,7 +214,8 @@ async def _validation_evidence(
     test_files: set[str],
     base: ValidationEvidence,
 ) -> ValidationEvidence:
-    """Symbol spans, symbol-level reach and test imports for every plan at once.
+    """Symbol spans, symbol-level reach, test imports and each function's nearest
+    tests for every plan at once.
 
     Bounded reads over the whole plan set (the symbol walk is one ``IN`` query
     per hop), so adding plans adds no statements.
@@ -242,6 +244,9 @@ async def _validation_evidence(
             session, repository_id, symbol_ids, test_files, avoid=base.hubs
         ),
         imports=await imported_names_by_test(session, repository_id, target_files, test_files),
+        # Every function in the files, not only the plans' targets: a step of
+        # a multi-step plan narrows to its own function.
+        function_tests=await tests_in_files(session, repository_id, target_files),
     )
 
 

@@ -2007,6 +2007,17 @@ async def save_full_health_report(
                 commit=analyzed_commit,
             ),
         )
+        # No rows means no graph to key them on: the stored ones stay. Before
+        # the finalizers, which read each plan's nearest tests off these rows.
+        fact_rows = getattr(hr, "function_facts", None)
+        if fact_rows is not None:
+            await write_function_facts(
+                session,
+                repo_id,
+                fact_rows,
+                roles=getattr(hr, "execution_roles", None),
+                tests=getattr(hr, "function_tests", None),
+            )
         # Group the stored performance findings into the materialized causal
         # read model, then reconcile lifecycle and plans.
         await finalize_performance_opportunities(
@@ -2020,12 +2031,6 @@ async def save_full_health_report(
         # savepoint because it composes over the stored rows, so it has to see
         # the reconciliation above rather than the detector output.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
-        # No rows means no graph to key them on: the stored ones stay.
-        fact_rows = getattr(hr, "function_facts", None)
-        if fact_rows is not None:
-            await write_function_facts(
-                session, repo_id, fact_rows, roles=getattr(hr, "execution_roles", None)
-            )
 
 
 async def refresh_governance_findings(

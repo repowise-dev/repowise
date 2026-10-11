@@ -2115,6 +2115,10 @@ class FunctionFact(Base):
     nloc: Mapped[int | None] = mapped_column(Integer, nullable=True)
     params: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_nesting: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The nearest test functions (``analysis.function_test_map``), as
+    # ``[[selector, hops], ...]``: ``[]`` when no test reaches the function,
+    # NULL when no run has mapped it. Restamped every run, like the role.
+    tests_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 

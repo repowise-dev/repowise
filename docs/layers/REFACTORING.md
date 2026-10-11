@@ -64,8 +64,12 @@ structured plan for an agent. The page never edits code or runs tests on its own
 
 A plan lists the tests closest to the change first: measured coverage, then
 tests named for the file, then the call graph. Tests that reach the file only
-through a widely imported hub module are left out. When no test reaches the
-change, the plan has no command and asks for a characterization test first.
+through a widely imported hub module are left out. When the plan changes known
+functions, it quotes the few test functions nearest each one as runnable
+selectors (`tests/test_orders.py::test_total`), and its command runs only the
+files they live in. When no test reaches the change, the plan has no command and
+asks for a characterization test first; it also asks when tests reach the file
+but none reaches the changed function.
 
 In a plan with several steps, such as a performance fix at several call sites,
 plan detail adds a `verify` to each step whose tests differ from the plan's: the
