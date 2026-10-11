@@ -65,6 +65,10 @@ def _tools_finding(container: str, member_called: bool):
     member = f"{_PATH}::Tools::Run"
     graph.add_node(member, node_type="symbol", file_path=_PATH, language="vbnet", kind="method")
     graph.add_edge(f"{_PATH}::Tools", member, edge_type="has_method")
+    # One resolved call, so VB's resolution basis is known to the deletion gate.
+    graph.add_edge(
+        f"{_CALLER}::Start", f"{_PATH}::Used", edge_type="calls", resolution_origin="import_scoped"
+    )
     if member_called:
         graph.add_edge(f"{_CALLER}::Start", member, edge_type="calls")
     source_map = {_PATH: _source(container), _CALLER: b"Sub Start()\n    Run()\nEnd Sub\n"}
