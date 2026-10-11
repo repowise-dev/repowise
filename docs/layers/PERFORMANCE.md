@@ -25,6 +25,10 @@ performance signal, never the defect score.
 The loop and the I/O call do not have to be in the same function. Repowise
 follows the resolved call graph up to three hops and attaches the
 caller-to-sink path. Per-function linters cannot see that case.
+An I/O call is recognised by the library its receiver was imported from. In
+TypeScript and JavaScript only the module name counts, so a local variable named
+like a package (`ws`) or a module path that contains a library name
+(`plugin-sdk/provider-http`) is not read as that library.
 
 Performance analysis covers Python, TypeScript/JavaScript (including Vue and
 Svelte scripts), Java, Go, C# (including Razor), Rust, Kotlin, Scala, Ruby, C++,
@@ -47,7 +51,7 @@ Each opportunity gets one state:
 | `expected` | The repetition is real and nothing should change, such as deleting N files, or the function is switched off by a constant flag (reason `gated_off`) or runs once per deploy, boot or incident (reason `cold_path`), or its loop runs a fixed number of times (reason `bounded_loop`) |
 
 A plan lists its edits, one step per call site and loop, each naming the call it
-repeats. When every site reaches one sink, the step that adds a bulk form of that
+repeats and the kind of I/O that call does (database, network, file system or subprocess). When every site reaches one sink, the step that adds a bulk form of that
 sink comes first. The plan also lists tests to run, found from coverage, the call
 graph and the import graph. An opportunity with a supported shared fix links to a
 `performance_fix` plan in [REFACTORING.md](REFACTORING.md).

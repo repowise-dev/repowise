@@ -8,7 +8,7 @@ from typing import Any
 
 from repowise.core.analysis.execution_graph import file_of_symbol
 
-from ..perf.actionability import PerformanceFix
+from ..perf.actionability import BOUNDARY_NOUN, PerformanceFix
 from ..perf.opportunities import PerformanceOpportunity
 from ..perf.opportunity_rank import band
 from .models import RefactoringSuggestion
@@ -74,14 +74,16 @@ def fix_steps(
     sink: str | None,
     locations: list[dict[str, object]],
     api: str | None = None,
+    boundary: str | None = None,
 ) -> list[dict[str, object]]:
     """Ordered edits for one plan; mechanical only when the strategy is proven.
 
     *sink* is the sink every site shares, or ``None``: a bulk form added to one
-    member's sink would leave the other sites' calls per-key.
+    member's sink would leave the other sites' calls per-key. *boundary* is the
+    I/O kind every site's call reaches, which the step names.
     """
     steps = _intro_steps(strategy, intervention, sink, api)
-    steps += _site_steps(strategy, safety, locations, api)
+    steps += _site_steps(strategy, safety, locations, api, boundary)
     return [{"order": index, **step} for index, step in enumerate(steps, 1)]
 
 
@@ -108,7 +110,11 @@ def _intro_steps(
 
 
 def _site_steps(
-    strategy: str, safety: str, locations: list[dict[str, object]], api: str | None
+    strategy: str,
+    safety: str,
+    locations: list[dict[str, object]],
+    api: str | None,
+    boundary: str | None = None,
 ) -> list[dict[str, object]]:
     """One step per place that changes: a call site, or a loop and variable."""
     _, per_site = (_API_STEPS if api else _STEPS).get(strategy, (None, ""))
@@ -130,7 +136,9 @@ def _site_steps(
         ]
     return [
         {
-            "action": per_site.format(api=api, call=_call_phrase(location.get("call"))),
+            "action": per_site.format(
+                api=api, call=_call_phrase(location.get("call"), boundary)
+            ),
             "symbol": location.get("function_name"),
             "file_path": location.get("file_path"),
             "line": location.get("line_start"),
@@ -161,8 +169,10 @@ def _loop_edits(locations: list[dict[str, object]]) -> list[dict[str, object]]:
     return list(edits.values())
 
 
-def _call_phrase(call: object) -> str:
-    return f"{call} call" if call else "call"
+def _call_phrase(call: object, boundary: str | None) -> str:
+    """``session.get database call``: the call and the kind of I/O it does."""
+    noun = BOUNDARY_NOUN.get(boundary or "")
+    return " ".join(str(part) for part in (call, noun, "call") if part)
 
 
 _EFFORT_BANDS = ((1, "S"), (3, "M"), (8, "L"))
@@ -274,7 +284,9 @@ def _suggestion(
         _shared_sink(opportunity),
         fix.api,
     )
-    edits = _site_steps(fix.strategy, fix.safety, locations, fix.api)
+    edits = _site_steps(
+        fix.strategy, fix.safety, locations, fix.api, opportunity.boundary_kind
+    )
     steps = [{"order": index, **step} for index, step in enumerate(intro + edits, 1)]
     # One edit per site, as before, less the sites a loop's one step covers.
     # Sites past the evidence cap stay one each: nothing says which share a loop.

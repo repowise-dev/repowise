@@ -59,6 +59,14 @@ CONCURRENCY_SENSITIVE_BOUNDARIES = frozenset({"db", "network"})
 # I/O out of the lock reintroduces the race the lock prevents.
 LOCK_SERIALIZED_BOUNDARIES = frozenset({"filesystem", "subprocess"})
 
+#: What a boundary's call is named in prose ("a database call").
+BOUNDARY_NOUN = {
+    "db": "database",
+    "filesystem": "file system",
+    "network": "network",
+    "subprocess": "subprocess",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class PerformanceFix:
@@ -359,6 +367,7 @@ def actionability(
 __all__ = [
     "BATCHABLE_BOUNDARIES",
     "BATCHABLE_MARKERS",
+    "BOUNDARY_NOUN",
     "LOCK_SERIALIZED_BOUNDARIES",
     "Actionability",
     "ActionabilityState",

@@ -399,6 +399,47 @@ def test_io_in_loop_fires_regardless_of_grouped_use_order():
         assert ("io_in_loop", "db") in {(h.kind, h.detail) for h in fc.perf_hits}
 
 
+def test_a_ts_module_string_binds_no_name_of_its_own():
+    # A local named like the package (``ws``) is a loop variable, not the import.
+    src = (
+        b'import { type WebSocket, WebSocketServer } from "ws";\n'
+        b"function broadcast(sockets: Set<WebSocket>) {\n"
+        b'  for (const ws of sockets) { ws.send("reload"); }\n'
+        b"}\n"
+    )
+    fc = walk_file("t.ts", "typescript", src)
+    assert fc.io_boundary_names == {"WebSocket": "network", "WebSocketServer": "network"}
+    assert not fc.perf_hits
+
+
+def test_a_hyphenated_ts_module_path_names_no_library():
+    # ``provider-http`` is a local helper module, not the ``http`` package.
+    fc = walk_file(
+        "t.ts",
+        "typescript",
+        b'import { readBody } from "openclaw/plugin-sdk/provider-http";\n'
+        b'import { request } from "./client.js";\n',
+    )
+    assert fc.io_boundary_names == {}
+
+
+@pytest.mark.parametrize(
+    ("source", "name", "kind"),
+    [
+        (b'import http from "node:http";\n', "http", "network"),
+        (b'import x = require("axios");\n', "x", "network"),
+        (b'import * as fs from "node:fs/promises";\n', "fs", "filesystem"),
+    ],
+)
+def test_a_ts_import_binds_its_clause_names(source: bytes, name: str, kind: str):
+    assert walk_file("t.ts", "typescript", source).io_boundary_names == {name: kind}
+
+
+def test_a_go_import_still_binds_its_package_name_from_the_path():
+    fc = walk_file("t.go", "go", b'package p\nimport "net/http"\n')
+    assert fc.io_boundary_names.get("http") == "network"
+
+
 class _FakeImportNode:
     def __init__(self, node_type: str, text: bytes, children: list[_FakeImportNode] | None = None):
         self.type = node_type
