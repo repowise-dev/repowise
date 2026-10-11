@@ -12,7 +12,7 @@ import dataclasses
 import functools
 import json
 import math
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -22,7 +22,13 @@ from repowise.core.analysis.health.perf.ranking import _percentile_threshold
 from repowise.core.analysis.health.queue_rules import FilterRule
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES
 from repowise.core.analysis.health.rows import field as row_field
-from repowise.core.analysis.health.worth import SIZE_MARKERS, above_bar_after, measure, worst_after
+from repowise.core.analysis.health.worth import (
+    SIZE_MARKERS,
+    above_bar_after,
+    by_function,
+    measure,
+    worst_after,
+)
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
@@ -1250,7 +1256,7 @@ def build_recommendations(
     metrics = metric_by_path or {}
     centrality = centrality or {}
     validations = validations or {}
-    findings_by_file = findings_by_path(findings or ())
+    findings_by_function = by_function(findings or ())
     out: list[Recommendation] = []
     for index, row in enumerate(rows):
         suggestion = rehydrate_suggestion(row)
@@ -1282,50 +1288,52 @@ def build_recommendations(
                 file_weighted_deficit=deficit,
                 validation=validation,
                 leaves_above_bar=leaves_above_bar(
-                    suggestion, findings_by_file.get(suggestion.file_path, ())
+                    suggestion,
+                    findings_by_function.get((suggestion.file_path, suggestion.target_symbol), ()),
                 ),
             )
         )
     return canonical_order(out)
 
 
-def findings_by_path(findings: Iterable[Any]) -> dict[str, list[Any]]:
-    """Health findings grouped by file, for :func:`leaves_above_bar`."""
-    out: dict[str, list[Any]] = {}
-    for finding in findings:
-        out.setdefault(row_field(finding, "file_path"), []).append(finding)
-    return out
-
-
 def leaves_above_bar(suggestion: RefactoringSuggestion, findings: Sequence[Any]) -> str | None:
     """Why an Extract Method plan, applied as written, still leaves a function
     at the break-up bar (:func:`..worth.above_bar_after`), or ``None``.
 
-    *findings* are the file's; the size findings on the target give its
-    measured CCN and lines before the plan."""
+    *findings* are the file's or the target's; the size findings on the
+    target give its measured CCN and lines before the plan."""
     if suggestion.refactoring_type != "extract_method":
         return None
-    own = [
+    named = [
         f
         for f in findings
         if row_field(f, "biomarker_type") in SIZE_MARKERS
         and row_field(f, "function_name") == suggestion.target_symbol
-        and _on_target(suggestion, f)
     ]
+    own = _on_target(suggestion, named)
     after = worst_after(
         suggestion.evidence or {}, suggestion.plan or {}, suggestion.target_symbol, measure(own)
     )
     return above_bar_after(after)
 
 
-def _on_target(suggestion: RefactoringSuggestion, finding: Any) -> bool:
-    """Whether *finding*'s lines overlap the target's; a side without lines
-    cannot tell two same-named functions apart, so it matches."""
-    start = row_field(finding, "line_start")
-    if not (start and suggestion.line_start and suggestion.line_end):
-        return True
-    end = row_field(finding, "line_end") or start
-    return start <= suggestion.line_end and end >= suggestion.line_start
+def _on_target(suggestion: RefactoringSuggestion, named: Sequence[Any]) -> list[Any]:
+    """The same-named findings on the target: those whose lines overlap it,
+    and those without lines unless a finding elsewhere in the file shows a
+    second function of that name. A plan without lines keeps them all."""
+    first, last = suggestion.line_start, suggestion.line_end
+    if not (first and last):
+        return list(named)
+    inside, unlined, elsewhere = [], [], False
+    for f in named:
+        start = row_field(f, "line_start")
+        if not start:
+            unlined.append(f)
+        elif start <= last and (row_field(f, "line_end") or start) >= first:
+            inside.append(f)
+        else:
+            elsewhere = True
+    return inside if elsewhere else inside + unlined
 
 
 def canonical_order(recommendations: Sequence[Recommendation]) -> list[Recommendation]:
@@ -1447,7 +1455,6 @@ __all__ = [
     "canonical_order",
     "detector_native_benefit",
     "enrich_blast_radius",
-    "findings_by_path",
     "hub_files",
     "leaves_above_bar",
     "listed_steps",

@@ -36,7 +36,7 @@ def test_a_staged_plan_reads_the_target_after_from_its_orchestrator() -> None:
 def test_an_unstaged_plan_reads_the_target_from_its_measured_shape() -> None:
     shape = {"ccn": 70, "nloc": 180}
     after = worst_after({"ccn_removed": 12, "slice_nloc": 40}, {}, "run", shape)
-    # 70 - 12 = 58 left in the target; the one helper is CCN 13.
+    # 70 - 12 = 58 left in the target; the one helper is at most CCN 12.
     assert after == {"function": "run", "ccn": 58, "nloc": 141}
     assert above_bar_after(after) is not None
 
@@ -49,7 +49,7 @@ def test_a_helper_that_takes_the_whole_body_is_still_judged() -> None:
     )
     assert after["function"] == "_body"
     assert above_bar_after(after) == (
-        "leaves _body at CCN 151, still above the break-up bar; more stages needed"
+        "leaves _body at CCN 150, still above the break-up bar; more stages needed"
     )
 
 
@@ -105,6 +105,14 @@ def test_only_the_targets_own_size_findings_count() -> None:
     other = _finding("other", 90, 10) | {"file_path": "pkg/big.py"}
     assert leaves_above_bar(plan, [elsewhere, other]) is None
     assert leaves_above_bar(plan, [_finding("big", 90, 10)]).startswith("leaves big at CCN 80")
+
+
+def test_a_finding_without_lines_is_dropped_when_the_name_repeats() -> None:
+    plan = _plan("big", 10, 10)
+    unlined = {**_finding("big", 90, 10), "line_start": None, "line_end": None}
+    assert leaves_above_bar(plan, [unlined]) is not None
+    other_big = {**_finding("big", 20, 10), "line_start": 500, "line_end": 520}
+    assert leaves_above_bar(plan, [unlined, other_big]) is None
 
 
 def test_a_plan_that_leaves_the_bar_ranks_after_one_that_does_not() -> None:

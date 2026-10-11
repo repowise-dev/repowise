@@ -63,7 +63,6 @@ LowPriority = Literal[
     "not_production",
     "unknown_context",
     "unreached_call",
-    "above_bar_after",
 ]
 
 #: Why an item can wait, as the tier reason a surface shows beside it.
@@ -88,10 +87,6 @@ LOW_PRIORITY_LABEL: dict[str, str] = {
     "not_production": "lower priority: it runs outside production code",
     "unknown_context": "lower priority: where this code runs is unknown",
     "unreached_call": "lower priority: no entry point is known to reach it",
-    "above_bar_after": (
-        "lower priority: the plan still leaves a function above the break-up bar; "
-        "more stages needed"
-    ),
 }
 
 #: Findings about one expression or one error site: real, and small to fix.
@@ -273,6 +268,15 @@ def _size_reason(shape: Mapping[str, int]) -> LowPriority | None:
     return None
 
 
+def by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
+    """Findings that name a function, by ``(file_path, function_name)``."""
+    out: dict[tuple[str, str], list[Any]] = defaultdict(list)
+    for f in findings:
+        if name := field(f, "function_name"):
+            out[(field(f, "file_path"), name)].append(f)
+    return dict(out)
+
+
 def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
     """:func:`low_priority` for each finding, in order. A function's shape is
     measured over every finding on it in ``findings``; a finding that rests
@@ -280,10 +284,6 @@ def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
     from .models import split_by_origin
 
     history = {id(f) for f in split_by_origin(findings)[1]}
-    by_function: dict[tuple[str, str], list[Any]] = defaultdict(list)
-    for f in findings:
-        if field(f, "function_name"):
-            by_function[(field(f, "file_path"), field(f, "function_name"))].append(f)
     # Measured once per function, not once per finding on it, and each row's
     # details parsed once: every list tiers a repository's whole open set.
     parsed: dict[int, Mapping[str, Any]] = {}
@@ -294,7 +294,7 @@ def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
             found = parsed[id(f)] = detail_map(f)
         return found
 
-    shapes = {key: measure(rows, details_of) for key, rows in by_function.items()}
+    shapes = {key: measure(rows, details_of) for key, rows in by_function(findings).items()}
     out: list[LowPriority | None] = []
     for f in findings:
         if id(f) in history:
@@ -308,6 +308,19 @@ def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
     return out
 
 
+def _helpers_after(
+    plan: Mapping[str, Any], target: str, removed: int, sliced: int
+) -> list[tuple[str, int, int]]:
+    """``(name, ccn, nloc)`` of each helper a plan creates: a stage's own
+    figures, or for an unstaged plan the one span it lifts, whose CCN is at
+    most what it removes."""
+    stages = [s for s in plan.get("stages") or () if isinstance(s, Mapping)]
+    return [
+        (str(s.get("suggested_name") or target), int(s.get("ccn") or 0), int(s.get("nloc") or 0))
+        for s in stages
+    ] or [(str(plan.get("suggested_name") or target), removed, sliced)]
+
+
 def worst_after(
     evidence: Mapping[str, Any], plan: Mapping[str, Any], target: str, shape: Mapping[str, int]
 ) -> dict[str, Any] | None:
@@ -319,13 +332,9 @@ def worst_after(
     helper. Each helper is a stage's own ``ccn`` and ``nloc``; an unstaged
     plan's one helper is the span it lifts. Nesting after is not estimated.
     """
-    stages = [s for s in plan.get("stages") or () if isinstance(s, Mapping)]
     removed = int(evidence.get("ccn_removed") or 0)
     sliced = int(evidence.get("slice_nloc") or 0)
-    helpers = [
-        (str(s.get("suggested_name") or target), int(s.get("ccn") or 0), int(s.get("nloc") or 0))
-        for s in stages
-    ] or [(str(plan.get("suggested_name") or target), removed + 1, sliced)]
+    helpers = _helpers_after(plan, target, removed, sliced)
     before = (plan.get("orchestrator") or {}).get("ccn_before") or shape.get("ccn")
     nloc = measured_nloc(shape)
     candidates = list(helpers)
@@ -419,6 +428,7 @@ __all__ = [
     "CostProof",
     "LowPriority",
     "above_bar_after",
+    "by_function",
     "cost_proof",
     "dispatch_shaped",
     "dormant",

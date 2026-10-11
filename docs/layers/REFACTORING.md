@@ -292,7 +292,8 @@ Most plans answer a health finding, so per-path marker rules in
 - An Extract Method plan that would still leave the function, or one of its new
   helpers, above the break-up bar says so, for example "leaves build_from_json
   at CCN 83, still above the break-up bar; more stages needed". The plan and
-  its file's opportunity rank after the work that finishes the job.
+  its file's opportunity rank after the work that finishes the job. The mark is
+  set when the repository is indexed, so a plan ranked live is not marked.
 - Move Method never targets a class the method only instantiates, or an ancestor of
   its own class.
 - Split File works on any language with call resolution and suggests a split only
