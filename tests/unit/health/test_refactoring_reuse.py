@@ -206,6 +206,22 @@ def test_a_site_binding_the_name_elsewhere_is_refused() -> None:
     assert repo.reuse(_OCCURRENCES).refused == "name_taken"
 
 
+def test_a_same_file_rebinding_of_the_name_is_refused() -> None:
+    def build(tail: list[str]) -> _Repo:
+        lines = [*_fn(), "", *_host(), *tail]
+        return (
+            _Repo()
+            .file("pkg/util.py", lines)
+            .symbol("pkg/util.py", "normalize", 1, 8, "def normalize(text, sep)")
+            .symbol("pkg/util.py", "run", 10, 17, "def run(text, sep)")
+        )
+
+    occurrences = [("pkg/util.py", 12, 17), ("pkg/util.py", 1, 8)]
+    assert build([]).reuse(occurrences).plan is not None
+    for tail in (["normalize = str.lower"], ["from pkg.other import normalize"]):
+        assert build(tail).reuse(occurrences).refused == "name_taken"
+
+
 def test_scope_statements_and_walrus_targets_are_read() -> None:
     body = ["    global CACHE", *_BODY[:5]]
     repo = _pair(body)

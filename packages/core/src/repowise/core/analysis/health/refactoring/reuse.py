@@ -43,7 +43,14 @@ from ...graph_view import ImportEdgeView
 from ...signature_effect import parameter_names
 from . import render
 from .graph_signals import defined_symbols
-from .reuse_names import exported_later, is_builtin, module_bindings, module_of, read_names
+from .reuse_names import (
+    binding_count,
+    exported_later,
+    is_builtin,
+    module_bindings,
+    module_of,
+    read_names,
+)
 
 ReuseSiteAction = Literal["replace_with_call", "delete"]
 #: What a reuse plan does at a site. Mirrored in ``packages/types``.
@@ -349,7 +356,13 @@ def _name_taken(repo: _Repo, fn: _Fn, path: str, *, deleting: bool) -> bool:
     """Whether *path* already binds ``fn.name`` to something other than an
     import of *fn* (or, when *deleting*, the copy the plan removes)."""
     if path == fn.file:
-        return False
+        # The call resolves the module global at run time, so any other
+        # module-level binding of the name (a later def, assignment or import)
+        # could be what it reaches. A method is reached through its receiver.
+        if fn.kind == "method":
+            return False
+        allowed = 2 if deleting else 1
+        return binding_count(repo.read(path) or [], path, repo.language, fn.name) > allowed
     for binding in repo.bindings(path).get(fn.name, ()):
         if not (deleting and binding == ("def", path)) and not _imports_fn(binding, fn):
             return True

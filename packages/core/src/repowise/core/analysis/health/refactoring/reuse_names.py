@@ -133,6 +133,13 @@ def module_bindings(lines: list[str], path: str, language: str) -> dict[str, set
     return out
 
 
+def binding_count(lines: list[str], path: str, language: str, name: str) -> int:
+    """How many module-level statements in *path* bind *name* (definitions,
+    assignments, imports): :func:`module_bindings` folds them into one set."""
+    scan = _py_bindings if language == "python" else _js_bindings
+    return sum(n == name for st in _top_level_statements(lines) for n, _b in scan(st, path))
+
+
 def _top_level_statements(lines: list[str]) -> list[str]:
     """Unindented lines, a bracketed continuation joined onto its first line.
     A continuation that runs past ``_MAX_CONTINUATION`` lines (a bracket in a
@@ -258,4 +265,4 @@ def module_of(path: str, language: str) -> str:
     return _js_module("./" + posixpath.basename(path), path)
 
 
-__all__ = ["exported_later", "is_builtin", "module_bindings", "module_of", "read_names"]
+__all__ = ["binding_count", "exported_later", "is_builtin", "module_bindings", "module_of", "read_names"]
