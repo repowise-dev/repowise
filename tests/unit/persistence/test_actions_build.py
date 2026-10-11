@@ -278,3 +278,22 @@ def test_a_recent_finding_reads_as_the_open_finding_does_today() -> None:
     ]
     assert (found.symbol, found.sha, found.change_kind) == ("kept", "s1", "introduced")
     assert (found.severity, found.line, found.reason) == ("critical", 701, "takes 12 parameters")
+
+
+def test_equally_serious_open_matches_pick_the_same_one_in_any_order() -> None:
+    from repowise.core.analysis.actions.build import build_recent
+
+    week = _T - timedelta(days=7)
+    row = {"sha": "s1", "committed_at": _iso(timedelta(days=2)), "change_kind": "worsened",
+           "severity": "high", "attribution_basis": "added_lines", "file_path": "src/a.py",
+           "biomarker_type": "complex_method", "symbol": "f"}
+    today = {"file_path": "src/a.py", "biomarker_type": "complex_method", "function_name": "f",
+             "severity": "high", "health_impact": 1.0}
+    a = {**today, "line_start": 40, "reason": "CCN 18"}
+    b = {**today, "line_start": 10, "reason": "CCN 16"}
+
+    for open_findings in ([a, b], [b, a]):
+        (found,) = build_recent([row], week=week, open_findings=open_findings, files={})[
+            "recent_findings"
+        ]
+        assert (found.line, found.reason) == (10, "CCN 16")

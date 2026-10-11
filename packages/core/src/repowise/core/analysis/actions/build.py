@@ -356,15 +356,25 @@ def _serious_open(open_findings: Rows) -> dict[tuple[str, str, str | None], Any]
 
     A commit's row records the finding as that commit left it; the open row
     is what is true today, so it decides whether the finding still counts and
-    what the action says about it.
+    what the action says about it. Ties go to the higher impact, then the
+    earlier line, then the reason, so the pick does not hang on row order.
     """
+
+    def worse(h: Any) -> tuple:
+        return (
+            field(h, "severity") == "critical",
+            field(h, "health_impact") or 0.0,
+            -(field(h, "line_start") or 0),
+            field(h, "reason") or "",
+        )
+
     out: dict[tuple[str, str, str | None], Any] = {}
     for h in open_findings:
         if not _open(h) or field(h, "severity") not in ("critical", "high"):
             continue
         key = (field(h, "file_path"), field(h, "biomarker_type"), field(h, "function_name"))
         held = out.get(key)
-        if held is None or (field(h, "severity"), field(held, "severity")) == ("critical", "high"):
+        if held is None or worse(h) > worse(held):
             out[key] = h
     return out
 
