@@ -107,3 +107,28 @@ module.exports = { run };
     vis = _symbols(src, path="src/mod.js")
     assert vis["run"] == "public"
     assert vis["internal"] == "public"
+
+
+def test_commonjs_named_export_assignment_keeps_everything_public() -> None:
+    src = """
+const run = () => {};
+const internal = () => {};
+exports.run = run;
+"""
+    vis = _symbols(src, path="src/mod.js")
+    assert vis["internal"] == "public"
+
+
+def test_reading_an_exports_variable_is_not_commonjs() -> None:
+    # A VS Code extension's activated ``exports`` object read as a value.
+    src = """
+interface GitExtension { readonly enabled: boolean; }
+export async function getApi(ext: { exports: GitExtension }) {
+  const exports = ext.exports;
+  if (!exports.enabled) return null;
+  return exports["enabled"];
+}
+"""
+    vis = _symbols(src)
+    assert vis["GitExtension"] == "private"
+    assert vis["getApi"] == "public"

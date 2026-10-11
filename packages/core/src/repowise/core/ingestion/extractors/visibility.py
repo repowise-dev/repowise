@@ -315,7 +315,14 @@ def php_visibility(_name: str, modifier_texts: list[str]) -> str:
 _TS_EXPORT_LIST_RE = re.compile(r"\bexport\s*\{([^}]*)\}")
 _TS_EXPORT_DEFAULT_RE = re.compile(r"\bexport\s+default\s+([A-Za-z_$][\w$]*)")
 _TS_EXPORT_ASSIGN_RE = re.compile(r"\bexport\s*=\s*([A-Za-z_$][\w$]*)")
-_TS_CJS_EXPORTS_RE = re.compile(r"\bmodule\.exports\b|\bexports\s*[.\[]")
+# CommonJS is a write to ``exports``, never a read: ``ext.exports`` or a local
+# ``const exports`` read as ``exports.enabled`` is ordinary code, and treating
+# it as CommonJS kept every non-exported declaration in the file public.
+_TS_CJS_EXPORTS_RE = re.compile(
+    r"\bmodule\.exports\b"
+    r"|(?<![.\w$])exports\s*(?:\.\s*[A-Za-z_$][\w$]*|\[[^\]\n]*\])\s*=(?![=>])"
+    r"|\bdefineProperty\(\s*exports\b"
+)
 
 # The same list form, plus whatever follows the closing brace, so a clause with
 # a ``from`` source can be told from one without. Only the source-less form
