@@ -329,6 +329,11 @@ def _parse_signature(sig: str, lang: str | None, kind: str | None) -> _Signature
     return _Signature(params=params, returns=returns, receiver=receiver)
 
 
+def _parsed(signature: str, language: str | None, kind: str | None) -> _Signature | None:
+    lang = (language or "").lower() or None
+    return _parse_signature(_normalize(signature, lang), lang, kind)
+
+
 def parameter_names(
     signature: str, language: str | None = None, kind: str | None = None
 ) -> tuple[str | None, list[str]] | None:
@@ -339,8 +344,7 @@ def parameter_names(
     position alone: a variadic, a keyword-only marker or argument, or a
     destructured parameter.
     """
-    lang = (language or "").lower() or None
-    parsed = _parse_signature(_normalize(signature, lang), lang, kind)
+    parsed = _parsed(signature, language, kind)
     if parsed is None:
         return None
     names: list[str] = []
@@ -355,10 +359,10 @@ def bound_names(
     signature: str, language: str | None = None, kind: str | None = None
 ) -> set[str] | None:
     """Every name the parameter list binds, variadic and keyword-only ones
-    and an identifier receiver included; None when the list cannot be parsed
-    or a parameter is destructured."""
-    lang = (language or "").lower() or None
-    parsed = _parse_signature(_normalize(signature, lang), lang, kind)
+    and an identifier receiver included, in any language
+    :func:`_parse_signature` reads (typed ``Go`` / ``Java`` lists too); None
+    when the list cannot be parsed or a parameter is destructured."""
+    parsed = _parsed(signature, language, kind)
     if parsed is None:
         return None
     out = {parsed.receiver} if parsed.receiver and parsed.receiver.isidentifier() else set()

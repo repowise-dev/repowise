@@ -503,6 +503,23 @@ def test_python_indentation_must_match() -> None:
     assert repo.reuse(_OCCURRENCES).plan is not None
 
 
+def test_a_bracket_in_a_string_or_comment_does_not_hide_indentation() -> None:
+    for opener in ('    parts = text.split("(")', "    parts = text.split(sep)  # (x"):
+        body = [opener, *_BODY[1:5], "    return joined.lower()"]
+        moved = [opener, *_BODY[1:5], "        return joined.lower()"]
+        util = ["import json", "", "", *_fn(body=body)]
+        host = ["from pkg.util import normalize", "", "", *_host(moved)]
+        repo = (
+            _Repo()
+            .file("pkg/util.py", util)
+            .file("pkg/b.py", host)
+            .symbol("pkg/util.py", "normalize", 4, len(util), "def normalize(text, sep)")
+            .symbol("pkg/b.py", "run", 4, len(host), "def run(text, sep)")
+            .imports("pkg/b.py", "pkg/util.py")
+        )
+        assert repo.reuse(_OCCURRENCES).refused == "text_differs"
+
+
 def test_an_annotation_in_a_keyword_only_host_header_binds_nothing() -> None:
     from repowise.core.analysis.signature_effect import bound_names
 
@@ -513,3 +530,5 @@ def test_an_annotation_in_a_keyword_only_host_header_binds_nothing() -> None:
     assert bound_names(signature, "python", "function") == {"a", "b", "kw"}
     assert bound_names("def m(self, x)", "python", "method") == {"self", "x"}
     assert bound_names("function f({ a, b }: P)", "typescript", "function") is None
+    assert bound_names("func (s *S) f(a int, b ...string)", "go", "method") == {"a", "b"}
+    assert bound_names("void f(int a, String... rest)", "java", "method") == {"a", "rest"}

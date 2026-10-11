@@ -45,6 +45,7 @@ from . import render
 from .graph_signals import defined_symbols
 from .reuse_names import (
     binding_count,
+    code_only,
     exported_later,
     is_builtin,
     module_bindings,
@@ -633,15 +634,25 @@ def _match(lines: Lines, src: _Source, occ: Occurrence, language: str, slack: in
 def _indents(lines: Lines, code: Code, language: str) -> tuple[int | None, ...]:
     """Each Python line's indentation relative to the first, None on a line
     continuing a bracket (its alignment is free); empty for other languages,
-    whose braces carry the structure the text comparison already checks."""
+    whose braces carry the structure the text comparison already checks.
+
+    Brackets are counted outside strings and comments; a line at or left of
+    the first line's indentation starts a statement whatever the count says
+    (a bracket in a multi-line string cannot hide the rest). Indentation is
+    counted in characters, so tabs against spaces never match; a backslash
+    continuation is compared like a statement."""
     if language != "python" or not code:
         return ()
     base = _indent(lines[code[0][0] - 1])
     out: list[int | None] = []
     depth = 0
     for n, text in code:
-        out.append(_indent(lines[n - 1]) - base if depth == 0 else None)
-        depth = max(0, depth + sum(text.count(o) - text.count(c) for o, c in ("()", "[]", "{}")))
+        indent = _indent(lines[n - 1])
+        if indent <= base:
+            depth = 0
+        out.append(indent - base if depth == 0 else None)
+        bare = code_only(text, language)
+        depth = max(0, depth + sum(bare.count(o) - bare.count(c) for o, c in ("()", "[]", "{}")))
     return tuple(out)
 
 
