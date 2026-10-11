@@ -351,6 +351,26 @@ def parameter_names(
     return parsed.receiver, names
 
 
+def bound_names(
+    signature: str, language: str | None = None, kind: str | None = None
+) -> set[str] | None:
+    """Every name the parameter list binds, variadic and keyword-only ones
+    and an identifier receiver included; None when the list cannot be parsed
+    or a parameter is destructured."""
+    lang = (language or "").lower() or None
+    parsed = _parse_signature(_normalize(signature, lang), lang, kind)
+    if parsed is None:
+        return None
+    out = {parsed.receiver} if parsed.receiver and parsed.receiver.isidentifier() else set()
+    for param in parsed.params:
+        if param.kind in ("kw_marker", "pos_marker"):
+            continue
+        if not param.name.isidentifier():
+            return None
+        out.add(param.name)
+    return out
+
+
 def _split_default(text: str, lang: str | None, param: _Param) -> str:
     at = _find_top(text, lang, "=")
     if at is None:
