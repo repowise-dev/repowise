@@ -642,6 +642,67 @@ def _stale_renderer_paths(repo_path, parsed_files) -> list[str]:
         return []
 
 
+def _run_decision_evolution(
+    repo_path: Path,
+    file_diffs: list,
+    git_meta_map: dict,
+    *,
+    base_ref: str,
+    head: str | None,
+    provider: Any,
+    cost_tracker: Any,
+    max_concurrency: int,
+) -> dict | None:
+    """Run the update's decision-evolution pass, or ``None`` with no changed file.
+
+    Pass 1 sees only the commits in ``base_ref..head``: older ones were judged
+    by the update that brought them in. The judge calls are booked as decision
+    spend, not page generation.
+    """
+    changed_set = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
+    if not changed_set:
+        return None
+
+    from repowise.core.analysis.decision_evolution import (
+        commits_in_range,
+        run_update_evolution,
+        update_evidence_by_file,
+    )
+
+    evidence_by_file = update_evidence_by_file(
+        file_diffs, git_meta_map, commits_in_range(repo_path, base_ref, head)
+    )
+
+    async def _run() -> dict:
+        from repowise.cli.helpers import get_db_url_for_repo
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            res = await run_update_evolution(
+                session,
+                repo.id,
+                changed_files=changed_set,
+                evidence_by_file=evidence_by_file,
+                provider=provider,
+                max_concurrency=max_concurrency,
+            )
+        await engine.dispose()
+        return res
+
+    with cost_tracker.record_as("decision_extraction"):
+        return run_async(_run())
+
+
 def run_update(
     path: str | None,
     provider_name: str | None,
@@ -1995,6 +2056,9 @@ def run_update(
                 "fingerprint was retained so the next update retries."
             ) from exc
 
+    # Sub-rows of ``decisions``; each step is best-effort and catches its own
+    # errors, so a plain start/stop pair brackets it.
+    timings.start("decisions.rescan")
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
@@ -2024,6 +2088,10 @@ def run_update(
         degraded.append(f"Decision re-scan: {exc}")
         if verbose:
             console.print(f"[yellow]Decision re-scan skipped: {exc}[/yellow]")
+    timings.stop("decisions.rescan")
+
+    # Session mining, session discovery, injection feedback and hook efficacy.
+    timings.start("decisions.sessions")
 
     # Session-sourced decisions: mine agent transcript lines appended since
     # the last update, structure new candidates in one batched LLM pass, and
@@ -2162,18 +2230,20 @@ def run_update(
         degraded.append(f"Hook efficacy: {exc}")
         if verbose:
             console.print(f"[yellow]Hook efficacy classification skipped: {exc}[/yellow]")
+    timings.stop("decisions.sessions")
 
     # Count of decision records touched by evolution, surfaced in the panel.
     decisions_evolved = 0
 
     # Build the shared vector store once: reused by the supersession detector
     # below and by the decision upsert in _persist (semantic dedup + search).
-    decision_vector_store = _build_update_vector_store(
-        repo_path,
-        cfg,
-        degraded,
-        required=(traversal_config_changed or generation_config_changed),
-    )
+    with timed(timings, "decisions.vector_store"):
+        decision_vector_store = _build_update_vector_store(
+            repo_path,
+            cfg,
+            degraded,
+            required=(traversal_config_changed or generation_config_changed),
+        )
 
     # --- Two-pass decision evolution (Phase 3C), BEFORE page regeneration ----
     # Cross-reference the diff + new commit bodies against existing decisions
@@ -2181,61 +2251,19 @@ def run_update(
     # survivor is amended/superseded/reaffirmed (Pass 2, gated). Governed pages
     # of an evolved decision are folded into ``affected.regenerate`` so they
     # re-render in this same run — the cascade-coupling the design calls for.
+    timings.start("decisions.evolution")
     try:
-        import json as _json_evo
-
-        evidence_by_file: dict[str, str] = {}
-        for fd in file_diffs:
-            if fd.status not in ("added", "modified"):
-                continue
-            parts: list[str] = []
-            if fd.trigger_commit_message:
-                parts.append(fd.trigger_commit_message)
-            if fd.diff_text:
-                parts.append(fd.diff_text)
-            meta = git_meta_map.get(fd.path)
-            if meta:
-                for c in _json_evo.loads(meta.get("significant_commits_json", "[]") or "[]"):
-                    msg = c.get("message") or ""
-                    body = c.get("body") or ""
-                    if msg or body:
-                        parts.append(f"{msg}\n{body}")
-            if parts:
-                evidence_by_file[fd.path] = "\n\n".join(parts)
-
-        changed_set = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
-        if changed_set:
-            from repowise.core.analysis.decision_evolution import run_update_evolution
-
-            async def _run_evolution() -> dict:
-                from repowise.cli.helpers import get_db_url_for_repo
-                from repowise.core.persistence import (
-                    create_engine,
-                    create_session_factory,
-                    get_session,
-                    init_db,
-                    upsert_repository,
-                )
-
-                url = get_db_url_for_repo(repo_path)
-                engine = create_engine(url)
-                await init_db(engine)
-                sf = create_session_factory(engine)
-                async with get_session(sf) as session:
-                    repo = await upsert_repository(
-                        session, name=repo_path.name, local_path=str(repo_path)
-                    )
-                    res = await run_update_evolution(
-                        session,
-                        repo.id,
-                        changed_files=changed_set,
-                        evidence_by_file=evidence_by_file,
-                        provider=provider,
-                    )
-                await engine.dispose()
-                return res
-
-            evo = run_async(_run_evolution())
+        evo = _run_decision_evolution(
+            repo_path,
+            file_diffs,
+            git_meta_map,
+            base_ref=base_ref,
+            head=head,
+            provider=provider,
+            cost_tracker=cost_tracker,
+            max_concurrency=config.max_concurrency,
+        )
+        if evo is not None:
             decisions_evolved = (
                 evo.get("superseded", 0) + evo.get("amended", 0) + evo.get("reaffirmed", 0)
             )
@@ -2257,6 +2285,7 @@ def run_update(
         degraded.append(f"Decision evolution: {exc}")
         if verbose:
             console.print(f"[yellow]Decision evolution skipped: {exc}[/yellow]")
+    timings.stop("decisions.evolution")
     timings.stop("decisions")
 
     # Filter to only affected files

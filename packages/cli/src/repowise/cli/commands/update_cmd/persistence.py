@@ -195,14 +195,17 @@ async def _persist_partial_health(
     await persist_partial_health(session, repo_id, report, repo_path)
 
 
-async def _persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
+async def _persist_incremental_commits(
+    session: Any, repo_id: str, repo_path: Any, *, timings: PhaseTimings | None = None
+) -> None:
     """Capture + upsert ``git_commits`` rows for commits new since the last index.
 
-    Delegates to :mod:`repowise.core.pipeline.incremental`.
+    Delegates to :mod:`repowise.core.pipeline.incremental`. ``timings`` carries
+    its ``persist.commits.*`` sub-rows into the run's phase table.
     """
     from repowise.core.pipeline.incremental import persist_incremental_commits
 
-    await persist_incremental_commits(session, repo_id, repo_path)
+    await persist_incremental_commits(session, repo_id, repo_path, timings=timings)
 
 
 def stamp_head_commit(repo_path: Any, head: str | None) -> None:
@@ -1053,7 +1056,9 @@ async def _persist_full_update_async(
                 try:
                     with timed(timings, "persist.commits"):
                         if full_git_summary is None:
-                            await _persist_incremental_commits(session, repo_id, repo_path)
+                            await _persist_incremental_commits(
+                                session, repo_id, repo_path, timings=timings
+                            )
                 except Exception as exc:
                     _skip("Commit capture", exc)
 
