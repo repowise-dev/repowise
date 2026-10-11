@@ -13,10 +13,10 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Protocol
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
-    effective_safe_to_delete,
     path_risk_factors,
 )
 from repowise.core.analysis.finding_registry import verification_label, withheld_summary

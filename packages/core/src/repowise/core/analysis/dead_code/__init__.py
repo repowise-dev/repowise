@@ -31,11 +31,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ...lazy_exports import lazy_exports
+from .deletion_gate import effective_safe_to_delete
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
-    effective_safe_to_delete,
     path_risk_factors,
     risk_evidence,
 )

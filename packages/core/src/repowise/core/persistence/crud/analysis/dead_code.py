@@ -9,11 +9,11 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeKind
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
-    effective_safe_to_delete,
     path_risk_factors,
 )
 from repowise.core.analysis.finding_registry import excluded_types

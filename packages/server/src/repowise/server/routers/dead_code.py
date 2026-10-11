@@ -5,9 +5,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
-    effective_safe_to_delete,
 )
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
