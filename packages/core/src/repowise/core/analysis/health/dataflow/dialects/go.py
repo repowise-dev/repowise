@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
+    DeclaredTypes,
     Occurrence,
     Receiver,
     StatementDefUse,
@@ -55,7 +56,7 @@ class GoDefUseDialect(BaseDefUseDialect):
     language = "go"
     member_access_kinds = frozenset({"selector_expression"})
     receiver_write_kinds = _ASSIGN_KINDS | _INC_DEC_KINDS
-    type_holder_kinds = frozenset({"parameter_declaration", "var_spec"})
+    declared_types = DeclaredTypes(frozenset({"parameter_declaration", "var_spec"}))
     keyword_kinds = frozenset()  # Go has no keyword arguments.
 
     def _is_scope_boundary(self, node: Node) -> bool:

@@ -752,7 +752,7 @@ def _declared_types(
         # Tree points are byte columns.
         node = fn_node.descendant_for_point_range((row, d.column), (row, d.column + len(raw)))
         if node is not None and node.text == raw:
-            typ = dialect.declared_type(node)
+            typ = dialect.declared_types.of(node)
             if typ:
                 found[d.var] = typ
     return found

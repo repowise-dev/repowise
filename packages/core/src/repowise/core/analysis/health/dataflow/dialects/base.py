@@ -173,6 +173,48 @@ class DefUseDialect(Protocol):
     def handler_head(self, handler: Node) -> HandlerHead: ...
 
 
+@dataclass(frozen=True)
+class DeclaredTypes:
+    """Reads the type written where a name is declared. A language sets its
+    holder / wrapper kinds and, where its declarators add to the type (C++),
+    overrides the two hooks below."""
+
+    #: Nodes whose ``type`` field types the names they declare: a typed
+    #: parameter, a typed local declaration.
+    holder_kinds: frozenset[str] = frozenset()
+    #: Declarators between a declared name and its holder (Java's
+    #: ``variable_declarator``, C++'s ``init_declarator`` / ``pointer_declarator``).
+    wrapper_kinds: frozenset[str] = frozenset()
+
+    def of(self, name: Node) -> str | None:
+        """The type written where identifier *name* is declared, or None when
+        the declaration writes none, or only asks for inference (``var``,
+        ``auto``). Reads the retained tree around one node: no walk."""
+        node, suffix = name.parent, ""
+        while node is not None and node.type in self.wrapper_kinds:
+            if node.child_by_field_name("dimensions") is not None:
+                return None  # Java ``int a[]``: the declarator changes the type
+            suffix = self._declarator_token(node) + suffix
+            node = node.parent
+        if node is None or node.type not in self.holder_kinds:
+            return None
+        typ = node.child_by_field_name("type")
+        if typ is None or typ.start_byte <= name.start_byte < typ.end_byte:
+            return None
+        text = " ".join(node_text(typ).lstrip(":").split())
+        if not text or text in _INFERRED_TYPES:
+            return None
+        return self._type_prefix(node, typ) + text + suffix
+
+    def _declarator_token(self, node: Node) -> str:
+        """What declarator *node* adds to the type (C++ ``*`` / ``&``)."""
+        return ""
+
+    def _type_prefix(self, holder: Node, typ: Node) -> str:
+        """Qualifiers written before the type (C++ ``const``)."""
+        return ""
+
+
 class BaseDefUseDialect:
     """Shared machinery for concrete dialects.
 
@@ -520,42 +562,8 @@ class BaseDefUseDialect:
         repeat it (a Go ``(s *S)``, a Rust ``&self``). Default: none."""
         return None
 
-    # -- declared types ---------------------------------------------------------
-
-    #: Nodes whose ``type`` field types the names they declare: a typed
-    #: parameter, a typed local declaration.
-    type_holder_kinds: frozenset[str] = frozenset()
-    #: Declarators between a declared name and its holder (Java's
-    #: ``variable_declarator``, C++'s ``init_declarator`` / ``pointer_declarator``).
-    type_wrapper_kinds: frozenset[str] = frozenset()
-
-    def declared_type(self, name: Node) -> str | None:
-        """The type written where identifier *name* is declared, or None when
-        the declaration writes none, or only asks for inference (``var``,
-        ``auto``). Reads the retained tree around one node: no walk."""
-        node, suffix = name.parent, ""
-        while node is not None and node.type in self.type_wrapper_kinds:
-            if node.child_by_field_name("dimensions") is not None:
-                return None  # Java ``int a[]``: the declarator changes the type
-            suffix = self._declarator_token(node) + suffix
-            node = node.parent
-        if node is None or node.type not in self.type_holder_kinds:
-            return None
-        typ = node.child_by_field_name("type")
-        if typ is None or typ.start_byte <= name.start_byte < typ.end_byte:
-            return None
-        text = " ".join(node_text(typ).lstrip(":").split())
-        if not text or text in _INFERRED_TYPES:
-            return None
-        return self._type_prefix(node, typ) + text + suffix
-
-    def _declarator_token(self, node: Node) -> str:
-        """What declarator *node* adds to the type (C++ ``*`` / ``&``)."""
-        return ""
-
-    def _type_prefix(self, holder: Node, typ: Node) -> str:
-        """Qualifiers written before the type (C++ ``const``)."""
-        return ""
+    #: How this language writes a declared name's type (see :class:`DeclaredTypes`).
+    declared_types: DeclaredTypes = DeclaredTypes()
 
     def _receiver(self, names: frozenset[str], **flags: bool) -> Receiver:
         return Receiver(names, self.member_access_kinds, self.receiver_write_kinds, **flags)

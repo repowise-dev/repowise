@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from .base import (
     BaseDefUseDialect,
+    DeclaredTypes,
     HandlerHead,
     Occurrence,
     Receiver,
@@ -92,11 +93,26 @@ def _is_static(method: Node) -> bool:
     return any(c.type == "static" for c in method.children)
 
 
+class _TsDeclaredTypes(DeclaredTypes):
+    def of(self, name: Node) -> str | None:
+        """The base rule, plus ``| undefined`` for an optional parameter
+        (``x?: T`` holds ``T | undefined`` until something narrows it)."""
+        typ = super().of(name)
+        if typ is None or name.parent is None or name.parent.type != "optional_parameter":
+            return typ
+        arms = union_arms(typ)
+        if "undefined" in arms:
+            return typ
+        return f"({typ}) | undefined" if len(arms) == 1 and "=>" in typ else f"{typ} | undefined"
+
+
 class TsJsDefUseDialect(BaseDefUseDialect):
     language = "typescript"
     member_access_kinds = frozenset({"member_expression"})
     receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS | _UPDATE_KINDS
-    type_holder_kinds = frozenset({"required_parameter", "optional_parameter", "variable_declarator"})
+    declared_types = _TsDeclaredTypes(
+        frozenset({"required_parameter", "optional_parameter", "variable_declarator"})
+    )
     keyword_kinds = frozenset()  # object-property keys are not variable reads.
     # ``shorthand_property_identifier`` is an object-literal read (``{ days }``
     # reads the local ``days``). Its ``_pattern`` twin is the destructuring
@@ -143,17 +159,6 @@ class TsJsDefUseDialect(BaseDefUseDialect):
         param = handler.child_by_field_name("parameter")
         named = param is not None and param.type == "identifier"
         return None, node_text(param) if named else None
-
-    def declared_type(self, name: Node) -> str | None:
-        """The base rule, plus ``| undefined`` for an optional parameter
-        (``x?: T`` holds ``T | undefined`` until something narrows it)."""
-        typ = super().declared_type(name)
-        if typ is None or name.parent is None or name.parent.type != "optional_parameter":
-            return typ
-        arms = union_arms(typ)
-        if "undefined" in arms:
-            return typ
-        return f"({typ}) | undefined" if len(arms) == 1 and "=>" in typ else f"{typ} | undefined"
 
     def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]:
         params_node = fn_node.child_by_field_name("parameters")

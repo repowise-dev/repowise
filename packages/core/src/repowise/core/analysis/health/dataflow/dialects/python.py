@@ -24,6 +24,7 @@ from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
     Captured,
+    DeclaredTypes,
     HandlerHead,
     Occurrence,
     Receiver,
@@ -63,7 +64,9 @@ class PythonDefUseDialect(BaseDefUseDialect):
     language = "python"
     member_access_kinds = frozenset({"attribute"})
     receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS
-    type_holder_kinds = frozenset({"typed_parameter", "typed_default_parameter", "assignment"})
+    declared_types = DeclaredTypes(
+        frozenset({"typed_parameter", "typed_default_parameter", "assignment"})
+    )
     keyword_kinds = frozenset({"keyword_argument"})
 
     # A nested ``def`` is visible in the enclosing scope from its statement on.
