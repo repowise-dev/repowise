@@ -37,10 +37,8 @@ silence), the same precision-first default as the def/use dialect.
 
 **Exceptions.** A ``try`` body, ``else`` clause or handler is joined to the
 handlers / ``finally`` it can raise into from the state before it and from each
-of its blocks. A block's edge into a handler is recorded in ``raise_edges``,
-because an exception can leave it between two statements: reaching definitions
-carry every write of such a block across it, so in a ``try`` body
-``x = 1; y = g(); x = 2`` an ``except`` that reads ``x`` sees ``x = 1`` too.
+of its blocks. Those block edges are ``raise_edges``, since an exception can
+leave a block mid-way: in ``x = 1; y = g(); x = 2`` the handler sees ``x = 1``.
 """
 
 from __future__ import annotations
@@ -240,6 +238,11 @@ class _CFGBuilder:
     def _raises_to(self, sources: list[BasicBlock], dst: BasicBlock) -> None:
         self._edges_to(sources, dst)
         self._raise_edges.update((src.id, dst.id) for src in sources)
+
+    def _protect(self, cur: BasicBlock, region: list[BasicBlock], dst: BasicBlock) -> None:
+        """*cur* reaches *dst* by its end state, *region*'s blocks from mid-block."""
+        self._edge(cur, dst)
+        self._raises_to(region, dst)
 
     def _record_stmt(self, block: BasicBlock, node: Node) -> None:
         block.statements.append(
@@ -517,8 +520,7 @@ class _CFGBuilder:
         )
         protected = self.blocks[first:]
         if finally_clause is not None:
-            self._edge(cur, normal_join)
-            self._raises_to(protected, normal_join)
+            self._protect(cur, protected, normal_join)
 
         # ``else`` runs only when the body completed without an exception; one
         # raised inside it skips the handlers but still runs the ``finally``.
@@ -538,8 +540,7 @@ class _CFGBuilder:
         for handler in (c for c in try_node.children if c.type in self.lmap.catch_kinds):
             first = len(self.blocks)
             handler_entry = self._new("handler")
-            self._edge(cur, handler_entry)
-            self._raises_to(protected, handler_entry)
+            self._protect(cur, protected, handler_entry)
             handler_out = self._process_seq(
                 self._body_stmts(self._block_of(handler)), handler_entry
             )

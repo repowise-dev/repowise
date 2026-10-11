@@ -10,11 +10,8 @@ Per block ``b`` with predecessors ``pred(b)``::
     GEN[b]  = the last definition of each variable written in b
     KILL[b] = every definition of any variable b writes, except GEN[b]
     IN[b]   = union over p in pred(b) of OUT[p]
+              (IN[p] union every def in p, on a raise edge p -> b)
     OUT[b]  = GEN[b] union (IN[b] minus KILL[b])
-
-An exception can leave a protected block between any two of its statements, so
-along a ``raise_edges`` edge ``p -> b`` the contribution is IN[p] plus every
-definition written in p, not OUT[p].
 
 Definition sets are integer sets keyed by :attr:`defuse.Definition.index`, so
 the lattice is finite and the worklist always converges in a bounded number of
@@ -66,13 +63,10 @@ class ReachingDefinitions:
         return [self.definitions[i] for i in sorted(idx)]
 
 
-def compute_reaching(
-    cfg: CFG,
-    fdu: FunctionDefUse,
-    *,
-    max_iterations: int | None = None,
-) -> ReachingDefinitions:
-    """Run the reaching-definitions fixpoint over *cfg* with *fdu*'s def facts."""
+def _block_facts(
+    cfg: CFG, fdu: FunctionDefUse
+) -> tuple[dict[int, frozenset[int]], dict[int, frozenset[int]], dict[int, frozenset[int]]]:
+    """GEN, KILL and every definition written, per block."""
     # All definitions of each variable -> the KILL sets.
     defs_by_var: dict[str, set[int]] = {}
     for d in fdu.definitions:
@@ -95,6 +89,18 @@ def compute_reaching(
         gen[block.id] = gen_b
         every[block.id] = frozenset(d.index for d in block_defs)
         kill[block.id] = frozenset(killed) - gen_b
+    return gen, kill, every
+
+
+def compute_reaching(
+    cfg: CFG,
+    fdu: FunctionDefUse,
+    *,
+    max_iterations: int | None = None,
+) -> ReachingDefinitions:
+    """Run the reaching-definitions fixpoint over *cfg* with *fdu*'s def facts."""
+    gen, kill, every = _block_facts(cfg, fdu)
+    raise_srcs = {src for src, _dst in cfg.raise_edges}
 
     in_sets: dict[int, frozenset[int]] = {b.id: frozenset() for b in cfg.blocks}
     out_sets: dict[int, frozenset[int]] = {b.id: gen[b.id] for b in cfg.blocks}
@@ -118,14 +124,17 @@ def compute_reaching(
 
         in_b: frozenset[int] = frozenset()
         for pred in block.predecessors:
-            in_b |= out_sets[pred]
+            # OUT[pred] is a subset of IN[pred] | every[pred].
             if (pred, bid) in cfg.raise_edges:
                 in_b |= in_sets[pred] | every[pred]
-        in_changed = in_b != in_sets[bid]
+            else:
+                in_b |= out_sets[pred]
+        # A raise edge carries IN, so its target moves even when OUT does not.
+        in_moved = bid in raise_srcs and in_b != in_sets[bid]
         in_sets[bid] = in_b
 
         out_b = gen[bid] | (in_b - kill[bid])
-        if out_b != out_sets[bid] or (in_changed and cfg.raise_edges):
+        if out_b != out_sets[bid] or in_moved:
             out_sets[bid] = out_b
             for succ in block.successors:
                 if succ not in queued:
