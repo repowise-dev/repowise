@@ -151,18 +151,21 @@ _PARENT_KEY = re.compile(
 
 
 def is_parent_key_filter(text: bytes) -> bool:
-    """The read filters on equality with one foreign key."""
+    """The read filters on equality with one foreign key, or walks the tree
+    below one row (``WITH RECURSIVE .. WHERE id = ?``)."""
+    if re.search(rb"\bRECURSIVE\b", text, re.IGNORECASE) and _KEY_EQUALITY.search(text):
+        return True
     return bool(_PARENT_KEY.search(text))
 
 
 _SQL_LIMIT = re.compile(
-    rb"\bselect\b.*?(?:\blimit\s+\d+\b|\btop\s*\(?\s*\d+|\bfetch\s+first\s+\d+)",
+    rb"\bselect\b.*?(?:\blimit\s+(?:\d+\b|\?|\$\d|:\w)|\btop\s*\(?\s*\d+|\bfetch\s+first\s+\d+)",
     re.IGNORECASE | re.DOTALL,
 )
 
 
 def has_sql_limit(text: bytes) -> bool:
-    """A SELECT capped at a literal row count (``LIMIT 10``, ``TOP 5``)."""
+    """A SELECT capped at a row count (``LIMIT 10``, ``LIMIT ?``, ``TOP 5``)."""
     return bool(_SQL_LIMIT.search(text))
 
 

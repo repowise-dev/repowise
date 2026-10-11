@@ -60,7 +60,7 @@ graph and the import graph. An opportunity with a supported shared fix links to 
 Each loop also says what it walks: rows a query returns, a collection its caller
 passes in, the rows of one key, a registry or configuration table, a fixed set, a
 directory listing or a stream, and plan steps name it. Python, TypeScript/JavaScript,
-Go, Java, C# and Ruby loops say whether they grow with the data or are bounded; a
+Go, Java, C#, Ruby, Rust, Kotlin and C++ loops say whether they grow with the data or are bounded; a
 loop whose size the code does not show stays unknown and is never treated as
 bounded. A loop that stops at the first call that answers, or feeds each call's
 result into the next, gets no batch advice (reason `loop_not_batchable`).
