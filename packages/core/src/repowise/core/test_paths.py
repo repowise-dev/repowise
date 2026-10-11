@@ -399,6 +399,7 @@ def _classify(
     path: str,
     language: str | None,
     roots: PytestRoots | None = None,
+    *,
     jvm_roots: JvmSourceSets | None = None,
 ) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
@@ -406,10 +407,6 @@ def _classify(
     One traversal, so the two public predicates cannot disagree with each other
     the way the copies they replace disagreed.
     """
-    if roots is not None and hasattr(roots, "collects") and not hasattr(roots, "may_collect_name"):
-        jvm_roots = roots  # type: ignore[assignment]
-        roots = None
-
     original, lowered = _parts(path)
     if not original:
         return ""
@@ -478,6 +475,7 @@ def is_test_path(
     path: str,
     language: str | None = None,
     roots: PytestRoots | None = None,
+    *,
     jvm_roots: JvmSourceSets | None = None,
 ) -> bool:
     """Whether *path* is a test.
@@ -490,13 +488,14 @@ def is_test_path(
     *roots* to let pytest's config overrule a test-shaped Python name, and
     *jvm_roots* to let JVM build configuration overrule a test-shaped JVM class.
     """
-    return _classify(path, language, roots, jvm_roots) == "test"
+    return _classify(path, language, roots, jvm_roots=jvm_roots) == "test"
 
 
 def is_test_support_path(
     path: str,
     language: str | None = None,
     roots: PytestRoots | None = None,
+    *,
     jvm_roots: JvmSourceSets | None = None,
 ) -> bool:
     """Whether *path* is test infrastructure rather than a test.
@@ -505,13 +504,14 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots, jvm_roots) == "support"
+    return _classify(path, language, roots, jvm_roots=jvm_roots) == "support"
 
 
 def is_test_related_path(
     path: str,
     language: str | None = None,
     roots: PytestRoots | None = None,
+    *,
     jvm_roots: JvmSourceSets | None = None,
 ) -> bool:
     """Whether *path* is a test **or** test support.
@@ -521,7 +521,7 @@ def is_test_related_path(
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
-    return _classify(path, language, roots, jvm_roots) != ""
+    return _classify(path, language, roots, jvm_roots=jvm_roots) != ""
 
 
 def is_unambiguous_test_path(path: str, language: str | None = None) -> bool:

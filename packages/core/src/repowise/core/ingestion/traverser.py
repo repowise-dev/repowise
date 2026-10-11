@@ -820,7 +820,7 @@ class FileTraverser:
         )
         tables = self._console_script_tables()
         is_test = is_test_related_path(
-            rel_str, language, tables.pytest_roots, tables.jvm_roots
+            rel_str, language, tables.pytest_roots, jvm_roots=tables.jvm_roots
         )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(

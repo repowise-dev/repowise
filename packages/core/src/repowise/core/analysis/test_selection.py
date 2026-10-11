@@ -451,6 +451,7 @@ def is_test_helper(path: str) -> bool:
 def is_runnable_test(
     path: str,
     roots: PytestRoots | JvmSourceSets | None = None,
+    *,
     jvm_roots: JvmSourceSets | None = None,
 ) -> bool:
     """A test-shaped file name with an extension a runner collects tests from.

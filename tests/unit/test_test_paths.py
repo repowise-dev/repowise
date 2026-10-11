@@ -462,3 +462,17 @@ def test_jvm_build_config_demotes_main_source_set_test_shaped_names() -> None:
     assert is_test_path(module_test_path, jvm_roots=roots)
     assert is_test_related_path(module_test_path, jvm_roots=roots)
 
+
+def test_jvm_roots_keyword_only_enforced() -> None:
+    """jvm_roots cannot be passed positionally, preventing multi-PR argument collisions."""
+    from repowise.core.jvm_source_sets import JvmSourceSets
+
+    roots = JvmSourceSets()
+    with pytest.raises(TypeError):
+        is_test_path("src/main/java/MainTest.java", "java", None, roots)  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        is_test_support_path("src/main/java/MainTest.java", "java", None, roots)  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        is_test_related_path("src/main/java/MainTest.java", "java", None, roots)  # type: ignore[misc]
+
+
