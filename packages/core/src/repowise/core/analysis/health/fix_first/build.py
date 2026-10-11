@@ -34,7 +34,7 @@ Row shapes (field names are the SQL columns):
 ``plans``
     Plan rows named by a refactoring step: ``public_id``, ``evidence`` /
     ``evidence_json`` and ``plan`` / ``plan_json`` (an extract-method ``span``,
-    ``params``, ``returns``, ``suggested_name``; a move's destination; a
+    ``params``, ``returns``, ``suggested_name``, ``anchors``; a move's destination; a
     split's named groups; a helper's ``occurrences``). A plan row that also
     carries ``refactoring_type`` ``extract_method``, ``file_path`` and
     ``target_symbol`` can give a finding with no plan of its own its first
@@ -91,6 +91,8 @@ from repowise.core.analysis.health.queue.value import (
     tier,
     worth,
 )
+from repowise.core.analysis.health.refactoring.recipe import ELSEWHERE_NOTE
+from repowise.core.analysis.health.refactoring.recipe import _anchors as plan_anchors
 from repowise.core.analysis.health.refactoring.render import NAME_PLACEHOLDER
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
@@ -106,6 +108,7 @@ from repowise.core.analysis.health.worth import (
     worth_size,
 )
 from repowise.core.analysis.next_call import ActionCommand
+from repowise.core.ci.markdown import code as md_code
 
 from . import text
 from .model import (
@@ -400,19 +403,7 @@ class _Files:
         if best is not None:
             start, end = _span(best)
             body = _plan_body(best)
-            into = text.signature(
-                body.get("suggested_name"),
-                list(body.get("params") or []),
-                list(body.get("returns") or []),
-                is_async=bool(body.get("needs_async", False)),
-            )
-            return FixStep(
-                1,
-                _stage_one(f"Extract lines {start}-{end} of {tail} into {into}", tail, body),
-                path,
-                start,
-                **_helper_code(body),
-            )
+            return FixStep(1, _extract_text(tail, body, start, end), path, start, **_helper_code(body))
         shape = self.shape(path, function)
         start, end = shape.get("deep_start"), shape.get("deep_end")
         if start and end:
@@ -642,14 +633,7 @@ def _refactor_step(
     code: dict[str, str | None] = {}
     if kind == "extract_method":
         code = _helper_code(body)
-        into = text.signature(
-            body.get("suggested_name"),
-            list(body.get("params") or []),
-            list(body.get("returns") or []),
-            is_async=bool(body.get("needs_async", False)),
-        )
-        where = f"lines {start}-{end} of {sym}" if start and end else f"part of {sym}"
-        line_text = _stage_one(f"Extract {where} into {into}", sym, body)
+        line_text = _extract_text(sym, body, start, end)
     elif kind == "extract_helper":
         line_text = f"Replace the duplicate in {sym} with a call to one shared helper"
     elif kind == "extract_class":
@@ -691,6 +675,33 @@ def _refactor_step(
     )
 
 
+def _extract_text(sym: str, body: Mapping[str, Any], start: Any, end: Any) -> str:
+    """An Extract Method step: the span by the text it starts and ends with
+    when the plan anchored it (line numbers move with every edit), else by
+    its lines, and its first stage when the plan is staged. A helper whose
+    header the plan wrote is named alone: the step carries the header."""
+    name = body.get("suggested_name")
+    into = (
+        name
+        if name and _helper_code(body)["signature"]
+        else text.signature(
+            name,
+            list(body.get("params") or []),
+            list(body.get("returns") or []),
+            is_async=bool(body.get("needs_async", False)),
+        )
+    )
+    anchors = plan_anchors(body.get("anchors"))
+    if anchors is not None:
+        where = f"{sym} from {md_code(anchors['first'])} to {md_code(anchors['last'])}"
+    else:
+        where = f"lines {start}-{end} of {sym}" if start and end else f"part of {sym}"
+    line_text = _stage_one(f"Extract {where} into {into}", body)
+    if anchors is not None and anchors["unique_in"] == "function":
+        line_text = f"{line_text}. {ELSEWHERE_NOTE}"
+    return line_text
+
+
 def _stage_count(body: Mapping[str, Any]) -> int:
     """How many helpers a staged Extract Method plan splits its function into;
     0 when unstaged. Counts stages with a span, as the plan detail page does,
@@ -711,9 +722,9 @@ def _has_span(stage: Any) -> bool:
     return type(start) is int and type(end) is int and bool(start and end)
 
 
-def _stage_one(line_text: str, sym: str, body: Mapping[str, Any]) -> str:
+def _stage_one(line_text: str, body: Mapping[str, Any]) -> str:
     """A staged plan's step is its first stage (the plan's top-level span),
-    so it says so and names what the whole plan does."""
+    so it says so and what the whole plan does to the function's CCN."""
     count = _stage_count(body)
     if not count:
         return line_text
@@ -723,8 +734,12 @@ def _stage_one(line_text: str, sym: str, body: Mapping[str, Any]) -> str:
         if isinstance(residual, dict)
         else (None, None)
     )
-    ccn = f", CCN {before} -> {after}" if before is not None and after is not None else ""
-    return f"Stage 1 of {count}: {line_text} (the plan splits {sym} into {count} helpers{ccn})"
+    ccn = (
+        f" (CCN {before} -> {after} after all {count})"
+        if before is not None and after is not None
+        else ""
+    )
+    return f"Stage 1 of {count}: {line_text}{ccn}"
 
 
 def _uncut_cycle_text(path: str, plan: Any) -> str:
