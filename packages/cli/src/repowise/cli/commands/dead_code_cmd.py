@@ -212,6 +212,13 @@ def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the live analysis (table format only).",
+)
 def dead_code_command(
     path: str | None,
     min_confidence: float,
@@ -224,6 +231,7 @@ def dead_code_command(
     no_unused_exports: bool,
     repo_alias: str | None,
     no_workspace: bool,
+    verbose: bool,
 ) -> None:
     """Detect dead and unused code.
 
@@ -235,7 +243,9 @@ def dead_code_command(
     --repo <alias> to target a different repo. Cross-repo dead-code
     detection is not yet supported — run once per repo for now.
     """
-    if fmt != "table":
+    # The live path parses the whole tree, and its structlog lines go to
+    # stdout: they would corrupt JSON/Markdown and bury the table.
+    if fmt != "table" or not verbose:
         silence_logs_for_machine_output_until_close()
 
     target = resolve_command_target(

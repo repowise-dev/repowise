@@ -728,11 +728,6 @@ def _generate_docs_for_added_repo(
         GenerationConfig,
         PageGenerator,
     )
-    from repowise.core.ingestion import (
-        ASTParser,
-        FileTraverser,
-        GraphBuilder,
-    )
     from repowise.core.persistence import (
         FullTextSearch,
         create_engine,
@@ -744,28 +739,13 @@ def _generate_docs_for_added_repo(
     )
 
     # Re-parse files. The pipeline persisted graph data already; for doc
-    # generation we need parsed files in-memory.
-    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
-    file_infos = list(traverser.traverse())
-    repo_structure = traverser.get_repo_structure()
-    parser = ASTParser()
-    graph_builder = GraphBuilder(repo_path)
-    parsed_files = []
-    source_map: dict = {}
-    for fi in file_infos:
-        try:
-            source = Path(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            parsed_files.append(parsed)
-            source_map[fi.path] = source
-            graph_builder.add_file(parsed)
-        except Exception:
-            continue
+    # generation we need parsed files in-memory, and the same graph init
+    # builds (framework and dynamic-hint edges included).
+    from repowise.core.pipeline.incremental import build_repo_graph
 
-    from repowise.core.ingestion import wire_tsconfig_resolver
-
-    wire_tsconfig_resolver(graph_builder, repo_path)
-    graph_builder.build()
+    parsed_files, source_map, graph_builder, repo_structure, _count = build_repo_graph(
+        repo_path, exclude_patterns, collect_sources=True
+    )
 
     from repowise.core.repo_config import load_repo_config
 

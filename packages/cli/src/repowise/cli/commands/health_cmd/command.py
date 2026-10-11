@@ -533,37 +533,27 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
 
 
 def _parse_tree(repo_path: Path) -> tuple[Any, list[Any]]:
-    """``(graph builder, parsed files)`` over the file set the index analyzed."""
-    from repowise.core.ingestion import (
-        ASTParser,
-        FileTraverser,
-        GraphBuilder,
-        wire_tsconfig_resolver,
-    )
+    """``(graph builder, parsed files)`` over the file set the index analyzed.
+
+    The graph is the one ``update`` builds (framework, pytest-root and
+    dynamic-hint edges included), since ``--recompute`` persists into the
+    rows the indexer writes. ``read_only`` keeps the parse cache, centrality
+    cache and structural episodes untouched.
+    """
+    from repowise.core.pipeline.incremental import build_repo_graph
 
     # A repo initialized with --include-submodules persists the flag in
     # state.json, and a flagless traverser would score a smaller tree.
     state = load_state(repo_path)
-    flags = {
-        "include_submodules": bool(state.get("include_submodules", False)),
-        "include_nested_repos": bool(state.get("include_nested_repos", False)),
-    }
-    # `--recompute` persists into the rows the indexer writes, so it has to
-    # analyze the same file set. Without the config's exclude patterns it
-    # scored, and overwrote rows for, files the index had dropped, and on a
-    # repo excluding a manifest directory it could write a different `module`.
-    exclude_patterns: list[str] = list(load_config(repo_path).get("exclude_patterns") or [])
-    traverser = FileTraverser(repo_path, **flags, extra_exclude_patterns=exclude_patterns or None)
-    parser = ASTParser()
-    graph_builder = GraphBuilder(repo_path, **flags)
-    parsed_files = []
-    for fi in traverser.traverse():
-        try:
-            parsed = parser.parse_file(fi, Path(fi.abs_path).read_bytes())
-            graph_builder.add_file(parsed)
-            parsed_files.append(parsed)
-        except Exception:
-            continue
-    wire_tsconfig_resolver(graph_builder, repo_path, **flags)
-    graph_builder.build()
+    # Without the config's exclude patterns it scored, and overwrote rows for,
+    # files the index had dropped, and on a repo excluding a manifest
+    # directory it could write a different `module`.
+    parsed_files, _sources, graph_builder, _structure, _count = build_repo_graph(
+        repo_path,
+        list(load_config(repo_path).get("exclude_patterns") or []),
+        collect_sources=True,
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
+        read_only=True,
+    )
     return graph_builder, parsed_files
