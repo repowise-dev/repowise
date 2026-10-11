@@ -18,6 +18,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Literal, get_args
 
 from .annotations import RiskKind
+from .batches import stage_batches
 from .render import NAME_PLACEHOLDER, TYPE_PLACEHOLDER
 
 RecipeAction = Literal[
@@ -658,8 +659,10 @@ def _extract_does_not(
 
 def build_recipe(detail: Mapping[str, Any]) -> dict[str, Any]:
     """*detail* as ``{id, kind, advisory, summary, target, preconditions, steps,
-    postconditions, does_not}``. Pure: reads only the dict it is given."""
+    postconditions, does_not}``, plus ``batches`` on a staged plan over five
+    stages (:mod:`.batches`). Pure: reads only the dict it is given."""
     steps = recipe_steps(detail)
+    batches = stage_batches(detail, steps)
     return {
         "id": detail.get("id"),
         "kind": detail.get("refactoring_type"),
@@ -677,6 +680,7 @@ def build_recipe(detail: Mapping[str, Any]) -> dict[str, Any]:
         "steps": steps,
         "postconditions": _postconditions(detail),
         "does_not": _does_not(detail, steps),
+        **({"batches": batches} if batches else {}),
     }
 
 
