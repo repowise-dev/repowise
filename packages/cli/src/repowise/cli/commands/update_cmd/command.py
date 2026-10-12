@@ -48,6 +48,7 @@ from repowise.core.ingestion.git_indexer import (
 )
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.reasoning import REASONING_MODES
+from repowise.core.store_location import resolve_store_dir
 
 from .incremental import (
     _build_update_vector_store,
@@ -833,7 +834,7 @@ def run_update(
     # updating, so post-commit hooks and agents running `update` in a fresh
     # worktree get incremental catch-up instead of a "no previous sync" error.
     # Best-effort: failed validation falls through to the normal flow.
-    if not (repo_path / ".repowise" / "state.json").exists():
+    if not (resolve_store_dir(repo_path) / "state.json").exists():
         from repowise.cli.worktree import (
             base_is_seedable,
             detect_worktree_base,

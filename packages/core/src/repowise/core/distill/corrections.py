@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.sessions import INTENT_SHELL_CALLS, Event, HarnessAdapter, get_adapter
+from repowise.core.store_location import resolve_store_dir
 
 #: Default scan window, in days. Corrections are rarer than missed savings,
 #: so the default window is wider.
@@ -446,7 +447,7 @@ def _attach_index_hints(repo_root: Path, rules: list[dict[str, Any]]) -> None:
     is decoration, so any failure leaves the rules untouched.
     """
     targets = [r for r in rules if r["kind"] == "wrong_path"]
-    db_path = repo_root / ".repowise" / "wiki.db"
+    db_path = resolve_store_dir(repo_root) / "wiki.db"
     if not targets or not db_path.exists():
         return
     try:

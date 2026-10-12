@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.repo_formatters import declares_ruff_format
+from repowise.core.store_location import resolve_store_dir
 
 from .store import TIER_STRUCTURAL, Episode, EpisodeStore
 
@@ -128,7 +129,7 @@ def record_structural_episodes(
     enrichment, and no failure here may fail an index.
     """
     root = Path(repo_path)
-    if not (root / ".repowise").is_dir():
+    if not resolve_store_dir(root).is_dir():
         return 0
     kinds = ALL_KINDS if allow_formatter_check else FREE_KINDS
     try:

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from repowise.core.persistence.search import SearchResult
 from repowise.core.providers.embedding import store_has_semantic_vectors
+from repowise.core.store_location import resolve_store_dir
 from repowise.server.deps import (
     get_fts,
     get_vector_store,
@@ -163,7 +164,7 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
         repo_path = (ws_root_path / entry.path).resolve()
         rid = path_to_rid.get(str(repo_path))
         if rid is None:
-            db_path = repo_path / ".repowise" / "wiki.db"
+            db_path = resolve_store_dir(repo_path) / "wiki.db"
             if db_path.exists():
                 import sqlite3 as _sql
 

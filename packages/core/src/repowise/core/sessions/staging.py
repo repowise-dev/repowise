@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
+from repowise.core.store_location import resolve_store_dir
 
 SESSIONS_DIRNAME = "sessions"
 SESSIONS_DB_FILENAME = "sessions.db"
@@ -214,7 +215,7 @@ def title_key(title: str, lane: str = "") -> str:
 
 
 def default_store_path(repo_path: Path) -> Path:
-    return Path(repo_path) / ".repowise" / SESSIONS_DIRNAME / SESSIONS_DB_FILENAME
+    return resolve_store_dir(repo_path) / SESSIONS_DIRNAME / SESSIONS_DB_FILENAME
 
 
 class _DbCursors:

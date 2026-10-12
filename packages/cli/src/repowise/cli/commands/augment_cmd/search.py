@@ -25,6 +25,8 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from repowise.core.store_location import resolve_store_dir
+
 from . import fast_lookup
 from ._shared import HookResult, _extract_output_text, _find_repo_root
 
@@ -342,7 +344,7 @@ def _matched_files(repo_path: Path, tool_output: object, output_text: str) -> di
 
 async def _pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | None:
     """Order *paths* by indexed PageRank, or None when the graph can't help."""
-    db_path = repo_path / ".repowise" / "wiki.db"
+    db_path = resolve_store_dir(repo_path) / "wiki.db"
     if not db_path.exists():
         # Bail before the sqlalchemy imports — unindexed repos shouldn't pay
         # the heavy-import cost for a digest that falls back to count order.
@@ -418,7 +420,7 @@ def _wiki_db_exists(repo_path: Path) -> bool:
     check, so the fast path has to answer "no index" the same way, with
     silence, not with a fallback that pays the import to learn the same thing.
     """
-    return (repo_path / ".repowise" / "wiki.db").exists()
+    return (resolve_store_dir(repo_path) / "wiki.db").exists()
 
 
 def _fast_pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | object | None:
@@ -673,7 +675,7 @@ async def _search_enrich(
     from repowise.core.persistence.database import resolve_db_url
 
     repo_path = Path(repo_path)
-    db_path = repo_path / ".repowise" / "wiki.db"
+    db_path = resolve_store_dir(repo_path) / "wiki.db"
     if not db_path.exists():
         return None
 

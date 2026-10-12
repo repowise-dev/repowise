@@ -38,6 +38,7 @@ from repowise.core.analysis.health.rows import detail_map, split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
 from repowise.core.persistence.crud.analysis.health import open_finding_count
+from repowise.core.store_location import resolve_store_dir
 
 from .codegen import _generate_refactoring_code
 from .persist import (
@@ -517,7 +518,7 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
         # Coverage folds in from whatever `repowise coverage add` (or index-time
         # ingest) persisted; ingestion lives solely in the `coverage` group.
         coverage_map=_load_persisted_coverage_map(repo_path),
-        duplication_cache_dir=Path(repo_path) / ".repowise",
+        duplication_cache_dir=resolve_store_dir(repo_path),
         repo_root=repo_path,
     )
     # Any .repowise/health-rules.json the user keeps in the repo.
