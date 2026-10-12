@@ -260,9 +260,9 @@ def scope_name(symbol: str | None, path: str) -> str | None:
 
 
 def own_changes(commits: int) -> str:
-    """``and the function itself changed in 14 commits``: blame's count,
-    the same one :func:`history_fact` quotes for a hotspot."""
-    return f"and the function itself changed in {plural(commits, 'commit')}"
+    """``function changed in 14 commits``: blame's count, the same one
+    :func:`history_fact` quotes for a hotspot."""
+    return f"function changed in {plural(commits, 'commit')}"
 
 
 def changes(commits: int, people: int | None) -> str:

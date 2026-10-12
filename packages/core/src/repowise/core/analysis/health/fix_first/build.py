@@ -470,7 +470,7 @@ class _Files:
         if cloned:
             head += f", {text.CLONED}"
         if changes is not None and changes >= MIN_CHURN_COMMITS:
-            head += f", {text.own_changes(changes)}"
+            head += f"; {text.own_changes(changes)}"
         return f"{head}{text.exposure(deps, self.commits(path), self.coverage(path))}."
 
     def context(self, path: str) -> tuple[FixContext, ...]:

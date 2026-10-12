@@ -163,8 +163,8 @@ def test_a_churned_function_outranks_an_equal_quiet_one_in_its_band() -> None:
         assert lead["function changed in"] == "14 commits"
         assert other["function changed in"] == "0 commits"
         assert float(lead["worth in band"]) > float(other["worth in band"])
-        assert "and the function itself changed in 14 commits;" in items[0].why
-        assert "itself changed" not in items[1].why
+        assert "; function changed in 14 commits;" in items[0].why
+        assert "function changed" not in items[1].why
 
 
 def test_function_history_never_lifts_a_band() -> None:
@@ -198,7 +198,7 @@ def test_without_function_history_the_file_weight_still_orders() -> None:
     assert (lead["changes often"], other["changes often"]) == ("yes", "no")
     assert float(lead["worth in band"]) == pytest.approx(
         float(other["worth in band"]) * CHURN_WEIGHT, abs=1)
-    assert all("itself changed" not in i.why for i in items)
+    assert all("function changed" not in i.why for i in items)
 
 
 def test_a_unit_led_by_no_function_keeps_the_file_weight() -> None:
