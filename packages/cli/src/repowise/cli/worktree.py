@@ -17,7 +17,6 @@ import uuid
 from pathlib import Path
 
 from repowise.cli.helpers import as_commit_id, console, warn
-from repowise.cli.helpers import console, warn
 from repowise.core.store_location import resolve_store_dir
 
 _SEED_TEMPDIR_STALENESS_SECS = 3600

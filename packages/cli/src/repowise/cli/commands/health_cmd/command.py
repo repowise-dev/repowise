@@ -518,7 +518,7 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
         # Coverage folds in from whatever `repowise coverage add` (or index-time
         # ingest) persisted; ingestion lives solely in the `coverage` group.
         coverage_map=_load_persisted_coverage_map(repo_path),
-        duplication_cache_dir=Path(repo_path) / ".repowise",
+        duplication_cache_dir=resolve_store_dir(repo_path),
         repo_root=repo_path,
     )
     # Any .repowise/health-rules.json the user keeps in the repo.

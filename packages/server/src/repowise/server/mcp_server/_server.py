@@ -435,7 +435,6 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         embedder = _query_embedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
 
-        from pathlib import Path
 
         lance_dir = resolve_store_dir(repo_path) / "lancedb" if repo_path else None
         try:

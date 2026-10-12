@@ -104,7 +104,7 @@ def doctor_command(
             abs_path = (ws_root / entry.path).resolve()
             if not abs_path.is_dir():
                 continue
-            if not (abs_path / ".repowise").is_dir():
+            if not resolve_store_dir(abs_path).is_dir():
                 not_indexed.append(entry.alias)
                 continue
             if fmt == "table":

@@ -249,7 +249,7 @@ pass reads the sources.
     graph_builder = GraphBuilder(
         repo_path,
         exclude_patterns=exclude_patterns,
-        centrality_cache_dir=None if read_only else Path(repo_path) / ".repowise",
+        centrality_cache_dir=None if read_only else resolve_store_dir(repo_path),
         head_commit=get_head_commit(Path(repo_path)),
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,

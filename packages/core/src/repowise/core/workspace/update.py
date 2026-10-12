@@ -632,7 +632,7 @@ async def _has_persisted_repo_index(repo_path: Path) -> bool:
     from ..persistence.database import get_configured_db_url
 
     if get_configured_db_url() is None:
-        return (repo_path / ".repowise" / "wiki.db").is_file()
+        return (resolve_store_dir(repo_path) / "wiki.db").is_file()
 
     from ..persistence import (
         create_engine,

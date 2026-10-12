@@ -278,7 +278,7 @@ class RepoRegistry:
         embedder: Any,
     ) -> None:
         """Background task: load LanceDB vector stores for a repo."""
-        lance_dir = repo_path / ".repowise" / "lancedb"
+        lance_dir = resolve_store_dir(repo_path) / "lancedb"
 
         def _report(exc: BaseException) -> None:
             # No index on disk is a keyless repo, not a failure.
@@ -290,7 +290,6 @@ class RepoRegistry:
                 await asyncio.to_thread(__import__, "lancedb")
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                lance_dir = resolve_store_dir(repo_path) / "lancedb"
                 if lance_dir.exists():
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     await vs._ensure_connected()

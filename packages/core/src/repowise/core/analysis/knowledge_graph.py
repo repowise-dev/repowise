@@ -18,7 +18,6 @@ from typing import Any
 
 from repowise.core.generation.entry_points import orientation_entry_points
 from repowise.core.store_location import resolve_store_dir
-from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS
 from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS, classification_token
 
 _log = logging.getLogger(__name__)

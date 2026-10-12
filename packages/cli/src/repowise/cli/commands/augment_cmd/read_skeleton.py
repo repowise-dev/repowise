@@ -94,7 +94,7 @@ def configured_mode(repo_path: Path) -> str:
     value = (os.environ.get(f"REPOWISE_HOOK_{MODE_KEY.upper()}") or "").strip()
     if not value:
         try:
-            text = (repo_path / ".repowise" / "config.yaml").read_text(encoding="utf-8")
+            text = (resolve_store_dir(repo_path) / "config.yaml").read_text(encoding="utf-8")
         except (OSError, ValueError):
             return "smart"
         if MODE_KEY not in text:
