@@ -8,6 +8,8 @@ interface FileDocTabProps {
   wikiPage: FileWikiPageRef | null;
   /** Server-rendered wiki content (the host renders markdown its own way). */
   docSlot?: ReactNode | undefined;
+
+
   /** The repository's own documents naming this file, rendered below the page. */
   referencesPanel?: ReactNode | undefined;
 }
@@ -24,8 +26,7 @@ export function FileDocTab({ wikiPage, docSlot, referencesPanel }: FileDocTabPro
         />
         {referencesPanel}
       </div>
-    );
-  }
+    );  }
 
   return (
     <div className="space-y-6">

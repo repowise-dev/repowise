@@ -2626,6 +2626,12 @@ export interface PatchCoverageTestHint {
   total: number;
 }
 
+/** Result of pinning a file's doc (issue #812). */
+export interface PinDocResponse {
+  file_path: string;
+  pinned: boolean;
+}
+
 /** A function's stored size measures; an absent one was not measured. */
 export interface PlanMeasuresResponse {
   ccn?: number | null;
