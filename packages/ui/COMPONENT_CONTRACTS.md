@@ -217,8 +217,10 @@ Behaviour worth knowing:
 - Optimistic row state lives here, not in the table, so resolving a row moves
   the list with it and undo can put it back.
 - Zero open findings: with `summary.analyzed_at` set, the lede reads "0 lines"
-  with a positive all-clear and no sections; without it, a neutral "Not
-  analysed yet" with a run button. Never green without a recorded run.
+  with a positive all-clear and no sections; with it `null` (no run recorded),
+  a neutral "Not analysed yet" with a run button. With the field absent (a
+  host that does not report runs), the all-clear shows without an "Analysed"
+  time; such a host should also set `analyzeDisabledReason`.
 
 ---
 

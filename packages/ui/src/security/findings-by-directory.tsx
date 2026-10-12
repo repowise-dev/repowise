@@ -1,8 +1,5 @@
-/**
- * @deprecated Use `SeverityDirectoryMatrix` from `./severity-directory-matrix`,
- * which takes the same `findings` and `depth` props. This alias keeps the old
- * import path working for one release and is then removed.
- */
+// Old import path for one release, then removed. `SeverityDirectoryMatrix`
+// in `./severity-directory-matrix` takes the same `findings` and `depth` props.
 import {
   SeverityDirectoryMatrix,
   type SeverityDirectoryMatrixProps,
@@ -11,5 +8,8 @@ import {
 /** @deprecated Use `SeverityDirectoryMatrixProps`. */
 export type FindingsByDirectoryProps = SeverityDirectoryMatrixProps;
 
-/** @deprecated Use `SeverityDirectoryMatrix`. */
+/**
+ * @deprecated Use `SeverityDirectoryMatrix`. This renders it: a plain count
+ * table of directory by severity, 14 rows by default, with no card or title.
+ */
 export const FindingsByDirectory = SeverityDirectoryMatrix;

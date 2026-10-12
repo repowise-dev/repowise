@@ -46,6 +46,8 @@ export interface DeadCodeAdapter {
   /**
    * When set, Re-analyze renders disabled with this sentence beside it, for a
    * host that cannot run a pass right now (a read-only snapshot, a plan limit).
+   * A host that cannot run analysis from the page, or that does not report
+   * `analyzed_at`, should set it, since the button cannot start a pass there.
    */
   analyzeDisabledReason?: string;
   patchFinding(
