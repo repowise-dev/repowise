@@ -60,6 +60,7 @@ from repowise.core.analysis.health.scoring import history_biomarkers
 
 from ...models import (
     DeadCodeFinding,
+    GitFunctionBlame,
     GitMetadata,
     GraphMetric,
     GraphNode,
@@ -143,6 +144,23 @@ async def _hot_cuts(session: AsyncSession, repo_id: str) -> tuple[float, float]:
     at = hot_cut_offset(len(rows))
     churn, deps = (sorted(column) for column in zip(*rows, strict=True))
     return hot_cut(churn[at]), hot_cut(deps[at])
+
+
+async def _function_changes(
+    session: AsyncSession, repo_id: str, paths: set[str]
+) -> dict[str, int] | None:
+    """Commits that changed each function in ``paths``, by ``symbol_id``;
+    ``None`` when the repository keeps no function history at all."""
+    b = GitFunctionBlame
+    any_row = await session.execute(select(b.id).where(b.repository_id == repo_id).limit(1))
+    if any_row.first() is None:
+        return None
+    if not paths:
+        return {}
+    rows = await session.execute(
+        select(b.symbol_id, b.mod_count).where(b.repository_id == repo_id, b.file_path.in_(paths))
+    )
+    return dict(rows.all())
 
 
 async def _basis(session: AsyncSession, repo_id: str) -> dict[str, str | None]:
@@ -803,6 +821,7 @@ async def _build(
         symbol_lines=await _symbol_lines(session, repository_id, performance),
         validate=await _finding_validator(session, repository_id, findings) if verify else None,
         judged=judged,
+        function_changes=await _function_changes(session, repository_id, paths),
     )
 
 

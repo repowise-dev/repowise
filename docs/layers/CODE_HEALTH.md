@@ -89,6 +89,9 @@ always reports it.
 work: a refactoring plan, one performance intervention, or the strongest code-shape
 finding in a file with no plan. It gives what to change and where, why, the first
 edit, the expected gain, the effort and the tests to run.
+Among items of the same value, a function that many commits have changed comes
+before an equally complex one that rarely changes, and its reason says how many
+commits changed it.
 
 Left out, and counted with a reason:
 

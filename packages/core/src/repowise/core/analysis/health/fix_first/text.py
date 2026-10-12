@@ -259,6 +259,12 @@ def scope_name(symbol: str | None, path: str) -> str | None:
     return short
 
 
+def own_changes(commits: int) -> str:
+    """``and the function itself changed in 14 commits``: blame's count,
+    the same one :func:`history_fact` quotes for a hotspot."""
+    return f"and the function itself changed in {plural(commits, 'commit')}"
+
+
 def changes(commits: int, people: int | None) -> str:
     """``changed 13 times in 90 days; 3 people have worked on it``."""
     out = f"changed {plural(commits, 'time')} in 90 days"
@@ -375,6 +381,7 @@ __all__ = [
     "loop_size",
     "marker_label",
     "measured",
+    "own_changes",
     "plural",
     "problem",
     "scope_name",
