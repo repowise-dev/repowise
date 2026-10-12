@@ -102,6 +102,22 @@ describe("ThemeToggle theme default + persistence", () => {
     ).toBeInTheDocument();
   });
 
+  it("names the theme in effect beside the icon only when asked", async () => {
+    const { rerender } = render(
+      <Harness>
+        <ThemeToggle />
+      </Harness>,
+    );
+    const button = await screen.findByRole("button", { name: "Switch to dark theme" });
+    expect(button).not.toHaveTextContent("Light");
+    rerender(
+      <Harness>
+        <ThemeToggle showLabel />
+      </Harness>,
+    );
+    expect(screen.getByRole("button", { name: "Switch to dark theme" })).toHaveTextContent("Light");
+  });
+
   it("switches to the opposite theme on click", async () => {
     render(
       <Harness>
