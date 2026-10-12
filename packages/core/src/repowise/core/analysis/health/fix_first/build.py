@@ -156,6 +156,8 @@ MAX_CONTEXT = 3
 DEFAULT_LIMIT = 10
 #: Class-level findings: a fix names member groups, which only a plan holds.
 CLASS_MARKERS = frozenset({"low_cohesion", "god_class"})
+#: Refactorings that change one function, whose own history orders them.
+_FUNCTION_LEADS = frozenset({"extract_method", "move_method"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +185,12 @@ class _Unit:
 def _tail(symbol: str | None) -> str | None:
     """A symbol's own name: ``a.py::Cls.run`` and ``Cls::run`` read ``run``."""
     return re.split(r"::|\.", symbol)[-1] if symbol else None
+
+
+def symbol_key(path: str, symbol: str | None) -> str | None:
+    """A function's ``git_function_blame`` key, ``path::name``; ``None`` for no symbol."""
+    name = text.short_symbol(symbol)
+    return f"{path}::{name}" if name else None
 
 
 def _open(row: Any) -> bool:
@@ -336,13 +344,15 @@ class _Files:
     def churning(self, path: str) -> bool:
         return self.commits(path) >= max(self.churn_cut, MIN_CHURN_COMMITS)
 
-    def changes(self, path: str, symbol: str | None) -> int | None:
-        """Commits that changed ``symbol`` in ``path``, 0 with no stored row;
-        ``None`` when the repository keeps no function history."""
-        if self.function_changes is None:
+    def changes(self, path: str, symbol: str | None, *, function: bool) -> int | None:
+        """Commits that changed the function ``symbol`` in ``path``, 0 with no
+        stored row; ``None`` when the repository keeps no function history or
+        the unit is led by no function (a class, a file, a duplicated span),
+        so its file's churn stands in."""
+        key = symbol_key(path, symbol) if function else None
+        if self.function_changes is None or key is None:
             return None
-        name = text.short_symbol(symbol)
-        return int(self.function_changes.get(f"{path}::{name}") or 0) if name else 0
+        return int(self.function_changes.get(key) or 0)
 
     def evidence(self, path: str, symbol: str | None) -> bool | None:
         """Whether history shows work on ``symbol`` pays: its file changes
@@ -933,7 +943,9 @@ class _RefactorPlan:
             shape,
             central,
             files.churning(path),
-            changes=files.changes(path, lead.get("target_symbol")),
+            changes=files.changes(
+                path, lead.get("target_symbol"), function=lead_type in _FUNCTION_LEADS
+            ),
             cloned=function_size and files.cloned(path, shape),
             low=low_priority(marker, shape, function_size=function_size) or _above_bar(details),
             gain=gain,
@@ -1394,7 +1406,9 @@ def _finding_rank(finding: Any, files: _Files) -> _ShapeRank:
         shape,
         central,
         files.churning(path),
-        changes=files.changes(path, field(finding, "function_name")),
+        changes=files.changes(
+            path, field(finding, "function_name"), function=marker not in CLASS_MARKERS
+        ),
         cloned=sized and files.cloned(path, shape),
         low=low_priority(marker, shape, error_kind=detail_map(finding).get("kind")),
         gain=_num(field(finding, "health_impact")),
@@ -1820,4 +1834,5 @@ __all__ = [
     "hot_cut",
     "hot_cut_offset",
     "judge_findings",
+    "symbol_key",
 ]

@@ -199,3 +199,15 @@ def test_without_function_history_the_file_weight_still_orders() -> None:
     assert float(lead["worth in band"]) == pytest.approx(
         float(other["worth in band"]) * CHURN_WEIGHT, abs=1)
     assert all("itself changed" not in i.why for i in items)
+
+
+def test_a_unit_led_by_no_function_keeps_the_file_weight() -> None:
+    # A class-level finding in a repository with function history: no function
+    # leads it, so its file's churn still orders it.
+    finding = {**_finding("a/one.py", "Store", 0.5, ccn=60, nloc=200, max_nesting=5),
+               "biomarker_type": "god_class"}
+    items = build_fix_first(metrics=[_metric("a/one.py", 3, 40)], findings=[finding],
+                            hot_cuts=_CUTS, limit=None,
+                            function_changes={"a/one.py::Store": 30}).items
+    facts = [{f.factor: f.value for f in i.why_ranked} for i in items]
+    assert all(f.get("changes often") == "yes" and "function changed in" not in f for f in facts)

@@ -44,6 +44,7 @@ from repowise.core.analysis.health.fix_first.build import (
     hot_cut,
     hot_cut_offset,
     judge_findings,
+    symbol_key,
 )
 from repowise.core.analysis.health.queue.counts import NOT_IN_QUEUE, Judgement
 from repowise.core.analysis.health.queue.eligibility import DEFAULT_QUEUE_STATES, MIN_WORTH
@@ -147,18 +148,25 @@ async def _hot_cuts(session: AsyncSession, repo_id: str) -> tuple[float, float]:
 
 
 async def _function_changes(
-    session: AsyncSession, repo_id: str, paths: set[str]
+    session: AsyncSession, repo_id: str, findings: list[Any], refactoring: list[Any]
 ) -> dict[str, int] | None:
-    """Commits that changed each function in ``paths``, by ``symbol_id``;
-    ``None`` when the repository keeps no function history at all."""
+    """Commits that changed each function a unit can lead with (a finding's,
+    a plan's lead step's), by ``symbol_id``; ``None`` when the repository
+    keeps no function history at all."""
     b = GitFunctionBlame
     any_row = await session.execute(select(b.id).where(b.repository_id == repo_id).limit(1))
     if any_row.first() is None:
         return None
-    if not paths:
+    keys = {symbol_key(f.file_path, f.function_name) for f in findings} | {
+        symbol_key(r.file_path, r.details["steps"][0].get("target_symbol"))
+        for r in refactoring
+        if r.details and r.details.get("steps")
+    }
+    keys.discard(None)
+    if not keys:
         return {}
     rows = await session.execute(
-        select(b.symbol_id, b.mod_count).where(b.repository_id == repo_id, b.file_path.in_(paths))
+        select(b.symbol_id, b.mod_count).where(b.repository_id == repo_id, b.symbol_id.in_(keys))
     )
     return dict(rows.all())
 
@@ -515,10 +523,17 @@ async def _stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
 
     A rewrite, a triage change (``updated_at`` moves) or a deletion (the
     count moves) changes it; git and graph rows are rewritten with the
-    health rows that read them.
+    health rows that read them. Function history is counted apart: an
+    update writes it after the health rows.
     """
     stamps: list[Any] = []
-    for model in (HealthFileMetric, HealthFinding, RefactoringOpportunity, PerformanceOpportunity):
+    for model in (
+        HealthFileMetric,
+        HealthFinding,
+        RefactoringOpportunity,
+        PerformanceOpportunity,
+        GitFunctionBlame,
+    ):
         stamps.extend(
             (
                 await session.execute(
@@ -821,7 +836,7 @@ async def _build(
         symbol_lines=await _symbol_lines(session, repository_id, performance),
         validate=await _finding_validator(session, repository_id, findings) if verify else None,
         judged=judged,
-        function_changes=await _function_changes(session, repository_id, paths),
+        function_changes=await _function_changes(session, repository_id, findings, refactoring),
     )
 
 

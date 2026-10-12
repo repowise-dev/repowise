@@ -118,6 +118,13 @@ async def test_loader_orders_by_the_stored_function_history(async_session) -> No
     assert {"9 commits", "3 commits"} <= {f.get("function changed in") for f in facts}
 
 
+async def test_loader_without_function_history_keeps_the_file_weight(async_session) -> None:
+    rid = await seed_fix_first(async_session)
+    loaded = await load_fix_first(async_session, rid)
+    facts = [{f.factor for f in i.why_ranked} for i in loaded.items if i.kind != "perf_fix"]
+    assert facts and all("changes often" in f and "function changed in" not in f for f in facts)
+
+
 async def test_loader_on_an_empty_repository(async_session) -> None:
     rid = (await insert_repo(async_session)).id
     queue = await load_fix_first(async_session, rid)
