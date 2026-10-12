@@ -685,7 +685,7 @@ def test_the_capability_table_leads_with_the_declared_term() -> None:
     from repowise.core.generation.overview_tables import select_capabilities
 
     picked = select_capabilities(
-        [_mined("Purchase")],
+        [_mined("Purchase", definition="Purchase is a payment for goods.")],
         MODULES_WITH_AVOIDED,
         declared=[_declared("Order", definition="A request.", avoid=("Purchase",))],
         limit=6,

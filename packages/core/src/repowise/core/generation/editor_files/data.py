@@ -152,9 +152,6 @@ class EditorFileData:
     # Empty on the common repository that has not declared a glossary, and the
     # section does not render at all in that case.
     canonical_terms: list[CanonicalTerm] = field(default_factory=list)
-    # Rendered MCP tool table (single source: tool_table.py). A data field
-    # rather than a Jinja global so any environment can render the template.
-    tool_table_md: str = field(default_factory=lambda: _render_tool_table())
     index_scope: dict = field(default_factory=dict)
 
     @property
