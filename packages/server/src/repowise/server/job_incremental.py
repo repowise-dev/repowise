@@ -110,7 +110,7 @@ def _incremental_generation_config(repo_path: Path, job_config: dict, repo_wiki_
     # A per-page style override in the job config wins over the repo default.
     from repowise.core.generation.styles import resolve_style
     from repowise.core.reasoning import resolve_reasoning
-    from repowise.core.repo_config import load_repo_config
+    from repowise.core.repo_config import load_repo_config, resolve_language
 
     effective_style = resolve_style(
         job_config.get("style") or repo_wiki_style, repo_path=repo_path
@@ -120,7 +120,7 @@ def _incremental_generation_config(repo_path: Path, job_config: dict, repo_wiki_
         repo_cfg,
         reasoning=resolve_reasoning(config=repo_cfg),
         wiki_style=effective_style,
-        language=repo_cfg.get("language", "en"),
+        language=resolve_language(repo_path, config=repo_cfg),
         # parsed_files holds only the changed files, so repo-wide pages
         # (level 3 and up) would be written from a truncated view.
         file_pages_only=True,
