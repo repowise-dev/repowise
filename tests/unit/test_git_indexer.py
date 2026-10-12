@@ -532,6 +532,8 @@ class TestFixCommitClassifier:
         assert not is_fix_commit("fixture update")
         assert not is_fix_commit("prefix with namespace")
         assert not is_fix_commit("postfix expression")
+        assert not is_fix_commit("prefixed #123")
+        assert not is_fix_commit("affixed #123")
         assert not is_fix_commit("")
 
 

@@ -166,8 +166,8 @@ _FIX_COMMIT_INCLUDE: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bbug\b", re.IGNORECASE),
     re.compile(r"\bpatch\b", re.IGNORECASE),
     re.compile(r"\bresolves?\b", re.IGNORECASE),
-    re.compile(r"closes?\s+#\d+", re.IGNORECASE),
-    re.compile(r"fix(?:e[sd])?\s+#\d+", re.IGNORECASE),
+    re.compile(r"\bcloses?\s+#\d+", re.IGNORECASE),
+    re.compile(r"\bfix(?:e[sd])?\s+#\d+", re.IGNORECASE),
 )
 _FIX_COMMIT_EXCLUDE: tuple[re.Pattern[str], ...] = (
     re.compile(r"^Merge ", re.IGNORECASE),
