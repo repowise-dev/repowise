@@ -23,6 +23,20 @@ _REPO = {
     "lib/lib/store/disk.py": "class Store:\n    pass\n",
     "lib/lib/hidden/__init__.py": "from .impl import helper\n",
     "lib/lib/hidden/impl.py": "def helper():\n    pass\n",
+    "lazy/pyproject.toml": '[project]\nname = "lazy"\n',
+    "lazy/lazy/__init__.py": (
+        "__all__ = ['extract', 'missing']\n"
+        "_LAZY: dict[str, tuple[str, str]] = {\n"
+        "    'extract': ('.extract', 'extract'),\n"
+        "    'missing': ('.missing', 'missing'),\n"
+        "}\n\n"
+        "def __getattr__(name):\n"
+        "    if name in _LAZY:\n"
+        "        module_name, attr = _LAZY[name]\n"
+        "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+        "    raise AttributeError(name)\n"
+    ),
+    "lazy/lazy/extract.py": "def extract():\n    pass\n",
     "app/pyproject.toml": (
         '[project]\nname = "app"\n[project.scripts]\napp = "app.main:run"\n'
     ),
@@ -62,6 +76,7 @@ EXPORTED = {
     "lib/lib/store/disk.py::Store": "lib/lib/store/__init__.py",
     "web/src/render.ts::render": "web/src/main.ts",
     "web/src/extra.ts::extra": "web/src/extra.ts",
+    "lazy/lazy/extract.py::extract": "lazy/lazy/__init__.py",
 }
 
 

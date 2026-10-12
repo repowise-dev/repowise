@@ -227,6 +227,85 @@ def test_python_dunder_all_decides_what_is_published(tmp_path):
     assert sorted(names) == ["Request", "__version__", "helper"]
 
 
+def test_python_lazy_getattr_map_publishes_literal_exports(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "__all__ = ['extract', 'generate', 'missing']\n"
+                "_LAZY: dict[str, str] = {\n"
+                "    'extract': ('.extract', 'extract'),\n"
+                "    'generate': ('.report', 'generate'),\n"
+                "    'missing': '.missing',\n"
+                "}\n\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n"
+                "        module_name, attr = _LAZY[name]\n"
+                "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/extract.py": "def extract():\n    pass\n",
+            "lazy_lib/report.py": "def generate():\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert {(entry["name"], entry["file"]) for entry in api} == {
+        ("extract", "lazy_lib/extract.py"),
+        ("generate", "lazy_lib/report.py"),
+    }
+
+
+def test_python_local_lazy_getattr_map_publishes_literal_exports(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "def __getattr__(name):\n"
+                "    lazy = {'extract': ('lazy_lib.extract', 'extract')}\n"
+                "    if name in lazy:\n"
+                "        module_name, attr = lazy[name]\n"
+                "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/extract.py": "def extract():\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert [(entry["name"], entry["file"]) for entry in api] == [
+        ("extract", "lazy_lib/extract.py")
+    ]
+
+
+def test_python_computed_lazy_getattr_map_is_ignored(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "__all__ = ['extract']\n"
+                "_NAMES = ['extract']\n"
+                "_LAZY = {name: ('.extract', name) for name in _NAMES}\n\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n"
+                "        module_name, attr = _LAZY[name]\n"
+                "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/extract.py": "def extract():\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert api == []
+
+
 def test_barrels_that_re_export_each_other_publish_everything_from_every_root(tmp_path):
     parsed = _index(
         tmp_path,
