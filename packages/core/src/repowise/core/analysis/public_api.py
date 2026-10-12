@@ -59,6 +59,8 @@ def api_roots(
 
 def _forwards(imp: Any, pf: Any) -> bool:
     """Whether *imp* publishes what it imports (a re-export), not just uses it."""
+    if getattr(imp, "deferred", False):
+        return False
     if imp.is_reexport or imp.raw_statement.lstrip().startswith("export"):
         return True
     # A Python package's ``__init__`` imports are its published namespace.
@@ -120,7 +122,7 @@ def _module_lazy_maps(tree: ast.Module) -> list[dict[str, tuple[str, str | None]
         for node in ast.walk(function)
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
     }
-    maps: list[dict[str, tuple[str, str | None]]] = []
+    effective: dict[str, dict[str, tuple[str, str | None]]] = {}
     statements = [*tree.body, *(statement for function in functions for statement in function.body)]
     for statement in statements:
         if isinstance(statement, ast.Assign):
@@ -132,11 +134,12 @@ def _module_lazy_maps(tree: ast.Module) -> list[dict[str, tuple[str, str | None]
         else:
             continue
         names = {target.id for target in targets if isinstance(target, ast.Name)}
-        if names & loads:
-            lazy_map = _literal_lazy_map(value)
-            if lazy_map:
-                maps.append(lazy_map)
-    return maps
+        lazy_map = _literal_lazy_map(value)
+        for name in names & loads:
+            # An empty result also records a computed or empty later assignment,
+            # so an earlier literal map cannot survive a rebinding.
+            effective[name] = lazy_map
+    return [lazy_map for lazy_map in effective.values() if lazy_map]
 
 
 def _lazy_map_from(
@@ -230,6 +233,9 @@ class _Resolver:
         out += [
             (alias, own[local], path) for alias, local in pf.export_aliases.items() if local in own
         ]
+        for imp in pf.imports:
+            if _forwards(imp, pf) and imp.resolved_file in self._parsed:
+                out += self._forwarded(imp)
         lazy_exports = (
             _lazy_map_from(
                 path,
@@ -240,16 +246,30 @@ class _Resolver:
             if pf.file_info.language == "python"
             else []
         )
+        published_names = {name for name, _sym, _path in out}
+        # A Python module alias binds its local name at import time, even
+        # though the existing eager-export reader does not publish a module
+        # namespace row for it.  It must still win over a same-named lazy
+        # fallback.  Imports inside a deferred function are excluded by
+        # ``_forwards`` above.
+        if pf.file_info.language == "python":
+            published_names.update(
+                binding.local_name
+                for imp in pf.imports
+                if _forwards(imp, pf) and imp.resolved_file in self._parsed
+                for binding in imp.bindings
+                if binding.local_name != "*"
+            )
         for public_name, target_path, target_name in lazy_exports:
+            if public_name in published_names:
+                continue
             hit = next(
                 (r for r in self.published(target_path) if r[0] == target_name),
                 None,
             )
             if hit is not None:
                 out.append((public_name, hit[1], hit[2]))
-        for imp in pf.imports:
-            if _forwards(imp, pf) and imp.resolved_file in self._parsed:
-                out += self._forwarded(imp)
+                published_names.add(public_name)
         self._visiting.discard(path)
         if not self._cut:
             self._memo[path] = out
@@ -276,7 +296,9 @@ class _Resolver:
             return list(self.exported(imp.resolved_file))
         out: _Published = []
         for b in imp.bindings:
-            if b.local_name == "*" or b.is_module_alias:
+            if b.local_name == "*":
+                continue
+            if b.is_module_alias:
                 continue
             wanted = b.exported_name or b.local_name
             hit = next(
