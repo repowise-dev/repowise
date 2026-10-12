@@ -283,6 +283,46 @@ class TestFileTraverser:
         assert "src/build/index.js" in paths
         assert "src/build/node_modules/x.js" not in paths
 
+    def test_negation_cannot_bypass_nested_repo_or_submodule_boundary(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowiseIgnore").write_text("!vendor/\n", encoding="utf-8")
+        nested = tmp_path / "vendor" / "nested_repo"
+        nested.mkdir(parents=True)
+        (nested / ".git").mkdir()
+        (nested / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "vendor" / "lib.py").write_text("y = 2\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        # vendor/lib.py is re-included by !vendor/
+        assert "vendor/lib.py" in paths
+        # But the nested git repository boundary is NEVER bypassed
+        assert "vendor/nested_repo/mod.py" not in paths
+
+    def test_cached_negations_refresh_on_file_creation_or_edit(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+
+        # 1st traversal: no ignore file, build directory is skipped as output
+        paths1 = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" not in paths1
+
+        # Now create nested .repowiseIgnore in the same process
+        (tmp_path / "src" / ".repowiseIgnore").write_text("!build/\n", encoding="utf-8")
+
+        # 2nd traversal: cache refreshes and re-includes the directory
+        paths2 = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths2
+
+    def test_custom_ignore_filename_negations(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+
+        paths = {
+            f.path
+            for f in FileTraverser(tmp_path, extra_ignore_filename=".customIgnore").traverse()
+        }
+        assert "src/build/index.js" in paths
+
     def test_traverses_e2e_specs(self, tmp_path: Path) -> None:
         """e2e spec files are indexed so they can get a file_page (#1497).
 

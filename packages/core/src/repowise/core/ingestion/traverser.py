@@ -617,6 +617,28 @@ class FileTraverser:
         tracked = self._tracked_paths()
         return rel_str in (tracked.dirs if is_dir else tracked.files)
 
+    def _in_blocked_dir(self, rel_str: str, dir_ignore: _DirIgnore | None) -> bool:
+        return in_blocked_dir(
+            rel_str,
+            self.repo_root,
+            self._output_dir_cache,
+            reincluded_patterns=self._reincluded_patterns,
+            is_dir=True,
+            dir_ignore=dir_ignore,
+            extra_ignore_filename=self._extra_ignore_filename,
+        )
+
+    def _is_dir_ignored(self, dirname: str, rel_str: str, dir_ignore: _DirIgnore | None) -> bool:
+        dir_slash = f"{dirname}/"
+        if self._extra_ignore.match_file(f"{rel_str}/") or self._extra_exclude.match_file(
+            f"{rel_str}/"
+        ):
+            return True
+        if dir_ignore is not None and dir_ignore.extra.match_file(dir_slash):
+            return True
+        nested = dir_ignore is not None and dir_ignore.gitignore.match_file(dir_slash)
+        return self._dir_gitignored(rel_str, nested)
+
     def _should_skip_dir(
         self,
         dirname: str,
@@ -624,37 +646,15 @@ class FileTraverser:
         dir_ignore: _DirIgnore | None = None,
     ) -> bool:
         rel_str = rel_path.as_posix()
-        if dirname in _BLOCKED_DIRS:
-            return in_blocked_dir(
-                rel_str,
-                self.repo_root,
-                self._output_dir_cache,
-                reincluded_patterns=self._reincluded_patterns,
-                is_dir=True,
-                dir_ignore=dir_ignore,
-            )
+        # Submodules and nested repos are hard boundaries; negation rules never bypass them.
         if self._is_repo_boundary(rel_str, self.repo_root / rel_path):
             return True
-        dir_pattern = rel_str + "/"
-        if self._extra_ignore.match_file(dir_pattern) or self._extra_exclude.match_file(
-            dir_pattern
-        ):
-            return True
-        # Per-directory ignore: pattern is relative to the parent directory.
-        if dir_ignore is not None and dir_ignore.extra.match_file(dirname + "/"):
-            return True
-        nested = dir_ignore is not None and dir_ignore.gitignore.match_file(dirname + "/")
-        if self._dir_gitignored(rel_str, nested):
+        if dirname in _BLOCKED_DIRS:
+            return self._in_blocked_dir(rel_str, dir_ignore)
+        if self._is_dir_ignored(dirname, rel_str, dir_ignore):
             return True
         if dirname in _OUTPUT_DIR_NAMES:
-            return in_blocked_dir(
-                rel_str,
-                self.repo_root,
-                self._output_dir_cache,
-                reincluded_patterns=self._reincluded_patterns,
-                is_dir=True,
-                dir_ignore=dir_ignore,
-            )
+            return self._in_blocked_dir(rel_str, dir_ignore)
         return False
 
     def _dir_gitignored(self, rel_str: str, nested_match: bool) -> bool:
@@ -1471,42 +1471,116 @@ def _compile_reincluded_patterns(lines: Iterable[str]) -> tuple[re.Pattern[str],
 
 
 @functools.lru_cache(maxsize=1024)
-def _load_dir_reincluded_patterns(
-    dirpath: Path, filename: str = REPOWISE_IGNORE_FILENAME
-) -> tuple[re.Pattern[str], ...]:
-    """Re-included directory patterns loaded from a directory's ignore file."""
-    ignore_file = dirpath / filename
-    if not ignore_file.exists():
-        return ()
+def _compile_reincluded_file(filepath: str, mtime_ns: int) -> tuple[re.Pattern[str], ...]:
     try:
-        lines = ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+        lines = Path(filepath).read_text(encoding="utf-8", errors="ignore").splitlines()
         return _compile_reincluded_patterns(lines)
     except OSError:
         return ()
+
+
+def _load_dir_reincluded_patterns(
+    dirpath: Path, filename: str = REPOWISE_IGNORE_FILENAME
+) -> tuple[re.Pattern[str], ...]:
+    """Re-included directory patterns loaded from a directory's ignore file.
+
+    Keyed by file path and modification time so changes to nested ignore files
+    refresh automatically across traversals without stale cache hits.
+    """
+    ignore_file = dirpath / filename
+    try:
+        mtime_ns = ignore_file.stat().st_mtime_ns
+    except OSError:
+        return ()
+    return _compile_reincluded_file(str(ignore_file), mtime_ns)
 
 
 def _is_dir_reincluded(
     rel_dir: str,
     dirname: str,
     root_patterns: Sequence[re.Pattern[str]],
-    repo_root: Path | None,
-    parent_rel_dir: str | None = None,
+    parent_dir: Path | None = None,
     dir_ignore: _DirIgnore | None = None,
+    extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
 ) -> bool:
     """Whether directory *rel_dir* (POSIX, repo-relative) or *dirname* is re-included."""
-    for pat in root_patterns:
-        if pat.match(rel_dir):
-            return True
+    if any(pat.match(rel_dir) for pat in root_patterns):
+        return True
     if dir_ignore is not None:
-        for pat in dir_ignore.reincluded:
-            if pat.match(dirname):
-                return True
-    elif repo_root is not None:
-        parent_dir = repo_root if not parent_rel_dir else repo_root / parent_rel_dir
-        for pat in _load_dir_reincluded_patterns(parent_dir):
-            if pat.match(dirname):
-                return True
+        return any(pat.match(dirname) for pat in dir_ignore.reincluded)
+    if parent_dir is not None:
+        return any(
+            pat.match(dirname)
+            for pat in _load_dir_reincluded_patterns(parent_dir, extra_ignore_filename)
+        )
     return False
+
+
+def _check_output_dir_cached(
+    abs_dir: Path,
+    is_leaf_file: bool,
+    leaf_name: str,
+    cache: dict[Path, bool] | None,
+) -> bool:
+    """Whether *abs_dir* is an output root, using *cache* when provided."""
+    cached = None if cache is None else cache.get(abs_dir)
+    if cached is None or (
+        cached and is_leaf_file and _is_handwritten_source_name(leaf_name)
+    ):
+        cached = is_output_dir(abs_dir)
+        if cache is not None:
+            cache[abs_dir] = cached
+    return bool(cached)
+
+
+def _resolve_root_reincluded_patterns(
+    repo_root: Path | None,
+    extra_exclude_patterns: Sequence[str] | None,
+    extra_ignore_filename: str,
+) -> tuple[re.Pattern[str], ...]:
+    """Compile root negation patterns from ignore file and exclude patterns."""
+    lines: list[str] | tuple[str, ...] = ()
+    if repo_root is not None:
+        root_ignore = repo_root / extra_ignore_filename
+        if root_ignore.exists():
+            lines = root_ignore.read_text(encoding="utf-8", errors="ignore").splitlines()
+    return _compile_reincluded_patterns((*lines, *(extra_exclude_patterns or ())))
+
+
+def _is_segment_blocked(
+    dirs: Sequence[str],
+    depth: int,
+    part: str,
+    leaf_name: str,
+    is_dir: bool,
+    repo_root: Path | None,
+    root_patterns: Sequence[re.Pattern[str]],
+    dir_ignore: _DirIgnore | None,
+    extra_ignore_filename: str,
+    cache: dict[Path, bool] | None,
+) -> bool:
+    """Whether directory segment *part* at *depth* within *dirs* is blocked."""
+    is_blocked_name = part in _BLOCKED_DIRS
+    is_output_name = part in _OUTPUT_DIR_NAMES
+    if not is_blocked_name and not is_output_name:
+        return False
+
+    cur_rel = "/".join(dirs[:depth])
+    parent_dir = None
+    if repo_root is not None:
+        parent_dir = repo_root if depth == 1 else repo_root.joinpath(*dirs[:depth - 1])
+    active_dir_ignore = dir_ignore if (is_dir and depth == len(dirs)) else None
+    if _is_dir_reincluded(
+        cur_rel, part, root_patterns, parent_dir, active_dir_ignore, extra_ignore_filename
+    ):
+        return False
+
+    if is_blocked_name or repo_root is None:
+        return True
+
+    abs_dir = repo_root.joinpath(*dirs[:depth])
+    is_leaf = not is_dir and depth == len(dirs)
+    return _check_output_dir_cached(abs_dir, is_leaf, leaf_name, cache)
 
 
 def in_blocked_dir(
@@ -1515,9 +1589,9 @@ def in_blocked_dir(
     cache: dict[Path, bool] | None = None,
     extra_exclude_patterns: Sequence[str] | None = None,
     reincluded_patterns: Sequence[re.Pattern[str]] | None = None,
-    *,
     is_dir: bool = False,
     dir_ignore: _DirIgnore | None = None,
+    extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
 ) -> bool:
     """Whether a directory on *rel_path* (POSIX, repo-relative) is blocklisted.
 
@@ -1540,47 +1614,19 @@ def in_blocked_dir(
         return False
 
     root_pats = reincluded_patterns
-    if root_pats is None and repo_root is not None:
-        root_lines = ()
-        root_ignore = repo_root / REPOWISE_IGNORE_FILENAME
-        if root_ignore.exists():
-            root_lines = root_ignore.read_text(encoding="utf-8", errors="ignore").splitlines()
-        root_pats = _compile_reincluded_patterns((*root_lines, *(extra_exclude_patterns or ())))
-    elif root_pats is None:
-        root_pats = _compile_reincluded_patterns(extra_exclude_patterns or ())
+    if root_pats is None:
+        root_pats = _resolve_root_reincluded_patterns(
+            repo_root, extra_exclude_patterns, extra_ignore_filename
+        )
 
-    name = parts[-1] if not is_dir else ""
-    for depth, part in enumerate(dirs, 1):
-        cur_rel = "/".join(dirs[:depth])
-        parent_rel = "/".join(dirs[:depth - 1]) if depth > 1 else None
-
-        is_blocked_name = part in _BLOCKED_DIRS
-        is_output_name = part in _OUTPUT_DIR_NAMES
-        if not is_blocked_name and not is_output_name:
-            continue
-
-        active_dir_ignore = dir_ignore if (is_dir and depth == len(dirs)) else None
-        if _is_dir_reincluded(cur_rel, part, root_pats, repo_root, parent_rel, active_dir_ignore):
-            continue
-
-        if is_blocked_name:
-            return True
-
-        if is_output_name:
-            if repo_root is None:
-                return True
-            abs_dir = repo_root.joinpath(*dirs[:depth])
-            cached = None if cache is None else cache.get(abs_dir)
-            if cached is None or (
-                cached and not is_dir and depth == len(dirs) and _is_handwritten_source_name(name)
-            ):
-                cached = is_output_dir(abs_dir)
-                if cache is not None:
-                    cache[abs_dir] = cached
-            if cached:
-                return True
-
-    return False
+    leaf_name = parts[-1] if not is_dir else ""
+    return any(
+        _is_segment_blocked(
+            dirs, depth, part, leaf_name, is_dir, repo_root,
+            root_pats, dir_ignore, extra_ignore_filename, cache
+        )
+        for depth, part in enumerate(dirs, 1)
+    )
 
 
 def is_candidate_source_path(
@@ -1588,6 +1634,7 @@ def is_candidate_source_path(
     repo_root: Path | None = None,
     cache: dict[Path, bool] | None = None,
     extra_exclude_patterns: Sequence[str] | None = None,
+    extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
 ) -> bool:
     """Whether *rel_path* is shaped like a file this repo would index.
 
@@ -1609,7 +1656,13 @@ def is_candidate_source_path(
     parts = Path(posix).parts
     if not parts:
         return False
-    if in_blocked_dir(posix, repo_root, cache, extra_exclude_patterns=extra_exclude_patterns):
+    if in_blocked_dir(
+        posix,
+        repo_root,
+        cache,
+        extra_exclude_patterns=extra_exclude_patterns,
+        extra_ignore_filename=extra_ignore_filename,
+    ):
         return False
 
     name = parts[-1]

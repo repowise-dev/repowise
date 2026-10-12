@@ -187,3 +187,22 @@ def test_history_tier_keeps_files_in_reincluded_dir(tmp_path: Path) -> None:
     kept = _history_tier_files(tmp_path, ["src/build/README.md", "dist/notes.md"])
     assert kept == {"src/build/README.md"}
 
+    # Also works via extra_exclude_patterns directly
+    (tmp_path / ".repowiseIgnore").unlink()
+    kept_patterns = _history_tier_files(
+        tmp_path,
+        ["src/build/README.md", "dist/notes.md"],
+        extra_exclude_patterns=["!src/build/"],
+    )
+    assert kept_patterns == {"src/build/README.md"}
+
+    # Also works via custom extra_ignore_filename
+    (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+    kept_custom = _history_tier_files(
+        tmp_path,
+        ["src/build/README.md", "dist/notes.md"],
+        extra_ignore_filename=".customIgnore",
+    )
+    assert kept_custom == {"src/build/README.md"}
+
+

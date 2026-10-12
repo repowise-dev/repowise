@@ -324,3 +324,13 @@ class TestIsCandidateSourcePath:
             )
             is True
         )
+
+        # Also via custom extra_ignore_filename
+        (tmp_path / ".repowiseIgnore").unlink()
+        (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+        assert (
+            is_candidate_source_path(
+                "src/build/index.js", tmp_path, extra_ignore_filename=".customIgnore"
+            )
+            is True
+        )
