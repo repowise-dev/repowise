@@ -167,8 +167,10 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
     fetched.length === 0 &&
     (summary?.total_findings ?? 0) === 0 &&
     (findings !== undefined || summary !== undefined);
-  // Only a recorded run can call a zero clean; an unknown one is "not yet".
-  const analyzed = Boolean(summary?.analyzed_at);
+  // A zero is clean only after a run. `null` is a host saying no run is
+  // recorded ("not yet"); an absent field is a host that does not report runs,
+  // where findings exist only once a pass has written them, so it reads as ran.
+  const analyzed = summary?.analyzed_at === undefined || Boolean(summary.analyzed_at);
 
   // "Propose cleanup" opens the shared AI-prompt modal seeded with the safe
   // list, with the same agent picker as every other AI action in the dashboard.
