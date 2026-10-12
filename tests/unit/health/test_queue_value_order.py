@@ -211,3 +211,21 @@ def test_a_unit_led_by_no_function_keeps_the_file_weight() -> None:
                             function_changes={"a/one.py::Store": 30}).items
     facts = [{f.factor: f.value for f in i.why_ranked} for i in items]
     assert all(f.get("changes often") == "yes" and "function changed in" not in f for f in facts)
+
+
+def test_a_file_blame_skipped_for_size_keeps_the_file_weight() -> None:
+    # Function history elsewhere in the repository; "a/one.py" was too large to
+    # blame, so its churning file weighs 1.25 and leads the equal quiet twin.
+    metrics = [_metric("a/one.py", 3, 40), _metric("b/two.py", 3, 0)]
+    findings = [_finding(p, fn, 0.5, ccn=60, nloc=200, max_nesting=5)
+                for p, fn in (("a/one.py", "first"), ("b/two.py", "second"))]
+    items = build_fix_first(metrics=metrics, findings=findings, hot_cuts=_CUTS, limit=None,
+                            function_changes={"c/three.py::other": 9},
+                            blame_skipped={"a/one.py"}).items
+    assert [i.target.symbol for i in items] == ["first", "second"]
+    lead, other = ({f.factor: f.value for f in i.why_ranked} for i in items)
+    assert lead["changes often"] == "yes"
+    # A missing row in a file that was blamed counts as unchanged.
+    assert other["function changed in"] == "0 commits"
+    assert float(lead["worth in band"]) == pytest.approx(
+        float(other["worth in band"]) * CHURN_WEIGHT, abs=1)

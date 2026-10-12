@@ -58,6 +58,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 )
 from repowise.core.analysis.health.rows import detail_map
 from repowise.core.analysis.health.scoring import history_biomarkers
+from repowise.core.ingestion.git_indexer.function_blame import _MIN_COMMITS_FOR_BLAME
 
 from ...models import (
     DeadCodeFinding,
@@ -149,14 +150,15 @@ async def _hot_cuts(session: AsyncSession, repo_id: str) -> tuple[float, float]:
 
 async def _function_changes(
     session: AsyncSession, repo_id: str, findings: list[Any], refactoring: list[Any]
-) -> dict[str, int] | None:
+) -> tuple[dict[str, int] | None, set[str]]:
     """Commits that changed each function a unit can lead with (a finding's,
-    a plan's lead step's), by ``symbol_id``; ``None`` when the repository
-    keeps no function history at all."""
+    a plan's lead step's), by ``symbol_id``, and the files among theirs the
+    blame pass skipped for size; ``None`` when the repository keeps no
+    function history at all."""
     b = GitFunctionBlame
     any_row = await session.execute(select(b.id).where(b.repository_id == repo_id).limit(1))
     if any_row.first() is None:
-        return None
+        return None, set()
     keys = {symbol_key(f.file_path, f.function_name) for f in findings} | {
         symbol_key(r.file_path, r.details["steps"][0].get("target_symbol"))
         for r in refactoring
@@ -164,11 +166,41 @@ async def _function_changes(
     }
     keys.discard(None)
     if not keys:
-        return {}
+        return {}, set()
     rows = await session.execute(
         select(b.symbol_id, b.mod_count).where(b.repository_id == repo_id, b.symbol_id.in_(keys))
     )
-    return dict(rows.all())
+    changes = dict(rows.all())
+    unmatched = {k.rsplit("::", 1)[0] for k in keys} - {k.rsplit("::", 1)[0] for k in changes}
+    return changes, await _blame_skipped(session, repo_id, unmatched)
+
+
+async def _blame_skipped(session: AsyncSession, repo_id: str, paths: set[str]) -> set[str]:
+    """Of ``paths``, the files the blame pass skipped for size: enough
+    commits to pass its commit floor, yet no function in them has a row.
+
+    Ceiling: a blame that failed for another reason looks the same. Upgrade
+    path: the git pass records the size skip on the file's row.
+    """
+    if not paths:
+        return set()
+    floor = await session.execute(
+        select(GitMetadata.file_path).where(
+            GitMetadata.repository_id == repo_id,
+            GitMetadata.file_path.in_(paths),
+            GitMetadata.commit_count_total >= _MIN_COMMITS_FOR_BLAME,
+        )
+    )
+    candidates = set(floor.scalars().all())
+    if not candidates:
+        return set()
+    b = GitFunctionBlame
+    # A file's rows are a key range of ``symbol_id``, which the unique index serves.
+    in_file = [and_(b.symbol_id >= f"{p}::", b.symbol_id < f"{p}:;") for p in candidates]
+    blamed = await session.execute(
+        select(b.file_path).where(b.repository_id == repo_id, or_(*in_file)).distinct()
+    )
+    return candidates - set(blamed.scalars().all())
 
 
 async def _basis(session: AsyncSession, repo_id: str) -> dict[str, str | None]:
@@ -821,6 +853,7 @@ async def _build(
     functions = {s["target_symbol"] for s in steps if s.get("target_symbol")}
     findings = await _findings(session, repository_id, full, planned, functions)
     paths = full | planned | {r.file_path for r in history_only}
+    changes, skipped = await _function_changes(session, repository_id, findings, refactoring)
     return build_fix_first(
         metrics=await _metrics(session, repository_id, paths),
         findings=[*findings, *(r for r in history_only if r.file_path not in full | planned)],
@@ -836,7 +869,8 @@ async def _build(
         symbol_lines=await _symbol_lines(session, repository_id, performance),
         validate=await _finding_validator(session, repository_id, findings) if verify else None,
         judged=judged,
-        function_changes=await _function_changes(session, repository_id, findings, refactoring),
+        function_changes=changes,
+        blame_skipped=skipped,
     )
 
 

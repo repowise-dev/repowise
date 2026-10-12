@@ -50,6 +50,9 @@ Row shapes (field names are the SQL columns):
     ``git_function_blame`` ``mod_count`` by ``symbol_id`` (``path::name``):
     the commits that changed each function. ``None`` when the repository keeps
     no function history; a function missing from it changed in none.
+``blame_skipped``
+    Paths the blame pass skipped for size: their functions have no history,
+    so the file's churn orders them.
 """
 
 from __future__ import annotations
@@ -290,9 +293,11 @@ class _Files:
         extractions: Mapping[tuple[str, str], list[Any]] | None = None,
         dead: Mapping[str, list[DeadSpan]] | None = None,
         function_changes: Mapping[str, int] | None = None,
+        blame_skipped: Iterable[str] = (),
     ) -> None:
         self.by_path = {field(m, "file_path"): m for m in metrics}
         self.function_changes = function_changes
+        self.blame_skipped = frozenset(blame_skipped)
         self.functions = functions
         self.clones = clones or {}
         self.extractions = extractions or {}
@@ -346,11 +351,12 @@ class _Files:
 
     def changes(self, path: str, symbol: str | None, *, function: bool) -> int | None:
         """Commits that changed the function ``symbol`` in ``path``, 0 with no
-        stored row; ``None`` when the repository keeps no function history or
-        the unit is led by no function (a class, a file, a duplicated span),
-        so its file's churn stands in."""
+        stored row; ``None`` when the repository keeps no function history,
+        the blame pass skipped the file for size, or the unit is led by no
+        function (a class, a file, a duplicated span), so its file's churn
+        stands in."""
         key = symbol_key(path, symbol) if function else None
-        if self.function_changes is None or key is None:
+        if self.function_changes is None or key is None or path in self.blame_skipped:
             return None
         return int(self.function_changes.get(key) or 0)
 
@@ -1539,6 +1545,7 @@ def _prepare(
     dead_code: Rows,
     hot_cuts: tuple[float, float] | None,
     function_changes: Mapping[str, int] | None = None,
+    blame_skipped: Iterable[str] = (),
 ) -> tuple[dict[str, tuple[list[Any], list[Any]]], _Files]:
     """Findings split into (code shape, history) by file, and the file facts."""
     split = {path: split_by_origin(rows) for path, rows in _shown_findings(findings).items()}
@@ -1551,6 +1558,7 @@ def _prepare(
         _extractions(plans),
         dead_spans(dead_code),
         function_changes,
+        blame_skipped,
     )
     return split, files
 
@@ -1661,6 +1669,7 @@ def build_fix_first(
     validate: Validate | None = None,
     judged: dict[str, Judgement] | None = None,
     function_changes: Mapping[str, int] | None = None,
+    blame_skipped: Iterable[str] = (),
 ) -> FixFirstQueue:
     """One ranked queue of what to fix, from stored rows (shapes in the module docstring).
 
@@ -1679,11 +1688,14 @@ def build_fix_first(
     the units they cover ``unreachable``. ``judged`` is filled with every open
     refactoring opportunity's judgement, by id, for the index to store.
     ``function_changes`` orders units inside a band by how often their
-    function changed (module docstring); without it the file's churn does.
+    function changed (module docstring); without it, and in a
+    ``blame_skipped`` file, the file's churn does.
     """
     metrics = list(metrics)
     plans = list(plans)
-    split, files = _prepare(metrics, findings, plans, dead_code, hot_cuts, function_changes)
+    split, files = _prepare(
+        metrics, findings, plans, dead_code, hot_cuts, function_changes, blame_skipped
+    )
     gate = _Gate(files, keep_tests=scope == "all")
     units, planned_files = _refactor_units(refactoring, plans, gate, judged)
     units += _perf_units(performance, gate, symbol_lines)

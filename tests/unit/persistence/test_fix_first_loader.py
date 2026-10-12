@@ -125,6 +125,27 @@ async def test_loader_without_function_history_keeps_the_file_weight(async_sessi
     assert facts and all("changes often" in f and "function changed in" not in f for f in facts)
 
 
+async def test_loader_reads_a_file_blame_skipped_for_size(async_session) -> None:
+    from sqlalchemy import update
+
+    rid = await seed_fix_first(async_session)
+    # History for one file only; src/core.py passes the commit floor with no
+    # rows (too large to blame), src/plain.py does not reach the floor.
+    async_session.add(GitFunctionBlame(repository_id=rid, symbol_id="src/repo.py::load",
+                                       file_path="src/repo.py", mod_count=4))
+    await async_session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/core.py")
+        .values(commit_count_total=40)
+    )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    facts = {i.target.file_path: {f.factor: f.value for f in i.why_ranked}
+             for i in loaded.items if i.kind != "perf_fix"}
+    assert facts["src/core.py"]["changes often"] == "yes"
+    assert facts["src/plain.py"]["function changed in"] == "0 commits"
+
+
 async def test_loader_on_an_empty_repository(async_session) -> None:
     rid = (await insert_repo(async_session)).id
     queue = await load_fix_first(async_session, rid)
