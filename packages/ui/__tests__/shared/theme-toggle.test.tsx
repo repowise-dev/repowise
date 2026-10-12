@@ -115,7 +115,8 @@ describe("ThemeToggle theme default + persistence", () => {
         <ThemeToggle showLabel />
       </Harness>,
     );
-    expect(screen.getByRole("button", { name: "Switch to dark theme" })).toHaveTextContent("Light");
+    const labelled = screen.getByRole("button", { name: "Light theme. Switch to dark theme" });
+    expect(labelled).toHaveTextContent("Light");
   });
 
   it("switches to the opposite theme on click", async () => {

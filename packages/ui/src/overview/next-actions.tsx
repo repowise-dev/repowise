@@ -60,8 +60,18 @@ export function renderActionTitle(title: string): ReactNode {
   );
 }
 
+// en-US grouping, as the server writes `{n:,}`, so a local sentence reads the same.
 function plural(n: number, noun: string): string {
-  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+  return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Sep 28" from the anchor's own calendar day, never shifted into the viewer's timezone. */
+function anchorDay(iso: string | null): string | null {
+  const m = iso ? /^\d{4}-(\d{2})-(\d{2})/.exec(iso) : null;
+  const month = m ? MONTHS[Number(m[1]) - 1] : undefined;
+  return m && month ? `${month} ${Number(m[2])}` : null;
 }
 
 const workIn = (h: ActionsResponse["horizons"][ActionHorizonKey]) =>
@@ -69,15 +79,11 @@ const workIn = (h: ActionsResponse["horizons"][ActionHorizonKey]) =>
 
 /**
  * The sentence for a view that carries no `summary` (a server that predates
- * it). Same wording as core's, from the same counts, so the line never goes
- * blank. A view with `summary` always wins.
+ * it). Same as the server's wording, from the same counts, so the line never
+ * goes blank. A view with `summary` always wins.
  */
 function fallbackSummary(data: ActionsResponse, horizon: ActionHorizonKey): string {
-  const anchor = data.anchor ? new Date(data.anchor) : null;
-  const until =
-    anchor && !Number.isNaN(anchor.getTime())
-      ? anchor.toLocaleDateString("en-US", { month: "short", day: "numeric" })
-      : null;
+  const until = anchorDay(data.anchor);
   const window =
     horizon === "week"
       ? until

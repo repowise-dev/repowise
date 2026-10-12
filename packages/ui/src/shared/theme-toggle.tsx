@@ -30,6 +30,9 @@ export interface ThemeToggleProps {
   className?: string;
 }
 
+/** Shared by the labelled button and its placeholder, so nothing moves on mount. */
+const LABELLED_WIDTH = "min-w-[5rem]";
+
 const BUTTON =
   "inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
 
@@ -54,12 +57,18 @@ export function ThemeToggle({
 
   if (!mounted) {
     return (
-      <span aria-hidden className={cn("inline-block h-8", showLabel ? "w-16" : "w-8", className)} />
+      <span
+        aria-hidden
+        className={cn("inline-block h-8", showLabel ? LABELLED_WIDTH : "w-8", className)}
+      />
     );
   }
 
   const isDark = resolvedTheme === "dark";
-  const label = isDark ? switchToLightLabel : switchToDarkLabel;
+  const current = isDark ? "Dark" : "Light";
+  const action = isDark ? switchToLightLabel : switchToDarkLabel;
+  // The accessible name starts with the visible text (WCAG 2.5.3).
+  const label = showLabel ? `${current} theme. ${action}` : action;
   const Icon = isDark ? Moon : Sun;
 
   return (
@@ -68,10 +77,10 @@ export function ThemeToggle({
       aria-label={label}
       title={label}
       onClick={() => setTheme(isDark ? "light" : "dark")}
-      className={cn(BUTTON, showLabel && "w-auto gap-2 px-3", className)}
+      className={cn(BUTTON, showLabel && cn("w-auto gap-2 px-3", LABELLED_WIDTH), className)}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      {showLabel && <span className="text-xs font-medium">{isDark ? "Dark" : "Light"}</span>}
+      {showLabel && <span className="text-xs font-medium">{current}</span>}
     </button>
   );
 }

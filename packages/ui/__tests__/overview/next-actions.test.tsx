@@ -209,6 +209,17 @@ describe("the status sentence", () => {
     expect(screen.getByText("1 thing worth doing this quarter.")).toBeInTheDocument();
   });
 
+  it("names the anchor's own day whatever the offset or the viewer's timezone", () => {
+    for (const anchor of ["2026-09-28T23:30:00-07:00", "2026-09-28T00:15:00Z"]) {
+      const data = { ...response([action({ horizons: ["week"] })], []), anchor };
+      const { unmount } = render(<NextActions data={data} hrefFor={() => null} />);
+      expect(
+        screen.getByText("1 thing worth doing in the week to Sep 28, the last indexed commit."),
+      ).toBeInTheDocument();
+      unmount();
+    }
+  });
+
   it("points to the other time frame when the open one is clear and no summary is sent", () => {
     render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
     fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
