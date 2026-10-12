@@ -90,9 +90,7 @@ async def _query_database_stamp(repo_path: Path) -> tuple[str, int, str] | None:
 def _incremental_cache_is_enabled(root: Path) -> bool:
     """Whether the last persisted index run had incremental graph state enabled."""
     try:
-        state = json.loads(
-            (resolve_store_dir(root) / "state.json").read_text(encoding="utf-8")
-        )
+        state = json.loads((resolve_store_dir(root) / "state.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     graph_update = state.get("graph_update")
@@ -449,9 +447,7 @@ async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
                     db_edges=edge_count,
                 )
                 return
-        dump_sealed_pickle(
-            resolve_store_dir(root) / _CACHE_NAME, payload, domain=_CACHE_NAME
-        )
+        dump_sealed_pickle(resolve_store_dir(root) / _CACHE_NAME, payload, domain=_CACHE_NAME)
         log.info("graph_seed_cache_saved", nodes=len(payload["nodes"]), edges=edge_count)
     except Exception as exc:
         # The cache is optional; the next update can always rebuild from sources.

@@ -278,7 +278,7 @@ def format_lock_age(age: float | None) -> str:
 
 
 def _init_lock_path(repo_path: Path) -> Path:
-    return Path(repo_path) / ".repowise" / INIT_LOCK_FILENAME
+    return resolve_store_dir(repo_path) / INIT_LOCK_FILENAME
 
 
 @contextlib.contextmanager
@@ -303,7 +303,7 @@ def read_init_lock(repo_path: Path) -> dict[str, Any] | None:
 
 
 def _commit_health_lock_path(repo_path: Path) -> Path:
-    return Path(repo_path) / ".repowise" / COMMIT_HEALTH_LOCK_FILENAME
+    return resolve_store_dir(repo_path) / COMMIT_HEALTH_LOCK_FILENAME
 
 
 def try_acquire_commit_health_lock(repo_path: Path) -> dict[str, Any] | None:

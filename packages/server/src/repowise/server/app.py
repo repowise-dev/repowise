@@ -36,7 +36,6 @@ from repowise.core.providers.embedding import is_semantic_embedder
 from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.core.providers.embedding.registry import DEFAULT_EMBEDDER
-from repowise.core.store_location import resolve_store_dir
 from repowise.server import __version__
 from repowise.server.routers import (
     actions,
