@@ -199,9 +199,24 @@ describe("the status sentence", () => {
     expect(screen.getByText("Core wording, week.")).toBeInTheDocument();
   });
 
-  it("shows no sentence from a server that predates it", () => {
+  it("words the sentence locally for a view that carries no summary", () => {
+    const now = action({ id: "n", tier: "act_now", horizons: ["week"] });
+    render(<NextActions data={response([now], [action()])} hrefFor={() => null} />);
+    expect(
+      screen.getByText("1 thing worth doing in the week to Sep 28, the last indexed commit, 1 of them now."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /This quarter/ }));
+    expect(screen.getByText("1 thing worth doing this quarter.")).toBeInTheDocument();
+  });
+
+  it("points to the other time frame when the open one is clear and no summary is sent", () => {
     render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
-    expect(screen.queryByText(/worth doing|Nothing/)).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
+    expect(
+      screen.getByText(
+        "Nothing needs you in the week to Sep 28, the last indexed commit. 1 thing is worth planning this quarter.",
+      ),
+    ).toBeInTheDocument();
   });
 });
 
