@@ -159,19 +159,20 @@ async def _function_changes(
     any_row = await session.execute(select(b.id).where(b.repository_id == repo_id).limit(1))
     if any_row.first() is None:
         return None, set()
-    keys = {symbol_key(f.file_path, f.function_name) for f in findings} | {
-        symbol_key(r.file_path, r.details["steps"][0].get("target_symbol"))
+    leads = [(f.file_path, symbol_key(f.file_path, f.function_name)) for f in findings] + [
+        (r.file_path, symbol_key(r.file_path, r.details["steps"][0].get("target_symbol")))
         for r in refactoring
         if r.details and r.details.get("steps")
-    }
-    keys.discard(None)
+    ]
+    keys = {key for _path, key in leads if key}
     if not keys:
         return {}, set()
     rows = await session.execute(
         select(b.symbol_id, b.mod_count).where(b.repository_id == repo_id, b.symbol_id.in_(keys))
     )
     changes = dict(rows.all())
-    unmatched = {k.rsplit("::", 1)[0] for k in keys} - {k.rsplit("::", 1)[0] for k in changes}
+    matched = {path for path, key in leads if key in changes}
+    unmatched = {path for path, key in leads if key} - matched
     return changes, await _blame_skipped(session, repo_id, unmatched)
 
 
@@ -179,8 +180,9 @@ async def _blame_skipped(session: AsyncSession, repo_id: str, paths: set[str]) -
     """Of ``paths``, the files the blame pass skipped for size: enough
     commits to pass its commit floor, yet no function in them has a row.
 
-    Ceiling: a blame that failed for another reason looks the same. Upgrade
-    path: the git pass records the size skip on the file's row.
+    Ceiling: a blame that failed, or one whose every line is ignored
+    (``.git-blame-ignore-revs``), looks the same. Upgrade path: the git pass
+    records the size skip on the file's row.
     """
     if not paths:
         return set()
@@ -195,10 +197,11 @@ async def _blame_skipped(session: AsyncSession, repo_id: str, paths: set[str]) -
     if not candidates:
         return set()
     b = GitFunctionBlame
-    # A file's rows are a key range of ``symbol_id``, which the unique index serves.
-    in_file = [and_(b.symbol_id >= f"{p}::", b.symbol_id < f"{p}:;") for p in candidates]
+    # Unindexed, but read only for the few files that pass the floor unmatched.
     blamed = await session.execute(
-        select(b.file_path).where(b.repository_id == repo_id, or_(*in_file)).distinct()
+        select(b.file_path)
+        .where(b.repository_id == repo_id, b.file_path.in_(candidates))
+        .distinct()
     )
     return candidates - set(blamed.scalars().all())
 
