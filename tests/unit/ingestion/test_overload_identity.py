@@ -697,3 +697,118 @@ class TestNarrowingShapes:
         )
         edges = _edges(tmp_path, {"app/Base.java": ("java", base), "app/Derived.java": ("java", derived)})
         assert edges == {("app/Derived.java::Derived::f", "app/Base.java::Base::f")}
+
+
+class TestOverloadTies:
+    """A tie keeps the representative only when the representative is tied.
+
+    Call sites carry no argument types, so same-arity members tie. Before, a
+    tie always answered with the representative, the first member declared,
+    even when its own arity could not take the call.
+    """
+
+    def test_java_a_tie_among_other_members_refuses(self, tmp_path: Path) -> None:
+        text = (
+            "package app;\npublic class Out {\n"
+            "  public String charset() { return \"\"; }\n"
+            "  public Out charset(String name) { return this; }\n"
+            "  public Out charset(java.nio.charset.Charset cs) { return this; }\n"
+            "  void use(String x) { charset(x); }\n"
+            "  void read() { charset(); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"app/Out.java": ("java", text)})
+        base = "app/Out.java::Out::"
+        # charset(x) ties between the two one-argument members; it never
+        # means the no-argument representative, so no edge is guessed.
+        assert not {c for a, c in edges if a == base + "use"}
+        assert {c for a, c in edges if a == base + "read"} == {base + "charset#0"}
+
+    def test_java_a_varargs_tie_respects_each_floor(self, tmp_path: Path) -> None:
+        text = (
+            "package app;\npublic class L {\n"
+            "  public void log(String msg) { }\n"
+            "  public void log(String fmt, Object... args) { }\n"
+            "  public void log(int level, String fmt, Object... args) { }\n"
+            "  void one(String m) { log(m); }\n"
+            "  void three(String m) { log(m, 1, 2); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"app/L.java": ("java", text)})
+        base = "app/L.java::L::"
+        assert {c for a, c in edges if a == base + "one"} == {base + "log#1"}
+        # Both varargs members admit three arguments; the representative does not.
+        assert not {c for a, c in edges if a == base + "three"}
+
+    def test_java_a_varargs_representative_in_the_tie_is_kept(self, tmp_path: Path) -> None:
+        text = (
+            "package app;\npublic class F {\n"
+            "  public void fmt(String f, Object... args) { }\n"
+            "  public void fmt(int n, Object... args) { }\n"
+            "  public void fmt() { }\n"
+            "  void use() { fmt(\"a\", 1); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"app/F.java": ("java", text)})
+        base = "app/F.java::F::"
+        assert {c for a, c in edges if a == base + "use"} == {base + "fmt#2(String,Object[])"}
+
+    def test_csharp_a_tie_among_other_members_refuses(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class H {\n"
+            "  public static int Sum() => 0;\n"
+            "  public static int Sum(int a) => a;\n"
+            "  public static int Sum(string s) => 0;\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public int One() => H.Sum(1);\n"
+            "  public int None() => H.Sum();\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"H.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert not {c for a, c in edges if a == "C.cs::C::One"}
+        assert ("C.cs::C::None", "H.cs::H::Sum#0") in edges
+
+    def test_cpp_a_tie_on_declared_defaults_refuses(self, tmp_path: Path) -> None:
+        header = (
+            "class Pen {\n public:\n  void shift();\n"
+            "  void shift(int x, int y = 0);\n  void shift(double x, double y = 0);\n};\n"
+        )
+        source = (
+            '#include "pen.h"\n'
+            "void Pen::shift() {}\n"
+            "void Pen::shift(int x, int y) {}\n"
+            "void Pen::shift(double x, double y) {}\n"
+        )
+        caller = '#include "pen.h"\nvoid draw(Pen& p) {\n  p.shift(1);\n}\nvoid lift(Pen& p) {\n  p.shift();\n}\n'
+        edges = _edges(
+            tmp_path, {"pen.h": ("cpp", header), "pen.cpp": ("cpp", source), "draw.cpp": ("cpp", caller)}
+        )
+        # Both two-parameter members admit one argument through the defaults
+        # their declarations write; the no-argument representative does not.
+        assert not {c for a, c in edges if a == "draw.cpp::draw"}
+        assert ("draw.cpp::lift", "pen.cpp::Pen::shift#0") in edges
+
+    def test_csharp_a_chain_through_a_refused_tie_takes_no_representative_type(
+        self, tmp_path: Path
+    ) -> None:
+        # A second Label() keeps the bare-name tiers from answering on their own.
+        types = (
+            "namespace App;\npublic class Cs {\n  public string Label() => \"\";\n}\n"
+            "public class Tag {\n  public string Label() => \"\";\n}\n"
+        )
+        holder = (
+            "namespace App;\npublic class Out {\n"
+            "  public Cs Charset() => null;\n"
+            "  public Tag Charset(string name) => null;\n"
+            "  public Tag Charset(Out other) => null;\n"
+            "  public string Use(string x) => Charset(x).Label();\n"
+            "  public string Bare() => Charset().Label();\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"Cs.cs": ("csharp", types), "Out.cs": ("csharp", holder)})
+        # Charset() returns Cs, but Charset(x) is not Charset().
+        assert ("Out.cs::Out::Use", "Cs.cs::Cs::Label") not in edges
+        assert ("Out.cs::Out::Bare", "Cs.cs::Cs::Label") in edges
