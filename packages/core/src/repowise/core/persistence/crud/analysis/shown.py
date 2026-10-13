@@ -73,7 +73,7 @@ async def gated_counts(
 ) -> dict[str, dict]:
     """What the gates on *layer* hold back among *model* rows matching *where*.
 
-    ``{language: {count, precision, reason}}``, from one grouped count, so a
+    ``{language: {count, reason}}``, from one grouped count, so a
     surface can say how many rows it left out and why instead of reading empty.
     Empty when ``include_unverified``: nothing was held back.
     """

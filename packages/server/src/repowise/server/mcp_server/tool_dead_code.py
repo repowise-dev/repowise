@@ -196,8 +196,8 @@ async def get_dead_code(
         include_zombie_packages: monorepo package findings (default true).
         no_unreachable: skip file-level reachability findings.
         no_unused_exports: skip public-export findings.
-        include_unverified: also show kinds and languages measured below
-            the precision bar (``summary.gated`` counts what is held back).
+        include_unverified: also show provisional kinds and languages held
+            back pending verification (``summary.gated`` counts them).
         finding_id: stable ``id`` emitted by a dead-code finding.
     """
     # MCP transport rejects payloads above ~25k tokens. A single serialized

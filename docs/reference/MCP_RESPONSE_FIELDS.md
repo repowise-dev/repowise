@@ -354,6 +354,8 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 
 Provisional finding types appear only with `include=["unverified"]`, each marked `verification: "unverified"`. Targeted mode is never split into production and test.
 
+Health findings, refactoring plans and opportunities, and performance opportunities on Java, C#, C and C++ files are held back pending verification for those languages. They are still stored and a lookup by id still answers; `_meta.gated` counts them per layer and language, and `include=["unverified"]` shows them.
+
 ### Opt-in blocks
 
 | `include` | Adds |
@@ -400,6 +402,7 @@ The `performance_opportunities` list holds causes whose cost is measured (`cost_
 | `tiers` | Findings by tier: `high` (0.7 and up), `medium` (0.4 to 0.7), `low`. Each has path, kind, confidence, line count, cleanup impact and a stable `id` |
 | `summary` | Totals over every open finding; `filtered_findings` counts what the filters kept; `filters` echoes non-default filters; `scope` says which is which |
 | `summary.withheld_types` | Provisional finding types held back; ask with `kind=` to see them, marked unverified |
+| `summary.gated` | Findings held back pending verification on Java, C#, C, C++, Kotlin and Swift files, counted per language; `include_unverified=true` shows them |
 | `summary.call_resolution_basis` | Per language, how many call edges the index resolved and the share that are guesses: the graph the findings rest on |
 | `by_directory`, `by_owner` | Rollups with `group_by` |
 | `limit_note` | A `limit` over 25 was clamped |

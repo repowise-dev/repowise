@@ -16,7 +16,8 @@ def _dead(path: str) -> dict:
 
 
 def test_actions_never_offer_a_gated_deletion():
-    dead = build_dead([_dead("src/a.py"), _dead("src/A.cs"), _dead("src/a.cpp")], {})
+    rows = [_dead(p) for p in ("src/a.py", "src/A.cs", "src/a.cpp", "app/A.kt", "App/A.swift")]
+    dead = build_dead(rows, {})
     assert [d.file_path for d in dead["dead"]] == ["src/a.py"]
 
 
@@ -39,5 +40,8 @@ def test_change_review_says_when_gated_findings_were_not_compared():
         return HealthFindingData("complex_method", Severity.HIGH, path, "f", 1, 9, {}, 1.0)
 
     assert len(_limits([finding("src/a.py")])) == 1
-    note = _limits([finding("src/a.py"), finding("src/A.java")])[-1]
-    assert "java" in note
+    note = _limits([finding("src/a.py"), finding("src/A.java"), finding("src/A.cs")])[-1]
+    assert "C#, Java files" in note and "pending verification" in note
+    assert "precision" not in note
+    # Kotlin is gated for dead code only, so its health findings are compared.
+    assert len(_limits([finding("app/A.kt")])) == 1

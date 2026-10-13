@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from ...support_paths import is_doc_or_config_path
 from ...test_paths import is_test_related_path
-from ..finding_registry import excluded_types, gate_for, is_served
+from ..finding_registry import excluded_types, gate_for, is_served, language_label
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
@@ -437,8 +437,8 @@ def _limits(head_findings: list[HealthFindingData]) -> list[str]:
     )
     if gated:
         limits.append(
-            f"Health findings on {', '.join(gated)} files are not compared: they "
-            "measured below the precision bar there, so none is reported for them."
+            f"Health findings on {', '.join(language_label(g) for g in gated)} files "
+            "are not compared: they are held back pending verification there."
         )
     return limits
 

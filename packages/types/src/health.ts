@@ -659,14 +659,12 @@ export interface PerformanceDefaultQueue {
 }
 
 /**
- * A layer measured below the precision bar on a language is held back on
- * files of that language unless the caller opts in (`include_unverified`).
- * Keyed by language tag (`java`, `csharp`, `c`, `cpp`).
+ * A layer held back pending verification on a language is left out on files
+ * of that language unless the caller opts in (`include_unverified`). Keyed by
+ * language tag (`java`, `csharp`, `c`, `cpp`, `kotlin`, `swift`); `reason`
+ * is the sentence to show.
  */
-export type GatedByLanguage = Record<
-  string,
-  { count: number; precision: number; reason: string }
->;
+export type GatedByLanguage = Record<string, { count: number; reason: string }>;
 
 export interface PerformanceOpportunitySummary {
   /** `current` once materialized, `stale_model` after a model bump, or

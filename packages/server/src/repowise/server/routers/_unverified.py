@@ -7,7 +7,7 @@ from fastapi import Query
 UnverifiedQuery = Query(
     False,
     description=(
-        "Also return finding types and per-language layers measured below the "
-        "precision bar. Without it, a response counts what it held back in `gated`."
+        "Also return provisional finding types and the per-language layers held back "
+        "pending verification. Without it, a response counts what it held back in `gated`."
     ),
 )

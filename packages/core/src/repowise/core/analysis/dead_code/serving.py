@@ -109,7 +109,7 @@ class FindingFilters:
     include_unverified: bool = False
 
     def split_gated(self, findings: list) -> tuple[list, dict[str, dict]]:
-        """``(shown rows, {gated language: count/precision/reason})``."""
+        """``(shown rows, {gated language: count/reason})``."""
         return split_gated(
             "dead_code",
             findings,

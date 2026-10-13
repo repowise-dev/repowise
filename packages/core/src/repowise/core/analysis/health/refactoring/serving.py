@@ -344,8 +344,8 @@ def directive_from_summary(row: Any | None, *, include_unverified: bool = False)
             "status": "clear",
             "reason": "lead_in_gated_language",
             "detail": (
-                "The leading refactoring opportunity is in a language whose plans "
-                "measured below the precision bar; include unverified results to see it."
+                "The leading refactoring opportunity is on a file held back pending "
+                "verification for its language; include unverified results to see it."
             ),
             "opportunities_total": total,
         }

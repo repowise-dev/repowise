@@ -101,7 +101,7 @@ class DeadCodeSummaryResponse(BaseModel):
     by_kind: dict
     # When dead-code analysis last ran; None = never ran or unknown (not all-clear).
     analyzed_at: datetime | None = None
-    #: Open findings a language gate held back, ``{language: {count, precision, reason}}``.
+    #: Open findings a language gate held back, ``{language: {count, reason}}``.
     gated: dict = {}
 
 

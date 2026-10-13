@@ -131,6 +131,11 @@ the extracted span appeared beside it (Extract Method only, so far). The other
 outcomes are `file_deleted`, `superseded` (the same plan found again under a new
 id), `target_changed` (renamed or rewritten another way) and `unknown`.
 
+Plans and opportunities on Java, C#, C and C++ files are composed and stored as
+usual but held back pending verification: the plan lists, the queue, its facets
+and the rollup's lead leave them out unless the caller passes
+`include_unverified`, and responses count them in `gated`.
+
 Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
 them or how to move them, so an opportunity carries it as `evidence` rather than
 as a numbered step: it never leads, and never reaches Fix first. The plan itself

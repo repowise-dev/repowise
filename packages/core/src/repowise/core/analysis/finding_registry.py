@@ -102,13 +102,17 @@ class LanguageGate:
     layer: GateLayer
     #: An ``EXTENSION_TO_LANGUAGE`` tag; a file's extension decides its language.
     language: str
-    #: Measured precision on the sample that failed the bar.
-    precision: float
+    #: Measured precision on the sample that failed the bar, ``None`` when the
+    #: evidence was a share of wrong rows rather than a judged sample. Kept for
+    #: the record: served text never quotes it.
+    precision: float | None
     #: What the measurement ran on, in words (no repository names).
     corpus: str
     #: ISO date of the measurement.
     measured_on: str
-    reason: str
+    #: Why the layer failed there, for maintainers; served text says only
+    #: that the layer is held back pending verification.
+    cause: str
     #: The kinds gated, or ``None`` for every kind of the layer.
     kinds: frozenset[str] | None = None
 
@@ -122,7 +126,7 @@ _NOT_A_COST = "Most judged opportunities were not real costs."
 # Every layer measured below 90% on every audited language, so whole layers
 # are gated (``kinds=None``). Precision is the lowest share of true positives
 # in a judged sample (debatable counted as a miss). Columns: layer, language,
-# precision, corpus, reason.
+# precision, corpus, cause.
 _GATE_ROWS: tuple[tuple[GateLayer, str, float, str, str], ...] = (
     ("health", "java", 0.09, _JAVA, "Field reads without `this.` and Java idioms read as defects."),
     ("health", "csharp", 0.06, _DOTNET, "Implicit member access and stubs read as defects."),
@@ -142,9 +146,28 @@ _GATE_ROWS: tuple[tuple[GateLayer, str, float, str, str], ...] = (
     ("dead_code", "cpp", 0.04, _DOTNET, "Uses through DLL tables, COM and callbacks are unseen."),
 )
 
-LANGUAGE_GATES: tuple[LanguageGate, ...] = tuple(
-    LanguageGate(layer, language, precision, corpus, _AUDIT_DATE, reason)
-    for layer, language, precision, corpus, reason in _GATE_ROWS
+LANGUAGE_GATES: tuple[LanguageGate, ...] = (
+    *(
+        LanguageGate(layer, language, precision, corpus, _AUDIT_DATE, cause)
+        for layer, language, precision, corpus, cause in _GATE_ROWS
+    ),
+    # Dead code only: health on these languages is not gated.
+    LanguageGate(
+        "dead_code",
+        "kotlin",
+        2 / 47,
+        "hand-judged findings on a Kotlin/Android sample app",
+        "2026-10-13",
+        "45 of 47 judged findings were wrong.",
+    ),
+    LanguageGate(
+        "dead_code",
+        "swift",
+        None,
+        "unreachable-file findings on a SwiftUI app",
+        "2026-10-13",
+        "132 of 431 files reported unreachable at confidence 1.0 were reachable.",
+    ),
 )
 
 
@@ -183,18 +206,29 @@ def gated_extensions(language: str) -> tuple[str, ...]:
     return tuple(sorted(ext for ext, tag in EXTENSION_TO_LANGUAGE.items() if tag == language))
 
 
+def language_label(language: str) -> str:
+    """The display name of a language tag (``csharp`` reads ``C#``)."""
+    from repowise.core.ingestion.languages import REGISTRY
+
+    spec = REGISTRY.get(language)
+    return spec.display_name if spec is not None else language
+
+
+def held_back_note(languages: Iterable[str]) -> str:
+    """The served sentence for rows held back on *languages*."""
+    names = [language_label(language) for language in languages]
+    return f"Held back on {', '.join(names)} files pending verification."
+
+
 def gated_summary(layer: GateLayer, counts: Mapping[str, int]) -> dict[str, dict]:
-    """``{language: {count, precision, reason}}`` for each gated language with
-    rows on *layer*, so a surface says what it held back and why."""
+    """``{language: {count, reason}}`` for each gated language with rows on
+    *layer*, so a surface says what it held back. The reason says only that
+    the layer is held back pending verification there."""
     out: dict[str, dict] = {}
     for gate in gates_on(layer):
         count = counts.get(gate.language, 0)
         if count:
-            out[gate.language] = {
-                "count": count,
-                "precision": gate.precision,
-                "reason": gate.reason,
-            }
+            out[gate.language] = {"count": count, "reason": held_back_note([gate.language])}
     return out
 
 
