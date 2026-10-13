@@ -108,14 +108,18 @@
 ) @call.site
 
 ; Cast receiver: ((Foo) x).bar(args) names its type at the call site, like the
-; fluent construction below. A scoped type (``(a.Foo) x``) is left uncaptured.
+; fluent construction below. A scoped type (``(a.Foo) x``) is left uncaptured,
+; and the anchors keep an intersection cast (``(Foo & Bar) x``) out.
 (method_invocation
   object: (parenthesized_expression
     (cast_expression
+      .
       type: [
         (type_identifier) @call.receiver
         (generic_type (type_identifier) @call.receiver)
       ]
+      .
+      value: (_)
     )
   )
   name: (identifier) @call.target

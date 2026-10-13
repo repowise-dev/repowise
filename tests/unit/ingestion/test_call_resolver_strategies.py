@@ -1444,7 +1444,11 @@ class TestInheritedTypedReceiver:
 class TestJavaReceiverRecall:
     """Java receivers the typed tiers missed: an inherited field, ``super``, a cast."""
 
-    def _targets(self, tmp_path: Path, body: str, head: str = "") -> list[tuple[str, str]]:
+    def _targets(
+        self, tmp_path: Path, body: str, head: str = "", members: str = "", mid: str | None = None
+    ) -> list[tuple[str, str]]:
+        """Callees of ``Sub``'s calls; a *mid* body puts ``b.Mid`` between ``Sub`` and ``Base``."""
+        parent = "Base" if mid is None else "Mid"
         files = {
             "a/Base.java": "package a;\npublic class Base {\n    protected Reader reader;\n"
             "    protected Doc doc;\n    public void m() {}\n}\n",
@@ -1452,19 +1456,16 @@ class TestJavaReceiverRecall:
             "a/Node.java": "package a;\npublic class Node {\n    public void append() {}\n}\n",
             "a/Doc.java": "package a;\npublic class Doc extends Node {}\n",
             "b/Reader.java": "package b;\npublic class Reader {\n    public void consume() {}\n}\n",
-            "b/Sub.java": f"package b;\nimport a.Base;\n{head}public class Sub extends Base {{\n"
-            f"    public void m() {{}}\n    void go(Object o) {{\n        {body}\n    }}\n}}\n",
+            "b/Mid.java": f"package b;\nimport a.Base;\npublic class Mid extends Base {{\n{mid}\n}}\n",
+            "b/Sub.java": f"package b;\nimport a.Base;\n{head}public class Sub extends {parent} {{\n"
+            f"{members}\n    public void m() {{}}\n    void go(Object o) {{\n        {body}\n    }}\n}}\n",
         }
         parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
         _link_imports(parsed, {"b/Sub.java": {"a.Base": "a/Base.java", "a.Node": "a/Node.java"}})
+        parents = {"b/Mid.java::Mid": {"a/Base.java::Base"}, "a/Doc.java::Doc": {"a/Node.java::Node"}}
+        parents["b/Sub.java::Sub"] = {"a/Base.java::Base" if mid is None else "b/Mid.java::Mid"}
         resolver = CallResolver(
-            parsed,
-            {k: set() for k in parsed},
-            repo_path=str(tmp_path),
-            heritage_parents={
-                "b/Sub.java::Sub": {"a/Base.java::Base"},
-                "a/Doc.java::Doc": {"a/Node.java::Node"},
-            },
+            parsed, {k: set() for k in parsed}, repo_path=str(tmp_path), heritage_parents=parents
         )
         calls = parsed["b/Sub.java"].calls
         return [(rc.callee_id, rc.origin) for rc in resolver.resolve_file("b/Sub.java", calls)]
@@ -1486,6 +1487,35 @@ class TestJavaReceiverRecall:
     def test_an_untyped_lambda_parameter_shadows_an_inherited_field(self, tmp_path: Path) -> None:
         assert self._targets(tmp_path, "run(reader -> reader.consume());") == []
 
+    @pytest.mark.parametrize(
+        ("body", "members"),
+        [
+            ("b.Reader reader = null; reader.consume();", ""),
+            ("var reader = 1; reader.consume();", ""),
+            ("", "    void f(b.Reader reader) { reader.consume(); }"),
+            ("reader.consume();", "    b.Reader reader;"),
+            ("reader.consume();", "    java.util.List<String> reader;"),
+            ("reader.consume();", "    int[] reader;"),
+        ],
+        ids=["qualified-local", "var-local", "qualified-parameter", "qualified-field",
+             "qualified-generic-field", "primitive-array-field"],
+    )
+    def test_a_name_declared_with_an_unread_type_shadows_an_inherited_field(
+        self, tmp_path: Path, body: str, members: str
+    ) -> None:
+        assert self._targets(tmp_path, body, members=members) == []
+
+    def test_the_nearest_superclass_field_hides_the_rest(self, tmp_path: Path) -> None:
+        """``Mid``'s ``reader`` is the package-``b`` one, wherever ``Base`` declares another."""
+        mid = "    protected Reader reader;"
+        assert self._targets(tmp_path, "reader.consume();", mid=mid) == [
+            ("b/Reader.java::Reader::consume", "receiver_field_same_package")
+        ]
+
+    def test_a_nearer_field_with_an_unread_type_stops_the_walk(self, tmp_path: Path) -> None:
+        mid = "    protected b.Reader reader;"
+        assert self._targets(tmp_path, "reader.consume();", mid=mid) == []
+
     def test_super_skips_the_callers_own_override(self, tmp_path: Path) -> None:
         assert self._targets(tmp_path, "super.m();") == [("a/Base.java::Base::m", "self_inherited")]
 
@@ -1500,6 +1530,24 @@ class TestJavaReceiverRecall:
         source = "class Use {\n    void go(Object o) {\n        ((a.Node) o).append();\n    }\n}\n"
         parsed = _parse_all(tmp_path, {"Use.java": ("java", source)})
         assert [c.receiver_name for c in parsed["Use.java"].calls] == [None]
+
+    def test_an_intersection_cast_names_no_receiver(self, tmp_path: Path) -> None:
+        """``(Node & Runnable) o`` names two types; taking either one would guess."""
+        source = (
+            "class Use {\n    void go(Object o) {\n        ((Node & Runnable) o).append();\n"
+            "        ((Node) o).append();\n    }\n}\n"
+        )
+        parsed = _parse_all(tmp_path, {"Use.java": ("java", source)})
+        assert sorted(
+            (c.line, c.receiver_name or "") for c in parsed["Use.java"].calls
+        ) == [(3, ""), (4, "Node")]
+
+    @pytest.mark.xfail(strict=True, reason="`S.super.m()` arrives as `S.m()`; the qualifier is lost")
+    def test_a_qualified_super_reaches_the_qualifiers_superclass(self, tmp_path: Path) -> None:
+        members = "    class In {\n        void q() { Sub.super.m(); }\n    }"
+        assert self._targets(tmp_path, "", members=members) == [
+            ("a/Base.java::Base::m", "self_inherited")
+        ]
 
 
 class TestOwnerAwareModuleTier:

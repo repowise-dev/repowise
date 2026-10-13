@@ -25,6 +25,7 @@ per strategy, and it is what the edge carries.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
@@ -1923,7 +1924,15 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         return next(iter(hits)) if len(hits) == 1 else None
 
     def _superclass_chain_method(self, class_id: str, method_name: str) -> str | None:
-        """The nearest declaration of *method_name* up the single superclass chain.
+        """The nearest declaration of *method_name* up the single superclass chain."""
+        for node in self._superclass_chain(class_id):
+            sym_id = self._declares(node, method_name)
+            if sym_id is not None:
+                return sym_id
+        return None
+
+    def _superclass_chain(self, class_id: str) -> Iterator[str]:
+        """*class_id*'s superclasses, nearest first.
 
         The walk stops where a type has no class parent, more than one, or
         one already seen.
@@ -1936,12 +1945,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 if getattr(self._symbols_by_id.get(p), "kind", None) == "class"
             ]
             if len(parents) != 1 or parents[0] in seen:
-                return None
+                return
             seen.add(parents[0])
             node = parents[0]
-            sym_id = self._declares(node, method_name)
-            if sym_id is not None:
-                return sym_id
+            yield node
 
     def _declares(self, class_id: str, method_name: str) -> str | None:
         """The symbol a type node declares under *method_name*, or None.

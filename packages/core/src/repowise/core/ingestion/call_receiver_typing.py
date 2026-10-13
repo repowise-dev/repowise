@@ -60,6 +60,11 @@ _FUNCTION_KINDS = frozenset({"function", "method"})
 
 _SOURCE_CACHE_FILES = 4
 
+# Any Java type spelling before a declared name, for ``_declares_name``; the
+# words that may precede a bare name without declaring it.
+_JAVA_ANY_TYPE = r"[\w$]+(?:\.[\w$]+)*(?:<[^;{}()]*>)?(?:\[\])*"
+_NOT_A_TYPE = frozenset({"return", "throw", "new", "else", "case", "yield", "assert"})
+
 # Where a Java declaration header opens its type-parameter list: after a type's
 # name, or after a method's modifiers and annotations, before its return type.
 _JAVA_TYPE_PARAMETERS = re.compile(
@@ -502,26 +507,65 @@ class ReceiverTypingMixin:
         if name in fields:
             field = fields[name]
             return None if builtin_local and external_type_name(field) else (field, "field", file_path)
-        inherited = None if builtin_local else self._inherited_field(file_path, class_id, name, language)
+        if builtin_local:
+            return None
+        inherited = self._inherited_field(file_path, caller_id, class_id, name, language)
         return None if inherited is None else (inherited[1], "field", inherited[0])
 
     def _inherited_field(
-        self, file_path: str, class_id: str, name: str, language: str
+        self, file_path: str, caller_id: str, class_id: str, name: str, language: str
     ) -> tuple[str, str | None] | None:
-        """``(declaring file, type)`` of the one ancestor field named *name*.
+        """``(declaring file, type)`` of the field *name* the nearest superclass declares.
 
-        Only where a typed receiver may reach an ancestor (Java); a name two
-        ancestors declare is refused.
+        Only where a typed receiver may reach an ancestor (Java). The
+        declaration scan skips a type it cannot read (``b.Reader x``,
+        ``int[] x``), so the caller, its class and each superclass passed are
+        also asked whether they declare the name at all: one that does hides
+        the rest, and refuses.
         """
         if not self._strategies_for(file_path).inherited_typed_receiver:
             return None
-        hits = {
-            (path, fields[name])
-            for ancestor in self._ancestors_of(class_id)
-            if (path := self._symbol_paths_by_id.get(ancestor)) is not None
-            and name in (fields := self._field_types_in(path, language).get(ancestor, {}))
-        }
-        return next(iter(hits)) if len(hits) == 1 else None
+        if self._declares_name(file_path, caller_id, name) or self._declares_name(
+            file_path, class_id, name
+        ):
+            return None
+        for ancestor in self._superclass_chain(class_id):
+            path = self._symbol_paths_by_id.get(ancestor)
+            if path is None:
+                return None
+            fields = self._field_types_in(path, language).get(ancestor, {})
+            if name in fields:
+                return path, fields[name]
+            if self._declares_name(path, ancestor, name):
+                return None
+        return None
+
+    def _declares_name(self, file_path: str, owner_id: str, name: str) -> bool:
+        """Does *owner_id*, a method or a class's own scope, declare *name* with any type?
+
+        A scan for the one name, run only where an inherited field would
+        answer: admitting every type spelling to the declaration scan slows
+        it by about two thirds. Ceiling: a later declarator (``int a, x;``) is
+        missed.
+        """
+        spans = self._spans_for(file_path)
+        start, end = spans.get(owner_id, (1, 0))
+        owner = self._symbols_by_id.get(owner_id)
+        bodies = merge_spans(
+            span
+            for sym_id, span in spans.items()
+            if owner is not None
+            and owner.kind not in _FUNCTION_KINDS
+            and getattr(self._symbols_by_id.get(sym_id), "kind", None) in _FUNCTION_KINDS
+        )
+        declared = re.compile(rf"(?<![\w.@$])(?P<type>{_JAVA_ANY_TYPE})\s+{re.escape(name)}\s*[=;,):]")
+        lines = self._text_of(file_path).splitlines()
+        return any(
+            match.group("type") not in _NOT_A_TYPE
+            for number in range(start, min(end, len(lines)) + 1)
+            if not in_spans(bodies, number)
+            for match in declared.finditer(lines[number - 1])
+        )
 
     def _module_receiver_type(
         self,
