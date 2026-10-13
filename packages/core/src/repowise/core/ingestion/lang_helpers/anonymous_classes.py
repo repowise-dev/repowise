@@ -74,15 +74,19 @@ def follow_renamed_hosts(symbols: list[Symbol]) -> None:
     members = [s for s in symbols if is_anonymous_member(s)]
     for host in symbols:
         base, payload = split_symbol_id(host.id)
-        if payload is None or host.kind not in ("function", "method"):
-            continue
-        path = host.id.partition("::")[0]
-        old, new = base[len(path) + 2 :] + "::", host.id[len(path) + 2 :] + "::"
-        for member in members:
-            parent = member.parent_name or ""
-            if parent.startswith(old) and host.start_line <= member.start_line <= host.end_line:
-                member.parent_name = new + parent[len(old) :]
-                member.id = f"{path}::{member.parent_name}::{member.name}"
+        if payload is not None and host.kind in ("function", "method"):
+            _move_members(host, base, members)
+
+
+def _move_members(host: Symbol, base: str, members: list[Symbol]) -> None:
+    """Re-home the *members* declared in *host* from its *base* id to its own."""
+    path = host.id.partition("::")[0]
+    old, new = base[len(path) + 2 :] + "::", host.id[len(path) + 2 :] + "::"
+    for member in members:
+        parent = member.parent_name or ""
+        if parent.startswith(old) and host.start_line <= member.start_line <= host.end_line:
+            member.parent_name = new + parent[len(old) :]
+            member.id = f"{path}::{member.parent_name}::{member.name}"
 
 
 def scope_segment(
