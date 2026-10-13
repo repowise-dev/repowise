@@ -246,6 +246,27 @@ def test_ownership_risk_skips_low_commit_files():
     assert OwnershipRiskDetector().detect(_ctx(meta)) == []
 
 
+def test_ownership_risk_no_clear_owner_names_the_share_arm():
+    # Under 20 commits nobody can hold <5%, so only the share arm fires.
+    meta = {"top_authors_json": _authors(("a", 3), ("b", 3), ("c", 2), ("d", 2))}
+    out = OwnershipRiskDetector().detect(_ctx(meta))
+    assert len(out) == 1
+    assert out[0].severity == "low"
+    assert out[0].details["minor_contributors"] == 0
+    assert out[0].reason == (
+        "no clear owner: the top author holds 30% of 10 commits across 4 contributors"
+    )
+
+
+def test_ownership_risk_caps_a_small_file_at_low():
+    ctx = _ctx(dict(_FRAGMENTED, is_hotspot=True))
+    ctx.nloc = 9  # a bodyless Spring Data interface
+    out = OwnershipRiskDetector().detect(ctx)
+    assert len(out) == 1
+    assert out[0].severity == "low"  # high on a 120-line file
+    assert out[0].reason.endswith("(low: only 9 code lines)")
+
+
 # ---- small-team calibration (issue #361) ---------------------------------
 
 

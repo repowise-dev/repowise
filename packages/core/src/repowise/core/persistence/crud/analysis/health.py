@@ -47,6 +47,7 @@ from ...models import (
     _now_utc,
 )
 from .._shared import _BATCH_SIZE
+from ..graph import get_test_file_paths
 from .plain_rows import plain_rows
 from .shown import shown
 
@@ -497,8 +498,9 @@ async def get_health_findings(
     include_unverified: bool = False,
     limit: int | None = None,
 ) -> list[HealthFinding]:
-    """Findings for one repository: worth doing first ahead of lower-priority
-    ones (``worth.finding_priorities``), each part ordered by health impact.
+    """Findings for one repository: production ahead of test files, worth doing
+    first ahead of lower-priority ones (``worth.finding_priorities``), each part
+    ordered by health impact.
 
     Finding types the registry withholds (``finding_registry``) are left out,
     so every surface built on this read shows only what has earned a place; a
@@ -586,8 +588,14 @@ async def get_health_findings(
         if narrowed
         else dict(zip((f.id for f in kept), finding_priorities(kept), strict=True))
     )
+    # Test files go below production, then lower-priority below worth doing.
     # Stable: each tier keeps the impact order. The cap applies after the tier.
-    ordered = sorted(kept, key=lambda f: reasons[f.id] is not None)
+    tests = await get_test_file_paths(
+        session,
+        repository_id,
+        None if file_path is None and file_paths is None else {f.file_path for f in kept},
+    )
+    ordered = sorted(kept, key=lambda f: (f.file_path in tests, reasons[f.id] is not None))
     return ordered if limit is None else ordered[:limit]
 
 
