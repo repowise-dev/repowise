@@ -85,6 +85,16 @@ def id_segment_name(segment: str) -> str:
     return _GENERIC_ARITY.sub("", segment)
 
 
+def symbol_id_path(symbol_id: str) -> str:
+    """The file path an id starts with: ``A.java::A::m`` -> ``A.java``."""
+    return symbol_id.partition("::")[0]
+
+
+def outer_scope(scope: str) -> str:
+    """One id segment up: ``A::m::Runnable`` -> ``A::m``, and ``A`` -> ``""``."""
+    return scope.rpartition("::")[0]
+
+
 def overload_sets(symbol_ids: Iterable[str]) -> dict[str, list[str]]:
     """``{base id: member ids}`` for every id that carries a discriminator."""
     sets: dict[str, list[str]] = defaultdict(list)
@@ -287,11 +297,13 @@ __all__ = [
     "disambiguate_colliding_ids",
     "has_overload_identity",
     "id_segment_name",
+    "outer_scope",
     "overload_sets",
     "pair_overloads",
     "split_symbol_id",
     "symbol_discriminator",
     "symbol_id_arity",
     "symbol_id_discriminator",
+    "symbol_id_path",
     "untyped_symbol_id",
 ]

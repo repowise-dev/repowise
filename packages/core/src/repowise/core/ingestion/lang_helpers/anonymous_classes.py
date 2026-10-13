@@ -16,7 +16,7 @@ from tree_sitter import Node
 from ..extractors import node_text
 from ..language_configs import LANGUAGE_CONFIGS
 from ..models import Symbol
-from ..symbol_identity import split_symbol_id
+from ..symbol_identity import split_symbol_id, symbol_id_path
 from ..type_names import bare_type_name
 
 # Declarations that name an anonymous class they hold: a field, local or
@@ -80,7 +80,7 @@ def follow_renamed_hosts(symbols: list[Symbol]) -> None:
 
 def _move_members(host: Symbol, base: str, members: list[Symbol]) -> None:
     """Re-home the *members* declared in *host* from its *base* id to its own."""
-    path = host.id.partition("::")[0]
+    path = symbol_id_path(host.id)
     old, new = base[len(path) + 2 :] + "::", host.id[len(path) + 2 :] + "::"
     for member in members:
         parent = member.parent_name or ""

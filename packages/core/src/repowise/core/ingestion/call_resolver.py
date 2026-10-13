@@ -66,7 +66,7 @@ from .return_types import (
     signature_parameter_count,
     signature_parameter_range,
 )
-from .symbol_identity import id_segment_name, pair_overloads, split_symbol_id
+from .symbol_identity import id_segment_name, outer_scope, pair_overloads, split_symbol_id
 from .type_names import (
     csharp_extension_receiver,
     is_resolvable_type_name,
@@ -1359,7 +1359,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             own = methods.get((caller_class, call.target_name))
             if own is not None:
                 return own
-            caller_class = caller_class.rpartition("::")[0]
+            caller_class = outer_scope(caller_class)
         return None
 
     def _partial_fragment_member(self, file_path: str, caller_id: str, name: str) -> str | None:
