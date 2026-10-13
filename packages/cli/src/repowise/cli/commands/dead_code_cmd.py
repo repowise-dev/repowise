@@ -22,6 +22,7 @@ from repowise.cli.helpers import (
 from repowise.cli.output import notice_console
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeReport
 from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
+from repowise.core.analysis.dead_code.serving import safe_only_note
 
 #: The floor ``init`` and ``update`` store findings at: they run the analyzer
 #: with its default config, which keeps nothing below this and runs all four
@@ -299,7 +300,10 @@ def dead_code_command(
     findings = sorted(report.findings, key=_finding_order)
 
     if safe_only:
-        findings = [f for f in findings if f.safe_to_delete]
+        safe = [f for f in findings if f.safe_to_delete]
+        if note := safe_only_note(len(findings), len(safe)):
+            notices.print(f"[dim]{note}[/dim]")
+        findings = safe
 
     if fmt == "json":
         output = []

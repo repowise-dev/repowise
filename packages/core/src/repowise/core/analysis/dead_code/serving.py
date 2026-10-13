@@ -205,6 +205,18 @@ def merge_summary_counts(parts: list[dict[str, Any]]) -> dict[str, Any]:
     return merged
 
 
+def safe_only_note(total: int, safe: int) -> str | None:
+    """Why a safe-only view is empty when findings exist but none is
+    deletion-ready; None otherwise. The MCP summary and the CLI share it."""
+    if safe or not total:
+        return None
+    return (
+        f"{total} finding(s), none deletion-ready: a finding is deletion-ready only "
+        "when missing imports are evidence for its language. Review the ranked list "
+        "without the safe-only filter."
+    )
+
+
 def build_summary(
     counts: dict[str, Any],
     filtered_count: int,
@@ -222,6 +234,10 @@ def build_summary(
         "by_kind": counts["by_kind"],
     }
     filters.summarize(summary)
+    if filters.safe_only and (
+        note := safe_only_note(counts["total_findings"], counts["safe_to_delete_count"])
+    ):
+        summary["safe_only_note"] = note
     if withheld:
         summary["withheld_types"] = withheld
     if gated:

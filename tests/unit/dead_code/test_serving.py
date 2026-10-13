@@ -26,6 +26,7 @@ from repowise.core.analysis.dead_code.serving import (
     merge_summary_counts,
     rollup_by_directory,
     rollup_by_owner,
+    safe_only_note,
     serialize_finding,
     summary_counts,
 )
@@ -133,6 +134,21 @@ def test_build_summary_counts_every_shown_finding() -> None:
         "by_kind",
     ]
     assert "withheld_types" not in summary
+
+
+def test_safe_only_note_explains_an_empty_safe_only_view() -> None:
+    unproven = [_row("src/a/one.py", 0.6, safe_to_delete=False)]
+    summary = build_summary(summary_counts(unproven), 0, _filters(safe_only=True), {})
+    assert summary["safe_only_note"] == safe_only_note(1, 0)
+    assert "1 finding(s), none deletion-ready" in summary["safe_only_note"]
+
+    # Safe rows exist, nothing to explain; nor when there are no findings.
+    safe = build_summary(summary_counts(_ROWS), 3, _filters(safe_only=True), {})
+    assert "safe_only_note" not in safe
+    empty = build_summary(summary_counts([]), 0, _filters(safe_only=True), {})
+    assert "safe_only_note" not in empty
+    # Without safe_only the summary never carries it.
+    assert "safe_only_note" not in build_summary(summary_counts(unproven), 1, _filters(), {})
 
 
 def test_serialization_is_the_same_for_rows_and_mappings() -> None:
