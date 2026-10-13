@@ -993,7 +993,9 @@ class HermesTarget:
         """User-scope health. The repo's ``AGENTS.md`` block only counts with it.
 
         The MCP entry is what makes repowise reachable at all (see ``detect``),
-        so with *repo_path* an unwired user scope is the whole answer.
+        so with *repo_path* an unwired user scope is the whole answer. A wired
+        one stays OK without the block, since the server still resolves the
+        repo it is launched in; the missing instructions are noted instead.
 
         An unreadable config **is** reported as ``BROKEN`` here, which is where
         this differs from OpenCode. That target declines to call an unparseable
@@ -1005,7 +1007,18 @@ class HermesTarget:
         """
         path = config_path()
         if _reads_repowise():
-            return DoctorReport(target_id=ID, status=DoctorStatus.OK)
+            if repo_path is None or any(r.scope is Scope.PROJECT for r in detect(repo_path)):
+                return DoctorReport(target_id=ID, status=DoctorStatus.OK)
+            return DoctorReport(
+                target_id=ID,
+                status=DoctorStatus.OK,
+                # An OK row prints only its issue, so the remedy lives in it.
+                issues=(
+                    f"{instructions_path(repo_path)} has no repowise block, so Hermes "
+                    "is not told to use repowise in this repo (run: repowise agents "
+                    "add --target=hermes --scope=project).",
+                ),
+            )
 
         if path.exists() and not _parses(path):
             return DoctorReport(

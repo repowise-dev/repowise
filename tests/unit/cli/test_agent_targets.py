@@ -3801,3 +3801,23 @@ def test_hermes_doctor_in_a_repo_does_not_ask_to_be_run_from_one(
     report = target.doctor(repo_path=tmp_path)
     assert report.status is DoctorStatus.NOT_INSTALLED
     assert report.issues == ("Hermes is not wired at user scope.",)
+
+
+def test_hermes_doctor_in_a_repo_notes_a_missing_instructions_block(
+    hermes_home: Path, tmp_path: Path
+) -> None:
+    target = get_target("hermes")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target.install(Scope.USER)
+
+    # User scope alone stays the bare-call answer.
+    assert target.doctor().issues == ()
+
+    report = target.doctor(repo_path=repo)
+    assert report.status is DoctorStatus.OK
+    assert "has no repowise block" in report.issues[0]
+    assert "repowise agents add --target=hermes --scope=project" in report.issues[0]
+
+    target.install(Scope.PROJECT, repo_path=repo)
+    assert target.doctor(repo_path=repo).issues == ()
