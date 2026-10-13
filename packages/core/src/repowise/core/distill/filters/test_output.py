@@ -10,6 +10,7 @@ the pass parade — dots, PASSED lines, ok lines — which is replaced by counts
 from __future__ import annotations
 
 import re
+from collections import deque
 from typing import ClassVar
 
 from repowise.core.distill.filters.base import OutputFilter, cap_block, is_error_line
@@ -29,8 +30,11 @@ _PYTEST_PROGRESS_FAIL_RE = re.compile(r"\b(FAILED|ERROR)\b")
 
 # go test -------------------------------------------------------------------
 _GO_RUN_RE = re.compile(r"^=== (?:RUN|PAUSE|CONT|NAME)\b")
+_GO_RUN_PARSE_RE = re.compile(r"^===\s+(?P<verb>RUN|PAUSE|CONT|NAME)(?:\s+(?P<name>\S+))?")
+_GO_STATUS_PARSE_RE = re.compile(r"^\s*--- (?:FAIL|PASS|SKIP):\s+(?P<name>\S+)")
 _GO_PASS_RE = re.compile(r"^\s*--- PASS:|^PASS$|^ok\s+\S+")
 _GO_FAIL_RE = re.compile(r"^\s*--- FAIL:|^FAIL\b")
+_GO_MAX_BUFFERED_TEST_LINES = 20
 
 # cargo test ----------------------------------------------------------------
 _CARGO_OK_RE = re.compile(r"^test \S+ \.\.\. ok$")
@@ -173,21 +177,75 @@ def _distill_go(lines: list[str]) -> str:
     passes = 0
     runs = 0
     in_fail_block = False
+    current_test: str | None = None
+    buffers: dict[str, deque[str]] = {}
+
     for line in lines:
-        if _GO_RUN_RE.match(line):
-            runs += 1
-            in_fail_block = False
-        elif _GO_FAIL_RE.match(line):
-            in_fail_block = line.lstrip().startswith("--- FAIL")
+        if line.startswith("exit status "):
             out.append(line)
-        elif _GO_PASS_RE.match(line):
+            current_test = None
             in_fail_block = False
+            continue
+
+        run_m = _GO_RUN_PARSE_RE.match(line)
+        if run_m:
+            verb = run_m.group("verb")
+            name = run_m.group("name")
+            in_fail_block = False
+            if verb == "RUN":
+                runs += 1
+                current_test = name
+                if name:
+                    buffers[name] = deque(maxlen=_GO_MAX_BUFFERED_TEST_LINES)
+            elif verb in ("CONT", "NAME"):
+                current_test = name
+                if name and name not in buffers:
+                    buffers[name] = deque(maxlen=_GO_MAX_BUFFERED_TEST_LINES)
+            elif verb == "PAUSE":
+                current_test = None
+            continue
+
+        if _GO_FAIL_RE.match(line):
+            is_test_fail = line.lstrip().startswith("--- FAIL")
+            in_fail_block = is_test_fail
+            out.append(line)
+            if is_test_fail:
+                status_m = _GO_STATUS_PARSE_RE.match(line)
+                if status_m:
+                    test_name = status_m.group("name")
+                    if test_name in buffers:
+                        out.extend(buffers.pop(test_name))
+            else:
+                if current_test and current_test in buffers:
+                    out.extend(buffers.pop(current_test))
+            current_test = None
+            continue
+
+        if _GO_PASS_RE.match(line):
+            in_fail_block = False
+            current_test = None
             if line.startswith(("ok", "PASS")):
                 out.append(line)
             else:
                 passes += 1
-        elif line.startswith("exit status ") or in_fail_block or is_error_line(line):
+                status_m = _GO_STATUS_PARSE_RE.match(line)
+                if status_m:
+                    buffers.pop(status_m.group("name"), None)
+            continue
+
+        if line.lstrip().startswith("--- SKIP"):
+            in_fail_block = False
+            current_test = None
+            status_m = _GO_STATUS_PARSE_RE.match(line)
+            if status_m:
+                buffers.pop(status_m.group("name"), None)
+            continue
+
+        if current_test is not None:
+            buffers[current_test].append(line)
+        elif in_fail_block or is_error_line(line):
             out.append(line)
+
     if not out and passes == 0 and runs == 0:
         raise ValueError("not go test output")
     if passes or runs:

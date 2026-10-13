@@ -110,6 +110,71 @@ def test_go_panic_traceback_survives(load_fixture) -> None:
     assert "TestParserPython3/basic" not in distilled
 
 
+def test_go_verbose_failure_messages_survive(load_fixture) -> None:
+    _raw, distilled = _distill(
+        load_fixture, "go_test_verbose_fail.txt", "test_output", "go test -v ./..."
+    )
+    assert "(13 passing tests omitted)" in distilled
+    assert "--- FAIL: TestPick" in distilled
+    assert "pick_test.go:10: unexpected value" in distilled
+    pick_fail_idx = distilled.index("--- FAIL: TestPick")
+    pick_msg_idx = distilled.index("pick_test.go:10: unexpected value")
+    assert pick_fail_idx < pick_msg_idx
+
+    assert "--- FAIL: TestSub/upper" in distilled
+    assert "pick_test.go:16: subtest broke: 3" in distilled
+    sub_fail_idx = distilled.index("--- FAIL: TestSub/upper")
+    sub_msg_idx = distilled.index("pick_test.go:16: subtest broke: 3")
+    assert sub_fail_idx < sub_msg_idx
+
+    assert "TestMany/case" not in distilled
+    assert "FAIL" in distilled
+
+
+def test_go_parallel_interleaved_distill() -> None:
+    raw = "\n".join(
+        [
+            "=== RUN   TestA",
+            "=== PAUSE TestA",
+            "=== RUN   TestB",
+            "=== PAUSE TestB",
+            "=== CONT  TestA",
+            "=== CONT  TestB",
+            "    test_b.go:42: info message from passing TestB",
+            "--- PASS: TestB (0.01s)",
+            "    test_a.go:10: failure reason for TestA",
+            "--- FAIL: TestA (0.02s)",
+            "FAIL",
+        ]
+    )
+    f = filter_registry.get("test_output")
+    distilled = f.distill(raw, command="go test -v ./...")
+    assert "--- FAIL: TestA (0.02s)" in distilled
+    assert "test_a.go:10: failure reason for TestA" in distilled
+    assert "test_b.go:42: info message from passing TestB" not in distilled
+    assert "(1 passing tests omitted)" in distilled
+
+
+def test_go_chatty_test_buffer_capped_to_20() -> None:
+    lines = ["=== RUN   TestChattyFail"]
+    for i in range(35):
+        lines.append(f"    chatty_test.go:{i}: log output line {i}")
+    lines.extend(
+        [
+            "--- FAIL: TestChattyFail (0.05s)",
+            "FAIL",
+        ]
+    )
+    raw = "\n".join(lines)
+    f = filter_registry.get("test_output")
+    distilled = f.distill(raw, command="go test -v ./...")
+    assert "--- FAIL: TestChattyFail (0.05s)" in distilled
+    assert "log output line 0" not in distilled
+    assert "log output line 14" not in distilled
+    assert "log output line 15" in distilled
+    assert "log output line 34" in distilled
+
+
 def test_cargo_failures_section_survives(load_fixture) -> None:
     _raw, distilled = _distill(load_fixture, "cargo_test_fail.txt", "test_output", "cargo test")
     assert "store::tests::test_ttl_prune" in distilled
