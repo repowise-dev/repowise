@@ -451,20 +451,26 @@ def _annotate_commit_row(
     resolved_commits: Mapping[str, str],
     *,
     channel: str,
+    inherited: bool = False,
 ) -> None:
     commit = row.get("commit") or row.get("sha") or row.get("subject")
-    row["provenance"] = "historical"
     ref = commit_reference(
             repository,
             commit,
             resolved_commits=resolved_commits,
-            fallback={"channel": channel, "row": row},
+            # Hashed as the row always read, provenance included, so ids hold.
+            fallback={"channel": channel, "row": {**row, "provenance": "historical"}},
         )
+    row["evidence_refs"] = [ref]
+    if inherited:
+        # The enclosing block states the provenance once and the lane key
+        # names the channel, so neither repeats per row.
+        return
+    row["provenance"] = "historical"
     ref["provenance"] = "historical"
     ref["source"] = channel
     ref["source_kind"] = channel
     ref["verification_basis"] = "historical"
-    row["evidence_refs"] = [ref]
 
 
 def _annotate_origin(
@@ -474,11 +480,14 @@ def _annotate_origin(
     records_by_id: Mapping[str, Any],
     records_by_title: Mapping[str, list[Any]],
 ) -> None:
-    if origin.get("available"):
+    available = bool(origin.get("available"))
+    if available:
         origin["provenance"] = "historical"
     for row in origin.get("key_commits") or []:
         if isinstance(row, dict):
-            _annotate_commit_row(row, repository, resolved_commits, channel="origin")
+            _annotate_commit_row(
+                row, repository, resolved_commits, channel="origin", inherited=available
+            )
     for linked in origin.get("linked_decisions") or []:
         if not isinstance(linked, dict):
             continue
@@ -652,5 +661,9 @@ def _annotate_archaeology(
         for row in archaeology.get(key) or []:
             if isinstance(row, dict):
                 _annotate_commit_row(
-                    row, repository, resolved_commits, channel=f"archaeology:{key}"
+                    row,
+                    repository,
+                    resolved_commits,
+                    channel=f"archaeology:{key}",
+                    inherited=True,
                 )

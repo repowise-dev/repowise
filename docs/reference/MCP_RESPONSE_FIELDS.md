@@ -285,8 +285,8 @@ Every float is rounded to 4 significant digits. Direct rows' `structural_score` 
 | `authority` | Per row: `accepted` or `candidate` |
 | `currency` | On accepted records: `active`, `needs_review` (files moved, still binds), `uncheckable` (names nothing), `superseded`, `dismissed`. Candidates carry `review_state: "open"` instead |
 | `alignment` | Path mode: `active_count`, `deprecated_count`, `uncheckable_count`, `candidate_count`, summing to `governing_count`. `score` comes from `active_count` alone |
-| `git_archaeology` | Present when no decision governs the path |
-| `provenance`, `evidence_refs` | Self-contained evidence references. Matching ids mean shared evidence, not independent corroboration |
+| `git_archaeology` | Present when no decision governs the path. `git_log` keeps its first five rows (the file's newest commits); the rest are recoverable through the omission marker |
+| `provenance`, `evidence_refs` | Self-contained evidence references. Matching ids mean shared evidence, not independent corroboration. Commit rows under `git_archaeology` and `origin_story.key_commits` inherit the block's `provenance` rather than repeating it per row |
 
 Read the lane, not `status`: a record can carry `status: "active"` with no acceptance behind it. Only `repowise decision confirm` or a committed ADR marked accepted produces an acceptance.
 
