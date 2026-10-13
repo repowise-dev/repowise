@@ -27,6 +27,8 @@ class ConditionComplexity:
     line: int  # 1-indexed start line of the enclosing construct
     operator_count: int
     enclosing_construct: str  # "if" | "while" | "for" | "ternary" | "case"
+    # One operator kind and no negation (``a || b || c``): a list, not a knot.
+    flat_chain: bool = False
 
 
 @dataclass
