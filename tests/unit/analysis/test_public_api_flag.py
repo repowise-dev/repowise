@@ -44,8 +44,8 @@ _REPO = {
 }
 
 
-def build_fixture(repo: Path) -> GraphBuilder:
-    for rel, body in _REPO.items():
+def build_fixture(repo: Path, files: dict[str, str] = _REPO) -> GraphBuilder:
+    for rel, body in files.items():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(body, encoding="utf-8")
     parser = ASTParser()
@@ -87,4 +87,160 @@ def test_exported_symbols_carry_the_file_that_exports_them(tmp_path: Path) -> No
         "web/src/render.ts::hidden",
     ):
         assert flags[node] == "", node
+
+
+def test_maven_published_module_flags_public_api(tmp_path: Path) -> None:
+    files = {
+        "pom.xml": (
+            '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+            '  <modelVersion>4.0.0</modelVersion>\n'
+            '  <groupId>com.example</groupId>\n'
+            '  <artifactId>parent</artifactId>\n'
+            '  <version>1.0.0</version>\n'
+            '  <packaging>pom</packaging>\n'
+            '  <modules><module>lib</module></modules>\n'
+            '</project>\n'
+        ),
+        "lib/pom.xml": (
+            '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+            '  <modelVersion>4.0.0</modelVersion>\n'
+            '  <groupId>com.example</groupId>\n'
+            '  <artifactId>lib</artifactId>\n'
+            '  <version>1.0.0</version>\n'
+            '  <packaging>jar</packaging>\n'
+            '</project>\n'
+        ),
+        "lib/src/main/java/a/Api.java": (
+            "package a;\n\n"
+            "public class Api {\n"
+            "    public void run() {}\n"
+            "    private void secret() {}\n"
+            "}\n"
+        ),
+        "lib/src/main/java/a/Hidden.java": (
+            "package a;\n\n"
+            "class Hidden {\n"
+            "    public void foo() {}\n"
+            "}\n"
+        ),
+        "lib/src/test/java/a/ApiTest.java": (
+            "package a;\n\n"
+            "public class ApiTest {\n"
+            "    public void testRun() {}\n"
+            "}\n"
+        ),
+    }
+    graph = build_fixture(tmp_path, files).graph()
+    flags = {
+        node: data["public_api"]
+        for node, data in graph.nodes(data=True)
+        if data.get("node_type") == "symbol" and "public_api" in data
+    }
+    assert flags["lib/src/main/java/a/Api.java::Api"] == "lib/src/main/java/a/Api.java"
+    assert flags["lib/src/main/java/a/Api.java::Api::run"] == "lib/src/main/java/a/Api.java"
+    assert flags.get("lib/src/main/java/a/Api.java::Api::secret", "") == ""
+    assert flags.get("lib/src/main/java/a/Hidden.java::Hidden", "") == ""
+    assert flags.get("lib/src/test/java/a/ApiTest.java::ApiTest", "") == ""
+
+
+def test_gradle_and_jpms_published_module_flags_public_api(tmp_path: Path) -> None:
+    files = {
+        "settings.gradle.kts": 'include("lib")\ninclude("app")\n',
+        "lib/build.gradle.kts": 'plugins {\n    `java-library`\n}\n',
+        "app/build.gradle.kts": 'plugins {\n    application\n}\n',
+        "lib/src/main/java/module-info.java": (
+            "module lib {\n"
+            "    exports a;\n"
+            "}\n"
+        ),
+        "lib/src/main/java/a/LibApi.java": (
+            "package a;\n\n"
+            "public class LibApi {\n"
+            "    public void serve() {}\n"
+            "}\n"
+        ),
+        "lib/src/main/java/a/impl/InternalLib.java": (
+            "package a.impl;\n\n"
+            "public class InternalLib {\n"
+            "    public void internalServe() {}\n"
+            "}\n"
+        ),
+        "app/src/main/java/b/AppMain.java": (
+            "package b;\n\n"
+            "public class AppMain {\n"
+            "    public void start() {}\n"
+            "}\n"
+        ),
+    }
+    graph = build_fixture(tmp_path, files).graph()
+    flags = {
+        node: data["public_api"]
+        for node, data in graph.nodes(data=True)
+        if data.get("node_type") == "symbol" and "public_api" in data
+    }
+    assert flags["lib/src/main/java/a/LibApi.java::LibApi"] == "lib/src/main/java/a/LibApi.java"
+    assert flags["lib/src/main/java/a/LibApi.java::LibApi::serve"] == "lib/src/main/java/a/LibApi.java"
+    assert flags.get("lib/src/main/java/a/impl/InternalLib.java::InternalLib", "") == ""
+    assert flags.get("lib/src/main/java/a/impl/InternalLib.java::InternalLib::internalServe", "") == ""
+    assert flags.get("app/src/main/java/b/AppMain.java::AppMain", "") == ""
+
+
+def test_kotlin_public_api_and_visibility(tmp_path: Path) -> None:
+    files = {
+        "build.gradle.kts": 'plugins {\n    `java-library`\n}\n',
+        "src/main/kotlin/a/Open.kt": (
+            "package a\n\n"
+            "class Open {\n"
+            "    fun execute() {}\n"
+            "}\n"
+        ),
+        "src/main/kotlin/a/Hidden.kt": (
+            "package a\n\n"
+            "internal class Hidden {\n"
+            "    fun run() {}\n"
+            "}\n\n"
+            "internal object HiddenObj {\n"
+            "    fun compute() {}\n"
+            "}\n"
+        ),
+    }
+    parser = ASTParser()
+    hidden_bytes = (
+        b"package a\n\n"
+        b"internal class Hidden {\n"
+        b"    fun run() {}\n"
+        b"}\n\n"
+        b"internal object HiddenObj {\n"
+        b"    fun compute() {}\n"
+        b"}\n"
+    )
+    from repowise.core.ingestion.traverser import FileInfo
+    fi = FileInfo(
+        path="src/main/kotlin/a/Hidden.kt",
+        abs_path=str(tmp_path / "src/main/kotlin/a/Hidden.kt"),
+        language="kotlin",
+        size_bytes=len(hidden_bytes),
+        git_hash="0",
+        last_modified=0.0,
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    pf = parser.parse_file(fi, hidden_bytes)
+    symbols = {s.name: s.visibility for s in pf.symbols}
+    assert symbols["Hidden"] == "internal"
+    assert symbols["HiddenObj"] == "internal"
+
+    graph = build_fixture(tmp_path, files).graph()
+    flags = {
+        node: data["public_api"]
+        for node, data in graph.nodes(data=True)
+        if data.get("node_type") == "symbol" and "public_api" in data
+    }
+    assert flags["src/main/kotlin/a/Open.kt::Open"] == "src/main/kotlin/a/Open.kt"
+    assert flags["src/main/kotlin/a/Open.kt::Open::execute"] == "src/main/kotlin/a/Open.kt"
+    assert flags.get("src/main/kotlin/a/Hidden.kt::Hidden", "") == ""
+    assert flags.get("src/main/kotlin/a/Hidden.kt::HiddenObj", "") == ""
+
 

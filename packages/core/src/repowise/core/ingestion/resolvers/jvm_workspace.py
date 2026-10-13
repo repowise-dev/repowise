@@ -132,6 +132,9 @@ class JvmWorkspaceIndex:
     autoconfig_imports: dict[str, tuple[str, ...]] = field(default_factory=dict)
     """Spring Boot autoconfig import files → listed FQNs (for Phase 3/4)."""
 
+    jpms_exports: dict[str, frozenset[str]] = field(default_factory=dict)
+    """Module dir → frozenset of exported package FQNs (from module-info.java)."""
+
     def files_for_package(self, fqn: str) -> tuple[str, ...]:
         """Return all files in the package."""
         pkg = self.packages.get(fqn)
@@ -275,6 +278,10 @@ _JPMS_PROVIDES_RE = re.compile(
     r"provides\s+([\w.]+)\s+with\s+([\w.,\s]+);",
     re.MULTILINE,
 )
+_JPMS_EXPORTS_RE = re.compile(
+    r"\bexports\s+([\w.]+)",
+    re.MULTILINE,
+)
 
 
 def _scan_jpms_provides(
@@ -304,6 +311,45 @@ def _scan_jpms_provides(
             if iface and impls:
                 out.setdefault(iface, []).extend(impls)
     return {k: tuple(v) for k, v in out.items()}
+
+
+def _scan_jpms_exports(
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+) -> dict[str, frozenset[str]]:
+    """Scan ``module-info.java`` files for ``exports <pkg>;`` directives.
+
+    Keyed by module directory (relative to repo_root). For paths containing
+    ``/src/``, the module directory is the path before ``/src/``; for root
+    or top-level module files, it is the enclosing directory (or ``""`` for root).
+    Ignores test ``module-info.java`` files.
+    """
+    out: dict[str, set[str]] = {}
+    for mi in glob_via(
+        snapshot, repo_path, "module-info.java", prune_nested_git=prune_nested_git
+    ):
+        if not mi.is_file():
+            continue
+        try:
+            rel = mi.relative_to(repo_path).as_posix()
+        except ValueError:
+            continue
+        if "/src/test/" in rel or rel.startswith("src/test/") or "/test/" in rel:
+            continue
+        if "/src/" in rel:
+            mod_dir = rel.split("/src/", 1)[0]
+        else:
+            mod_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        try:
+            text = mi.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        pkgs = set()
+        for m in _JPMS_EXPORTS_RE.finditer(text):
+            pkg = m.group(1).strip()
+            if pkg:
+                pkgs.add(pkg)
+        out.setdefault(mod_dir, set()).update(pkgs)
+    return {k: frozenset(v) for k, v in out.items()}
 
 
 def _scan_meta_inf_services(
@@ -480,6 +526,10 @@ def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
         pass
     with contextlib.suppress(Exception):
         index.autoconfig_imports = _scan_spring_autoconfig(
+            repo_path, prune_nested_git=ctx.prune_nested_git, snapshot=snapshot
+        )
+    with contextlib.suppress(Exception):
+        index.jpms_exports = _scan_jpms_exports(
             repo_path, prune_nested_git=ctx.prune_nested_git, snapshot=snapshot
         )
 

@@ -135,6 +135,93 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
                     if nd is not None:
                         nd["is_never_flag"] = True
 
+    # Stamp qualifying JVM source files in publishing modules as package_export.
+    # A module publishes if:
+    # 1. Gradle: applies java-library or maven-publish (or java-library.*) and not application.
+    # 2. Maven: packaging is jar.
+    # If the module defines a module-info.java, only files in packages it exports qualify.
+    # Test files and pom aggregators never qualify.
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    repo_path = getattr(ctx, "repo_path", None)
+    snapshot = getattr(ctx, "walk_snapshot", None)
+    jpms_exports = getattr(index, "jpms_exports", {})
+
+    def _qualifies(path: str, mod_dir: str) -> bool:
+        pf = parsed.get(path)
+        if pf is not None and getattr(pf.file_info, "is_test", False):
+            return False
+        if path.endswith(("module-info.java", "package-info.java")):
+            return False
+        if mod_dir in jpms_exports:
+            pkg = index.package_for_file(path)
+            if not pkg or pkg not in jpms_exports[mod_dir]:
+                return False
+        return True
+
+    # 1. Gradle publishing modules
+    if gradle_index is not None:
+        from .resolvers.jvm_gradle import is_publishing_gradle_project
+
+        for project in gradle_index.projects.values():
+            if not is_publishing_gradle_project(project):
+                continue
+            base = project.root_dir.rstrip("/")
+            mod_dir = project.root_dir.strip("/")
+            if mod_dir == ".":
+                mod_dir = ""
+            main_src_dirs: list[str] = []
+            for ss in project.source_sets.values():
+                if ss.is_main:
+                    main_src_dirs.extend(ss.src_dirs)
+            if not main_src_dirs:
+                main_src_dirs = ["src/main/java", "src/main/kotlin"]
+
+            prefixes = [f"{base}/{sd}/" if base else f"{sd}/" for sd in main_src_dirs]
+            for path in parsed:
+                if (
+                    (path.endswith(".java") or path.endswith(".kt"))
+                    and any(path.startswith(p) for p in prefixes)
+                    and _qualifies(path, mod_dir)
+                ):
+                    node = graph.nodes.get(path)
+                    if node is not None:
+                        node["package_export"] = True
+
+    # 2. Maven publishing modules
+    if repo_path is not None:
+        from pathlib import PurePosixPath
+
+        from repowise.core.fs_walk import glob_via
+
+        pom_paths = [
+            p
+            for p in glob_via(
+                snapshot, repo_path, "pom.xml", prune_nested_git=ctx.prune_nested_git
+            )
+            if p.is_file()
+        ]
+        if pom_paths:
+            try:
+                from .external_systems.maven_model import load_maven_reactor
+
+                reactor = load_maven_reactor(repo_path, pom_paths)
+                for proj in reactor.projects:
+                    if proj.packaging.lower() == "jar":
+                        pom_parent = PurePosixPath(proj.manifest).parent
+                        mod_dir = "" if str(pom_parent) == "." else str(pom_parent).strip("/")
+                        prefix = f"{mod_dir}/src/main/" if mod_dir else "src/main/"
+                        for path in parsed:
+                            if (
+                                (path.endswith(".java") or path.endswith(".kt"))
+                                and path.startswith(prefix)
+                                and _qualifies(path, mod_dir)
+                            ):
+                                node = graph.nodes.get(path)
+                                if node is not None:
+                                    node["package_export"] = True
+            except Exception:
+                pass
+
 
 def _warmup_cpp(ctx: ResolverContext) -> None:
     """Build the C/C++ workspace index and propagate workspace-discovered

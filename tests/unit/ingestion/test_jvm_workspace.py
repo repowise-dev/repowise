@@ -157,6 +157,30 @@ class TestJvmWorkspaceIndex:
         assert "com.example.MyAutoConfig" in fqns
         assert "com.example.OtherConfig" in fqns
 
+    def test_jpms_exports(self, tmp_path: Path) -> None:
+        mi_caffeine = tmp_path / "caffeine" / "src" / "main" / "java" / "module-info.java"
+        mi_caffeine.parent.mkdir(parents=True)
+        mi_caffeine.write_text(
+            "module caffeine {\n"
+            "    exports com.github.benmanes.caffeine.cache;\n"
+            "    exports com.github.benmanes.caffeine.cache.stats;\n"
+            "}\n"
+        )
+        mi_javalin = tmp_path / "javalin" / "module-info.java"
+        mi_javalin.parent.mkdir(parents=True)
+        mi_javalin.write_text(
+            "module io.javalin {\n"
+            "    exports io.javalin;\n"
+            "}\n"
+        )
+        ctx = _ctx(tmp_path, [])
+        index = build_jvm_workspace_index(ctx)
+        assert index.jpms_exports["caffeine"] == frozenset({
+            "com.github.benmanes.caffeine.cache",
+            "com.github.benmanes.caffeine.cache.stats",
+        })
+        assert index.jpms_exports["javalin"] == frozenset({"io.javalin"})
+
 
 class TestMemberFqnResolution:
     def test_kotlin_companion_member_import_resolves_to_declaring_type(

@@ -127,3 +127,38 @@ class TestJvmGradleIndex:
         index = build_jvm_gradle_index(tmp_path)
         matches = index.lookup_class("com.example.Custom")
         assert java_path in matches
+
+    def test_plugin_detection_and_publishing(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.resolvers.jvm_gradle import (
+            JvmGradleProject,
+            _detect_plugins,
+            is_publishing_gradle_project,
+        )
+
+        (tmp_path / "lib").mkdir()
+        (tmp_path / "lib" / "build.gradle.kts").write_text(
+            "plugins {\n"
+            "    `java-library`\n"
+            "    `maven-publish`\n"
+            "}\n"
+        )
+        lib_plugins = _detect_plugins(tmp_path / "lib")
+        assert "java-library" in lib_plugins
+        assert "maven-publish" in lib_plugins
+        assert is_publishing_gradle_project(
+            JvmGradleProject(id="lib", root_dir="lib", plugins=lib_plugins)
+        )
+
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "build.gradle.kts").write_text(
+            'plugins {\n'
+            '    id("application")\n'
+            '    id("java-library.caffeine")\n'
+            '}\n'
+        )
+        app_plugins = _detect_plugins(tmp_path / "app")
+        assert "application" in app_plugins
+        assert "java-library.caffeine" in app_plugins
+        assert not is_publishing_gradle_project(
+            JvmGradleProject(id="app", root_dir="app", plugins=app_plugins)
+        )
