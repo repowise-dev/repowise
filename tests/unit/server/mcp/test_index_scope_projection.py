@@ -118,6 +118,55 @@ def test_status_names_the_condition_that_explains_the_rest(
     assert compact_index_scope(resolve_index_scope(state))["status"] == expected
 
 
+def test_a_pending_upgrade_with_a_provider_is_upgrading() -> None:
+    state = {**_FULL_STATE, "full_upgrade": {"status": "pending"}}
+    assert compact_index_scope(resolve_index_scope(state))["status"] == "upgrading"
+
+
+def _keyless_state(embedder: str | None, **scope: Any) -> dict[str, Any]:
+    """The scope a default keyless init stamps: no provider, no semantic vectors."""
+    return {
+        **_FULL_STATE,
+        "docs_mode": "deterministic",
+        "index_scope": {
+            "git_commit_cap": 500,
+            "file_pages": _WHOLE_PAGES,
+            "provider": {"name": None, "embedder": embedder},
+            "search": {"full_text": "available", "semantic": "unavailable"},
+            **scope,
+        },
+        "full_upgrade": {"status": "pending"},
+    }
+
+
+@pytest.mark.parametrize("embedder", ["mock", None])
+def test_a_finished_keyless_index_reads_complete(embedder: str | None) -> None:
+    """Nothing takes a keyless pending upgrade up, and no semantic leg was meant."""
+    state = _keyless_state(embedder)
+    assert compact_index_scope(resolve_index_scope(state))["status"] == "complete"
+
+
+@pytest.mark.parametrize("embedder", ["mock", None])
+def test_a_keyless_index_with_omitted_pages_reads_partial(embedder: str | None) -> None:
+    state = _keyless_state(embedder, file_pages={"eligible": 10, "generated": 8, "omitted": 2})
+    assert compact_index_scope(resolve_index_scope(state))["status"] == "partial"
+
+
+def test_a_fast_keyless_index_with_no_pages_reads_partial() -> None:
+    state = _keyless_state(
+        "mock",
+        file_pages={"eligible": 10, "generated": 0, "omitted": 10},
+        analysis={"skipped": ["generation"]},
+        search={"full_text": "unavailable", "semantic": "unavailable"},
+    )
+    assert compact_index_scope(resolve_index_scope(state))["status"] == "partial"
+
+
+def test_a_keyless_index_whose_real_embedder_failed_is_degraded() -> None:
+    state = _keyless_state("openai")
+    assert compact_index_scope(resolve_index_scope(state))["status"] == "degraded"
+
+
 def test_omitted_pages_are_never_reported_as_complete() -> None:
     """A partial index must not read as a whole one to save a word."""
     scope = resolve_index_scope(_FULL_STATE)
