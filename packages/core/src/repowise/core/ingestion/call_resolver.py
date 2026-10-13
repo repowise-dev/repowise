@@ -180,6 +180,23 @@ def _overload_return_types(
     return found
 
 
+def _overload_phase(admitted: tuple[int, int | None], argument_count: int) -> int | None:
+    """The first phase in which a member with *admitted* arguments takes the call.
+
+    0 for exactly that arity, 1 when its defaults admit the count (Java's first
+    phase, C#'s normal form), 2 when its varargs or ``params`` expand to it,
+    and None when it cannot take the call.
+    """
+    fewest, most = admitted
+    if argument_count < fewest:
+        return None
+    if most is None:
+        return 2
+    if argument_count > most:
+        return None
+    return 0 if fewest == most else 1
+
+
 def _flattened_wildcard_source(imp: Import) -> str | None:
     """The repository file whose every name *imp* forwards, or None.
 
@@ -956,13 +973,12 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """The members of the first phase with any candidate for *argument_count*."""
         if argument_count is None or rep in self._unranged_overload_sets:
             return []
-        members = self._overload_members.get(rep, ())
-        phases = (
-            [m for m, (fewest, most) in members if fewest == most == argument_count],
-            [m for m, (fewest, most) in members if most is not None and fewest <= argument_count <= most],
-            [m for m, (fewest, most) in members if most is None and fewest <= argument_count],
-        )
-        return next((phase for phase in phases if phase), [])
+        phases: dict[int, list[str]] = defaultdict(list)
+        for member, admitted in self._overload_members.get(rep, ()):
+            phase = _overload_phase(admitted, argument_count)
+            if phase is not None:
+                phases[phase].append(member)
+        return phases[min(phases)] if phases else []
 
     def _overload_sibling_call(self, call: CallSite) -> ResolvedCall | None:
         """An overload calling another member of its own set, ``f(a)`` inside ``f(a, b)``.
