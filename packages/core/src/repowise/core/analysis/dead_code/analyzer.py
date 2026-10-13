@@ -24,7 +24,7 @@ from typing import Any
 
 import structlog
 
-from ...code_origin import is_build_file
+from ...code_origin import code_origin, is_build_file
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.decorator_names import decorator_base as _decorator_base
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
@@ -969,7 +969,9 @@ class DeadCodeAnalyzer:
         findings: list[DeadCodeFindingData] = []
 
         dynamic_patterns = cfg.get("dynamic_patterns", _DEFAULT_DYNAMIC_PATTERNS)
-        whitelist = set(cfg.get("whitelist", []))
+        # Machine output known only by its content (a webpack chunk, a minified
+        # bundle) joins the whitelist, which every pass already honours.
+        whitelist = set(cfg.get("whitelist", [])) | self._content_machine_output()
 
         if cfg.get("detect_unreachable_files", True):
             findings.extend(self._detect_unreachable_files(whitelist))
@@ -2244,6 +2246,19 @@ class DeadCodeAnalyzer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _content_machine_output(self) -> set[str]:
+        """Files ``code_origin`` reads as generated or vendored from their bytes.
+
+        The path-only rules are asked per candidate by ``never_flag_path``.
+        ``is_test=False`` skips the test-path check, which cannot change
+        either answer and is half the cost.
+        """
+        return {
+            path
+            for path, data in self._source_map.items()
+            if code_origin(path, data, is_test=False) in ("generated", "vendored")
+        }
 
     def _should_never_flag(self, path: str, whitelist: set[str]) -> bool:
         """Return True if path should never be flagged as dead.
