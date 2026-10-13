@@ -68,6 +68,7 @@ from .entry_shape import (
     is_program,
 )
 from .file_reachability import (
+    _NON_DEPENDENCY_EDGES,
     CSHARP_SUFFIX,
     PackageFileMap,
     ReachabilityRescues,
@@ -2224,7 +2225,10 @@ class DeadCodeAnalyzer:
     def _has_cross_package_importer(self, pkg: str, files: list[str]) -> bool:
         """Whether anything outside *pkg* depends on a file inside it."""
         for f in files:
-            for pred in self.graph.predecessors(f):
+            for pred, _f, edge_data in self.graph.in_edges(f, data=True):
+                # Committed together is history, not a dependency.
+                if edge_data.get("edge_type") in _NON_DEPENDENCY_EDGES:
+                    continue
                 pred_str = str(pred)
                 if pred_str.startswith("external:"):
                     # Third-party imports don't count as cross-package

@@ -206,7 +206,10 @@ def is_jvm_file_reachable(
       (Spring/Jakarta/Quarkus/Micronaut/JPA);
     - it defines a ``main`` method.
     """
-    if graph.in_degree(node) > 0:
+    # Called, not imported at module level: file_reachability imports this module.
+    from .file_reachability import has_dependency_importer
+
+    if has_dependency_importer(graph, node):
         return True
 
     if _file_defines_entry_class(graph, node):
@@ -216,7 +219,7 @@ def is_jvm_file_reachable(
         if sibling == node:
             continue
         sib_data = graph.nodes.get(sibling, {})
-        if graph.in_degree(sibling) > 0:
+        if has_dependency_importer(graph, sibling):
             return True
         if is_reachability_root(sib_data):
             return True
