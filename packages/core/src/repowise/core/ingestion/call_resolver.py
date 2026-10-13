@@ -1024,7 +1024,19 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
 
         # --- Free function call: function() ---
-        return self._with_props(self._resolve_free_call(file_path, call, caller_id), call)
+        return self._with_props(self._resolve_bare_call(file_path, call, caller_id), call)
+
+    def _resolve_bare_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A receiver-less call, refused where it lands on an extension it has no receiver for."""
+        hit = self._resolve_free_call(file_path, call, caller_id)
+        if hit is None or call.receiver_call is not None:
+            return hit
+        return None if self._lacks_extension_receiver(file_path, call, hit.callee_id) else hit
 
     def _with_props(self, res: ResolvedCall | None, call: CallSite) -> ResolvedCall | None:
         if res is not None and call.supplied_props is not None:

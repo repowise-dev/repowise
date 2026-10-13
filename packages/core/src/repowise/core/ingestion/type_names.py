@@ -219,6 +219,27 @@ _CSHARP_EXTENSION_RECEIVER = re.compile(
 )
 
 
+def kotlin_extension_receiver(header: str, name: str) -> str | None:
+    """The bare type Kotlin's ``fun Type.name(`` in *header* extends, or None.
+
+    None too for a receiver that is the function's own type parameter
+    (``fun <T> T.name()``): any implicit receiver fits it.
+    """
+    # Read at the header's first `fun` only: a same-named function below it is
+    # another declaration.
+    first = re.search(r"\bfun\s", header)
+    match = first and re.compile(
+        rf"fun\s+(?:<(?P<params>(?:[^<>]|<[^<>]*>)*)>\s*)?"
+        rf"(?P<type>[^()=]+?)\.\s*`?{re.escape(name)}`?\s*[(<]"
+    ).match(header, first.start())
+    if not match:
+        return None
+    bare = bare_type_name(match.group("type").strip().rstrip("?"))
+    params = (match.group("params") or "").split(",")
+    declared = {p.split(":")[0].split()[-1] for p in params if p.strip()}
+    return None if not bare or bare in declared else bare
+
+
 def csharp_extension_receiver(signature: str) -> str | None:
     """The bare type a C# extension method extends, or None if it is not one.
 

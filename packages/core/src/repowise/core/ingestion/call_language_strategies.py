@@ -6,12 +6,16 @@ targets and crate roots that no import statement names.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import Any
 
-from .call_receiver_typing import _TYPE_KINDS
-from .models import CallSite, ParsedFile
+from .call_receiver_typing import _FUNCTION_KINDS, _TYPE_KINDS
+from .lang_helpers.kotlin_lambdas import in_lambda
+from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
+from .symbol_identity import outer_scope
+from .type_names import bare_type_name, kotlin_extension_receiver
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +44,14 @@ class _LanguageCallStrategies:
 _NO_LANGUAGE_STRATEGIES = _LanguageCallStrategies()
 
 _TYPED_RECEIVER = ("_resolve_typed_receiver",)
+
+
+def _gradle_script_receiver(path: str) -> str | None:
+    """The ``this`` a Gradle Kotlin script's own code runs with."""
+    if not path.endswith(".gradle.kts"):
+        return None
+    return "Settings" if path.rpartition("/")[2] == "settings.gradle.kts" else "Project"
+
 
 _JVM_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_jvm_same_package",),
@@ -110,6 +122,9 @@ class LanguageStrategiesMixin:
         # built" from "built but unavailable" (no repo_path / no go files).
         self._go_index: Any = None
         self._go_index_built = False
+
+        # {Kotlin function id: the type it extends, or None}
+        self._kotlin_receivers: dict[str, str | None] = {}
 
         # JVM same-package resolution (lazy JvmWorkspaceIndex)
         self._jvm_index: Any = None
@@ -439,3 +454,98 @@ class LanguageStrategiesMixin:
             if sym_id is not None and sym_id != caller_id:
                 return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
         return None
+
+    def _lacks_extension_receiver(self, file_path: str, call: CallSite, callee_id: str) -> bool:
+        """Is *callee_id* a Kotlin extension this bare call has no receiver for?
+
+        Written bare, ``digest(..)`` reaches ``fun AuthenticationConfig.digest``
+        only where the implicit ``this`` is that type: in a member or an
+        extension of it or of a subtype, or in a lambda, whose receiver
+        (``routing { .. }``) a text scan cannot type and so never refuses.
+        """
+        receiver = self._extension_receiver(callee_id)
+        if receiver is None:
+            return False
+        caller = self._symbols_by_id.get(call.caller_symbol_id or "")
+        if receiver in self._receivers_in_scope(file_path, caller):
+            return False
+        return not self._call_in_lambda(file_path, call, caller)
+
+    def _extension_receiver(self, callee_id: str) -> str | None:
+        """The repo class a Kotlin extension needs as ``this``.
+
+        None for an external receiver (``List<String>``, a library base the
+        caller may extend) or an alias: no repo class says which callers
+        have one, so nothing is refused.
+        """
+        callee = self._symbols_by_id.get(callee_id)
+        if callee is None or callee.language != "kotlin" or callee.kind not in _FUNCTION_KINDS:
+            return None
+        receiver = self._kotlin_receiver(callee)
+        return receiver if receiver in self._known_type_names else None
+
+    def _receivers_in_scope(self, file_path: str, caller: Symbol | None) -> set[str]:
+        """The bare type names ``this`` may be outside any lambda of *caller*."""
+        if caller is not None:
+            return self._implicit_receivers(caller)
+        script = _gradle_script_receiver(file_path)
+        return {script} if script else set()
+
+    def _call_in_lambda(self, file_path: str, call: CallSite, caller: Symbol | None) -> bool:
+        """Is *call* inside a lambda of *caller*? True when the text cannot tell."""
+        lines = self._text_of(file_path).splitlines()
+        start = caller.start_line if caller is not None else 1
+        if not 1 <= start <= call.line <= len(lines):
+            return True
+        last = lines[call.line - 1]
+        at = re.search(rf"(?<![\w.]){re.escape(call.target_name)}\b", last)
+        source = "\n".join([*lines[start - 1 : call.line - 1], last[: at.start() if at else 0]])
+        return in_lambda(source, caller is not None and caller.kind in _FUNCTION_KINDS)
+
+    def _kotlin_receiver(self, symbol: Symbol) -> str | None:
+        """The type a Kotlin function extends, read off its header (annotations included)."""
+        if symbol.id not in self._kotlin_receivers:
+            path = self._symbol_paths_by_id.get(symbol.id, "")
+            lines = self._text_of(path).splitlines()[symbol.start_line - 1 : symbol.start_line + 7]
+            self._kotlin_receivers[symbol.id] = kotlin_extension_receiver(
+                " ".join(lines), symbol.name
+            )
+        return self._kotlin_receivers[symbol.id]
+
+    def _implicit_receivers(self, caller: Symbol) -> set[str]:
+        """The bare type names ``this`` may be inside *caller*."""
+        extended = self._kotlin_receiver(caller) if caller.language == "kotlin" else None
+        names = {extended} if extended else set()
+        names.update(self._names_of_classes(self._receiver_classes(caller)))
+        parsed = self._parsed_files.get(self._symbol_paths_by_id.get(caller.id, ""))
+        names.update(
+            bare_type_name(h.parent_name)
+            for h in (parsed.heritage if parsed else ())
+            if h.child_name in names
+        )
+        return names
+
+    def _receiver_classes(self, caller: Symbol) -> list[str]:
+        """The class whose code *caller* is, then each outer class an ``inner`` one sees."""
+        if caller.kind in _TYPE_KINDS:
+            class_id = caller.id
+        elif caller.parent_name:
+            class_id = self._caller_class_id(caller.id)
+        else:
+            return []
+        found = []
+        while (symbol := self._symbols_by_id.get(class_id)) is not None:
+            found.append(class_id)
+            if "inner" not in symbol.modifiers:
+                break
+            class_id = outer_scope(class_id)
+        return found
+
+    def _names_of_classes(self, class_ids: list[str]) -> set[str]:
+        """The names of *class_ids* and of their repo ancestors."""
+        return {
+            symbol.name
+            for class_id in class_ids
+            for symbol in map(self._symbols_by_id.get, (class_id, *self._ancestors_of(class_id)))
+            if symbol is not None
+        }
