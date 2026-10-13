@@ -162,6 +162,20 @@ class TraversalStats:
     workers would name a different subset on every run.
     """
 
+    def unindexed_source_files(self) -> list[tuple[str, str]]:
+        """``(path, reason)`` for each dropped file the dead-code analyzer reads.
+
+        Without them it cannot tell "nothing uses this" from "its user was
+        never read" (#1237). Generated files count too: they are skipped for
+        being generated, not for naming nothing, so a header function called
+        only from a jnigen ``.c`` is used. Sorted, so a read budget that runs
+        out skips the same generated files every run.
+        """
+        return [
+            *((s.path, s.reason) for s in (*self.skipped_source_files, *self.unknown_language_files)),
+            *((path, "generated") for path in sorted(self.generated_files)),
+        ]
+
 
 log = structlog.get_logger(__name__)
 

@@ -869,7 +869,7 @@ def run_partial_analysis(
         # files they cover; the stored rows carry every other file, which is
         # what init's analyzer had and this path did not.
         _dead_code_git_meta = {**(stored_git_meta or {}), **git_meta_map}
-        # Files the walk dropped on size or for having no language spec. This
+        # Files the walk dropped (size, no language spec, generated). This
         # report is persisted repo-wide (see below), so without them an update
         # would re-derive the verdicts init had clamped and write them back
         # unclamped — the #1237 cascade would return, looking like the fix had
@@ -881,13 +881,9 @@ def run_partial_analysis(
             parsed_files=graph_builder._parsed_files,
             source_map=source_map,
             repo_root=repo_path,
-            unindexed_source_files=[
-                (skipped.path, skipped.reason)
-                for skipped in (
-                    *getattr(_traversal_stats, "skipped_source_files", []),
-                    *getattr(_traversal_stats, "unknown_language_files", []),
-                )
-            ],
+            unindexed_source_files=(
+                _traversal_stats.unindexed_source_files() if _traversal_stats is not None else []
+            ),
             dotnet_index=getattr(graph_builder, "dotnet_index", None),
         )
         # Repo-wide, and persisted repo-wide. The detectors were always

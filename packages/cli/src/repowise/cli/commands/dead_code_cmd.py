@@ -135,17 +135,13 @@ def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport
 
     # parsed_files powers the source-scan rescues (dynamic-import markers,
     # bundler resolve.alias targets, export-alias maps).
-    stats = graph_builder.traversal_stats
     analyzer = DeadCodeAnalyzer(
         graph_builder.graph(),
         git_meta_map,
         parsed_files=graph_builder._parsed_files,
         source_map=source_map,
         repo_root=repo_path,
-        unindexed_source_files=[
-            (skipped.path, skipped.reason)
-            for skipped in (*stats.skipped_source_files, *stats.unknown_language_files)
-        ],
+        unindexed_source_files=graph_builder.traversal_stats.unindexed_source_files(),
         dotnet_index=getattr(graph_builder, "dotnet_index", None),
     )
     return analyzer.analyze(config)
