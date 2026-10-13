@@ -20,7 +20,9 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...batches import chunked
 from ...models import (
+    HealthFileMetric,
     HealthFinding,
     PerformanceOpportunity,
     PerformanceSummary,
@@ -48,6 +50,13 @@ Serving reads evidence from the findings table by opportunity, so this bounds
 the plan payload only.
 """
 
+# A finding's queue judgement: its cause's, written by the finalizer.
+_QUEUE_COLUMNS = (
+    HealthFinding.queue_eligible,
+    HealthFinding.queue_reason,
+    HealthFinding.queue_value,
+    HealthFinding.queue_tier,
+)
 # Columns the causal model reads off a row. Narrower than the ORM entity on
 # purpose: the finalizer walks every open performance finding, and ``severity``
 # and ``health_impact`` are not inputs to grouping.
@@ -235,7 +244,7 @@ async def finalize_performance_opportunities(
     rows = list(
         (
             await session.execute(
-                select(*_OBSERVATION_COLUMNS).where(
+                select(*_OBSERVATION_COLUMNS, *_QUEUE_COLUMNS).where(
                     HealthFinding.repository_id == repository_id,
                     HealthFinding.status == "open",
                     HealthFinding.dimension == "performance",
@@ -245,13 +254,17 @@ async def finalize_performance_opportunities(
     )
     if execution_roles is not None:
         rows = await _restamp_roles(session, rows, execution_roles)
-    opportunities = build_performance_opportunities(rows, evidence_limit=_EVIDENCE_LIMIT)
+    opportunities = build_performance_opportunities(
+        rows,
+        evidence_limit=_EVIDENCE_LIMIT,
+        origins=await _unknown_context_origins(session, repository_id, rows),
+    )
 
-    await _restamp_findings(session, rows)
     plan_states, plans = await _replace_plans(session, repository_id, opportunities, policy)
-    await _reconcile_opportunities(
+    verdicts = await _reconcile_opportunities(
         session, repository_id, opportunities, plan_states, analyzed_commit, plans
     )
+    await _restamp_findings(session, rows, verdicts)
     await _write_summary(session, repository_id, opportunities, plan_states, analyzed_commit, plans)
     return len(opportunities)
 
@@ -285,8 +298,31 @@ async def _restamp_roles(
     return out
 
 
-async def _restamp_findings(session: AsyncSession, rows: list[Any]) -> None:
-    """Point every stored observation at its cause, and give it a public id.
+async def _unknown_context_origins(
+    session: AsyncSession, repository_id: str, rows: list[Any]
+) -> dict[str, str | None]:
+    """The stored ``code_origin`` of each file whose code context is ``unknown``,
+    for :func:`~repowise.core.analysis.health.perf.causal.settled_context`."""
+    from ....analysis.health.perf.causal import execution_context
+
+    paths = sorted(p for p in {r.file_path for r in rows} if execution_context(p) == "unknown")
+    origins: dict[str, str | None] = {}
+    m = HealthFileMetric
+    for batch in chunked(paths):
+        result = await session.execute(
+            select(m.file_path, m.code_origin).where(
+                m.repository_id == repository_id, m.file_path.in_(batch)
+            )
+        )
+        origins.update(result.tuples().all())
+    return origins
+
+
+async def _restamp_findings(
+    session: AsyncSession, rows: list[Any], verdicts: dict[str, dict[str, Any]]
+) -> None:
+    """Point every stored observation at its cause, give it a public id, and
+    write its cause's queue judgement on it.
 
     The causal key reads one observation's own facts, so the link only ever
     changes for rows written before the column existed or under an older model.
@@ -297,8 +333,13 @@ async def _restamp_findings(session: AsyncSession, rows: list[Any]) -> None:
 
     changed = []
     for row in rows:
-        values = {}
-        if (opportunity_id := opportunity_id_for_finding(row)) != row.opportunity_id:
+        opportunity_id = opportunity_id_for_finding(row)
+        values = {
+            name: value
+            for name, value in verdicts.get(opportunity_id, {}).items()
+            if getattr(row, name) != value
+        }
+        if opportunity_id != row.opportunity_id:
             values["opportunity_id"] = opportunity_id
         if not row.public_id:
             # A store written before the column existed. Backfilling here is
@@ -391,8 +432,9 @@ async def _reconcile_opportunities(
     plan_states: dict[str, str],
     analyzed_commit: str | None,
     plans: dict[str, dict[str, Any]] | None = None,
-) -> None:
-    """Update, insert, and resolve, in one pass over the stored rows."""
+) -> dict[str, dict[str, Any]]:
+    """Update, insert, and resolve, in one pass over the stored rows. Returns
+    each open cause's queue judgement columns, by opportunity id."""
     stored = {
         (row.performance_model_version, row.opportunity_id): row
         for row in (
@@ -406,6 +448,7 @@ async def _reconcile_opportunities(
         .all()
     }
     seen: set[tuple[int, str]] = set()
+    verdicts: dict[str, dict[str, Any]] = {}
     now = _now_utc()
     for position, item in enumerate(opportunities):
         key = (item.performance_model_version, item.opportunity_id)
@@ -417,6 +460,7 @@ async def _reconcile_opportunities(
             analyzed_commit=analyzed_commit,
             plan=(plans or {}).get(item.opportunity_id),
         )
+        verdicts[item.opportunity_id] = {c.key: values[c.key] for c in _QUEUE_COLUMNS}
         row = stored.get(key)
         if row is None:
             session.add(
@@ -436,6 +480,7 @@ async def _reconcile_opportunities(
             row.status = "resolved"
             row.updated_at = now
     await session.flush()
+    return verdicts
 
 
 async def _write_summary(
