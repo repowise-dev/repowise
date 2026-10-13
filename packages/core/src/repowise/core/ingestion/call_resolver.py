@@ -906,7 +906,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if rep is None:
             return resolved
         target = self._overload_target(rep, call.argument_count)
-        if target is None or target == resolved.caller_id:
+        if target == resolved.caller_id:
             return None
         return resolved if target == resolved.callee_id else replace(resolved, callee_id=target)
 
@@ -921,23 +921,31 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         found = self._deciding_overloads(rep, argument_count)
         return found[0] if len(found) == 1 else None
 
-    def _overload_target(self, rep: str, argument_count: int | None) -> str | None:
-        """The member of *rep*'s set a call lands on, or None for no member.
+    def _overload_target(self, rep: str, argument_count: int | None) -> str:
+        """The member of *rep*'s set a call lands on.
 
         The member ``_pick_overload`` names, else the representative when the
         count cannot choose: it is unknown (a method reference, a C# method
         group), no member admits it, or the representative's own range is
-        unknown. A tie keeps the representative only when it is one of the
-        tied members; a tie among others refuses, since ``charset(x)`` over
-        ``charset()``, ``charset(String)`` and ``charset(Charset)`` never
-        means the no-argument representative.
+        unknown. A tie keeps the representative when it is one of the tied
+        members. A tie among others takes the first of them in declaration
+        order, the order the overload index records: ``charset(x)`` over
+        ``charset()``, ``charset(String)`` and ``charset(Charset)`` never means
+        the no-argument representative, but it does mean the set, which dead
+        code judges as one unit and a constructor set needs for any inbound
+        edge at all.
         """
         found = self._deciding_overloads(rep, argument_count)
         if len(found) == 1:
             return found[0]
+        tied = self._tied_without_representative(rep, found)
+        return tied[0] if tied else rep
+
+    def _tied_without_representative(self, rep: str, found: list[str]) -> list[str]:
+        """*found* when it is a tie the representative, with a known range, is not in."""
         if len(found) > 1 and rep not in found and rep in dict(self._overload_members.get(rep, ())):
-            return None
-        return rep
+            return found
+        return []
 
     def _deciding_overloads(self, rep: str, argument_count: int | None) -> list[str]:
         """The members of the first phase with any candidate for *argument_count*."""
@@ -1228,6 +1236,15 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         callee_id = resolved_inner.callee_id
         rep = self._overload_rep.get(callee_id)
         if rep is not None:
+            tied = self._tied_without_representative(
+                rep, self._deciding_overloads(rep, inner.argument_count)
+            )
+            # A tie names a type only when every tied member returns it.
+            returns = {
+                self._callee_return_type(member, inner.argument_count, language) for member in tied
+            }
+            if len(returns) > 1 or None in returns:
+                return None
             target = self._overload_target(rep, inner.argument_count)
             if target != rep:
                 callee_id = target
