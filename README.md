@@ -649,8 +649,8 @@ rows we lose beside the rows we win.
   recall in most Go cells is still not us, and the page says so.
 - **Accuracy by language.** Graded against each language's own toolchain: Dart 0.99,
   C 0.95 to 0.98, Python 0.96 to 0.98 on three of four repositories, Java 0.86 to
-  0.94, Rust 0.85 to 0.90, C# 0.72 to 0.92, C++ 0.78, each with its recall and its
-  weak spots.
+  0.94, Rust 0.85 to 0.90, C# 0.72 to 0.92, C++ 0.78, Kotlin 0.65 to 0.92, each
+  with its recall and its weak spots.
 - **Scale.** dotnet/runtime, 58,924 files, indexed in 120 minutes at 11.7 GiB peak
   memory on one laptop. Building just the call graph uses 75 MB at the median, the
   lowest of five tools on 35 of 35 repositories.

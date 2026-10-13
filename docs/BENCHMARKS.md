@@ -15,7 +15,7 @@ Where another tool beats us, the row is on this page too. The research each meth
 | Claim | Number | Sample | Measured on |
 |---|---|---|---|
 | [Call graph checked by the compiler](#8-the-same-question-against-an-answer-key-we-do-not-control) (Go, TypeScript) | No tool that finds as much of the graph gets more of it right, in **7 of 7** cells. Our precision **0.976 to 0.995** | 7 cells, 37,853 compiler edges, 5 tools | repowise main `4fccb31ec`, 2026-10-03; competitors August 2026 |
-| [Call graph accuracy by language](#accuracy-by-language) | Precision: Dart **0.99**, C **0.95 to 0.98**, Python **0.96 to 0.98** (attrs 0.50), Java **0.86 to 0.94**, Rust **0.85 to 0.90**, C# **0.72 to 0.92**, C++ **0.78** | 18 repositories, 7 languages, recall beside every figure | repowise main `1a37148e4` (Java, C# Polly, C++, Dart), 2026-10-14; other rows main `4fccb31ec`, 2026-10-03 |
+| [Call graph accuracy by language](#accuracy-by-language) | Precision: Dart **0.99**, C **0.95 to 0.98**, Python **0.96 to 0.98** (attrs 0.50), Java **0.86 to 0.94**, Rust **0.85 to 0.90**, C# **0.72 to 0.92**, C++ **0.78**, Kotlin **0.65 to 0.92** | 21 repositories, 8 languages, recall beside every figure | repowise main `1a37148e4` (Java, C# Polly, C++, Dart, Kotlin), 2026-10-14; other rows main `4fccb31ec`, 2026-10-03 |
 | [Finding the right files](#1-finding-the-right-files) | **0.876** of the needed files found, against **0.610** for the next tool | 42 sealed instances, p = 0.00004 | repowise `081a59fa`, August 2026 |
 | [Work saved in an agent loop](#2-what-changes-in-a-real-agent-loop) | **31.6% less** agent output than no tool, 3.8 tool calls against 7.2 | 43 django questions on Codex, p < 0.0001 | repowise `081a59fa`, August 2026 |
 | [Health score against CodeScene](#5-code-health-predicts-defects) | **2.3x** the later-defective files inside a 20% review budget | 2,770 files, 21 repositories, p = 0.003 | May 2026 |
@@ -62,7 +62,7 @@ our edges it confirms (**precision**) and how many of its edges we found
 (**recall**). We did not write any of these answer keys and cannot tune them.
 
 Repowise main, freshly indexed from source for every cell, one run per cell:
-the Java, C# Polly, C++ and Dart rows on `1a37148e4` (2026-10-14), the others on
+the Java, C# Polly, C++, Dart and Kotlin rows on `1a37148e4` (2026-10-14), the others on
 `4fccb31ec` (2026-10-03). No competitor was run in this section; the five-tool comparison is
 the [next section](#8-the-same-question-against-an-answer-key-we-do-not-control).
 
@@ -89,6 +89,9 @@ the [next section](#8-the-same-question-against-an-answer-key-we-do-not-control)
 | Python | typer | held out | jedi (not a compiler) | 2,099 | **0.960** | 0.782 |
 | Python | attrs | held out | jedi (not a compiler) | 1,328 | 0.500 | 0.368 |
 | Dart | pub | dev | Dart analyzer (`package:analyzer`) | 2,311 | **0.992** | 0.827 |
+| Kotlin | nowinandroid | dev | Kotlin K2 compiler | 643 | **0.921** | 0.652 |
+| Kotlin | ktor-samples | dev | Kotlin K2 compiler | 347 | 0.872 | 0.628 |
+| Kotlin | okio (JVM) | dev | Kotlin K2 compiler | 1,468 | 0.646 | 0.379 |
 
 **Dev and held out.** Dev repositories are the ones accuracy fixes were
 developed against. Held-out repositories were chosen in advance and never used
@@ -113,6 +116,10 @@ see. Every cell carries a 95% confidence interval in the published artifacts.
   the right method can land on the wrong overload; counting any overload of
   the right method as correct, Polly reads 0.886. Polly is also measured on 4
   of its projects only.
+- **Kotlin okio is low at 0.65 precision.** okio is a multiplatform library:
+  its `expect` declarations and its own `minOf` overloads share names with the
+  standard library and with their `actual` twins, and those calls land on the
+  wrong one. The app-shaped Kotlin repositories read 0.87 and 0.92.
 - **Python attrs is low at 0.50 precision.** attrs exports its API through
   chained module aliases (`s = attributes = attrs`), and calls through those
   aliases bind to the alias line. That gap is open.
@@ -123,14 +130,15 @@ see. Every cell carries a 95% confidence interval in the published artifacts.
   Dart. Dynamic
   dispatch is the main reason, as the next section shows for Go.
 - **Not reported:** TypeScript through SCIP (that method did not agree with
-  `tsc`, so TypeScript comes from `tsc` directly), Kotlin (not run), C++ and
+  `tsc`, so TypeScript comes from `tsc` directly), C++ and
   Rust held-out repositories (no answer key could be built), Ruby and PHP (no
   answer key exists).
 - Do not compare recall across languages. It depends on how many entry points a
   codebase has and how much it dispatches dynamically.
 
 Reference versions: scip-go 0.2.7, scip-java 0.13.1, scip-dotnet 0.2.14,
-scip-clang 0.3.1, rust-analyzer 1.96.0, jedi 0.20.0, Dart analyzer 14.5.0.
+scip-clang 0.3.1, rust-analyzer 1.96.0, jedi 0.20.0, Dart analyzer 14.5.0, kotlinc
+2.4.21.
 Per-repository scores, confidence intervals and the scoring code:
 **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)**.
 
@@ -713,7 +721,7 @@ has been withdrawn.
 
 - **Retrieval and agent-loop numbers are Python and Go**, and the agent loop is
   one repository at one commit. The graph sections are wider: nine languages
-  hand-graded, Go and TypeScript against a compiler across five tools, and seven
+  hand-graded, Go and TypeScript against a compiler across five tools, and eight
   more languages against a compiler for repowise alone. A JavaScript and
   TypeScript retrieval corpus is built, but its sealed half is unrun, so nothing
   from it is quoted.
