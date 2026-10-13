@@ -90,7 +90,7 @@ surface is the ten flagship tools below plus `list_repos` (see
 | `get_symbol` | Raw source of one symbol with exact line bounds |
 | `search_codebase` | Hybrid code search — `mode="auto"` routes identifiers to indexed symbols, paths to files, prose to semantic wiki search |
 | `get_risk` | Per-file hotspot, dependents, co-changes, owners; PR `directive` block with `changed_files` |
-| `get_change_risk` | Benchmarked live-change percentile/classification plus supporting diff-shape score |
+| `get_change_risk` | Health delta of a change, its size-and-spread percentile and the touched files' bug-fix record |
 | `get_why` | Architectural decisions — search, path-anchored, or health dashboard |
 | `get_dead_code` | Unused/unreachable findings tiered by confidence |
 | `get_health` | 1–10 code-health score and marker findings per file |

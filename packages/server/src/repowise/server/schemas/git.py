@@ -198,7 +198,7 @@ class CommitResponse(BaseModel):
     # Repo-relative normalization (the portable signal).
     #: Repo-relative percentile rank, 0-100.
     risk_percentile: float
-    #: Authoritative repo-relative review-priority tercile.
+    #: Repo-relative tercile of the diff-size percentile; size, not danger.
     review_priority: str
     # The dominant risk driver, surfaced on rows so reviewers don't have to
     # open every detail sheet. Recomputed deterministically from the stored
@@ -395,7 +395,7 @@ class RiskRangeResponse(BaseModel):
     base: str
     head: str
     #: Separate historical evidence about where the change lands; it is not
-    #: folded into the authoritative percentile/classification.
+    #: folded into the diff-size percentile.
     fix_history: FixHistoryResponse
     risk_authority: RiskAuthority
     score: float

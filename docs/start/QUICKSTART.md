@@ -146,7 +146,7 @@ The same answers are on the command line:
 ```bash
 repowise health            # lowest-scoring files, and why
 repowise dead-code         # what nothing references
-repowise risk main..HEAD   # review priority for your branch
+repowise risk main..HEAD   # size and bug-fix record for your branch
 repowise impacted-tests main..HEAD   # tests your branch's changes exercise
 ```
 
@@ -211,7 +211,7 @@ seeds its index from the main checkout: [Worktrees](../scale/WORKTREES.md).
 | Fewer tokens on test and build output | [Distill](../agent/DISTILL.md) |
 | What the health score measures | [Code Health](../layers/CODE_HEALTH.md) |
 | Unused files and exports | [Dead Code](../layers/DEAD_CODE.md) |
-| Review priority for a change | [Change Risk](../layers/CHANGE_RISK.md) |
+| Size and bug-fix record of a change | [Change Risk](../layers/CHANGE_RISK.md) |
 | Gates and annotations on pull requests | [CI](CI.md) |
 | Several repositories as one | [Workspaces](../scale/WORKSPACES.md) |
 | Every setting and environment variable | [Config](../reference/CONFIG.md) |

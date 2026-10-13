@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import math
 import shutil
 import subprocess
 import threading
@@ -29,6 +28,7 @@ from repowise.core.analysis.change_risk import (
     normalize_extensions,
     score_live_change,
 )
+from repowise.core.analysis.change_risk.render import LIMITS, size_text
 from repowise.core.analysis.prior_fix_impact import (
     FixRecord,
     PriorFixFile,
@@ -144,6 +144,8 @@ _HEALTH_DIAGNOSTIC_FIELDS = ("analyzer", "base", "head", "limits")
 
 #: ``classification`` labels for the MCP surface. ``review_priority`` is a
 #: tercile of the diff-shape rank, so the label names size, not a verdict.
+#: Both ship only under ``include=["scales"]``: ``risk_percentile`` is the one
+#: rank on the default response.
 _DIFF_SIZE_LABELS = {
     "low": "Below-typical diff size",
     "moderate": "Typical diff size",
@@ -268,10 +270,16 @@ def _shape_payload(result: Any, include_set: set[str], revspec: str | None) -> t
     out of the payload when the caller did not ask for them.
     """
     payload = change_risk_payload(result, scales="scales" in include_set)
-    if payload.get("review_priority") in _DIFF_SIZE_LABELS:
+    if "scales" not in include_set:
+        payload.pop("review_priority")
+        payload.pop("classification")
+    elif payload.get("review_priority") in _DIFF_SIZE_LABELS:
         payload["classification"] = _DIFF_SIZE_LABELS[payload["review_priority"]]
     if "diagnostics" not in include_set:
         diagnostics = {f: payload.pop(f) for f in _DIAGNOSTIC_FIELDS if f in payload}
+        # The fix record reads as files and counts; its rank is a second
+        # percentile beside ``risk_percentile`` and only invited comparing them.
+        payload["fix_history"].pop("percentile", None)
         payload["fix_history"].pop("density", None)
     else:
         diagnostics = {}
@@ -310,8 +318,8 @@ async def get_change_risk(
     pre-existing.
 
     ``directive.status`` is the verdict; ``partial`` health means code files
-    were skipped. ``review_priority``, ``classification`` and ``diff_shape``
-    measure diff size only, not danger.
+    were skipped. ``risk_percentile`` and ``diff_shape`` measure diff size
+    only, not danger.
 
     ``impacted_tests`` is the ``impacted-tests`` selection; read ``run_all``.
     ``patch_coverage`` is the share of changed executable lines stored coverage
@@ -330,7 +338,7 @@ async def get_change_risk(
             comma-separated string, e.g. ``"src/api/,src/db/"``. Omit for all.
         baseline: Recent commits sampled for percentile ranking; 0 disables it.
         include: ``"findings"``, ``"diagnostics"`` (raw mechanics) or
-            ``"scales"`` (units).
+            ``"scales"`` (units, size tercile).
         finding_id: Expand one ``health_delta`` finding by its id.
     """
     if repo == "all":
@@ -592,14 +600,8 @@ def _diff_shape_sentence(payload: dict, diagnostics: dict) -> str:
     It replaced a block that restated four fields already at the top level and
     was read in 2 of 118 recorded calls.
     """
-    pct = payload.get("risk_percentile")
-    where = (
-        f"bigger than {min(math.floor(pct), 99)}% of this repo's recent commits"
-        if pct is not None
-        else "unranked (no baseline to compare against)"
-    )
     tail = " Mechanics: get_change_risk(include=['diagnostics'])." if diagnostics else ""
-    return f"Diff shape: {where}. Size and spread, not danger.{tail}"
+    return f"{size_text(payload.get('risk_percentile'))}. {LIMITS}{tail}"
 
 
 def _drill_down(payload: dict, delta: Any, finding_id: str, revspec: str | None) -> dict:

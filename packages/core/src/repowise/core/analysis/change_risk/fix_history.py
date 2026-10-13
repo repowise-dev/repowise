@@ -23,6 +23,7 @@ import subprocess
 from collections.abc import Iterable, Sequence
 
 from ...ingestion.git_indexer._constants import is_fix_commit
+from ..selection_scopes import is_manifest
 from .features import GIT_TIMEOUT_SECONDS, _git
 from .normalize import RiskNormalizer
 
@@ -269,12 +270,14 @@ def hot_files(
     """The change's fix-bearing files as ``(path, churn, pressure)``, worst first.
 
     Shared by every surface so the CLI, the MCP payload and the HTTP API cannot
-    order or round the same list differently.
+    order or round the same list differently. Manifests and lockfiles are left
+    out of the list: a fix that bumps a dependency edits them, and they are not
+    files that broke. Display only; *pressure* and every density keep them.
     """
     rows = [
         (path, churn, pressure[rename_target(path)])
         for path, churn in changes
-        if pressure.get(rename_target(path))
+        if pressure.get(rename_target(path)) and not is_manifest(rename_target(path))
     ]
     rows.sort(key=lambda row: -row[2])
     return tuple((path, churn, round(p, 2)) for path, churn, p in rows[:limit])

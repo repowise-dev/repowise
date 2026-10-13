@@ -4,11 +4,10 @@ description: Rank a live change for review using a repo-relative percentile and 
 
 # Repowise Risk
 
-Assess a *change* (not a file) for review priority. The authoritative fields are
-the repo-relative `risk_percentile` and `classification`. The response includes
-`fix_history`: the recency-weighted bug-fix record of the files the change
-touches, which of them carry it, and where that sits among the repo's own
-recent commits. The supporting 0–10 score measures diff size and spread (named
+Rank a *change* (not a file) by size and spread. `risk_percentile` is its rank
+among the repo's recent commits by diff size: not a bug predictor. The response
+includes `fix_history`: the recency-weighted bug-fix record of the files the
+change touches, manifests and lockfiles excluded. The supporting 0–10 score measures diff size and spread (named
 in `score_measures`) rather than danger and is not a probability. Pure git +
 learned constants: no LLM, no network. A natural pre-merge / PR gate.
 
@@ -16,8 +15,8 @@ learned constants: no LLM, no network. A natural pre-merge / PR gate.
 
 1. If `.repowise/` doesn't exist: "This repo isn't indexed yet. Run `/prompts:repowise-init` first." Stop.
 2. Resolve the target from `$ARGUMENTS`, run `repowise risk`, and present the
-   fix history first (which files keep breaking, and the repo-relative
-   percentile), then the score and its drivers.
+   size-and-spread percentile, then the fix history (which files carry prior
+   bug fixes), then the score and its drivers.
 
 ## Choosing the revspec
 

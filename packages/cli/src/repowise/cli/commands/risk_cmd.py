@@ -3,8 +3,9 @@
 Two questions, one command, because they are the same question asked of
 different subjects.
 
-A REVSPEC scores a *change* from its diff shape — size, diffusion, author
-familiarity — and prints a benchmarked review priority plus a supporting 0-10
+A REVSPEC scores a *change* from its diff shape (size, diffusion, author
+familiarity) and leads with its percentile of recent commits by size and
+spread, then the bug-fix record of the files it touches, then a supporting 0-10
 diff-shape score with an attributable breakdown. Runs
 in-process: pure git + learned constants, no LLM, no network. A natural
 pre-merge / PR gate, complementary to ``repowise health`` (which scores files).
@@ -15,7 +16,7 @@ is the ``get_risk`` MCP tool, and this command is a thin adapter over it — the
 same seam ``ask`` / ``context`` / ``symbol`` / ``why`` use. It reads the index
 rather than git, so the repo must be indexed.
 
-``--fail-above-percentile P`` makes the REVSPEC path a CI gate on the
+``--fail-above-percentile P`` makes the REVSPEC path a CI size gate on the
 repo-relative percentile (never the 0-10 score), with the shared CI exit codes
 (:mod:`repowise.cli.ci`): 1 above the gate, 2 when the change cannot be read
 or ranked.
@@ -36,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import click
+from rich.markup import escape
 from rich.table import Table
 
 from repowise.cli.ci import (
@@ -54,18 +56,9 @@ from repowise.cli.output import emit_json, format_option, full_option
 from repowise.core.analysis.change_risk import (
     ChangeRiskResult,
     change_risk_payload,
-    review_priority_classification,
     score_live_change,
 )
-from repowise.core.analysis.change_risk.render import ordinal as _ordinal
-from repowise.core.analysis.change_risk.render import percentile_text
-
-_PRIORITY_LEAD = {
-    "low": "Smaller or more focused than a typical commit in this repo",
-    "moderate": "Typical diff size and spread for this repo",
-    "high": "Larger or more dispersed than most commits in this repo",
-}
-
+from repowise.core.analysis.change_risk.render import LIMITS, fix_history_text, size_text
 
 #: Per-target keys the trim drops, and nothing else.
 #:
@@ -547,7 +540,7 @@ def risk_command(
     fmt: str,
     full: bool,
 ) -> None:
-    """Assess a change's review priority, or the history of named files.
+    """Rank a change by size and spread, or report the history of named files.
 
     With no --target this scores REVSPEC (a commit, or a ``base..head``
     range) from its diff. Omit REVSPEC to score your uncommitted work, or
@@ -643,38 +636,29 @@ def _score(
 
 def _print_change(subject: _Subject, result: ChangeRiskResult, failed: bool) -> None:
     """The table rendering of a scored change."""
-    _print_priority(result, subject.fail_above, failed)
+    _print_size(result, subject.fail_above, failed)
     _print_fix_history_and_shape(result)
     groups = _independent_changes_for(subject.repo_path, result, subject.revspec)
     if groups:
         _print_independent_changes(groups)
 
 
-def _print_priority(result: ChangeRiskResult, fail_above: float | None, failed: bool) -> None:
-    """Lead with the benchmarked population-relative authority.
+def _print_size(result: ChangeRiskResult, fail_above: float | None, failed: bool) -> None:
+    """Lead with the one percentile: the change's rank by diff size and spread.
 
     Without a usable baseline, label the offline absolute band explicitly as
     the fallback.
     """
-    risk, priority = result.risk, result.priority
-    if result.percentile is not None and priority is not None:
-        console.print(
-            f"\n[bold]Benchmarked review priority[/bold]: "
-            f"{review_priority_classification(priority)} · "
-            f"{percentile_text(result, fail_above)} percentile of recent commits by size and spread"
-        )
-        console.print(f"  [dim]{_PRIORITY_LEAD[priority]}.[/dim]")
-        if fail_above is not None:
-            from repowise.core.analysis.change_risk.render import gate_text
+    console.print(f"\n[bold]{size_text(result.percentile, fail_above)}[/bold]")
+    if result.percentile is None:
+        level = result.risk.level
+        color = {"high": "red", "moderate": "yellow", "low": "green"}[level]
+        console.print(f"  Absolute per-commit diff-size band: [{color}]{level}[/{color}]")
+    elif fail_above is not None:
+        from repowise.core.analysis.change_risk.render import gate_text
 
-            color = "red" if failed else "green"
-            console.print(f"  [{color}]Gate: {gate_text(result, fail_above)}.[/{color}]")
-    else:
-        color = {"high": "red", "moderate": "yellow", "low": "green"}[risk.level]
-        console.print(
-            f"\n[bold]Absolute fallback band[/bold]: [{color}]{risk.level}[/{color}] "
-            "(absolute per-commit band — no repo baseline to rank against)"
-        )
+        color = "red" if failed else "green"
+        console.print(f"  [{color}]Gate: {gate_text(result, fail_above)}.[/{color}]")
 
 
 def _print_fix_history_and_shape(result: ChangeRiskResult) -> None:
@@ -687,27 +671,13 @@ def _print_fix_history_and_shape(result: ChangeRiskResult) -> None:
 
 def _print_fix_headline(result: ChangeRiskResult) -> None:
     """Fix history remains separate evidence about where the change lands."""
-    features = result.features
+    color = "red" if result.hot_files else "green"
     if not result.fix_history_available:
-        console.print(
-            f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
-            "[yellow]fix history unavailable[/yellow] (the git history walk failed)"
-        )
-    elif result.hot_files:
-        where = (
-            f" · {_ordinal(round(result.fix_percentile))} percentile of this repo's recent commits"
-            if result.fix_percentile is not None
-            else ""
-        )
-        console.print(
-            f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
-            f"[red]touches files that have broken before[/red]{where}"
-        )
-    else:
-        console.print(
-            f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
-            "[green]no bug-fix history in the files it touches[/green]"
-        )
+        color = "yellow"
+    console.print(
+        f"\n[bold]Bug-fix record[/bold] for [cyan]{escape(result.features.ref)}[/cyan]: "
+        f"[{color}]{fix_history_text(result)}[/{color}]"
+    )
 
 
 def _print_change_facts(result: ChangeRiskResult) -> None:
@@ -736,7 +706,7 @@ def _print_hot_files(result: ChangeRiskResult) -> None:
         hot.add_column("Lines", justify="right")
         hot.add_column("Prior fixes", justify="right")
         for path, churn, pressure in result.hot_files:
-            hot.add_row(path, str(churn), f"{pressure:.1f}")
+            hot.add_row(escape(path), str(churn), f"{pressure:.1f}")
         console.print(hot)
         console.print(
             "  [dim]Prior fixes are recency-weighted against this change's own date — "
@@ -751,6 +721,7 @@ def _print_diff_shape(result: ChangeRiskResult) -> None:
         f"  [dim]Diff-size score: {risk.score:.1f}/10 — how big and spread out the change is, "
         f"not where it lands. Corpus-anchored to a single commit.[/dim]"
     )
+    console.print(f"  [dim]{LIMITS}[/dim]")
 
     table = Table(title="Diff shape (each driver vs. the model's baseline commit)")
     table.add_column("Driver")

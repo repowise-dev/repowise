@@ -79,14 +79,12 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
         "entropy": 0.0,
         "exp": 1,
     }
-    assert diagnostics["risk_authority"]["primary_fields"] == [
-        "risk_percentile",
-        "classification",
-    ]
+    assert diagnostics["risk_authority"]["primary_fields"] == ["risk_percentile"]
     assert result["exclude_patterns"] == ["tests/", "docs/"]
     assert result["risk_percentile"] is None
-    assert result["review_priority"] is None
-    assert result["classification"] is None
+    # The tercile and its label repeat the percentile, so they wait for scales.
+    assert "review_priority" not in result
+    assert "classification" not in result
     assert diagnostics["fallback_band"] in {"low", "moderate", "high"}
     assert diagnostics["baseline_sample_size"] == 0
     # The per-field dictionary is identical on every call, so it is opt-in.
@@ -97,6 +95,8 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     scales = {scale["field"]: scale for scale in expanded["risk_scales"]}
     assert scales["score"]["authoritative"] is False
     assert scales["risk_percentile"]["authoritative"] is True
+    assert scales["classification"]["authoritative"] is False
+    assert expanded["review_priority"] is None
     assert scales["features.la|features.ld"]["unit"] == "lines"
     assert scales["drivers[].contribution"]["unit"] == "logit_points"
     # Live-git responses carry a _meta envelope flagged as index-independent.
@@ -127,7 +127,7 @@ async def test_get_change_risk_labels_the_priority_tercile_as_diff_size(tmp_path
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
     monkeypatch.setattr(module, "change_risk_payload", _ranked)
-    result = await module.get_change_risk("HEAD", baseline=0)
+    result = await module.get_change_risk("HEAD", baseline=0, include=["scales"])
 
     assert result["review_priority"] == "high"
     assert result["classification"] == "Above-typical diff size"
@@ -542,10 +542,12 @@ async def test_get_change_risk_drops_request_echoes_and_empty_fields(tmp_path, m
     assert "working_tree" not in result
     assert "is_fix" not in result
     assert "density" not in result["fix_history"]
-    assert "percentile" in result["fix_history"]
+    # One percentile on the default response: the size rank, not the fix rank.
+    assert "percentile" not in result["fix_history"]
 
     diagnostics = await module.get_change_risk("HEAD", baseline=0, include=["diagnostics"])
     assert "density" in diagnostics["fix_history"]
+    assert "percentile" in diagnostics["fix_history"]
 
 
 @pytest.mark.asyncio

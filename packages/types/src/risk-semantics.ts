@@ -33,9 +33,9 @@ export interface RiskScalarSemantics {
 }
 
 export interface RiskAuthority {
-  authoritative_for: "live_change_review";
-  primary_fields: ["risk_percentile", "classification"];
-  primary_basis: "benchmarked_population_relative";
+  authoritative_for: "diff_size_rank";
+  primary_fields: ["risk_percentile"];
+  primary_basis: "population_relative_diff_size";
   fallback_field: "fallback_band";
   fallback_basis: "absolute_model_score_band";
   score_role: "supporting_diff_shape_signal";

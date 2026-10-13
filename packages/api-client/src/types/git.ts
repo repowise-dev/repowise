@@ -119,7 +119,7 @@ export interface CommitResponse {
   change_risk_level: ReviewPriority | null;
   /** Repo-relative percentile rank, 0–100. */
   risk_percentile: number;
-  /** Authoritative repo-relative review-priority tercile. */
+  /** Repo-relative tercile of the diff-size percentile; size, not danger. */
   review_priority: ReviewPriority;
   /** Label of the dominant risk driver; null when never risk-scored. */
   top_driver?: string | null;

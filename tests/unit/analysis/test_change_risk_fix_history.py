@@ -22,6 +22,7 @@ from repowise.core.analysis.change_risk import (
     fix_density_percentile,
     fix_pressure,
     fixes_reachable_from,
+    hot_files,
     score_live_change,
 )
 from repowise.core.analysis.change_risk.fix_history import rename_target
@@ -125,6 +126,30 @@ def test_fix_pressure_counts_only_fix_commits(repo_with_history: Path) -> None:
     pressure = fix_pressure(str(repo_with_history), "HEAD")
     assert pressure["hot.py"] == pytest.approx(3.0, abs=0.05)
     assert "cold.py" not in pressure  # churn is not fix history
+
+
+_MANIFESTS = ("package.json", "web/package-lock.json", "pyproject.toml")
+
+
+def _dependency_fix(repo: Path) -> None:
+    files = {"hot.py": "v = 9\n", **{path: "{}\n" for path in _MANIFESTS}}
+    _commit(repo, files, "fix: pin the parser dependency")
+
+
+def test_fix_pressure_still_counts_manifests(repo_with_history: Path) -> None:
+    """The pressure feeds densities and the risky-file gate, so it stays whole."""
+    _dependency_fix(repo_with_history)
+    pressure = fix_pressure(str(repo_with_history), "HEAD")
+    assert pressure["hot.py"] == pytest.approx(4.0, abs=0.05)
+    assert set(_MANIFESTS) <= set(pressure)
+
+
+def test_hot_files_leave_out_manifests_and_lockfiles(repo_with_history: Path) -> None:
+    """A fix that bumps a dependency edits the manifest; that file did not break."""
+    _dependency_fix(repo_with_history)
+    pressure = fix_pressure(str(repo_with_history), "HEAD")
+    rows = hot_files(pressure, [("hot.py", 1), *((path, 1) for path in _MANIFESTS)])
+    assert [path for path, _, _ in rows] == ["hot.py"]
 
 
 def test_fix_density_is_orthogonal_to_diff_size(repo_with_history: Path) -> None:

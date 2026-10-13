@@ -104,9 +104,9 @@ def test_payload_includes_friendly_repo_relative_classification() -> None:
     assert payload["classification"] == "Typical"
     assert payload["baseline_sample_size"] == 200
     assert payload["risk_authority"] == {
-        "authoritative_for": "live_change_review",
-        "primary_fields": ["risk_percentile", "classification"],
-        "primary_basis": "benchmarked_population_relative",
+        "authoritative_for": "diff_size_rank",
+        "primary_fields": ["risk_percentile"],
+        "primary_basis": "population_relative_diff_size",
         "fallback_field": "fallback_band",
         "fallback_basis": "absolute_model_score_band",
         "score_role": "supporting_diff_shape_signal",

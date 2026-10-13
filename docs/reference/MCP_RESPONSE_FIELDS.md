@@ -245,12 +245,12 @@ Every float is rounded to 4 significant digits. Direct rows' `structural_score` 
 |-------|---------|
 | `directive` | `status` (`review_required`, `review_recommended`, `clear_in_analyzed_scope`, `unknown`), a headline, reasons, next actions |
 | `health_delta` | What the change newly made worse. See below |
-| `risk_percentile`, `review_priority`, `classification` | The change's diff size and spread ranked against the repo's recent commits (`classification` reads `Below-typical`, `Typical` or `Above-typical diff size`). Size, not a verdict: `directive.status` is the verdict |
+| `risk_percentile` | The change's diff size and spread ranked against the repo's recent commits. Size, not a verdict: `directive.status` is the verdict. `include=["scales"]` adds the `review_priority` tercile and its `classification` (`Below-typical`, `Typical` or `Above-typical diff size`) |
 | `is_fix` | Present only when the change is a bug fix |
 | `exclude_patterns` | Present only when something was excluded: the request's patterns plus `.riskignore` |
 | `diff_shape` | One sentence on size and spread; never a danger verdict |
 | `working_tree` | Present only when `revspec` was omitted: whether uncommitted work was scored, or a clean tree fell back to `HEAD` |
-| `fix_history` | Recency-weighted bug-fix record of the touched files, with `percentile` and `overlap`; the raw `density` ships with `include=["diagnostics"]` |
+| `fix_history` | Recency-weighted bug-fix record of the touched files (manifests and lockfiles not listed), with `overlap`; `density` and its `percentile` ship with `include=["diagnostics"]` |
 | `impacted_tests` | The tests the change needs, and whether every test must run |
 | `patch_coverage` | Share of changed executable lines the stored coverage ran |
 | `branch_overlap` | Other branches editing the same files |

@@ -836,9 +836,9 @@ constants). With no `REVSPEC` it scores your uncommitted work, falling back to
 `base..head` range to score a whole branch / PR as one change (`base...head`
 diffs from the merge-base, so commits that landed on `base` meanwhile stay out).
 
-The headline is **repo-relative**: the change's percentile and review priority
-(`Below typical` / `Typical` / `Elevated`) within the repo's own recent commits,
-sampled live. The raw 0–10 model score is still shown, but as a secondary,
+The headline is **repo-relative**: the change's percentile by size and spread
+within the repo's own recent commits, sampled live. It ranks diff size, not
+danger; the bug-fix record of the touched files follows it. The raw 0–10 model score is still shown, but as a secondary,
 corpus-anchored number (it skews high on repos whose typical commit is large, so
 the percentile is the signal to act on). Each risk driver is reported relative
 to the model's baseline commit, not this repo.
@@ -853,7 +853,7 @@ to the model's baseline commit, not this repo.
 | `--baseline` | Recent commits to sample for the repo-relative percentile (default 200; `0` shows only the absolute per-commit model-score band) |
 | `--target` / `-t` | Score what history says about these **files** instead of a change. Repeatable; switches the command to the `get_risk` tool |
 | `--changed-file` | With `--target`: PR mode. Leads with a directive naming what may break, which co-changes and tests are missing, and what to run |
-| `--fail-above-percentile` | CI gate (0-100): exit `1` when the change ranks above this percentile of recent commits (`risk_percentile`, never the 0-10 score), `2` when it has no percentile (`--baseline 0`, or fewer than 8 commits to rank against). Without `REVSPEC` it scores the CI change: the target branch `...HEAD` |
+| `--fail-above-percentile` | CI size gate (0-100): exit `1` when the change ranks above this percentile of recent commits (`risk_percentile`, never the 0-10 score), `2` when it has no percentile (`--baseline 0`, or fewer than 8 commits to rank against). Without `REVSPEC` it scores the CI change: the target branch `...HEAD` |
 | `--format` | Output format: `table` (default), `json`, `markdown` or `github`. `markdown` and `github` are not for `--target`; without `REVSPEC` they score the CI change. `github` writes an `::error::` when the gate fails (else a `::notice::`) and the markdown to `$GITHUB_STEP_SUMMARY` |
 | `--full` | With `--target`: emit the complete tool payload as JSON (implies `--format json`) |
 

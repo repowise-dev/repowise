@@ -77,9 +77,14 @@ async def test_legacy_ranked_fields_stay_at_the_top_level(tool, make_repo):
     module = tool(seeded(make_repo))
 
     result = await module.get_change_risk("HEAD", baseline=0)
+    scaled = await module.get_change_risk("HEAD", baseline=0, include=["scales"])
 
-    for field in ("ref", "risk_percentile", "review_priority", "classification"):
+    for field in ("ref", "risk_percentile"):
         assert field in result
+    # The size tercile repeats the percentile, so it ships with the scales.
+    for field in ("review_priority", "classification"):
+        assert field not in result
+        assert field in scaled
 
 
 async def test_the_raw_score_is_not_on_the_wire_by_default(tool, make_repo):

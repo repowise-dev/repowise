@@ -35,7 +35,8 @@
 #   REPOWISE_SECURITY_FAIL_ON       Lowest severity that fails: high (default), med, low.
 #   REPOWISE_RISK_FAIL_ABOVE_PERCENTILE
 #                                   Fail when the change ranks above this percentile of
-#                                   recent commits. The risk job runs only when it is set.
+#                                   recent commits by size (a size gate, not a bug
+#                                   predictor). The risk job runs only when it is set.
 #   REPOWISE_IMPACTED_TESTS         "true" adds repowise-impacted-tests, which selects the
 #                                   tests the change needs from a cached index.
 #   REPOWISE_IMPACTED_TESTS_RUNNER  Runner its arguments are for: auto (default), pytest,
