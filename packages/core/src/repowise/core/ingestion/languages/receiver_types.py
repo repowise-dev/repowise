@@ -31,9 +31,9 @@ from ..type_names import (
     bare_type_name,
     is_resolvable_type_name,
     strip_type_arguments,
-    type_argument_count,
     type_qualifier,
     unwrap_pointer_like,
+    written_type_key,
 )
 
 # A type as written before a declared name: optionally qualified, generic to two
@@ -889,7 +889,8 @@ def _usable_type_name(raw: str, language: str) -> tuple[str | None, bool]:
     Only C++ looks inside the spelling: ``shared_ptr<Foo>`` is a ``Foo`` behind
     the arrow. Elsewhere the generic head is the value's real type. A C# head
     keeps its arity, ``IFoo`1``, since a same-file ``IFoo`` may be another type;
-    the lookup falls back to the bare name.
+    the lookup falls back to the bare name. A Java ``Token.Tag`` keeps its
+    outer type, which picks the member type the lookup means.
     """
     if _nests_in_a_builtin(raw, language):
         return None, False
@@ -897,9 +898,7 @@ def _usable_type_name(raw: str, language: str) -> tuple[str | None, bool]:
     name = inner or (raw if raw.isidentifier() else bare_type_name(raw))
     if not is_resolvable_type_name(name, language):
         return None, False
-    if language == "csharp" and (arity := type_argument_count(raw)):
-        name = f"{name}`{arity}"
-    return name, inner is not None
+    return written_type_key(name, raw, language), inner is not None
 
 
 # Languages whose constructor parameter lists sit at class scope, unextracted,

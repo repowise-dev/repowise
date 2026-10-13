@@ -1328,6 +1328,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             key = (symbol_path, symbol.parent_name, symbol.name, count)
             if len(self._overload_return_types.get(key, ())) > 1:
                 return None
+        if type_name is not None and language == "java":
+            # Read where the method declares it, with its member types in scope.
+            return self._read_java_type(symbol_path, callee_id, type_name)
         return type_name
 
     def _return_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:

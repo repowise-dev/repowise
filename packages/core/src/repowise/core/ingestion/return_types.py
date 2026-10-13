@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from .type_names import bare_type_name, type_argument_count
+from .type_names import bare_type_name, written_type_key
 
 _NULLISH_UNION = re.compile(r"\s*\|\s*(?:null|undefined)\b")
 _CPP_PREFIX = re.compile(r"^(?:(?:const|volatile|typename|class|struct)\s+)+")
@@ -137,6 +137,4 @@ def normalize_return_type(raw: str, language: str) -> str | None:
     name = bare_type_name(value).strip()
     if not name.isidentifier():
         return None
-    if language == "csharp" and (arity := type_argument_count(value)):
-        return f"{name}`{arity}"
-    return name
+    return written_type_key(name, value, language)

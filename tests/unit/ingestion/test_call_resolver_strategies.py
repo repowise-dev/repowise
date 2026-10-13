@@ -1602,6 +1602,175 @@ class TestJavaReceiverRecall:
         ]
 
 
+class TestJavaMemberTypes:
+    """A member type shadows a same-named import or package type, as Java scopes it.
+
+    ``p.Token`` nests ``Tag`` and ``Comment``; ``p.Tag`` and ``n.Comment`` are
+    top-level types of the same simple names.
+    """
+
+    _TOKEN = (
+        "package p;\nabstract class Token {\n"
+        "    static abstract class Tag extends Token {\n"
+        "        Tag reset() { return this; }\n        String name() { return null; }\n    }\n"
+        "    static final class StartTag extends Tag {}\n"
+        "    static final class Comment extends Token {\n"
+        "        String getData() { return null; }\n    }\n}\n"
+    )
+
+    def _targets(self, tmp_path: Path, source: str) -> list[tuple[str, str]]:
+        files = {
+            "p/Token.java": self._TOKEN,
+            "p/Tag.java": "package p;\npublic class Tag {\n    public String name() { return null; }\n}\n",
+            "n/Comment.java": "package n;\npublic class Comment {\n"
+            "    public String getData() { return null; }\n}\n",
+            "p/Use.java": source,
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        _link_imports(parsed, {"p/Use.java": {"n.Comment": "n/Comment.java"}})
+        token, tag = "p/Token.java::Token", "p/Token.java::Token::Tag"
+        parents = {tag: {token}, f"{token}::StartTag": {tag}, f"{token}::Comment": {token}}
+        if "extends Token" in source:
+            parents["p/Use.java::Use"] = {token}
+        resolver = CallResolver(
+            parsed, {k: set() for k in parsed}, repo_path=str(tmp_path), heritage_parents=parents
+        )
+        calls = parsed["p/Use.java"].calls
+        return sorted((rc.callee_id, rc.origin) for rc in resolver.resolve_file("p/Use.java", calls))
+
+    def test_a_qualified_type_names_the_member_type(self, tmp_path: Path) -> None:
+        """``Token.Tag`` is not the package's top-level ``Tag``, nor ``Token.Comment`` the import."""
+        source = (
+            "package p;\nimport n.Comment;\nclass Use {\n    Token.Tag pending;\n"
+            "    void go(Token.Comment c) {\n        pending.name();\n        c.getData();\n    }\n}\n"
+        )
+        assert self._targets(tmp_path, source) == [
+            ("p/Token.java::Comment::getData", "receiver_typed_same_package"),
+            ("p/Token.java::Tag::name", "receiver_field_same_package"),
+        ]
+
+    def test_an_inherited_member_type_shadows_an_import(self, tmp_path: Path) -> None:
+        source = (
+            "package p;\nimport n.Comment;\nclass Use extends Token {\n"
+            "    void go(Comment c) {\n        c.getData();\n    }\n}\n"
+        )
+        assert self._targets(tmp_path, source) == [
+            ("p/Token.java::Comment::getData", "receiver_typed_same_package")
+        ]
+
+    def test_a_return_type_is_read_where_its_method_declares_it(self, tmp_path: Path) -> None:
+        """``reset()`` returns ``Tag`` inside ``Token``, so its ``name()`` is the member's."""
+        source = (
+            "package p;\nclass Use {\n    void go(Token.StartTag t) {\n"
+            "        t.reset().name();\n    }\n}\n"
+        )
+        assert self._targets(tmp_path, source) == [
+            ("p/Token.java::Tag::name", "return_type_same_package"),
+            ("p/Token.java::Tag::reset", "receiver_typed_same_package"),
+        ]
+
+    def test_a_top_level_type_answers_where_no_member_shadows_it(self, tmp_path: Path) -> None:
+        source = (
+            "package p;\nimport n.Comment;\nclass Use {\n"
+            "    void go(Tag t, Comment c) {\n        t.name();\n        c.getData();\n    }\n}\n"
+        )
+        assert self._targets(tmp_path, source) == [
+            ("n/Comment.java::Comment::getData", "receiver_typed_import"),
+            ("p/Tag.java::Tag::name", "receiver_typed_same_package"),
+        ]
+
+    def test_a_type_parameter_shadows_a_member_type(self, tmp_path: Path) -> None:
+        source = (
+            "package p;\nimport n.Comment;\nclass Use extends Token {\n"
+            "    <Comment> void go(Comment c) {\n        c.getData();\n    }\n}\n"
+        )
+        assert ("p/Token.java::Comment::getData", "receiver_typed_same_package") not in (
+            self._targets(tmp_path, source)
+        )
+
+    @pytest.mark.parametrize(
+        ("outer", "inner", "returns"),
+        [
+            ("class Outer", "public static class Inner", "q.Outer.Inner"),
+            ("public class Outer", "private static class Inner", "q.Outer.Inner"),
+            ("public class Outer", "static class Inner", "Outer.Inner"),
+        ],
+        ids=["package-private-top-level", "private-member", "package-private-member"],
+    )
+    def test_a_qualified_type_the_caller_cannot_access_is_not_resolved(
+        self, tmp_path: Path, outer: str, inner: str, returns: str
+    ) -> None:
+        """Java's access rules apply to a qualified spelling as they do to a plain name."""
+        files = {
+            "q/Outer.java": f"package q;\n{outer} {{\n"
+            f"    {inner} {{\n        public void z() {{}}\n    }}\n}}\n",
+            "x/Factory.java": "package x;\nimport q.Outer;\npublic class Factory {\n"
+            f"    public static {returns} make() {{ return null; }}\n}}\n",
+            "a/Use.java": "package a;\nimport x.Factory;\nclass Use {\n"
+            "    void go() {\n        Factory.make().z();\n    }\n}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        _link_imports(parsed, {"a/Use.java": {"x.Factory": "x/Factory.java"}})
+        _link_imports(parsed, {"x/Factory.java": {"q.Outer": "q/Outer.java"}})
+        resolver = CallResolver(parsed, {k: set() for k in parsed}, repo_path=str(tmp_path))
+        calls = parsed["a/Use.java"].calls
+        assert "q/Outer.java::Inner::z" not in {
+            rc.callee_id for rc in resolver.resolve_file("a/Use.java", calls)
+        }
+
+    def test_a_package_qualified_return_type_names_its_package_type(self, tmp_path: Path) -> None:
+        """``p.Outer.Inner make()`` is ``p.Outer``'s ``Inner``, not the ``q.Inner`` imported."""
+        files = {
+            "p/Outer.java": "package p;\npublic class Outer {\n"
+            "    public static class Inner {\n        public void z() {}\n    }\n}\n",
+            "q/Inner.java": "package q;\npublic class Inner {\n    public void z() {}\n}\n",
+            "x/Factory.java": "package x;\nimport q.Inner;\npublic class Factory {\n"
+            "    public static p.Outer.Inner make() { return null; }\n}\n",
+            "a/Use.java": "package a;\nimport q.Inner;\nimport x.Factory;\nclass Use {\n"
+            "    void go() {\n        Factory.make().z();\n    }\n}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        imports = {"q.Inner": "q/Inner.java", "x.Factory": "x/Factory.java"}
+        _link_imports(parsed, {"a/Use.java": imports, "x/Factory.java": imports})
+        resolver = CallResolver(parsed, {k: set() for k in parsed}, repo_path=str(tmp_path))
+        calls = parsed["a/Use.java"].calls
+        assert "p/Outer.java::Inner::z" in {
+            rc.callee_id for rc in resolver.resolve_file("a/Use.java", calls)
+        }
+
+    @pytest.mark.parametrize(
+        ("modifier", "inherited"),
+        [("private ", False), ("", False), ("protected ", True)],
+        ids=["private", "package-private-elsewhere", "protected"],
+    )
+    def test_only_an_accessible_superclass_member_type_shadows_an_import(
+        self, tmp_path: Path, modifier: str, inherited: bool
+    ) -> None:
+        """``b.Base``'s nested ``Inner`` is inherited by ``a.Sub`` only if ``a`` may access it."""
+        files = {
+            "b/Base.java": "package b;\npublic class Base {\n"
+            f"    {modifier}static class Inner {{\n        void z() {{}}\n    }}\n}}\n",
+            "c/Inner.java": "package c;\npublic class Inner {\n"
+            "    public void y() {}\n    public void z() {}\n}\n",
+            "a/Sub.java": "package a;\nimport b.Base;\nimport c.Inner;\npublic class Sub extends Base {\n"
+            "    void m(Inner i) {\n        i.z();\n        i.y();\n    }\n}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        _link_imports(parsed, {"a/Sub.java": {"b.Base": "b/Base.java", "c.Inner": "c/Inner.java"}})
+        resolver = CallResolver(
+            parsed,
+            {k: set() for k in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents={"a/Sub.java::Sub": {"b/Base.java::Base"}},
+        )
+        calls = parsed["a/Sub.java"].calls
+        callees = sorted(rc.callee_id for rc in resolver.resolve_file("a/Sub.java", calls))
+        if inherited:
+            assert callees == ["b/Base.java::Inner::z"]
+        else:
+            assert callees == ["c/Inner.java::Inner::y", "c/Inner.java::Inner::z"]
+
+
 class TestOwnerAwareModuleTier:
     """The module and import-name tiers pick an owner, not just a file.
 

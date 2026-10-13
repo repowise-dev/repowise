@@ -31,7 +31,8 @@ def test_signature_parameter_count(signature: str, expected: int | None) -> None
     ("raw", "language", "expected"),
     [
         ("Result", "java", "Result"),
-        ("java.util.Optional<Result>", "java", "Optional"),
+        # Java keeps its qualifiers: the resolver reads them where they were written.
+        ("java.util.Optional<Result>", "java", "java.util.Optional"),
         ("const seastar::future<Result>&", "cpp", "future"),
         ("global::System.Threading.Tasks.Task<Result>?", "csharp", "Task`1"),
         ("IRuleBuilderOptions<T, TProperty>", "csharp", "IRuleBuilderOptions`2"),

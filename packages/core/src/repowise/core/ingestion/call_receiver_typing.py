@@ -49,7 +49,7 @@ from .languages.receiver_types import (
 from .models import CallSite, NamedBinding, ParsedFile, Symbol, symbol_id_language
 from .resolved_call import ResolvedCall
 from .return_types import declared_return_type, go_first_result
-from .symbol_identity import id_segment_name
+from .symbol_identity import id_segment_name, outer_scope, symbol_id_path
 from .type_names import (
     POINTER_LIKE_MEMBERS,
     bare_type_name,
@@ -279,7 +279,14 @@ class ReceiverTypingMixin:
         A C# generic spelling (``IFoo`1``) first asks for the type that carries
         that arity in its id, which exists only beside a same-file ``IFoo``;
         a repo-wide guess under it is not taken over the bare name's answer.
+
+        A Java name is read in the caller's scope (``_read_java_type``) unless
+        it arrives already read, as a type id.
         """
+        if self._language_of(file_path) == "java":
+            type_name = self._read_java_type(file_path, caller_id, type_name)
+            if "::" in type_name:
+                return self._java_member_target(file_path, call, caller_id, type_name)
         bare = id_segment_name(type_name)
         if bare != type_name:
             found = self._typed_receiver_lookup(file_path, call, caller_id, type_name)
@@ -324,6 +331,145 @@ class ReceiverTypingMixin:
             return True
         index = self._get_jvm_index()
         return index is not None and type_file in index.same_package_files(file_path)
+
+    def _read_java_type(self, file_path: str, scope_id: str, spelled: str) -> str:
+        """*spelled* as Java reads it in *scope_id*: a member type's id, else its bare name.
+
+        A type id passes through, already read where it was written.
+        """
+        if "::" in spelled:
+            return spelled
+        return self._java_written_type(file_path, scope_id, spelled) or bare_type_name(spelled)
+
+    def _java_written_type(self, file_path: str, scope_id: str, spelled: str) -> str | None:
+        """The type id a Java spelling names as a member type, written in *scope_id*.
+
+        A member type of an enclosing class, declared or inherited, shadows an
+        import or a package type of its name, so a bare name asks the
+        enclosing classes first. ``Outer.Inner`` is the ``Inner`` of the
+        ``Outer`` *file_path* sees, and ``p.Outer`` the ``Outer`` package ``p``
+        declares. None leaves the name to the ordinary lookup.
+        """
+        qualifier, name = type_qualifier(spelled), bare_type_name(spelled)
+        if not qualifier:
+            return self._enclosing_member_type(file_path, scope_id, name)
+        if bare_type_name(qualifier)[:1].islower():
+            return self._package_type(qualifier, name, file_path)
+        owner = self._java_written_type(file_path, scope_id, qualifier)
+        if owner is None and not type_qualifier(qualifier):
+            owner = self._visible_top_level_type(file_path, qualifier)
+        return None if owner is None else self._member_type(owner, name, file_path)
+
+    def _package_type(self, package: str, name: str, from_file: str) -> str | None:
+        """The top-level type *name* of the Java package *package* that *from_file* may use."""
+        index = self._get_jvm_index()
+        files = index.files_for_fqn(f"{package}.{name}") if index is not None else ()
+        type_id = f"{files[0]}::{name}" if len(files) == 1 else ""
+        return type_id if self._accessible_type(type_id, from_file) else None
+
+    def _enclosing_member_type(self, file_path: str, scope_id: str, name: str) -> str | None:
+        """The member type *name* of the innermost class around *scope_id* that has one.
+
+        A type parameter of the scope or a class around it shadows it, so
+        that name is left to the ordinary lookup.
+        """
+        symbol = self._symbols_by_id.get(scope_id)
+        is_type = getattr(symbol, "kind", None) in _TYPE_KINDS
+        found = self._innermost_member_type(
+            scope_id if is_type else self._caller_class_id(scope_id), name, file_path
+        )
+        # Read only on a hit: the header scan reads the file.
+        if found is not None and name in self._java_type_parameters(file_path, scope_id):
+            return None
+        return found
+
+    def _innermost_member_type(self, class_id: str, name: str, file_path: str) -> str | None:
+        """Walk out from *class_id* through its enclosing types to the first with member *name*."""
+        node = class_id
+        while "::" in node:
+            if getattr(self._symbols_by_id.get(node), "kind", None) in _TYPE_KINDS:
+                found = self._member_type(node, name, file_path)
+                if found is not None:
+                    return found
+            node = outer_scope(node)
+        return None
+
+    def _member_type(self, type_id: str, name: str, from_file: str) -> str | None:
+        """The type *name* that *type_id* declares, else the one it inherits.
+
+        The superclass chain answers nearest first; past it, one ancestor
+        (an interface) must be the only one declaring the name. An ancestor's
+        member type is inherited only where *from_file* may access it.
+        """
+        own = f"{type_id}::{name}"
+        if self._accessible_type(own, from_file):
+            return own
+        for owner in self._superclass_chain(type_id):
+            member = f"{owner}::{name}"
+            if self._inherited_member_type(member, from_file):
+                return member
+        hits = {
+            f"{ancestor}::{name}"
+            for ancestor in self._ancestors_of(type_id)
+            if self._inherited_member_type(f"{ancestor}::{name}", from_file)
+        }
+        return next(iter(hits)) if len(hits) == 1 else None
+
+    def _inherited_member_type(self, member_id: str, from_file: str) -> bool:
+        """Whether *member_id* is a type a subclass written in *from_file* inherits.
+
+        An accessible one that is not private: private members are not inherited.
+        """
+        symbol = self._symbols_by_id.get(member_id)
+        return symbol is not None and symbol.visibility != "private" and (
+            self._accessible_type(member_id, from_file)
+        )
+
+    def _accessible_type(self, type_id: str, from_file: str) -> bool:
+        """Whether Java lets code in *from_file* use the type *type_id*.
+
+        A private type only within its own top-level class (its file), a
+        package-private one only within its package.
+        """
+        symbol = self._symbols_by_id.get(type_id)
+        if symbol is None or symbol.kind not in _TYPE_KINDS:
+            return False
+        type_file = symbol_id_path(type_id)
+        if symbol.visibility == "private":
+            return type_file == from_file
+        if symbol.visibility == "internal":
+            return posixpath.dirname(type_file) == posixpath.dirname(from_file)
+        return True
+
+    def _visible_top_level_type(self, file_path: str, name: str) -> str | None:
+        """The one top-level type *name* that *file_path* sees, by import, file or package."""
+        found = self._class_named(file_path, name)
+        if found is not None:
+            return found[1]
+        if name in self._externally_bound_names(file_path):
+            return None
+        ids = {
+            identity[0]
+            for path, identity, _ in self._declared_types_named(name)
+            if identity[0] == f"{path}::{name}" and self._visible_java_type(file_path, name, path)
+        }
+        return next(iter(ids)) if len(ids) == 1 else None
+
+    def _java_member_target(
+        self, file_path: str, call: CallSite, caller_id: str, type_id: str
+    ) -> tuple[str, str] | None:
+        """The method *call* names on the member type *type_id*, and its scope."""
+        sym_id = self._declares(type_id, call.target_name) or self._ancestor_method(
+            type_id, call.target_name, caller_id, class_chain_first=True
+        )
+        if sym_id is None:
+            return None
+        type_file = symbol_id_path(type_id)
+        if type_file == file_path:
+            return sym_id, "same_file"
+        if posixpath.dirname(type_file) == posixpath.dirname(file_path):
+            return sym_id, "same_package"
+        return sym_id, "import"
 
     def _java_type_parameters(self, file_path: str, caller_id: str) -> set[str]:
         """Type parameters the caller and its enclosing types declare.
@@ -736,7 +882,7 @@ class ReceiverTypingMixin:
         )
         if type_name is not None and language == "python" and "::" in type_name:
             return self._located(file_path, type_name)  # typed from a call
-        return None if type_name is None else self._class_named(typing_file, type_name)
+        return None if type_name is None else self._class_named(typing_file, type_name, caller_id)
 
     def _chain_hop(
         self, found: tuple[str, str, str], field: str, language: str
@@ -750,7 +896,7 @@ class ReceiverTypingMixin:
         fields = self._field_types_in(class_file, language).get(class_id, {})
         if field in fields:
             type_name = fields[field]
-            hop = None if type_name is None else self._class_named(class_file, type_name)
+            hop = None if type_name is None else self._class_named(class_file, type_name, class_id)
         elif language == "python":
             hop = self._located(class_file, self._property_type_id(class_file, class_id, field))
         else:
@@ -768,13 +914,21 @@ class ReceiverTypingMixin:
             return None
         return path, type_id, "same_file" if path == file_path else "import"
 
-    def _class_named(self, file_path: str, type_name: str) -> tuple[str, str, str] | None:
+    def _class_named(
+        self, file_path: str, type_name: str, scope_id: str | None = None
+    ) -> tuple[str, str, str] | None:
         """``(file, class id, tier)`` for the one class *type_name* names in *file_path*.
 
         The name must be imported (a re-export followed to its declaration)
         or declared in *file_path* itself, and name exactly one type there:
-        no repo-wide guess, since every hop of a chain rests on this.
+        no repo-wide guess, since every hop of a chain rests on this. A Java
+        member type seen from *scope_id* answers first.
         """
+        if scope_id is not None and self._language_of(file_path) == "java":
+            type_id = self._java_written_type(file_path, scope_id, type_name)
+            if type_id is not None:
+                return self._located(file_path, type_id)
+            type_name = bare_type_name(type_name)
         # A chain hop asks for the type by its written name, arity aside.
         type_name = id_segment_name(type_name)
         bound = self._import_names.get(file_path, {}).get(type_name)

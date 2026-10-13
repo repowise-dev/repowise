@@ -94,6 +94,34 @@ def bare_type_name(raw: str) -> str:
     return text.strip()
 
 
+def written_type_key(name: str, raw: str, language: str) -> str:
+    """*name*, the bare type *raw* spells, as receiver lookups key it.
+
+    A C# head keeps its arity (``IFoo`1``), since a same-file ``IFoo`` may be
+    another type; a Java member type keeps its outer type (``Token.Tag``),
+    which picks among same-named member types.
+    """
+    if language == "csharp" and (arity := type_argument_count(raw)):
+        return f"{name}`{arity}"
+    if language == "java":
+        return java_type_path(raw) or name
+    return name
+
+
+def java_type_path(raw: str) -> str | None:
+    """``p.Token.Tag<X>[]`` -> ``p.Token.Tag``: a type spelled through its qualifiers.
+
+    Kept whole because the qualifier picks which same-named type is meant: an
+    outer type a member type, a package (lowercase) a top-level type. None for
+    an undotted spelling or one that names no type.
+    """
+    text = strip_type_arguments(raw.strip()).replace(" ", "")
+    parts = text.split(".")
+    if len(parts) < 2 or not any(part[:1].isupper() for part in parts):
+        return None
+    return text if all(part.isidentifier() for part in parts) else None
+
+
 def type_argument_count(raw: str) -> int:
     """How many type arguments the named type in *raw* is given.
 
