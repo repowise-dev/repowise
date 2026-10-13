@@ -317,23 +317,21 @@ def build_recent(
     open_findings: Rows,
     files: Mapping[str, FileFacts],
 ) -> dict[str, Any]:
-    """Findings a commit in the last week wrote that are still open."""
+    """Findings a commit in the last week wrote that are still open and serious,
+    as the open finding reads today."""
     if week is None:
         return {}
     candidates = _recent_candidates(rows, week=week, files=files)
     if not candidates:
         return {"recent_findings": ()}
-    open_keys = {
-        (field(h, "file_path"), field(h, "biomarker_type"), field(h, "function_name"))
-        for h in open_findings
-        if _open(h)
-    }
+    serious = _serious_open(open_findings)
     recent = []
     seen: set[tuple[str, str, str | None]] = set()
     for f, at in sorted(candidates, key=lambda c: c[1], reverse=True):
         key = (field(f, "file_path"), field(f, "biomarker_type"), field(f, "symbol"))
-        # Still open, and counted once however many commits touched it.
-        if key not in open_keys or key in seen:
+        # Still serious today, and counted once however many commits touched it.
+        now = serious.get(key)
+        if now is None or key in seen:
             continue
         seen.add(key)
         recent.append(
@@ -344,13 +342,41 @@ def build_recent(
                 file_path=field(f, "file_path"),
                 symbol=field(f, "symbol"),
                 biomarker=field(f, "biomarker_type"),
-                severity=field(f, "severity"),
+                severity=field(now, "severity"),
                 change_kind=field(f, "change_kind"),
-                line=field(f, "line_start"),
-                reason=field(f, "reason") or "",
+                line=field(now, "line_start"),
+                reason=field(now, "reason") or "",
             )
         )
     return {"recent_findings": tuple(recent)}
+
+
+def _serious_open(open_findings: Rows) -> dict[tuple[str, str, str | None], Any]:
+    """The worst open critical/high finding per (file, marker, function).
+
+    A commit's row records the finding as that commit left it; the open row
+    is what is true today, so it decides whether the finding still counts and
+    what the action says about it. Ties go to the higher impact, then the
+    earlier line, then the reason, so the pick does not hang on row order.
+    """
+
+    def worse(h: Any) -> tuple:
+        return (
+            field(h, "severity") == "critical",
+            field(h, "health_impact") or 0.0,
+            -(field(h, "line_start") or 0),
+            field(h, "reason") or "",
+        )
+
+    out: dict[tuple[str, str, str | None], Any] = {}
+    for h in open_findings:
+        if not _open(h) or field(h, "severity") not in ("critical", "high"):
+            continue
+        key = (field(h, "file_path"), field(h, "biomarker_type"), field(h, "function_name"))
+        held = out.get(key)
+        if held is None or worse(h) > worse(held):
+            out[key] = h
+    return out
 
 
 def build_fix_first_store(rows: Mapping[str, Rows]) -> dict[str, Any]:

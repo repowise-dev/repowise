@@ -123,9 +123,9 @@ class HintRegistry:
             if file_paths is not None:
                 snapshot = WalkSnapshot.from_files(repo_root, file_paths)
             else:
-                from ._walk import PRUNED_DIRS
+                from ._walk import PRUNED_DIRS, is_output_dir
 
-                snapshot = WalkSnapshot(repo_root, prune_dirs=PRUNED_DIRS)
+                snapshot = WalkSnapshot(repo_root, prune_dirs=PRUNED_DIRS, prune=is_output_dir)
         except Exception as e:  # pragma: no cover - snapshot is best-effort
             log.warning("dynamic_hints_snapshot_failed", error=str(e))
         for ex in self._extractors:

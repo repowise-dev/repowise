@@ -180,6 +180,7 @@ def test_a_rebased_branch_in_the_history_falls_back(tmp_path) -> None:
     _commit(repo, tmp_path, "base.py", "b = 1\n")
     base = repo.head.commit.hexsha
     _commit(repo, tmp_path, "main1.py", "m = 1\nm = 2\n")
+    trunk = repo.active_branch.name  # whatever init.defaultBranch names it
 
     _git(tmp_path, "checkout", "-q", "-b", "feature", base)
     _commit(repo, tmp_path, "feat1.py", "f = 1\nf = 2\nf = 3\n")
@@ -187,7 +188,7 @@ def test_a_rebased_branch_in_the_history_falls_back(tmp_path) -> None:
     anchored = capture_repo_totals(repo)  # anchored on the pre-rebase feature tip
     assert _churn(anchored) == (4, 0)
 
-    _git(tmp_path, "rebase", "-q", "master")
+    _git(tmp_path, "rebase", "-q", trunk)
     revs: list[str] = []
     folded = capture_repo_totals(_SpyRepo(repo, revs), anchored)
 

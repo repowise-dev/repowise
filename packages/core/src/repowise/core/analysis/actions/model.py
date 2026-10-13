@@ -203,7 +203,7 @@ class Action:
     def action_id(self) -> str:
         identity = self.identity or f"{self.target_path}:{self.target_symbol or ''}"
         key = f"{self.rule}:{identity}"
-        return "act_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+        return "act_" + hashlib.sha1(key.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -256,4 +256,4 @@ class RuleOutcome:
 
 def fingerprint(*parts: object) -> str:
     raw = "|".join(str(p) for p in parts)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]

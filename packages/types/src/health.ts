@@ -654,7 +654,8 @@ export type PerformanceQueueExclusion =
 
 export interface PerformanceDefaultQueue {
   total: number;
-  excluded: Record<PerformanceQueueExclusion, number>;
+  /** Per reason; a server that predates a reason leaves it out. */
+  excluded: Partial<Record<PerformanceQueueExclusion, number>>;
 }
 
 export interface PerformanceOpportunitySummary {

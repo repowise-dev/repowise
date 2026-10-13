@@ -199,9 +199,35 @@ describe("the status sentence", () => {
     expect(screen.getByText("Core wording, week.")).toBeInTheDocument();
   });
 
-  it("shows no sentence from a server that predates it", () => {
+  it("words the sentence locally for a view that carries no summary", () => {
+    const now = action({ id: "n", tier: "act_now", horizons: ["week"] });
+    render(<NextActions data={response([now], [action()])} hrefFor={() => null} />);
+    expect(
+      screen.getByText("1 thing worth doing in the week to Sep 28, the last indexed commit, 1 of them now."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /This quarter/ }));
+    expect(screen.getByText("1 thing worth doing this quarter.")).toBeInTheDocument();
+  });
+
+  it("names the anchor's own day whatever the offset or the viewer's timezone", () => {
+    for (const anchor of ["2026-09-28T23:30:00-07:00", "2026-09-28T00:15:00Z"]) {
+      const data = { ...response([action({ horizons: ["week"] })], []), anchor };
+      const { unmount } = render(<NextActions data={data} hrefFor={() => null} />);
+      expect(
+        screen.getByText("1 thing worth doing in the week to Sep 28, the last indexed commit."),
+      ).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("points to the other time frame when the open one is clear and no summary is sent", () => {
     render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
-    expect(screen.queryByText(/worth doing|Nothing/)).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
+    expect(
+      screen.getByText(
+        "Nothing needs you in the week to Sep 28, the last indexed commit. 1 thing is worth planning this quarter.",
+      ),
+    ).toBeInTheDocument();
   });
 });
 

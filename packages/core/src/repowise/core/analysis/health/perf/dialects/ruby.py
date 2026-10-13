@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BasePerfDialect
+from .iterables import IterableSources
 from .python import HTTP_VERBS
 
 if TYPE_CHECKING:
@@ -246,7 +246,45 @@ def _decode(node: Node | None) -> str | None:
     return node.text.decode("utf-8", "replace")
 
 
-class RubyPerfDialect(BasePerfDialect):
+_RB_FN_KINDS: frozenset[str] = frozenset({"method", "singleton_method", "lambda", "program"})
+# ActiveRecord batch iteration: the call reads the table the block walks.
+_AR_BATCHES: frozenset[str] = frozenset({"find_each", "find_in_batches", "in_batches"})
+# Relation builders: on a model class, walking the result reads its table.
+_AR_RELATION: frozenset[str] = _AR_BATCHES | frozenset(
+    {
+        "all", "where", "order", "reorder", "includes", "preload", "eager_load", "joins",
+        "left_joins", "left_outer_joins", "select", "distinct", "group", "having", "not",
+        "unscoped", "references", "rewhere", "limit", "offset",
+    }
+)
+# Constants that are core or stdlib classes, never a model.
+_RB_CORE_CONSTANTS: frozenset[str] = frozenset(
+    {"File", "Dir", "IO", "Time", "Date", "DateTime", "JSON", "YAML", "Set", "Hash", "Array",
+     "String", "Struct", "Kernel", "Process", "Thread", "Rails", "ENV", "ObjectSpace"}
+)
+
+
+def _is_model_name(node: Node) -> bool:
+    """``User`` / ``Admin::User``: a CapWords class that is not core Ruby."""
+    if node.type == "scope_resolution":
+        node = node.child_by_field_name("name") or node
+    name = _decode(node) or ""
+    return (
+        node.type == "constant"
+        and name not in _RB_CORE_CONSTANTS
+        and any(c.islower() for c in name)
+    )
+
+
+def _rb_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``x = v`` or ``x ||= v``."""
+    if node.type not in ("assignment", "operator_assignment"):
+        return []
+    left, right = node.child_by_field_name("left"), node.child_by_field_name("right")
+    ok = left is not None and left.type in ("identifier", "instance_variable") and right is not None
+    return [(left.text or b"", right)] if ok else []
+
+class RubyPerfDialect(IterableSources):
     language = "ruby"
     markers = frozenset(
         {
@@ -512,6 +550,108 @@ class RubyPerfDialect(BasePerfDialect):
         if method == "synchronize" and self.callee_is_attribute(node):
             return "lock_in_loop"
         return None
+
+    # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
+
+    function_kinds = _RB_FN_KINDS
+    change_kinds = frozenset({"assignment", "operator_assignment", "binary"})
+    grow_methods = frozenset({"push", "append", "concat", "insert", "store", "unshift"})
+    conditional_kinds = frozenset(
+        {
+            "if", "unless", "elsif", "else", "case", "when", "in_clause", "while", "until",
+            "for", "begin", "rescue", "if_modifier", "unless_modifier", "while_modifier",
+            "until_modifier", "rescue_modifier", "conditional", "block", "do_block",
+        }
+    )
+
+    literal_kinds = frozenset({"array", "string_array", "symbol_array", "hash"})
+    int_kinds = frozenset({"integer"})
+    name_kinds = frozenset({"identifier", "instance_variable"})
+    wrapper_kinds = frozenset({"parenthesized_statements"})
+    pass_through = frozenset(
+        {
+            "map", "flat_map", "collect", "select", "filter", "filter_map", "reject",
+            "sort", "sort_by", "uniq", "compact", "flatten", "to_a", "values", "keys",
+            "reverse", "lazy", "with_index", "each_with_index", "each_slice", "zip",
+            "group_by", "includes", "preload", "eager_load", "order", "distinct",
+        }
+    )
+    caps = frozenset({"first", "take", "last", "sample", "limit"})
+    size_names = frozenset({"size", "length", "count"})
+    listings = frozenset({"glob", "entries", "children", "each_child"})
+    streams = frozenset({"foreach", "readlines", "each_line", "lines"})
+    query_caps = frozenset({"limit", "first", "take"})
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type == "for":
+            return "each", self._for_iterable(loop)
+        if loop.type != "call" or self.block_loop_body(loop) is None:
+            return "each", None
+        method = _decode(loop.child_by_field_name("method")) or ""
+        receiver = loop.child_by_field_name("receiver")
+        if method == "times":
+            return "counted", receiver
+        if method == "upto":
+            args = loop.child_by_field_name("arguments")
+            return "counted", args.named_children[0] if args and args.named_children else None
+        if method in _AR_BATCHES or method in self.streams or method in self.listings:
+            return "each", loop  # the call itself reads what the block walks
+        if method in _COUNTING_METHODS or method == "loop":
+            return "each", None
+        return "each", receiver
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if node.type == "element_reference":
+            # ``Dir["**/*.rb"]`` is ``Dir.glob``.
+            obj = node.child_by_field_name("object")
+            if obj is None or obj.text != b"Dir":
+                return None
+            return "glob", obj, [c for c in node.named_children if c != obj]
+        if node.type != "call":
+            return None
+        args = node.child_by_field_name("arguments")
+        return (
+            _decode(node.child_by_field_name("method")) or "",
+            node.child_by_field_name("receiver"),
+            [c for c in args.named_children if c.type != "block_argument"] if args else [],
+        )
+
+    def is_literal(self, node: Node) -> bool:
+        if node.type == "range":
+            return self._is_constant_collection(node)
+        return super().is_literal(node)
+
+    def query_chain(self, node: Node) -> bool:
+        """``Order.where(x)`` / ``User.includes(:posts).order(:id)``: a relation
+        built on a model class, which reads its table when walked."""
+        relation = False
+        cur: Node | None = node
+        while cur is not None and cur.type == "call":
+            method = _decode(cur.child_by_field_name("method")) or ""
+            if method not in _AR_RELATION:
+                return False
+            relation = True
+            cur = cur.child_by_field_name("receiver")
+        return relation and cur is not None and _is_model_name(cur)
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _rb_bindings(node)
+
+    def mutated_name(self, node: Node) -> bytes | None:
+        # Of the binary operators only ``xs << x`` grows its left side.
+        if node.type == "binary" and _decode(node.child_by_field_name("operator")) != "<<":
+            return None
+        return super().mutated_name(node)
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        scope = self._scope(loop)
+        params = scope.child_by_field_name("parameters") if scope is not None else None
+        names: set[bytes] = set()
+        for param in params.named_children if params is not None else ():
+            name = param if param.type == "identifier" else param.child_by_field_name("name")
+            if name is not None and name.text:
+                names.add(name.text)
+        return names
 
     def is_lock_scope(self, node: Node) -> bool:
         # ``mutex.synchronize do … end`` — the block argument is the held

@@ -403,11 +403,14 @@ export interface ChangeRiskArtifact extends ArtifactEnvelopeIdentity {
 export interface SearchResultsArtifactData {
   query: string;
   results: Array<{
-    title: string;
+    /** Omitted when it only restates `path`/`symbol_id` (a structural title). */
+    title?: string;
     page_type: string;
     page_id?: string;
     /** Openable repo-relative file; absent when the hit names no file. */
     path?: string;
+    /** `path::Symbol` on a symbol page. */
+    symbol_id?: string;
     /** Kept only where it differs from `path` or `path` is absent. */
     target_path?: string;
     snippet?: string;

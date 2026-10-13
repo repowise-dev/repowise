@@ -967,9 +967,13 @@ cognitive complexity and per-function markers. Optional additions widen it:
 metrics (LCOM4, god-class); `assert_kinds` / `assert_call_kinds` add
 assertion-block smells. See `complexity/README.md`.
 
-C, F# and Objective-C have maps of their own (C separate from C++ despite the
-shared grammar), so they get complexity markers, but none of the three has a perf
-or dataflow dialect yet.
+C, Swift, F# and Objective-C have maps of their own (C separate from C++ despite
+the shared grammar), so they get complexity markers, but none of the four has a
+perf or dataflow dialect yet. Swift's map counts `guard` as a decision, a `for` /
+`catch` `where` filter as one more, and a computed property (also a subscript's
+body, and a `willSet` / `didSet` block) as a function unit named for the property;
+a struct, an enum, an extension and an actor are classes, since the grammar gives
+them all `class_declaration`.
 
 ### 2. Performance: `analysis/health/perf/dialects/` (`PERF_DIALECTS`)
 

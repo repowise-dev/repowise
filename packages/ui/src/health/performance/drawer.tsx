@@ -412,7 +412,6 @@ export function OpportunityDrawer({
   // The row is the fallback body: a host without the detail call still reads
   // every field the queue carried, and simply learns nothing extra.
   const resolved = detail && detail.found ? detail : null;
-  const unresolved = detail && !detail.found ? detail : null;
   const current: PerformanceOpportunity | null = resolved ?? opportunity;
   const plan = useVerifiedPlan(current, adapter, planEnabled);
 
@@ -431,20 +430,7 @@ export function OpportunityDrawer({
           <div className="flex-1 space-y-7 overflow-y-auto px-5 py-5">
             <WhereToEdit opportunity={current} />
 
-            {unresolved ? <ModelStateNotice state={unresolved.model_state} /> : null}
-            {resolved ? <ModelStateNotice state={resolved.model_state} /> : null}
-            {unresolved ? (
-              <p className="text-sm text-[var(--color-text-tertiary)]">{unresolved.detail}</p>
-            ) : null}
-            {resolved && resolved.lifecycle_status === "resolved" ? (
-              <p
-                role="status"
-                className="border-l-2 border-[var(--color-warning)] py-1.5 pl-3 text-sm text-[var(--color-text-secondary)]"
-              >
-                No observation supports this cause in the current index. It is kept so a saved
-                link still resolves.
-              </p>
-            ) : null}
+            <StatusNotices detail={detail} />
 
             <MapLink adapter={adapter} opportunity={current} />
 
@@ -456,41 +442,7 @@ export function OpportunityDrawer({
               <SiblingsNote siblings={current.siblings} onSelect={onSelectById} />
             ) : null}
 
-            <Section title="Whether it can be changed">
-              <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
-                <Field
-                  label="Actionability"
-                  value={ACTIONABILITY_LABEL[current.actionability_state]}
-                  detail={humanizeToken(current.actionability_reason)}
-                />
-                <Field
-                  label="Actionability confidence"
-                  value={CONFIDENCE_LABEL[current.facets.actionability_confidence]}
-                  detail="Whether reducing the work is likely valid."
-                />
-                <Field
-                  label="Fix safety"
-                  value={current.fix ? humanizeToken(current.fix.safety) : "No named fix"}
-                  detail={
-                    current.fix
-                      ? "Whether this one transformation is safe to apply."
-                      : "No transformation was proposed, so none was judged safe."
-                  }
-                />
-              </dl>
-              {current.prerequisites.length > 0 ? (
-                <div className="mt-3">
-                  <p className="text-xs text-[var(--color-text-tertiary)]">
-                    Missing before a fix can be named:
-                  </p>
-                  <ul className="mt-1 list-inside list-disc text-xs text-[var(--color-text-secondary)]">
-                    {current.prerequisites.map((item) => (
-                      <li key={item}>{humanizeToken(item)}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </Section>
+            <ChangeabilitySection current={current} />
 
             <PlanSection
               opportunity={current}
@@ -501,95 +453,13 @@ export function OpportunityDrawer({
 
             <RelatedSection adapter={adapter} filePath={current.file_path} />
 
-            {current.validation ? (
-              <CollapsibleSection
-                title="Tests"
-                hint={
-                  current.validation.total > 0
-                    ? `${formatNumber(current.validation.total)} guarding`
-                    : "none guarding"
-                }
-                defaultOpen={current.validation.total === 0}
-              >
-                <ValidationSummary
-                  validation={toRecommendationValidation(current.validation)}
-                  fileHref={adapter.fileHref}
-                />
-              </CollapsibleSection>
-            ) : null}
+            <TestsSection current={current} adapter={adapter} />
 
-            <CollapsibleSection title="What the evidence shows">
-              <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
-                <Field label="Context" value={contextLabel(current.execution_context)} />
-                <Field label="Boundary" value={boundaryLabel(current.boundary_kind)} />
-                <Field
-                  label="Evidence confidence"
-                  value={CONFIDENCE_LABEL[current.confidence]}
-                  detail={`How reliably the call path resolved. Provenance: ${humanizeToken(current.provenance).toLowerCase()}.`}
-                />
-                <Field
-                  label="Affected"
-                  value={affectedSummary(current)}
-                  detail={`${current.observations_total.toLocaleString()} observation${current.observations_total === 1 ? "" : "s"} fold into this cause.`}
-                />
-                <Field
-                  label="Amplification"
-                  value={humanizeToken(current.facets.amplification)}
-                  hint={FACET_GLOSSARY.amplification}
-                />
-                <Field
-                  label="Exposure"
-                  value={humanizeToken(current.facets.exposure)}
-                  hint={FACET_GLOSSARY.exposure}
-                />
-                <Field
-                  label="Leverage"
-                  value={humanizeToken(current.facets.leverage)}
-                  hint={FACET_GLOSSARY.leverage}
-                />
-                <Field
-                  label="Change risk"
-                  value={humanizeToken(current.facets.change_risk)}
-                  hint={FACET_GLOSSARY.change_risk}
-                />
-                {current.facets.loop_magnitude && current.facets.loop_magnitude !== "n/a" ? (
-                  <Field
-                    label="Loop magnitude"
-                    value={humanizeToken(current.facets.loop_magnitude)}
-                    hint={FACET_GLOSSARY.loop_magnitude}
-                  />
-                ) : null}
-              </dl>
-            </CollapsibleSection>
+            <EvidenceSection current={current} />
 
-            <CollapsibleSection title="Why it ranks here">
-              <p className="text-sm text-[var(--color-text-secondary)]">
-                Position <span className="tabular-nums">{(current.rank_position + 1).toLocaleString()}</span>{" "}
-                in the queue.
-              </p>
-              {current.why_ranked.length > 0 ? (
-                <ul className="mt-2 space-y-1 text-sm text-[var(--color-text-secondary)]">
-                  {current.why_ranked.map((factor) => (
-                    <li key={factor.factor} className="tabular-nums">
-                      {whyRankedLabel(factor)}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </CollapsibleSection>
+            <WhyRankedSection current={current} />
 
-            {current.evidence.some((item) => item.path.length > 0) ? (
-              <CollapsibleSection title="Caller to sink paths">
-                <ProvenancePathList
-                  paths={current.evidence
-                    .filter((item) => item.path.length > 0)
-                    .map((item) => ({ nodes: item.path, provenance: item.provenance }))}
-                  total={current.observations_total}
-                  fileHref={adapter.fileHref}
-                  {...(adapter.symbolHref ? { symbolHref: adapter.symbolHref } : {})}
-                />
-              </CollapsibleSection>
-            ) : null}
+            <CallerPathsSection current={current} adapter={adapter} />
 
             <RawObservations
               opportunityId={current.opportunity_id}
@@ -599,20 +469,7 @@ export function OpportunityDrawer({
               adapter={adapter}
             />
 
-            <CollapsibleSection title="Hand this to an agent">
-              <p className="text-sm text-[var(--color-text-secondary)]">
-                Ask for the same record by its stable id:
-              </p>
-              <p className="mt-1 break-all rounded bg-[var(--color-bg-inset)] px-2 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
-                {agentHandoffCall(current.opportunity_id)}
-              </p>
-              {resolved?.analyzed_commit ? (
-                <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-                  Analyzed at{" "}
-                  <span className="font-mono">{resolved.analyzed_commit.slice(0, 7)}</span>.
-                </p>
-              ) : null}
-            </CollapsibleSection>
+            <AgentHandoffSection current={current} resolved={resolved} />
           </div>
 
           <div className="flex items-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-5 py-3.5">
@@ -765,5 +622,210 @@ function MapLink({
     >
       Show this cause on the map
     </a>
+  );
+}
+
+/** Whether the id resolved, and whether anything still supports it. */
+function StatusNotices({ detail }: { detail: PerformanceOpportunityDetail | undefined }) {
+  const resolved = detail && detail.found ? detail : null;
+  const unresolved = detail && !detail.found ? detail : null;
+  return (
+    <>
+      {unresolved ? <ModelStateNotice state={unresolved.model_state} /> : null}
+      {resolved ? <ModelStateNotice state={resolved.model_state} /> : null}
+      {unresolved ? (
+        <p className="text-sm text-[var(--color-text-tertiary)]">{unresolved.detail}</p>
+      ) : null}
+      {resolved && resolved.lifecycle_status === "resolved" ? (
+        <p
+          role="status"
+          className="border-l-2 border-[var(--color-warning)] py-1.5 pl-3 text-sm text-[var(--color-text-secondary)]"
+        >
+          No observation supports this cause in the current index. It is kept so a saved
+          link still resolves.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function ChangeabilitySection({ current }: { current: PerformanceOpportunity }) {
+  return (
+    <Section title="Whether it can be changed">
+      <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
+        <Field
+          label="Actionability"
+          value={ACTIONABILITY_LABEL[current.actionability_state]}
+          detail={humanizeToken(current.actionability_reason)}
+        />
+        <Field
+          label="Actionability confidence"
+          value={CONFIDENCE_LABEL[current.facets.actionability_confidence]}
+          detail="Whether reducing the work is likely valid."
+        />
+        <Field
+          label="Fix safety"
+          value={current.fix ? humanizeToken(current.fix.safety) : "No named fix"}
+          detail={
+            current.fix
+              ? "Whether this one transformation is safe to apply."
+              : "No transformation was proposed, so none was judged safe."
+          }
+        />
+      </dl>
+      {current.prerequisites.length > 0 ? (
+        <div className="mt-3">
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Missing before a fix can be named:
+          </p>
+          <ul className="mt-1 list-inside list-disc text-xs text-[var(--color-text-secondary)]">
+            {current.prerequisites.map((item) => (
+              <li key={item}>{humanizeToken(item)}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </Section>
+  );
+}
+
+function TestsSection({
+  current,
+  adapter,
+}: {
+  current: PerformanceOpportunity;
+  adapter: PerformanceViewAdapter;
+}) {
+  if (!current.validation) return null;
+  return (
+    <CollapsibleSection
+      title="Tests"
+      hint={
+        current.validation.total > 0
+          ? `${formatNumber(current.validation.total)} guarding`
+          : "none guarding"
+      }
+      defaultOpen={current.validation.total === 0}
+    >
+      <ValidationSummary
+        validation={toRecommendationValidation(current.validation)}
+        fileHref={adapter.fileHref}
+      />
+    </CollapsibleSection>
+  );
+}
+
+function EvidenceSection({ current }: { current: PerformanceOpportunity }) {
+  return (
+    <CollapsibleSection title="What the evidence shows">
+      <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
+        <Field label="Context" value={contextLabel(current.execution_context)} />
+        <Field label="Boundary" value={boundaryLabel(current.boundary_kind)} />
+        <Field
+          label="Evidence confidence"
+          value={CONFIDENCE_LABEL[current.confidence]}
+          detail={`How reliably the call path resolved. Provenance: ${humanizeToken(current.provenance).toLowerCase()}.`}
+        />
+        <Field
+          label="Affected"
+          value={affectedSummary(current)}
+          detail={`${current.observations_total.toLocaleString()} observation${current.observations_total === 1 ? "" : "s"} fold into this cause.`}
+        />
+        <Field
+          label="Amplification"
+          value={humanizeToken(current.facets.amplification)}
+          hint={FACET_GLOSSARY.amplification}
+        />
+        <Field
+          label="Exposure"
+          value={humanizeToken(current.facets.exposure)}
+          hint={FACET_GLOSSARY.exposure}
+        />
+        <Field
+          label="Leverage"
+          value={humanizeToken(current.facets.leverage)}
+          hint={FACET_GLOSSARY.leverage}
+        />
+        <Field
+          label="Change risk"
+          value={humanizeToken(current.facets.change_risk)}
+          hint={FACET_GLOSSARY.change_risk}
+        />
+        {current.facets.loop_magnitude && current.facets.loop_magnitude !== "n/a" ? (
+          <Field
+            label="Loop magnitude"
+            value={humanizeToken(current.facets.loop_magnitude)}
+            hint={FACET_GLOSSARY.loop_magnitude}
+          />
+        ) : null}
+      </dl>
+    </CollapsibleSection>
+  );
+}
+
+function WhyRankedSection({ current }: { current: PerformanceOpportunity }) {
+  return (
+    <CollapsibleSection title="Why it ranks here">
+      <p className="text-sm text-[var(--color-text-secondary)]">
+        Position <span className="tabular-nums">{(current.rank_position + 1).toLocaleString()}</span>{" "}
+        in the queue.
+      </p>
+      {current.why_ranked.length > 0 ? (
+        <ul className="mt-2 space-y-1 text-sm text-[var(--color-text-secondary)]">
+          {current.why_ranked.map((factor) => (
+            <li key={factor.factor} className="tabular-nums">
+              {whyRankedLabel(factor)}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </CollapsibleSection>
+  );
+}
+
+function CallerPathsSection({
+  current,
+  adapter,
+}: {
+  current: PerformanceOpportunity;
+  adapter: PerformanceViewAdapter;
+}) {
+  if (!current.evidence.some((item) => item.path.length > 0)) return null;
+  return (
+    <CollapsibleSection title="Caller to sink paths">
+      <ProvenancePathList
+        paths={current.evidence
+          .filter((item) => item.path.length > 0)
+          .map((item) => ({ nodes: item.path, provenance: item.provenance }))}
+        total={current.observations_total}
+        fileHref={adapter.fileHref}
+        {...(adapter.symbolHref ? { symbolHref: adapter.symbolHref } : {})}
+      />
+    </CollapsibleSection>
+  );
+}
+
+function AgentHandoffSection({
+  current,
+  resolved,
+}: {
+  current: PerformanceOpportunity;
+  resolved: Extract<PerformanceOpportunityDetail, { found: true }> | null;
+}) {
+  return (
+    <CollapsibleSection title="Hand this to an agent">
+      <p className="text-sm text-[var(--color-text-secondary)]">
+        Ask for the same record by its stable id:
+      </p>
+      <p className="mt-1 break-all rounded bg-[var(--color-bg-inset)] px-2 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
+        {agentHandoffCall(current.opportunity_id)}
+      </p>
+      {resolved?.analyzed_commit ? (
+        <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+          Analyzed at{" "}
+          <span className="font-mono">{resolved.analyzed_commit.slice(0, 7)}</span>.
+        </p>
+      ) : null}
+    </CollapsibleSection>
   );
 }

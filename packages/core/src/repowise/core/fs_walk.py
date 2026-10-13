@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 import structlog
@@ -96,12 +96,14 @@ PRUNED_DIRS: frozenset[str] = frozenset(
     }
 )
 
-# PRUNED_DIRS plus common *derived-output* names that occasionally double as
-# real source dirs. Use for scans where derived trees would only add noise
+# PRUNED_DIRS plus derived-output names that occasionally double as real
+# source dirs. Use for scans where derived trees would only add noise
 # (dynamic hints' settings/router extraction); do NOT use for manifest
-# discovery, where a module legitimately rooted at ``build/`` or
-# ``coverage/`` must still be found.
-PRUNED_DIRS_DERIVED: frozenset[str] = PRUNED_DIRS | frozenset({"dist", "build", "out", "coverage"})
+# discovery. ``build``, ``coverage``, ``dist`` and ``target`` are not listed:
+# the traverser's ``is_output_dir`` decides them per directory, so pass it as
+# ``prune`` to skip only real output and still read a source package that has
+# one of those names, as the indexer does.
+PRUNED_DIRS_DERIVED: frozenset[str] = PRUNED_DIRS | frozenset({"out"})
 
 # Safety net: bail if walk depth grows pathologically. Real-world repos
 # rarely exceed depth 20; anything beyond strongly suggests a cycle.
@@ -132,6 +134,7 @@ def walk_repo(
     prune_dirs: frozenset[str] = PRUNED_DIRS,
     prune_nested_git: bool = True,
     max_depth: int = _MAX_WALK_DEPTH,
+    prune: Callable[[Path], bool] | None = None,
 ) -> Iterator[tuple[Path, list[str], list[str]]]:
     """``os.walk`` over *root* with pruning. Yields ``(dirpath, dirnames, filenames)``.
 
@@ -144,6 +147,10 @@ def walk_repo(
         prune_nested_git: Skip any non-root directory that contains its own
                           ``.git`` entry (dir or file) — i.e. another repo.
         max_depth:        Hard depth cap (cycle safety net).
+        prune:            Optional per-directory check, called with each
+                          subdirectory's path after *prune_dirs*; a ``True``
+                          answer skips it. For decisions a name cannot make
+                          (``is_output_dir`` for ``build``/``dist``/...).
 
     ``dirnames`` is yielded *after* pruning; callers may prune further by
     mutating it in place, exactly like ``os.walk``.
@@ -172,6 +179,9 @@ def walk_repo(
 
         # Skip junk directories at every level.
         dirnames[:] = [d for d in dirnames if d not in prune_dirs]
+        if prune is not None:
+            parent = Path(dirpath)
+            dirnames[:] = [d for d in dirnames if not prune(parent / d)]
 
         # Drop any dir whose realpath we've already entered — catches
         # Windows junctions and other cycles ``os.walk`` can't detect via
@@ -273,7 +283,7 @@ class WalkSnapshot:
     root outside the snapshot tree falls back to a live walk.
     """
 
-    __slots__ = ("_entries", "_prune_dirs", "_prune_nested_git", "root")
+    __slots__ = ("_entries", "_prune", "_prune_dirs", "_prune_nested_git", "root")
 
     def __init__(
         self,
@@ -281,14 +291,16 @@ class WalkSnapshot:
         *,
         prune_dirs: frozenset[str] = PRUNED_DIRS,
         prune_nested_git: bool = True,
+        prune: Callable[[Path], bool] | None = None,
     ) -> None:
         self.root = Path(root)
         self._prune_dirs = prune_dirs
         self._prune_nested_git = prune_nested_git
+        self._prune = prune
         # (dirpath, root-relative posix dir ('' for the root), dirnames, filenames)
         self._entries: list[tuple[Path, str, list[str], list[str]]] = []
         for dirpath, dirnames, filenames in walk_repo(
-            self.root, prune_dirs=prune_dirs, prune_nested_git=prune_nested_git
+            self.root, prune_dirs=prune_dirs, prune_nested_git=prune_nested_git, prune=prune
         ):
             rel = dirpath.relative_to(self.root).as_posix()
             self._entries.append(
@@ -312,6 +324,7 @@ class WalkSnapshot:
         snap.root = Path(root)
         snap._prune_dirs = PRUNED_DIRS
         snap._prune_nested_git = True
+        snap._prune = None
         files_by_dir: dict[str, set[str]] = {"": set()}
         subdirs: dict[str, set[str]] = {"": set()}
         for rel in rel_paths:
@@ -356,6 +369,7 @@ class WalkSnapshot:
                     pats,
                     prune_dirs=self._prune_dirs,
                     prune_nested_git=self._prune_nested_git,
+                    prune=self._prune,
                 )
                 return
 
@@ -402,6 +416,7 @@ def iter_glob(
     *,
     prune_dirs: frozenset[str] = PRUNED_DIRS,
     prune_nested_git: bool = True,
+    prune: Callable[[Path], bool] | None = None,
 ) -> Iterator[Path]:
     """Pruned drop-in for ``root.rglob(pattern)``.
 
@@ -416,7 +431,7 @@ def iter_glob(
     pats = (patterns,) if isinstance(patterns, str) else tuple(patterns)
 
     for dirpath, dirnames, filenames in walk_repo(
-        root_path, prune_dirs=prune_dirs, prune_nested_git=prune_nested_git
+        root_path, prune_dirs=prune_dirs, prune_nested_git=prune_nested_git, prune=prune
     ):
         rel_dir = dirpath.relative_to(root_path).as_posix()
         prefix = "" if rel_dir == "." else rel_dir + "/"

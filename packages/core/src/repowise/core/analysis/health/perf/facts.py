@@ -155,6 +155,7 @@ def evidence_row(facts: ObservationFacts) -> dict[str, Any]:
         **({"loop_line": loop} if (loop := facts.details.get("loop_line")) else {}),
         **({"sink_call": call} if (call := facts.details.get("sink_call")) else {}),
         **({"subject": subject} if (subject := facts.details.get("subject")) else {}),
+        **({"loop_iterates": what} if (what := facts.details.get("loop_iterates")) else {}),
     }
 
 

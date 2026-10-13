@@ -45,6 +45,7 @@ from .security_scan import (
     SECRET_KINDS,
     _detect_secrets_allowlisted,
     _mask_comments_and_strings,
+    marker_silences,
     masked_snippet,
     scan_source,
     source_lines,
@@ -93,7 +94,7 @@ _BINARY_SNIFF = 8000
 #: is absent on purpose: it needs parsed symbols and never gates.
 _RULE_TEXT: dict[str, str] = {
     "eval_call": "A call to eval.",
-    "exec_call": "A call to exec (outside Python, in a file that names child_process).",
+    "exec_call": "A call to exec (outside Python, child_process exec or execSync).",
     "pickle_loads": "pickle.loads, which runs code from the data it loads.",
     "subprocess_shell_true": "A subprocess call with shell=True.",
     "os_system": "os.system, which runs its argument through a shell.",
@@ -108,10 +109,13 @@ _RULE_TEXT: dict[str, str] = {
     "azure_devops_pat": "An Azure DevOps personal access token.",
     "git_url_credentials": "A password or token embedded in a git remote URL.",
     "private_key_pem": "A PEM private key with its body.",
-    "fstring_sql": "An f-string holding SQL and an interpolation.",
+    "fstring_sql": "An f-string query that interpolates a value where a bound parameter belongs.",
     "concat_sql": "SQL built by string concatenation.",
-    "tls_verify_false": "TLS certificate verification turned off (verify=False).",
-    "weak_hash": "The words md5 or sha1.",
+    "tls_verify_false": "TLS certificate verification turned off (verify=False on an HTTP client).",
+    "weak_hash": (
+        "MD5 or SHA-1 used in code: a call, a type, or the algorithm named to a hashing "
+        "call. A call passing usedforsecurity=False is exempt."
+    ),
     "unsafe_inner_html": "__html set from a non-literal value.",
     "template_literal_sql": "A template literal holding SQL and an interpolation.",
     "public_env_secret": "A secret-shaped name behind a NEXT_PUBLIC_ or VITE_ prefix.",
@@ -138,14 +142,6 @@ _CUSTOM_PREFIX = "custom:"
 #: lookaround such as ``(?=z)``) matches somewhere in it.
 _ZERO_WIDTH_PROBE = string.printable
 _QUANTIFIERS = ("*", "+", "{")
-
-_IGNORE_TOKEN = "repowise-security-ignore"
-_IGNORE_RE = re.compile(
-    rf"{_IGNORE_TOKEN}(?![\w-])"
-    r"(?:[ \t]*:[ \t]*([\w:-]+(?:[ \t]*,[ \t]*[\w:-]+)*))?"
-    # A colon no kind list follows is a malformed scope, which silences nothing.
-    r"(?P<stray>[ \t]*:)?"
-)
 
 
 @dataclass(frozen=True)
@@ -309,18 +305,6 @@ def _class_end(regex: str, start: int) -> int:
     while i < len(regex) and regex[i] != "]":
         i += 2 if regex[i] == "\\" else 1
     return i + 1
-
-
-def _silenced(line: str, kind: str) -> bool:
-    """Whether a marker on *line* silences *kind*: the bare token all kinds, ``: a, b`` those."""
-    if _IGNORE_TOKEN not in line:
-        return False
-    match = _IGNORE_RE.search(line)
-    if match is None or match.group("stray"):
-        return False
-    if not match.group(1):
-        return True
-    return kind in {k.strip() for k in match.group(1).split(",")}
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +525,7 @@ def _row(text: _Text, entry: _Entry) -> dict:
         "fingerprint": fingerprint,
         "commit": None,
     }
-    if _silenced(text.line(lineno), kind):
+    if marker_silences(text.line(lineno), kind):
         row[_SUPPRESSED] = True
     return row
 

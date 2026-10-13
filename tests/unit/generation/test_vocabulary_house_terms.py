@@ -1248,3 +1248,21 @@ def test_heading_definition_after_fenced_block_is_extracted_correctly(
         "Blast radius is the set of files a change can reach through the import graph."
     )
 
+
+def test_scan_tree_reads_a_source_package_named_coverage(tmp_path: Path) -> None:
+    """An output-shaped name prunes only output: a package named ``coverage``
+    is read, a ``dist`` bundle is not (#3237)."""
+    (tmp_path / "pkg" / "coverage").mkdir(parents=True)
+    (tmp_path / "pkg" / "coverage" / "__init__.py").write_text(
+        '"""Measures which lines the suite executes."""\n', encoding="utf-8"
+    )
+    (tmp_path / "web" / "dist").mkdir(parents=True)
+    (tmp_path / "web" / "dist" / "bundle.js").write_text(
+        "/** Bundled application entry. */\nexport default 1;\n", encoding="utf-8"
+    )
+
+    prose, dir_names = _scan_tree(tmp_path)
+
+    assert [path for path, _ in prose] == ["pkg/coverage/__init__.py"]
+    assert "coverage" in dir_names
+    assert "dist" not in dir_names

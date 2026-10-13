@@ -273,6 +273,34 @@ async def test_matching_fingerprint_does_not_widen(async_session, tmp_path):
     assert ("c.py", "a.py", "imports") not in await _db_edge_set(async_session, repo.id)
 
 
+async def test_index_into_a_fresh_store_stamps_the_parser(async_session, tmp_path):
+    """``init`` stamps the build that wrote the edges when nothing preceded them.
+
+    A fresh store has no surplus edges for a widen to clear. Left unstamped, a
+    later parser-only release could not tell it from a current one on a quiet
+    checkout.
+    """
+    repo = await insert_repo(async_session)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "b.py").write_text("from a import x\n")
+    gb, parsed = _build_graph(tmp_path)
+
+    await persist_ingestion(
+        SimpleNamespace(
+            parsed_files=parsed,
+            graph_builder=gb,
+            external_systems=[],
+            execution_flow_report=None,
+            source_map={},
+        ),
+        async_session,
+        repo.id,
+    )
+    await async_session.commit()
+
+    assert await _stored_fingerprint(async_session, repo.id) == parser_fingerprint()
+
+
 async def test_full_reindex_does_not_suppress_the_widen(async_session, tmp_path):
     """A re-index must not mark a store parser-current — it cannot clear surplus edges.
 
@@ -326,3 +354,26 @@ async def test_full_reindex_does_not_suppress_the_widen(async_session, tmp_path)
     await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
     await async_session.commit()
     assert ("c.py", "a.py", "imports") not in await _db_edge_set(async_session, repo.id)
+
+
+async def test_a_registration_edge_follows_the_decorated_file(async_session, tmp_path):
+    """``@rule`` lives in the decorated file, so editing only that file adds and drops the edge."""
+    repo = await insert_repo(async_session)
+    registry = "_RULES = []\n\n\ndef rule(fn):\n    _RULES.append(fn)\n    return fn\n"
+    plain = "from reg import rule\n\n\ndef _check():\n    return 1\n"
+    (tmp_path / "reg.py").write_text(registry)
+    (tmp_path / "b.py").write_text(plain)
+    gb1, _ = _build_graph(tmp_path)
+    await _seed_full(async_session, repo.id, gb1)
+    await async_session.commit()
+    edge = ("reg.py::rule", "b.py::_check", "references")
+    assert edge not in await _db_edge_set(async_session, repo.id)
+
+    for text, expected in ((plain.replace("def _check", "@rule\ndef _check"), True), (plain, False)):
+        (tmp_path / "b.py").write_text(text)
+        gb, parsed = _build_graph(tmp_path)
+        await persist_graph_nodes(async_session, repo.id, gb)
+        await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
+        await async_session.commit()
+        assert (edge in await _db_edge_set(async_session, repo.id)) is expected
+

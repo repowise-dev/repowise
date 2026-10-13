@@ -119,7 +119,7 @@ export function HighlightedCodeBlock({
       {...(className ? { className } : {})}
     >
       {!streaming && html ? (
-        <div dangerouslySetInnerHTML={{ __html: html }} />
+        <div dangerouslySetInnerHTML={{ __html: html /* shiki output; repowise-security-ignore: unsafe_inner_html */ }} />
       ) : (
         <pre>
           <code>{code}</code>

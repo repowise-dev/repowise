@@ -2,7 +2,7 @@
 
 /**
  * ThemeToggle: one icon button that shows the theme in effect and switches to
- * the other on click.
+ * the other on click. `showLabel` names that theme beside the icon.
  *
  * Relies on `next-themes` (a peer dependency of consumers) for state and
  * persistence. Deliberately two-state, no "System" option. Consumers set
@@ -25,8 +25,13 @@ export interface ThemeToggleProps {
   switchToLightLabel?: string;
   /** Accepted for backwards compatibility; the control is always icon-only. */
   compact?: boolean;
+  /** Name the theme in effect ("Light" or "Dark") beside the icon. Off by default. */
+  showLabel?: boolean;
   className?: string;
 }
+
+/** Shared by the labelled button and its placeholder, so nothing moves on mount. */
+const LABELLED_WIDTH = "min-w-[5rem]";
 
 const BUTTON =
   "inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
@@ -34,6 +39,7 @@ const BUTTON =
 export function ThemeToggle({
   switchToDarkLabel = "Switch to dark theme",
   switchToLightLabel = "Switch to light theme",
+  showLabel = false,
   className,
 }: ThemeToggleProps) {
   const { theme, resolvedTheme, setTheme } = useTheme();
@@ -50,11 +56,19 @@ export function ThemeToggle({
   }, [mounted, theme, setTheme]);
 
   if (!mounted) {
-    return <span aria-hidden className={cn("inline-block h-8 w-8", className)} />;
+    return (
+      <span
+        aria-hidden
+        className={cn("inline-block h-8", showLabel ? LABELLED_WIDTH : "w-8", className)}
+      />
+    );
   }
 
   const isDark = resolvedTheme === "dark";
-  const label = isDark ? switchToLightLabel : switchToDarkLabel;
+  const current = isDark ? "Dark" : "Light";
+  const action = isDark ? switchToLightLabel : switchToDarkLabel;
+  // The accessible name starts with the visible text (WCAG 2.5.3).
+  const label = showLabel ? `${current} theme. ${action}` : action;
   const Icon = isDark ? Moon : Sun;
 
   return (
@@ -63,9 +77,10 @@ export function ThemeToggle({
       aria-label={label}
       title={label}
       onClick={() => setTheme(isDark ? "light" : "dark")}
-      className={cn(BUTTON, className)}
+      className={cn(BUTTON, showLabel && cn("w-auto gap-2 px-3", LABELLED_WIDTH), className)}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      {showLabel && <span className="text-xs font-medium">{current}</span>}
     </button>
   );
 }

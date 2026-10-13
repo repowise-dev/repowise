@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING
 from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
+    DeclaredTypes,
+    HandlerHead,
     Occurrence,
     Receiver,
     StatementDefUse,
@@ -86,18 +88,45 @@ def _declarator_name(fn_node: Node) -> Node | None:
     return name
 
 
+class _CppDeclaredTypes(DeclaredTypes):
+    def _declarator_token(self, node: Node) -> str:
+        """``*`` for a pointer declarator, ``&`` / ``&&`` for a reference."""
+        if node.type == "init_declarator" or not node.children:
+            return ""
+        return node_text(node.children[0])
+
+    def _type_prefix(self, holder: Node, typ: Node) -> str:
+        """``const`` / ``volatile`` written before the type."""
+        quals = [
+            node_text(c)
+            for c in holder.named_children
+            if c.type == "type_qualifier" and c.end_byte <= typ.start_byte
+        ]
+        return "".join(q + " " for q in quals)
+
+
 class CppDefUseDialect(BaseDefUseDialect):
     language = "cpp"
     member_access_kinds = frozenset({_FIELD_EXPRESSION})
     receiver_write_kinds = _ASSIGN_KINDS | _UPDATE_KINDS
     keyword_kinds = frozenset()  # C++ has no keyword arguments.
-    type_holder_kinds = frozenset(
-        {"parameter_declaration", "optional_parameter_declaration", "declaration"}
+    declared_types = _CppDeclaredTypes(
+        frozenset({"parameter_declaration", "optional_parameter_declaration", "declaration"}),
+        frozenset({"init_declarator", "pointer_declarator", "reference_declarator"}),
     )
-    type_wrapper_kinds = frozenset({"init_declarator", "pointer_declarator", "reference_declarator"})
 
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """``catch (const E& e)`` names ``E``; ``catch (...)`` catches
+        everything. The bound name is not needed: C++ re-raises with ``throw;``."""
+        params = handler.child_by_field_name("parameters")
+        decl = next(
+            (c for c in params.named_children if c.type == "parameter_declaration"), None
+        ) if params is not None else None
+        kind = decl.child_by_field_name("type") if decl is not None else None
+        return ((node_text(kind),) if kind is not None else None), None
 
     def collect_reads(self, node: Node | None, out: list[Occurrence]) -> None:
         """Like the base collector, but a ``call_expression`` contributes only
@@ -152,20 +181,6 @@ class CppDefUseDialect(BaseDefUseDialect):
         quals = {node_text(c) for c in node.children if c.type == "type_qualifier"}
         return "const" if "const" in quals else None
 
-    def _declarator_token(self, node: Node) -> str:
-        """``*`` for a pointer declarator, ``&`` / ``&&`` for a reference."""
-        if node.type == "init_declarator" or not node.children:
-            return ""
-        return node_text(node.children[0])
-
-    def _type_prefix(self, holder: Node, typ: Node) -> str:
-        """``const`` / ``volatile`` written before the type."""
-        quals = [
-            node_text(c)
-            for c in holder.named_children
-            if c.type == "type_qualifier" and c.end_byte <= typ.start_byte
-        ]
-        return "".join(q + " " for q in quals)
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """``this`` for a member function defined in its class (a bare name

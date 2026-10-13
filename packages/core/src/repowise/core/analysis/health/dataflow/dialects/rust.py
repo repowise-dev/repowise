@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
+    DeclaredTypes,
     Occurrence,
     Receiver,
     StatementDefUse,
@@ -102,7 +103,7 @@ class RustDefUseDialect(BaseDefUseDialect):
     language = "rust"
     member_access_kinds = frozenset({"field_expression"})
     receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS
-    type_holder_kinds = frozenset({"parameter", "let_declaration"})
+    declared_types = DeclaredTypes(frozenset({"parameter", "let_declaration"}))
     keyword_kinds = frozenset()  # struct-literal field names are not reads.
     # ``self`` is its own node type in tree-sitter-rust, not an ``identifier``;
     # without it here every ``self.field`` read would drop its receiver (Go and

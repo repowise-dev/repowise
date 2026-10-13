@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.persistence.crud.repository import get_repository_by_path
 from repowise.core.persistence.models import (
     Repository,
 )
@@ -117,6 +118,11 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
         obj = result.scalar_one_or_none()
         if obj:
             return obj
+        # Try the resolved path: case, separators and a trailing slash may differ
+        if Path(repo).is_absolute():
+            obj = await get_repository_by_path(session, str(Path(repo).resolve()))
+            if obj:
+                return obj
         # Try by ID
         obj = await session.get(Repository, repo)
         if obj:

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -415,7 +415,26 @@ async def backfill_module_attribution(
     return changed
 
 
-async def _health_exclude_spec(session: AsyncSession, repository_id: str) -> Any:
+def open_finding_count(findings: Iterable[Any]) -> int:
+    """The open findings total every health headline prints.
+
+    Advisory findings carry a zero health impact, so counting them would grow
+    the headline without anything having got worse.
+    """
+    return sum(1 for f in findings if getattr(f, "dimension", None) != ADVISORY_DIMENSION)
+
+
+async def health_exclude_spec(
+    session: AsyncSession, repository_id: str, repo_path: Path | str | None = None
+) -> Any:
+    """The exclude patterns every health surface narrows its files by.
+
+    The repository's settings and ``exclude_patterns`` only. Not the gitignore
+    stack: ingestion keeps a file git tracks even when an ignore rule matches
+    it, so a stored row under such a rule is a real file of the repository.
+    ``repo_path`` is where to read the config when the caller serves a
+    checkout other than the stored ``local_path``.
+    """
     repo = await session.get(Repository, repository_id)
     if repo is None:
         return None
@@ -441,7 +460,7 @@ async def _health_exclude_spec(session: AsyncSession, repository_id: str) -> Any
     try:
         from repowise.core.repo_config import load_repo_config
 
-        cfg = load_repo_config(Path(repo.local_path))
+        cfg = load_repo_config(Path(repo_path or repo.local_path))
         if isinstance(cfg, dict):
             _add(cfg.get("exclude_patterns"))
     except Exception:
@@ -544,7 +563,7 @@ async def get_health_findings(
     result = await session.execute(q)
     kept = _filter_excluded_paths(
         list(result.scalars().all()),
-        await _health_exclude_spec(session, repository_id),
+        await health_exclude_spec(session, repository_id),
     )
     # A filter that drops some of a function's findings would misread its
     # shape, so the tier then reads every open finding on the kept files.
@@ -638,7 +657,7 @@ async def get_health_metrics(
     result = await session.execute(q)
     rows = _filter_excluded_paths(
         list(result.scalars().all()),
-        await _health_exclude_spec(session, repository_id),
+        await health_exclude_spec(session, repository_id),
     )
     if len(rows) < 2:
         # Nothing to order. Skips the aggregate for the single-file lookups
@@ -684,7 +703,7 @@ async def get_average_health(session: AsyncSession, repository_id: str) -> float
                 )
             ).all()
         ),
-        await _health_exclude_spec(session, repository_id),
+        await health_exclude_spec(session, repository_id),
     )
     # Files with no score (no health dialect for their language) are skipped,
     # so a repository of nothing else reads unmeasured, never 10.0.
@@ -736,7 +755,7 @@ async def _open_finding_totals_rows(session: AsyncSession, repository_id: str) -
         .order_by(HealthFinding.health_impact.desc(), HealthFinding.id)
     )
     return _filter_excluded_paths(
-        plain_rows(rows), await _health_exclude_spec(session, repository_id)
+        plain_rows(rows), await health_exclude_spec(session, repository_id)
     )
 
 
@@ -852,9 +871,7 @@ async def get_health_summary(
         "worst_performer_score": round(worst.score, 2),
         "worst_test_path": worst_test.file_path if worst_test is not None else None,
         "worst_test_score": round(worst_test.score, 2) if worst_test is not None else None,
-        # Advisory findings carry a zero health impact, so counting them
-        # here would grow the headline without anything having got worse.
-        "open_findings": len(findings) - by_dim.get(ADVISORY_DIMENSION, 0),
+        "open_findings": open_finding_count(findings),
         "maintainability_average": _rounded(maintainability_average),
         "performance_average": _rounded(performance_average),
         # The headline's two halves, in deduction points. Both come off columns

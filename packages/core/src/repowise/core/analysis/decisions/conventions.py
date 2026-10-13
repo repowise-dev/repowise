@@ -38,7 +38,8 @@ from repowise.core.analysis.decisions.scope import resolve_module_nodes
 from repowise.core.analysis.external_systems.links import declaration_name_candidates
 from repowise.core.ingestion.cohesion import UNIT_FANOUT_LANGUAGES
 from repowise.core.ingestion.external_systems.io_kind import classify_io_kind
-from repowise.core.workspace.extractors.http.wrappers import mask_source, symbol_body
+from repowise.core.ingestion.source_mask import mask_source
+from repowise.core.workspace.extractors.http.wrappers import symbol_body
 
 if TYPE_CHECKING:
     import networkx as nx

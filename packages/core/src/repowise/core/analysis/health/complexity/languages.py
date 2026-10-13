@@ -699,6 +699,59 @@ _KOTLIN = LanguageNodeMap(
     call_kinds=frozenset({"call_expression"}),
 )
 
+# tree-sitter-swift names a struct, an enum, an extension and an actor
+# ``class_declaration`` like a class, so one class kind covers them all; a
+# ``protocol_declaration`` holds requirements with no bodies and is left out.
+#
+# A computed property is a function unit: ``computed_property`` holds either
+# the bare getter's statements or its ``get`` / ``set`` accessors, and is also
+# the body of a ``subscript``, which is why ``subscript_declaration`` is not a
+# kind itself (the walk would stop at the nested one and count nothing).
+# ``willSet`` / ``didSet`` are one unit the same way.
+_SWIFT = LanguageNodeMap(
+    function_kinds=frozenset(
+        {
+            "function_declaration",
+            "init_declaration",
+            "deinit_declaration",
+            "computed_property",
+            "willset_didset_block",
+        }
+    ),
+    lambda_kinds=frozenset({"lambda_literal"}),
+    # ``guard`` is a decision like ``if``: it has a condition and a path that
+    # leaves. ``if let`` / ``guard let`` are the same nodes with a binding.
+    # ``for x in xs where c`` and ``catch E where c`` filter with a
+    # ``where_clause``: one more decision, no deeper nesting (a generic
+    # constraint is a ``type_constraints`` node and is not one). A ``case ...
+    # where c`` guard has no node of its own in this grammar and is not counted.
+    branch_kinds=frozenset(
+        {"if_statement", "guard_statement", "ternary_expression", "where_clause"}
+    ),
+    loop_kinds=frozenset({"for_statement", "while_statement", "repeat_while_statement"}),
+    # ``do`` opens the guarded region and each ``catch`` is a path out of it.
+    # ``try`` / ``try?`` / ``try!`` mark a call that can throw and ``defer``
+    # schedules cleanup: neither is a decision.
+    try_kinds=frozenset({"do_statement"}),
+    catch_kinds=frozenset({"catch_block"}),
+    switch_kinds=frozenset({"switch_statement"}),
+    case_kinds=frozenset({"switch_entry"}),
+    boolean_operator_kinds=frozenset({"conjunction_expression", "disjunction_expression"}),
+    class_kinds=frozenset({"class_declaration"}),
+    self_identifiers=frozenset({"self"}),
+    member_access_kinds=frozenset({"navigation_expression"}),
+    field_decl_kinds=frozenset({"property_declaration"}),
+    identifier_kinds=frozenset({"simple_identifier"}),
+    ctor_kinds=frozenset({"init_declaration"}),
+    fixed_signature_markers=frozenset({"override"}),
+    # No ``scalar_type_names``: a Swift ``parameter`` is a child of the function
+    # with no list node around it, which ``typed_param_counts`` does not read
+    # yet, so ``primitive_obsession`` has nothing to count here. No assertion
+    # kinds either: XCTest has no vocabulary row, so the test-quality markers
+    # do not read Swift.
+    call_kinds=frozenset({"call_expression"}),
+)
+
 _DART = LanguageNodeMap(
     scalar_type_names=frozenset({"int", "double", "num", "bool", "String"}),
     # Dart splits a function into a ``function_signature`` node whose body is
@@ -1319,6 +1372,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "fsharp": _FSHARP,
     "objectivec": _OBJC,
     "php": _PHP,
+    "swift": _SWIFT,
 }
 
 

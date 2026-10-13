@@ -616,6 +616,9 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*vitest.workspace.*",
     "*vitest.shims.*",
     "*vitest.root.*",
+    # @vscode/test-cli reads its config by this name from the working directory.
+    *(f".vscode-test{ext}" for ext in _JS_TOOL_EXTS),
+    *(f"*/.vscode-test{ext}" for ext in _JS_TOOL_EXTS),
     # Codegen / generated artifacts.
     "*.gen.ts",
     "*.gen.tsx",
@@ -806,6 +809,9 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.task",
     "celery.task",
     "shared_task",
+    # SQLAlchemy, imported bare: stored in the dialect compiler / event registry.
+    "compiles",
+    "listens_for",
     # Click CLI commands â€” registered with the parent group/command.
     "click.command",
     "click.group",
@@ -995,9 +1001,9 @@ _PURE_WRAPPER_DECORATOR_ATTRS: frozenset[str] = frozenset(
 )
 
 # Languages whose idiom is a static holder class the call site never names,
-# because it names only the member (C# extension methods). A set so widening it
-# is a deliberate act.
-_CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
+# because it names only the member (C# extension methods, VB.NET Modules). A
+# set so widening it is a deliberate act.
+_CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp", "vbnet"})
 
 # Languages whose files are run, never imported: a directory holding only these
 # (a ``docker/`` folder of Dockerfiles and an entrypoint script) is not a package

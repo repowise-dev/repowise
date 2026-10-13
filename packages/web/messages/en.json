@@ -270,7 +270,7 @@
       "coChangeNoticeTitle": "Health scores changed in this release.",
       "coChangeNoticeMore": "What changed",
       "coChangeNoticeLess": "Hide",
-      "coChangeNoticeBody": "Co-change coupling is now measured relative to your repository and decays with commit history rather than calendar time, so roughly one file in ten moves a band. Scores are not comparable to snapshots taken before this release.",
+      "coChangeNoticeBody": "Several false findings are gone: classes whose methods share no state no longer read as low cohesion, chained ternaries and conditional expressions no longer count as deep nesting, import cycles count only imports that run, and expected-exception tests and noqa lines no longer flag swallowed exceptions, so many files score higher. Functions defined inside other functions are now measured, and a test-named Python module that pytest does not collect is scored as production code, so some files score lower. PHP files now get complexity, cohesion and test-assertion checks, so PHP scores move as well.",
       "tabs": {
         "triage": "Overview",
         "performance": "Performance",

@@ -10,16 +10,19 @@ from __future__ import annotations
 
 import builtins
 import re
-from collections.abc import Iterator
 from typing import TYPE_CHECKING, ClassVar
 
-from ..loop_facts import BatchForm
+from .. import loop_lexicon as lex
+from ..loop_facts import BatchForm, LoopSource
 from .base import BasePerfDialect
+from .iterables import IterableSources
 
 if TYPE_CHECKING:
     from tree_sitter import Node
 
-    from ..loop_facts import LoopMagnitude, SinkProbe
+    from ..loop_facts import LoopIterates, LoopMagnitude, SinkProbe
+
+    Source = tuple[LoopIterates, LoopMagnitude | None]
 
 # Network round-trip verbs (shared across languages that name HTTP methods).
 HTTP_VERBS: frozenset[str] = frozenset(
@@ -186,11 +189,41 @@ _PY_PER_KEY_LIMITS: frozenset[str] = frozenset(
 _PY_ONE_ROW: frozenset[str] = _PY_PER_KEY_LIMITS | {"scalar"}
 _PY_READ_CAPS: frozenset[str] = _PY_ONE_ROW - {"order", "order_by", "offset"}
 _PY_WRITES: frozenset[str] = frozenset({"update", "insert", "upsert", "values"})
+# Keys a query yields (``.in_(select(...))``) are as many as that table's rows.
+_PY_KEY_READS: frozenset[str] = _PY_STATEMENT_BUILDERS | {
+    "subquery", "scalar_subquery", "query", "cte", "alias", "union", "union_all",
+    "execute", "table", "from_",
+}
 _PY_SCOPES: frozenset[str] = frozenset({"function_definition", "lambda", "class_definition"})
 _PY_BUILTINS: frozenset[str] = frozenset(dir(builtins))
 _PY_SEM_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit)$")
 # A model class is CapWords; an ALL_CAPS constant (``API_URL``) is not.
 _PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
+# Directory listings; the recursive ones walk a whole tree.
+_PY_LISTINGS: frozenset[str] = frozenset(
+    {
+        "glob", "iglob", "rglob", "iterdir", "walk", "listdir", "scandir", "traverse",
+        "iter_glob", "glob_via", "walk_repo", "_rglob",
+    }
+)
+_PY_RECURSIVE_LISTINGS: frozenset[str] = frozenset(
+    {"rglob", "walk", "traverse", "walk_repo", "_rglob"}
+)
+# Reads that yield lines or chunks as they arrive.
+_PY_STREAMS: frozenset[str] = frozenset(
+    {
+        "readlines", "iter_lines", "iter_content", "iter_bytes", "iter_text",
+        "aiter_lines", "aiter_bytes", "aiter_text", "aiter_raw",
+    }
+)
+# Wrappers and chunkers whose first argument is what the loop walks.
+_PY_PASS_THROUGH: frozenset[str] = frozenset(
+    {
+        "enumerate", "sorted", "reversed", "list", "set", "tuple", "iter", "zip",
+        "batched", "chunked", "ichunked", "chunks", "iter_chunks", "grouper",
+    }
+)
+_PY_CONSTANT_RHS: frozenset[str] = frozenset({"list", "tuple", "set", "dictionary"})
 
 
 _PY_DEF_KINDS = frozenset({"function_definition", "lambda", "class_definition"})
@@ -257,7 +290,7 @@ def _module_int_constant(name: Node) -> bool:
         scope = scope.parent
     if scope is None or any(
         n.type == "global_statement" and any(c.text == text for c in n.named_children)
-        for n in _walk_tree(scope)
+        for n in BasePerfDialect._walk(scope)
     ):
         return False
     bound = _bindings(scope, text)
@@ -267,15 +300,83 @@ def _module_int_constant(name: Node) -> bool:
     return right is not None and right.type == "integer"
 
 
-def _walk_tree(node: Node) -> Iterator[Node]:
-    stack = [node]
+def _text(node: Node) -> str:
+    return (node.text or b"").decode("utf-8", "replace")
+
+
+def _field_text(node: Node, field: str) -> str:
+    child = node.child_by_field_name(field)
+    return _text(child) if child is not None else ""
+
+
+def _value_refs(expr: Node) -> list[Node]:
+    """The names and dotted paths *expr* reads values from: not a callee
+    (``tuple`` in ``tuple(xs)``), a keyword, or an ALL_CAPS constant."""
+    refs = []
+    stack = [expr]
     while stack:
-        current = stack.pop()
-        yield current
-        stack.extend(current.children)
+        node = stack.pop()
+        if node.type not in ("identifier", "attribute"):
+            stack.extend(node.children)
+            continue
+        parent = node.parent
+        callee = parent is not None and parent.child_by_field_name("function") == node
+        keyword = parent is not None and parent.type == "keyword_argument" and (
+            parent.child_by_field_name("name") == node
+        )
+        last = node.child_by_field_name("attribute") if node.type == "attribute" else node
+        constant = last is not None and _text(last).strip("_").isupper()
+        if callee and node.type == "attribute":
+            # ``self.ids.copy()`` still reads ``self.ids``.
+            stack.extend(filter(None, [node.child_by_field_name("object")]))
+        elif not (callee or keyword or constant):
+            refs.append(node)
+    return refs
 
 
-class PythonPerfDialect(BasePerfDialect):
+def _string_value(node: Node) -> str | None:
+    return _text(node).strip("\"'") if node.type == "string" else None
+
+
+def _in_filter(call: Node, args: list[Node]) -> tuple[str, Node] | None:
+    """``(column, keys)`` of ``Model.col.in_(keys)`` or PostgREST ``.in_("col", keys)``."""
+    if len(args) == 2:
+        column = _string_value(args[0])
+        return (column, args[1]) if column else None
+    fn = call.child_by_field_name("function")
+    receiver = fn.child_by_field_name("object") if fn is not None else None
+    if len(args) != 1 or receiver is None or receiver.type != "attribute":
+        return None
+    column = _field_text(receiver, "attribute")
+    return (column, args[0]) if column else None
+
+
+def _fixed_set(value: Node | None) -> bool:
+    """A non-empty literal of scalars; an empty one is a container filled later."""
+    return (
+        value is not None
+        and value.type in _PY_CONSTANT_RHS
+        and bool(value.named_children)
+        and all(_scalar_literal(item) for item in value.named_children)
+    )
+
+
+_PY_SCALARS = frozenset({"string", "concatenated_string", "integer", "float", "true", "false", "none"})
+
+
+def _scalar_literal(item: Node) -> bool:
+    """``"a"`` / ``3`` / ``("a", 1)`` / ``"k": v`` by its key: an entry the source
+    spells out. A name or call in the literal (``[ROOT / "a", repo.path]``) may
+    stand for anything, so the table is not shown to be a fixed set."""
+    if item.type == "pair":
+        key = item.child_by_field_name("key")
+        return key is not None and key.type in _PY_SCALARS
+    if item.type == "tuple":
+        return all(child.type in _PY_SCALARS for child in item.named_children)
+    return item.type in _PY_SCALARS
+
+
+class PythonPerfDialect(IterableSources):
     language = "python"
     lock_acquire_functions = frozenset({"acquire", "__enter__"})
     spin_loop_header = re.compile(r"while\s+True\s*:")
@@ -443,7 +544,7 @@ class PythonPerfDialect(BasePerfDialect):
 
     def _bound_locally(self, call: Node, name: bytes) -> bool:
         """*name* is assigned before *call* in its function, or is a parameter of it."""
-        if self._reaching_rhs(call, name) is not None:
+        if self.bindings_before(call, name):
             return True
         scope = call.parent
         while scope is not None and scope.type != "function_definition":
@@ -928,10 +1029,199 @@ class PythonPerfDialect(BasePerfDialect):
     scope_kinds = _PY_SCOPES
     sequence_appends = frozenset({"append", "extend", "insert"})
 
-    def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
+    # -- what a loop walks: the shared reading (perf/dialects/iterables.py) -------
+    function_kinds = _PY_SCOPES
+    member_kinds = frozenset({"attribute"})
+    recursive_listings = _PY_RECURSIVE_LISTINGS
+    recursive_marks = (b"**", b"recursive=True")
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "elif_clause", "else_clause", "for_statement", "while_statement",
+            "try_statement", "except_clause", "match_statement", "case_clause",
+            "conditional_expression", "boolean_operator",
+        }
+    )
+    # The iterable's own syntax (``_magnitude``) says whether a read grows.
+    read_grows = None
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        if node.type == "assignment":
+            target, value = node.child_by_field_name("left"), node.child_by_field_name("right")
+        elif node.type == "named_expression":
+            target, value = node.child_by_field_name("name"), node.child_by_field_name("value")
+        else:
+            return []
+        ok = target is not None and target.type == "identifier" and target.text and value is not None
+        return [(target.text, value)] if ok else []
+
+    def loop_source(self, loop: Node, probe: SinkProbe) -> LoopSource | None:
         if loop.type != "for_statement":
             return None
-        return self._magnitude(loop.child_by_field_name("right"), loop, probe, hop=True)
+        right = loop.child_by_field_name("right")
+        baseline = self._magnitude(right, loop, probe, hop=True) or "unknown"
+        iterates, claim = self._source(right, loop, probe, hop=True)
+        if iterates == "unknown" and baseline == "unknown":
+            return None
+        return LoopSource(iterates, claim or baseline)
+
+    def _source(self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        """What *expr* walks, and the magnitude that settles when it differs from
+        what the iterable's syntax alone proves (``None``: keep that).
+
+        *hop* allows one step through the name's last assignment before the loop.
+        """
+        if expr is None:
+            return "unknown", None
+        if expr.type in ("await", "parenthesized_expression"):
+            inner = next((c for c in expr.children if c.is_named), None)
+            return self._source(inner, loop, probe, hop=hop)
+        if expr.type == "boolean_operator" and any(c.type == "or" for c in expr.children):
+            return self._source(expr.child_by_field_name("left"), loop, probe, hop=hop)
+        if expr.type in ("identifier", "attribute") and lex.is_config_name(_text(expr)):
+            # A registry grows with what users register: the name alone bounds nothing.
+            return "config_table", None
+        if expr.type == "identifier":
+            return self._name_source(expr, loop, probe, hop=hop)
+        if expr.type == "attribute":
+            return self._attribute_source(expr, loop, probe, hop=hop)
+        if expr.type == "subscript" and self._slice_magnitude(expr) == "bounded":
+            # A fixed-width slice bounds the trip count, not what is walked.
+            walked = self._source(expr.child_by_field_name("value"), loop, probe, hop=hop)
+            return walked[0], "bounded"
+        if expr.type == "call":
+            return self._call_source(expr, loop, probe, hop=hop)
+        return "unknown", None
+
+    def _attribute_source(self, expr: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        """``result.rows`` walks ``result``; ``self._TABLES`` bound to a literal is a constant."""
+        attr = expr.child_by_field_name("attribute")
+        name = (attr.text if attr is not None else b"") or b""
+        if name.decode("utf-8", "replace") in _PY_RESULT_PROJECTIONS:
+            return self._source(expr.child_by_field_name("object"), loop, probe, hop=hop)
+        if self._literal_constant(expr, name):
+            return "constant", "bounded"
+        return "unknown", None
+
+    def _name_source(self, name: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        rhs = self.reaching_value(loop, name.text or b"") if hop else None
+        if rhs is not None:
+            return self._source(rhs, loop, probe, hop=False)
+        fn = loop.parent
+        while fn is not None and fn.type != "function_definition":
+            fn = fn.parent
+        params = fn.child_by_field_name("parameters") if fn is not None else None
+        if params is not None and _text(name) in self._param_names(params):
+            return "parameter", None
+        return "unknown", None
+
+    def _call_source(self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        method, fn, receiver, args = self._call_bits(call)
+        if lex.is_config_name(self._dotted_path(fn) or "", callee=True):
+            return "config_table", None
+        if method == "range" and receiver is None:
+            return self._range_source(call, args, loop, probe, hop=hop)
+        walked = self._walked_arg_or_receiver(method, receiver, args)
+        if walked is not None:
+            return self._source(walked, loop, probe, hop=hop)
+        if method in _PY_LISTINGS or method in _PY_STREAMS or (method == "open" and not receiver):
+            return self._file_source(call, method, loop)
+        if probe(call) in ("db", "network"):
+            return self._query(call, loop)
+        if receiver is not None and method in _PY_RESULT_PROJECTIONS:
+            return self._source(receiver, loop, probe, hop=hop)
+        return "unknown", None
+
+    def _call_bits(self, call: Node) -> tuple[str, Node | None, Node | None, list[Node]]:
+        """``(method, callee, receiver, positional args)`` of a call."""
+        fn = call.child_by_field_name("function")
+        receiver = fn.child_by_field_name("object") if fn is not None and fn.type == "attribute" else None
+        arg_list = call.child_by_field_name("arguments")
+        args = [c for c in arg_list.children if c.is_named] if arg_list is not None else []
+        return self.callee_method_name(call) or "", fn, receiver, args
+
+    @staticmethod
+    def _walked_arg_or_receiver(
+        method: str, receiver: Node | None, args: list[Node]
+    ) -> Node | None:
+        """``sorted(xs)`` / ``enumerate(xs)`` walk ``xs``; ``d.items()`` walks ``d``."""
+        if method in _PY_PASS_THROUGH and args and args[0].type != "keyword_argument":
+            return args[0]
+        if receiver is not None and method in ("items", "values", "keys"):
+            return receiver
+        return None
+
+    def _file_source(self, call: Node, method: str, loop: Node) -> Source:
+        """A directory listing (grows when it walks the repository tree) or a stream."""
+        if method in _PY_LISTINGS:
+            return "listing", "grows_with_data" if self._walks_repo(call, method, loop) else None
+        return "stream", None
+
+    def _range_source(
+        self, call: Node, args: list[Node], loop: Node, probe: SinkProbe, *, hop: bool
+    ) -> Source:
+        """``range(3)`` is a constant; ``range(0, len(ids), N)`` walks ``ids``."""
+        if self._range_magnitude(call, loop, probe, hop=hop) == "bounded":
+            return "constant", "bounded"
+        stop = args[1] if len(args) > 1 else (args[0] if args else None)
+        if stop is not None and stop.type == "call" and self.callee_method_name(stop) == "len":
+            inner = [c for c in stop.child_by_field_name("arguments").children if c.is_named]
+            if len(inner) == 1:
+                return self._source(inner[0], loop, probe, hop=hop)
+        return "unknown", None
+
+    def reads_config_table(self, call: Node, nodes: list[Node]) -> bool:
+        """Every SQL text and selected model names a registry or configuration table."""
+        walked = [n for part in nodes for n in self._walk(part)]
+        sql = [
+            n.text or b""
+            for n in walked
+            if n.type == "string" and _PY_SQL_LITERAL_RE.match(_text(n))
+        ]
+        models = [
+            model
+            for n in walked
+            if n.type == "call" and self.callee_method_name(n) in ("select", "query")
+            for model in self._selected_models(n)
+        ]
+        return bool(sql or models) and (
+            all(lex.is_config_sql(text) for text in sql)
+            and all(lex.is_config_model(model) for model in models)
+        )
+
+    def _selected_models(self, select: Node) -> list[str]:
+        """``select(Repository)`` / ``query(Repository.id, Repository.path)`` -> the model
+        names; ``func.count()`` and other expressions name none."""
+        args = select.child_by_field_name("arguments")
+        models: list[str] = []
+        for arg in (c for c in args.children if c.is_named) if args is not None else ():
+            path = self._dotted_path(arg) or ""
+            head = next((seg for seg in path.split(".") if _PY_MODEL_NAME_RE.match(seg)), None)
+            if head is not None:
+                models.append(head)
+        return models
+
+    def _literal_constant(self, expr: Node, name: bytes) -> bool:
+        """``self._TABLES`` where the file binds ``_TABLES`` once, to a literal collection."""
+        text = name.decode("utf-8", "replace")
+        if len(text.strip("_")) < 2 or not text.isupper():
+            return False
+        root = expr
+        while root.parent is not None:
+            root = root.parent
+        rights = [
+            n.child_by_field_name("right")
+            for n in self._walk(root)
+            if n.type == "assignment"
+            and (left := n.child_by_field_name("left")) is not None
+            and left.type == "identifier"
+            and left.text == name
+        ]
+        return (
+            len(rights) == 1
+            and rights[0] is not None
+            and rights[0].type in _PY_CONSTANT_RHS
+            and all(_scalar_literal(item) for item in rights[0].named_children)
+        )
 
     def _magnitude(
         self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool
@@ -947,7 +1237,7 @@ class PythonPerfDialect(BasePerfDialect):
             inner = next((c for c in expr.children if c.is_named), None)
             return self._magnitude(inner, loop, probe, hop=hop)
         if expr.type == "identifier" and hop and expr.text:
-            rhs = self._reaching_rhs(loop, expr.text)
+            rhs = self.reaching_value(loop, expr.text)
             return self._magnitude(rhs, loop, probe, hop=False)
         if expr.type == "subscript":
             return self._slice_magnitude(expr)
@@ -973,39 +1263,56 @@ class PythonPerfDialect(BasePerfDialect):
             # A read capped in the query is as large as its cap; a statement or result
             # built before the loop (``stmt = ....limit(n)``) is read one assignment back.
             names = [n.text for n in self._walk(expr) if n.type == "identifier"]
-            parts = [expr, *filter(None, (self._reaching_rhs(loop, name) for name in names))]
-            capped = any(self._caps_read(n, loop) for part in parts for n in self._walk(part))
+            parts = [expr, *filter(None, (self.reaching_value(loop, name) for name in names))]
+            capped = any(self.is_cap(n, loop) for part in parts for n in self._walk(part))
             return None if capped else "grows_with_data"
         if member and method in _PY_RESULT_PROJECTIONS:
             receiver = expr.child_by_field_name("function").child_by_field_name("object")
             return self._grows(self._magnitude(receiver, loop, probe, hop=hop))
         return None
 
-    def _caps_read(self, node: Node, loop: Node) -> bool:
-        """``.limit(n)`` and peers, a SQL string saying ``LIMIT n``, or ``.in_()`` over
-        one chunk of keys."""
+    def is_cap(self, node: Node, loop: Node) -> bool:
+        """``.limit(n)`` and peers, a SQL string saying ``LIMIT n``, or a filter to a
+        set of keys (:meth:`read_key_column`), which is as large as the keys are."""
         if node.type == "string":
             return bool(_PY_SQL_LIMIT_RE.search(_PY_SQL_COMMENT_RE.sub(b"", node.text or b"")))
         method = self.callee_method_name(node) if node.type == "call" else None
         if method in _PY_READ_CAPS:
             return True
-        return method == "in_" and self._in_one_chunk(node, loop)
+        return node.type == "call" and self.read_key_column(node, loop) is not None
 
-    def _in_one_chunk(self, node: Node, loop: Node) -> bool:
-        """``.in_(xs[i:i + N])``, or ``.in_(chunk)`` where a loop walks ``xs`` in chunks."""
-        args = node.child_by_field_name("arguments")
-        keys = next((c for c in args.children if c.is_named), None) if args else None
-        if keys is None:
+    def read_key_column(self, call: Node, anchor: Node) -> str | None:
+        """``Model.col.in_(keys)`` and PostgREST ``.in_("col", keys)`` -> ``col``;
+        ``filter_by(id=k)`` and ``.eq("id", k)`` -> ``id``. Keys a query yields
+        (``.in_(select(...))``, or a name bound to one) grow with that table."""
+        method = self.callee_method_name(call)
+        arg_list = call.child_by_field_name("arguments")
+        args = arg_list.named_children if arg_list is not None else []
+        if method == "filter_by":
+            named = {_field_text(a, "name") for a in args if a.type == "keyword_argument"}
+            return "id" if "id" in named else None
+        if method == "eq":
+            return "id" if len(args) == 2 and _string_value(args[0]) == "id" else None
+        found = _in_filter(call, args) if method == "in_" else None
+        if found is None or not self._handed_in(found[1], anchor):
+            return None
+        return found[0]
+
+    def _handed_in(self, keys: Node, anchor: Node) -> bool:
+        """*keys* holds values given to the code, not ones a query yields or a fixed
+        set of states (``in_(("a", "b"))``, ``in_(SOURCES)``) whose rows grow."""
+        values = [
+            self.reaching_value(anchor, ref.text or b"") if ref.type == "identifier" else None
+            for ref in _value_refs(keys)
+        ]
+        if all(_fixed_set(value) for value in values):
             return False
-        if keys.type == "subscript":
-            return self._slice_magnitude(keys) == "bounded"
-        outer = loop
-        while outer is not None and keys.type == "identifier":
-            target = outer.child_by_field_name("left") if outer.type == "for_statement" else None
-            if target is not None and target.text == keys.text and self.is_chunked_loop(outer):
-                return True
-            outer = outer.parent
-        return False
+        parts = [keys, *filter(None, values)]
+        return not any(
+            n.type == "call" and self.callee_method_name(n) in _PY_KEY_READS
+            for part in parts
+            for n in self._walk(part)
+        )
 
     def _range_magnitude(
         self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool
@@ -1042,23 +1349,6 @@ class PythonPerfDialect(BasePerfDialect):
             if same_start and right is not None and right.type == "integer":
                 return "bounded"
         return None
-
-    def _reaching_rhs(self, loop: Node, name: bytes) -> Node | None:
-        """The right side of the last ``name = ...`` before *loop* in its function."""
-        scope = loop.parent
-        while scope is not None and scope.type != "function_definition":
-            scope = scope.parent
-        if scope is None:
-            return None
-        last: Node | None = None
-        for node in self._walk(scope, prune=_PY_SCOPES):
-            if node.type != "assignment" or node.end_byte > loop.start_byte:
-                continue
-            left = node.child_by_field_name("left")
-            named = left is not None and left.type == "identifier" and left.text == name
-            if named and (last is None or node.start_byte > last.start_byte):
-                last = node
-        return last.child_by_field_name("right") if last is not None else None
 
     def batch_form(self, sink: Node, loop: Node, probe: SinkProbe) -> BatchForm | None:
         target = loop.child_by_field_name("left")
@@ -1124,9 +1414,10 @@ class PythonPerfDialect(BasePerfDialect):
         builtin (``str(r.id)``) or a method on a local (``res.first()``)."""
         if not self.callee_is_attribute(call):
             return not (assigned and self.callee_method_name(call) in _PY_BUILTINS)
-        rhs = self._reaching_rhs(call, (self.callee_root_name(call) or "").encode())
-        if rhs is None:
+        before = self.bindings_before(call, (self.callee_root_name(call) or "").encode())
+        if not before:
             return True
+        rhs = before[-1][1]
         return not (assigned or self._rhs_is_list(rhs) or self._rhs_is_nonlist_container(rhs))
 
     def _limited_downstream(self, sink: Node, body: Node) -> bool:

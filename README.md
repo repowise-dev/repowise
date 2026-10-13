@@ -11,20 +11,14 @@ decisions once, on your machine. Then you and your coding agent ask it things:<b
 what calls this, what breaks if I change it, what is dead, what to fix first, and why it was built this way.</p>
 
 <p align="center">
-  <a href="#quickstart"><img src="https://img.shields.io/badge/SET_UP_WITH_YOUR_AGENT-one_line-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Set up Repowise with your coding agent" /></a>
-  <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-0A0A0A?style=for-the-badge&labelColor=F59520" alt="Open the live Repowise demo" /></a>
+  <a href="https://www.repowise.dev/?src=oss_readme_hero"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-0A0A0A?style=for-the-badge&labelColor=F59520" alt="Open the live Repowise demo" /></a>
 </p>
 
 <table align="center">
 <tr>
-<td align="center" width="250"><h2>−31.6%</h2></td>
-<td align="center" width="250"><h2>2.3×</h2></td>
-<td align="center" width="250"><h2>58,924</h2></td>
-</tr>
-<tr>
-<td align="center" valign="top"><sub><strong>less agent output</strong><br />3.8 vs 7.2 tool calls<br /><em>43 questions · p&lt;0.0001</em></sub></td>
-<td align="center" valign="top"><sub><strong>more defects surfaced than CodeScene</strong><br />same 20% review budget<br /><em>2,770 files · p=0.003</em></sub></td>
-<td align="center" valign="top"><sub><strong>files indexed in one run</strong><br />dotnet/runtime, one laptop<br /><em>120 min · 11.7 GiB peak</em></sub></td>
+<td align="center" width="250"><b>−31.6%</b><br /><sub>less agent output · <em>p&lt;0.0001</em></sub></td>
+<td align="center" width="250"><b>2.3×</b><br /><sub>defects found vs CodeScene · <em>p=0.003</em></sub></td>
+<td align="center" width="250"><b>58,924</b><br /><sub>files indexed on one laptop · <em>120 min</em></sub></td>
 </tr>
 </table>
 
@@ -45,6 +39,8 @@ free and self-hosted · AGPL-3.0 or commercial
 </p>
 
 <p align="center">
+  <a href="#hosted"><strong>Hosted</strong></a> ·
+  <a href="https://www.repowise.dev/foresight?src=oss_readme_nav"><strong>Foresight</strong></a> ·
   <a href="#what-it-does"><strong>What it does</strong></a> ·
   <a href="#quickstart"><strong>Quickstart</strong></a> ·
   <a href="#your-agent-stops-guessing"><strong>Agents</strong></a> ·
@@ -67,6 +63,23 @@ why it was built this way. Cutting tokens was never the goal. It happens anyway,
 because an agent that can ask the index stops searching, opening and re-reading
 files to find out. Measured against the other context tools on the same agent
 tasks, it is also the largest saving.
+
+<a id="hosted"></a>
+<a id="foresight"></a>
+
+## Hosted, and Foresight
+
+Everything in this README runs free on your own machine. [repowise.dev](https://www.repowise.dev/?src=oss_readme_section)
+runs it for you, private repos included, and is where **Foresight** arrives first.
+
+<a href="https://www.repowise.dev/?src=oss_readme_section"><img src=".github/assets/hosted-foresight.webp" alt="Hosted at repowise.dev: everything in this README with nothing to run, private repos included, one MCP endpoint for Claude, ChatGPT and Cursor, the PR bot with free deterministic review and AI review for cents a pull request, Jira and Confluence, and team workspaces. Coming to repowise.dev: Foresight, models trained on how real codebases change that rank the files a fix will touch, flag what a change forgot, and explain every answer." width="100%" /></a>
+
+<p align="center">
+  <a href="https://www.repowise.dev/login?mode=signup&src=oss_readme_section"><img src="https://img.shields.io/badge/START_FREE-hosted-0A0A0A?style=for-the-badge&labelColor=F59520" alt="Start free on hosted repowise.dev" /></a>
+  <a href="https://www.repowise.dev/foresight?src=oss_readme_section"><img src="https://img.shields.io/badge/FORESIGHT-join_the_waitlist-0A0A0A?style=for-the-badge&labelColor=B9A3E3" alt="Join the Foresight waitlist" /></a>
+</p>
+
+---
 
 <a id="quickstart"></a>
 

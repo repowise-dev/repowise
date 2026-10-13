@@ -127,3 +127,79 @@ async def test_a_renamed_file_is_dropped_under_its_old_path(session, engine):
     await fts.delete_many(marked)
 
     assert await fts.search("xylophone", limit=10) == []
+
+
+async def _spotlight(session, repo_id: str, target: str) -> str:
+    page_id = f"symbol_spotlight:{target}"
+    await upsert_page(
+        session,
+        page_id=page_id,
+        repository_id=repo_id,
+        page_type="symbol_spotlight",
+        title=f"Symbol: {target}",
+        content="Spotlight.",
+        summary="Spotlight.",
+        target_path=target,
+        source_hash="h",
+        model_name="mock",
+        provider_name="mock",
+    )
+    return page_id
+
+
+async def _status(session, page_id: str) -> tuple[str, list[str] | None]:
+    import json
+
+    from repowise.core.persistence.models import Page
+
+    page = await session.get(Page, page_id)
+    return page.freshness_status, json.loads(page.metadata_json or "{}").get("successor_paths")
+
+
+async def test_a_deleted_files_spotlight_pages_are_tombstoned_and_returned(session, engine):
+    """A symbol spotlight page belongs to its file: when the file goes, so does
+    the page, and the caller is told about it so the index drops it too (#3457)."""
+    fts = FullTextSearch(engine)
+    await fts.ensure_index()
+    repo_id = await _seed(session, fts, "pkg/gone.py", "pkg/gone.pyx")
+    gone = await _spotlight(session, repo_id, "pkg/gone.py::helper")
+    sibling = await _spotlight(session, repo_id, "pkg/gone.pyx::other")
+    await session.commit()
+
+    marked = await mark_tombstone_pages(session, repo_id, [("pkg/gone.py", ["pkg/new.py"])])
+
+    assert sorted(marked) == ["file_page:pkg/gone.py", gone]
+    assert await _status(session, gone) == ("tombstone", ["pkg/new.py"])
+    assert (await _status(session, sibling))[0] == "fresh"
+
+
+async def test_a_path_is_matched_literally_not_as_a_like_pattern(session, engine):
+    """``_`` and ``%`` in a path are not wildcards: deleting ``a_b.py`` leaves
+    the spotlight pages of ``aXb.py`` alone."""
+    fts = FullTextSearch(engine)
+    await fts.ensure_index()
+    repo_id = await _seed(session, fts, "pkg/a_b.py", "pkg/aXb.py")
+    gone = await _spotlight(session, repo_id, "pkg/a_b.py::f")
+    other = await _spotlight(session, repo_id, "pkg/aXb.py::f")
+    await session.commit()
+
+    marked = await mark_tombstone_pages(session, repo_id, [("pkg/a_b.py", [])])
+
+    assert sorted(marked) == ["file_page:pkg/a_b.py", gone]
+    assert (await _status(session, other))[0] == "fresh"
+
+
+async def test_a_case_only_sibling_keeps_its_spotlight_pages(session, engine):
+    """SQLite LIKE ignores ASCII case: deleting ``pkg/Foo.py`` must not
+    tombstone the spotlight pages of a live ``pkg/foo.py``."""
+    fts = FullTextSearch(engine)
+    await fts.ensure_index()
+    repo_id = await _seed(session, fts, "pkg/Foo.py", "pkg/foo.py")
+    gone = await _spotlight(session, repo_id, "pkg/Foo.py::f")
+    kept = await _spotlight(session, repo_id, "pkg/foo.py::f")
+    await session.commit()
+
+    marked = await mark_tombstone_pages(session, repo_id, [("pkg/Foo.py", [])])
+
+    assert sorted(marked) == ["file_page:pkg/Foo.py", gone]
+    assert (await _status(session, kept))[0] == "fresh"

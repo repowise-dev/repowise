@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.communities import has_community
 from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.generation.page_selection import STALE_STATUSES
@@ -844,7 +845,7 @@ async def _resolve_one_target(
                     )
                 )
                 gn = res.scalar_one_or_none()
-                if gn and gn.community_id is not None:
+                if gn and has_community(gn.community_id):
                     _cmeta: dict[str, Any] = {}
                     with contextlib.suppress(json.JSONDecodeError, TypeError):
                         _cmeta = json.loads(gn.community_meta_json or "{}")

@@ -168,7 +168,7 @@ def _load_recommendations(
             if repo is None:
                 return []
             recommendations = await hydrate_recommendations(
-                session, repo.id, suggestions, metric_rows=metrics
+                session, repo.id, suggestions, metric_rows=metrics, checkout=str(repo_path)
             )
             return serialize_recommendations(recommendations)
 

@@ -364,7 +364,7 @@ def _claim_emission(event: str, context: str) -> bool:
     import time
 
     try:
-        key = hashlib.sha1(f"{event}\x00{context}".encode()).hexdigest()[:16]
+        key = hashlib.sha1(f"{event}\x00{context}".encode(), usedforsecurity=False).hexdigest()[:16]
         marker = Path(tempfile.gettempdir()) / f".repowise-augment-{key}"
         now = time.time()
         try:

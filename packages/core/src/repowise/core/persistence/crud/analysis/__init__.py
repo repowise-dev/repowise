@@ -66,7 +66,7 @@ from .doc_drift import (
     serialize_doc_drift_row,
     summarize_confidence_rows,
 )
-from .function_facts import get_function_facts, write_function_facts
+from .function_facts import get_function_facts, tests_for_functions, write_function_facts
 from .health import (
     FILE_TREND_SNAPSHOT_WINDOW,
     HEALTH_SNAPSHOT_RETENTION,
@@ -223,6 +223,7 @@ __all__ = [
     "summarize_open_plans",
     "tests_covering",
     "tests_covering_files",
+    "tests_for_functions",
     "update_dead_code_status",
     "update_health_finding_status",
     "update_refactoring_opportunity_status",

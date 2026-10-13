@@ -175,6 +175,32 @@ def test_update_refreshes_every_index_layer(tmp_path: Path) -> None:
     assert state.get("knowledge_graph", {}).get("fingerprint")
 
 
+def test_only_indexing_moves_the_stored_commit(tmp_path: Path) -> None:
+    """A full index and an update stamp HEAD; a decision recorded between them does not."""
+    repo = _make_git_repo(tmp_path)
+    _index_full(repo)
+    base = _git(repo, "rev-parse", "HEAD")
+    assert asyncio.run(_db_snapshot(repo))["head_commit"] == base
+
+    from repowise.cli.helpers import save_state
+
+    save_state(repo, {"last_sync_commit": base, "docs_enabled": False})
+    (repo / "c.py").write_text("def gamma():\n    return 3\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add c.py")
+    new_head = _git(repo, "rev-parse", "HEAD")
+
+    added = CliRunner().invoke(
+        cli, ["decision", "add", "--title", "T", "--decision", "D", str(repo)], input=""
+    )
+    assert added.exit_code == 0, added.output
+    assert asyncio.run(_db_snapshot(repo))["head_commit"] == base
+
+    result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace"])
+    assert result.exit_code == 0, result.output
+    assert asyncio.run(_db_snapshot(repo))["head_commit"] == new_head
+
+
 def test_update_recovers_idle_file_decayed_health(tmp_path: Path, monkeypatch) -> None:
     """#728: an idle file's time-decayed history must recover on a plain git
     update. a.py churns hard, then only b.py changes six months later — a.py is

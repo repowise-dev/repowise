@@ -49,8 +49,8 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | Kind | Severity | Matches |
 |------|----------|---------|
 | `eval_call` | high | `eval(...)`, including a receiver chain (`vm.eval(`) |
-| `exec_call` | high | `exec(...)`. Outside Python, only a call through a name bound to `child_process` (`exec`, `execFile`, `execSync`) |
-| `pickle_loads` | high | `pickle.loads` |
+| `exec_call` | high | `exec(...)`. Outside Python, only a call through a name bound to `child_process` (`exec`, `execSync`). `execFile` runs no shell and does not fire |
+| `pickle_loads` | high | `pickle.loads`, except a round trip of an own object (`pickle.loads(pickle.dumps(x))`) |
 | `subprocess_shell_true` | high | `subprocess.*` with `shell=True`, also across lines |
 | `os_system` | high | `os.system` |
 | `hardcoded_password` | high | a quoted literal assigned to a name containing `password`, any case |
@@ -66,14 +66,14 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | `private_key_pem` | high | a `-----BEGIN ... PRIVATE KEY-----` header followed by a base64 body line (an escaped `\n` counts) |
 | `public_env_secret` | high | `API_KEY`/`SECRET`/`TOKEN`/`PASSWORD` behind `NEXT_PUBLIC_` or `VITE_`, excluding `..._ANON_...` |
 | `new_function_call` | high | `new Function(...)` |
-| `fstring_sql` | med | a Python f-string with `SELECT` and an interpolation |
+| `fstring_sql` | med | a Python f-string query (`SELECT` with `FROM`) that interpolates a value after a comparison or `LIKE` (`WHERE id = {uid}`). A table, column, fragment or placeholder list cannot be bound, so interpolating one does not fire |
 | `concat_sql` | med | `.execute("SELECT ... +` |
 | `template_literal_sql` | med | a JS/TS template literal with `SELECT`+`FROM` or `UPDATE`+`SET` and an interpolation |
-| `tls_verify_false` | med | `verify = False` |
+| `tls_verify_false` | med | `verify=False` passed to an HTTP client call or set as `verify`, in a file that imports an HTTP client library (`requests`, `httpx`, `aiohttp`, `urllib3`, boto3). A call through a plain name must go through that import or a value built from it |
 | `reject_unauthorized_false` | med | `rejectUnauthorized: false` |
 | `unsafe_inner_html` | med | `__html:` (React's `dangerouslySetInnerHTML`) assigned a non-literal |
-| `weak_hash` | low | the words `md5` or `sha1` |
-| `security_sensitive_symbol` | low | a symbol named with `auth`, `token`, `password`, `jwt`, `session` or `crypto` |
+| `weak_hash` | low | MD5 or SHA-1 in use in code: a call (`hashlib.md5(`), a type (`MD5.Create()`) or the algorithm named to a hashing call (`createHash("sha1")`). A call passing `usedforsecurity=False` does not fire |
+| `security_sensitive_symbol` | low | a symbol named `auth`, `password`, `jwt` or `crypto`. A bare `session` or `token` is usually a database session or a lexer token and does not fire |
 
 `security_sensitive_symbol` is informational: it marks where security code
 lives, not a problem.
@@ -95,13 +95,18 @@ and the in-change commit scan report only these by default.
   comment is still a leak.
 - **Prose files** (`.md`, `.mdx`, `.rst`, `.txt`, `.adoc`) are scanned for the
   secret kinds only.
+- **JavaScript kinds stay in JavaScript.** `unsafe_inner_html`,
+  `template_literal_sql`, `new_function_call`, `reject_unauthorized_false` and
+  `public_env_secret` do not fire in Python files, where such a line can only be
+  quoted text.
 - **Placeholders are skipped**: a keyword value that is elided or templated
-  (`...`, `<your key>`, `xxx`, `example`, `placeholder`, `dummy`, `fake`,
+  (`...`, `<your key>`, `xxx`, `example`, `placeholder`, `dummy`, `fake`, `redacted`,
   `changeme`, `{{ }}`, `${}`), shorter than eight characters, a short
   single-case word, or a snake_case key name. A value a vendor kind already
   reports is not reported twice.
-- **`weak_hash`, the SQL kinds, the TLS kinds and `unsafe_inner_html`** run on
-  raw source, comments included.
+- **`concat_sql`, `template_literal_sql` and `unsafe_inner_html`** run on raw
+  source, comments included. `fstring_sql` and `weak_hash` need their match to
+  start in code, so a comment or a fixture string quoting one does not fire.
 
 ### Working tree versus history
 
@@ -143,7 +148,7 @@ its first four characters and `****`. The raw value is never stored.
 2. High working-tree kinds, as places to read. The layer found a call; you
    decide whether it is reachable.
 3. `security_sensitive_symbol`, as a map of where auth and crypto code lives.
-4. Low findings last. `weak_hash` is a word match.
+4. Low findings last. `weak_hash` cannot tell a checksum from a password hash.
 
 A low finding count means the registry did not match. On most repos, in most
 languages, that is all it means.
@@ -190,7 +195,9 @@ upload are in [Repowise in CI](../start/CI.md).
 Put `repowise-security-ignore` on the finding's own line in any comment
 syntax; `repowise-security-ignore: aws_access_key` silences only the kinds it
 lists. There is no next-line or whole-file form. A silenced finding never fails
-the gate and is still reported as suppressed. Exact rules are in the
+the gate and is still reported there as suppressed. The scan that indexing
+stores leaves it out, so it does not reach the dashboard, `get_risk` or REST.
+Exact rules are in the
 [CLI reference](../reference/CLI_REFERENCE.md#repowise-security-check-revspec).
 
 The scanner also honours detect-secrets comments: `# pragma: allowlist secret`
@@ -246,7 +253,8 @@ result with that in mind.
   eight vendor shapes are invisible unless you add custom patterns. Use gitleaks
   or trufflehog for secret scanning proper.
 - **No dependency or CVE scanning.**
-- **False positives happen.** `weak_hash` fires on `md5` in a comment.
+- **False positives happen.** `weak_hash` fires on an MD5 checksum unless the
+  call passes `usedforsecurity=False`.
   `unsafe_inner_html` ships at `med` because it cannot tell a name pointing at
   a pinned constant from a dynamic value.
 - **The five JS/TS kinds were checked by hand** on a 17-repository, 1,109-file

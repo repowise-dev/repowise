@@ -1,4 +1,4 @@
-"""Module constants, regexes, and the GitPython noise patch for git indexing.
+"""Module constants and regexes for git indexing.
 
 Kept in one place so the per-tier modules share a single source of truth for
 the commit-depth defaults, decay half-lives, and skip heuristics.
@@ -6,7 +6,6 @@ the commit-depth defaults, decay half-lives, and skip heuristics.
 
 from __future__ import annotations
 
-import contextlib
 import re
 from typing import Any
 
@@ -17,23 +16,6 @@ from ...co_change import (
     MIN_CO_CHANGE_SUPPORT,
 )
 from ..languages.registry import REGISTRY as _LANG_REGISTRY
-
-# Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
-# When git cat-file streams are GC'd after the subprocess pipe is closed,
-# their __del__ tries to drain remaining bytes and hits a closed file.
-# This is harmless but floods stderr with tracebacks.
-try:
-    from git.cmd import _CatFileContentStream
-
-    _orig_del = _CatFileContentStream.__del__
-
-    def _quiet_del(self: Any) -> None:
-        with contextlib.suppress(ValueError, OSError):
-            _orig_del(self)
-
-    _CatFileContentStream.__del__ = _quiet_del  # type: ignore[assignment]
-except Exception:
-    pass  # git not installed — nothing to patch
 
 # Commit message prefixes that are ALWAYS skipped (no signal value).
 _HARD_SKIP_PREFIXES = ("Merge ",)

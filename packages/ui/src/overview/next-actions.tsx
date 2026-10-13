@@ -60,8 +60,48 @@ export function renderActionTitle(title: string): ReactNode {
   );
 }
 
+// en-US grouping, as the server writes `{n:,}`, so a local sentence reads the same.
 function plural(n: number, noun: string): string {
-  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+  return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Sep 28" from the anchor's own calendar day, never shifted into the viewer's timezone. */
+function anchorDay(iso: string | null): string | null {
+  const m = iso ? /^\d{4}-(\d{2})-(\d{2})/.exec(iso) : null;
+  const month = m ? MONTHS[Number(m[1]) - 1] : undefined;
+  return m && month ? `${month} ${Number(m[2])}` : null;
+}
+
+const workIn = (h: ActionsResponse["horizons"][ActionHorizonKey]) =>
+  (h.by_tier.act_now ?? 0) + (h.by_tier.plan ?? 0);
+
+/**
+ * The sentence for a view that carries no `summary` (a server that predates
+ * it). Same as the server's wording, from the same counts, so the line never
+ * goes blank. A view with `summary` always wins.
+ */
+function fallbackSummary(data: ActionsResponse, horizon: ActionHorizonKey): string {
+  const until = anchorDay(data.anchor);
+  const window =
+    horizon === "week"
+      ? until
+        ? `in the week to ${until}, the last indexed commit`
+        : "this week"
+      : "this quarter";
+  const work = workIn(data.horizons[horizon]);
+  if (work === 0) {
+    const other = workIn(data.horizons[horizon === "week" ? "quarter" : "week"]);
+    if (other === 0) return `Nothing stands out ${window}.`;
+    const tail =
+      horizon === "week"
+        ? `${other === 1 ? "is" : "are"} worth planning this quarter`
+        : "came up this week";
+    return `Nothing needs you ${window}. ${plural(other, "thing")} ${tail}.`;
+  }
+  const now = data.horizons[horizon].by_tier.act_now ?? 0;
+  return `${plural(work, "thing")} worth doing ${window}${now ? `, ${now} of them now` : ""}.`;
 }
 
 export function NextActions({
@@ -78,8 +118,7 @@ export function NextActions({
   // "add a coverage report" is not a reason to show an empty week first.
   // Counts come from `data` alone, like the sentence, so the two agree; both
   // move when the host passes the re-read view after an answer.
-  const work = (key: ActionHorizonKey) =>
-    data ? (data.horizons[key].by_tier.act_now ?? 0) + (data.horizons[key].by_tier.plan ?? 0) : 0;
+  const work = (key: ActionHorizonKey) => (data ? workIn(data.horizons[key]) : 0);
   const initial: ActionHorizonKey = work("week") === 0 && work("quarter") > 0 ? "quarter" : "week";
   const [horizon, setHorizon] = useState<ActionHorizonKey>(initial);
   const [expanded, setExpanded] = useState(false);
@@ -131,7 +170,7 @@ export function NextActions({
   return (
     <OverviewSection
       title="Do next"
-      description={data.summary?.[horizon] ?? ""}
+      description={data.summary?.[horizon] ?? fallbackSummary(data, horizon)}
       action={
         <Segmented
           label="Time frame"

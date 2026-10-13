@@ -132,7 +132,7 @@ def why_ranked(factors: dict[str, float], *, limit: int = 3) -> list[dict[str, A
     return [{"factor": name, "value": value} for name, value in top_factors(factors, limit)]
 
 
-def rank_sort_key(opportunity: Any) -> tuple[int, bool, float, str, str]:
+def rank_sort_key(opportunity: Any) -> tuple[int, bool, bool, float, str, str]:
     """A total order, production files first. The id tail is what stops ties
     floating between runs.
 
@@ -145,11 +145,14 @@ def rank_sort_key(opportunity: Any) -> tuple[int, bool, float, str, str]:
     benefit (a cycle's size, a split's group count) is not health, and on this
     repo it outranked every real extraction once those were credited
     proportionally; those opportunities stay listed, after the credited ones,
-    in their own order.
+    in their own order. Credited work that leaves a function at the
+    break-up bar (:func:`leads_queue`) ranks after the credited work that does
+    not.
     """
     return (
         ship_rank(opportunity.file_path),
         not has_credit(opportunity),
+        not leads_queue(opportunity),
         -opportunity.rank_score,
         opportunity.file_path,
         opportunity.opportunity_id,
@@ -161,10 +164,17 @@ def has_credit(opportunity: Any) -> bool:
     return float(opportunity.recoverable_health or 0.0) > 0.0
 
 
+def leads_queue(opportunity: Any) -> bool:
+    """Whether credited work may lead the queue: it recovers health and leaves
+    no function at the break-up bar."""
+    return has_credit(opportunity) and not getattr(opportunity, "leaves_above_bar", None)
+
+
 __all__ = [
     "MECHANICAL_SHARE_WEIGHT",
     "PRIMARY_PROBLEM_WEIGHT",
     "has_credit",
+    "leads_queue",
     "opportunity_benefit",
     "opportunity_risk",
     "rank_factors",

@@ -210,8 +210,8 @@ def test_file_namers_lists_every_file_naming_one() -> None:
     files = ["web/src/styles/layout.css", "other/layout.css"]
     # An asset may be included by another asset, so its name alone names it.
     assert file_namers(files, sources)["other/layout.css"] == [
-        "web/src/app.ts",
         "src/other.py",
+        "web/src/app.ts",
         "web/src/more.ts",
     ]
     # A manifest is named only where a written directory can lead to it.

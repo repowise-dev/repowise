@@ -221,7 +221,7 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 | `page_type` | string | none | One page type, usually `file_page` or `module_page` |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` to search every repo |
 
-**Key return fields:** `results` (every row that names a file carries it in `path`, and a row naming no file has no `path`; symbol hits carry `symbol_id`, line bounds and `signature`, plus `symbols` (`name:line` of up to five other matches in that file, then `+N more`) when several matched; concept hits carry `relevance_score`, `snippet` and `sources`; `file` on symbol and file hits is a deprecated alias of `path`, removed in the next minor release, and a page keeps `target_path` only where it differs from `path`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
+**Key return fields:** `results` (every row that names a file carries it in `path`, and a row naming no file has no `path`; symbol hits carry `symbol_id`, line bounds and `signature`, plus `symbols` (`name:line` of up to five other matches in that file, then `+N more`) when several matched; concept hits carry `relevance_score` and `snippet`, plus `sources` unless it would be `["fts"]` on an index without embeddings; a row leaves off `page_id` and a structural `title` (`File: <path>`) where `page_type` plus `symbol_id` or `path` rebuild them; the old `file` alias is gone, and a page keeps `target_path` only where it differs from `path`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
 
 **Page rows** also carry `symbols`: up to three `name:line` entries (`Owner.member` for members) in that file whose names match the query's words. The first three page rows whose file has a matching line also carry `matched_lines`: a sample of up to three `{line, text}` source lines read from the live file that share the most query words, code lines before comments and imports. Unlike `lines`, it is never every match.
 
@@ -326,7 +326,7 @@ Code-health scores and findings from the stored analysis, across defect risk, ma
 | `only` | list[string] | none | Keep just these top-level keys; identity, totals and recovery fields always survive. An unknown key is named in `unknown_only_keys` with `unknown_only_keys_hint` |
 | `limit` | int | `20` | Max rows in every ranked list, capped at 50; `0` for none. `fix_first` shows five unless `limit` is passed with `only=["fix_first"]`, which pages up to 25; `refactoring_plans` up to 25 |
 | `cursor` | int | `0` | Offset into a ranked list (and into `fix_first` when named in `only`); the `recovery` block names the next call |
-| `fix_id` | string | none | Open one `fix_first` item in full |
+| `fix_id` | string | none | Open one `fix_first` item (`fix1_...`) in full, or one `get_overview` `next_actions` action (`act_...`) with its `details` and `commands` (`mode: "action"`) |
 | `finding_id`, `plan_id` | string | none | Open one finding or refactoring plan by id. With `plan_id`, `include=["recipe"]` adds `plan.recipe`: the plan's preconditions, ordered steps, postconditions and what it must not do |
 | `opportunity_id` | string | none | Open one opportunity: `perf...` for performance, `refop...` for a refactoring |
 | `refactoring_view` | string | `"diversified"` | `diversified`, `canonical` or `file_spread` |
@@ -349,6 +349,7 @@ The response is bounded. Pair `include` with `only` to keep one block, e.g. `get
 get_health(only=["fix_first"], limit=25)
 get_health(only=["fix_first"], limit=25, cursor=25)
 get_health(fix_id="fix1_...")
+get_health(fix_id="act_...")
 get_health(include=["refactoring"], only=["refactoring_plans"], limit=15, refactoring_scope="all")
 get_health(targets=["src/api/server.py"], include=["signals"])
 get_health(include=["performance"], only=["performance_summary"])

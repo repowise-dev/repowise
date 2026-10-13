@@ -14,10 +14,12 @@
 ) @symbol.def
 
 (class_declaration
+  (modifiers)? @symbol.modifiers
   (identifier) @symbol.name
 ) @symbol.def
 
 (object_declaration
+  (modifiers)? @symbol.modifiers
   (identifier) @symbol.name
 ) @symbol.def
 

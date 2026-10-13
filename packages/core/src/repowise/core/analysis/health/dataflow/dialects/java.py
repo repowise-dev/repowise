@@ -24,7 +24,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import NO_RECEIVER, BaseDefUseDialect, Occurrence, Receiver, StatementDefUse
+from .base import (
+    NO_RECEIVER,
+    BaseDefUseDialect,
+    DeclaredTypes,
+    HandlerHead,
+    Occurrence,
+    Receiver,
+    StatementDefUse,
+    node_text,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -55,14 +64,25 @@ class JavaDefUseDialect(BaseDefUseDialect):
     language = "java"
     member_access_kinds = frozenset({"field_access"})
     receiver_write_kinds = _ASSIGN_KINDS | _UPDATE_KINDS
-    type_holder_kinds = frozenset(
-        {"formal_parameter", "local_variable_declaration", "enhanced_for_statement"}
+    declared_types = DeclaredTypes(
+        frozenset({"formal_parameter", "local_variable_declaration", "enhanced_for_statement"}),
+        frozenset({"variable_declarator"}),
     )
-    type_wrapper_kinds = frozenset({"variable_declarator"})
     keyword_kinds = frozenset()  # Java has no keyword arguments.
 
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """``catch (A | B e)`` names ``A`` and ``B`` and binds ``e``."""
+        kids = handler.named_children
+        param = next((c for c in kids if c.type == "catch_formal_parameter"), None)
+        if param is None:
+            return (), None
+        kinds = next((c for c in param.named_children if c.type == "catch_type"), None)
+        types = tuple(node_text(t) for t in kinds.named_children) if kinds else ()
+        name = param.child_by_field_name("name")
+        return types, node_text(name) if name is not None else None
 
     def collect_reads(self, node: Node | None, out: list[Occurrence]) -> None:
         """Like the base collector, but a ``method_invocation`` / ``method_reference``

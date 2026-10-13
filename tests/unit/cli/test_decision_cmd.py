@@ -151,6 +151,45 @@ def test_decision_add_records_without_prompting(indexed_repo: Path) -> None:
     assert record["tags"] == ["database"]
 
 
+def test_decision_commands_leave_the_indexed_commit_alone(tmp_path: Path) -> None:
+    """Recording or confirming a decision is not a sync, so the row's commit stays.
+
+    Moving it to HEAD left the database and ``state.json`` naming two different
+    commits, which made test selection distrust the index and run every test.
+    """
+    import sqlite3
+
+    repo = tmp_path / "repo"
+    git = repo / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git / "refs" / "heads" / "main").write_text("b" * 40 + "\n", encoding="utf-8")
+    indexed = "a" * 40
+    _seed_wiki_db(repo, [{"id": "cccccccc", "title": "Old", "status": "proposed"}])
+    conn = sqlite3.connect(repo / ".repowise" / "wiki.db")
+    with conn:
+        conn.execute("UPDATE repositories SET head_commit = ?", (indexed,))
+    conn.close()
+
+    added = CliRunner().invoke(
+        cli,
+        ["decision", "add", "--title", "T", "--decision", "D", str(repo)],
+        input="",
+    )
+    assert added.exit_code == 0, added.output
+    confirmed = CliRunner().invoke(cli, ["decision", "confirm", "cccccccc", str(repo)])
+    assert confirmed.exit_code == 0, confirmed.output
+    listed = CliRunner().invoke(cli, ["decision", "list", str(repo)])
+    assert listed.exit_code == 0, listed.output
+
+    conn = sqlite3.connect(repo / ".repowise" / "wiki.db")
+    try:
+        rows = conn.execute("SELECT head_commit FROM repositories").fetchall()
+    finally:
+        conn.close()
+    assert rows == [(indexed,)]
+
+
 def test_a_flag_driven_decision_lands_proposed(indexed_repo: Path) -> None:
     """A caller that inferred a decision has not reviewed it, and the store says so.
 

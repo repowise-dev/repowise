@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY

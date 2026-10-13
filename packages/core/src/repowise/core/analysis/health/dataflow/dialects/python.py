@@ -24,9 +24,12 @@ from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
     Captured,
+    DeclaredTypes,
+    HandlerHead,
     Occurrence,
     Receiver,
     StatementDefUse,
+    node_text,
 )
 
 if TYPE_CHECKING:
@@ -61,7 +64,9 @@ class PythonDefUseDialect(BaseDefUseDialect):
     language = "python"
     member_access_kinds = frozenset({"attribute"})
     receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS
-    type_holder_kinds = frozenset({"typed_parameter", "typed_default_parameter", "assignment"})
+    declared_types = DeclaredTypes(
+        frozenset({"typed_parameter", "typed_default_parameter", "assignment"})
+    )
     keyword_kinds = frozenset({"keyword_argument"})
 
     # A nested ``def`` is visible in the enclosing scope from its statement on.
@@ -97,6 +102,30 @@ class PythonDefUseDialect(BaseDefUseDialect):
             if name_node is not None:
                 out.append(self._occ(name_node))
         return tuple(out)
+
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """``except E as e:`` reads ``E`` and binds ``e``: the same ``value``
+        field shape as a ``with`` item. Python unbinds ``e`` when the handler
+        ends; that is not modelled, so a later read of ``e`` (an error in the
+        original too) sees this binding and a span holding it takes ``e`` in."""
+        defs: list[Occurrence] = []
+        uses: list[Occurrence] = []
+        self._with_item(handler, defs, uses)
+        return StatementDefUse(defs=tuple(defs), uses=tuple(uses))
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """``except (A, b.C) as e:`` names ``A`` and ``b.C`` and binds ``e``;
+        a bare ``except:`` catches everything."""
+        value = handler.child_by_field_name("value")
+        if value is None:
+            return None, None
+        alias = None
+        if value.type == "as_pattern":
+            alias = value.child_by_field_name("alias")
+            value = value.named_children[0]
+        grouped = value.type in ("tuple", "parenthesized_expression")
+        names = value.named_children if grouped else [value]
+        return tuple(node_text(n) for n in names), node_text(alias) if alias else None
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """A method's first parameter when it is ``self`` / ``cls`` and the
@@ -178,6 +207,13 @@ class PythonDefUseDialect(BaseDefUseDialect):
             return
         if t == "with_item":
             self._with_item(node, defs, uses)
+            return
+        if t == "except_clause":  # a nested scope's handler, walked whole
+            self._with_item(node, defs, uses)
+            value = node.child_by_field_name("value")
+            for child in node.named_children:
+                if value is None or child.id != value.id:
+                    self._process(child, defs, uses)
             return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; member is not
@@ -296,10 +332,13 @@ class PythonDefUseDialect(BaseDefUseDialect):
         named = node.child_by_field_name("name")
         if named is not None and named.type in self.identifier_kinds:
             return named
-        # typed_parameter / splat: first identifier descendant.
+        # typed_parameter / splat: first identifier descendant (``**kw: Any``
+        # nests the splat in the typed parameter).
         for child in node.named_children:
             if child.type in self.identifier_kinds:
                 return child
+            if child.type in _SPLAT_TARGETS:
+                return self._param_name_node(child)
         return None
 
 

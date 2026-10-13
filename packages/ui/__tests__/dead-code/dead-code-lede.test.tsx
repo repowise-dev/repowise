@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { DeadCodeLede } from "../../src/dead-code/dead-code-lede.js";
+import { AnalysedAt, DeadCodeLede } from "../../src/dead-code/dead-code-lede.js";
 import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
 
 const SUMMARY: DeadCodeSummary = {
@@ -38,6 +38,11 @@ describe("DeadCodeLede", () => {
   it("drops the time rather than inventing one when the run is unknown", () => {
     render(<DeadCodeLede summary={{ ...SUMMARY, analyzed_at: null }} />);
     expect(screen.getByText(/have no reachable caller/).textContent).not.toMatch(/Analysed/);
+  });
+
+  it("renders no time for a host that does not report one", () => {
+    const { container } = render(<AnalysedAt at={undefined} />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("agrees in number for a single finding", () => {

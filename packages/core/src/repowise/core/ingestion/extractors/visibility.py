@@ -315,7 +315,19 @@ def php_visibility(_name: str, modifier_texts: list[str]) -> str:
 _TS_EXPORT_LIST_RE = re.compile(r"\bexport\s*\{([^}]*)\}")
 _TS_EXPORT_DEFAULT_RE = re.compile(r"\bexport\s+default\s+([A-Za-z_$][\w$]*)")
 _TS_EXPORT_ASSIGN_RE = re.compile(r"\bexport\s*=\s*([A-Za-z_$][\w$]*)")
-_TS_CJS_EXPORTS_RE = re.compile(r"\bmodule\.exports\b|\bexports\s*[.\[]")
+# CommonJS is a write to ``exports``, never a read: ``ext.exports``,
+# ``const prev = module.exports`` or a local ``exports.enabled`` is ordinary
+# code, and treating it as CommonJS kept every non-exported declaration in the
+# file public. A write assigns ``module.exports`` (or a member of it) or a
+# member of bare ``exports``, or ``Object.assign``/``defineProperty`` onto one.
+_CJS_MODULE_EXPORTS = r"""\bmodule\s*(?:\.\s*exports\b|\[\s*["']exports["']\s*\])"""
+_CJS_MEMBER = r"(?:\.\s*[A-Za-z_$][\w$]*|\[[^\]\n]*\])"
+_CJS_ASSIGN = r"\s*=(?![=>])"
+_TS_CJS_EXPORTS_RE = re.compile(
+    rf"{_CJS_MODULE_EXPORTS}(?:\s*{_CJS_MEMBER})?{_CJS_ASSIGN}"
+    rf"|(?<![.\w$])exports\s*{_CJS_MEMBER}{_CJS_ASSIGN}"
+    rf"|\b(?:defineProperty|assign)\(\s*(?:{_CJS_MODULE_EXPORTS}|exports\b)"
+)
 
 # The same list form, plus whatever follows the closing brace, so a clause with
 # a ``from`` source can be told from one without. Only the source-less form

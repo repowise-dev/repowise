@@ -542,7 +542,7 @@ export default function CodeHealthPage() {
           release's version so a reader who dismissed an earlier one sees it. */}
       <ReleaseNotice
         id="health-scoring"
-        version="0.55.0"
+        version="0.56.0"
         detail={t("coChangeNoticeBody")}
         detailLabel={t("coChangeNoticeMore")}
         hideLabel={t("coChangeNoticeLess")}

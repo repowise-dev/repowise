@@ -374,8 +374,10 @@ def test_python_class_cohesion():
     assert cohesive is not None and splintered is not None
     # All methods collaborate around shared state → single component.
     assert cohesive.lcom4 == 1
-    # Two disjoint field clusters + a loner → three components.
-    assert splintered.lcom4 == 3
+    # Two disjoint field clusters; the loner touches no field, so it is a
+    # component but not a group to extract.
+    assert splintered.lcom4 == 2
+    assert len(splintered.components) == 3
     assert splintered.method_count == 5
     assert splintered.field_count == 2
 
@@ -446,7 +448,7 @@ def test_typescript_class_cohesion():
     if cohesive is None or splintered is None:
         pytest.skip("typescript classes not detected")
     assert cohesive.lcom4 == 1
-    assert splintered.lcom4 == 3
+    assert splintered.lcom4 == 2
 
 
 def test_class_metrics_carry_methods_and_size():
@@ -548,6 +550,44 @@ def test_kotlin_assertion_blocks():
     assert many.assertion_blocks[0][2] == 16
     few = _find(results, "testFewAsserts")
     assert few is not None and few.assertion_blocks == []
+
+
+def test_swift_nesting_and_ccn():
+    results = _walk("swift/nested.swift", "swift")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+
+
+def test_swift_scores_the_kotlin_fixture_s_twin_the_same():
+    """``swift/nested.swift`` is ``kotlin/nested.kt`` line for line: the two
+    maps must agree on every number the control flow gives."""
+    swift = {r.name: (r.ccn, r.max_nesting, r.cognitive) for r in _walk("swift/nested.swift", "swift")}
+    kotlin = {r.name: (r.ccn, r.max_nesting, r.cognitive) for r in _walk("kotlin/nested.kt", "kotlin")}
+    assert swift == kotlin
+    assert swift["deeplyNested"] == (5, 4, 10)
+
+
+def test_swift_class_cohesion():
+    classes = _walk_classes("swift/classes.swift", "swift")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert (cohesive.lcom4, cohesive.method_count, cohesive.field_count) == (1, 4, 2)
+    # A struct is a class kind too. Each cluster is an accessor pair over one
+    # field and the loner touches none, as in the Kotlin fixture.
+    assert (splintered.lcom4, splintered.method_count, splintered.field_count) == (1, 5, 2)
+    # ``self.total`` is read as a use of the field: every pair of Cohesive's
+    # methods shares one, and few of Splintered's do. Kotlin's twin agrees.
+    kotlin = _walk_classes("kotlin/classes.kt", "kotlin")
+    assert cohesive.tcc == kotlin["Cohesive"].tcc == 1.0
+    assert splintered.tcc == kotlin["Splintered"].tcc < 0.5
 
 
 def test_cpp_nesting_and_ccn():
@@ -792,7 +832,7 @@ def test_scala_class_cohesion():
     splintered = classes.get("Splintered")
     assert cohesive is not None and splintered is not None
     assert cohesive.lcom4 == 1
-    assert splintered.lcom4 == 3
+    assert splintered.lcom4 == 2
     assert splintered.method_count == 5
     assert splintered.field_count == 2
     # ``object`` and ``trait`` bodies group methods like a class body.

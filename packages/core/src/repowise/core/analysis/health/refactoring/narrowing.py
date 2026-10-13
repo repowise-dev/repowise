@@ -61,14 +61,27 @@ def narrowings(
         if node.parent.type in lmap.block_kinds:
             sib = node.prev_named_sibling
             while sib is not None:
-                line = sib.start_point[0] + 1
-                for name, drops in _guard_tests(sib, lmap).items():
-                    rebound = any(sib.end_point[0] + 1 < ln <= end for ln in def_lines.get(name, ()))
-                    if name in names and name not in out and not rebound:
-                        out[name] = Narrowing(line, drops)
+                _add_guard(sib, lmap, end, names, def_lines, out)
                 sib = sib.prev_named_sibling
         node = node.parent
     return out
+
+
+def _add_guard(
+    sib: Node,
+    lmap: LanguageNodeMap,
+    end: int,
+    names: set[str],
+    def_lines: dict[str, list[int]],
+    out: dict[str, Narrowing],
+) -> None:
+    """Record in *out* each name in *names* guard *sib* narrows that has no
+    nearer guard yet and nothing rebinds before line *end*."""
+    line = sib.start_point[0] + 1
+    for name, drops in _guard_tests(sib, lmap).items():
+        rebound = any(sib.end_point[0] + 1 < ln <= end for ln in def_lines.get(name, ()))
+        if name in names and name not in out and not rebound:
+            out[name] = Narrowing(line, drops)
 
 
 def narrowed(declared: str, drops: frozenset[str]) -> str | None:

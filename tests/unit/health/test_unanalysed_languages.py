@@ -27,12 +27,14 @@ from repowise.core.analysis.health.trends import snapshot_fields
 from repowise.core.pipeline.incremental import _numbers_moved
 
 
-@pytest.mark.parametrize("language", ["python", "typescript", "csharp", "razor", "sql", "php"])
+@pytest.mark.parametrize(
+    "language", ["python", "typescript", "csharp", "razor", "sql", "php", "swift"]
+)
 def test_languages_health_walks_have_a_dialect(language: str) -> None:
     assert has_health_dialect(language)
 
 
-@pytest.mark.parametrize("language", ["swift", "elixir", "markdown", "", None])
+@pytest.mark.parametrize("language", ["lua", "elixir", "markdown", "", None])
 def test_languages_nothing_walks_have_none(language: str | None) -> None:
     assert not has_health_dialect(language)
 

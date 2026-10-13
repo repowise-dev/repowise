@@ -74,7 +74,11 @@ def stage_batches(
         return None
     lead = [s["n"] for s in steps if s["n"] < numbers[0]]
     tests, total = _batch_tests(detail)
-    commands = commands_for_tests(tests, total=total)
+    # Each JS/TS test runs from the package the plan stored for it.
+    packages = _validation(detail).get("js_packages")
+    commands = commands_for_tests(
+        tests, total=total, packages=packages if isinstance(packages, Mapping) else None
+    )
     check = _check(tests, detail)
     sizes = _sizes(len(numbers))
     out: list[dict[str, Any]] = []

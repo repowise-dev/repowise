@@ -55,6 +55,30 @@ async def test_overview_carries_the_stored_actions(setup_mcp, session):
 
 
 @pytest.mark.asyncio
+async def test_every_handed_out_action_id_opens_in_get_health(setup_mcp, session):
+    """An agent following Do next opens the id it was handed, details and all."""
+    from repowise.core.persistence.crud.analysis.actions import load_action
+    from repowise.server.mcp_server import get_health, get_overview
+
+    await _seed(session, setup_mcp)
+    block = (await get_overview())["next_actions"]
+    ids = {a["id"] for h in ("week", "quarter") for a in block[h]["actions"]}
+    assert ids, "the seed should produce actions"
+    for action_id in ids:
+        full = await get_health(fix_id=action_id)
+        assert full["mode"] == "action" and full["found"] is True
+        # The same serialization the REST actions route renders from.
+        expected = (await load_action(session, setup_mcp, action_id)).as_dict()
+        assert full["action"] == expected
+        assert full["action"]["details"] and full["action"]["commands"]
+
+    missing = await get_health(fix_id="act_0000000000000000")
+    assert missing["mode"] == "action" and missing["found"] is False
+    assert missing["action"] is None
+    assert "act_" in missing["next_action"] and "fix1_" in missing["next_action"]
+
+
+@pytest.mark.asyncio
 async def test_a_failed_read_is_omitted_with_a_reason(setup_mcp, monkeypatch):
     from repowise.server.mcp_server import get_overview
     from repowise.server.mcp_server.tool_overview import actions as mod

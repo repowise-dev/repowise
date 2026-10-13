@@ -304,7 +304,7 @@ def test_declared_types_are_read_off_the_parse(language: str):
     for d in fn.def_use.definitions:
         row = d.line - 1
         node = fn.fn_node.descendant_for_point_range((row, d.column), (row, d.column + len(d.var)))
-        found[d.var] = dialect.declared_type(node)
+        found[d.var] = dialect.declared_types.of(node)
     assert {k: found.get(k) for k in _EXPECTED_TYPES[language]} == _EXPECTED_TYPES[language]
 
 

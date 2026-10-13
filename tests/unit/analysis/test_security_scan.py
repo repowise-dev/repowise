@@ -75,6 +75,18 @@ async def _rows(sf) -> list[tuple]:
 
 
 class TestScanFile:
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("obj = pickle.loads(request.body)\n", True),
+            ("obj = pickle.loads(blob); copy = pickle.dumps(obj)\n", True),
+            ("assert pickle.loads(pickle.dumps(config)) == config\n", False),
+            ("gb2 = pickle.loads(pickle.dumps(gb, protocol=pickle.HIGHEST_PROTOCOL))\n", False),
+        ],
+    )
+    def test_pickle_round_trip_is_not_a_load(self, source: str, expected: bool) -> None:
+        assert bool([f for f in scan_source("a.py", source) if f["kind"] == "pickle_loads"]) is expected
+
     def test_line_patterns_fire_on_real_source(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("a.py", SNIPPY.decode(), symbols=[]))
@@ -173,13 +185,12 @@ class TestScanFile:
         [
             ('import { exec } from "child_process";\nexec(cmd);\n', {"exec_call"}),
             ('const cp = require("child_process");\ncp.execSync(cmd);\n', {"exec_call"}),
-            (
-                'import { execFile } from "node:child_process";\nexecFile(bin, args);\n',
-                {"exec_call"},
-            ),
+            # execFile passes argv and runs no shell, like subprocess without shell=True.
+            ('import { execFile } from "node:child_process";\nexecFile(bin, args);\n', set()),
             ('import { exec as run } from "child_process";\nrun(cmd);\n', {"exec_call"}),
             ('const { execSync: sh } = require("child_process");\nsh(cmd);\n', {"exec_call"}),
-            ('import * as cp from "node:child_process";\ncp.execFile(bin);\n', {"exec_call"}),
+            ('import * as cp from "node:child_process";\ncp.execFile(bin);\n', set()),
+            ('import * as cp from "node:child_process";\ncp.exec(cmd);\n', {"exec_call"}),
             ('require("child_process").exec(cmd);\n', {"exec_call"}),
             # A regex's ``.exec`` in a file that also spawns is not bound to the module.
             ('require("child_process");\nconst m = /a/.exec(s);\n', set()),
@@ -285,6 +296,8 @@ class TestScanFile:
             'api_key = "your-api-key-here"\n',
             'api_key = "<YOUR_API_KEY>"\n',
             'password = "fixture-value"\n',
+            'api_key = "«redacted:sk-repo»"\n',
+            'OPENAI_API_KEY = "[REDACTED]-k3y-0f-mine"\n',
         ],
     )
     def test_credential_placeholder_filtering(self, source: str) -> None:
@@ -292,6 +305,25 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
         assert not any(f["kind"] in {"hardcoded_password", "hardcoded_secret"} for f in findings)
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("auth", True),
+            ("Password", True),
+            ("jwt", True),
+            ("crypto", True),
+            # A database session, a pytest fixture, a lexer token.
+            ("session", False),
+            ("SESSION", False),
+            ("Token", False),
+            ("get_token", False),
+        ],
+    )
+    def test_security_sensitive_symbol_names(self, name: str, expected: bool) -> None:
+        sym = SimpleNamespace(name=name, start_line=3)
+        kinds = {f["kind"] for f in scan_source("m.py", "", [sym])}
+        assert ("security_sensitive_symbol" in kinds) is expected
 
     @pytest.mark.parametrize(
         "file_path",
@@ -319,13 +351,13 @@ class TestScanFile:
     @pytest.mark.parametrize(
         ("source", "expected_kind"),
         [
-            ('AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n', "aws_access_key"),
+            ('AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n', "aws_access_key"),  # pragma: allowlist secret
             (
-                'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n',
+                'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n',  # pragma: allowlist secret
                 "github_token",
             ),
             (
-                "GH_APP_TOKEN = 'ghu_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'\n",
+                "GH_APP_TOKEN = 'ghu_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'\n",  # pragma: allowlist secret
                 "github_token",
             ),
             (
@@ -334,9 +366,9 @@ class TestScanFile:
                 + '"\n',
                 "github_token",
             ),
-            ('SLACK_BOT_TOKEN = "xoxb-4721609583-T5Rk9mPz2Qa"\n', "slack_token"),
+            ('SLACK_BOT_TOKEN = "xoxb-4721609583-T5Rk9mPz2Qa"\n', "slack_token"),  # pragma: allowlist secret
             (
-                'GOOGLE_MAPS_API_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"\n',
+                'GOOGLE_MAPS_API_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"\n',  # pragma: allowlist secret
                 "google_api_key",
             ),
             (
@@ -371,7 +403,7 @@ class TestScanFile:
         """A vendor key is invisible to the keyword list under a name like
         ``client_id``, so it must be caught by the value shape alone."""
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        source = 'client_id = "AKIAQZXNRTVYWMPKLBHG"\n'
+        source = 'client_id = "AKIAQZXNRTVYWMPKLBHG"\n'  # pragma: allowlist secret
         findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
         assert any(f["kind"] == "aws_access_key" for f in findings)
 
@@ -402,7 +434,7 @@ class TestScanFile:
         """#2121's value gate must apply to the new vendor kinds too: a
         low-severity path downgrades severity, same as the keyword kinds."""
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'
+        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'  # pragma: allowlist secret
         findings = asyncio.run(scanner.scan_file("tests/fixtures/keys.py", source, symbols=[]))
         hits = [f for f in findings if f["kind"] == "aws_access_key"]
         assert len(hits) == 1
@@ -549,7 +581,7 @@ class TestScanFile:
     @pytest.mark.parametrize(
         ("source", "expected"),
         [
-            ("requests.get(url, verify=False)\n", True),
+            ("import requests\nrequests.get(url, verify=False)\n", True),
             ('"tls_verify_false": "TLS verification turned off (verify=False).",\n', False),
             ("# verify=False disables certificate checks\n", False),
         ],
@@ -558,6 +590,111 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("client.py", source, symbols=[]))
         assert bool([f for f in findings if f["kind"] == "tls_verify_false"]) is expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("import httpx\nhttpx.Client(\n    base_url=url,\n    verify=False,\n)\n", True),
+            ('import boto3\nboto3.client("s3", verify=False)\n', True),
+            ('import boto3\nc = boto3.session.Session().client("s3", verify=False)\n', True),
+            ("from requests import get\nget(url, verify=False)\n", True),
+            ("import requests\ns = requests.Session()\ns.get(url, verify=False)\n", True),
+            ("import requests as r\nwith r.Session() as s:\n    s.post(url, verify=False)\n", True),
+            ("import requests\nclass C:\n    def go(self):\n        self.http.get(u, verify=False)\n", True),
+            ("import requests\ns = requests.Session()\ns.verify = False\n", True),
+            ("import requests\nclass Backend:\n    verify = False\n", True),
+            # A file with no HTTP client library: whatever ``get`` or ``client`` is, not TLS.
+            ("rows = db.get(key, verify=False)\n", False),
+            ('c = client("s3", verify=False)\n', False),
+            ("session.verify = False\n", False),
+            ("class Backend:\n    verify = False\n", False),
+            # An HTTP library imported, but the receiver is some other object.
+            ("import requests\nrows = db.get(key, verify=False)\n", False),
+            ("import requests\nGitRepo(io, git_commit_verify=False)\n", False),
+            ("import requests\nmock_get.assert_called_with(url, verify=False)\n", False),
+            # A function of the project's own whose keyword means something else.
+            ("import httpx\nrows = load_fix_first(session, repo_id, verify=False)\n", False),
+        ],
+    )
+    def test_tls_verify_false_needs_an_http_client(self, source: str, expected: bool) -> None:
+        findings = scan_source("client.py", source)
+        assert bool([f for f in findings if f["kind"] == "tls_verify_false"]) is expected
+
+    def test_tls_verify_false_keeps_the_line_match_when_python_does_not_parse(self) -> None:
+        findings = scan_source("client.py", "def broken(:\nload(x, verify=False)\n")
+        assert [f["line"] for f in findings if f["kind"] == "tls_verify_false"] == [2]
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("rows = con.execute(f\"SELECT id FROM users WHERE name = '{name}'\")\n", True),
+            ('sql = (\n    f"SELECT {cols}, name "\n    f"FROM users WHERE id = {uid}"\n)\n', True),
+            ("q = f\"SELECT * FROM docs WHERE title LIKE '%{term}%'\"\n", True),
+            ('q = f"SELECT * FROM t WHERE age >= {age} ORDER BY 1"\n', True),
+            # Identifiers, fragments and placeholder lists, which cannot be bound.
+            ('found = con.execute(f"SELECT MAX(at) FROM {table}").fetchone()\n', False),
+            ('q = f"SELECT ref FROM omissions WHERE ref IN ({placeholders})"\n', False),
+            ('q = f"SELECT {column}, COUNT(*) FROM episodes{where} GROUP BY {column}"\n', False),
+            ('q = f"SELECT id FROM t WHERE id = :id", params={"id": 1}\n', False),
+            ('q = f"SELECT a FROM t WHERE b = {{literal}}"\n', False),
+            ('q = f"""SELECT id FROM users WHERE id = {uid}"""\n', True),
+            ('q = f"""SELECT {cols}\n    FROM users\n    WHERE name = \'{name}\'\n"""\n', True),
+            ('q = f"""SELECT id FROM {table}"""\nx = {"a": 1}\n', False),
+            # A message about SQL, with no query in it.
+            ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
+            # Python source quoted inside a string, as a test fixture holds it.
+            ("src = 'q = f\"SELECT * FROM t WHERE id = {uid}\"'\n", False),
+        ],
+    )
+    def test_fstring_sql_needs_a_value_written_into_a_query(self, source: str, expected: bool) -> None:
+        findings = scan_source("db.py", source)
+        assert bool([f for f in findings if f["kind"] == "fstring_sql"]) is expected
+
+    @pytest.mark.parametrize(
+        ("line", "kind"),
+        [
+            ("<div dangerouslySetInnerHTML={{ __html: markup }} />", "unsafe_inner_html"),
+            ("const q = `SELECT * FROM users WHERE id = ${id}`;", "template_literal_sql"),
+            ("const f = new Function(body);", "new_function_call"),
+            ("const a = new https.Agent({ rejectUnauthorized: false });", "reject_unauthorized_false"),
+            ("const k = process.env.NEXT_PUBLIC_API_KEY;", "public_env_secret"),
+        ],
+    )
+    def test_javascript_kinds_fire_in_javascript_not_python(self, line: str, kind: str) -> None:
+        assert kind in {f["kind"] for f in scan_source("web/app.tsx", line + "\n")}
+        quoted = f"CASE = {line!r}\n"
+        assert kind not in {f["kind"] for f in scan_source("src/check.py", quoted)}
+
+    @pytest.mark.parametrize(
+        ("path", "source", "expected"),
+        [
+            ("a.py", "digest = hashlib.md5(data).hexdigest()\n", True),
+            ("a.py", "mac = hmac.new(key, msg, hashlib.sha1)\n", True),
+            ("a.py", 'h = hashlib.new("md5")\n', True),
+            ("a.py", "from hashlib import sha1\nkey = sha1(raw)\n", True),
+            ("a.js", 'const h = crypto.createHash("md5");\n', True),
+            ("A.java", 'MessageDigest md = MessageDigest.getInstance("SHA-1");\n', True),
+            ("a.go", "sum := md5.Sum(data)\n", True),
+            ("A.cs", "using var h = MD5.Create();\n", True),
+            ("a.rb", "Digest::SHA1.hexdigest(s)\n", True),
+            ("a.rs", "let d = md5::compute(bytes);\n", True),
+            ("a.php", "$h = md5($password);\n", True),
+            # A commit id named for its algorithm, and the word in prose.
+            ("a.py", 'sha1 = git("rev-parse", "HEAD")\n', False),
+            ("a.py", "assert repo.head_commit == sha1\n", False),
+            ("a.py", "#: A commit id (sha1 or sha256).\n", False),
+            ("a.py", '"weak_hash": "The words md5 or sha1.",\n', False),
+            ("a.py", "_commit(repo, \"h.py\", \"hashlib.md5(b'')\")\n", False),
+            # Declared a checksum, not a security control.
+            ("a.py", "key = hashlib.sha1(text.encode(), usedforsecurity=False).hexdigest()\n", False),
+            ("a.py", "key = hashlib.sha1(\n    text.encode(), usedforsecurity=False\n)\n", False),
+            ("a.py", 'key = hashlib.sha1(f"({a})".encode(), usedforsecurity=False)\n', False),
+            ("a.py", 'key = hashlib.sha1(b"usedforsecurity=False")\n', True),
+            ("a.py", "key = hashlib.sha1(\n    text.encode()\n)\nok = sha256(b, usedforsecurity=False)\n", True),
+        ],
+    )
+    def test_weak_hash_is_an_algorithm_in_use(self, path: str, source: str, expected: bool) -> None:
+        assert bool([f for f in scan_source(path, source) if f["kind"] == "weak_hash"]) is expected
 
 
 class TestPersistSecurityFindings:
@@ -822,7 +959,7 @@ class TestScanSource:
     @pytest.mark.parametrize(
         ("source", "raw"),
         [
-            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),
+            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),  # pragma: allowlist secret
             ('  "VITE_API_KEY": "abcdef0123456789",\n', "abcdef0123456789"),
             ("export const NEXT_PUBLIC_AUTH_TOKEN = 'tok_9876543210';\n", "tok_9876543210"),
         ],
@@ -877,6 +1014,28 @@ class TestScanSource:
         assert set(findings_by_file) == {"a.py"}
         assert findings_by_file["a.py"] == scan_source("a.py", SNIPPY.decode())
 
+    def test_ignore_marker_silences_the_stored_scan(self) -> None:
+        source = (
+            "data = pickle.loads(blob)  # repowise-security-ignore: pickle_loads\n"
+            "other = pickle.loads(raw)  # repowise-security-ignore: eval_call\n"
+            "os.system(cmd)  # repowise-security-ignore\n"
+            "os.system(cmd2)\n"
+        )
+        # The gate reads scan_source and reports silenced findings as suppressed.
+        assert len(scan_source("a.py", source)) == 4
+        result = _fake_result({"a.py": source})
+        findings_by_file, _ = scan_source_map(result.parsed_files, result.source_map)
+        assert sorted((f["kind"], f["line"]) for f in findings_by_file["a.py"]) == [
+            ("os_system", 4),
+            ("pickle_loads", 2),
+        ]
+
+    def test_a_fully_silenced_file_stores_nothing(self) -> None:
+        source = "data = pickle.loads(blob)  # repowise-security-ignore\n"
+        result = _fake_result({"a.py": source})
+        findings_by_file, scanned = scan_source_map(result.parsed_files, result.source_map)
+        assert scanned == ["a.py"] and findings_by_file == {}
+
 
 def _assert_no_raw(snippet: str, raw: str) -> None:
     leaked = [raw[i : i + 5] for i in range(len(raw) - 4) if raw[i : i + 5] in snippet]
@@ -899,7 +1058,7 @@ class TestEverySnippetIsMasked:
     @pytest.mark.parametrize(
         ("source", "kind"),
         [
-            (f'API_KEY = "{KEY}"  # md5\n', "weak_hash"),
+            (f'API_KEY = "{KEY}"; h = md5(b)\n', "weak_hash"),
             (f'os.system(cmd); secret = "{KEY}"\n', "os_system"),
             (f'x = eval(y); secret = "{KEY}"\n', "eval_call"),
             (f'subprocess.run(cmd, secret = "{KEY}",\n    shell=True)\n', "subprocess_shell_true"),
@@ -975,9 +1134,10 @@ class TestEverySnippetIsMasked:
         _assert_no_raw(hit["snippet"], body[::-1])
 
     def test_stray_hit_on_a_pem_body_line_is_masked(self) -> None:
-        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgE+md5/AoIBAQC7VJTUt9Us8cKj"
+        # pragma: allowlist nextline secret
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgE+AKIAQ2Z7RT4WXY5BCDFG/AoIBAQC7VJTUt9Us8cKj"
         source = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\n"
-        (hit,) = [f for f in scan_source("id_rsa", source) if f["kind"] == "weak_hash"]
+        (hit,) = [f for f in scan_source("id_rsa", source) if f["kind"] == "aws_access_key"]
         assert hit["line"] == 2
         _assert_no_raw(hit["snippet"], body)
 
@@ -1012,7 +1172,7 @@ class TestVendorShapeEdges:
         assert "hardcoded_secret" not in self._kinds(source)
 
     def test_vendor_shape_and_keyword_report_one_finding(self) -> None:
-        source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'
+        source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'  # pragma: allowlist secret
         assert self._kinds(source) == ["github_token"]
 
     def test_pem_key_with_escaped_newline_is_flagged(self) -> None:
@@ -1023,11 +1183,11 @@ class TestVendorShapeEdges:
         assert "private_key_pem" in self._kinds(source, ".env")
 
     def test_google_key_ending_in_a_dash_is_flagged(self) -> None:
-        source = 'MAPS_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9a-"\n'
+        source = 'MAPS_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9a-"\n'  # pragma: allowlist secret
         assert "google_api_key" in self._kinds(source)
 
     def test_google_shape_inside_an_integrity_hash_is_ignored(self) -> None:
-        run = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"
+        run = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"  # pragma: allowlist secret
         for integrity in (f"sha512-{run}+Q==", f"sha512-Zm9v/{run}/b2=="):
             source = f'      "integrity": "{integrity}",\n'
             assert "google_api_key" not in self._kinds(source, "package-lock.json")
@@ -1092,14 +1252,14 @@ class TestForgeSecretShapes:
     @pytest.mark.parametrize(
         "url",
         [
-            "https://deploy:S3cr3t-Pa55w0rd@gitlab.internal/group/repo.git",
-            "https://ci:Zq8vT2mLw9@github.com/owner/repo",
-            "https://ci:Zq8vT2mLw9@GitLab.com:443/o/r",
-            "git+https://ci:Zq8vT2mLw9@bitbucket.org/o/r",
-            "https://org:Zq8vT2mLw9@dev.azure.com/org/p/_git/r",
-            "https://org:Zq8vT2mLw9@org.visualstudio.com/p/_git/r",
-            "ssh://ci:Zq8vT2mLw9@git.internal:2222/o/r.git",
-            "http://ci:Zq8vT2mLw9@10.0.0.5/o/r.git/info/refs",
+            "https://deploy:S3cr3t-Pa55w0rd@gitlab.internal/group/repo.git",  # pragma: allowlist secret
+            "https://ci:Zq8vT2mLw9@github.com/owner/repo",  # pragma: allowlist secret
+            "https://ci:Zq8vT2mLw9@GitLab.com:443/o/r",  # pragma: allowlist secret
+            "git+https://ci:Zq8vT2mLw9@bitbucket.org/o/r",  # pragma: allowlist secret
+            "https://org:Zq8vT2mLw9@dev.azure.com/org/p/_git/r",  # pragma: allowlist secret
+            "https://org:Zq8vT2mLw9@org.visualstudio.com/p/_git/r",  # pragma: allowlist secret
+            "ssh://ci:Zq8vT2mLw9@git.internal:2222/o/r.git",  # pragma: allowlist secret
+            "http://ci:Zq8vT2mLw9@10.0.0.5/o/r.git/info/refs",  # pragma: allowlist secret
         ],
     )
     def test_git_remote_credentials_fire(self, url: str) -> None:
@@ -1157,8 +1317,8 @@ class TestForgeSecretShapes:
     @pytest.mark.parametrize(
         ("source", "kind"),
         [
-            ('password = "https://ci:Xk29fjQ81z@gitlab.com/o/r.git"\n', "hardcoded_password"),
-            ('API_KEY = "https://svc:Xk29fjQ81z@github.com/o/r"\n', "hardcoded_secret"),
+            ('password = "https://ci:Xk29fjQ81z@gitlab.com/o/r.git"\n', "hardcoded_password"),  # pragma: allowlist secret
+            ('API_KEY = "https://svc:Xk29fjQ81z@github.com/o/r"\n', "hardcoded_secret"),  # pragma: allowlist secret
         ],
     )
     def test_keyword_named_url_credential_keeps_its_kind(self, source: str, kind: str) -> None:
@@ -1166,7 +1326,7 @@ class TestForgeSecretShapes:
         assert self._kinds(source) == [kind]
 
     def test_url_credentials_in_prose_fire(self) -> None:
-        source = "Clone with `git clone https://ci:Zq8vT2mLw9@git.internal/r.git`.\n"
+        source = "Clone with `git clone https://ci:Zq8vT2mLw9@git.internal/r.git`.\n"  # pragma: allowlist secret
         assert self._kinds(source, "README.md") == ["git_url_credentials"]
 
 
@@ -1196,7 +1356,7 @@ class TestCallKindsIgnoreProseAndText:
         assert self._hits(source, "docs/CHANGELOG.md") == []
 
     def test_secret_in_markdown_is_still_flagged(self) -> None:
-        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'
+        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'  # pragma: allowlist secret
         kinds = [f["kind"] for f in scan_source("README.md", source)]
         assert "aws_access_key" in kinds
 
@@ -1317,5 +1477,5 @@ class TestSecretPrecision:
         assert self._kinds(source) == {"hardcoded_password"}
 
     def test_vendor_key_in_a_comment_still_fires(self) -> None:
-        kinds = {f["kind"] for f in scan_source("src/app.py", "# AKIAQZXNRTVYWMPKLBHG\n")}
+        kinds = {f["kind"] for f in scan_source("src/app.py", "# AKIAQZXNRTVYWMPKLBHG\n")}  # pragma: allowlist secret
         assert kinds == {"aws_access_key"}

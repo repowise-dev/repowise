@@ -43,6 +43,10 @@ export interface RecommendationValidation {
   /** Set when no test reaches the change: the step to take before the edit.
    *  Absent on a payload from an older server. */
   prerequisite?: string | null;
+  /** The package directory each shown JS/TS test runs from ("" is the root,
+   *  null when none can run it). Absent when the plan was validated without
+   *  a checkout or names no JS/TS test. */
+  js_packages?: Record<string, string | null>;
 }
 
 /** How a step's tests were found: coverage runs its lines, the graph reaches
@@ -122,6 +126,9 @@ export interface RefactoringPlan {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: RecommendationValidation;
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
   /** Plan detail only: ids of the accepted decisions governing the file.
    *  Absent when the plan was never checked (not yet re-indexed). */
   governed_by?: string[];
@@ -387,6 +394,9 @@ export interface OpportunityStep {
   /** Findings this step's cause produced, for a round trip to the diagnosis. */
   finding_ids?: string[];
   validation_profile_id?: string;
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
 }
 
 /** A supporting observation. Never an instruction to change anything. */
@@ -464,6 +474,9 @@ export interface RefactoringOpportunity {
   /** Files importing the lead file. Absent when the store predates the figure. */
   dependents?: number;
   steps?: OpportunityStep[];
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
   steps_total?: number;
   steps_emitted?: number;
   steps_reduced_reason?: string;

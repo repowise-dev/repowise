@@ -273,21 +273,6 @@ def save_vscode_extensions_config(repo_path: Path) -> Path:
     return vscode.write_extensions_config(repo_path).path
 
 
-#: Re-exported for the Codex hooks writer's own use and for callers that used
-#: to reach it through this module.
-def _is_repowise_hook(hook: dict) -> bool:
-    from repowise.cli.agent_targets.targets.codex import _is_augment_hook
-
-    return _is_augment_hook(hook)
-
-
-def _has_repowise_hook_for_matcher(hook_list: list, matcher: object) -> bool:
-    """Check if a repowise augment hook is registered for a matcher group."""
-    from repowise.cli.agent_targets.targets.codex import _has_augment_hook_for_matcher
-
-    return _has_augment_hook_for_matcher(hook_list, matcher)
-
-
 __all__ = [
     "enable_codex_hooks_feature",
     "generate_codex_hooks_config",

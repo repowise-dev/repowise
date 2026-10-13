@@ -85,7 +85,7 @@ def analyze_function(
     if dialect is None:
         return None
     try:
-        cfg = build_cfg(fn_node, lmap)
+        cfg = build_cfg(fn_node, lmap, dialect=dialect)
     except CFGGuardTrippedError:
         return None
     def_use = compute_def_use(cfg, fn_node, lmap, dialect)
@@ -131,7 +131,7 @@ def analyze_file(
             continue
 
         try:
-            cfg = build_cfg(fn_node, lmap)
+            cfg = build_cfg(fn_node, lmap, dialect=dialect)
         except CFGGuardTrippedError:
             result.stats.guard_tripped += 1
             continue

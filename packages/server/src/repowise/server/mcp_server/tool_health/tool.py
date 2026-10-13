@@ -166,7 +166,7 @@ async def get_health(
         repo: usually omitted.
         limit: max rows per ranked list (default 20), ``0`` for none.
         cursor: offset into a ranked list.
-        fix_id/finding_id/plan_id: stable ``id`` of an item, finding or plan.
+        fix_id/finding_id/plan_id: stable ``id``: item or ``act_``, finding, plan.
         opportunity_id: ``perf...``/``refop...``: the unit, its steps or
             plan, evidence paged by ``only=["*_evidence"]``.
         refactoring_view: ``diversified`` (default)|``canonical``|

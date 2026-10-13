@@ -593,6 +593,7 @@ async def _incremental_repo_update(
         file_diffs=file_diffs,
         knowledge_graph_result=kg,
         parsed_files=parsed_files,
+        source_map=source_map,
         git_decay_map=git_decay_map,
         full_git_summary=full_git_summaries[0] if full_git_summaries else None,
         failed_steps=failed_steps,

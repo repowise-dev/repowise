@@ -701,7 +701,10 @@ more) and not both CCN 25 and nesting 5; a dominant dispatch; nesting that is on
 else-if or ternary chain; long but CCN under 20 and nesting under 5; a single
 complex condition or error site. From CCN 80, 400 lines or nesting 8 a function is
 worth doing regardless. The hot-file bonus orders items but never lifts one out of
-`later`. Each item carries up to `MAX_TESTS` (5) tests from its validation profile.
+`later`. Inside a band, items order by complexity removed times reach times the lead
+function's history, `1 + ln(1 + n)` for the `n` commits that changed it (`git_function_blame`);
+a repository with no function history, a file too large to blame, a unit led by no
+function and a performance cause weigh a file in the top fifth by churn 1.25 instead. Each item carries up to `MAX_TESTS` (5) tests from its validation profile.
 
 The findings list uses the same rule: worth-doing findings lead and the rest carry
 `lower_priority`. Class-design findings and history-only findings are lower

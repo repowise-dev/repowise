@@ -365,7 +365,8 @@ def file_namers(
             continue
         for f in _named_in(text, path, by_name, exact):
             out.setdefault(f, []).append(path)
-    return {f: n for f, n in out.items() if n}
+    # Sources arrive in set order (#3297): configs first, then code, each by path.
+    return {f: sorted(n, key=lambda p: (is_code_file(p), p)) for f, n in out.items() if n}
 
 
 def _named_in(

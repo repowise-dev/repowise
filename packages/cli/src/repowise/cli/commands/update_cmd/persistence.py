@@ -195,14 +195,17 @@ async def _persist_partial_health(
     await persist_partial_health(session, repo_id, report, repo_path)
 
 
-async def _persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
+async def _persist_incremental_commits(
+    session: Any, repo_id: str, repo_path: Any, *, timings: PhaseTimings | None = None
+) -> None:
     """Capture + upsert ``git_commits`` rows for commits new since the last index.
 
-    Delegates to :mod:`repowise.core.pipeline.incremental`.
+    Delegates to :mod:`repowise.core.pipeline.incremental`. ``timings`` carries
+    its ``persist.commits.*`` sub-rows into the run's phase table.
     """
     from repowise.core.pipeline.incremental import persist_incremental_commits
 
-    await persist_incremental_commits(session, repo_id, repo_path)
+    await persist_incremental_commits(session, repo_id, repo_path, timings=timings)
 
 
 def stamp_head_commit(repo_path: Any, head: str | None) -> None:
@@ -411,94 +414,22 @@ def resolve_repair_base(
     return from_commit, None
 
 
-def _persist_index_only_update(
+def _rescore_stale_findings(
     repo_path: Any,
     graph_builder: Any,
-    git_meta_map: dict,
-    dead_code_report: Any,
-    partial_health_report: Any,
     state: dict,
-    head: str | None,
-    start: float,
-    changed_paths: list[str],
-    doc_drift_report: Any | None = None,
-    file_diffs: list | None = None,
-    knowledge_graph_result: Any | None = None,
-    parsed_files: list | None = None,
-    degraded: list[str] | None = None,
-    pages_rendered: int = 0,
-    template_wiki: bool = False,
-    git_decay_map: dict | None = None,
-    exclude_patterns: list[str] | None = None,
-    head_ts: float | None = None,
-    force_full_rescore: bool = False,
-    full_git_summary: Any | None = None,
-    reconcile_full_scope: bool = False,
-    full_generation_page_ids: set[str] | None = None,
-    dependency_fingerprints: dict[str, str] | None = None,
-    vector_store: Any | None = None,
-    require_config_rebuild_success: bool = False,
-    history_window_changed: bool = False,
-    timings: PhaseTimings | None = None,
-) -> None:
-    """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
-    save state, and print the completion line. No LLM regeneration.
+    *,
+    head_ts: float | None,
+    parsed_files: list | None,
+    exclude_patterns: list[str] | None,
+    force_full_rescore: bool,
+    timings: PhaseTimings | None,
+) -> tuple[Any, Any, Any]:
+    """Re-score health and rescan security repo-wide when they are stale.
 
-    ``force_full_rescore`` runs the full health re-score regardless of the
-    periodic gate. Set by the config-changed caller, which relies on this path
-    rather than re-scoring separately and returning — doing that advanced
-    ``last_sync_commit`` past commits it never indexed.
-
-    ``timings`` is the run's phase table. Its ``run`` row is closed here, at
-    the state write, and the whole table lands in ``state.json`` as
-    ``phase_timings`` the way ``init`` records its own run.
-
-    DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
-    state-file updates and console reporting stay here. Best-effort steps
-    that fail land in ``degraded`` and surface in the completion panel.
+    Returns the ``last_full_rescore_at``, ``health_analyzer_version`` and
+    ``security_scanner_version`` stamps the new state should carry.
     """
-    from repowise.core.pipeline.incremental import persist_incremental_index
-
-    degraded = degraded if degraded is not None else []
-    # Failures whose input was this commit range, kept apart from ``degraded``
-    # (which also collects repo-wide and non-DB failures) because only these
-    # strand data the advancing sync pointer would otherwise skip forever.
-    failed_steps: list[str] = []
-    degraded_before_persist = len(degraded)
-    run_async(
-        persist_incremental_index(
-            repo_path,
-            graph_builder,
-            git_meta_map,
-            dead_code_report,
-            partial_health_report,
-            changed_paths,
-            doc_drift_report=doc_drift_report,
-            file_diffs=file_diffs,
-            knowledge_graph_result=knowledge_graph_result,
-            parsed_files=parsed_files,
-            git_decay_map=git_decay_map,
-            full_git_summary=full_git_summary,
-            history_window_changed=history_window_changed,
-            reconcile_full_scope=reconcile_full_scope,
-            full_generation_page_ids=full_generation_page_ids,
-            vector_store=vector_store,
-            log=console.print,
-            degraded=degraded,
-            failed_steps=failed_steps,
-            timings=timings,
-        )
-    )
-    if require_config_rebuild_success and len(degraded) > degraded_before_persist:
-        raise RuntimeError(
-            "Configuration rebuild did not update every dependent store; "
-            "the previous fingerprint was retained so the next update retries."
-        )
-    from repowise.cli.helpers import config_fingerprint
-    from repowise.core.repo_config import config_dependency_fingerprints
-
-    from .command import _current_renderer_fingerprint
-
     # Periodic idle-file health re-score (#728): git_metadata is now fresh in the
     # DB, so re-score every file's findings against the decayed inputs. Gated to
     # ~weekly since only the findings (not their cheap git inputs) lag here.
@@ -534,6 +465,150 @@ def _persist_index_only_update(
         with timed(timings, "security_rescan"):
             if run_full_security_rescan(repo_path, exclude_patterns or []):
                 security_scanner_version = SECURITY_SCANNER_VERSION
+    return last_full_rescore_at, health_analyzer_version, security_scanner_version
+
+
+def _stamp_git_history(
+    new_state: dict, full_git_summary: Any | None, failed_steps: list[str]
+) -> None:
+    """Record git history coverage and version when this run walked full history."""
+    if full_git_summary is None:
+        return
+    coverage = getattr(full_git_summary, "history_coverage", None)
+    if coverage is not None:
+        new_state["git_history_coverage"] = coverage.to_dict()
+    else:
+        new_state.pop("git_history_coverage", None)
+    # Every row was rewritten under the current rules, unless they never
+    # reached the store; then the next update walks again.
+    if "Git persist" not in failed_steps:
+        new_state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+
+
+def _stamp_scope(repo_path: Any, new_state: dict, failed_steps: list[str]) -> None:
+    """Stamp the index scope, counting this run's failed steps as unavailable."""
+    from repowise.core.index_scope import resolve_index_scope, stamp_index_scope
+
+    scope = resolve_index_scope(new_state, load_config(repo_path))
+    unavailable = set(scope["analysis"]["unavailable"])
+    unavailable.update(str(step) for step in failed_steps)
+    stamp_index_scope(
+        new_state,
+        load_config(repo_path),
+        git_history_coverage=new_state.get("git_history_coverage"),
+        analysis={
+            "unavailable": sorted(unavailable),
+            "skipped": scope["analysis"]["skipped"],
+        },
+    )
+
+
+def _persist_index_only_update(
+    repo_path: Any,
+    graph_builder: Any,
+    git_meta_map: dict,
+    dead_code_report: Any,
+    partial_health_report: Any,
+    state: dict,
+    head: str | None,
+    start: float,
+    changed_paths: list[str],
+    doc_drift_report: Any | None = None,
+    file_diffs: list | None = None,
+    knowledge_graph_result: Any | None = None,
+    parsed_files: list | None = None,
+    source_map: dict | None = None,
+    degraded: list[str] | None = None,
+    pages_rendered: int = 0,
+    template_wiki: bool = False,
+    git_decay_map: dict | None = None,
+    exclude_patterns: list[str] | None = None,
+    head_ts: float | None = None,
+    force_full_rescore: bool = False,
+    full_git_summary: Any | None = None,
+    reconcile_full_scope: bool = False,
+    full_generation_page_ids: set[str] | None = None,
+    stamp_renderer: bool = True,
+    dependency_fingerprints: dict[str, str] | None = None,
+    vector_store: Any | None = None,
+    require_config_rebuild_success: bool = False,
+    history_window_changed: bool = False,
+    timings: PhaseTimings | None = None,
+) -> None:
+    """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
+    save state, and print the completion line. No LLM regeneration.
+
+    ``force_full_rescore`` runs the full health re-score regardless of the
+    periodic gate. Set by the config-changed caller, which relies on this path
+    rather than re-scoring separately and returning — doing that advanced
+    ``last_sync_commit`` past commits it never indexed.
+
+    ``stamp_renderer`` False keeps the stored renderer fingerprint: the full
+    re-render a renderer change asked for failed, so the next run retries it.
+
+    ``timings`` is the run's phase table. Its ``run`` row is closed here, at
+    the state write, and the whole table lands in ``state.json`` as
+    ``phase_timings`` the way ``init`` records its own run.
+
+    DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
+    state-file updates and console reporting stay here. Best-effort steps
+    that fail land in ``degraded`` and surface in the completion panel.
+    """
+    from repowise.core.pipeline.incremental import persist_incremental_index
+
+    degraded = degraded if degraded is not None else []
+    # Failures whose input was this commit range, kept apart from ``degraded``
+    # (which also collects repo-wide and non-DB failures) because only these
+    # strand data the advancing sync pointer would otherwise skip forever.
+    failed_steps: list[str] = []
+    degraded_before_persist = len(degraded)
+    run_async(
+        persist_incremental_index(
+            repo_path,
+            graph_builder,
+            git_meta_map,
+            dead_code_report,
+            partial_health_report,
+            changed_paths,
+            doc_drift_report=doc_drift_report,
+            file_diffs=file_diffs,
+            knowledge_graph_result=knowledge_graph_result,
+            parsed_files=parsed_files,
+            source_map=source_map,
+            git_decay_map=git_decay_map,
+            full_git_summary=full_git_summary,
+            history_window_changed=history_window_changed,
+            reconcile_full_scope=reconcile_full_scope,
+            full_generation_page_ids=full_generation_page_ids,
+            vector_store=vector_store,
+            log=console.print,
+            degraded=degraded,
+            failed_steps=failed_steps,
+            timings=timings,
+        )
+    )
+    if require_config_rebuild_success and len(degraded) > degraded_before_persist:
+        raise RuntimeError(
+            "Configuration rebuild did not update every dependent store; "
+            "the previous fingerprint was retained so the next update retries."
+        )
+    from repowise.cli.helpers import config_fingerprint
+    from repowise.core.repo_config import config_dependency_fingerprints
+
+    from .command import _current_renderer_fingerprint
+
+    last_full_rescore_at, health_analyzer_version, security_scanner_version = (
+        _rescore_stale_findings(
+            repo_path,
+            graph_builder,
+            state,
+            head_ts=head_ts,
+            parsed_files=parsed_files,
+            exclude_patterns=exclude_patterns,
+            force_full_rescore=force_full_rescore,
+            timings=timings,
+        )
+    )
     new_state = {
         **state,
         "last_sync_commit": head,
@@ -552,18 +627,13 @@ def _persist_index_only_update(
         # update pays a full reparse forever even though nothing is stale. This
         # is the keyless hot path (the post-commit hook), so a lingering reparse
         # here is exactly the cost the mode exists to avoid.
-        "renderer_fingerprint": _current_renderer_fingerprint(repo_path),
+        "renderer_fingerprint": (
+            _current_renderer_fingerprint(repo_path)
+            if stamp_renderer
+            else state.get("renderer_fingerprint")
+        ),
     }
-    if full_git_summary is not None:
-        coverage = getattr(full_git_summary, "history_coverage", None)
-        if coverage is not None:
-            new_state["git_history_coverage"] = coverage.to_dict()
-        else:
-            new_state.pop("git_history_coverage", None)
-        # Every row was rewritten under the current rules, unless they never
-        # reached the store; then the next update walks again.
-        if "Git persist" not in failed_steps:
-            new_state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+    _stamp_git_history(new_state, full_git_summary, failed_steps)
     # Before save_state, and reading ``state`` (the pre-update dict) for the old
     # pointer: this is what keeps a degraded run recoverable now that the
     # pointer below advances to head regardless.
@@ -586,20 +656,7 @@ def _persist_index_only_update(
     if timings is not None:
         timings.stop("run")
         new_state["phase_timings"] = timings.totals
-    from repowise.core.index_scope import resolve_index_scope, stamp_index_scope
-
-    scope = resolve_index_scope(new_state, load_config(repo_path))
-    unavailable = set(scope["analysis"]["unavailable"])
-    unavailable.update(str(step) for step in failed_steps)
-    stamp_index_scope(
-        new_state,
-        load_config(repo_path),
-        git_history_coverage=new_state.get("git_history_coverage"),
-        analysis={
-            "unavailable": sorted(unavailable),
-            "skipped": scope["analysis"]["skipped"],
-        },
-    )
+    _stamp_scope(repo_path, new_state, failed_steps)
     save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
     from .reporting import show_index_only_completion
@@ -716,6 +773,7 @@ def _persist_full_update(
     doc_drift_report: Any | None = None,
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
+    source_map: dict | None = None,
     git_decay_map: dict | None = None,
     full_git_summary: Any | None = None,
     reconcile_full_scope: bool = False,
@@ -758,6 +816,7 @@ def _persist_full_update(
             doc_drift_report=doc_drift_report,
             decay_paths=decay_paths,
             parsed_files=parsed_files,
+            source_map=source_map,
             git_decay_map=git_decay_map,
             full_git_summary=full_git_summary,
             reconcile_full_scope=reconcile_full_scope,
@@ -788,6 +847,7 @@ async def _persist_full_update_async(
     doc_drift_report: Any | None = None,
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
+    source_map: dict | None = None,
     git_decay_map: dict | None = None,
     full_git_summary: Any | None = None,
     reconcile_full_scope: bool = False,
@@ -827,7 +887,9 @@ async def _persist_full_update_async(
 
         async with get_session(sf) as session:
             with timed(timings, "persist.open"):
-                repo = await upsert_repository(session, name=repo_name, local_path=str(repo_path))
+                repo = await upsert_repository(
+                    session, name=repo_name, local_path=str(repo_path), stamp_head=True
+                )
             repo_id = repo.id
 
             if reconcile_full_scope:
@@ -1053,7 +1115,9 @@ async def _persist_full_update_async(
                 try:
                     with timed(timings, "persist.commits"):
                         if full_git_summary is None:
-                            await _persist_incremental_commits(session, repo_id, repo_path)
+                            await _persist_incremental_commits(
+                                session, repo_id, repo_path, timings=timings
+                            )
                 except Exception as exc:
                     _skip("Commit capture", exc)
 
@@ -1217,6 +1281,18 @@ async def _persist_full_update_async(
                 except Exception as exc:
                     _skip("Doc-drift persist", exc)
 
+            # Re-persist graph_nodes so symbol-level PageRank / betweenness /
+            # community ids reflect the current build. Before health, whose
+            # plan annotations read each symbol's ``public_api`` from here; a
+            # failed write leaves them reading the last run's flags.
+            try:
+                from repowise.core.pipeline.persist import persist_graph_nodes
+
+                with timed(timings, "persist.graph_nodes"):
+                    await persist_graph_nodes(session, repo_id, graph_builder)
+            except Exception as exc:
+                _skip("Graph nodes persist", exc)
+
             # Code-health findings + metrics (partial — upsert only).
             if partial_health_report is not None:
                 try:
@@ -1248,16 +1324,6 @@ async def _persist_full_update_async(
                 except Exception as exc:
                     _skip("Dead-code persist", exc)
 
-            # Re-persist graph_nodes so symbol-level PageRank / betweenness /
-            # community ids reflect the current build.
-            try:
-                from repowise.core.pipeline.persist import persist_graph_nodes
-
-                with timed(timings, "persist.graph_nodes"):
-                    await persist_graph_nodes(session, repo_id, graph_builder)
-            except Exception as exc:
-                _skip("Graph nodes persist", exc)
-
             # Refresh wiki_symbols for the changed files (upsert + within-file
             # prune). Without this, symbol bounds fossilize at the last full
             # index and the get_answer hydrator serves drifted signatures.
@@ -1277,6 +1343,24 @@ async def _persist_full_update_async(
                     )
             except Exception as exc:
                 _skip("Symbol persist", exc)
+
+            try:
+                from repowise.core.pipeline.persist import persist_incremental_security_findings
+
+                with timed(timings, "persist.security"):
+                    await persist_incremental_security_findings(
+                        session,
+                        repo_id,
+                        parsed_files,
+                        source_map,
+                        (
+                            [parsed.file_info.path for parsed in parsed_files or []]
+                            if reconcile_full_scope
+                            else [fd.path for fd in file_diffs]
+                        ),
+                    )
+            except Exception as exc:
+                _skip("Security persist", exc)
 
             # Refresh graph_edges for the changed files (delete-then-insert of
             # each file's outgoing edges). Without this, adjacency fossilizes at
@@ -1379,6 +1463,11 @@ async def _persist_full_update_async(
                     "Configuration rebuild did not update every dependent store; "
                     "the previous fingerprint was retained so the next update retries."
                 )
+            # The transaction commits as the block exits.
+            if timings is not None:
+                timings.start("persist.commit")
+        if timings is not None:
+            timings.stop("persist.commit")
 
         # FTS outside the transaction — rebuildable, and its writer manages
         # its own connection state.
@@ -1430,6 +1519,13 @@ async def _persist_full_update_async(
                 _skip("Deferred vector cleanup", exc)
                 if require_config_rebuild_success:
                     raise
+
+        # After the transaction, so the scan never holds the write lock, and on
+        # every update, so a backlog an earlier budget left drains.
+        from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
+
+        with timed(timings, "persist.commit_health"):
+            await refresh_commit_health_after_update(sf, repo_id, str(repo_path))
         return total_pages
     finally:
         await engine.dispose()
@@ -1578,6 +1674,10 @@ async def _rescore_health_from_db(
                 f"[yellow]{len(report.findings)} findings[/yellow]"
             )
 
+            # Graph nodes first: the plan annotations the writer below stores
+            # read each symbol's ``public_api`` from them.
+            await persist_graph_nodes(session, repo_id, graph_builder)
+
             # Same writer the index's analysis phase uses, so a re-score leaves
             # the derived queues agreeing with the findings it just replaced
             # rather than describing the set it deleted. Read HEAD off disk:
@@ -1615,7 +1715,6 @@ async def _rescore_health_from_db(
                     ingested_commit_sha=live_head,
                     provenance=coverage.provenance,
                 )
-            await persist_graph_nodes(session, repo_id, graph_builder)
 
     await _rescore()
 
@@ -1730,9 +1829,13 @@ def parser_changed(repo_path: Path) -> bool:
     """Whether the stored graph edges were written by a different parser.
 
     Compares the fingerprint ``persist_incremental_edges`` stamped on the repo
-    row with the running ``parser_fingerprint()``. An unstamped row, or a store
-    that cannot be read, is **not** a change, for the reason
-    :func:`health_analyzer_changed` gives: the next commit's widen stamps it.
+    row with the running ``parser_fingerprint()``. An unstamped row **is** a
+    change: ``init`` stamps a fresh store, so an unstamped one was written
+    before the stamp or re-indexed over older edges, and the re-parse this
+    triggers is the widen that reconciles and stamps it. Reading absence as
+    current let a parser-only release report "already up to date" on a quiet
+    checkout. A store that cannot be read, has no repository row, or has no
+    edges to reconcile, is not.
 
     Also true when a test file was never checked for walking the source tree
     (an index built before that check): selection would run everything until
@@ -1747,26 +1850,33 @@ def parser_changed(repo_path: Path) -> bool:
         get_repository_by_path,
         get_session,
     )
+    from repowise.core.pipeline.persist import has_graph_edges
 
-    async def _stored() -> tuple[str | None, bool]:
+    async def _stored() -> bool:
         engine = create_engine(get_db_url_for_repo(repo_path))
         try:
             sf = create_session_factory(engine)
             async with get_session(sf) as session:
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
-                    return None, False
-                unscanned = bool(await unscanned_test_files(session, repo.id))
-                return repo.graph_edges_parser_fingerprint, unscanned
+                    return False
+                stored = repo.graph_edges_parser_fingerprint
+                if stored is None:
+                    # Unstamped with no edges is a store nothing ever indexed
+                    # into: there is nothing a re-parse could reconcile.
+                    if await has_graph_edges(session, repo.id):
+                        return True
+                elif stored != parser_fingerprint():
+                    return True
+                return bool(await unscanned_test_files(session, repo.id))
         finally:
             await engine.dispose()
 
     try:
-        stored, unscanned = run_async(_stored())
+        return run_async(_stored())
     except Exception as exc:
         log.debug("parser_change_check_failed", error=str(exc))
         return False
-    return unscanned or (stored is not None and stored != parser_fingerprint())
 
 
 def health_analyzer_changed(state: dict) -> bool:
@@ -1785,12 +1895,27 @@ def health_analyzer_changed(state: dict) -> bool:
 def security_scanner_changed(state: dict) -> bool:
     """Whether the stored security findings were written by a different scanner.
 
-    Mirrors :func:`health_analyzer_changed`: a legacy state file with no stamp
-    is not a change, it picks the stamp up on its first full security rescan
-    (#3072).
+    Unlike :func:`health_analyzer_changed`, a state file with no stamp **is** a
+    change: the stamp arrived after 0.55.0 (#3086), so an unstamped store was
+    written by an older scanner. Reading absence as current would also keep it
+    unstamped forever, since only the rescan this gates writes the stamp.
+    ``init`` stamps every fresh index, so a new install never reads as stale.
     """
-    stored = state.get("security_scanner_version")
-    return stored is not None and stored != SECURITY_SCANNER_VERSION
+    return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
+
+
+def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: list[str]) -> bool:
+    """Full security rescan when the scanner changed, stamping ``state`` on success.
+
+    Returns True only when it rescanned and stamped, so the caller knows
+    ``state`` needs saving. A failed rescan leaves the stamp for a retry.
+    """
+    if not security_scanner_changed(state):
+        return False
+    if not run_full_security_rescan(repo_path, exclude_patterns):
+        return False
+    state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+    return True
 
 
 def full_rescore_due(state: dict, head_ts: float | None) -> bool:

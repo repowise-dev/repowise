@@ -337,10 +337,6 @@ export function neighbourGroups(
   return groups;
 }
 
-export function nodeName(graph: SystemGraph, id: string): string {
-  return graph.nodes.find((n) => n.id === id)?.name ?? id;
-}
-
 /** Where a service lives: "repo / service/path", or "repo repository" for a repo root. */
 export function nodeLocation(node: Pick<SystemNode, "repo" | "service_path">): string {
   return node.service_path ? `${node.repo} / ${node.service_path}` : `${node.repo} repository`;

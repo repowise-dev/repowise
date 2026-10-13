@@ -480,6 +480,57 @@ async def _load_file_page_render_keys(repo_path: Path) -> dict[str, str]:
         await engine.dispose()
 
 
+def hydrate_symbol_complexity(repo_path: Path, parsed_files: list, paths: set[str]) -> None:
+    """Restore stored ``complexity_estimate`` on the symbols of *paths*.
+
+    A parse leaves every symbol at the default of 1; only health analysis
+    measures it, and an update analyses the changed files alone. Any other
+    file it re-renders would otherwise print 1 on every spotlight. The stored
+    value is what the last full health run measured for code that has not
+    changed since. Best effort: an unreadable store leaves the defaults.
+    """
+    if not paths:
+        return
+    stored = run_async(_load_symbol_complexity(repo_path))
+    if not stored:
+        return
+    for pf in parsed_files:
+        if pf.file_info.path not in paths:
+            continue
+        for sym in pf.symbols:
+            sid = getattr(sym, "id", None) or f"{pf.file_info.path}::{sym.name}"
+            value = stored.get(sid)
+            if value:
+                sym.complexity_estimate = value
+
+
+async def _load_symbol_complexity(repo_path: Path) -> dict[str, int]:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence.crud import get_repository_by_path
+        from repowise.core.persistence.models import WikiSymbol
+
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return {}
+            rows = await session.execute(
+                sa_select(WikiSymbol.symbol_id, WikiSymbol.complexity_estimate).where(
+                    WikiSymbol.repository_id == repo.id
+                )
+            )
+            return {sid: int(value or 0) for sid, value in rows}
+    except Exception:
+        return {}
+    finally:
+        await engine.dispose()
+
+
 def load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
     """``defining file path -> render keys`` for the wiki's symbol spotlights.
 

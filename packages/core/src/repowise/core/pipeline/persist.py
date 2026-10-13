@@ -23,6 +23,10 @@ from repowise.core.generation.models import (
 
 logger = structlog.get_logger(__name__)
 
+#: Candidate paths per spotlight query: each path is one ``LIKE`` term, and
+#: SQLite caps how deep an expression tree may grow.
+_SPOTLIGHT_PATHS_PER_QUERY = 200
+
 # A second, stdlib logger for the one message here that has to survive
 # ``repowise init``. ``configure_cli_logging`` pins both ``repowise.core`` and
 # structlog to ERROR for the progress-bar commands, so anything below ERROR is
@@ -55,7 +59,8 @@ def tombstone_candidates(file_diffs: list[Any]) -> list[tuple[str, list[str]]]:
 async def mark_tombstone_pages(
     session: Any, repo_id: str, candidates: list[tuple[str, list[str]]]
 ) -> list[str]:
-    """Mark file pages for deleted/renamed files as tombstones.
+    """Mark the pages of deleted/renamed files as tombstones: each file's page
+    and the symbol spotlight pages of the symbols it defined.
 
     A ``freshness_status="fresh"`` page for a file that no longer exists is
     an active trap: retrieval serves it, agents cite it, and the index-age
@@ -73,16 +78,42 @@ async def mark_tombstone_pages(
     """
     if not candidates:
         return []
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
 
     from repowise.core.persistence.models import Page
 
     page_ids = {f"file_page:{path}": (path, successors) for path, successors in candidates}
-    res = await session.execute(
-        select(Page).where(Page.repository_id == repo_id, Page.id.in_(page_ids))
+    pages = list(
+        (
+            await session.execute(
+                select(Page).where(Page.repository_id == repo_id, Page.id.in_(page_ids))
+            )
+        ).scalars()
     )
+    # A symbol spotlight page targets ``<path>::<symbol>``, so its id is never
+    # ``file_page:<path>``; it goes with its file all the same. Matched on the
+    # ``<path>::`` prefix, so a file whose name merely starts with *path* stays.
+    successors_by_path = dict(candidates)
+    paths = list(successors_by_path)
+    for start in range(0, len(paths), _SPOTLIGHT_PATHS_PER_QUERY):
+        chunk = paths[start : start + _SPOTLIGHT_PATHS_PER_QUERY]
+        res = await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.page_type == "symbol_spotlight",
+                or_(*(Page.target_path.startswith(f"{p}::", autoescape=True) for p in chunk)),
+            )
+        )
+        for page in res.scalars():
+            path = (page.target_path or "").split("::", 1)[0]
+            # SQLite LIKE ignores ASCII case, so ``pkg/Foo.py::`` also matches
+            # a live ``pkg/foo.py``; keep only exact path matches.
+            if path not in successors_by_path:
+                continue
+            page_ids[page.id] = (path, successors_by_path.get(path, []))
+            pages.append(page)
     marked: list[str] = []
-    for page in res.scalars().all():
+    for page in pages:
         _, successors = page_ids[page.id]
         page.freshness_status = "tombstone"
         try:
@@ -402,6 +433,55 @@ def _betweenness_commits(graph_builder: Any) -> dict[str, str | None]:
         return {"file": None, "symbol": None}
 
 
+def _stamp_betweenness_commit(
+    node_dict: dict[str, Any],
+    node_type: str,
+    bc: dict[str, float],
+    sym_bc: dict[str, float],
+    bt_commits: dict[str, str | None],
+) -> None:
+    """Set ``betweenness_commit`` on a graph-node row when its scoring is known."""
+    node_id = node_dict["node_id"]
+    # Scored → its commit; in no scoring → NULL, the unscored marker;
+    # provenance unknown → key omitted, so the stored stamp survives.
+    if node_id in bc:
+        kind, scored = "file", True
+    elif node_id in sym_bc:
+        kind, scored = "symbol", True
+    else:
+        kind, scored = ("file" if node_type == "file" else "symbol"), False
+    if bt_commits[kind] is not None:
+        node_dict["betweenness_commit"] = bt_commits[kind] if scored else None
+
+
+def _community_meta(
+    node_id: str,
+    node_type: str,
+    cd: dict[str, Any],
+    sc: dict[str, Any],
+    ci: dict[Any, Any],
+    ep_scores: dict[str, float],
+) -> dict[str, Any]:
+    """The ``community_meta_json`` payload of one graph node."""
+    community_meta: dict[str, Any] = {}
+    if node_type == "file":
+        cid = cd.get(node_id, 0)
+        comm_info = ci.get(cid)
+        if comm_info:
+            community_meta = {
+                "label": comm_info.label,
+                "cohesion": comm_info.cohesion,
+                "conductance": comm_info.conductance,
+            }
+    elif node_type == "symbol":
+        sym_cid = sc.get(node_id)
+        if sym_cid is not None:
+            community_meta = {"symbol_community_id": sym_cid}
+        if node_id in ep_scores:
+            community_meta["entry_point_score"] = ep_scores[node_id]
+    return community_meta
+
+
 async def persist_graph_nodes(
     session: Any,
     repo_id: str,
@@ -416,6 +496,7 @@ async def persist_graph_nodes(
     update path can refresh ``graph_nodes`` (including symbol-level
     PageRank / betweenness) without constructing a full ``PipelineResult``.
     """
+    from repowise.core.analysis.communities import stored_community_id
     from repowise.core.persistence import (
         batch_upsert_graph_metrics,
         batch_upsert_graph_node_membership,
@@ -465,36 +546,12 @@ async def persist_graph_nodes(
             # per-symbol UI panel shows real centrality instead of 0.
             "pagerank": pr.get(node_id, sym_pr.get(node_id, 0.0)),
             "betweenness": bc.get(node_id, sym_bc.get(node_id, 0.0)),
-            "community_id": cd.get(node_id, 0),
+            "community_id": stored_community_id(cd, node_id),
         }
 
-        # Scored → its commit; in no scoring → NULL, the unscored marker;
-        # provenance unknown → key omitted, so the stored stamp survives.
-        if node_id in bc:
-            kind, scored = "file", True
-        elif node_id in sym_bc:
-            kind, scored = "symbol", True
-        else:
-            kind, scored = ("file" if node_type == "file" else "symbol"), False
-        if bt_commits[kind] is not None:
-            node_dict["betweenness_commit"] = bt_commits[kind] if scored else None
+        _stamp_betweenness_commit(node_dict, node_type, bc, sym_bc, bt_commits)
 
-        community_meta: dict[str, Any] = {}
-        if node_type == "file":
-            cid = cd.get(node_id, 0)
-            comm_info = ci.get(cid)
-            if comm_info:
-                community_meta = {
-                    "label": comm_info.label,
-                    "cohesion": comm_info.cohesion,
-                    "conductance": comm_info.conductance,
-                }
-        elif node_type == "symbol":
-            sym_cid = sc.get(node_id)
-            if sym_cid is not None:
-                community_meta = {"symbol_community_id": sym_cid}
-            if node_id in ep_scores:
-                community_meta["entry_point_score"] = ep_scores[node_id]
+        community_meta = _community_meta(node_id, node_type, cd, sc, ci, ep_scores)
         node_dict["community_meta_json"] = json.dumps(community_meta)
 
         if node_type == "symbol":
@@ -509,6 +566,7 @@ async def persist_graph_nodes(
                     "visibility": data.get("visibility"),
                     "signature": data.get("signature"),
                     "parent_symbol_id": data.get("parent_name"),
+                    "public_api": data.get("public_api"),
                 }
             )
         nodes.append(node_dict)
@@ -634,11 +692,15 @@ def _changed_file_edges(
     """``(reconcile_paths, edges)`` for edges emanating from changed+parsed files.
 
     An edge is attributed to the file that owns its *source* node: a file node
-    is the path itself; a symbol node carries ``file_path``. Restricting to
+    is the path itself; a symbol node carries ``file_path``. An edge whose fact
+    sits at its target (``TARGET_OWNED_HINTS``) belongs to the target's file
+    as well, so editing the decorated file rewrites it. Restricting to
     files that both changed and parsed this run mirrors ``_changed_file_symbols``
     — a changed file that failed to parse keeps its existing edges rather than
     having them wrongly wiped on a transient failure.
     """
+    from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
     changed = set(changed_paths or [])
     parsed = {pf.file_info.path for pf in parsed_files or []}
     reconcile = changed & parsed
@@ -655,9 +717,10 @@ def _changed_file_edges(
 
     edges: list[dict] = []
     for u, v, data in graph.edges(data=True):
-        if owner.get(u) not in reconcile:
-            continue
-        edges.append(_edge_row(u, v, data))
+        if owner.get(u) in reconcile or (
+            data.get("hint_source") in TARGET_OWNED_HINTS and owner.get(v) in reconcile
+        ):
+            edges.append(_edge_row(u, v, data))
     return sorted(reconcile), edges
 
 
@@ -721,6 +784,20 @@ async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any
     return row is None
 
 
+async def has_graph_edges(session: Any, repo_id: str) -> bool:
+    """Whether this repo already has any ``graph_edges`` row."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import GraphEdge
+
+    row = (
+        await session.execute(
+            select(GraphEdge.repository_id).where(GraphEdge.repository_id == repo_id).limit(1)
+        )
+    ).first()
+    return row is not None
+
+
 async def _stored_edges_parser_fingerprint(session: Any, repo_id: str) -> str | None:
     """The ``parser_fingerprint()`` recorded when this repo's edges were written.
 
@@ -741,15 +818,16 @@ async def _stored_edges_parser_fingerprint(session: Any, repo_id: str) -> str | 
 async def stamp_edges_parser_fingerprint(session: Any, repo_id: str, fingerprint: str) -> None:
     """Record the parser build that just wrote this repo's ``graph_edges``.
 
-    Written only by :func:`persist_incremental_edges`, and only after a widen.
-    Deliberately *not* written by the full :func:`persist_ingestion` path, which
-    upserts edges (:func:`batch_upsert_graph_edges`) and prunes only the nodes
-    of files that vanished: a re-index over an existing store therefore adds the
-    new build's edges without removing the old build's surplus ones. Stamping
-    there would mark such a store parser-current and permanently suppress the
-    delete-then-insert reconcile that is the only thing which clears them. The
-    cost of not stamping is one widen on the first update after an index, which
-    is wasted on a fresh store and exactly the repair on a re-indexed one.
+    Written by :func:`persist_incremental_edges` after a widen, and by the full
+    :func:`persist_ingestion` path only when the store held no edges before it.
+    That path upserts edges (:func:`batch_upsert_graph_edges`) and prunes only
+    the nodes of files that vanished, so a re-index over an existing store adds
+    the new build's edges without removing the old build's surplus ones.
+    Stamping such a store would mark it parser-current and permanently suppress
+    the delete-then-insert reconcile that is the only thing which clears them;
+    it stays unstamped, and the first update widens. A fresh store has no
+    surplus, so it is stamped: unstamped, the next parser change could not be
+    told apart from "already up to date" on a quiet checkout.
     """
     from sqlalchemy import update
 
@@ -791,7 +869,9 @@ async def persist_incremental_edges(
     change; :func:`_edges_predate_cohesion` is the bespoke predecessor, kept
     until shipped stores have all been stamped.
     """
-    if graph_builder is None or not parsed_files:
+    # An empty parse still counts: a repo with no source files has nothing to
+    # widen, and it must be stamped, or a missing stamp re-parses it forever.
+    if graph_builder is None or parsed_files is None:
         return
     from repowise.core.ingestion.parse_cache import parser_fingerprint
     from repowise.core.persistence.crud import reconcile_edges_for_files
@@ -810,26 +890,28 @@ async def persist_incremental_edges(
         logger.info("graph_edges_cohesion_backfill", repo_id=repo_id, files=len(changed_paths))
 
     reconcile_paths, edges = _changed_file_edges(graph_builder, parsed_files, changed_paths)
-    if not reconcile_paths:
-        return
-    await reconcile_edges_for_files(session, repo_id, reconcile_paths, edges)
+    if reconcile_paths:
+        await reconcile_edges_for_files(session, repo_id, reconcile_paths, edges)
+        # Every reconciled file, not only a widen's: a symbol renamed or removed
+        # in a changed file otherwise keeps its node beside the new one.
+        await _prune_vanished_symbol_nodes(session, repo_id, graph_builder, reconcile_paths)
     # Only after the widen actually ran to completion. Raising here (or in any
     # caller before the commit) leaves the old stamp, so the next update retries
     # rather than stranding the files it never reached.
     if parser_changed:
-        await _prune_vanished_symbol_nodes(session, repo_id, graph_builder, parsed_files)
         await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
 
 
 async def _prune_vanished_symbol_nodes(
-    session: Any, repo_id: str, graph_builder: Any, parsed_files: list[Any]
+    session: Any, repo_id: str, graph_builder: Any, paths: list[str]
 ) -> None:
-    """Delete symbol ``graph_nodes`` a re-extraction no longer produces.
+    """Delete symbol ``graph_nodes`` of *paths* a re-extraction no longer produces.
 
     ``persist_graph_nodes`` upserts the current graph and never deletes, so a
-    symbol whose id changed under a new parser (an overload gaining its own id)
-    would otherwise keep its old row beside the new ones. Scoped to files this
-    run parsed; a file that is gone is :func:`_prune_stale_file_rows`'s job.
+    symbol whose id changed (a rename, or an overload gaining its own id under
+    a new parser) would otherwise keep its old row beside the new ones. Scoped
+    to files this run reconciled; a file that is gone is
+    :func:`_prune_stale_file_rows`'s job.
     Membership rows prune themselves on their next write, and ``graph_metrics``
     holds files only.
     """
@@ -838,7 +920,6 @@ async def _prune_vanished_symbol_nodes(
     from repowise.core.persistence.models import GraphEdge, GraphNode
 
     graph = graph_builder.graph()
-    paths = [pf.file_info.path for pf in parsed_files]
     stale: list[str] = []
     for i in range(0, len(paths), _PRUNE_CHUNK):
         rows = await session.execute(
@@ -1649,8 +1730,13 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
     # ---- Graph edges ---------------------------------------------------------
     graph = result.graph_builder.graph()
     edges = [_edge_row(u, v, data) for u, v, data in graph.edges(data=True)]
+    fresh_store = not await has_graph_edges(session, repo_id)
     if edges:
         await batch_upsert_graph_edges(session, repo_id, edges)
+    if fresh_store:
+        from repowise.core.ingestion.parse_cache import parser_fingerprint
+
+        await stamp_edges_parser_fingerprint(session, repo_id, parser_fingerprint())
 
     # ---- External systems (C4 L1) -------------------------------------------
     # Persist before symbols so the FK linkage step below sees the IDs.
@@ -1693,10 +1779,39 @@ async def persist_security_findings(result: Any, session: Any, repo_id: str) -> 
     it off ``file_info`` yields empty text and a scan that can never fire.
     Resume views without a ``source_map`` degrade to the symbol-name scan.
     """
+    source_map = getattr(result, "source_map", None) or {}
+    await _replace_security_findings(session, repo_id, result.parsed_files, source_map)
+
+
+async def persist_incremental_security_findings(
+    session: Any,
+    repo_id: str,
+    parsed_files: list[Any] | None,
+    source_map: dict[str, Any] | None,
+    changed_paths: list[str],
+) -> None:
+    """Rescan the changed and added files' working-tree security findings.
+
+    Without this, update kept every finding from the last full index: new
+    secrets in changed files were missed and old rows pointed at moved lines.
+    Deleted files are dropped by ``prune_deleted_file_rows``. No source map
+    means no text to scan, and scanning empty text would wipe real findings,
+    so that case is a no-op.
+    """
+    if not parsed_files or not source_map:
+        return
+    changed = set(changed_paths)
+    targets = [pf for pf in parsed_files if pf.file_info.path in changed]
+    if targets:
+        await _replace_security_findings(session, repo_id, targets, source_map)
+
+
+async def _replace_security_findings(
+    session: Any, repo_id: str, parsed_files: Any, source_map: dict[str, Any]
+) -> None:
     from repowise.core.analysis.security_scan import SecurityScanner, scan_source_map
 
-    source_map = getattr(result, "source_map", None) or {}
-    findings_by_file, scanned_paths = scan_source_map(result.parsed_files, source_map)
+    findings_by_file, scanned_paths = scan_source_map(parsed_files, source_map)
     await SecurityScanner(session, repo_id).replace_findings(findings_by_file, scanned_paths)
 
 
@@ -2007,6 +2122,17 @@ async def save_full_health_report(
                 commit=analyzed_commit,
             ),
         )
+        # No rows means no graph to key them on: the stored ones stay. Before
+        # the finalizers, which read each plan's nearest tests off these rows.
+        fact_rows = getattr(hr, "function_facts", None)
+        if fact_rows is not None:
+            await write_function_facts(
+                session,
+                repo_id,
+                fact_rows,
+                roles=getattr(hr, "execution_roles", None),
+                tests=getattr(hr, "function_tests", None),
+            )
         # Group the stored performance findings into the materialized causal
         # read model, then reconcile lifecycle and plans.
         await finalize_performance_opportunities(
@@ -2020,12 +2146,6 @@ async def save_full_health_report(
         # savepoint because it composes over the stored rows, so it has to see
         # the reconciliation above rather than the detector output.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
-        # No rows means no graph to key them on: the stored ones stay.
-        fact_rows = getattr(hr, "function_facts", None)
-        if fact_rows is not None:
-            await write_function_facts(
-                session, repo_id, fact_rows, roles=getattr(hr, "execution_roles", None)
-            )
 
 
 async def refresh_governance_findings(
