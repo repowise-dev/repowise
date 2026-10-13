@@ -326,7 +326,8 @@ class CallSite:
     receiver_call: CallReceiver | None = None  # set only for a captured chained call
     # C++ `Ns::f()` / `Class::m()`: the qualifier as written. Kept apart from
     # ``receiver_name`` because that field routes to the member strategies,
-    # and cpp has none -- a scoped call must stay on the free-call path.
+    # and cpp has none -- a scoped call must stay on the free-call path. Java
+    # writes the ``S`` of ``S.super.m()`` here.
     scope_name: str | None = None
     edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)

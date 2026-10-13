@@ -107,6 +107,16 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Qualified super: ``S.super.m()``, where ``S`` is an enclosing class or a
+; superinterface. The plain member pattern above also matches it, with ``S`` as
+; the receiver; the parser drops that copy.
+(method_invocation
+  object: (identifier) @call.scope
+  (super) @call.receiver
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Cast receiver: ((Foo) x).bar(args) names its type at the call site, like the
 ; fluent construction below. A scoped type (``(a.Foo) x``) is left uncaptured,
 ; and the anchors keep an intersection cast (``(Foo & Bar) x``) out.

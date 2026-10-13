@@ -1880,14 +1880,35 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         close it.
         """
         class_id = _extract_class_id(caller_id)
+        skip = 1
+        if call.scope_name:
+            class_id, skip = self._qualified_super(caller_id, call.scope_name)
         mro = self._mro(class_id) if class_id is not None else None
-        for ancestor in (mro or ())[1:]:
+        for ancestor in (mro or ())[skip:]:
             if ancestor.startswith(_EXTERNAL_PREFIX):
                 return None
             sym_id = self._declares(ancestor, call.target_name)
             if sym_id is not None:
                 return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
         return None
+
+    def _qualified_super(self, caller_id: str, qualifier: str) -> tuple[str | None, int]:
+        """Where Java's ``S.super.m()`` starts its walk, and how many classes it skips.
+
+        ``S`` names an enclosing class, whose superclass is meant, or a direct
+        superinterface of the caller's class, whose own ``m`` is.
+        """
+        def named(type_id: str) -> bool:
+            return getattr(self._symbols_by_id.get(type_id), "name", None) == qualifier
+
+        class_id = self._caller_class_id(caller_id)
+        node = class_id
+        while "::" in node:
+            if named(node):
+                return node, 1
+            node = outer_scope(node)
+        interfaces = [p for p in self._heritage_parents.get(class_id, ()) if named(p)]
+        return (interfaces[0], 0) if len(interfaces) == 1 else (None, 0)
 
     def _mro(self, class_id: str, visiting: frozenset[str] = frozenset()) -> tuple[str, ...] | None:
         """Python's C3 linearization of *class_id*, or None when it cannot be built.

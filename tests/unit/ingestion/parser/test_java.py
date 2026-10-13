@@ -169,3 +169,10 @@ class TestReceiverlessTwin:
         self, parser: ASTParser
     ) -> None:
         assert self._sites(parser, "set")[-2:] == [(15, None), (15, "data")]
+
+
+def test_a_qualified_super_call_keeps_its_qualifier(parser: ASTParser) -> None:
+    """``Sub.super.m()`` arrives as a ``super`` call scoped by ``Sub``, never as ``Sub.m()``."""
+    source = b"package b;\nclass Sub extends Base {\n  class In { void q() { Sub.super.m(); } }\n}\n"
+    calls = parser.parse_file(_make_file_info("b/Sub.java", "java"), source).calls
+    assert [(c.receiver_name, c.scope_name, c.target_name) for c in calls] == [("super", "Sub", "m")]

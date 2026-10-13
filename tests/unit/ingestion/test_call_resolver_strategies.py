@@ -1577,7 +1577,24 @@ class TestJavaReceiverRecall:
             (c.line, c.receiver_name or "") for c in parsed["Use.java"].calls
         ) == [(3, ""), (4, "Node")]
 
-    @pytest.mark.xfail(strict=True, reason="`S.super.m()` arrives as `S.m()`; the qualifier is lost")
+    def test_a_qualified_super_reaches_the_named_superinterface(self, tmp_path: Path) -> None:
+        """``I.super.m()`` is ``I``'s default ``m``, not the superclass's."""
+        files = {
+            "a/Base.java": "package a;\npublic class Base {\n    public void m() {}\n}\n",
+            "a/I.java": "package a;\npublic interface I {\n    default void m() {}\n}\n",
+            "a/Sub.java": "package a;\npublic class Sub extends Base implements I {\n"
+            "    public void m() {\n        I.super.m();\n    }\n}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        parents = {"a/Sub.java::Sub": {"a/Base.java::Base", "a/I.java::I"}}
+        resolver = CallResolver(
+            parsed, {k: set() for k in parsed}, repo_path=str(tmp_path), heritage_parents=parents
+        )
+        calls = parsed["a/Sub.java"].calls
+        assert [(rc.callee_id, rc.origin) for rc in resolver.resolve_file("a/Sub.java", calls)] == [
+            ("a/I.java::I::m", "self_inherited")
+        ]
+
     def test_a_qualified_super_reaches_the_qualifiers_superclass(self, tmp_path: Path) -> None:
         members = "    class In {\n        void q() { Sub.super.m(); }\n    }"
         assert self._targets(tmp_path, "", members=members) == [

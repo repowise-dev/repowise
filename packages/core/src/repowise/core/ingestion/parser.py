@@ -469,6 +469,10 @@ def _receiver_text(language: str, node: Node, src: str) -> str | None:
     names: a call, subscript or optional hop inside it types nothing, and
     dropping the site keeps it off the bare-call tiers.
     """
+    sibling = node.next_named_sibling
+    if language == "java" and node.type != "super" and getattr(sibling, "type", None) == "super":
+        # ``S.super.m()``: ``S`` qualifies the ``super`` its own pattern captures.
+        return None
     text = _node_text(node, src).strip()
     if (language, node.type) not in _PATH_RECEIVERS:
         return text
