@@ -102,3 +102,23 @@
     (value_arguments "(") @call.arguments
   )
 ) @call.site
+
+; Member call on a variable named ``copy``, ``consume`` or ``unsafe``: the
+; grammar reads ``copy.remove(at: i)`` as the ``copy`` operator applied to an
+; implicit member call ``.remove(at: i)``, the same tree as ``copy .remove(at: i)``.
+; Read as the member call, the common case. The second branch is the first hop
+; of a chain (``copy.remove(at: i).foo()``); like ``x.remove(at: i).foo()``, only
+; that hop is a call site.
+(_
+  ["copy" "consume" "unsafe"] @call.receiver
+  [
+    (call_expression
+      (prefix_expression "." (simple_identifier) @call.target)
+      (call_suffix (value_arguments "(") @call.arguments)) @call.site
+    (call_expression
+      (navigation_expression
+        (call_expression
+          (prefix_expression "." (simple_identifier) @call.target)
+          (call_suffix (value_arguments "(") @call.arguments)) @call.site))
+  ]
+)

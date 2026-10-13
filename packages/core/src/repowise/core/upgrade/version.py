@@ -79,7 +79,8 @@ STORE_FORMAT_VERSION: int = 2
 #: types (``put#1(String)``, ``put#1(int)``), and a method in a Java enum
 #: constant's body sits under the constant (``Op::PLUS::apply``); the first
 #: update re-keys those symbols and graph nodes. A Swift ``extension`` is an
-#: ``impl``, no longer a ``class``.
+#: ``impl``, no longer a ``class``. Swift parses with tree-sitter-swift 0.7, so
+#: a type body holding ``#if`` keeps its members.
 PARSER_SCHEMA_VERSION: int = 8
 
 #: state.json key holding the store format version that wrote the store.
