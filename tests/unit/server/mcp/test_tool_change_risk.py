@@ -54,6 +54,21 @@ async def test_git_timeout_is_an_error_naming_the_change(monkeypatch):
     assert result == {"error": "git timed out reading change 'a..b'."}
 
 
+@pytest.mark.asyncio
+async def test_git_missing_from_path_is_an_error_naming_git(monkeypatch, tmp_path):
+    """The real scorer with no git on PATH: a named error, not a raw FileNotFoundError."""
+
+    async def _context(_repo):
+        return SimpleNamespace(path=str(tmp_path))
+
+    monkeypatch.setattr(tool, "_resolve_repo_context", _context)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    result = await tool.get_change_risk("HEAD")
+    assert result == {
+        "error": "git was not found on PATH; change risk reads the repository history."
+    }
+
+
 # ---------------------------------------------------------------------------
 # Health comparison and its stored-finding references
 # ---------------------------------------------------------------------------

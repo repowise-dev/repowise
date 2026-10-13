@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
+import shutil
 import subprocess
 import threading
 import time
@@ -174,6 +175,14 @@ async def _score_change(
         return None, {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
     except subprocess.TimeoutExpired:
         return None, {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
+    except FileNotFoundError:
+        # Scoring spawns git from several readers, so the missing binary is
+        # named once here. Any other missing file is a real bug: re-raise.
+        if shutil.which("git") is not None:
+            raise
+        return None, {
+            "error": "git was not found on PATH; change risk reads the repository history."
+        }
     return result, None
 
 
