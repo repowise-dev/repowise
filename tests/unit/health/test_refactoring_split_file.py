@@ -650,3 +650,36 @@ def test_a_module_only_one_group_leans_on_still_names_it():
     by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
     assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/utils.cpp"
     assert by_first["fn_4"]["suggested_file"] == "src/Workspaces/layout.cpp"
+
+
+@pytest.mark.parametrize(
+    ("language", "parents", "member", "owner"),
+    [
+        # Java: ``new Runnable() { void run() }`` inside overload ``over(int)``.
+        ("java", {"A": None, "A::over#1(int)": "A"}, ("run", "A::over#1(int)::Runnable"), "A"),
+        # Kotlin: ``object : Condition { fun apply() }`` in a top-level function.
+        ("kotlin", {"untilReady": None}, ("apply", "untilReady::Condition"), "untilReady"),
+    ],
+)
+def test_an_anonymous_class_member_rolls_up_to_its_named_owner(language, parents, member, owner):
+    path = "src/A.x"
+    defined = {
+        f"{path}::{sid}": {"parent_name": parent, "language": language}
+        for sid, parent in parents.items()
+    }
+    name, scope = member
+    member_id = f"{path}::{scope}::{name}"
+    defined[member_id] = {"parent_name": scope, "language": language}
+
+    assert SplitFileDetector()._resolve_owner(path, member_id, defined) == f"{path}::{owner}"
+
+
+def test_a_scoped_parent_without_a_node_stays_its_own_owner_outside_anonymous_classes():
+    path = "src/a.cpp"
+    defined = {
+        f"{path}::ns": {"parent_name": None, "language": "cpp"},
+        f"{path}::ns::Foo::bar": {"parent_name": "ns::Foo", "language": "cpp"},
+    }
+
+    owner = SplitFileDetector()._resolve_owner(path, f"{path}::ns::Foo::bar", defined)
+    assert owner == f"{path}::ns::Foo::bar"

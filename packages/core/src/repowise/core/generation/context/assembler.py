@@ -1148,6 +1148,7 @@ def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:
         "complexity_estimate": symbol.complexity_estimate,
         "decorators": symbol.decorators,
         "parent_name": symbol.parent_name,
+        "language": symbol.language,
         "start_line": symbol.start_line,
         "end_line": symbol.end_line,
     }

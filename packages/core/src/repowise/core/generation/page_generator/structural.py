@@ -29,6 +29,7 @@ from typing import Any
 
 import structlog
 
+from ...ingestion.lang_helpers.anonymous_classes import is_anonymous_scope
 from ..models import (
     GENERATION_LEVELS,
     TEMPLATE_PAGE_CONFIDENCE,
@@ -44,7 +45,7 @@ log = structlog.get_logger(__name__)
 # output without changing any template's bytes: new context fields, a changed
 # helper, a reordered section. Template edits are picked up automatically
 # (their source is hashed), so this is only for the cases hashing cannot see.
-STRUCTURAL_GENERATION_VERSION = "4"
+STRUCTURAL_GENERATION_VERSION = "5"
 
 # Keyless stub templates live one directory down so their filenames can match
 # the prompt templates they stand in for.
@@ -426,13 +427,17 @@ def is_public_api(symbol: Mapping[str, Any]) -> bool:
     Alembic's ``revision`` / ``down_revision`` are 771 of the 878 such symbols
     in this repository, and not one of them is something another file calls.
     The type aliases that share the kind (``SourceFile``, ``ReasoningMode``)
-    keep their capitals and stay.
+    keep their capitals and stay. A member of an anonymous class
+    (``Gson::make::Comparator``) is reached through its supertype, never by
+    name, and has no type of its own to be listed under.
 
     Demoted, not dropped: the caller still names them on the page, so the
     identifier stays in ``content`` for the index.
     """
     name = str(symbol.get("name") or "")
     if name.startswith("__") and name.endswith("__"):
+        return False
+    if is_anonymous_scope(symbol.get("language"), symbol.get("parent_name")):
         return False
     if symbol.get("kind") == "variable" and not symbol.get("parent_name"):
         return any(c.isupper() for c in name)

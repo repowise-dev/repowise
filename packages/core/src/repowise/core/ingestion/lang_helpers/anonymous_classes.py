@@ -57,10 +57,13 @@ def is_anonymous_member(symbol: Symbol) -> bool:
     In a language with anonymous classes only such a member has a parent of
     several segments (``Gson::FILTER::Filter``).
     """
-    config = LANGUAGE_CONFIGS.get(symbol.language)
-    return bool(
-        config and config.anonymous_class_types and "::" in (symbol.parent_name or "")
-    )
+    return is_anonymous_scope(symbol.language, symbol.parent_name)
+
+
+def is_anonymous_scope(language: str | None, parent_name: str | None) -> bool:
+    """:func:`is_anonymous_member` for a graph node or a symbol dict."""
+    config = LANGUAGE_CONFIGS.get(language or "")
+    return bool(config and config.anonymous_class_types and "::" in (parent_name or ""))
 
 
 def follow_renamed_hosts(symbols: list[Symbol]) -> None:
