@@ -1404,6 +1404,30 @@ def _parent_type_name(ancestor: Node, src: str) -> str | None:
     return _node_text(name_node, src)
 
 
+def _nesting_parent(def_node: Node, config: LanguageConfig, src: str) -> str | None:
+    """The class/impl ancestor naming *def_node*'s parent.
+
+    An anonymous class is a class of its own, so its members gain segments
+    below it: ``Gson::FILTER::Filter::check``.
+    """
+    segments: list[str] = []
+    child, ancestor = def_node, def_node.parent
+    while ancestor is not None:
+        if ancestor.type in config.parent_class_types:
+            name = _parent_type_name(ancestor, src)
+            if name is not None:
+                return "::".join([name, *reversed(segments)])
+        else:
+            segment = scope_segment(
+                ancestor, child, bool(segments), config.anonymous_class_types, src
+            )
+            if segment is not None:
+                segments.append(segment)
+        child, ancestor = ancestor, ancestor.parent
+    # A Kotlin top-level function's object expression: ``f::Foo``.
+    return "::".join(reversed(segments)) or None
+
+
 def _java_enum_constant(def_node: Node, config: LanguageConfig, src: str) -> str | None:
     """The enum constant whose body declares *def_node*, before any enclosing type.
 
@@ -1915,25 +1939,7 @@ class ASTParser:
             return None
 
         if config.parent_extraction in ("nesting", "impl"):
-            # Walk up the AST to find a class/impl ancestor. An anonymous class
-            # is a class of its own, so its members gain segments below it:
-            # ``Gson::FILTER::Filter::check``.
-            segments: list[str] = []
-            child, ancestor = def_node, def_node.parent
-            while ancestor is not None:
-                if ancestor.type in config.parent_class_types:
-                    name = _parent_type_name(ancestor, src)
-                    if name is not None:
-                        return "::".join([name, *reversed(segments)])
-                else:
-                    segment = scope_segment(
-                        ancestor, child, bool(segments), config.anonymous_class_types, src
-                    )
-                    if segment is not None:
-                        segments.append(segment)
-                child, ancestor = ancestor, ancestor.parent
-            # A Kotlin top-level function's object expression: ``f::Foo``.
-            return "::".join(reversed(segments)) or None
+            return _nesting_parent(def_node, config, src)
 
         return None  # "none" mode
 
