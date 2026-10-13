@@ -881,6 +881,71 @@ def test_why_renders_the_archaeology_it_falls_back_to(monkeypatch, repo):
     assert "5 of 7" in result.stdout, "the cap was applied but never disclosed"
 
 
+def test_why_table_prints_each_commit_once_before_showing_new_git_log_rows(monkeypatch, repo):
+    shared = "a123456789abcdef"
+    second = "b123456789abcdef"
+    new = "c123456789abcdef"
+    payload = {
+        "mode": "path", "path": "a.py",
+        "origin_story": {"available": True, "key_commits": [
+            {"sha": shared, "date": "2026-01-01", "message": "origin"},
+        ]},
+        "git_archaeology": {
+            "file_commits": [
+                {"sha": shared, "date": "2026-01-02", "message": "repeated"},
+                {"sha": second, "date": "2026-01-03", "message": "indexed"},
+            ],
+            "git_log": [
+                {"sha": shared, "date": "2026-01-04", "message": "repeated live"},
+                {"sha": second, "date": "2026-01-04", "message": "repeated indexed"},
+                {"sha": new, "date": "2026-01-05", "message": "new live"},
+                *[
+                    {"sha": f"{letter}123456789abcdef", "message": "another live"}
+                    for letter in "defgh"
+                ],
+            ],
+            "cross_references": [{"sha": second, "source_file": "b.py", "message": "other file"}],
+        }, "_meta": {},
+    }
+    result = _invoke(monkeypatch, why_command, ["a.py"], repo, payload)
+    assert result.stdout.count(shared[:8]) == 1
+    assert result.stdout.count(second[:8]) == 2  # cross-references stay independent
+    assert result.stdout.count(new[:8]) == 1
+    assert "git log: c1234567" in result.stdout
+    assert "5 of 8 git log shown" in result.stdout  # duplicates count toward the cap
+    assert "2026-01-02" not in result.stdout
+    json_result = _invoke(monkeypatch, why_command, ["a.py", "--format", "json"], repo, payload)
+    assert json.loads(json_result.stdout)["git_archaeology"]["git_log"][0]["sha"] == shared
+
+
+def test_why_nested_target_deduplicates_its_own_history(monkeypatch, repo):
+    payload = {
+        "mode": "search", "target_context": {
+            "b.py": {"git_archaeology": {
+                "file_commits": [{"sha": "a123456789", "message": "first"}],
+                "git_log": [{"sha": "a123456789", "message": "repeat"},
+                            {"sha": "b123456789", "message": "fresh"}],
+            }},
+            "c.py": {"git_archaeology": {
+                "git_log": [{"sha": "a123456789", "message": "other target"}],
+            }},
+        }, "_meta": {},
+    }
+    result = _invoke(
+        monkeypatch, why_command, ["q", "--target", "b.py", "--target", "c.py"], repo, payload
+    )
+    assert result.stdout.count("a1234567") == 2
+    assert result.stdout.count("b1234567") == 1
+    assert "git log: a1234567" in result.stdout  # independent target
+
+
+def test_why_help_names_the_actual_repeatable_target_option():
+    result = CliRunner().invoke(why_command, ["--help"])
+    assert result.exit_code == 0
+    assert "--target TEXT" in result.stdout
+    assert "--targets" not in result.stdout
+
+
 def test_why_renders_a_targets_own_history(monkeypatch, repo):
     """``origin.summary`` exists only when there is *no* history.
 
