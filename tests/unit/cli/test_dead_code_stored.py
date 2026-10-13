@@ -183,3 +183,15 @@ def test_safe_only_says_why_it_is_empty(indexed_repo, monkeypatch):
     out = _md(indexed_repo, "--safe-only")
     assert "1 finding(s), none deletion-ready" in out
     assert "none deletion-ready" not in _md(indexed_repo)
+
+
+def test_safe_only_rereads_a_stored_safe_flag_through_the_gate(indexed_repo, monkeypatch):
+    # Stored safe, but a runtime-loaded config path: the read surfaces'
+    # gate downgrades it, so --safe-only hides it and explains why.
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+    risky = {**_STORED_ONLY, "file_path": "gone/settings.py"}
+    run_async(_store(indexed_repo, [risky]))
+
+    out = _md(indexed_repo, "--safe-only")
+    assert "gone/settings.py" not in out
+    assert "1 finding(s), none deletion-ready" in out
