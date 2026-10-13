@@ -538,6 +538,30 @@ class TestFieldTypedReceiver:
         callers = {e[0] for e in edges if e[3].startswith("receiver_field_")}
         assert callers == {"Repo.swift::Repo::a", "Repo.swift::Repo::b"}
 
+    def test_a_dart_field_and_local_type_their_receivers(self, tmp_path: Path) -> None:
+        """A field set by an initialising formal, and a `final x = Foo()` local."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "lib/repo.dart": (
+                    "dart",
+                    "import 'api.dart';\n\nclass Repo {\n  final Api api;\n  Repo(this.api);\n\n"
+                    "  void load() {\n    api.fetch();\n    final store = Store();\n"
+                    "    store.get();\n    api.missing();\n  }\n}\n",
+                ),
+                "lib/api.dart": (
+                    "dart",
+                    "class Api {\n  void fetch() {}\n}\nclass Store {\n  void get() {}\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"lib/repo.dart": {"api.dart": "lib/api.dart"}})
+        edges = _edges(parsed, tmp_path, {"lib/repo.dart": {"lib/api.dart"}, "lib/api.dart": set()})
+        caller = "lib/repo.dart::Repo::load"
+        assert (caller, "lib/api.dart::Api::fetch", 0.88, "receiver_field_import") in edges
+        assert (caller, "lib/api.dart::Store::get", 0.88, "receiver_typed_import") in edges
+        assert not [e for e in edges if e[1].endswith("::missing")]
+
     def test_a_nested_class_field_types_its_receiver(self, tmp_path: Path) -> None:
         """A nested class's id carries its outer class; its methods' ids do not."""
         parsed = _parse_all(

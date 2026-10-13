@@ -69,10 +69,11 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     "kotlin": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
     "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    # Swift registers the fallback and nothing else: it has no package
-    # tier of its own, so a typed receiver is looked for in the caller's
-    # file, in what the file imports, and then in the global pair index.
+    # Swift and Dart register the fallback and nothing else: neither has a
+    # package tier of its own, so a typed receiver is looked for in the
+    # caller's file, in what the file imports, and then in the global pair index.
     "swift": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    "dart": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     # TypeScript's typed fallback also walks a dotted receiver's fields.
     "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     # Rust types a local or parameter only; a `self.field` receiver is not

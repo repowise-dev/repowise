@@ -540,6 +540,57 @@ class TestSwiftRefusals:
         assert fields(source, "swift", [])["store"] == "Store"
 
 
+class TestDartShapes:
+    def test_a_typed_local(self) -> None:
+        assert declared_types("void f() {\n  Cache cache = make();\n}", "dart")["cache"] == "Cache"
+
+    def test_a_parameter_and_a_named_parameter(self) -> None:
+        types = declared_types("void f(Api api, {required Dao dao}) { }", "dart")
+        assert (types["api"], types["dao"]) == ("Api", "Dao")
+
+    def test_a_nullable_type_keeps_its_type(self) -> None:
+        assert declared_types("void f() {\n  Api? api;\n}", "dart")["api"] == "Api"
+
+    @pytest.mark.parametrize(
+        "line",
+        ["final store = Store();", "var store = new Store();", "const store = Store<A>();"],
+    )
+    def test_a_construction(self, line: str) -> None:
+        assert declared_types(f"void f() {{\n  {line}\n}}", "dart")["store"] == "Store"
+
+    def test_a_cascade_is_still_the_constructed_type(self) -> None:
+        body = "void f() {\n  final paint = Paint()..color = c;\n}"
+        assert declared_types(body, "dart")["paint"] == "Paint"
+
+    @pytest.mark.parametrize(
+        "line", ["final x = Builder().build();", "final x = Store.instance();"]
+    )
+    def test_a_chain_or_static_call_types_nothing(self, line: str) -> None:
+        assert declared_types(f"void f() {{\n  {line}\n}}", "dart") == {}
+
+    def test_a_doc_comment_is_not_a_declaration(self) -> None:
+        body = "/// Returns Foo instance;\n/* Bar other; */\nvoid f() { }"
+        assert declared_types(body, "dart") == {}
+
+    def test_dart_reaches_class_scope(self) -> None:
+        assert "dart" in IMPLICIT_FIELD_LANGUAGES
+
+
+class TestDartFieldScope:
+    def test_fields_and_initialising_formals(self) -> None:
+        """`this.api` spells no type; the field it assigns types `api`."""
+        source = (
+            "class Repo {\n  final Api api;\n  Dao? _dao;\n  final _store = Store();\n"
+            "  Repo(this.api, Dao dao, {Other other}) : _dao = dao;\n"
+            "  void load() { api.fetch(); }\n}"
+        )
+        assert fields(source, "dart", [(6, 6)]) == {"api": "Api", "_dao": "Dao", "_store": "Store"}
+
+    def test_a_method_local_is_not_a_field(self) -> None:
+        source = "class C {\n  void f() {\n    final s = Store();\n  }\n}"
+        assert fields(source, "dart", [(2, 4)]) == {}
+
+
 class TestGoShapes:
     """Go writes ``name T``, which is the reverse of every other shape here.
 
@@ -771,6 +822,7 @@ def test_the_language_set_is_what_the_patterns_declare() -> None:
     assert set(RECEIVER_TYPE_LANGUAGES) == {
         "cpp",
         "csharp",
+        "dart",
         "go",
         "java",
         "kotlin",

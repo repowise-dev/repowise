@@ -506,11 +506,12 @@ Pattern families today:
 | Go | Go | parameters, `name := Type{}`, `var name Type` |
 | Kotlin | Kotlin | `name: Type`, `= Type(...)` |
 | Swift | Swift | `name: Type`, `= Type(...)` |
+| Dart | Dart | `Type name`, `Type? name`, `final name = Type(...)` |
 | Python | Python | annotations, `name = Type(...)`, target lists |
 
 Two further sets gate the harder half:
 
-- **`IMPLICIT_FIELD_LANGUAGES`** = `{csharp, java, kotlin, swift}`. Only these
+- **`IMPLICIT_FIELD_LANGUAGES`** = `{csharp, dart, java, kotlin, swift}`. Only these
   look up an unbound receiver among the *enclosing class's fields*. Go is
   deliberately excluded even though its locals and parameters are typed: its
   package-level `var` is a wider scope than a field, and the shape is a rounding

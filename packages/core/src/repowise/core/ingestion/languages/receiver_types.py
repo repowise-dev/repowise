@@ -240,6 +240,26 @@ _SWIFT_CONSTRUCTED = re.compile(
     r"(?<![\w.])(?:let|var)\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\((?![^()]*\)\s*\.)"
 )
 
+# Dart writes the C family's `Type name`, plus a nullable `Api? api` and a named
+# parameter closing on `}`. Fields close on `;` or `=` as Java's do. A
+# constructor is no symbol here, so its parameters sit at class scope, where
+# `)` and `}` keep them out. An initialising formal (`Repo(this.api)`) spells
+# no type: the field it assigns already carries one.
+_DART_TYPED = re.compile(
+    rf"(?<![\w.])(?P<type>{_TYPE})\??\s+(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,)}}]))"
+)
+
+# `final x = Foo()`, `var`/`const`, with `new`/`const` before the type. The
+# `=` closer makes it a field at class scope, as `_TS_CONSTRUCTED`'s does. A
+# chain is refused as `_KT_CONSTRUCTED` refuses one, but a cascade
+# (`Paint()..color = c`) is still the `Paint`. `Foo.named()` is refused too:
+# a named constructor and a static call look the same.
+_DART_CONSTRUCTED = re.compile(
+    r"(?<![\w.])(?:final|var|const)\s+(?P<name>[a-z_]\w*)\s*(?P<closer>=)\s*"
+    r"(?:(?:new|const)\s+)?(?P<type>[A-Z]\w*)\s*(?:<(?:[^<>]|<[^<>]*>)*>)?\s*"
+    r"\((?![^()]*\)\s*\.(?!\.))"
+)
+
 # C++ writes ``T name`` with differences ``_TYPE`` cannot read: ``::`` qualifies,
 # ``*``/``&`` bind between type and name, and lowercase heads (the STL) are
 # ordinary. A keyword head is refused, or ``struct foo {`` would declare ``foo``
@@ -297,12 +317,14 @@ _C_FAMILY = (_TYPED_DECLARATION, _INFERRED_FROM_NEW)
 _GO_FAMILY = (_GO_PARAM, _GO_SHORT_DECL, _GO_VAR_DECL, _GO_FIELD, _GO_EMBEDDED_FIELD)
 _KT_FAMILY = (_KT_ANNOTATED, _KT_CONSTRUCTED)
 _SWIFT_FAMILY = (_SWIFT_ANNOTATED, _SWIFT_CONSTRUCTED)
+_DART_FAMILY = (_DART_TYPED, _DART_CONSTRUCTED)
 _PY_FAMILY = (_PY_ANNOTATED, _PY_CONSTRUCTED, _PY_SELF_ANNOTATED, _PY_SELF_CONSTRUCTED)
 _TS_FAMILY = (_TS_ANNOTATED, _TS_PARAMETER_PROPERTY, _TS_CONSTRUCTED)
 
 _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "cpp": (_CPP_DECLARATION,),
     "csharp": _C_FAMILY,
+    "dart": _DART_FAMILY,
     "go": _GO_FAMILY,
     "java": _C_FAMILY,
     "kotlin": _KT_FAMILY,
@@ -319,7 +341,7 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 # writes ``self.foo.bar()``, a dotted receiver the grammar mints no call site
 # for, so class scope could only bind a bare local to a field. Membership rests
 # on the scan actually finding typed fields in the language's idiom.
-IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "java", "kotlin", "swift"})
+IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "dart", "java", "kotlin", "swift"})
 
 # Languages whose scan keeps a declaration of a builtin type, marked external,
 # so the resolver can refuse a call on it instead of matching the method name.
@@ -652,6 +674,7 @@ _LANGUAGE_BLOCK_COMMENTS: dict[str, re.Pattern[str]] = {
     # C++ needs the block strip for the reason Kotlin does: doxygen writes
     # `@param Type name`, which is exactly the shape the scan reads.
     "cpp": _BLOCK_COMMENT,
+    "dart": _BLOCK_COMMENT,
     "kotlin": _BLOCK_COMMENT,
     "typescript": _BLOCK_COMMENT,
 }
@@ -659,6 +682,7 @@ _LANGUAGE_BLOCK_COMMENTS: dict[str, re.Pattern[str]] = {
 _LANGUAGE_COMMENTS: dict[str, re.Pattern[str]] = {
     "cpp": _LINE_COMMENT,
     "csharp": _LINE_COMMENT,
+    "dart": _LINE_COMMENT,
     "go": _LINE_COMMENT,
     "java": _LINE_COMMENT,
     "kotlin": _LINE_COMMENT,
