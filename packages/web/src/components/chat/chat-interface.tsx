@@ -71,7 +71,10 @@ export function ChatInterface({
   // conversation URL restores history, which keeps returning users from being
   // dropped at the bottom of an old answer they did not choose to reopen.
   const lifecycleRef = useRef("");
-  const awaitingFreshIdRef = useRef(false);
+  // The id the fresh workspace was requested over, or true when there was none.
+  // `reset()` has not applied when the sync effect below runs in the same
+  // commit, so it would otherwise read the id being closed and write it back.
+  const awaitingFreshIdRef = useRef<string | boolean>(false);
   useEffect(() => {
     const identity = `${repoId}:${urlConversationId ?? "new"}:${initialQuestion ?? ""}`;
     if (lifecycleRef.current === identity) return;
@@ -83,7 +86,7 @@ export function ChatInterface({
       }
       return;
     }
-    awaitingFreshIdRef.current = true;
+    awaitingFreshIdRef.current = conversationId || true;
     reset();
     if (initialQuestion) void sendMessage(initialQuestion, {
       context: pageContext,
@@ -94,6 +97,8 @@ export function ChatInterface({
 
   useEffect(() => {
     if (!awaitingFreshIdRef.current || !conversationId) return;
+    // Never re-sync the id the fresh workspace was requested over.
+    if (awaitingFreshIdRef.current === conversationId) return;
     awaitingFreshIdRef.current = false;
     const next = new URLSearchParams(searchParams.toString());
     next.delete("q");
