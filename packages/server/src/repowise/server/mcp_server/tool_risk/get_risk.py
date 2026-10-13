@@ -36,6 +36,7 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._test_selection import (
     SelectionUnavailableError,
     files_change,
@@ -271,7 +272,8 @@ async def _gather_evidence(
         repo_id = repository.id
         # A card walks from the target as given and reads links under its
         # normalized path, so both spellings are roots.
-        roots = {*targets, *(normalize_target_path(t, repository.local_path) for t in targets)}
+        repo_root = served_root(repository, ctx.path)
+        roots = {*targets, *(normalize_target_path(t, repo_root) for t in targets)}
         graph = await _load_dependency_graph(session, repo_id, roots)
 
         # Repo-wide, so computed once for every target's bus-factor calibration.
@@ -299,6 +301,7 @@ async def _gather_evidence(
                     collector,
                     include_graph,
                     as_of_ts=as_of_ts,
+                    repo_root=repo_root,
                 )
                 for t in targets
             ]

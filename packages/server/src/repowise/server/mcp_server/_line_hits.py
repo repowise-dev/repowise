@@ -47,6 +47,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
     read_repo_file_text,
 )
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._query_shape import (
     _canonical_symbol_query,
     _identifier_candidates,
@@ -405,7 +406,7 @@ async def _attach(
     spec = _get_exclude_spec(ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        root = Path(repository.local_path or ctx.path)
+        root = Path(served_root(repository, ctx.path))
         nodes = []
         if candidates:
             found = await _exact_symbols(session, repository.id, query, candidates)

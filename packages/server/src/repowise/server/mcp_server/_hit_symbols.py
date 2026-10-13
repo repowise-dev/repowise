@@ -22,6 +22,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
 from repowise.server.mcp_server._edit_sites import MAX_TEXT_CHARS, _import_lines, _read_lines
 from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server.tool_search_symbols import _tokens
@@ -183,7 +184,7 @@ async def _attach(ctx, query: str, rows: list[dict]) -> None:
             wanted.setdefault(path, [span for *_, span in ranked])
     if not wanted:
         return
-    root = Path(repo.local_path or ctx.path)
+    root = Path(served_root(repo, ctx.path))
     sampled = await asyncio.to_thread(_sample_lines, root, list(wanted.items()), terms)
     for hit in rows:
         if found := sampled.get(targets.get(id(hit), "")):

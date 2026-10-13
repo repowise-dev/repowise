@@ -24,6 +24,7 @@ from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
     is_excluded,
 )
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.repo_paths import normalize_target_path
 
 #: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
@@ -447,6 +448,7 @@ async def _assess_one_target(
     collector: OmissionCollector | None = None,
     include_graph: bool = False,
     as_of_ts: datetime | None = None,
+    repo_root: str | None = None,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -457,7 +459,8 @@ async def _assess_one_target(
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
 
-    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
+    repo_root = served_root(repository, repo_root)
+    lookup_path = normalize_target_path(target, repo_root=repo_root)
     dependency_population = _dependency_population(
         lookup_path, reverse_deps, node_meta, exclude_spec
     )
@@ -580,7 +583,7 @@ async def _assess_one_target(
         return {
             "target": target,
             "resolved": False,
-            **await _unresolved_reason(target, lookup_path, repository.local_path),
+            **await _unresolved_reason(target, lookup_path, repo_root),
             "risk_summary": (
                 f"{target} — not resolved to an indexed file; no risk signal was computed"
             ),

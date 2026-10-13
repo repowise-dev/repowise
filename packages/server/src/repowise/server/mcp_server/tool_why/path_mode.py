@@ -27,6 +27,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._why_evidence import annotate_response_evidence_async
 from repowise.server.mcp_server.tool_why.archaeology import _git_archaeology_fallback
 from repowise.server.mcp_server.tool_why.caps import (
@@ -244,7 +245,7 @@ async def _add_ungoverned_evidence(
         path,
         git_meta,
         all_git_meta,
-        repository,
+        served_root(repository, repo_path),
     )
     # The "why" may live in a code comment.
     rationale = _mine_rationale(
@@ -273,6 +274,7 @@ async def _build_target_context(
         # Load all git metadata for cross-file search
         all_git_meta_list = await _all_git_metadata(session2, repository.id)
 
+        root = served_root(repository, ctx.path)
         target_context: dict[str, Any] = {}
         for t in targets:
             target_context[t] = await _target_card(
@@ -280,7 +282,7 @@ async def _build_target_context(
                 all_decisions,
                 target_git.get(t),
                 all_git_meta_list,
-                repository,
+                root,
                 accepted or set(),
             )
         return target_context
@@ -306,7 +308,7 @@ async def _target_card(
     all_decisions: list,
     git_m: Any | None,
     all_git_meta_list: list,
-    repository: Any,
+    repo_root: str | None,
     accepted_ids: set[str],
 ) -> dict[str, Any]:
     """One target's card: its rules, its candidates, its origin, and archaeology."""
@@ -342,7 +344,7 @@ async def _target_card(
             t,
             git_m,
             all_git_meta_list,
-            repository,
+            repo_root,
         )
     return ctx_entry
 

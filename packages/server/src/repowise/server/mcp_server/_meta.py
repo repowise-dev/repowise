@@ -71,6 +71,34 @@ def full_meta(tool: str | None = None) -> bool:
 _STALE_AGE_FLOOR_DAYS = 90
 
 
+def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | None:
+    """The checkout to read live HEAD, state.json and files from for *repository*.
+
+    The stored ``local_path`` is where the repo was indexed; a moved or copied
+    repo keeps the old value, so reads through it see another tree. A
+    single-repo server's own path wins for the row its own store identifies
+    (``_state._served_repo_id``) when that path holds ``.repowise/`` and
+    ``.git`` (a file in a worktree). Any other row, such as another repo in a
+    shared store, keeps its stored path; *ctx_path* stands in only when the
+    row has none. The row is never rewritten.
+    """
+    from repowise.server.mcp_server import _state
+
+    served = _state._repo_path
+    if (
+        served
+        and _state._registry is None
+        and _state._served_repo_id is not None
+        and getattr(repository, "id", None) == _state._served_repo_id
+    ):
+        root = Path(served)
+        if (root / ".repowise").is_dir() and (root / ".git").exists():
+            return str(root)
+    # Ceiling: a workspace server keeps each repo's stored path; giving it
+    # the same override needs the registry to record each store's one row.
+    return getattr(repository, "local_path", None) or (str(ctx_path) if ctx_path else None)
+
+
 def read_live_head(local_path: str | None) -> str | None:
     """Read the repo's current git HEAD SHA via plain file I/O.
 
@@ -444,7 +472,9 @@ def reverted_targets(local_path: str | None, targets: list[str] | None) -> list[
     return out
 
 
-def freshness_from_repo(repository: Any | None, targets: list[str] | None = None) -> dict[str, Any]:
+def freshness_from_repo(
+    repository: Any | None, targets: list[str] | None = None, root: str | None = None
+) -> dict[str, Any]:
     """Return a minimal freshness dict for the given Repository row.
 
     Calibrated to fire ``stale_warning`` rarely so the agent keeps trusting
@@ -504,7 +534,8 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         age_days = max(0, (datetime.now(UTC) - ua).days)
         out["index_age_days"] = age_days
 
-    local_path = getattr(repository, "local_path", None)
+    # ``root``: the served checkout (see served_root), resolved here when omitted.
+    local_path = root or served_root(repository)
     # Prefer state.json's last_sync_commit over a possibly-stale DB head_commit
     # so freshness self-heals on read (see resolve_indexed_commit).
     indexed_full = resolve_indexed_commit(
@@ -634,8 +665,9 @@ def build_meta(
     if cached:
         out["cached"] = True
     if repository is not None:
-        out.update(freshness_from_repo(repository, targets=targets))
-        scope = index_scope_for_response(getattr(repository, "local_path", None))
+        root = served_root(repository)
+        out.update(freshness_from_repo(repository, targets=targets, root=root))
+        scope = index_scope_for_response(root)
         # A complete digest restates the default; only a gap is news.
         if scope is not None and (
             full or _canonical_scope_requested() or scope.get("status") != "complete"
@@ -659,7 +691,7 @@ def build_meta_with_full_scope(**kwargs: Any) -> dict[str, Any]:
     meta = {"contract_version": MCP_CONTRACT_VERSION, **build_meta(**kwargs)}
     repository = kwargs.get("repository")
     if repository is not None:
-        scope = read_index_scope(getattr(repository, "local_path", None))
+        scope = read_index_scope(served_root(repository))
         if scope is not None:
             # The fingerprint is what makes a held copy checkable against a
             # later digest, so the copy being held has to carry it too.

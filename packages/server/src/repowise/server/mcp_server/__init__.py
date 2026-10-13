@@ -330,6 +330,7 @@ _STATE_NAMES = frozenset(
         "_decision_store",
         "_fts",
         "_repo_path",
+        "_served_repo_id",
         "_vector_store_ready",
         "_lancedb_ready",
         "_registry",

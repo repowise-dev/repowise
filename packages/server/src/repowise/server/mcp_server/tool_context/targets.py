@@ -56,7 +56,7 @@ from repowise.server.mcp_server._helpers import (
     read_repo_file_text,
 )
 from repowise.server.mcp_server._index_state import index_state_key
-from repowise.server.mcp_server._meta import uncommitted_targets
+from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows, symbol_id_variants
 from repowise.server.mcp_server.tool_context.enrichment import (
@@ -1272,7 +1272,7 @@ async def _resolve_one_target(
             freshness["freshness_status"] = None
             freshness["is_stale"] = None
         if file_path_for_git and uncommitted_targets(
-            getattr(repository, "local_path", None), [file_path_for_git]
+            served_root(repository, repo_root), [file_path_for_git]
         ):
             freshness["working_tree"] = "modified"
         result_data["freshness"] = freshness
@@ -1325,7 +1325,7 @@ async def _resolve_one_target(
             want_callees=want_callees,
             exclude_spec=exclude_spec,
             collector=collector,
-            repo_root=repo_root or getattr(repository, "local_path", None),
+            repo_root=served_root(repository, repo_root),
         )
 
     # --- Reference edit set: every live site naming the symbol ---
@@ -1344,7 +1344,7 @@ async def _resolve_one_target(
                 key=lambda g: (g.node_id != symbol_node_id, g.node_id),
                 default=None,
             )
-        root = repo_root or getattr(repository, "local_path", None)
+        root = served_root(repository, repo_root)
         if ref_node is not None and root:
             result_data["references"] = await reference_edit_set(
                 session, repo_id, root, ref_node, collector

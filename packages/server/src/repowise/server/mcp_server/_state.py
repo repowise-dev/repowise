@@ -18,6 +18,10 @@ _vector_store: Any = None
 _decision_store: Any = None
 _fts: Any = None
 _repo_path: str | None = None
+# Id of the row the served checkout's own store holds for it, when that store
+# holds exactly one (set by _lifespan). Only that row's live reads follow
+# ``_repo_path`` when its stored local_path differs; see _meta.served_root.
+_served_repo_id: str | None = None
 # When set, the server skips workspace auto-detection even if the path is
 # inside a workspace root. This backs the CLI's `--no-workspace` escape hatch.
 _force_single_repo: bool = False

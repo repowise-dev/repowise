@@ -66,7 +66,7 @@ async def test_fresh_and_cached_answers_share_one_external_contract(setup_mcp, m
     provider = _Provider("Authentication is implemented in src/auth/service.py.")
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _path: provider)
 
-    def freshness(_repository, targets=None):
+    def freshness(_repository, targets=None, root=None):
         result = {"index_behind": True}
         if "src/auth/middleware.py" in (targets or []):
             result["stale_warning"] = "dropped evidence changed"
