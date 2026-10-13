@@ -73,6 +73,8 @@ class CodeHealthBlock:
     # direction as every other surface: a bare "6.9/10" beside a risk-shaped
     # label is the one reading that inverts.
     band: str = ""
+    # "analysed N of M code files" when health left some out; ``None`` otherwise.
+    analysed_note: str | None = None
     # ``None`` until two snapshots exist; the section then omits the label.
     hotspot_trend: str | None = None
     # Maintainability pillar headline (NLOC-weighted average over the per-file

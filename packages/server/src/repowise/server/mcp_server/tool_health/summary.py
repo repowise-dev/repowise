@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
-from repowise.core.analysis.health.grading import TARGET_SCORE, band_for
+from repowise.core.analysis.health.grading import TARGET_SCORE, analysed_share, headline_band
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
 from repowise.core.analysis.health.rows import split_tests
@@ -169,6 +169,7 @@ def _compute_kpis(
     production, tests = split_tests(metrics)
     worst = min(production or metrics, key=lambda r: r.score)
     worst_test = min(tests, key=lambda r: r.score) if tests else None
+    share = analysed_share(len(metrics), unanalysed)
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
@@ -177,7 +178,10 @@ def _compute_kpis(
         # Weighted vs plain mean: a gap means a few large files hold it down.
         "average_health_weighting": "nloc",
         "average_health_unweighted": round(sum(m.score for m in metrics) / len(metrics), 2),
-        "band": band_for(round(avg, 2)),
+        # Withheld when too few code files were analysed to grade the repo.
+        "band": headline_band(round(avg, 2), share),
+        # Only said when some files were left out, as ``unanalysed_file_count`` is.
+        **({"analysed_share": share} if unanalysed else {}),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
         "worst_test_path": worst_test.file_path if worst_test else None,

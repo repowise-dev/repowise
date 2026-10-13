@@ -35,6 +35,38 @@ def test_health_line_for_a_repo_with_no_scored_file(monkeypatch) -> None:
     assert line is not None and "not analysed" in line and "2992" in line
 
 
+def _health(**over) -> dict:
+    return {
+        "average_health": 10.0,
+        "file_count": 4,
+        "unanalysed_file_count": 0,
+        "analysed_share": 1.0,
+        "worst_performer_path": "a.swift",
+        "worst_performer_score": 10.0,
+        **over,
+    }
+
+
+def test_health_line_withholds_the_band_on_a_mostly_unanalysed_repo(monkeypatch) -> None:
+    monkeypatch.setattr(
+        status_cmd,
+        "_query_health",
+        lambda _path: _health(unanalysed_file_count=431, analysed_share=4 / 435),
+    )
+    line = status_cmd._query_health_line(Path("."))
+    assert line is not None
+    assert "Excellent" not in line
+    assert "analysed 4 of 435 code files" in line
+
+
+def test_health_line_is_unchanged_when_fully_analysed(monkeypatch) -> None:
+    monkeypatch.setattr(status_cmd, "_query_health", lambda _path: _health())
+    line = status_cmd._query_health_line(Path("."))
+    assert line is not None
+    assert "(avg) [[green]Excellent[/green]] · " in line
+    assert "analysed" not in line
+
+
 class TestStatusKeylessUpgradeNote:
     """``repowise status`` names the keyless upgrade commands, template-only (#3105)."""
 

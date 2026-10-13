@@ -311,7 +311,7 @@ def health_command(
         # Every figure the controls select for. Defect accuracy below is not
         # one of them: it scores the ranking against `prior_defect`, and
         # narrowing leaves it no labels to be accurate about.
-        report.kpis = compute_kpis(metrics, hotspots)
+        report.kpis = compute_kpis(metrics, hotspots, unanalysed=unanalysed)
     metrics_sorted = sorted(metrics, key=lambda m: m.score)
 
     findings = report.findings
@@ -349,7 +349,7 @@ def health_command(
         return
 
     if badge_view:
-        _render_badge(report.kpis.get("average_health"))
+        _render_badge(report.kpis.get("average_health"), report.kpis.get("analysed_share"))
         return
 
     if fmt == "json":
@@ -410,7 +410,9 @@ def health_command(
     from repowise.core.analysis.health.grading import (
         BAND_LABEL,
         BAND_TERMINAL_COLOR,
+        analysed_note,
         band_for,
+        headline_band,
     )
     from repowise.core.analysis.health.grading import (
         distribution as health_distribution,
@@ -423,8 +425,8 @@ def health_command(
     kpis = report.kpis
     avg = kpis.get("average_health")
     band_str = ""
-    if isinstance(avg, (int, float)):
-        band = band_for(float(avg))
+    band = headline_band(avg, kpis.get("analysed_share"))
+    if band is not None:
         band_color = BAND_TERMINAL_COLOR[band]
         band_str = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
     console.print(
@@ -440,6 +442,10 @@ def health_command(
             f"[dim]{unanalysed} file(s) not analysed: health does not support "
             "their language yet.[/dim]"
         )
+    # The share behind the headline, from the same counts as its band.
+    note = analysed_note(kpis.get("file_count") or 0, kpis.get("unanalysed_file_count") or 0)
+    if note:
+        console.print(f"[dim]Code health {note}.[/dim]")
     _render_split_line(kpis)
     _render_distribution_line(health_distribution(metrics))
 

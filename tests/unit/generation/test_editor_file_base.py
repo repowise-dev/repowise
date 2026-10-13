@@ -231,6 +231,19 @@ def test_the_headline_drops_the_band_when_it_is_unknown(gen):
     assert "avg ()" not in result
 
 
+def test_the_headline_states_the_analysed_share(gen):
+    import dataclasses
+
+    block = dataclasses.replace(
+        _health_block(6.4, band=""), analysed_note="analysed 4 of 435 code files"
+    )
+    result = gen.render(dataclasses.replace(_minimal_data(), code_health=block))
+    assert "code health 7.5/10 avg (analysed 4 of 435 code files)," in result
+    block = dataclasses.replace(block, band="Good")
+    result = gen.render(dataclasses.replace(_minimal_data(), code_health=block))
+    assert "avg (Good, analysed 4 of 435 code files)," in result
+
+
 def test_render_surfaces_maintainability_when_present(gen):
     import dataclasses
 

@@ -23,6 +23,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from .grading import analysed_share
 from .models import HealthFileMetricData, HealthFindingData, Severity
 from .rows import field, scored_rows, split_tests, split_unscored
 
@@ -945,6 +946,7 @@ def _empty_kpis(unanalysed: int) -> dict[str, object]:
         "hotspot_health": None,
         "average_health": None,
         "unanalysed_file_count": unanalysed,
+        "analysed_share": analysed_share(0, unanalysed),
         "worst_performer_path": None,
         "worst_performer_score": None,
         "worst_test_path": None,
@@ -970,6 +972,8 @@ def _empty_kpis(unanalysed: int) -> dict[str, object]:
 def compute_kpis(
     metrics: list[HealthFileMetricData],
     hotspot_paths: set[str],
+    *,
+    unanalysed: int = 0,
 ) -> dict[str, object]:
     """Repo-level KPIs derived from per-file metrics.
 
@@ -993,8 +997,13 @@ def compute_kpis(
     - ``unanalysed_file_count``: files stored with no score because health has
       no dialect for their language. Every KPI above leaves them out; when no
       file is scored at all, the two headline averages are ``None``.
+    - ``analysed_share``: scored files over all code files (``grading.analysed_share``),
+      which decides whether the headline carries a band. *unanalysed* counts
+      unscored files a caller already took out of *metrics*, so a narrowed
+      recompute keeps the share of the population it narrowed.
     """
-    metrics, unanalysed = split_unscored(metrics)
+    metrics, left_out = split_unscored(metrics)
+    unanalysed += left_out
     if not metrics:
         return _empty_kpis(unanalysed)
 
@@ -1037,4 +1046,5 @@ def compute_kpis(
         ),
         "production_file_count": len(production),
         "unanalysed_file_count": unanalysed,
+        "analysed_share": analysed_share(len(metrics), unanalysed),
     }

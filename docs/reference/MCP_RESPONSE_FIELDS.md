@@ -344,6 +344,7 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 |-------|---------|
 | `kpis` | Hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `worst_performer_path`, `worst_test_path`, `non_code_files`, `average_health_code_only` |
 | `unanalysed_file_count` | Files in a language health has no dialect for, stored with no score and left out of every figure; absent when there are none |
+| `kpis.band`, `kpis.analysed_share` | The headline band is `null` when fewer than half the code files were analysed, since the average then speaks for a sample; `analysed_share` (scored over all code files) appears when some were left out. `get_overview` reports `code_health` the same way |
 | `gap_analysis` | Weighted points the average must recover to reach 8.0, files below it, `files_to_reach_target`, `files_for_half_gap`, `weighted_gap_points`, `weighted_gross_gap_points` |
 | `worst_files`, `test_worst_files` | Lowest raw scores, production and test |
 | `high_leverage_files` | Ranked by `weighted_deficit`, with `share_of_repo_gap_pct` |

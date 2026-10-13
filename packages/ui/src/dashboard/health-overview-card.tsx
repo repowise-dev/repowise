@@ -15,7 +15,7 @@ import { AllClearStat } from "../shared/empty-state";
 import { truncatePath } from "../lib/format";
 import { healthBand, SEVERITY_LABEL, SEVERITY_SEGMENT, type Severity } from "../health/tokens";
 import { ProportionBar } from "../shared/proportion-bar";
-import { formatScore } from "@repowise-dev/types/health";
+import { formatScore, type HealthBand } from "@repowise-dev/types/health";
 import { Sparkline } from "../health/sparkline";
 
 export interface HealthOverviewPoint {
@@ -27,6 +27,9 @@ export interface HealthOverviewPoint {
 export interface HealthOverviewData {
   /** Repo-wide biomarker health average, 1–10 (null until first health run). */
   average_health: number | null;
+  /** Server-graded band for the average; `null` when it was withheld because
+   *  too few code files were analysed. Absent on an older server. */
+  band?: HealthBand | null;
   /** Health of the highest-churn files, 1–10. */
   hotspot_health: number | null;
   /** Lowest-scoring file and its score (1–10). */
@@ -301,7 +304,7 @@ export function HealthOverviewCard({
                 label="Average health"
                 value={avg}
                 delta={averageDelta}
-                band={avg != null ? healthBand(avg) : null}
+                band={avg != null && data.band !== null ? healthBand(avg) : null}
                 sparkline={avgSeries}
               />
               <MetricTile

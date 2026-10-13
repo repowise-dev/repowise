@@ -16,9 +16,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.finding_registry import excluded_types
-from repowise.core.analysis.health.grading import BAND_LABEL, band_for
+from repowise.core.analysis.health.grading import (
+    BAND_LABEL,
+    analysed_note,
+    analysed_share,
+    headline_band,
+)
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
-from repowise.core.analysis.health.rows import scored_rows, split_tests
+from repowise.core.analysis.health.rows import split_tests, split_unscored
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
@@ -363,7 +368,8 @@ class EditorFileDataFetcher:
         """
         # Scored rows only: a file in a language health has no dialect for
         # carries no score, and a repository of nothing else has no block.
-        metric_rows = scored_rows(
+        # The rest are counted, so the line can say how much was analysed.
+        metric_rows, unanalysed = split_unscored(
             (
                 await self._session.execute(
                     select(HealthFileMetric).where(
@@ -464,10 +470,12 @@ class EditorFileDataFetcher:
             self._session, self._repo_id, limit=DECLINE_LOOKBACK + 1
         )
 
+        band = headline_band(round(avg, 2), analysed_share(len(metric_rows), unanalysed))
         return CodeHealthBlock(
             hotspot_health=round(hotspot_for_claude_md, 2),
             average_health=round(avg, 2),
-            band=BAND_LABEL[band_for(round(avg, 2))],
+            band=BAND_LABEL[band] if band is not None else "",
+            analysed_note=analysed_note(len(metric_rows), unanalysed),
             worst_score=round(worst.score, 2),
             worst_path=worst.file_path,
             hotspot_trend=hotspot_trend(history),

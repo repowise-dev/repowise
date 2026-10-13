@@ -282,14 +282,21 @@ def _query_health_line(repo_path: Path) -> str | None:
     from repowise.core.analysis.health.grading import (
         BAND_LABEL,
         BAND_TERMINAL_COLOR,
-        band_for,
+        analysed_note,
         format_score,
+        headline_band,
     )
 
     worst_repr = format_score(worst_score) if worst_score is not None else "—"
 
-    band = band_for(float(data["average_health"]))
-    band_color = BAND_TERMINAL_COLOR[band]
+    band = headline_band(data["average_health"], data.get("analysed_share"))
+    if band is not None:
+        band_color = BAND_TERMINAL_COLOR[band]
+        band_part = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
+    else:
+        band_part = ""
+    note = analysed_note(data["file_count"], data.get("unanalysed_file_count") or 0)
+    note_part = f" · {note}" if note else ""
     # Maintainability and performance are co-surfaced pillars; show each when the
     # split has populated it (None on indexes that predate the relevant work).
     maint = data.get("maintainability_average")
@@ -309,8 +316,8 @@ def _query_health_line(repo_path: Path) -> str | None:
     hotspot = data.get("hotspot_health")
     hotspot_part = f"{format_score(hotspot)} (hotspots) · " if hotspot is not None else ""
     return (
-        f"[bold]Health:[/bold] {format_score(data['average_health'])} (avg) "
-        f"[[{band_color}]{BAND_LABEL[band]}[/{band_color}]] · "
+        f"[bold]Health:[/bold] {format_score(data['average_health'])} (avg)"
+        f"{band_part}{note_part} · "
         f"{hotspot_part}"
         f"{worst_repr} (worst: {worst_path})"
         f"{maint_part}"

@@ -737,6 +737,9 @@ export interface HealthOverviewSummary {
   /** Files left out of every figure here because health has no dialect for
    *  their language. Absent on an older server. */
   unanalysed_file_count?: number;
+  /** Scored files over all code files, 0-1; `null` with no code files. Absent
+   *  on an older server. */
+  analysed_share?: number | null;
   hotspot_health?: number | null;
   worst_performer_path: string | null;
   worst_performer_score: number | null;
@@ -751,8 +754,10 @@ export interface HealthOverviewSummary {
     medium: number;
     low: number;
   };
-  /** Repo-level band derived from `average_health` (added in the band/distribution layer). */
-  band?: HealthBand;
+  /** Repo-level band derived from `average_health` (added in the band/distribution layer).
+   *  `null` when no file is scored or too few code files were analysed to grade
+   *  the repo; absent on an older server. */
+  band?: HealthBand | null;
   /**
    * NLOC-weighted repo headline for the maintainability pillar (the second
    * surfaced signal). `null`/absent when no file carries a maintainability

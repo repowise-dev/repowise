@@ -22,6 +22,7 @@ from ....analysis.health.finding_identity import (
     legacy_finding_public_id,
 )
 from ....analysis.health.governance import GOVERNANCE_BIOMARKERS
+from ....analysis.health.grading import analysed_share
 
 # The comparator is pure and lives with the health read models; only the SQL
 # that feeds it belongs here. Re-imported rather than moved out of reach: the
@@ -687,8 +688,12 @@ async def get_health_metrics(
     )
 
 
-async def get_average_health(session: AsyncSession, repository_id: str) -> float | None:
-    """The repo's NLOC-weighted average health score, or ``None`` if unmeasured.
+async def get_headline_health(
+    session: AsyncSession, repository_id: str
+) -> tuple[float | None, float | None]:
+    """``(average health, analysed share)``: the badge's figure and its band gate.
+
+    The average is ``None`` if unmeasured; the share is ``analysed_share``.
 
     Numerically identical to ``get_health_summary()["average_health"]`` — same
     weighting, same ``max(nloc, 1)`` floor, same 2dp rounding — for callers that
@@ -720,7 +725,8 @@ async def get_average_health(session: AsyncSession, repository_id: str) -> float
     )
     # Files with no score (no health dialect for their language) are skipped,
     # so a repository of nothing else reads unmeasured, never 10.0.
-    return _rounded(nloc_weighted_attr(rows, "score"))
+    scored, unanalysed = split_unscored(rows)
+    return _rounded(nloc_weighted_attr(scored, "score")), analysed_share(len(scored), unanalysed)
 
 
 async def get_file_language_map(session: AsyncSession, repository_id: str) -> dict[str, str]:
@@ -802,6 +808,7 @@ async def get_health_summary(
         return {
             "file_count": 0,
             "unanalysed_file_count": unanalysed,
+            "analysed_share": analysed_share(0, unanalysed),
             "average_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,
@@ -879,6 +886,7 @@ async def get_health_summary(
     return {
         "file_count": len(metrics),
         "unanalysed_file_count": unanalysed,
+        "analysed_share": analysed_share(len(metrics), unanalysed),
         "average_health": _rounded(avg),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),

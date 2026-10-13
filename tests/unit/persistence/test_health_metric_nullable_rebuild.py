@@ -114,8 +114,8 @@ async def test_the_badge_says_no_data_when_no_file_is_scored(async_session):
 
     repo = await insert_repo(async_session)
     # No rows at all is no data too: a repo of only data and config files has none.
-    assert await _badge_average_health(async_session, repo.id) is None
+    assert await _badge_average_health(async_session, repo.id) == (None, None)
     await save_health_metrics(async_session, repo.id, [_row("Big.ex", None)])
-    assert await _badge_average_health(async_session, repo.id) is None
+    assert await _badge_average_health(async_session, repo.id) == (None, 0.0)
     await save_health_metrics(async_session, repo.id, [_row("Big.ex", None), _row("a.py", 8.0)])
-    assert await _badge_average_health(async_session, repo.id) == 8.0
+    assert await _badge_average_health(async_session, repo.id) == (8.0, 0.5)

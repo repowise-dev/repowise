@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.aggregation import (
     severity_breakdown as health_severity_breakdown,
 )
+from repowise.core.analysis.health.grading import headline_band
 from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.forges import read_remote_url, strip_credentials
 from repowise.core.persistence import crud
@@ -511,6 +512,11 @@ async def overview_summary(
             "average_health": health_summary.get("average_health"),
             # Files in a language health has no dialect for: in no figure here.
             "unanalysed_file_count": health_summary.get("unanalysed_file_count", 0),
+            "analysed_share": health_summary.get("analysed_share"),
+            # ``None`` when too few code files were analysed to grade the repo.
+            "band": headline_band(
+                health_summary.get("average_health"), health_summary.get("analysed_share")
+            ),
             "hotspot_health": hotspot_health_value,
             "worst_performer_path": health_summary.get("worst_performer_path"),
             "worst_performer_score": health_summary.get("worst_performer_score"),

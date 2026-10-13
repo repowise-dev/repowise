@@ -14,8 +14,8 @@ from repowise.core.analysis.health.aggregation import (
     severity_breakdown,
 )
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
-from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
+from repowise.core.analysis.health.grading import headline_band
 from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS, hotspot_health
 from repowise.core.persistence import crud
@@ -113,7 +113,9 @@ async def health_overview(
         # asked for; the two differ while a request is in flight.
         "counts": counts,
         "unscored_files": unscored,
-        "band": band_for(float(avg)) if avg is not None else None,
+        # Withheld when too few code files were analysed for the average to
+        # speak for the repo; ``analysed_share`` rides in from the summary.
+        "band": headline_band(avg, summary.get("analysed_share")),
         "gated": gated,
     }
     distribution = health_distribution(metric_dicts)

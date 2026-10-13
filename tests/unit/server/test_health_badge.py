@@ -25,6 +25,12 @@ def test_badge_fields_band_colors() -> None:
     assert _badge_fields(6.98) == ("health", "6.9/10", "yellow", "fair")
 
 
+def test_badge_is_neutral_when_too_little_was_analysed() -> None:
+    # 4 of 435 files scored: the score stays, but not in green.
+    assert _badge_fields(10.0, 4 / 435) == ("health", "10.0/10", "lightgrey", "unknown")
+    assert _badge_fields(9.0, 1.0) == ("health", "9.0/10", "brightgreen", "excellent")
+
+
 def test_every_band_colour_has_a_hex_for_the_self_rendered_svg() -> None:
     # The JSON endpoint hands shields a colour name; the SVG endpoint has to
     # resolve it here. A band colour without a hex renders grey.

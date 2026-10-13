@@ -2707,3 +2707,37 @@ async def test_dashboard_unanalysed_file_count_name(setup_mcp, health_data, sess
     only = await get_health(only=["unanalysed_file_count"])
     assert only["unanalysed_file_count"] == 1
     assert "unknown_only_keys" not in only
+
+
+@pytest.mark.asyncio
+async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, health_data, session):
+    """A few scored files beside many unanalysed ones: no band, both counts said."""
+    import uuid
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server.tool_overview.health import _build_code_health
+
+    repo = SimpleNamespace(id=health_data)
+    full = await _build_code_health(session, repo)
+    assert full["band"] is not None
+    assert "unanalysed_file_count" not in full
+    assert "analysed_share" not in full
+
+    for i in range(3):
+        session.add(
+            HealthFileMetric(
+                id=uuid.uuid4().hex,
+                repository_id=health_data,
+                file_path=f"Sources/View{i}.swift",
+                score=None,
+                nloc=10,
+            )
+        )
+    await session.flush()
+
+    partial = await _build_code_health(session, repo)
+    assert partial["file_count"] == 2
+    assert partial["unanalysed_file_count"] == 3
+    assert partial["analysed_share"] == 0.4
+    assert partial["band"] is None
