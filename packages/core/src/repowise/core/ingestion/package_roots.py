@@ -42,7 +42,7 @@ def package_manifest_names() -> frozenset[str]:
 
 
 @cache
-def _glob_manifest() -> Callable[[str], object]:
+def _glob_manifest() -> Callable[[str], re.Match[str] | None]:
     """Matches a file name against every manifest glob, ignoring case."""
     globs = sorted(_LANG_REGISTRY.package_manifest_globs())
     if not globs:

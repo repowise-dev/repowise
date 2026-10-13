@@ -68,6 +68,8 @@ class MSBuildProject:
     #: same as an explicit <IsPackable>false</IsPackable>.
     is_packable: bool | None = None
     generate_package_on_build: bool = False
+    #: A literal ``<IsTestProject>true</IsTestProject>``, or the MSTest SDK, which sets it.
+    is_test_project: bool = False
 
     @property
     def name(self) -> str:
@@ -129,6 +131,7 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
 
     project = MSBuildProject(path=csproj_path.resolve(), project_dir=csproj_path.parent.resolve())
     root = tree.getroot()
+    project.is_test_project = "mstest.sdk" in (root.get("Sdk") or "").lower()
 
     for elem in root.iter():
         tag = _local(elem.tag)
@@ -148,6 +151,8 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
                 project.is_packable = packable
         elif tag == "GeneratePackageOnBuild" and elem.text:
             project.generate_package_on_build = _bool(elem.text)
+        elif tag == "IsTestProject" and elem.text:
+            project.is_test_project = _bool(elem.text)
         elif tag == "ProjectReference":
             include = elem.get("Include")
             if include:

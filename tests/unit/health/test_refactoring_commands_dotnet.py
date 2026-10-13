@@ -175,3 +175,37 @@ def test_a_batch_runs_its_tests_through_the_stored_project() -> None:
         f'dotnet test {TESTS} --filter "{"|".join(f"CartTests.Case{n}" for n in range(2))}"'
         " -p:CollectCoverage=false"
     ]
+
+
+def test_an_unreferenced_app_is_not_a_test_project(tmp_path: Path) -> None:
+    # A console app nothing references holds a test-named file; it runs no tests.
+    _project(tmp_path, "src/Tool/Tool.csproj")
+    test = "src/Tool/Tests/ToolTests.cs"
+    assert _packages(tmp_path, [test]) == {test: None}
+    assert commands_for_tests([test], packages=_packages(tmp_path, [test])) == []
+    (tmp_path / "Shop.sln").write_text("", encoding="utf-8")
+    assert _packages(tmp_path, [test]) == {test: "Shop.sln"}
+
+
+def test_a_project_that_says_it_is_a_test_project_is_one(tmp_path: Path) -> None:
+    # The test packages come from shared build files; the property is local.
+    project = tmp_path / "test/Specs/Specs.csproj"
+    project.parent.mkdir(parents=True)
+    project.write_text(
+        "<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>",
+        encoding="utf-8",
+    )
+    test = "test/Specs/RetrySpecs.cs"
+    assert _packages(tmp_path, [test]) == {test: "test/Specs/Specs.csproj"}
+
+
+def test_a_root_level_test_project_runs_its_tests(tmp_path: Path) -> None:
+    _project(tmp_path, "Shop.Tests.csproj", body=XUNIT)
+    _project(tmp_path, "lib/Lib.csproj")
+    assert _packages(tmp_path, ["CartTests.cs", "Unit/PriceTests.cs", "lib/LibTests.cs"]) == {
+        "CartTests.cs": "Shop.Tests.csproj",
+        "Unit/PriceTests.cs": "Shop.Tests.csproj",
+        "lib/LibTests.cs": None,
+    }
+    _project(tmp_path, "Shop.Tests.csproj")  # no longer declares a test package
+    assert _packages(tmp_path, ["CartTests.cs"]) == {"CartTests.cs": None}

@@ -22,7 +22,8 @@ from ....ingestion.workspace_members import (
 )
 from ...test_selection import JS_SUFFIXES, PYTHON_SUFFIXES
 
-#: Where each test file runs from. A JS/TS test's value is the directory
+#: Each test file's runner location, for JS/TS and C# alike; plans store it as
+#: ``js_packages``. A JS/TS test's value is the directory
 #: (``""`` is the repository root) whose package.json declares a ``test``
 #: script; a C# test's is the project or solution ``dotnet test`` takes. None
 #: when nothing can run the file; a file the map does not hold is None too.
@@ -149,8 +150,10 @@ def _is_dotnet(test: str) -> bool:
 
 
 #: NuGet ids that make a project a test project: the test SDK and each
-#: framework's runner. Ceiling: a project that gets them from a
-#: ``Directory.Build.props`` counts only when nothing references it.
+#: framework's runner. Ceiling: a project that gets them only from shared
+#: build files (``Directory.Build.*``, imported targets) and does not set
+#: ``IsTestProject`` itself is not seen as one; its tests fall back to the
+#: solution.
 _TEST_PACKAGES = frozenset(
     {
         "microsoft.net.test.sdk",
@@ -170,33 +173,37 @@ _TEST_PACKAGES = frozenset(
 def _project_graph(root: Path, projects: list[str]) -> tuple[dict[str, set[str]], set[str]]:
     """Over *projects* (repo-relative ``.csproj`` paths): each referenced one
     mapped to the projects whose ``ProjectReference`` names it, and the test
-    projects, which declare a test package or are referenced by none.
-    Ceiling: one parse per project in the repository, per call."""
+    projects, which say so or declare a test package. An app or library that
+    nothing references is not one. Ceiling: one parse per project, per call."""
     by_path = {(root / project).resolve(): project for project in projects}
     referrers: dict[str, set[str]] = {}
-    declared: set[str] = set()
+    test_projects: set[str] = set()
     for project in projects:
         parsed = parse_csproj(root / project)
         if parsed is None:
             continue
-        if _TEST_PACKAGES.intersection(map(str.lower, parsed.package_references)):
-            declared.add(project)
+        packages = {package.lower() for package in parsed.package_references}
+        if parsed.is_test_project or not _TEST_PACKAGES.isdisjoint(packages):
+            test_projects.add(project)
         for target in parsed.project_references:
             if target in by_path:
                 referrers.setdefault(by_path[target], set()).add(project)
-    return referrers, declared | (set(projects) - referrers.keys())
+    return referrers, test_projects
 
 
-def _root_solution(root: Path) -> str | None:
-    """The repository root's solution file: the only one, or the one named
-    after the checkout; None when there is none or the choice is a guess."""
+def _root_files(root: Path) -> tuple[list[str], str | None]:
+    """The ``.csproj`` files at the repository root, which the package scan
+    leaves out, and its solution: the only one, or the one named after the
+    checkout; None when there is none or the choice is a guess."""
     try:
-        names = sorted(p.name for p in root.iterdir() if p.suffix.lower() in _SOLUTIONS)
+        names = sorted(p.name for p in root.iterdir())
     except OSError:
-        return None
-    if len(names) > 1:
-        names = [name for name in names if Path(name).stem.lower() == root.name.lower()]
-    return names[0] if len(names) == 1 else None
+        return [], None
+    projects = [name for name in names if name.lower().endswith(".csproj")]
+    solutions = [name for name in names if Path(name).suffix.lower() in _SOLUTIONS]
+    if len(solutions) > 1:
+        solutions = [name for name in solutions if Path(name).stem.lower() == root.name.lower()]
+    return projects, solutions[0] if len(solutions) == 1 else None
 
 
 def _test_project(
@@ -206,9 +213,11 @@ def _test_project(
     test_projects: set[str],
 ) -> str | None:
     """The test project that runs C# file *path*: the one project in its
-    directory when that is a test project, else the only test project that
-    references it (*path* is in a test helper library); None otherwise."""
-    projects = by_dir.get(module_for(path, by_dir.keys()) or "", [])
+    directory (the root's when no deeper one holds it) when that is a test
+    project, else the only test project that references it (*path* is in a
+    test helper library); None otherwise."""
+    owner = module_for(path, by_dir.keys())
+    projects = by_dir.get(owner, []) if owner in by_dir else by_dir.get("", [])
     if len(projects) != 1:
         return None
     if projects[0] in test_projects:
@@ -223,17 +232,18 @@ def dotnet_test_projects(
     """The project ``dotnet test`` runs each C# test in *tests* through, from
     the ``.csproj`` names *manifests* (:func:`scan_package_manifests`) records;
     the root solution when no single test project runs the file, else None.
-    Blocking file reads: an async caller uses a thread."""
+    Blocking file reads, and none without a C# test: an async caller uses a
+    thread."""
     files = {_file(test) for test in tests if _is_dotnet(test)}
     if not files:
         return {}
-    by_dir: dict[str, list[str]] = {}
+    root_projects, solution = _root_files(root)
+    by_dir: dict[str, list[str]] = {"": root_projects} if root_projects else {}
     for directory, names in manifests.items():
         for name in sorted(names):
             if name.lower().endswith(".csproj"):
                 by_dir.setdefault(directory, []).append(f"{directory}/{name}")
     referrers, test_projects = _project_graph(root, [p for ps in by_dir.values() for p in ps])
-    solution = _root_solution(root)
     return {
         path: _test_project(path, by_dir, referrers, test_projects) or solution for path in files
     }
@@ -495,23 +505,29 @@ def _dotnet_filter(test: str) -> str | None:
     return name if re.fullmatch(r"\w+(\.\w+)?", name) else None
 
 
+def _filter_arg(names: set[str]) -> str:
+    """``--filter`` for *names*, with coverage collection off: a coverage gate
+    (coverlet's threshold) fails any filtered run. Double quotes keep ``|``
+    from every shell."""
+    joined = "|".join(sorted(names))
+    return (f'--filter "{joined}"' if len(names) > 1 else f"--filter {joined}") + (
+        " -p:CollectCoverage=false"
+    )
+
+
 def _dotnet_commands(tests: list[str], packages: JsPackages | None) -> list[str]:
     """``dotnet test`` per project, filtered to the named tests; the whole
     project when any of its tests is a file. A test no project runs gets none."""
-    groups: dict[str, list[str | None]] = {}
+    groups: dict[str, set[str | None]] = {}
     for test in tests:
         project = packages.get(_file(test)) if packages is not None else None
         if project is not None:
-            groups.setdefault(project, []).append(_dotnet_filter(test))
+            groups.setdefault(project, set()).add(_dotnet_filter(test))
     commands = []
     for project, names in sorted(groups.items()):
         command = f"dotnet test {_arg(project)}"
         if None not in names:
-            # Double quotes keep ``|`` from every shell. A coverage gate
-            # (coverlet's threshold) fails any filtered run, so it is off.
-            joined = "|".join(sorted({name for name in names if name}))
-            command += f' --filter "{joined}"' if "|" in joined else f" --filter {joined}"
-            command += " -p:CollectCoverage=false"
+            command += " " + _filter_arg({name for name in names if name is not None})
         commands.append(command)
     return commands
 
