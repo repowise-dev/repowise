@@ -335,6 +335,7 @@ class RefactoringHealthService:
             "plans",
             shown=shown,
             file_paths=query.file_paths,
+            include_unverified=self._include_unverified,
         )
         return counts.as_dict()
 

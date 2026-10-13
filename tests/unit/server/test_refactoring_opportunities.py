@@ -350,6 +350,7 @@ async def test_every_surface_reports_the_same_counts(client, app):
         "due": page["counts"]["due"],
         "shown": 2,
         "excluded": {"below_min_worth": 1, "test": 1},
+        "gated": 0,
     }
     overview = (await client.get(f"/api/repos/{repo_id}/health/overview")).json()
     by_unit = overview["queue_counts"]

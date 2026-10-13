@@ -2727,6 +2727,7 @@ export interface QueueCounts {
   due?: number;
   shown?: number;
   excluded?: Record<string, number>;
+  gated?: number;
 }
 
 /** What the ``fix_first`` scope leaves out of a page's filtered set. */

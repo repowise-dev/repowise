@@ -5,7 +5,8 @@ counts at five levels: ``inventory`` every open unit; ``in_scope`` those whose
 code is in scope (not test, tooling, vendored, generated or docs); ``eligible``
 those a default queue holds; ``due`` eligible units in a tier worth scheduling
 now; ``shown`` what the response carries. ``excluded`` names every reason a
-unit is out, so the levels add up.
+unit is out, and ``gated`` counts the units a language gate holds back, so the
+levels add up: ``inventory`` is the served units plus ``gated``.
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ class QueueCounts:
     due: int = 0
     shown: int = 0
     excluded: dict[str, int] = field(default_factory=dict)
+    gated: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -85,12 +87,16 @@ class QueueCounts:
             "due": self.due,
             "shown": self.shown,
             "excluded": dict(self.excluded),
+            "gated": self.gated,
         }
 
 
-def queue_counts(groups: Iterable[tuple[str | None, str | None, int]], shown: int) -> QueueCounts:
-    """Fold ``(reason, tier, n)`` groups (``reason`` ``None`` for an eligible
-    unit) into the counts; ``shown`` is the caller's."""
+def queue_counts(
+    groups: Iterable[tuple[str | None, str | None, int]], shown: int, *, gated: int = 0
+) -> QueueCounts:
+    """Fold ``(reason, tier, n)`` groups of served units (``reason`` ``None``
+    for an eligible unit) into the counts; ``shown`` is the caller's and
+    ``gated`` the units a language gate held back."""
     eligible = due = 0
     excluded: dict[str, int] = {}
     for reason, level, n in groups:
@@ -99,21 +105,25 @@ def queue_counts(groups: Iterable[tuple[str | None, str | None, int]], shown: in
             due += n if level in DUE_TIERS else 0
         else:
             excluded[reason] = excluded.get(reason, 0) + n
-    return counts_of(eligible, due, excluded, shown)
+    return counts_of(eligible, due, excluded, shown, gated=gated)
 
 
-def counts_of(eligible: int, due: int, excluded: Mapping[str, int], shown: int) -> QueueCounts:
-    """The counts from what a queue holds and what it left out, by reason."""
+def counts_of(
+    eligible: int, due: int, excluded: Mapping[str, int], shown: int, *, gated: int = 0
+) -> QueueCounts:
+    """The counts from what a queue holds and what it left out, by reason.
+    A gated unit is in ``inventory`` and ``gated`` only."""
     kept = {reason: n for reason, n in excluded.items() if n}
-    inventory = eligible + sum(kept.values())
+    served = eligible + sum(kept.values())
     out_of_scope = sum(n for reason, n in kept.items() if reason in SCOPE_EXCLUSIONS)
     return QueueCounts(
-        inventory=inventory,
-        in_scope=inventory - out_of_scope,
+        inventory=served + gated,
+        in_scope=served - out_of_scope,
         eligible=eligible,
         due=due,
         shown=shown,
         excluded=dict(sorted(kept.items(), key=lambda i: (-i[1], i[0]))),
+        gated=gated,
     )
 
 

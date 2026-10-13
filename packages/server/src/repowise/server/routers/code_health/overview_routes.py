@@ -161,7 +161,10 @@ async def health_overview(
         # same numbers the lists, MCP and the CLI report, whatever scope or
         # counts this page projects.
         "queue_counts": await all_unit_counts(
-            session, repo_id, shown={"findings": len(top_findings)}
+            session,
+            repo_id,
+            shown={"findings": len(top_findings)},
+            include_unverified=include_unverified,
         ),
         "meta": {
             "last_indexed_at": last_indexed_at,

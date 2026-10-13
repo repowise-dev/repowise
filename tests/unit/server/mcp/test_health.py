@@ -1655,7 +1655,7 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     assert len(block["items"]) == min(eligible, FIX_FIRST_PAGE_CAP)
     assert block["items_total"] == eligible
     counts = block["counts"]
-    assert set(counts) == {"inventory", "in_scope", "eligible", "due", "shown", "excluded"}
+    assert set(counts) == {"inventory", "in_scope", "eligible", "due", "shown", "excluded", "gated"}
     assert counts["inventory"] >= counts["in_scope"] >= counts["eligible"] >= counts["due"]
     assert counts["shown"] == len(block["items"])
     assert all(n > 0 for n in counts["excluded"].values())
@@ -1793,6 +1793,7 @@ def test_fix_first_counts_split_scope_from_worth():
         "due": 0,
         "shown": 1,
         "excluded": {"test": 4, "tooling": 1, "below_min_worth": 3},
+        "gated": 0,
     }
 
 

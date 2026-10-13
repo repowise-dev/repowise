@@ -181,7 +181,13 @@ async def load_health_data(
     )
     data.fix_first, data.fix_first_full = await _read_fix_first(session, repository, pop, req)
     if "top_findings" in req.only_set and not pop.nothing_resolved:
-        counts = await unit_counts(session, repository.id, "findings", file_paths=pop.target_paths)
+        counts = await unit_counts(
+            session,
+            repository.id,
+            "findings",
+            file_paths=pop.target_paths,
+            include_unverified=req.include_unverified,
+        )
         data.finding_counts = counts.as_dict()
     data.gated = await _read_gated(session, req, data)
     return data

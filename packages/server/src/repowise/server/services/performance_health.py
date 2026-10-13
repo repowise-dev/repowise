@@ -150,6 +150,7 @@ class PerformanceHealthService:
                     "causes",
                     shown=len(items),
                     file_paths=query.file_paths,
+                    include_unverified=self._include_unverified,
                 )
             ).as_dict(),
             gated=await self.gated(),

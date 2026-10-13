@@ -146,6 +146,25 @@ async def test_health_findings_and_overview(client: AsyncClient, app) -> None:
     assert drawer["findings"] == [] and drawer["gated"]["java"]["count"] == 2
 
 
+async def test_queue_counts_take_a_gated_unit_once(client: AsyncClient, app) -> None:
+    repo_id = await _seed(client, app)
+    url = f"/api/repos/{repo_id}/health/overview"
+
+    def served(counts: dict) -> int:
+        return counts["eligible"] + sum(counts["excluded"].values())
+
+    held = (await _get(client, url))["queue_counts"]
+    opted = (await _get(client, url, include_unverified=True))["queue_counts"]
+    for unit in ("findings", "causes", "plans"):
+        counts, every = held[unit], opted[unit]
+        # The Java row is in the inventory once, as gated, and in no other level.
+        assert counts["gated"] == 1, unit
+        assert counts["inventory"] == served(counts) + counts["gated"], unit
+        # Opted in, nothing is held back and the inventory is the same rows.
+        assert every["gated"] == 0, unit
+        assert every["inventory"] == served(every) == counts["inventory"], unit
+
+
 async def test_dead_code_list_and_summary(client: AsyncClient, app) -> None:
     repo_id = await _seed(client, app)
     base = f"/api/repos/{repo_id}/dead-code"
