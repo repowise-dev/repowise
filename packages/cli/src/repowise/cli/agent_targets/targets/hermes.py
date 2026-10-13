@@ -989,11 +989,11 @@ class HermesTarget:
             return [str(config_path())]
         return [str(instructions_path(repo_path or Path.cwd()))]
 
-    def doctor(self) -> DoctorReport:
-        """User-scope health, which is the only half a bare call can see.
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
+        """User-scope health. The repo's ``AGENTS.md`` block only counts with it.
 
-        ``doctor()`` takes no repo path, so the repo's ``AGENTS.md`` is out of
-        reach and reporting on its behalf would be a claim nothing checked.
+        The MCP entry is what makes repowise reachable at all (see ``detect``),
+        so with *repo_path* an unwired user scope is the whole answer.
 
         An unreadable config **is** reported as ``BROKEN`` here, which is where
         this differs from OpenCode. That target declines to call an unparseable
@@ -1026,7 +1026,9 @@ class HermesTarget:
             target_id=ID,
             status=DoctorStatus.NOT_INSTALLED,
             issues=(
-                "Hermes is not wired at user scope; the managed AGENTS.md block is "
+                "Hermes is not wired at user scope."
+                if repo_path is not None
+                else "Hermes is not wired at user scope; the managed AGENTS.md block is "
                 "repo-local, so run this from a repo to check that half.",
             ),
             fix_command="repowise agents add --target=hermes",

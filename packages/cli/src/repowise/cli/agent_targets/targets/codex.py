@@ -1188,7 +1188,7 @@ class CodexTarget:
             str(instructions_path(repo)),
         ]
 
-    def doctor(self) -> DoctorReport:
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the Codex wiring.
 
         The stale-matcher case matters more here than anywhere else: Codex is

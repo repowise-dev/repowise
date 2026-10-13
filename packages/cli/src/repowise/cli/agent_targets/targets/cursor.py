@@ -536,11 +536,11 @@ class CursorTarget:
         repo = repo_path or Path.cwd()
         return [str(mcp_config_path(repo)), str(rules_path(repo))]
 
-    def doctor(self) -> DoctorReport:
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the one user-level surface, the rewrite hook.
 
-        The MCP config and rules file are workspace-local and ``doctor()`` takes
-        no repo path, so they are not judged here.
+        The MCP config and rules file are workspace-local, so they are not
+        judged here.
         """
         from repowise.cli.agent_adapters.cursor import cursor_rewrite_hook_matcher, user_hooks_path
 

@@ -279,7 +279,7 @@ class CopilotTarget:
             return [str(mcp_config_path())]
         return [str(vscode.instructions_path(repo_path or Path.cwd()))]
 
-    def doctor(self) -> DoctorReport:
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """User-scope health; the project block needs a repo to check."""
         from ..formats.json_merge import load_json_object_or_value_error
 

@@ -541,7 +541,7 @@ class ClaudeCodeTarget:
             paths.append(str(desktop))
         return paths
 
-    def doctor(self) -> DoctorReport:
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the Claude Code wiring, with one command to fix it.
 
         Reports a stale rewrite-hook matcher explicitly. An entry whose matcher

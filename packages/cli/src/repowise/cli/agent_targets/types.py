@@ -379,8 +379,11 @@ class AgentTarget(Protocol):
         """
         ...
 
-    def doctor(self) -> DoctorReport:
-        """This target's health, with one command that would fix it."""
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
+        """This target's health, with one command that would fix it.
+
+        *repo_path* lets a target with repo-local wiring check that half too.
+        """
         ...
 
 
