@@ -438,8 +438,10 @@ def _walk_function_body(
                     )
                 )
         elif node.is_named and node.type in lmap.try_kinds:
-            # TRY opens a nesting level but does not branch on its own.
-            nesting_increment = 1
+            # TRY neither branches nor nests: each catch opens the level for
+            # its own body, and the guarded and finally bodies stay at the
+            # try's depth (Sonar's cognitive complexity spec).
+            pass
         elif node.is_named and node.type in lmap.switch_kinds:
             # Detect flat match: all arms are simple single-expression arms.
             if _is_flat_match(node, lmap):

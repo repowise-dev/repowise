@@ -133,10 +133,11 @@ def test_conditional_rendering_inside_markup_is_flat():
 
 def test_real_pyramid_inside_a_jsx_handler_still_flagged():
     fn = _fn(HANDLER_PYRAMID, "Panel")
-    # for > if > try > if > while: the arrow handler rolls into Panel.
-    assert fn.max_nesting == 5
+    # for > if > if > while (the try adds no level): the arrow handler rolls
+    # into Panel.
+    assert fn.max_nesting == 4
     [finding] = BIOMARKER.detect(_ctx(fn))
-    assert finding.severity.value == "high"
+    assert finding.severity.value == "medium"
 
 
 def test_value_ternary_chain_is_flat_in_plain_typescript():

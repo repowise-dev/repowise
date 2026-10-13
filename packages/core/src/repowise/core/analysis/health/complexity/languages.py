@@ -7,7 +7,7 @@ names to the walker's abstract categories:
 - ``BRANCH``    — adds 1 to CCN, 1 to nesting, 1 + nesting to cognitive.
 - ``LOOP``      — same as BRANCH.
 - ``TRY``       — adds 1 to CCN per ``catch``/``except`` clause; the
-                  ``TRY`` block itself only opens a nesting level.
+                  ``TRY`` block itself adds no CCN and no nesting.
 - ``CATCH``     — adds 1 to CCN, 1 to nesting; the catch clause.
 - ``SWITCH``    — case dispatch root; counts each case as a branch.
 - ``CASE``      — adds 1 to CCN, 1 to nesting per case.
@@ -1288,7 +1288,7 @@ _OBJC = LanguageNodeMap(
     # ``for_in_statement`` node in this grammar.
     loop_kinds=frozenset({"for_statement", "while_statement", "do_statement"}),
     try_kinds=frozenset({"try_statement"}),
-    # TRY only opens a nesting level; CATCH is what adds to CCN.
+    # CATCH, not TRY, adds to CCN and nesting.
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_statement"}),
     case_kinds=frozenset({"case_statement"}),

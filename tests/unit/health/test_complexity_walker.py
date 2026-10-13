@@ -987,3 +987,83 @@ def test_php_assertion_blocks():
     assert many.assertion_blocks[0][2] == 5
     few = _find(results, "testFewAsserts")
     assert few is not None and few.assertion_blocks == []
+
+
+def _walk_source(source: str, language: str, filename: str):
+    _require_language(language)
+    results = walk_file_complexity(filename, language, source.encode())
+    if not results:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    return {r.name: r for r in results}
+
+
+# A try neither branches nor nests: each catch opens one level for its own
+# body, and the guarded and finally bodies stay at the try's depth.
+@pytest.mark.parametrize(
+    ("language", "filename", "source", "ccn", "nesting", "cognitive"),
+    [
+        (
+            "python",
+            "f.py",
+            "def f(a):\n try:\n  g()\n except ValueError:\n  if a:\n   return 2\n return 3\n",
+            3,
+            2,
+            3,
+        ),
+        (
+            "python",
+            "f.py",
+            "def f(a):\n try:\n  if a:\n   g()\n finally:\n  if a:\n   h()\n",
+            3,
+            1,
+            2,
+        ),
+        (
+            "python",
+            "f.py",
+            "def f():\n try:\n  try:\n   g()\n  except KeyError:\n   h()\n except ValueError:\n  k()\n",
+            3,
+            1,
+            2,
+        ),
+        (
+            "java",
+            "F.java",
+            "class F {\n  int f(boolean a) {\n    try (Reader r = open()) {\n      g();\n"
+            "    } catch (IOException e) {\n      if (a) { return 2; }\n    }\n    return 3;\n  }\n}\n",
+            3,
+            2,
+            3,
+        ),
+        (
+            "kotlin",
+            "f.kt",
+            "fun f(a: Boolean): Int {\n    val x = try {\n        g()\n    } catch (e: Exception) {\n"
+            "        if (a) 2 else 3\n    }\n    return x\n}\n",
+            3,
+            2,
+            3,
+        ),
+    ],
+    ids=["try-except-if", "try-finally", "nested-try", "java-try-with-resources", "kotlin-try-expression"],
+)
+def test_try_does_not_nest(language, filename, source, ccn, nesting, cognitive):
+    fn = _walk_source(source, language, filename)["f"]
+    assert (fn.ccn, fn.max_nesting, fn.cognitive) == (ccn, nesting, cognitive)
+
+
+def test_catch_still_nests_its_body():
+    source = (
+        "def f(a):\n"
+        "    try:\n"
+        "        g()\n"
+        "    except ValueError:\n"
+        "        log()\n"
+        "        log()\n"
+        "        log()\n"
+        "    return 3\n"
+    )
+    fn = _walk_source(source, "python", "f.py")["f"]
+    assert fn.max_nesting == 1
+    # The nesting locator names the except clause, not the try around it.
+    assert fn.deepest_block == (4, 7)

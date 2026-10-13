@@ -210,7 +210,7 @@ def test_a_case_where_guard_is_not_counted():
 # -- errors -----------------------------------------------------------------------
 
 
-def test_do_catch_counts_each_catch_and_do_opens_a_level():
+def test_do_catch_counts_each_catch_and_only_the_catch_nests():
     source = (
         "func f() -> Int {\n    do {\n        try g()\n    } catch let e as NSError {\n        return 1\n"
         "    } catch {\n        return 2\n    }\n    return 0\n}\n"
@@ -220,8 +220,8 @@ def test_do_catch_counts_each_catch_and_do_opens_a_level():
         "    } catch (e: Exception) {\n        return 2\n    }\n    return 0\n}\n"
     )
 
-    assert _shape(source) == {"f": (3, 2)}
-    assert _shape(kotlin, "kotlin") == {"f": (3, 2)}
+    assert _shape(source) == {"f": (3, 1)}
+    assert _shape(kotlin, "kotlin") == {"f": (3, 1)}
 
 
 def test_a_catch_where_filter_is_one_more_decision():
@@ -240,8 +240,8 @@ def test_try_marks_and_defer_are_not_decisions():
     assert _shape(source) == {"f": (1, 0)}
 
 
-def test_a_do_block_with_no_catch_opens_a_level_and_adds_no_path():
-    assert _f("    do { if a > 0 { return 1 } }") == (2, 2)
+def test_a_do_block_with_no_catch_adds_no_path_and_no_level():
+    assert _f("    do { if a > 0 { return 1 } }") == (2, 1)
 
 
 # -- what is a function -------------------------------------------------------------
