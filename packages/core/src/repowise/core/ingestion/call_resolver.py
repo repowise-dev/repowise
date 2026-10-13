@@ -287,6 +287,19 @@ def _parameter_at(parameters: list[str], index: int, expanded: bool) -> str | No
     return parameters[index] if index < len(parameters) else None
 
 
+def _java_method_refusing(symbol: Symbol | None, argument_count: int | None) -> bool:
+    """Whether *symbol* is a Java method whose parameters cannot take *argument_count*."""
+    if symbol is None or argument_count is None:
+        return False
+    return symbol.language == "java" and symbol.kind == "method" and not _takes(symbol, argument_count)
+
+
+def _takes(symbol: Symbol, argument_count: int) -> bool:
+    """Whether *symbol*'s parameters admit *argument_count*; an unread signature does."""
+    admitted = signature_parameter_range(symbol.signature or "", symbol.language)
+    return admitted is None or _overload_phase(admitted, argument_count) is not None
+
+
 def _flattened_wildcard_source(imp: Import) -> str | None:
     """The repository file whose every name *imp* forwards, or None.
 
@@ -1007,11 +1020,59 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """
         rep = self._overload_rep.get(resolved.callee_id)
         if rep is None:
-            return resolved
+            return self._inherited_overload(resolved, call)
         target = self._overload_target(rep, call.argument_count, call.argument_types)
         if target == resolved.caller_id:
             return None
         return resolved if target == resolved.callee_id else replace(resolved, callee_id=target)
+
+    def _inherited_overload(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
+        """A Java callee that cannot take the call's arguments yields to an inherited overload.
+
+        ``getField(i)`` in a class that overrides only ``getField(int, Chronology)``
+        calls the one-parameter ``getField`` a superclass declares. With no
+        ancestor overload that takes the count, the edge goes: its callee
+        cannot be what the call means, and a constructor inherits none. Java
+        only, where arity is binding.
+        """
+        callee = self._symbols_by_id.get(resolved.callee_id)
+        if not _java_method_refusing(callee, call.argument_count):
+            return resolved
+        assert callee is not None
+        target = None if callee.name == callee.parent_name else self._inherited_taker(resolved, call)
+        return None if target in (None, resolved.caller_id) else replace(resolved, callee_id=target)
+
+    def _inherited_taker(self, resolved: ResolvedCall, call: CallSite) -> str | None:
+        """The ancestor overload of the callee's name that takes *call*, or None.
+
+        Java looks the name up through the whole hierarchy, so a nearer
+        declaration that cannot take the count does not hide a farther one
+        that can. The superclass chain answers nearest first; past it, one
+        other ancestor (an interface default) must be the only taker.
+        """
+        class_id = self._caller_class_id(resolved.callee_id)
+        name = self._symbols_by_id[resolved.callee_id].name
+        chain = tuple(self._superclass_chain(class_id))
+        for ancestor in chain:
+            target = self._taker_in(ancestor, name, call)
+            if target is not None:
+                return target
+        takers = {
+            self._taker_in(ancestor, name, call)
+            for ancestor in self._ancestors_of(class_id)
+            if ancestor not in chain
+        } - {None}
+        return takers.pop() if len(takers) == 1 else None
+
+    def _taker_in(self, type_id: str, name: str, call: CallSite) -> str | None:
+        """The member of *type_id*'s own *name* overloads that takes *call*, or None."""
+        declared = self._declares(type_id, name)
+        if declared is None or self._symbols_by_id[declared].kind != "method":
+            return None
+        count = call.argument_count or 0
+        rep = self._overload_rep.get(declared)
+        target = declared if rep is None else self._overload_target(rep, count, call.argument_types)
+        return target if _takes(self._symbols_by_id[target], count) else None
 
     def _pick_overload(
         self, rep: str, argument_count: int | None, argument_types: _ArgumentTypes = None

@@ -769,6 +769,64 @@ class TestOverloadTies:
         base = "app/F.java::F::"
         assert {c for a, c in edges if a == base + "use"} == {base + "fmt#2(String,Object[])"}
 
+    @pytest.mark.parametrize(
+        ("inherited", "expected"),
+        [
+            ("  public int getField(int i) { return i; }\n", "app/Base.java::Base::getField#1"),
+            ("", None),
+        ],
+        ids=["inherited-overload", "none-admits"],
+    )
+    def test_java_a_callee_that_cannot_take_the_count_yields_to_an_inherited_overload(
+        self, tmp_path: Path, inherited: str, expected: str | None
+    ) -> None:
+        """``getField(i)`` beside an override of only ``getField(int, Chronology)``."""
+        base = (
+            "package app;\npublic abstract class Base {\n"
+            f"{inherited}  protected abstract int getField(int i, Object chrono);\n}}\n"
+        )
+        sub = (
+            "package app;\npublic class Sub extends Base {\n"
+            "  protected int getField(int i, Object chrono) { return i; }\n"
+            "  int use(int i) { return getField(i); }\n}\n"
+        )
+        files = {"app/Base.java": ("java", base), "app/Sub.java": ("java", sub)}
+        parsed = {rel: _parse(rel, lang, text, tmp_path) for rel, (lang, text) in files.items()}
+        resolver = CallResolver(
+            parsed,
+            {rel: set(parsed) - {rel} for rel in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents={"app/Sub.java::Sub": {"app/Base.java::Base"}},
+        )
+        callees = {rc.callee_id for rc in resolver.resolve_file("app/Sub.java", parsed["app/Sub.java"].calls)}
+        assert callees == ({expected} if expected else set())
+
+    def test_java_a_farther_ancestor_overload_takes_what_a_nearer_one_cannot(
+        self, tmp_path: Path
+    ) -> None:
+        """``f(1)``: ``Mid`` declares only ``f(int, int)``, ``Top`` the ``f(int)`` that takes it."""
+        files = {
+            "app/Top.java": "package app;\npublic class Top {\n  public void f(int i) { }\n}\n",
+            "app/Mid.java": "package app;\npublic class Mid extends Top {\n"
+            "  public void f(int a, int b) { }\n}\n",
+            "app/Sub.java": "package app;\npublic class Sub extends Mid {\n"
+            "  public void f(int a, int b) { }\n  void use() { f(1); }\n}\n",
+        }
+        parsed = {rel: _parse(rel, "java", text, tmp_path) for rel, text in files.items()}
+        resolver = CallResolver(
+            parsed,
+            {rel: set(parsed) - {rel} for rel in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents={
+                "app/Sub.java::Sub": {"app/Mid.java::Mid"},
+                "app/Mid.java::Mid": {"app/Top.java::Top"},
+            },
+        )
+        calls = parsed["app/Sub.java"].calls
+        assert {rc.callee_id for rc in resolver.resolve_file("app/Sub.java", calls)} == {
+            "app/Top.java::Top::f"
+        }
+
     def test_csharp_a_tie_among_other_members_takes_the_first_admitting_one(
         self, tmp_path: Path
     ) -> None:
