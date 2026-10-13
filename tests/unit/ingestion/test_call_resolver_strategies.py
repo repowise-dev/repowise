@@ -1441,6 +1441,67 @@ class TestInheritedTypedReceiver:
         assert self._targets(tmp_path, files, parents, language="kotlin") == []
 
 
+class TestJavaReceiverRecall:
+    """Java receivers the typed tiers missed: an inherited field, ``super``, a cast."""
+
+    def _targets(self, tmp_path: Path, body: str, head: str = "") -> list[tuple[str, str]]:
+        files = {
+            "a/Base.java": "package a;\npublic class Base {\n    protected Reader reader;\n"
+            "    protected Doc doc;\n    public void m() {}\n}\n",
+            "a/Reader.java": "package a;\npublic class Reader {\n    public void consume() {}\n}\n",
+            "a/Node.java": "package a;\npublic class Node {\n    public void append() {}\n}\n",
+            "a/Doc.java": "package a;\npublic class Doc extends Node {}\n",
+            "b/Reader.java": "package b;\npublic class Reader {\n    public void consume() {}\n}\n",
+            "b/Sub.java": f"package b;\nimport a.Base;\n{head}public class Sub extends Base {{\n"
+            f"    public void m() {{}}\n    void go(Object o) {{\n        {body}\n    }}\n}}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        _link_imports(parsed, {"b/Sub.java": {"a.Base": "a/Base.java", "a.Node": "a/Node.java"}})
+        resolver = CallResolver(
+            parsed,
+            {k: set() for k in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents={
+                "b/Sub.java::Sub": {"a/Base.java::Base"},
+                "a/Doc.java::Doc": {"a/Node.java::Node"},
+            },
+        )
+        calls = parsed["b/Sub.java"].calls
+        return [(rc.callee_id, rc.origin) for rc in resolver.resolve_file("b/Sub.java", calls)]
+
+    def test_an_inherited_field_is_typed_in_the_declaring_file(self, tmp_path: Path) -> None:
+        """``Reader`` is ``a.Reader`` where ``Base`` declares it, not the caller's ``b.Reader``."""
+        assert self._targets(tmp_path, "reader.consume();") == [
+            ("a/Reader.java::Reader::consume", "receiver_field_same_package")
+        ]
+
+    def test_an_inherited_field_reaches_its_types_ancestor(self, tmp_path: Path) -> None:
+        assert self._targets(tmp_path, "doc.append();") == [
+            ("a/Node.java::Node::append", "receiver_field_global")
+        ]
+
+    def test_a_local_shadows_an_inherited_field(self, tmp_path: Path) -> None:
+        assert self._targets(tmp_path, "Object reader = null; reader.consume();") == []
+
+    def test_an_untyped_lambda_parameter_shadows_an_inherited_field(self, tmp_path: Path) -> None:
+        assert self._targets(tmp_path, "run(reader -> reader.consume());") == []
+
+    def test_super_skips_the_callers_own_override(self, tmp_path: Path) -> None:
+        assert self._targets(tmp_path, "super.m();") == [("a/Base.java::Base::m", "self_inherited")]
+
+    @pytest.mark.parametrize("cast", ["Node", "Node<String>"])
+    def test_a_cast_names_its_receiver_type(self, tmp_path: Path, cast: str) -> None:
+        body = f"(({cast}) o).append();"
+        assert self._targets(tmp_path, body, "import a.Node;\n") == [
+            ("a/Node.java::Node::append", "module_alias")
+        ]
+
+    def test_a_scoped_cast_type_is_not_captured(self, tmp_path: Path) -> None:
+        source = "class Use {\n    void go(Object o) {\n        ((a.Node) o).append();\n    }\n}\n"
+        parsed = _parse_all(tmp_path, {"Use.java": ("java", source)})
+        assert [c.receiver_name for c in parsed["Use.java"].calls] == [None]
+
+
 class TestOwnerAwareModuleTier:
     """The module and import-name tiers pick an owner, not just a file.
 

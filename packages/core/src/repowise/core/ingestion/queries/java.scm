@@ -99,12 +99,25 @@
 ; bare name through the flat same-file index instead of against the caller's own
 ; class.
 ;
-; ``super`` stays out: ``super.m()`` arrives bare, where the caller's own class
-; answers it and the recursion refusal drops an override calling itself. No
-; member strategy answers a ``super`` receiver for Java, so capturing one would
-; only move the call onto its bare-name fallback, which skips the caller's class.
+; ``super.m()`` is captured too, so the resolver walks the caller's ancestors
+; instead of binding the caller's own override.
 (method_invocation
-  object: (this) @call.receiver
+  object: [(this) (super)] @call.receiver
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Cast receiver: ((Foo) x).bar(args) names its type at the call site, like the
+; fluent construction below. A scoped type (``(a.Foo) x``) is left uncaptured.
+(method_invocation
+  object: (parenthesized_expression
+    (cast_expression
+      type: [
+        (type_identifier) @call.receiver
+        (generic_type (type_identifier) @call.receiver)
+      ]
+    )
+  )
   name: (identifier) @call.target
   arguments: (argument_list) @call.arguments
 ) @call.site

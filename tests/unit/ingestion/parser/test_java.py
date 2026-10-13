@@ -153,6 +153,8 @@ class TestReceiverlessTwin:
         assert (10, None) not in self._sites(parser, "set")
         assert (11, "this") in self._sites(parser, "reset")
         assert (11, None) not in self._sites(parser, "reset")
+        assert (13, "super") in self._sites(parser, "reset")
+        assert (13, None) not in self._sites(parser, "reset")
         fi = _make_file_info("java_pkg/Token.java", "java")
         calls = parser.parse_file(fi, TWIN_SOURCE).calls
         assert all(c.bare_name_fallback for c in calls if c.receiver_name)
@@ -161,7 +163,6 @@ class TestReceiverlessTwin:
     def test_genuine_receiverless_calls_are_kept(self, parser: ASTParser) -> None:
         resets = self._sites(parser, "reset")
         assert (12, None) in resets, "a bare reset()"
-        assert (13, None) in resets, "super.reset() has no receiver pattern"
         assert self._sites(parser, "max") == [(14, None)], "a static-imported call"
 
     def test_a_bare_call_sharing_a_line_with_its_member_twin_is_kept(

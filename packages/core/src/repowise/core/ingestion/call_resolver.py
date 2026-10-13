@@ -956,7 +956,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         language = self._language_of(file_path) or ""
         receiver_call = call.receiver_call
-        if language == "python" and _is_super_receiver(receiver_call):
+        if _is_super_call(call, language):
             return self._with_props(self._super_call(call, caller_id), call)
         # A language with an `external_return_types` table reaches the tier for
         # that table alone; only the constant above admits the full lane.
@@ -1803,6 +1803,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     def _super_call(self, call: CallSite, caller_id: str) -> ResolvedCall | None:
         """``super().m()``: the first class after the caller's own in its MRO to declare ``m``.
 
+        Java's ``super.m()`` arrives here too, with ``super`` as its receiver.
+
         Never handed to the bare-name tiers, which answered with whichever
         same-named method the file declared last. A base outside the
         repository ends the walk unresolved: it may declare ``m`` itself.
@@ -2104,9 +2106,17 @@ def _rivals_a_class_method(symbol_id: str) -> bool:
     return len(parts) >= 3 and id_segment_name(parts[-1]) != id_segment_name(parts[-2])
 
 
-def _is_super_receiver(receiver: CallReceiver | None) -> bool:
-    """Is this chained call's receiver Python's ``super(...)``?"""
-    return receiver is not None and receiver.target_name == "super" and receiver.receiver_name is None
+def _is_super_call(call: CallSite, language: str) -> bool:
+    """Python's ``super().m()`` (a chained call) or Java's ``super.m()``."""
+    if language == "java":
+        return call.receiver_name == "super"
+    receiver = call.receiver_call
+    return (
+        language == "python"
+        and receiver is not None
+        and receiver.target_name == "super"
+        and receiver.receiver_name is None
+    )
 
 
 def _c3_merge(sequences: list[tuple[str, ...]]) -> list[str] | None:

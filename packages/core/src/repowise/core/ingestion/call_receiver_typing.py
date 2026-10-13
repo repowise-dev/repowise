@@ -420,7 +420,7 @@ class ReceiverTypingMixin:
             if language not in _CHAIN_SELF:
                 return None
             return self._resolve_chained_receiver(file_path, call, caller_id, language)
-        type_name, scope = self._receiver_type_and_scope(
+        type_name, scope, typing_file = self._receiver_type_and_scope(
             file_path, caller_id, language, receiver_name
         )
         if type_name is None:
@@ -437,7 +437,7 @@ class ReceiverTypingMixin:
         if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name):
             return None
 
-        found = self._typed_receiver_target(file_path, call, caller_id, type_name)
+        found = self._typed_receiver_target(typing_file, call, caller_id, type_name)
         if found is None:
             # Last, because C# prefers an instance method to an extension.
             return self._typed_extension_call(file_path, call, caller_id, type_name, language)
@@ -454,15 +454,16 @@ class ReceiverTypingMixin:
         caller_id: str,
         language: str,
         receiver_name: str,
-    ) -> tuple[str | None, str]:
-        """The receiver's declared type and the scope that declared it.
+    ) -> tuple[str | None, str, str]:
+        """The receiver's declared type, the scope that declared it, and the file to read it in.
 
         A local shadows a field, so the body answers first and its answer
         stands — including when that answer is "declared twice, no usable
         type". Only a name the body never mentions reaches class scope, and
         only a name neither binds reaches module scope. A name the body binds
         with no type it can read (`{ api -> api.m() }`) is still a local, so it
-        refuses the field too.
+        refuses the field too. A field a repository ancestor declares is read
+        in that ancestor's file.
         """
         body_types = self._declared_types_in(file_path, caller_id, language)
         # A builtin type answers only when nothing else does, so a local
@@ -471,24 +472,56 @@ class ReceiverTypingMixin:
         declared = body_types.get(receiver_name)
         builtin_local = external_type_name(declared) is not None
         if receiver_name in body_types and not builtin_local:
-            return declared, "body"
+            return declared, "body", file_path
         if language in IMPLICIT_FIELD_LANGUAGES:
-            class_id = self._caller_class_id(caller_id)
-            fields = self._field_types_in(file_path, language).get(class_id, {})
-            field = fields.get(receiver_name)
-            if receiver_name in fields and not (builtin_local and external_type_name(field)):
-                bound = self._bound_names_in(file_path, caller_id, language)
-                if builtin_local or receiver_name not in bound:
-                    return field, "field"
+            found = self._field_type(file_path, caller_id, language, receiver_name, builtin_local)
+            if found is not None:
+                return found
         if builtin_local:
-            return declared, "body"
+            return declared, "body", file_path
         # Third scope: a module-level def a framework decorator turned into an
         # instance, which is neither in the body nor a field.
         if language in FRAMEWORK_DECORATOR_LANGUAGES:
             type_name = self._framework_receiver_type(file_path, caller_id, language, receiver_name)
             if type_name is not None:
-                return type_name, "framework"
-        return self._module_receiver_type(file_path, caller_id, language, receiver_name), "body"
+                return type_name, "framework", file_path
+        type_name = self._module_receiver_type(file_path, caller_id, language, receiver_name)
+        return type_name, "body", file_path
+
+    def _field_type(
+        self, file_path: str, caller_id: str, language: str, name: str, builtin_local: bool
+    ) -> tuple[str | None, str, str] | None:
+        """The caller class's field *name*, else the one a repository ancestor declares.
+
+        A name the body binds with no readable type is a local and refuses both.
+        """
+        if not builtin_local and name in self._bound_names_in(file_path, caller_id, language):
+            return None
+        class_id = self._caller_class_id(caller_id)
+        fields = self._field_types_in(file_path, language).get(class_id, {})
+        if name in fields:
+            field = fields[name]
+            return None if builtin_local and external_type_name(field) else (field, "field", file_path)
+        inherited = None if builtin_local else self._inherited_field(file_path, class_id, name, language)
+        return None if inherited is None else (inherited[1], "field", inherited[0])
+
+    def _inherited_field(
+        self, file_path: str, class_id: str, name: str, language: str
+    ) -> tuple[str, str | None] | None:
+        """``(declaring file, type)`` of the one ancestor field named *name*.
+
+        Only where a typed receiver may reach an ancestor (Java); a name two
+        ancestors declare is refused.
+        """
+        if not self._strategies_for(file_path).inherited_typed_receiver:
+            return None
+        hits = {
+            (path, fields[name])
+            for ancestor in self._ancestors_of(class_id)
+            if (path := self._symbol_paths_by_id.get(ancestor)) is not None
+            and name in (fields := self._field_types_in(path, language).get(ancestor, {}))
+        }
+        return next(iter(hits)) if len(hits) == 1 else None
 
     def _module_receiver_type(
         self,
@@ -643,8 +676,10 @@ class ReceiverTypingMixin:
             if symbol is None or symbol.kind not in _TYPE_KINDS:
                 return None
             return file_path, class_id, "same_file"
-        type_name, _ = self._receiver_type_and_scope(file_path, caller_id, language, head)
-        return None if type_name is None else self._class_named(file_path, type_name)
+        type_name, _, typing_file = self._receiver_type_and_scope(
+            file_path, caller_id, language, head
+        )
+        return None if type_name is None else self._class_named(typing_file, type_name)
 
     def _chain_hop(
         self, found: tuple[str, str, str], field: str, language: str
@@ -855,7 +890,9 @@ class ReceiverTypingMixin:
         language = self._typed_receiver_language(file_path, call)
         if language not in EXTERNAL_TYPE_LANGUAGES:
             return False
-        type_name, _ = self._receiver_type_and_scope(file_path, caller_id, language, receiver_name)
+        type_name, _, typing_file = self._receiver_type_and_scope(
+            file_path, caller_id, language, receiver_name
+        )
         if type_name is None or "::" in type_name:
             return False
         builtin = external_type_name(type_name)
@@ -863,7 +900,7 @@ class ReceiverTypingMixin:
         head = type_qualifier(builtin or type_name) or builtin or type_name
         if head in self._known_type_names:
             return False
-        return builtin is not None or head in self._externally_bound_names(file_path)
+        return builtin is not None or head in self._externally_bound_names(typing_file)
 
     def _externally_bound_names(self, file_path: str) -> frozenset[str]:
         """Simple names this file imports from outside the repo.
