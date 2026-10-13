@@ -593,6 +593,114 @@ def scan_binding_positions(text: str, language: str) -> tuple[tuple[int, int, st
     return tuple(sorted(positions))
 
 
+# Languages where a parameter or local hides a bare call of its name from every
+# repo symbol of that name. Kotlin, Swift and Dart read their own shapes below.
+CALL_SHADOW_LANGUAGES = BINDING_LANGUAGES | {"dart", "kotlin", "swift"}
+
+# Kotlin resolves `f()` past a binding that cannot be invoked, so only a
+# function-typed one hides `f`: `onClick: () -> Unit`, `r: Call.() -> T`,
+# `val f = { .. }`. Ceiling: a class type with `operator fun invoke` is missed.
+_KT_INVOKABLE = (
+    re.compile(
+        r"(?<![\w.@])(?P<name>[a-z_]\w*)\s*:\s*(?:@\w+(?:\([^()\n]*\))?\s+)*"
+        r"(?:suspend\s+)?(?:[\w.]+(?:<[^\n]*?>)?\??\.)?\("
+    ),
+    re.compile(r"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*=\s*\{"),
+)
+# Where a declared parameter list opens. Dart's header is told from a call by
+# the body that follows its list (`_DART_BODY`).
+_GENERIC = r"(?:<[^<>\n]*(?:<[^<>\n]*>[^<>\n]*)*>)?"
+_SWIFT_HEADER = re.compile(rf"(?<![\w.])(?:func\s+[^\s(<]+|init[?!]?|subscript)\s*{_GENERIC}\s*\(")
+_DART_HEADER = re.compile(rf"(?<![\w$.])(?P<fn>[A-Za-z_$][\w$]*)\s*{_GENERIC}\s*\(")
+_DART_BODY = re.compile(r"\s*(?:async\*?|sync\*)?\s*(?:\{|=>)")
+_DART_NOT_HEADERS = frozenset({"if", "for", "while", "switch", "catch", "super", "this", "assert"})
+_GROUP_BRACKETS = str.maketrans("{}[]", "    ")
+_TRAILING_NAME = re.compile(r"(?P<name>[A-Za-z_$][\w$]*)\s*$")
+
+
+def _parameter_pieces(cleaned: str, open_paren: int) -> tuple[list[tuple[int, str]], int]:
+    """``(offset, text)`` of each top-level parameter in the list at *open_paren*, and its end.
+
+    A Dart `{..}` / `[..]` optional group at the top is read through, and an
+    arrow (`->`, `=>`) closes nothing.
+    """
+    pieces: list[tuple[int, str]] = []
+    depth, start, index = 0, open_paren + 1, open_paren + 1
+    while index < len(cleaned):
+        char = cleaned[index]
+        if char in "(<" or (char in "{[" and depth):
+            depth += 1
+        elif char == ">" and cleaned[index - 1] in "-=":
+            pass
+        elif char in ")>" or (char in "}]" and depth):
+            if not depth and char == ")":
+                pieces.append((start, cleaned[start:index]))
+                return pieces, index
+            depth = max(depth - 1, 0)
+        elif char == "," and not depth:
+            pieces.append((start, cleaned[start:index]))
+            start = index + 1
+        index += 1
+    return pieces, index
+
+
+def _swift_parameter(piece: str) -> str | None:
+    """The name a Swift parameter binds in the body: the last word before its type."""
+    words = piece.partition(":")[0].split()
+    return words[-1] if words and words[-1] != "_" and words[-1].isidentifier() else None
+
+
+def _dart_parameter(piece: str) -> str | None:
+    """The name a Dart parameter binds; a `this.x` / `super.x` one binds no new name."""
+    # An optional group's brackets (`{required T name}`, `[T name]`) are not the name.
+    head = re.split(r"[=:]", piece.translate(_GROUP_BRACKETS), maxsplit=1)[0].strip()
+    if re.search(r"\b(?:this|super)\.", head):
+        return None
+    found = _TRAILING_NAME.search(head)
+    return found.group("name") if found else None
+
+
+def _listed_parameters(
+    cleaned: str, header: re.Pattern[str], name_of: Callable[[str], str | None], body: bool
+) -> set[tuple[int, str]]:
+    found: set[tuple[int, str]] = set()
+    for match in header.finditer(cleaned):
+        if body and match.group("fn") in _DART_NOT_HEADERS:
+            continue
+        pieces, end = _parameter_pieces(cleaned, match.end() - 1)
+        if body and not _DART_BODY.match(cleaned, end + 1):
+            continue
+        for offset, piece in pieces:
+            name = name_of(piece)
+            if name is not None:
+                found.add((offset + piece.find(name), name))
+    return found
+
+
+def scan_call_shadows(text: str, language: str) -> tuple[tuple[int, str], ...]:
+    """Every ``(line, name)`` binding in *text* that hides a bare call of that name.
+
+    Everything ``scan_bindings`` reads, but for Kotlin only invokable bindings,
+    and Swift and Dart add their declared parameters.
+    """
+    if language in BINDING_LANGUAGES:
+        return scan_bindings(text, language)
+    if language not in CALL_SHADOW_LANGUAGES:
+        return ()
+    cleaned = _without_comments(text, language)
+    if language == "kotlin":
+        found = _named_bindings(_KT_INVOKABLE, cleaned)
+    elif language == "swift":
+        found = _listed_parameters(cleaned, _SWIFT_HEADER, _swift_parameter, body=False)
+    else:
+        found = _listed_parameters(cleaned, _DART_HEADER, _dart_parameter, body=True)
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    lines = {(bisect_right(starts, offset), name) for offset, name in found}
+    if language != "kotlin":
+        lines.update(scan_bindings(text, language))
+    return tuple(sorted(lines))
+
+
 # What a scope binds beyond its positional bindings. A TypeScript/JavaScript
 # ``function`` declaration is hoisted, so it binds from the top of its scope
 # whatever its line. A Python ``global`` name is the module's in that scope,

@@ -12,6 +12,7 @@ from typing import NamedTuple, TypeVar
 from .lang_helpers.anonymous_classes import is_anonymous_member
 from .languages.receiver_types import (
     BINDING_LANGUAGES,
+    CALL_SHADOW_LANGUAGES,
     CALL_TYPED_LANGUAGES,
     EXTERNAL_TYPE_LANGUAGES,
     FRAMEWORK_DECORATOR_LANGUAGES,
@@ -35,6 +36,7 @@ from .languages.receiver_types import (
     scan_binding_positions,
     scan_bindings,
     scan_call_assignments,
+    scan_call_shadows,
     scan_declarations,
     scan_ranges,
     scan_scope_marks,
@@ -594,9 +596,13 @@ class ReceiverTypingMixin:
         """Is a bare call's name a parameter or local of the calling function?
 
         Then no module, import or repo-wide symbol of that name is the callee.
+        In the languages added for that question alone, a member call on its
+        bare fallback (`vm.onClick()`) is never the local.
         """
         language = self._language_of(file_path) or ""
-        return language in BINDING_LANGUAGES and self._binds_locally(
+        if call.receiver_name and language not in BINDING_LANGUAGES:
+            return False
+        return language in CALL_SHADOW_LANGUAGES and self._binds_locally(
             file_path, caller_id, language, call.target_name, call.line
         )
 
@@ -659,7 +665,7 @@ class ReceiverTypingMixin:
             return chains
         parsed = self._parsed_files.get(file_path)
         text = self._text_of(file_path)
-        bindings = self._bindings_for(file_path, language)
+        bindings = self._call_shadows_for(file_path, language)
         marks = scan_scope_marks(text, language)
         chains = {}
         open_functions: list[tuple[Symbol, _Scope]] = []
@@ -1370,6 +1376,12 @@ class ReceiverTypingMixin:
                 names = names_in_span(self._bindings_for(file_path, language), *span)
             _store_capped(self._bound_names, key, names, _BODY_TYPE_CACHE_ENTRIES)
         return names
+
+    def _call_shadows_for(self, file_path: str, language: str) -> tuple[tuple[int, str], ...]:
+        """The bindings that hide a bare call of their name, read off one file."""
+        if language in BINDING_LANGUAGES:
+            return self._bindings_for(file_path, language)
+        return scan_call_shadows(self._text_of(file_path), language)
 
     def _bindings_for(self, file_path: str, language: str) -> tuple[tuple[int, str], ...]:
         """Every name one file binds, scanned once however many bodies ask."""
