@@ -5,10 +5,12 @@ from __future__ import annotations
 import posixpath
 import re
 from bisect import bisect_left, bisect_right
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple, TypeVar
 
+from .decorator_names import is_property_accessor, is_property_getter
 from .lang_helpers.anonymous_classes import is_anonymous_member
 from .languages.receiver_types import (
     BINDING_LANGUAGES,
@@ -726,18 +728,39 @@ class ReceiverTypingMixin:
         type_name, _, typing_file = self._receiver_type_and_scope(
             file_path, caller_id, language, head
         )
+        if type_name is not None and language == "python" and "::" in type_name:
+            return self._located(file_path, type_name)  # typed from a call
         return None if type_name is None else self._class_named(typing_file, type_name)
 
     def _chain_hop(
         self, found: tuple[str, str, str], field: str, language: str
     ) -> tuple[str, str, str] | None:
-        """The class *field* of *found*'s class holds, tiered by the weaker hop."""
+        """The class *field* of *found*'s class holds, tiered by the weaker hop.
+
+        A Python field no assignment types may be a ``@property``, typed by its
+        getter's return annotation.
+        """
         class_file, class_id, tier = found
-        type_name = self._field_types_in(class_file, language).get(class_id, {}).get(field)
-        hop = None if type_name is None else self._class_named(class_file, type_name)
+        fields = self._field_types_in(class_file, language).get(class_id, {})
+        if field in fields:
+            type_name = fields[field]
+            hop = None if type_name is None else self._class_named(class_file, type_name)
+        elif language == "python":
+            hop = self._located(class_file, self._property_type_id(class_file, class_id, field))
+        else:
+            hop = None
         if hop is None:
             return None
         return hop[0], hop[1], max(tier, hop[2], key=_CHAIN_TIER_RANK.__getitem__)
+
+    def _located(self, file_path: str, type_id: str | None) -> tuple[str, str, str] | None:
+        """``(file, class id, tier)`` for a class already known by id, seen from *file_path*."""
+        if type_id is None:
+            return None
+        path = self._symbol_paths_by_id.get(type_id)
+        if path is None:
+            return None
+        return path, type_id, "same_file" if path == file_path else "import"
 
     def _class_named(self, file_path: str, type_name: str) -> tuple[str, str, str] | None:
         """``(file, class id, tier)`` for the one class *type_name* names in *file_path*.
@@ -1099,31 +1122,69 @@ class ReceiverTypingMixin:
         only a second ``:=`` of the name (another block) can disagree, and
         that makes the name unanswerable, as for any declaration. A name a
         declaration already types keeps that reading untouched.
+
+        A Python name may be rebound to anything, so one the body also binds
+        other than by a call assignment is skipped, and one whose call
+        assignments do not all yield a type is unanswerable.
         """
         assignments = self._call_assignments_for(file_path, language)
         sites = self._call_sites_for(file_path)
         declared = frozenset(types)
         first = bisect_left(assignments, start, key=lambda a: a.line)
-        for assignment in assignments[first:]:
-            if assignment.line > end:
-                break
-            if assignment.name in declared:
+        in_body = [a for a in assignments[first:] if a.line <= end]
+        rebound = self._rebound_names(file_path, language, in_body, (start, end))
+        for assignment in in_body:
+            if assignment.name in declared or assignment.name in rebound:
                 continue
             site = sites.get((assignment.line, assignment.receiver, assignment.target))
-            resolved = None if site is None else self._resolve_one(file_path, site)
-            # A repo-wide guess at the callee is not evidence of what it returns.
-            if resolved is None or "global" in resolved.origin:
-                continue
-            type_id = self._returned_type_id(resolved.callee_id)
+            type_id = (
+                None
+                if site is None
+                else self._site_returned_type_id(file_path, site, assignment.awaited)
+            )
             if type_id is not None:
                 record_type(types, assignment.name, type_id)
+            elif language == "python":
+                types[assignment.name] = None
 
-    def _returned_type_id(self, callee_id: str) -> str | None:
+    def _rebound_names(
+        self,
+        file_path: str,
+        language: str,
+        assignments: list[CallAssignment],
+        span: tuple[int, int],
+    ) -> set[str]:
+        """Names the body binds anywhere but in one of its call *assignments*.
+
+        Counted by position, so a second binding on an assignment's own line counts.
+        """
+        assigned = Counter((a.line, a.name) for a in assignments)
+        bound = Counter(
+            (line, name)
+            for line, _, name in self._binding_positions_for(file_path, language)
+            if span[0] <= line <= span[1]
+        )
+        return {name for (line, name), count in bound.items() if count > assigned[(line, name)]}
+
+    def _site_returned_type_id(self, file_path: str, site: CallSite, awaited: bool) -> str | None:
+        """The type id the call at *site* returns, read off the callee it resolves to."""
+        resolved = self._resolve_one(file_path, site)
+        # A repo-wide guess at the callee is not evidence of what it returns.
+        if resolved is None or "global" in resolved.origin:
+            return None
+        return self._returned_type_id(resolved.callee_id, awaited)
+
+    def _returned_type_id(self, callee_id: str, awaited: bool = False) -> str | None:
         """The repository type a go call to *callee_id* yields, as a symbol id.
 
         ``T`` is looked up in the callee's own package and ``pkg.T`` in the
         package the callee's file imports as ``pkg``; exactly one type there
         must carry the name. A slice, map or external type yields None.
+
+        A Python return annotation must be one bare class name, quoted or not,
+        read in the callee's file as a chain hop reads a field's type. A
+        property is read, not called, and an ``async def`` returns a coroutine
+        unless the call is *awaited*.
         """
         symbol = self._symbols_by_id.get(callee_id)
         path = self._symbol_paths_by_id.get(callee_id)
@@ -1131,6 +1192,14 @@ class ReceiverTypingMixin:
             return None
         if symbol.kind in _TYPE_KINDS:
             return callee_id  # a conversion, ``T(x)``
+        if symbol.language != "python":
+            return self._go_returned_type_id(symbol, path)
+        if is_property_accessor(symbol.decorators) or (symbol.is_async and not awaited):
+            return None
+        return self._python_returned_class(symbol, path)
+
+    def _go_returned_type_id(self, symbol: Symbol, path: str) -> str | None:
+        """``_returned_type_id`` for a go function or method *symbol* declared in *path*."""
         raw = declared_return_type(symbol.signature or "")
         written = go_first_result(raw).lstrip("*") if raw else ""
         type_name = bare_type_name(written)
@@ -1139,8 +1208,10 @@ class ReceiverTypingMixin:
         if not type_name.isidentifier() or (qualifier and not qualifier.isidentifier()):
             return None
         package = posixpath.dirname(path) if not qualifier else self._imported_dir(path, qualifier)
-        if package is None:
-            return None
+        return None if package is None else self._only_type_in_dir(type_name, package)
+
+    def _only_type_in_dir(self, type_name: str, package: str) -> str | None:
+        """The id of the one type named *type_name* declared in the directory *package*."""
         found = [
             type_id
             for type_id in self._global_symbols.get(type_name, ())
@@ -1148,6 +1219,29 @@ class ReceiverTypingMixin:
             and posixpath.dirname(self._symbol_paths_by_id.get(type_id, "")) == package
         ]
         return found[0] if len(found) == 1 else None
+
+    def _python_returned_class(self, symbol: Symbol, path: str) -> str | None:
+        """The class id *symbol*'s return annotation names, read in *path*.
+
+        One bare class name, quoted or not: ``Optional[T]``, ``T | None`` and
+        a qualified name type nothing.
+        """
+        raw = declared_return_type(symbol.signature or "")
+        written = raw.strip("\"' ") if raw else ""
+        found = self._class_named(path, written) if written.isidentifier() else None
+        return None if found is None else found[1]
+
+    def _property_type_id(self, class_file: str, class_id: str, name: str) -> str | None:
+        """The class a Python ``@property`` getter *class_id* declares returns.
+
+        The getter, not its setter, which shares the id and returns nothing.
+        """
+        sym_id = self._declares(class_id, name)
+        parsed = self._parsed_files.get(class_file)
+        for symbol in parsed.symbols if parsed is not None and sym_id is not None else ():
+            if symbol.id == sym_id and is_property_getter(symbol.decorators):
+                return self._python_returned_class(symbol, class_file)
+        return None
 
     def _imported_dir(self, file_path: str, local_name: str) -> str | None:
         """The directory of the repository package *file_path* imports as *local_name*."""
@@ -1166,18 +1260,16 @@ class ReceiverTypingMixin:
         """``x.m()`` where ``x`` holds the type *type_id*, bound by identity.
 
         A go method may sit in any file of its type's package, so the method
-        is looked for across that package, not only the type's own file.
+        is looked for across that package, not only the type's own file. A
+        Python method is the one its class declares.
         """
-        type_name = self._symbols_by_id[type_id].name
-        package = posixpath.dirname(self._symbol_paths_by_id[type_id])
-        found = [
-            (path, sym_id)
-            for path, sym_id in self._global_methods.get((type_name, call.target_name), ())
-            if posixpath.dirname(path) == package
-        ]
-        if len(found) != 1 or found[0][1] == caller_id:
+        if self._symbols_by_id[type_id].language == "python":
+            return self._python_typed_call(file_path, call, caller_id, type_id)
+        hit = self._package_method(type_id, call.target_name)
+        if hit is None or hit[1] == caller_id:
             return None
-        method_file, sym_id = found[0]
+        method_file, sym_id = hit
+        package = posixpath.dirname(self._symbol_paths_by_id[type_id])
         if method_file == file_path:
             tier = "same_file"
         elif package == posixpath.dirname(file_path):
@@ -1185,6 +1277,26 @@ class ReceiverTypingMixin:
         else:
             tier = "import"
         return self._body_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _python_typed_call(
+        self, file_path: str, call: CallSite, caller_id: str, type_id: str
+    ) -> ResolvedCall | None:
+        """``_call_typed_receiver`` for a Python class: no package tier."""
+        hit = self._located(file_path, self._declares(type_id, call.target_name))
+        if hit is None or hit[1] == caller_id:
+            return None
+        return self._body_typed_call(caller_id, hit[1], hit[2], call.line)
+
+    def _package_method(self, type_id: str, method_name: str) -> tuple[str, str] | None:
+        """``(file, method id)`` for the one go method of *type_id* in its package."""
+        type_name = self._symbols_by_id[type_id].name
+        package = posixpath.dirname(self._symbol_paths_by_id[type_id])
+        found = [
+            (path, sym_id)
+            for path, sym_id in self._global_methods.get((type_name, method_name), ())
+            if posixpath.dirname(path) == package
+        ]
+        return found[0] if len(found) == 1 else None
 
     def _module_types_in(self, file_path: str, language: str) -> dict[str, str | None]:
         """``{name: type}`` for the declarations one file makes at module scope.

@@ -210,6 +210,19 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
                 (child for child in function.named_children if child.type == "identifier"), None
             )
             receiver = None
+        elif function.type == "attribute":
+            # Python ``obj.m()``: the receiver is kept as a plain dotted path,
+            # and a call on anything else is not carried at all.
+            target = function.child_by_field_name("attribute")
+            obj = function.child_by_field_name("object")
+            path = (
+                _receiver_text("python", obj, src)
+                if obj is not None and obj.type in ("identifier", "attribute")
+                else None
+            )
+            if target is None or path is None:
+                return None
+            return CallReceiver(_node_text(target, src).strip(), path, argument_count)
         else:
             target = (
                 function.child_by_field_name("name")

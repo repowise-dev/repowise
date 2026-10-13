@@ -41,7 +41,7 @@ from .call_receiver_typing import (
     ReceiverTypingMixin,
     _store_capped,
 )
-from .decorator_names import decorator_base
+from .decorator_names import is_property_accessor
 from .lang_helpers.anonymous_classes import is_anonymous_member
 from .language_data import (
     get_builtin_methods,
@@ -140,23 +140,11 @@ _NON_CALLABLE_KINDS = frozenset({"property"})
 # the bare-name indices; its members still resolve through the method index.
 _EXTENSION_KINDS = frozenset({"impl"})
 
-# A getter and its setter are two declarations under one id, which reads as an
-# overload set and is not one: the name is an attribute, not a callable.
-_PROPERTY_DECORATORS = frozenset({"property", "cached_property"})
-_PROPERTY_ACCESSOR_SUFFIXES = (".setter", ".getter", ".deleter")
-
-
-def _is_property_accessor(sym: Any) -> bool:
-    for decorator in getattr(sym, "decorators", ()) or ():
-        tail = decorator_base(decorator)
-        if tail in _PROPERTY_DECORATORS or tail.endswith(_PROPERTY_ACCESSOR_SUFFIXES):
-            return True
-    return False
-
-
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
-PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp", "csharp", "go", "java"})
+PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset(
+    {"cpp", "csharp", "go", "java", "python"}
+)
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
@@ -609,7 +597,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             self._tu_local_ids.add(index_id)
         if sym.kind in _NON_CALLABLE_KINDS:
             self._non_callable_ids.add(index_id)
-        if _is_property_accessor(sym):
+        # A getter and its setter are two declarations under one id, which reads
+        # as an overload set and is not one: the name is an attribute.
+        if is_property_accessor(sym.decorators):
             self._property_accessor_ids.add(index_id)
         # Same rules as the per-file index, for the global-unique tier.
         bodiless_method = sym.is_declaration and sym.parent_name is not None
@@ -1055,9 +1045,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             if tabled is not None
             else self._chain_inner_callee(file_path, call, inner, caller_id, language)
         )
-        if language == "go" and inner_callee is not None:
+        if language in ("go", "python") and inner_callee is not None:
             # A go method may sit in any file of its type's package, so the
             # type is read by identity and the method asked for across it.
+            # Python reads its annotation in the callee's file the same way.
             type_id = self._returned_type_id(inner_callee)
             hit = (
                 None
@@ -1067,6 +1058,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             if hit is not None:
                 tier = hit.origin.removeprefix("receiver_typed_")
                 return True, self._return_typed_call(caller_id, hit.callee_id, tier, call.line)
+        if language == "python":
+            # A type name read in the caller's file is not evidence, and an
+            # inherited method is not a refusal: the bare name keeps the site.
+            return False, None
         type_name = (
             tabled
             if tabled is not None

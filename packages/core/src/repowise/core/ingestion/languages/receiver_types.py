@@ -893,15 +893,29 @@ class CallAssignment(NamedTuple):
     name: str
     receiver: str | None
     target: str
+    # Python ``x = await f()``: an ``async def`` yields its annotation only then.
+    awaited: bool = False
 
 
-_CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {"go": _GO_CALL_DECL}
+# ``x = f(..)``, ``x = await obj.f(..)``: a plain statement-start assignment
+# that ends its line. The resolver refuses a name the body also binds elsewhere.
+_PY_CALL_ASSIGNMENT = re.compile(
+    r"(?m)^[ \t]*(?P<name>[a-z_]\w*)[ \t]*=[ \t]*(?P<awaited>await[ \t]+)?"
+    r"(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*\("
+)
+
+_CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "go": _GO_CALL_DECL,
+    "python": _PY_CALL_ASSIGNMENT,
+}
 
 # Languages whose locals may be typed from a call's declared return type.
 CALL_TYPED_LANGUAGES = frozenset(_CALL_ASSIGNMENT_PATTERNS)
 
 _QUOTES = frozenset("\"'`")
 _STATEMENT_ENDS = frozenset("\n;}")
+# A Python ``;`` may rebind the name later on the line, where no scan sees it.
+_LANGUAGE_STATEMENT_ENDS = {"python": frozenset("\n")}
 
 
 def _call_end(text: str, index: int) -> int:
@@ -935,11 +949,12 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
         return ()
     cleaned = _without_comments(text, language)
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    ends = _LANGUAGE_STATEMENT_ENDS.get(language, _STATEMENT_ENDS)
     found: list[CallAssignment] = []
     for match in pattern.finditer(cleaned):
         end = _call_end(cleaned, match.end())
         rest = cleaned[end:].lstrip(" \t") if end >= 0 else ""
-        if end < 0 or (rest and rest[0] not in _STATEMENT_ENDS):
+        if end < 0 or (rest and rest[0] not in ends):
             continue
         found.append(
             CallAssignment(
@@ -947,6 +962,7 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
                 match.group("name"),
                 match.group("receiver"),
                 match.group("target"),
+                bool(match.groupdict().get("awaited")),
             )
         )
     return tuple(found)

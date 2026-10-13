@@ -775,6 +775,25 @@ class TestGoCallAssignments:
         assert scan_call_assignments("x := f()\n", "java") == ()
 
 
+class TestPythonCallAssignments:
+    """``x = f(..)``: a whole-statement call, awaited or not."""
+
+    def test_a_dotted_call_and_an_awaited_one(self) -> None:
+        body = "def f():\n    r = self.client.get(\n        ')'\n    )\n    s = await g()\n"
+        assert scan_call_assignments(body, "python") == (
+            CallAssignment(2, "r", "self.client", "get"),
+            CallAssignment(5, "s", None, "g", awaited=True),
+        )
+
+    def test_a_comparison_a_chain_and_a_target_list_are_refused(self) -> None:
+        body = "def f():\n    x == g()\n    y = g().h()\n    a, b = g()\n    c = g() or d\n"
+        assert scan_call_assignments(body, "python") == ()
+
+    def test_a_statement_after_a_semicolon_is_refused(self) -> None:
+        """``u = f(); u = 3`` rebinds where no binding scan looks."""
+        assert scan_call_assignments("def f():\n    u = g(); u = 3\n", "python") == ()
+
+
 class TestClassScope:
     """What counts as a field, given that a class span contains every method.
 

@@ -81,6 +81,8 @@ STORE_FORMAT_VERSION: int = 2
 #: update re-keys those symbols and graph nodes. A Swift ``extension`` is an
 #: ``impl``, no longer a ``class``. Swift parses with tree-sitter-swift 0.7, so
 #: a type body holding ``#if`` keeps its members.
+#: A Python call chained on a method call (``a.get().close()``) carries that
+#: inner call.
 PARSER_SCHEMA_VERSION: int = 8
 
 #: state.json key holding the store format version that wrote the store.

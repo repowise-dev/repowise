@@ -215,7 +215,7 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
-    assert frozenset({"cpp", "csharp", "go", "java"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+    assert frozenset({"cpp", "csharp", "go", "java", "python"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
 
 
 def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
