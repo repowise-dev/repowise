@@ -82,13 +82,11 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 # its ancestors, for an explicit ``self``/``this`` receiver and an implicit one.
 #
 # C++ is absent because its heritage binds a qualified external parent to a
-# same-named local type, putting unrelated siblings in one hierarchy. Java is
-# absent because `java.scm`'s bare-call pattern also matches `this.field.m()`,
-# which then arrives here indistinguishable from a real implicit receiver.
+# same-named local type, putting unrelated siblings in one hierarchy.
 #
 # C# is present: the tier answers with a name's overload set, and
 # ``resolve_file`` narrows it to the member the argument count names.
-_INHERITED_LANGUAGES = frozenset({"kotlin", "python", "typescript", "swift", "csharp"})
+_INHERITED_LANGUAGES = frozenset({"java", "kotlin", "python", "typescript", "swift", "csharp"})
 
 # VB.NET's own-instance receivers, lowercased: the language is case-insensitive.
 _VBNET_SELF_RECEIVERS = frozenset({"me", "myclass"})
@@ -1507,6 +1505,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> ResolvedCall | None:
         """Tier 3 and what follows it: answers not grounded in this file or its imports."""
         target_name = call.target_name
+        # Ahead of tier 3: the caller's own hierarchy is better evidence than
+        # repo-wide uniqueness, and a JVM package sibling's member never answers.
+        inherited = self._implicit_inherited_call(file_path, call, caller_id)
+        if inherited is not None:
+            return inherited
         # Tier 3: global unique match, only within the same language.
         # Uniqueness is judged before filtering data members, on purpose: filtering
         # them out first would re-uniquify a name a field and a method share. A
@@ -1521,13 +1524,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 file_path, call, caller_id, target_name, candidates[0]
             )
 
-        inherited = self._implicit_inherited_call(file_path, call, caller_id)
-        if inherited is not None:
-            return inherited
-
-        # An overload set is several declarations under one id, not an
-        # ambiguity. Asked after the inherited tier, which answers with more
-        # confidence when the caller's own hierarchy declares the name.
+        # An overload set is several declarations under one id, not an ambiguity.
         collapsed = self._collapse_declarations(candidates)
         if len(candidates) <= 1 or len(collapsed) != 1:
             return None
@@ -1554,8 +1551,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> ResolvedCall | None:
         """A bare call an ancestor of the caller's class answers.
 
-        Asked after tier 3, so it can only add an edge. A member call on its
-        bare fallback is refused, as in ``_enclosing_class_method``.
+        A member call on its bare fallback is refused, as in
+        ``_enclosing_class_method``.
         """
         lang = self._language_of(file_path)
         if lang not in _IMPLICIT_RECEIVER_LANGUAGES or lang not in _INHERITED_LANGUAGES:
