@@ -810,6 +810,26 @@ class TestOverloadTies:
         assert {c for a, c in edges if a == "draw.cpp::draw"} == {"pen.cpp::Pen::shift#2(int,int)"}
         assert ("draw.cpp::lift", "pen.cpp::Pen::shift#0") in edges
 
+    def test_a_member_with_an_unknown_range_keeps_the_representative(self, tmp_path: Path) -> None:
+        """A member whose parameter list cannot be read may admit any count."""
+        text = (
+            "package app;\npublic class P {\n"
+            "  void put() { }\n"
+            "  void put(int a) { }\n"
+            "  void put(String s, int n) { }\n"
+            "  void use() { put(1); }\n"
+            "}\n"
+        )
+        parsed = _parse("app/P.java", "java", text, tmp_path)
+        for symbol in parsed.symbols:
+            if symbol.id == "app/P.java::P::put#2":
+                symbol.signature = "put"  # no closed parameter list: range unknown
+        resolver = CallResolver({"app/P.java": parsed}, {"app/P.java": set()}, repo_path=str(tmp_path))
+        edges = {(rc.caller_id, rc.callee_id) for rc in resolver.resolve_file("app/P.java", parsed.calls)}
+        # Only put#1 is known to admit one argument, but put#2 may too: the
+        # count does not choose, and the representative answers.
+        assert edges == {("app/P.java::P::use", "app/P.java::P::put#0")}
+
     @pytest.mark.parametrize(
         ("second_returns", "typed"), [("Tag", True), ("Cs", False)]
     )

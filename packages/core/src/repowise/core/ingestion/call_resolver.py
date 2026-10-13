@@ -308,6 +308,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # {representative: ((member id, (fewest, most) arguments), ...)}.
         self._overload_rep: dict[str, str] = {}
         self._overload_members: dict[str, tuple[tuple[str, tuple[int, int | None]], ...]] = {}
+        # Representatives of sets with a member whose range is unknown; a count
+        # cannot choose there, since that member may admit it too.
+        self._unranged_overload_sets: set[str] = set()
         self._symbols_by_id = {
             symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         }
@@ -620,7 +623,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             for sym in overloads:
                 representatives[sym.id] = rep
                 admitted = signature_parameter_range(sym.signature or "", sym.language)
-                if admitted is not None:
+                if admitted is None:
+                    self._unranged_overload_sets.add(rep)
+                else:
                     ranges.setdefault(sym.id, admitted)
             self._overload_members[rep] = tuple(ranges.items())
         self._overload_rep.update(representatives)
@@ -926,9 +931,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         The member ``_pick_overload`` names, else the representative when the
         count cannot choose: it is unknown (a method reference, a C# method
-        group), no member admits it, or the representative's own range is
-        unknown. A tie keeps the representative when it is one of the tied
-        members. A tie among others takes the first of them in declaration
+        group), no member admits it, or a member's range is unknown, since
+        that member may admit it too. A tie keeps the representative when it
+        is one of the tied members. A tie among others takes the first of them in declaration
         order, the order the overload index records: ``charset(x)`` over
         ``charset()``, ``charset(String)`` and ``charset(Charset)`` never means
         the no-argument representative, but it does mean the set, which dead
@@ -942,14 +947,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         return tied[0] if tied else rep
 
     def _tied_without_representative(self, rep: str, found: list[str]) -> list[str]:
-        """*found* when it is a tie the representative, with a known range, is not in."""
-        if len(found) > 1 and rep not in found and rep in dict(self._overload_members.get(rep, ())):
+        """*found* when it is a tie the representative is not in."""
+        if len(found) > 1 and rep not in found:
             return found
         return []
 
     def _deciding_overloads(self, rep: str, argument_count: int | None) -> list[str]:
         """The members of the first phase with any candidate for *argument_count*."""
-        if argument_count is None:
+        if argument_count is None or rep in self._unranged_overload_sets:
             return []
         members = self._overload_members.get(rep, ())
         phases = (
