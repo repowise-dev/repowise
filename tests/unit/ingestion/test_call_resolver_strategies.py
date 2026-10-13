@@ -508,6 +508,16 @@ class TestFieldTypedReceiver:
                 "class Api { public void Nothing() {} }\n",
                 "Nothing",
             ),
+            (
+                "lib/repo.dart",
+                "dart",
+                "class Repo {\n  final Api api;\n  Repo(this.api);\n"
+                "  void a() { api.nothing(); }\n"
+                "  void b(List<X> items) { items.map((api) => api.nothing()); }\n"
+                "  void c() { final api = make();\n    api.nothing(); }\n}\n"
+                "class Api { void nothing() {} }\n",
+                "nothing",
+            ),
         ],
     )
     def test_an_untyped_local_or_lambda_parameter_shadows_the_field(

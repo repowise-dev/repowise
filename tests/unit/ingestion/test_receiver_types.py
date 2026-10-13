@@ -590,6 +590,16 @@ class TestDartFieldScope:
         source = "class C {\n  void f() {\n    final s = Store();\n  }\n}"
         assert fields(source, "dart", [(2, 4)]) == {}
 
+    def test_a_defaulted_constructor_parameter_is_not_a_field(self) -> None:
+        """A constructor is no symbol, so `{Dao d = const Dao()}` closes on `=`
+        at class scope exactly as a field does. Being inside parentheses is
+        what refuses it."""
+        source = (
+            "class Repo {\n  final Api api;\n  Repo(this.api, {Dao d = const Dao()});\n"
+            "  void a() { d.read(); }\n}"
+        )
+        assert fields(source, "dart", [(4, 4)]) == {"api": "Api"}
+
 
 class TestGoShapes:
     """Go writes ``name T``, which is the reverse of every other shape here.

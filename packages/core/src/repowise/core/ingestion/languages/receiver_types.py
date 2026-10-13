@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left, bisect_right
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import NamedTuple
 
 from ..language_data import get_builtin_types
@@ -242,9 +242,10 @@ _SWIFT_CONSTRUCTED = re.compile(
 
 # Dart writes the C family's `Type name`, plus a nullable `Api? api` and a named
 # parameter closing on `}`. Fields close on `;` or `=` as Java's do. A
-# constructor is no symbol here, so its parameters sit at class scope, where
-# `)` and `}` keep them out. An initialising formal (`Repo(this.api)`) spells
-# no type: the field it assigns already carries one.
+# constructor is no symbol here, so its parameters sit at class scope; nothing
+# inside parentheses owns a field (`_PARAMETERS_AT_CLASS_SCOPE`), which keeps
+# out `{Dao d = const Dao()}` too. An initialising formal (`Repo(this.api)`)
+# spells no type: the field it assigns already carries one.
 _DART_TYPED = re.compile(
     rf"(?<![\w.])(?P<type>{_TYPE})\??\s+(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,)}}]))"
 )
@@ -521,6 +522,19 @@ _LOCAL_NAME_SHAPES: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
         ),
         (re.compile(r"\((?P<lhs>[\w\s,]*)\)\s*=>"),),
     ),
+    "dart": (
+        (
+            re.compile(
+                r"(?<![\w.])(?:final|var|const)\s+(?P<name>[a-z_]\w*)\b(?=\s*(?:[=;,]|in\b))"
+            ),
+        ),
+        # A function literal's list follows punctuation, never a name or `if`.
+        (
+            re.compile(
+                r"(?m)(?:(?<=[(,=:>])|^)\s*\((?P<lhs>[\w\s,]*)\)\s*(?:async\s*)?(?:=>|\{)"
+            ),
+        ),
+    ),
     "java": _JAVA_LAMBDA,
     "kotlin": (
         (
@@ -780,6 +794,29 @@ def _usable_type_name(raw: str, language: str) -> tuple[str | None, bool]:
     return name, inner is not None
 
 
+# Languages whose constructor parameter lists sit at class scope, unextracted,
+# with defaults closing on `=`: a declaration inside parentheses owns no field.
+_PARAMETERS_AT_CLASS_SCOPE = frozenset({"dart"})
+_PARENTHESIS = re.compile(r"[()]")
+
+
+def _inside_parentheses(cleaned: str) -> Callable[[int], bool]:
+    """Is an offset of *cleaned* inside a parenthesis? Strings are not skipped."""
+    offsets: list[int] = []
+    depths: list[int] = []
+    depth = 0
+    for match in _PARENTHESIS.finditer(cleaned):
+        depth += 1 if match.group() == "(" else -1
+        offsets.append(match.start())
+        depths.append(depth)
+
+    def inside(offset: int) -> bool:
+        index = bisect_left(offsets, offset) - 1
+        return index >= 0 and depths[index] > 0
+
+    return inside
+
+
 def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     """Every declaration *text* makes, in line order."""
     patterns = _LANGUAGE_PATTERNS.get(language)
@@ -795,6 +832,7 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     # walks the string character by character. Resolve each spelling once.
     resolved: dict[str, tuple[str | None, bool]] = {}
     found: list[Declaration] = []
+    inside = _inside_parentheses(cleaned) if language in _PARAMETERS_AT_CLASS_SCOPE else None
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
             raw = match.group("type")
@@ -810,6 +848,8 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
             # (see `_KT_ANNOTATED`).
             closer = groups.get("closer") or ""
             if "keyword" in groups and not groups["keyword"]:
+                closer = ""
+            if inside is not None and inside(match.start()):
                 closer = ""
             found.append(
                 Declaration(
