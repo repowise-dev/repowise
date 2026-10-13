@@ -35,12 +35,13 @@ if TYPE_CHECKING:
     import networkx as nx
 
 
-_ANDROID_NAME_RE = re.compile(r"android:name=\"([\w.$]+)\"")
+# XML allows either quote and spaces around ``=``.
+_ANDROID_NAME_RE = re.compile(r"""android:name\s*=\s*['"]([\w.$]+)['"]""")
 _ANDROID_COMPONENT_TAGS = ("<activity", "<service", "<receiver",
                            "<provider", "<application")
 
 
-_MANIFEST_PACKAGE_RE = re.compile(r"<manifest\b[^>]*?\bpackage=\"([\w.]+)\"")
+_MANIFEST_PACKAGE_RE = re.compile(r"""<manifest\b[^>]*?\bpackage\s*=\s*['"]([\w.]+)['"]""")
 _GRADLE_NAMESPACE_RE = re.compile(r"""\bnamespace\s*=?\s*['"]([\w.]+)['"]""")
 
 
