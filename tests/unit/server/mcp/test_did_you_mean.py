@@ -168,3 +168,18 @@ async def test_a_big_file_is_searched_whole(session, repository) -> None:
     await session.flush()
     card = await _card(session, repository, f"{big}::zebra_handlr")
     assert card["did_you_mean"] == [f"{big}::zebra_handler"]
+
+
+async def test_excluded_rows_do_not_fill_the_row_pool(session, repository, monkeypatch) -> None:
+    """Excluded ``send`` methods sort first; the allowed one is still reached."""
+    import pathspec
+
+    monkeypatch.setattr(_symbol_lookup, "_NEAREST_ROW_POOL", 3)
+    for i in range(10):
+        session.add(_method(repository.id, f"a/x{i}.py", "Client", "send"))
+    await session.flush()
+    excluded = pathspec.PathSpec.from_lines("gitwildmatch", ["a/*"])
+    card = await _resolve_one_target(
+        session, repository, "Clinet.send", None, True, exclude_spec=excluded
+    )
+    assert card["did_you_mean"] == [f"{_CLIENT}::Client::send"]

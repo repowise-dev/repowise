@@ -336,6 +336,10 @@ _NEAREST_CUTOFF = 0.6
 #: a file-scoped miss reads every symbol of the one file.
 _NEAREST_NAME_POOL = 2000
 _NEAREST_ROW_POOL = 500
+#: Pages of ``_NEAREST_ROW_POOL`` rows read while excluded files fill them. A
+#: pathspec has no SQL form, so exclusion runs here; past this many pages a
+#: match behind excluded rows is missed.
+_NEAREST_MAX_PAGES = 10
 
 
 def _length_window(n: int) -> tuple[int, int]:
@@ -365,6 +369,27 @@ async def _close_values(session, column, query: str, *where) -> list[str]:
     )
     values = [v for v in res.scalars().all() if v]
     return difflib.get_close_matches(query, values, n=NEAREST_LIMIT, cutoff=_NEAREST_CUTOFF)
+
+
+async def _allowed_rows(session, stmt, exclude_spec: Any, *, capped: bool) -> list:
+    """Rows of ``stmt`` outside excluded files; with ``capped``, up to the row pool.
+
+    The cap counts allowed rows, so excluded ones cannot fill it: pages are
+    read until it is met or the rows run out, at most ``_NEAREST_MAX_PAGES``.
+    """
+    if not capped:
+        res = await session.execute(stmt)
+        return [r for r in res.all() if not is_excluded(r.file_path, exclude_spec)]
+    rows: list = []
+    for page_no in range(_NEAREST_MAX_PAGES):
+        res = await session.execute(
+            stmt.limit(_NEAREST_ROW_POOL).offset(page_no * _NEAREST_ROW_POOL)
+        )
+        page = res.all()
+        rows += [r for r in page if not is_excluded(r.file_path, exclude_spec)]
+        if len(page) < _NEAREST_ROW_POOL or len(rows) >= _NEAREST_ROW_POOL:
+            break
+    return rows[:_NEAREST_ROW_POOL]
 
 
 async def nearest_symbol_ids(
@@ -411,14 +436,10 @@ async def nearest_symbol_ids(
         .where(*where)
         .order_by(WikiSymbol.symbol_id)
     )
-    if not file_path:
-        stmt = stmt.limit(_NEAREST_ROW_POOL)
-    res = await session.execute(stmt)
+    rows = await _allowed_rows(session, stmt, exclude_spec, capped=not file_path)
     depth = dotted.count(".") + 1
     by_key: dict[str, list[str]] = {}
-    for sid, name, qualified, path in res.all():
-        if is_excluded(path, exclude_spec):
-            continue
+    for sid, name, qualified, _path in rows:
         key = ".".join(_dotted(qualified or name).split(".")[-depth:])
         by_key.setdefault(key, []).append(sid)
     keys = difflib.get_close_matches(
