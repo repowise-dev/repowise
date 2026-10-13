@@ -217,6 +217,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "interface_declaration": "interface",
             "enum_declaration": "enum",
             "record_declaration": "class",  # Java 16+ records
+            # ``@interface Ann { String value(); }``: ``ann.value()`` calls an element.
+            "annotation_type_declaration": "interface",
+            "annotation_type_element_declaration": "method",
             "method_declaration": "method",
             "constructor_declaration": "function",
         },
@@ -225,7 +228,13 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=java_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset(
-            {"class_declaration", "interface_declaration", "enum_declaration", "record_declaration"}
+            {
+                "class_declaration",
+                "interface_declaration",
+                "enum_declaration",
+                "record_declaration",
+                "annotation_type_declaration",
+            }
         ),
         anonymous_class_types=frozenset({"object_creation_expression"}),
     ),

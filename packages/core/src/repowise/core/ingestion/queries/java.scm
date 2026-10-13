@@ -31,6 +31,17 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+; An annotation type, and its elements as its methods: ``ann.value()`` calls one.
+(annotation_type_declaration
+  (modifiers)? @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
+(annotation_type_element_declaration
+  (modifiers)? @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
 ; One pattern, modifiers optional: two overlapping patterns kept whichever
 ; matched first, which dropped either the modifiers or the parameters that
 ; name an overload.

@@ -83,6 +83,18 @@ class TestJavaParser:
         module_paths = [i.module_path for i in result.imports]
         assert any("ArrayList" in p for p in module_paths)
 
+    def test_annotation_type_elements_are_its_methods(self, parser: ASTParser) -> None:
+        source = (
+            b"package p;\npublic @interface Since {\n    double value();\n"
+            b"    String[] names() default {};\n}\n"
+        )
+        result = parser.parse_file(_make_file_info("p/Since.java", "java"), source)
+        assert sorted((s.id, s.kind, s.signature) for s in result.symbols) == [
+            ("p/Since.java::Since", "interface", "@interface Since"),
+            ("p/Since.java::Since::names", "method", "names() -> String[]"),
+            ("p/Since.java::Since::value", "method", "value() -> double"),
+        ]
+
     def test_own_field_receiver_is_captured(self, parser: ASTParser) -> None:
         """``this.field.m()`` must carry ``field``, not arrive receiver-less.
 

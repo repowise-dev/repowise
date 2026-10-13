@@ -51,6 +51,11 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return base
     if node_type == "interface_declaration":
         return f"interface {name}"
+    if node_type == "annotation_type_declaration":
+        return f"@interface {name}"
+    if node_type == "annotation_type_element_declaration":
+        # Java: an element takes no arguments and its declared type is what it returns.
+        return f"{name}(){_ret(('type',))}"
     if node_type == "type_alias_declaration":
         return f"type {name}"
     if node_type == "enum_declaration":

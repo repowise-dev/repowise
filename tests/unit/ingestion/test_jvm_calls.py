@@ -229,3 +229,18 @@ class TestKotlinImportBindings:
         assert any(
             u.endswith("App.kt::run") and v.endswith("Routing.kt::routing") for u, v, _ in edges
         ), edges
+
+
+class TestJavaAnnotationElements:
+    def test_an_element_call_binds_to_the_annotation_type(self, tmp_path: Path) -> None:
+        """``since.value()`` reads an element of the ``@interface``, a method of it."""
+        files = {
+            "p/Since.java": ("java", "package p;\npublic @interface Since {\n    double value();\n}\n"),
+            "p/Use.java": (
+                "java",
+                "package p;\nclass Use {\n"
+                "    boolean ok(Since since) {\n        return since.value() > 1;\n    }\n}\n",
+            ),
+        }
+        edges = _resolve_calls(_parse_all(tmp_path, files), tmp_path)
+        assert [(u, v) for u, v, _ in edges] == [("p/Use.java::Use::ok", "p/Since.java::Since::value")]
