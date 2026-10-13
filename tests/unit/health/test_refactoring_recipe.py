@@ -146,3 +146,11 @@ def test_an_extract_method_plan_says_once_that_its_names_are_placeholders() -> N
     texts = " ".join(s["text"] for s in staged)
     assert texts.count("placeholder") == 1
     assert "Each stage's helper name is a placeholder" in texts
+
+
+
+def test_a_plan_stored_with_a_real_name_is_not_called_a_placeholder() -> None:
+    detail = json.loads(json.dumps(_PLANS["extract_method_typed"]))
+    detail["plan"]["suggested_name"] = "_read_config"
+    (step,) = build_recipe(detail)["steps"]
+    assert "placeholder: rename" not in step["text"]

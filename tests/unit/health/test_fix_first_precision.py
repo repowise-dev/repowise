@@ -187,7 +187,7 @@ def _extraction(start: int = 22, end: int = 34, ccn_removed: int = 3) -> dict:
 def test_a_size_finding_starts_at_the_best_stored_extraction() -> None:
     plans = [_extraction(22, 34, 3), _extraction(40, 44, 1)]
     item = _queue([_finding()], plans=plans).lead
-    assert item.action.steps[0].text == "Extract lines 22-34 of run into total_rows(rows), renamed for what it returns or does"
+    assert item.action.steps[0].text == "Extract lines 22-34 of run into total_rows(rows)"
     assert item.action.steps[0].line == 22
 
 

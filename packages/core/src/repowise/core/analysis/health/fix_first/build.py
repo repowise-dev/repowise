@@ -764,9 +764,6 @@ def _extract_text(sym: str, body: Mapping[str, Any], start: Any, end: Any) -> st
         list(body.get("returns") or []),
         is_async=bool(body.get("needs_async", False)),
     )
-    # The name is a placeholder (without one the signature already asks for one).
-    if body.get("suggested_name"):
-        into += ", renamed for what it returns or does"
     anchors = plan_anchors(body.get("anchors"))
     # Worded like the plan's own step (``recipe._extract_step``).
     if anchors is not None:
@@ -1094,7 +1091,7 @@ def _staged_title(sym: str, stages: int) -> str:
 
 def _span_title(plan: _RefactorPlan, lead_plan: Any) -> str:
     start, end = _span(lead_plan)
-    # No helper name: an extraction's is a placeholder its step asks to rename.
+    # Titles never quote the helper name: it is a placeholder the step asks to rename.
     spanned = plan.lead_type == "extract_method" and bool(start and end)
     if spanned and magnitude(plan.rank.shape) >= SIZE_BREAK_UP:
         return _break_up_title(plan.sym, plan.rank.shape, f"{start}-{end}")

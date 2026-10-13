@@ -88,13 +88,14 @@ describe("extract_method suggested_name reaches the rendered prompt", () => {
   it("uses the plan's placeholder and asks the agent to rename it", () => {
     const prompt = buildRefactoringPlanPrompt({ plan: methodPlan("_extracted_helper") });
     expect(prompt).toContain("into `_extracted_helper`:");
-    expect(prompt).toContain("`_extracted_helper` is a placeholder: rename the helper");
+    expect(prompt).toContain("The helper's name is a placeholder: rename it");
     expect(prompt).not.toContain("a clearly named helper");
   });
 
   it("asks the agent to name a helper stored without a name", () => {
     const prompt = buildRefactoringPlanPrompt({ plan: methodPlan(null) });
-    expect(prompt).toContain("`<name>` is a placeholder: rename the helper");
+    expect(prompt).toContain("into `<name>`:");
+    expect(prompt).toContain("The helper's name is a placeholder: rename it");
     expect(extractMethodPlan(methodPlan(null)).suggested_name).toBeNull();
   });
 
