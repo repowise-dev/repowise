@@ -505,13 +505,16 @@ async def any_tests_reaching(
 async def tests_reaching_through_helpers(
     session: AsyncSession, repo_id: str, targets: list[str], test_files: set[str]
 ) -> dict[str, ReachedBy]:
-    """Tests that import a file only tests import, which imports the target.
+    """Tests that import a file only tests import, or a barrel, which imports the target.
 
     A second import hop, kept off hubs: a blanket second hop was measured and
     rejected (see Depth), but a module nothing outside the test suite imports
     is test support whatever its name (``attempt.spawn-workspace.test-support.ts``
     loading ``attempt.ts`` for 30-odd tests), so walking through it claims
-    nothing a hub would.
+    nothing a hub would. A barrel (``index.ts``, ``__init__.py``) passes on
+    what it imports even when source imports it too, as
+    :func:`files_with_paired_tests` already reads it: a package's tests
+    import its entry, not each module behind it.
     """
     edge_types = sorted(FILE_DEPENDENCY_EDGE_TYPES)
     middles: dict[str, set[str]] = {}
@@ -525,9 +528,10 @@ async def tests_reaching_through_helpers(
         importers.setdefault(middle, set()).add(dependent)
     reached: dict[str, set[str]] = {}
     for middle, who in importers.items():
-        if who <= test_files:
+        tests = who & test_files
+        if tests and (tests == who or PurePosixPath(middle).name in BARREL_FILENAMES):
             for target in middles[middle]:
-                reached.setdefault(target, set()).update(who)
+                reached.setdefault(target, set()).update(tests)
     out: dict[str, ReachedBy] = {}
     for target, tests in reached.items():
         ordered = tuple(rank_tests(target, tests))

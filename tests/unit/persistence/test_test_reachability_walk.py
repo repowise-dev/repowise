@@ -678,3 +678,47 @@ async def test_the_import_walk_from_memory_matches_the_walk_from_the_database(as
         "tests/helper.py": 3,
         "tests/test_h.py": 4,
     }
+
+
+_KY_LIKE = {
+    "src/core/Ky.ts": "export class Ky {\n  static create(input: string) { return new Ky(); }\n}\n",
+    # Three calls deep before the test's own call: past the call walk's depth.
+    "src/index.ts": (
+        "import {Ky} from './core/Ky';\n"
+        "const createRequest = (input: string) => Ky.create(input);\n"
+        "const createInstance = () => (input: string) => createRequest(input);\n"
+        "const ky = createInstance();\n"
+        "export default ky;\n"
+        "export type {Hooks} from './types/hooks';\n"
+    ),
+    # A type import back into the package entry: index.ts is not test-only.
+    "src/types/hooks.ts": "import type ky from '../index';\nexport type Hooks = typeof ky;\n",
+    "test/x.test.ts": (
+        "import ky from '../src/index';\nimport {pool} from '../src/pool';\n"
+        "ky('https://example.com');\n"
+    ),
+    # Source imports pool.ts too and it is no barrel, so it passes nothing on.
+    "src/pool.ts": "import {retry} from './retry';\nexport const pool = [retry];\n",
+    "src/retry.ts": "export const retry = 1;\n",
+    "src/agent.ts": "import {pool} from './pool';\nexport const agent = pool;\n",
+}
+
+
+async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path, async_session):
+    """A test importing a package's ``index.ts`` reaches the files it imports."""
+    from repowise.core.analysis.test_reachability import any_tests_reaching, clear_test_map_cache
+    from repowise.core.persistence.crud.graph import batch_upsert_graph_edges
+    from repowise.core.pipeline.persist import _edge_row, persist_graph_nodes
+    from tests.unit.analysis.test_public_api_flag import build_fixture
+
+    builder = build_fixture(tmp_path, _KY_LIKE)
+    repo = await insert_repo(async_session)
+    await persist_graph_nodes(async_session, repo.id, builder, ep_scores={})
+    edges = [_edge_row(u, v, d) for u, v, d in builder.graph().edges(data=True)]
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    clear_test_map_cache()
+
+    found = await any_tests_reaching(async_session, repo.id, ["src/core/Ky.ts", "src/retry.ts"])
+    assert found["src/core/Ky.ts"].tests == ["test/x.test.ts"]
+    assert found["src/core/Ky.ts"].via == "import-graph"
+    assert "src/retry.ts" not in found
