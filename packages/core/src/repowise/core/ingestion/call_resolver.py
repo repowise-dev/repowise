@@ -1604,9 +1604,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         Not when *sym_id* has internal linkage in another translation unit: a
         ``static`` function in one .c file cannot be linked from any other. The
         include-grounded tiers need no check, since an included file is part of
-        the includer's translation unit.
+        the includer's translation unit. Nor across independent builds
+        (``_in_reach_of_build``).
         """
-        return sym_id not in self._tu_local_ids or self._symbol_paths_by_id.get(sym_id) == file_path
+        path = self._symbol_paths_by_id.get(sym_id, "")
+        if sym_id in self._tu_local_ids and path != file_path:
+            return False
+        return self._in_reach_of_build(file_path, path)
 
     def _implicit_inherited_call(
         self,

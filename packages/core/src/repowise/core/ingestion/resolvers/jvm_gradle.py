@@ -34,7 +34,7 @@ log = structlog.get_logger(__name__)
 _INCLUDE_RE = re.compile(r'include\s*\(\s*((?:"[^"]+"\s*,?\s*)+)\)')
 _INCLUDE_ITEM_RE = re.compile(r'"([^"]+)"')
 _INCLUDE_LINE_RE = re.compile(r'include\s+([\'"])([^\'"]+)\1')
-_INCLUDE_BUILD_RE = re.compile(r'includeBuild\s*\(\s*"([^"]+)"\s*\)')
+_INCLUDE_BUILD_RE = re.compile(r"""includeBuild\s*\(?\s*(["'])([^"']+)\1""")
 _PROJECT_DIR_RE = re.compile(
     r'project\s*\(\s*"([^"]+)"\s*\)\s*\.\s*projectDir\s*=\s*file\s*\(\s*"([^"]+)"\s*\)'
 )
@@ -162,6 +162,11 @@ def parse_settings(settings_file: Path) -> tuple[list[str], dict[str, str]]:
         overrides[mod] = match.group(2)
 
     return result, overrides
+
+
+def included_builds(settings_text: str) -> list[str]:
+    """The directories a settings script composes in with ``includeBuild``, as written."""
+    return [match.group(2) for match in _INCLUDE_BUILD_RE.finditer(settings_text)]
 
 
 def _module_dir(repo_path: Path, module_name: str, overrides: dict[str, str]) -> Path:

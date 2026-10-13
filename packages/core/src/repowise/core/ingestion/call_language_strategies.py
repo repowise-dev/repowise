@@ -43,6 +43,9 @@ class _LanguageCallStrategies:
 
 _NO_LANGUAGE_STRATEGIES = _LanguageCallStrategies()
 
+# Languages whose builds are told apart by ``build_roots``.
+_BUILD_ROOT_LANGUAGES = frozenset({"dart", "java", "kotlin", "scala", "swift"})
+
 _TYPED_RECEIVER = ("_resolve_typed_receiver",)
 
 
@@ -133,6 +136,11 @@ class LanguageStrategiesMixin:
         # C/C++ same-target resolution (lazy CppWorkspaceIndex)
         self._cpp_index: Any = None
         self._cpp_index_built = False
+
+        # Independent builds in the repo (lazy BuildRoots), and the build roots
+        # each file's imports land in.
+        self._build_roots: Any = None
+        self._imported_roots: dict[str, frozenset[str | None]] = {}
 
     def _get_rust_crate_src(self) -> dict[str, str]:
         """Lazily build a mapping from normalised crate name to src/ dir."""
@@ -281,6 +289,61 @@ class LanguageStrategiesMixin:
                 return ResolvedCall(caller_id, sym_id, 0.85, call.line, "same_target")
         return None
 
+    def _in_reach_of_build(self, file_path: str, target_path: str) -> bool:
+        """May a bare name in *file_path* mean a symbol in *target_path*, by name alone?
+
+        Not across independent builds, unless the caller's build composes the
+        target's in or the caller imports a file there. A Gradle build
+        script's classpath is its build logic, not the sources it builds, so a
+        script's name reaches only into a build its own composes in.
+        """
+        if self._language_of(file_path) not in _BUILD_ROOT_LANGUAGES:
+            return True
+        if self._build_roots is None:
+            from .build_roots import BuildRoots
+
+            self._build_roots = BuildRoots(self._repo_path, self._parsed_files)
+        roots = self._build_roots
+        other = roots.root_of(target_path)
+        if file_path.endswith(".gradle.kts"):
+            return roots.script_sees(file_path, other)
+        own = roots.root_of(file_path)
+        return not roots.separates(own, other) or other in self._roots_imported_by(file_path)
+
+    def _roots_imported_by(self, file_path: str) -> frozenset[str | None]:
+        """The build roots *file_path*'s imports land in, re-exports followed."""
+        imported = self._imported_roots.get(file_path)
+        if imported is None:
+            assert self._build_roots is not None
+            imported = frozenset(map(self._build_roots.root_of, self._visible_files(file_path)))
+            self._imported_roots[file_path] = imported
+        return imported
+
+    def _visible_files(self, file_path: str) -> set[str]:
+        """The files *file_path* imports, and every file those re-export (Dart ``export``)."""
+        seen: set[str] = set()
+        pending = list(self._import_targets.get(file_path, ()))
+        while pending:
+            target = pending.pop()
+            if target in seen:
+                continue
+            seen.add(target)
+            parsed = self._parsed_files.get(target)
+            pending.extend(
+                imp.resolved_file
+                for imp in (parsed.imports if parsed else ())
+                if imp.is_reexport and imp.resolved_file in self._parsed_files
+            )
+        return seen
+
+    def _same_package_siblings(self, index: Any, file_path: str) -> list[str]:
+        """*file_path*'s JVM package siblings within its own build."""
+        return [
+            sibling
+            for sibling in index.same_package_files(file_path)
+            if self._in_reach_of_build(file_path, sibling)
+        ]
+
     def _get_jvm_index(self) -> Any:
         """Lazily build the JvmWorkspaceIndex (or None if unavailable)."""
         if self._jvm_index_built:
@@ -344,7 +407,7 @@ class LanguageStrategiesMixin:
         if index is None:
             return None
         found: str | None = None
-        for sibling in index.same_package_files(file_path):
+        for sibling in self._same_package_siblings(index, file_path):
             sym_id = self._package_symbol(sibling, call.target_name, caller_id)
             if sym_id is not None:
                 if not unique_only:
@@ -392,7 +455,7 @@ class LanguageStrategiesMixin:
         index = self._get_jvm_index()
         if index is None:
             return None
-        for sibling in index.same_package_files(file_path):
+        for sibling in self._same_package_siblings(index, file_path):
             sym_id = self._file_methods.get(sibling, {}).get(key)
             if sym_id is not None:
                 return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
