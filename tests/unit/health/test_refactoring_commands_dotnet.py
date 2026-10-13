@@ -200,12 +200,57 @@ def test_a_project_that_says_it_is_a_test_project_is_one(tmp_path: Path) -> None
 
 
 def test_a_root_level_test_project_runs_its_tests(tmp_path: Path) -> None:
-    _project(tmp_path, "Shop.Tests.csproj", body=XUNIT)
+    _project(tmp_path, "Shop.csproj", body=XUNIT)
     _project(tmp_path, "lib/Lib.csproj")
     assert _packages(tmp_path, ["CartTests.cs", "Unit/PriceTests.cs", "lib/LibTests.cs"]) == {
-        "CartTests.cs": "Shop.Tests.csproj",
-        "Unit/PriceTests.cs": "Shop.Tests.csproj",
+        "CartTests.cs": "Shop.csproj",
+        "Unit/PriceTests.cs": "Shop.csproj",
         "lib/LibTests.cs": None,
     }
-    _project(tmp_path, "Shop.Tests.csproj")  # no longer declares a test package
+    _project(tmp_path, "Shop.csproj")  # no longer declares a test package
     assert _packages(tmp_path, ["CartTests.cs"]) == {"CartTests.cs": None}
+
+
+def _build_props(root: Path, directory: str, body: str) -> None:
+    (root / directory).mkdir(parents=True, exist_ok=True)
+    (root / directory / "Directory.Build.props").write_text(
+        f"<Project>{body}</Project>", encoding="utf-8"
+    )
+
+
+def test_a_shared_build_file_that_declares_tests_makes_test_projects(tmp_path: Path) -> None:
+    # The test packages live in a shared build file under test/, not the project.
+    _build_props(tmp_path, "test", f"<ItemGroup>{XUNIT}</ItemGroup>")
+    _project(tmp_path, "test/Core/Core.csproj")
+    _project(tmp_path, "src/App/App.csproj")
+    tests = ["test/Core/RetryCases.cs", "src/App/AppTests.cs"]
+    assert _packages(tmp_path, tests) == {
+        "test/Core/RetryCases.cs": "test/Core/Core.csproj",
+        "src/App/AppTests.cs": None,
+    }
+
+
+def test_a_conditional_shared_test_package_does_not_make_every_project_a_test_project(
+    tmp_path: Path,
+) -> None:
+    _build_props(
+        tmp_path,
+        "",
+        "<ItemGroup Condition=\"'$(IsTestProject)' == 'true'\">"
+        f"{XUNIT}</ItemGroup>"
+        "<PropertyGroup><IsTestProject Condition=\"$(MSBuildProjectName.EndsWith('Tests'))\">"
+        "true</IsTestProject></PropertyGroup>",
+    )
+    _project(tmp_path, "src/Tool/Tool.csproj")
+    assert _packages(tmp_path, ["src/Tool/ToolTests.cs"]) == {"src/Tool/ToolTests.cs": None}
+
+
+def test_a_project_named_for_tests_runs_its_own_files_only(tmp_path: Path) -> None:
+    _project(tmp_path, "tests/Shop.Specs/Shop.Specs.csproj", refs=("../Helpers/Helpers.csproj",))
+    _project(tmp_path, "tests/Helpers/Helpers.csproj")
+    tests = ["tests/Shop.Specs/CartSpecs.cs", "tests/Helpers/FakeClock.cs"]
+    assert _packages(tmp_path, tests) == {
+        "tests/Shop.Specs/CartSpecs.cs": "tests/Shop.Specs/Shop.Specs.csproj",
+        # The name vouches only for the project's own files, not a library it uses.
+        "tests/Helpers/FakeClock.cs": None,
+    }

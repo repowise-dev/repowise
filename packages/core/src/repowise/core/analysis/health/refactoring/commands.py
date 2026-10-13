@@ -13,7 +13,7 @@ from typing import Any
 
 from ....ingestion.external_systems.maven_model import load_maven_reactor
 from ....ingestion.package_roots import module_for, owning_package
-from ....ingestion.resolvers.dotnet.msbuild import parse_csproj
+from ....ingestion.resolvers.dotnet.msbuild import MSBuildProject, parse_csproj
 from ....ingestion.resolvers.jvm_gradle import parse_settings
 from ....ingestion.workspace_members import (
     declared_workspace_members,
@@ -150,10 +150,7 @@ def _is_dotnet(test: str) -> bool:
 
 
 #: NuGet ids that make a project a test project: the test SDK and each
-#: framework's runner. Ceiling: a project that gets them only from shared
-#: build files (``Directory.Build.*``, imported targets) and does not set
-#: ``IsTestProject`` itself is not seen as one; its tests fall back to the
-#: solution.
+#: framework's runner.
 _TEST_PACKAGES = frozenset(
     {
         "microsoft.net.test.sdk",
@@ -168,27 +165,66 @@ _TEST_PACKAGES = frozenset(
         "xunit.v3.mtp-v2",
     }
 )
+#: MSBuild files every project below their directory imports.
+_SHARED_BUILD_FILES = ("Directory.Build.props", "Directory.Build.targets")
+#: The .NET test project naming convention (``Shop.Tests``, ``Shop.UnitTests``,
+#: ``Shop.Test``, ``Shop.Specs``).
+_TEST_PROJECT_NAME = re.compile(r"(Tests|\.Test|\.Specs)$", re.IGNORECASE)
+
+
+def _declares_tests(is_test_project: bool, packages: Iterable[str]) -> bool:
+    return is_test_project or not _TEST_PACKAGES.isdisjoint(p.lower() for p in packages)
+
+
+def _shared_declares_tests(root: Path, directory: str, seen: dict[str, bool]) -> bool:
+    """Whether a ``Directory.Build`` file in *directory* declares tests outside
+    any ``Condition``, each directory read once per call (*seen*)."""
+    if directory not in seen:
+        parsed = [
+            parse_csproj(root / directory / name)
+            for name in _SHARED_BUILD_FILES
+            if (root / directory / name).is_file()
+        ]
+        seen[directory] = any(
+            _declares_tests(p.is_test_project, p.unconditional_package_references)
+            for p in parsed
+            if p is not None
+        )
+    return seen[directory]
+
+
+def _declared_test_project(
+    root: Path, project: str, parsed: MSBuildProject, seen: dict[str, bool]
+) -> bool:
+    """Whether *project* (*parsed*) says it runs tests, itself or through a
+    shared build file on its path from the repository root."""
+    if _declares_tests(parsed.is_test_project, parsed.package_references):
+        return True
+    parts = project.split("/")[:-1]
+    return any(
+        _shared_declares_tests(root, "/".join(parts[:i]), seen) for i in range(len(parts) + 1)
+    )
 
 
 def _project_graph(root: Path, projects: list[str]) -> tuple[dict[str, set[str]], set[str]]:
     """Over *projects* (repo-relative ``.csproj`` paths): each referenced one
-    mapped to the projects whose ``ProjectReference`` names it, and the test
-    projects, which say so or declare a test package. An app or library that
-    nothing references is not one. Ceiling: one parse per project, per call."""
+    mapped to the projects whose ``ProjectReference`` names it, and the
+    projects that declare tests (:func:`_declared_test_project`).
+    Ceiling: one parse per project and shared build file, per call."""
     by_path = {(root / project).resolve(): project for project in projects}
     referrers: dict[str, set[str]] = {}
-    test_projects: set[str] = set()
+    declared: set[str] = set()
+    seen: dict[str, bool] = {}
     for project in projects:
         parsed = parse_csproj(root / project)
         if parsed is None:
             continue
-        packages = {package.lower() for package in parsed.package_references}
-        if parsed.is_test_project or not _TEST_PACKAGES.isdisjoint(packages):
-            test_projects.add(project)
+        if _declared_test_project(root, project, parsed, seen):
+            declared.add(project)
         for target in parsed.project_references:
             if target in by_path:
                 referrers.setdefault(by_path[target], set()).add(project)
-    return referrers, test_projects
+    return referrers, declared
 
 
 def _root_files(root: Path) -> tuple[list[str], str | None]:
@@ -213,14 +249,15 @@ def _test_project(
     test_projects: set[str],
 ) -> str | None:
     """The test project that runs C# file *path*: the one project in its
-    directory (the root's when no deeper one holds it) when that is a test
-    project, else the only test project that references it (*path* is in a
-    test helper library); None otherwise."""
+    directory (the root's when no deeper one holds it) when it declares tests
+    or is named as a test project, else the only project declaring tests that
+    references it (*path* is in a test helper library); None otherwise. An app
+    or library with neither signal runs no tests."""
     owner = module_for(path, by_dir.keys())
     projects = by_dir.get(owner, []) if owner in by_dir else by_dir.get("", [])
     if len(projects) != 1:
         return None
-    if projects[0] in test_projects:
+    if projects[0] in test_projects or _TEST_PROJECT_NAME.search(Path(projects[0]).stem):
         return projects[0]
     users = [user for user in referrers.get(projects[0], ()) if user in test_projects]
     return users[0] if len(users) == 1 else None
