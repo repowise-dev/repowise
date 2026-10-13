@@ -417,6 +417,9 @@ class FileTraverser:
         self._count_lock = threading.Lock()
         self._console_scripts_lock = threading.Lock()
         self._dir_ignore_lock = threading.Lock()
+        # Repo-relative dir -> whether it holds a package manifest; asked only
+        # about test-helper-named dirs (see :meth:`_is_package_root_dir`).
+        self._package_root_cache: dict[str, bool] = {}
         log.info(
             "FileTraverser initialised",
             repo_root=str(self.repo_root),
@@ -812,7 +815,10 @@ class FileTraverser:
             or rel_str in self._distribution_inits
         )
         is_test = is_test_related_path(
-            rel_str, language, self._console_script_tables().pytest_roots
+            rel_str,
+            language,
+            self._console_script_tables().pytest_roots,
+            package_root=self._is_package_root_dir,
         )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
@@ -830,6 +836,21 @@ class FileTraverser:
             is_manifest_entry=manifest_entry,
             is_reachability_root=entry,
         )
+
+    def _is_package_root_dir(self, rel_dir: str) -> bool:
+        """Whether *rel_dir* holds a package manifest, so it ships as a package.
+
+        :mod:`..test_paths` asks this only about a ``test-utils/``-style
+        directory, so it is a few stats per such directory rather than the full
+        :meth:`package_manifests` scan. Racing workers compute the same answer,
+        so the cache needs no lock.
+        """
+        cached = self._package_root_cache.get(rel_dir)
+        if cached is None:
+            base = self.repo_root / rel_dir
+            cached = any((base / name).is_file() for name in _MANIFEST_FILES)
+            self._package_root_cache[rel_dir] = cached
+        return cached
 
     # ------------------------------------------------------------------
     # Internal: monorepo detection
