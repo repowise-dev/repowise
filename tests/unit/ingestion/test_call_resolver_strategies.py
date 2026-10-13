@@ -173,6 +173,23 @@ class TestUnpinnedStrategies:
             )
         ]
 
+    def test_jvm_bare_call_does_not_reach_a_sibling_classes_member(
+        self, tmp_path: Path
+    ) -> None:
+        """``copy(..)`` in a lambda is its receiver's, not a sibling data class's."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/p/Query.kt": ("kotlin", "package p\n\ndata class Query(val a: Int)\n"),
+                "src/p/Other.kt": ("kotlin", "package p\n\ndata class Other(val b: Int)\n"),
+                "src/p/Repo.kt": (
+                    "kotlin",
+                    "package p\n\nfun sync(v: Versions) {\n    v.update { copy(a = 1) }\n}\n",
+                ),
+            },
+        )
+        assert not [e for e in _edges(parsed, tmp_path) if e[1].endswith("::copy")]
+
     def test_a_target_name_declared_nowhere_resolves_to_nothing(self, tmp_path: Path) -> None:
         """The population the cascade spends most of its budget on."""
         parsed = _parse_all(

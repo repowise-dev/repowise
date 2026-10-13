@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .call_receiver_typing import _TYPE_KINDS
 from .models import CallSite, ParsedFile
 from .resolved_call import ResolvedCall
 
@@ -329,8 +330,8 @@ class LanguageStrategiesMixin:
             return None
         found: str | None = None
         for sibling in index.same_package_files(file_path):
-            sym_id = self._file_symbols.get(sibling, {}).get(call.target_name)
-            if sym_id is not None and sym_id != caller_id:
+            sym_id = self._package_symbol(sibling, call.target_name, caller_id)
+            if sym_id is not None:
                 if not unique_only:
                     return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
                 if found is not None:
@@ -340,6 +341,23 @@ class LanguageStrategiesMixin:
         if found is None:
             return None
         return ResolvedCall(caller_id, found, 0.90, call.line, "same_package")
+
+    def _package_symbol(self, sibling: str, name: str, caller_id: str) -> str | None:
+        """What *name* means in *sibling* to a bare call from another package file.
+
+        The package shares top-level names, not members: a data class's
+        synthesized ``copy`` or a ViewModel's ``onClick`` is reached through a
+        receiver, an ancestor or a scope function, never by the package alone.
+        A nested type and a constructor (named for its class) are not members.
+        """
+        sym_id = self._file_symbols.get(sibling, {}).get(name)
+        if sym_id is None or sym_id == caller_id:
+            return None
+        symbol = self._symbols_by_id[sym_id]
+        parent = symbol.parent_name
+        if parent is not None and symbol.name != parent and symbol.kind not in _TYPE_KINDS:
+            return None
+        return sym_id
 
     def _resolve_jvm_receiver_same_package(
         self,
