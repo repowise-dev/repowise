@@ -18,9 +18,11 @@ matched as given, since ``.`` and ``/`` are meaningful inside them.
 from __future__ import annotations
 
 import difflib
+from typing import Any
 
 from sqlalchemy import func, or_, select
 
+from repowise.core.exclusion import is_excluded
 from repowise.core.ingestion.symbol_identity import (
     base_symbol_id,
     id_segment_name,
@@ -328,9 +330,10 @@ NEAREST_LIMIT = 5
 #: shorter length, so a name outside [3a/7, 7a/3] of the query's length ``a``
 #: can never pass it; the pools below filter on that window in SQL.
 _NEAREST_CUTOFF = 0.6
-#: Backstop caps. Names are read closest length first, so the cap drops the
-#: least likely names; past it a match is missed (a trigram index on ``name``
-#: is the upgrade). Rows per pool are capped the same way.
+#: Backstop caps for a repo-wide miss. Names are read closest length first,
+#: so the cap drops the least likely names; past it a match is missed (a
+#: trigram index on ``name`` is the upgrade). Rows are capped the same way;
+#: a file-scoped miss reads every symbol of the one file.
 _NEAREST_NAME_POOL = 2000
 _NEAREST_ROW_POOL = 500
 
@@ -365,7 +368,11 @@ async def _close_values(session, column, query: str, *where) -> list[str]:
 
 
 async def nearest_symbol_ids(
-    session, repo_id: str, query: str, file_path: str | None = None
+    session,
+    repo_id: str,
+    query: str,
+    file_path: str | None = None,
+    exclude_spec: Any = None,
 ) -> list[str]:
     """Up to five symbol ids whose names read closest to ``query``, best first.
 
@@ -374,7 +381,8 @@ async def nearest_symbol_ids(
     qualified query (``Clinet.send``) also narrows by the closest parent
     names, so a common method name cannot crowd out the class asked for.
     Each candidate is compared on as many trailing qualified-name segments
-    as the query has. Empty when nothing is close.
+    as the query has; symbols in files ``exclude_spec`` matches are never
+    offered. Empty when nothing is close.
     """
     dotted = name_variants(query)[0] if query else ""
     bare = bare_name(dotted)
@@ -393,15 +401,24 @@ async def nearest_symbol_ids(
             parents = await _close_values(session, WikiSymbol.parent_name, qualifier, *where)
             if parents:
                 where.append(WikiSymbol.parent_name.in_(parents))
-    res = await session.execute(
-        select(WikiSymbol.symbol_id, WikiSymbol.name, WikiSymbol.qualified_name)
+    stmt = (
+        select(
+            WikiSymbol.symbol_id,
+            WikiSymbol.name,
+            WikiSymbol.qualified_name,
+            WikiSymbol.file_path,
+        )
         .where(*where)
         .order_by(WikiSymbol.symbol_id)
-        .limit(_NEAREST_ROW_POOL)
     )
+    if not file_path:
+        stmt = stmt.limit(_NEAREST_ROW_POOL)
+    res = await session.execute(stmt)
     depth = dotted.count(".") + 1
     by_key: dict[str, list[str]] = {}
-    for sid, name, qualified in res.all():
+    for sid, name, qualified, path in res.all():
+        if is_excluded(path, exclude_spec):
+            continue
         key = ".".join(_dotted(qualified or name).split(".")[-depth:])
         by_key.setdefault(key, []).append(sid)
     keys = difflib.get_close_matches(

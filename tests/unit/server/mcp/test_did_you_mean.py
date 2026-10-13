@@ -132,3 +132,39 @@ async def test_a_qualified_miss_prefers_the_closest_class(
     for target in ("Clinet.send", "httpx.Clinet::send"):
         card = await _card(session, repository, target)
         assert card["did_you_mean"][0] == f"{_CLIENT}::Client::send", target
+
+
+async def test_a_full_miss_never_suggests_an_excluded_file(session, repository) -> None:
+    import pathspec
+
+    excluded = pathspec.PathSpec.from_lines("gitwildmatch", ["httpx/*"])
+    card = await _resolve_one_target(
+        session, repository, "Clinet.send", None, True, exclude_spec=excluded
+    )
+    assert card["error"].startswith("Target not found")
+    assert "did_you_mean" not in card
+
+
+async def test_a_big_file_is_searched_whole(session, repository) -> None:
+    """600 symbols sort before the match; a capped read would never see it."""
+    big = "big.py"
+    session.add(GraphNode(repository_id=repository.id, node_id=big, node_type="file"))
+    names = [f"aaa_{i:03}" for i in range(600)] + ["zebra_handler"]
+    for line, name in enumerate(names, 1):
+        session.add(
+            WikiSymbol(
+                repository_id=repository.id,
+                file_path=big,
+                symbol_id=f"{big}::{name}",
+                name=name,
+                qualified_name=f"big.{name}",
+                kind="function",
+                signature=name,
+                start_line=line,
+                end_line=line,
+                language="python",
+            )
+        )
+    await session.flush()
+    card = await _card(session, repository, f"{big}::zebra_handlr")
+    assert card["did_you_mean"] == [f"{big}::zebra_handler"]

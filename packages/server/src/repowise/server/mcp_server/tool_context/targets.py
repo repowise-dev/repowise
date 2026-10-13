@@ -110,7 +110,11 @@ def _kind_rank(kind: str | None) -> int:
 
 
 async def _did_you_mean(
-    session: AsyncSession, repo_id: str, target: str, file_path: str | None = None
+    session: AsyncSession,
+    repo_id: str,
+    target: str,
+    file_path: str | None = None,
+    exclude_spec: Any = None,
 ) -> dict[str, list[str]]:
     """``{"did_you_mean": [...]}``: the nearest symbol ids to a missed name, or ``{}``.
 
@@ -127,7 +131,7 @@ async def _did_you_mean(
         return {}
     else:
         query = target
-    ids = await nearest_symbol_ids(session, repo_id, query, file_path)
+    ids = await nearest_symbol_ids(session, repo_id, query, file_path, exclude_spec)
     return {"did_you_mean": [symbol_identity(sid) for sid in ids]} if ids else {}
 
 
@@ -725,7 +729,7 @@ async def _resolve_one_target(
             miss: dict[str, Any] = {"target": target, "error": f"Target not found: '{target}'"}
             if suggestions:
                 miss["suggestions"] = suggestions
-            miss.update(await _did_you_mean(session, repo_id, target))
+            miss.update(await _did_you_mean(session, repo_id, target, exclude_spec=exclude_spec))
             return miss
 
     result_data["target"] = target
