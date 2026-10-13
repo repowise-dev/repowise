@@ -83,10 +83,11 @@ class Occurrence:
     #: add to what reaches and hide nothing.
     may: bool = False
     #: A declaration with no initializer, in a language where that leaves the
-    #: name without a value to read (Java's ``List<T> xs;``, ``let x;``): the
-    #: compiler rejects a read it cannot prove assigned. It still declares the
-    #: name, but it is no value a later read can be handed. Never set for Go,
-    #: whose zero value is a value.
+    #: name without a value to read (Java's ``List<T> xs;``, TypeScript's
+    #: ``let x: T;``): the compiler rejects a read it cannot prove assigned. It
+    #: still declares the name, but it is no value a later read can be handed.
+    #: Never set for Go, whose zero value is a value, nor for a JavaScript
+    #: ``let x;``, which holds ``undefined``.
     valueless: bool = False
 
 

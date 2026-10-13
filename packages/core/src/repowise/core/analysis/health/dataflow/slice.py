@@ -644,13 +644,15 @@ def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
 
 
 def _valueless_lines(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
-    """Per variable, the lines of the declarations that give it no value
-    (``Definition.valueless``): Java's ``List<T> xs;``, ``let x;``."""
-    lines: dict[str, set[int]] = defaultdict(set)
+    """Per variable, the lines whose only definitions of it are declarations
+    that give it no value (``Definition.valueless``): Java's ``List<T> xs;``,
+    TypeScript's ``let x: T;``. A line that also assigns the name
+    (``int x; x = 1;``) is not one: what a read sees from it is the value."""
+    bare: dict[str, set[int]] = defaultdict(set)
+    valued: dict[str, set[int]] = defaultdict(set)
     for d in def_use.definitions:
-        if d.valueless:
-            lines[d.var].add(d.line)
-    return {var: frozenset(at) for var, at in lines.items()}
+        (bare if d.valueless else valued)[d.var].add(d.line)
+    return {var: frozenset(at - valued[var]) for var, at in bare.items()}
 
 
 def _reads_observing(

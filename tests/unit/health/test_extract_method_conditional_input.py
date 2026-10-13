@@ -319,19 +319,83 @@ function run(query: string, args: unknown, out: Sink) {
 """
 
 
-def test_a_typescript_let_without_a_value_is_not_passed_in():
-    """ToolJet's couchbase ``query_operations``: ``let parsedArgs;``."""
-    spans = _spans(_TS_IF.replace("{INIT}", ""), "typescript", "ts")
-    holding = [x for (s, e), x in spans.items() if s == 4 and e >= 10]
-    assert holding, sorted(spans)
-    assert all("parsedArgs" not in x.params for x in holding)
-
-
-def test_the_same_let_with_a_value_is_passed_in():
-    spans = _spans(_TS_IF.replace("{INIT}", " = null"), "typescript", "ts")
+@pytest.mark.parametrize("init", ["", ": Args | undefined", " = null"])
+def test_a_typescript_let_that_holds_undefined_is_passed_in(init):
+    """ToolJet's couchbase ``query_operations``: ``let parsedArgs;``. With a
+    falsy ``args`` the read sees ``undefined``, which is a value: the helper
+    needs it like any other."""
+    spans = _spans(_TS_IF.replace("{INIT}", init), "typescript", "ts")
     holding = [x for (s, e), x in spans.items() if s == 4 and e >= 10]
     assert holding, sorted(spans)
     assert all("parsedArgs" in x.params for x in holding)
+
+
+def test_a_javascript_let_is_passed_in():
+    src = _TS_IF.replace("query: string, args: unknown, out: Sink", "query, args, out")
+    spans = _spans(src.replace("{INIT}", ""), "javascript", "js")
+    holding = [x for (s, e), x in spans.items() if s == 4 and e >= 10]
+    assert holding, sorted(spans)
+    assert all("parsedArgs" in x.params for x in holding)
+
+
+_TS_DO = """
+function cleanup(queue: Queue, resend: boolean, out: Sink) {
+  const interrupted = out.interrupted();
+  let results{INIT};
+  do {
+    results = queue.poll();
+    out.send(results);
+  } while (results.length > 0);
+  if (resend) {
+    out.awaitReplies();
+  }
+  out.done(interrupted);
+}
+"""
+
+
+def test_a_typed_typescript_let_is_not_passed_in():
+    """``let results: number[];`` cannot be read until it is assigned, so the
+    compiler has proved the ``do`` body's write; passing it would not compile."""
+    spans = _spans(_TS_DO.replace("{INIT}", ": number[]"), "typescript", "ts")
+    assert (4, 10) in spans
+    assert spans[(4, 10)].params == ("out", "queue", "resend")
+
+
+def test_the_same_let_without_a_type_is_passed_in():
+    spans = _spans(_TS_DO.replace("{INIT}", ""), "typescript", "ts")
+    assert spans[(4, 10)].params == ("out", "queue", "resend", "results")
+
+
+_JAVA_SAME_LINE = """
+class C {
+    void f(boolean c, Sink out) {
+        out.note(1);
+        int x; x = 1;
+        if (c) {
+            x = 7;
+        } else {
+            out.mark();
+        }
+        out.note(2);
+        if (x > 3) {
+            out.log(x);
+        } else {
+            out.log(0);
+        }
+        out.done();
+    }
+}
+"""
+
+
+def test_an_assignment_on_the_declarations_line_is_a_value():
+    """``int x; x = 1;``: the line holds a bare declaration and a value, and
+    what the read sees from it is the value."""
+    spans = _spans(_JAVA_SAME_LINE, "java", "java")
+    holding = [x for (s, e), x in spans.items() if s == 5 and e >= 14]
+    assert holding, sorted(spans)
+    assert all("x" in x.params for x in holding)
 
 
 def _valueless(src: str, language: str, ext: str) -> dict[str, bool]:
@@ -359,7 +423,33 @@ def _valueless(src: str, language: str, ext: str) -> dict[str, bool]:
             "typescript",
             "ts",
             "function f() { let a; let b = 1; let c: string; var d; a = 2; use(a, b, c, d); }",
-            {"a": True, "b": False, "c": True, "d": True},
+            {"a": False, "b": False, "c": True, "d": False},
+        ),
+        # Only a type that cannot hold ``undefined`` makes the name unreadable.
+        (
+            "typescript",
+            "ts",
+            "function f() { let e: string | undefined; let g!: string; let h: any;"
+            " let i: number | (string | undefined); let j: Box<undefined>;"
+            " let k: unknown; let l: void; let m: string = ''; let n: number | string;"
+            " use(e, g, h, i, j, k, l, m, n); }",
+            {
+                "e": False,
+                "g": False,
+                "h": False,
+                "i": False,
+                "j": True,
+                "k": False,
+                "l": False,
+                "m": False,
+                "n": True,
+            },
+        ),
+        (
+            "javascript",
+            "js",
+            "function f() { let a; var d; a = 2; use(a, d); }",
+            {"a": False, "d": False},
         ),
         (
             "csharp",
@@ -500,9 +590,57 @@ def test_a_stage_takes_it_in_typescript_too():
     ]
 
 
+_TS_DRAIN = """
+function drain(items: Item[], strict: boolean, seen: string[], queue: Queue): string[] {
+  let batch{INIT};
+  for (const it of items) {
+    if (it.a) {
+      seen.push(it.a);
+    } else if (it.b) {
+      seen.push(it.b);
+    } else if (it.c && strict) {
+      seen.push(it.c);
+    }
+    if (it.d || it.e) {
+      seen.push(it.d);
+    }
+  }
+  do {
+    batch = queue.poll(seen);
+    if (batch.length > 9 && strict) {
+      report(batch);
+    } else if (batch.length > 5 || seen.length === 0) {
+      seen.pop();
+    }
+    if (strict && seen.length > 3) {
+      queue.resend(seen);
+    }
+    if (seen.length > 7) {
+      seen.shift();
+    } else if (seen.length > 6 && strict) {
+      queue.flush();
+    }
+  } while (batch.length > 0 && strict);
+  return seen;
+}
+"""
+
+
 def test_no_stage_is_handed_a_declaration_without_a_value():
-    """With ``let worst;`` the second stage is not given ``worst``, and the
-    composition check then declines the split, as it did before #3523."""
-    plan, stages = _stages(_TS_STAGES.replace("{INIT}", ""), "typescript", "ts", max_returns=1)
+    """With ``let batch: string[];`` the second stage is not given ``batch``,
+    and the composition check then declines the split, as it did before
+    #3523. Handed on, the first stage would return a name never assigned."""
+    plan, stages = _stages(
+        _TS_DRAIN.replace("{INIT}", ": string[]"), "typescript", "ts", max_returns=1
+    )
     assert stages == []
     assert plan.reason == "composition"
+
+
+def test_a_stage_is_handed_a_let_that_holds_undefined():
+    plan, stages = _stages(_TS_DRAIN.replace("{INIT}", ""), "typescript", "ts", max_returns=1)
+    assert plan.reason is None
+    assert stages == [
+        (2, 14, ("items", "seen", "strict"), ("batch",)),
+        (15, 30, ("batch", "queue", "seen", "strict"), ()),
+    ]

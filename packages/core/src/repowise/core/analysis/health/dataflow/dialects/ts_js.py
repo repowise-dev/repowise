@@ -106,6 +106,34 @@ class _TsDeclaredTypes(DeclaredTypes):
         return f"({typ}) | undefined" if len(arms) == 1 and "=>" in typ else f"{typ} | undefined"
 
 
+#: Types under which TypeScript lets a ``let`` be read before it is assigned.
+_ADMITS_UNDEFINED = frozenset({b"undefined", b"any", b"unknown", b"void"})
+_TYPE_WRAPPERS = frozenset({"type_annotation", "union_type", "parenthesized_type"})
+
+
+def _admits_undefined(type_node: Node) -> bool:
+    if type_node.type in _TYPE_WRAPPERS:
+        return any(_admits_undefined(child) for child in type_node.named_children)
+    return type_node.text in _ADMITS_UNDEFINED
+
+
+def _unreadable_until_assigned(declarator: Node) -> bool:
+    """Whether *declarator* leaves its name without a value to read:
+    ``let x: string;``, which TypeScript rejects a read of until an assignment.
+
+    Every other bare declaration holds ``undefined``, a value like any other:
+    one with no annotation (all of JavaScript, an implicit ``any``), one whose
+    type admits ``undefined`` (``let x: T | undefined;``), and one with a
+    definite-assignment ``!``. A type alias is taken at its word: whether
+    ``let x: Maybe;`` admits ``undefined`` is not visible here."""
+    if declarator.child_by_field_name("value") is not None:
+        return False
+    annotation = declarator.child_by_field_name("type")
+    if annotation is None or any(child.type == "!" for child in declarator.children):
+        return False
+    return not _admits_undefined(annotation)
+
+
 class TsJsDefUseDialect(BaseDefUseDialect):
     language = "typescript"
     member_access_kinds = frozenset({"member_expression"})
@@ -246,13 +274,14 @@ class TsJsDefUseDialect(BaseDefUseDialect):
                     continue
                 start = len(defs)
                 self._targets(declarator.child_by_field_name("name"), defs, uses)
-                value = declarator.child_by_field_name("value")
-                # ``let x;`` holds nothing yet: TypeScript rejects a read of a
-                # typed one before it is assigned.
                 self._declare(
-                    defs, start, declarator, binds=t != _VAR_DECL, valueless=value is None
+                    defs,
+                    start,
+                    declarator,
+                    binds=t != _VAR_DECL,
+                    valueless=_unreadable_until_assigned(declarator),
                 )
-                self._process(value, defs, uses)
+                self._process(declarator.child_by_field_name("value"), defs, uses)
             return
         if t == _CATCH:  # a nested scope's handler, walked whole
             sdu = self.handler_def_use(node)
