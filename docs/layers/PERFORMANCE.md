@@ -79,7 +79,7 @@ Everything else is counted by reason, not hidden:
 |---|---|
 | `test` | The code is test code |
 | `tooling` | The code is build, migration or developer tooling |
-| `unknown` | Repowise cannot tell whether the code ships. A file whose path only looks like an example or docs tree (a `com/example/...` package) and that the index read as production code is judged as production |
+| `unknown` | Repowise cannot tell whether the code ships |
 | `expected` | The repetition is intended |
 | `gated_off` | The function is switched off by a constant flag; see [dormant functions](CODE_HEALTH.md#fix-first) |
 | `cold_path` | The function is named for a migration, startup, shutdown or crash recovery, so it runs rarely |
@@ -87,7 +87,10 @@ Everything else is counted by reason, not hidden:
 | `cold_role` | Only startup, a CLI command, tooling, tests or client UI code run the loop, so no server pays it per request |
 | `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=background_unproven` |
 
-To see them, widen the filter (below). Each performance finding also stores the reason its cause is in or out of the queue. Performance work also appears in
+To see them, widen the filter (below). Each performance finding also stores the reason its cause is in or out of the queue.
+Code in a package path that only looks like an example tree (`com/example/...`) is judged as production when the index read it as production.
+
+Performance work also appears in
 [Fix first](CODE_HEALTH.md#fix-first), where it competes with other kinds of work.
 
 ## Reading it

@@ -225,10 +225,11 @@ def _assemble(
 
     Context, boundary, and intervention are kernel inputs, so the group
     already agrees on them by construction. Taking them off the key keeps one
-    owner for each instead of reclassifying a representative row; a stored
-    origin only settles an ``unknown`` context, the id keeps the key's. Sinks are
-    members' facts, so they are listed rather than assumed shared. Everything
-    else comes from :func:`_read_live`; inert members are listed last.
+    owner for each instead of reclassifying a representative row. A stored
+    origin may settle an ``unknown`` context; the id keeps the key's. Sinks
+    are members' facts, so they are listed rather than assumed shared.
+    Everything else comes from :func:`_read_live`; inert members are listed
+    last.
     """
     context = settled_context(key_context(key), {facts.file_path for facts in members}, origins)
     boundary = key_boundary(key)

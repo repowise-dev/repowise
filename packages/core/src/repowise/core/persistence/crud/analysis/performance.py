@@ -301,8 +301,7 @@ async def _restamp_roles(
 async def _unknown_context_origins(
     session: AsyncSession, repository_id: str, rows: list[Any]
 ) -> dict[str, str | None]:
-    """The stored ``code_origin`` of each file whose code context is ``unknown``,
-    for :func:`~repowise.core.analysis.health.perf.causal.settled_context`."""
+    """The stored ``code_origin`` of each file whose code context is ``unknown``."""
     from ....analysis.health.perf.causal import execution_context
 
     paths = sorted(p for p in {r.file_path for r in rows} if execution_context(p) == "unknown")
