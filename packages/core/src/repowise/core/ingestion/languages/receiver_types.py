@@ -26,6 +26,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable, Mapping
 from typing import NamedTuple
 
+from ..framework_routes import scan_code
 from ..language_data import get_builtin_types
 from ..type_names import (
     bare_type_name,
@@ -607,6 +608,26 @@ _KT_INVOKABLE = (
     ),
     re.compile(r"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*=\s*\{"),
 )
+_SWIFT_INVOKABLE = re.compile(
+    r"(?<![\w.])(?:let|var)\s+(?P<name>[a-z_]\w*)\s*(?::\s*(?:@\w+\s+)*\(|=\s*\{)"
+)
+
+
+def holds_function(declaration: str, name: str, language: str) -> bool:
+    """Does Kotlin or Swift *declaration* give property *name* a function value?
+
+    Read with comments and string literals blanked, so text inside them never
+    looks like a function type.
+    """
+    code = [" "] * len(declaration)
+    quotes = "\"'" if language == "kotlin" else '"'
+    for index, char, _ in scan_code(declaration, quotes=quotes, text_blocks=True):
+        code[index] = char
+    masked = "".join(code)
+    shapes = _KT_INVOKABLE if language == "kotlin" else (_SWIFT_INVOKABLE,)
+    return any(match.group("name") == name for shape in shapes for match in shape.finditer(masked))
+
+
 # Where a declared parameter list opens. Dart's header is told from a call by
 # the body that follows its list (`_DART_BODY`).
 _GENERIC = r"(?:<[^<>\n]*(?:<[^<>\n]*>[^<>\n]*)*>)?"

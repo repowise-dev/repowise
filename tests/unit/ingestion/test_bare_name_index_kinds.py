@@ -173,6 +173,74 @@ class TestThePredicateStaysNarrow:
         assert [e for e in _edges(parsed, tmp_path) if e[1] == "util.ts::doThing"]
 
 
+class TestKotlinAndSwiftPropertiesAreNotCallable:
+    """A Kotlin or Swift ``variable`` is a property: ``url("...")`` in a Ktor
+    DSL block is not the repo's ``private var url``."""
+
+    def test_a_kotlin_property_does_not_answer_a_bare_name(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Builder.kt": (
+                    "kotlin",
+                    "class Builder {\n    private var url: String = \"\"\n}\n",
+                ),
+                "Client.kt": ("kotlin", "fun main() {\n    url(\"https://x\")\n}\n"),
+            },
+        )
+        assert _kinds(parsed, "url") == {"variable"}
+        assert not [e for e in _edges(parsed, tmp_path) if e[1].endswith("::url")]
+
+    def test_a_swift_property_does_not_answer_a_bare_name(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "model.swift": ("swift", "struct Model {\n    var title: String = \"\"\n}\n"),
+                "view.swift": ("swift", "func render() {\n    title(\"x\")\n}\n"),
+            },
+        )
+        assert _kinds(parsed, "title") == {"variable"}
+        assert not [e for e in _edges(parsed, tmp_path) if e[1].endswith("::title")]
+
+    def test_a_function_shares_its_id_with_a_property(self, tmp_path: Path) -> None:
+        """``val isDark`` and ``fun isDark()`` in one file are one id, still callable."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Theme.kt": (
+                    "kotlin",
+                    "package a\n\nval isDark: Boolean = false\nfun isDark(): Boolean = true\n",
+                ),
+                "Use.kt": ("kotlin", "package b\n\nfun use() {\n    isDark()\n}\n"),
+            },
+        )
+        assert [e for e in _edges(parsed, tmp_path) if e[1] == "Theme.kt::isDark"]
+
+    def test_a_property_holding_a_function_stays_callable(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Handlers.kt": ("kotlin", "package a\n\nval handler: () -> Unit = {}\n"),
+                "Use.kt": ("kotlin", "package b\n\nfun use() {\n    handler()\n}\n"),
+            },
+        )
+        assert [e for e in _edges(parsed, tmp_path) if e[1] == "Handlers.kt::handler"]
+
+    def test_function_text_in_a_string_or_comment_is_no_function(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Labels.kt": (
+                    "kotlin",
+                    'package a\n\nval label: String = "x"\n// val label: () -> Unit\n'
+                    'val title = "val title = { }"\n',
+                ),
+                "Use.kt": ("kotlin", "package b\n\nfun use() {\n    label()\n    title()\n}\n"),
+            },
+        )
+        assert not [e for e in _edges(parsed, tmp_path) if e[1].startswith("Labels.kt::")]
+
+
 def _edges_with_imports(
     parsed: dict[str, ParsedFile],
     tmp_path: Path,

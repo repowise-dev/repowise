@@ -49,6 +49,7 @@ from .language_data import (
     get_external_receiver_types,
     get_external_return_types,
 )
+from .languages.receiver_types import holds_function
 from .models import (
     CallReceiver,
     CallSite,
@@ -133,6 +134,16 @@ _MAX_ANCESTOR_EXPAND_DEPTH = 3
 # ``property`` is the only kind that means "data member" and nothing else; every
 # other language spells its fields ``variable``, indistinguishable by kind.
 _NON_CALLABLE_KINDS = frozenset({"property"})
+# Languages whose ``variable`` is always a property (`val`/`var`/`let`): a data
+# member. Calling one invokes the value it holds, which is not this symbol.
+_PROPERTY_VARIABLE_LANGUAGES = frozenset({"kotlin", "swift"})
+
+
+def _is_data_member(sym: Symbol) -> bool:
+    if sym.kind in _NON_CALLABLE_KINDS:
+        return True
+    return sym.kind == "variable" and sym.language in _PROPERTY_VARIABLE_LANGUAGES
+
 
 # A Rust ``impl`` or Swift ``extension`` block is named for the type it adds
 # members to and declares nothing itself, so no bare name means it: ``Text(..)``
@@ -349,6 +360,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Held as an id set rather than a full id->kind map: it is the only
         # kind question asked of it and the set is small.
         self._non_callable_ids: set[str] = set()
+        self._callable_ids: set[str] = set()
+        # The lines of the file being indexed, for its property declarations.
+        self._indexed_lines: tuple[str, list[str]] = ("", [])
         # C/C++ symbols with internal linkage; see ``_reachable_by_name``.
         self._tu_local_ids: set[str] = set()
         self._property_accessor_ids: set[str] = set()
@@ -595,8 +609,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     def _index_globally(self, path: str, sym: Symbol, index_id: str) -> None:
         if _has_internal_linkage(path, sym):
             self._tu_local_ids.add(index_id)
-        if sym.kind in _NON_CALLABLE_KINDS:
-            self._non_callable_ids.add(index_id)
+        self._record_callability(path, sym, index_id)
         # A getter and its setter are two declarations under one id, which reads
         # as an overload set and is not one: the name is an attribute.
         if is_property_accessor(sym.decorators):
@@ -605,6 +618,27 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         bodiless_method = sym.is_declaration and sym.parent_name is not None
         if not (bodiless_method or sym.kind in _EXTENSION_KINDS or is_anonymous_member(sym)):
             self._global_symbols[sym.name].append(index_id)
+
+    def _record_callability(self, path: str, sym: Symbol, index_id: str) -> None:
+        """Mark *index_id* a data member's, unless anything callable shares it.
+
+        A Kotlin `val isDark` and `fun isDark()` in one file are one id.
+        """
+        if _is_data_member(sym) and not self._holds_function(path, sym):
+            if index_id not in self._callable_ids:
+                self._non_callable_ids.add(index_id)
+        else:
+            self._callable_ids.add(index_id)
+            self._non_callable_ids.discard(index_id)
+
+    def _holds_function(self, path: str, sym: Symbol) -> bool:
+        """Is property *sym* declared with a function value (`val f: () -> Unit`)?"""
+        if sym.kind != "variable" or sym.language not in _PROPERTY_VARIABLE_LANGUAGES:
+            return False
+        if self._indexed_lines[0] != path:
+            self._indexed_lines = (path, self._text_of(path).splitlines())
+        lines = self._indexed_lines[1][sym.start_line - 1 : max(sym.end_line, sym.start_line)]
+        return holds_function("\n".join(lines), sym.name, sym.language)
 
     def _index_overload_sets(self, parsed: ParsedFile) -> dict[str, str]:
         """Record *parsed*'s overload sets; ``{member id: representative}``.
