@@ -346,4 +346,57 @@ target = root / "packages" / "types" / "src" / "dead-code.ts"
         "tests/unit/dead_code/test_confidence_parity.py", src_loop_rebound, path_set
     ) == []
 
+    # 15. Negative: function parameter shadows module-level ancestor binding
+    src_param_shadowed = b"""
+ROOT = Path(__file__).parents[3]
+def f(ROOT):
+    target = ROOT / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_param_shadowed, path_set
+    ) == []
+
+    # 16. Local function reassignment invalidates inside function but preserves outer binding
+    src_local_preserve = b"""
+ROOT = Path(__file__).parents[3]
+def helper():
+    ROOT = get_root()
+    target1 = ROOT / "packages" / "types" / "src" / "dead-code.ts"
+
+def test_fn():
+    target2 = ROOT / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_local_preserve, path_set
+    ) == ["packages/types/src/dead-code.ts"]
+
+    # 17. Negative: comprehension loop variable shadows module-level ancestor binding
+    src_comp_shadowed = b"""
+ROOT = Path(__file__).parents[3]
+targets = [ROOT / "packages" / "types" / "src" / "dead-code.ts" for ROOT in get_roots()]
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_comp_shadowed, path_set
+    ) == []
+
+    # 18. Negative: lambda parameter shadows module-level ancestor binding
+    src_lambda_shadowed = b"""
+ROOT = Path(__file__).parents[3]
+fn = lambda ROOT: ROOT / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_lambda_shadowed, path_set
+    ) == []
+
+    # 19. Negative: context manager target invalidates tracked binding
+    src_with_invalidated = b"""
+ROOT = Path(__file__).parents[3]
+with open("some_file") as ROOT:
+    target = ROOT / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_with_invalidated, path_set
+    ) == []
+
+
 

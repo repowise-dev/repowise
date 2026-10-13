@@ -160,6 +160,30 @@ def _unroll_div_chain(node: ast.AST) -> tuple[ast.AST, list[ast.AST]]:
     return curr, chain
 
 
+class _Scope:
+    def __init__(self, is_class: bool = False) -> None:
+        self.bindings: dict[str, str | None] = {}
+        self.is_class: bool = is_class
+        self.globals: set[str] = set()
+
+
+def _bind_function_args(scope: _Scope, args: ast.arguments) -> None:
+    def _bind_arg(arg: ast.arg | None) -> None:
+        if arg is not None:
+            scope.bindings[arg.arg] = None
+
+    for a in getattr(args, "posonlyargs", []):
+        _bind_arg(a)
+    for a in args.args:
+        _bind_arg(a)
+    if args.vararg:
+        _bind_arg(args.vararg)
+    for a in args.kwonlyargs:
+        _bind_arg(a)
+    if args.kwarg:
+        _bind_arg(args.kwarg)
+
+
 def python_ancestor_targets(test_path: str, text: bytes, path_set: set[str]) -> list[str]:
     """Indexed code files *test_path* names via Path(__file__) ancestor anchors or variables."""
     try:
@@ -167,15 +191,26 @@ def python_ancestor_targets(test_path: str, text: bytes, path_set: set[str]) -> 
     except Exception:
         return []
 
-    vars_to_prefix: dict[str, str] = {}
+    scopes: list[_Scope] = [_Scope()]
     found: dict[str, None] = {}
+
+    def resolve_name(name: str) -> str | None:
+        if name in scopes[-1].globals:
+            return scopes[0].bindings.get(name)
+        for idx in range(len(scopes) - 1, -1, -1):
+            scope = scopes[idx]
+            if idx < len(scopes) - 1 and scope.is_class:
+                continue
+            if name in scope.bindings:
+                return scope.bindings[name]
+        return None
 
     def resolve_expr(node: ast.AST) -> str | None:
         anchor_n = _get_anchor_n(node)
         if anchor_n is not None:
             return _climb_ancestor(test_path, anchor_n)
         if isinstance(node, ast.Name):
-            return vars_to_prefix.get(node.id)
+            return resolve_name(node.id)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             base, chain = _unroll_div_chain(node)
             prefix = resolve_expr(base)
@@ -206,13 +241,15 @@ def python_ancestor_targets(test_path: str, text: bytes, path_set: set[str]) -> 
     class Visitor(ast.NodeVisitor):
         def _bind_or_invalidate(self, target: ast.AST, prefix: str | None) -> None:
             if isinstance(target, ast.Name):
-                if prefix is not None:
-                    vars_to_prefix[target.id] = prefix
+                if target.id in scopes[-1].globals:
+                    scopes[0].bindings[target.id] = prefix
                 else:
-                    vars_to_prefix.pop(target.id, None)
+                    scopes[-1].bindings[target.id] = prefix
             elif isinstance(target, (ast.Tuple, ast.List)):
                 for elt in target.elts:
                     self._bind_or_invalidate(elt, None)
+            elif isinstance(target, ast.Starred):
+                self._bind_or_invalidate(target.value, None)
 
         def visit_Assign(self, node: ast.Assign) -> None:
             prefix = resolve_expr(node.value)
@@ -241,12 +278,133 @@ def python_ancestor_targets(test_path: str, text: bytes, path_set: set[str]) -> 
             self.generic_visit(node)
 
         def visit_For(self, node: ast.For) -> None:
+            self.visit(node.iter)
             self._bind_or_invalidate(node.target, None)
-            self.generic_visit(node)
+            for stmt in node.body:
+                self.visit(stmt)
+            for stmt in node.orelse:
+                self.visit(stmt)
 
         def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+            self.visit(node.iter)
             self._bind_or_invalidate(node.target, None)
+            for stmt in node.body:
+                self.visit(stmt)
+            for stmt in node.orelse:
+                self.visit(stmt)
+
+        def visit_With(self, node: ast.With) -> None:
+            for item in node.items:
+                self.visit(item.context_expr)
+                if item.optional_vars is not None:
+                    self._bind_or_invalidate(item.optional_vars, None)
+            for stmt in node.body:
+                self.visit(stmt)
+
+        def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+            for item in node.items:
+                self.visit(item.context_expr)
+                if item.optional_vars is not None:
+                    self._bind_or_invalidate(item.optional_vars, None)
+            for stmt in node.body:
+                self.visit(stmt)
+
+        def visit_Global(self, node: ast.Global) -> None:
+            scopes[-1].globals.update(node.names)
             self.generic_visit(node)
+
+        def visit_Delete(self, node: ast.Delete) -> None:
+            for target in node.targets:
+                self._bind_or_invalidate(target, None)
+            self.generic_visit(node)
+
+        def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            for dec in node.decorator_list:
+                self.visit(dec)
+            for tp in getattr(node, "type_params", []):
+                self.visit(tp)
+            self.visit(node.args)
+            if node.returns:
+                self.visit(node.returns)
+            func_scope = _Scope()
+            for tp in getattr(node, "type_params", []):
+                if hasattr(tp, "name"):
+                    func_scope.bindings[tp.name] = None
+            _bind_function_args(func_scope, node.args)
+            scopes.append(func_scope)
+            try:
+                for stmt in node.body:
+                    self.visit(stmt)
+            finally:
+                scopes.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_function(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._visit_function(node)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            self.visit(node.args)
+            lam_scope = _Scope()
+            _bind_function_args(lam_scope, node.args)
+            scopes.append(lam_scope)
+            try:
+                self.visit(node.body)
+            finally:
+                scopes.pop()
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            for dec in node.decorator_list:
+                self.visit(dec)
+            for tp in getattr(node, "type_params", []):
+                self.visit(tp)
+            for b in node.bases:
+                self.visit(b)
+            for kw in node.keywords:
+                self.visit(kw)
+            class_scope = _Scope(is_class=True)
+            scopes.append(class_scope)
+            try:
+                for stmt in node.body:
+                    self.visit(stmt)
+            finally:
+                scopes.pop()
+
+        def _visit_comprehension(
+            self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+        ) -> None:
+            comp_scope = _Scope()
+            first_gen = node.generators[0] if node.generators else None
+            if first_gen:
+                self.visit(first_gen.iter)
+            scopes.append(comp_scope)
+            try:
+                for idx, gen in enumerate(node.generators):
+                    if idx > 0:
+                        self.visit(gen.iter)
+                    self._bind_or_invalidate(gen.target, None)
+                    for if_expr in gen.ifs:
+                        self.visit(if_expr)
+                if isinstance(node, ast.DictComp):
+                    self.visit(node.key)
+                    self.visit(node.value)
+                else:
+                    self.visit(node.elt)
+            finally:
+                scopes.pop()
+
+        def visit_ListComp(self, node: ast.ListComp) -> None:
+            self._visit_comprehension(node)
+
+        def visit_SetComp(self, node: ast.SetComp) -> None:
+            self._visit_comprehension(node)
+
+        def visit_DictComp(self, node: ast.DictComp) -> None:
+            self._visit_comprehension(node)
+
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+            self._visit_comprehension(node)
 
         def visit_BinOp(self, node: ast.BinOp) -> None:
             if isinstance(node.op, ast.Div):
