@@ -29,6 +29,7 @@ import re
 from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import PurePosixPath
+from typing import Any
 
 from ...ingestion.extractors.visibility import _TS_BLOCK_COMMENT, _TS_CJS_EXPORTS_RE
 from ...ingestion.languages.registry import REGISTRY
@@ -134,6 +135,24 @@ def is_program(path: str, blob: bytes) -> bool:
     they only cap a finding, through :func:`_script_reason`.
     """
     return _program_reason(path, blob) is not None
+
+
+def defines_main_function(graph: Any, file_node: str) -> bool:
+    """Whether *file_node* defines a top-level function named ``main``.
+
+    A program's start in Kotlin, Dart, Go, Rust and C. On its own it is weak
+    (a Python helper may be named ``main``), so callers pair it with a root
+    stamp or a language rule.
+    """
+    return any(
+        sym.get("node_type") == "symbol"
+        and sym.get("kind") == "function"
+        and sym.get("name") == "main"
+        and not sym.get("parent_name")
+        and graph.get_edge_data(file_node, succ, {}).get("edge_type") == "defines"
+        for succ in graph.successors(file_node)
+        for sym in (graph.nodes.get(succ, {}),)
+    )
 
 
 def drop_program_entries(

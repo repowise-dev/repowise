@@ -61,7 +61,12 @@ from .dynamic_markers import (
     find_dynamic_import_files,
     read_source_text,
 )
-from .entry_shape import clamp_entry_shaped, drop_program_entries, is_program
+from .entry_shape import (
+    clamp_entry_shaped,
+    defines_main_function,
+    drop_program_entries,
+    is_program,
+)
 from .file_reachability import (
     CSHARP_SUFFIX,
     PackageFileMap,
@@ -70,6 +75,7 @@ from .file_reachability import (
     is_file_reachable,
 )
 from .go_name_uses import drop_go_package_uses
+from .jvm_reachability import defines_main
 from .kotlin_multiplatform import settle_platform_declarations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .module_strings import drop_named_modules
@@ -1433,7 +1439,8 @@ class DeadCodeAnalyzer:
         # Roots include framework-instantiated files the runtime constructs.
         # Not ``is_file_reachable``: its barrel rescue is scoped to files, and an
         # unused symbol defined in a barrel should still be flagged.
-        if is_reachability_root(node_data):
+        # A JVM ``main`` launches its file the same way.
+        if is_reachability_root(node_data) or defines_main(self.graph, str(node)):
             return None
         if node_data.get("is_test", False):
             return None
@@ -2164,10 +2171,21 @@ class DeadCodeAnalyzer:
         if not self._has_package_manifest(pkg, files):
             return False
         # Tests are run, never imported, and so is a package that ships a
-        # program (a CLI started by its shebang). One program file is enough,
-        # even a stray script: this errs toward not calling a package dead.
+        # program: a CLI started by its shebang, a JVM ``main``, or a root
+        # with a top-level ``main`` (Dart ``lib/main.dart``). A root alone is
+        # not enough: a Rust ``lib.rs`` is a root and the library's surface.
+        # One program file is enough, even a stray script: this errs toward
+        # not calling a package dead.
         files = [f for f in files if not self.graph.nodes.get(f, {}).get("is_test")]
-        if any(is_program(f, self._source_map.get(f, b"")) for f in files):
+        if any(
+            is_program(f, self._source_map.get(f, b""))
+            or defines_main(self.graph, f)
+            or (
+                is_reachability_root(self.graph.nodes[f])
+                and defines_main_function(self.graph, f)
+            )
+            for f in files
+        ):
             return False
         # A real package contains at least one source file something could
         # import. Config and data (YAML, JSON, MD, TOML) is metadata, and a

@@ -152,6 +152,7 @@ class TestJvmFileReachable:
                     symbols=[{
                         "name": "main",
                         "kind": "method",
+                        "signature": "main(String[] args) -> void",
                         "visibility": "public",
                         "language": "java",
                     }],
