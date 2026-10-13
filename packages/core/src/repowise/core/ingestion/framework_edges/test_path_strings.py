@@ -204,22 +204,48 @@ def python_ancestor_targets(test_path: str, text: bytes, path_set: set[str]) -> 
             found[candidate] = None
 
     class Visitor(ast.NodeVisitor):
+        def _bind_or_invalidate(self, target: ast.AST, prefix: str | None) -> None:
+            if isinstance(target, ast.Name):
+                if prefix is not None:
+                    vars_to_prefix[target.id] = prefix
+                else:
+                    vars_to_prefix.pop(target.id, None)
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                for elt in target.elts:
+                    self._bind_or_invalidate(elt, None)
+
         def visit_Assign(self, node: ast.Assign) -> None:
             prefix = resolve_expr(node.value)
+            for target in node.targets:
+                self._bind_or_invalidate(target, prefix)
             if prefix is not None:
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        vars_to_prefix[target.id] = prefix
                 check_candidate(prefix)
             self.generic_visit(node)
 
         def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-            if node.value is not None:
-                prefix = resolve_expr(node.value)
-                if prefix is not None:
-                    if isinstance(node.target, ast.Name):
-                        vars_to_prefix[node.target.id] = prefix
-                    check_candidate(prefix)
+            prefix = resolve_expr(node.value) if node.value is not None else None
+            self._bind_or_invalidate(node.target, prefix)
+            if prefix is not None:
+                check_candidate(prefix)
+            self.generic_visit(node)
+
+        def visit_AugAssign(self, node: ast.AugAssign) -> None:
+            self._bind_or_invalidate(node.target, None)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            prefix = resolve_expr(node.value)
+            self._bind_or_invalidate(node.target, prefix)
+            if prefix is not None:
+                check_candidate(prefix)
+            self.generic_visit(node)
+
+        def visit_For(self, node: ast.For) -> None:
+            self._bind_or_invalidate(node.target, None)
+            self.generic_visit(node)
+
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+            self._bind_or_invalidate(node.target, None)
             self.generic_visit(node)
 
         def visit_BinOp(self, node: ast.BinOp) -> None:

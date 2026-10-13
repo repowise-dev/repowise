@@ -305,3 +305,45 @@ target = root / "packages" / "data" / "sample.json"
         "tests/unit/dead_code/test_confidence_parity.py", src_data, path_set
     ) == []
 
+    # 11. Negative: reassignment to dynamic expression invalidates tracked binding
+    src_reassigned = b"""
+root = Path(__file__).parents[3]
+root = get_root()
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_reassigned, path_set
+    ) == []
+
+    # 12. Negative: annotated reassignment to dynamic expression invalidates tracked binding
+    src_ann_reassigned = b"""
+root = Path(__file__).parents[3]
+root: Path = get_root()
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_ann_reassigned, path_set
+    ) == []
+
+    # 13. Negative: bare type annotation without assignment invalidates tracked binding
+    src_ann_bare = b"""
+root = Path(__file__).parents[3]
+root: Path
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_ann_bare, path_set
+    ) == []
+
+    # 14. Negative: loop variable rebounds and invalidates tracked binding
+    src_loop_rebound = b"""
+root = Path(__file__).parents[3]
+for root in get_roots():
+    pass
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_loop_rebound, path_set
+    ) == []
+
+
