@@ -151,18 +151,19 @@ a file whose only plan is a cycle). The plan list's `structural_total` leaves
 Break Cycle out, matching the opportunities; `by_type` still counts it.
 
 Names are never invented. A suggested helper or file name is `null` when nothing
-in the code anchors one. A Split File or Extract Class plan with an unnamed group
-is held as `needs_design`, like a cycle: it is not a step and never reaches Fix
-first. A plan led by Move Method or Extract Class stays in the full list but is
-kept out of Fix first and the default scope, counted as not yet audited, until
+in the code anchors one; an Extract Method helper carries a placeholder instead. A
+Split File or Extract Class plan with an unnamed group is held as `needs_design`,
+like a cycle: it is not a step and never reaches Fix first. A plan led by Move
+Method or Extract Class stays in the full list but is kept out of Fix first and the default scope, counted as not yet audited, until
 that kind passes a per-language review. When such a step follows another lead, the
 Fix first item leaves it out and says how many steps it held back; the full plan
 keeps them. Code only moves within a language family,
 so Java, Kotlin and Scala are separate. A callback is named after the call it is
-passed to. An Extract Method helper is named from a stage label, a banner comment,
-or `compute_<value>` when the span has no outside effects; otherwise it is the host
-function's name plus what the span handles, such as `render_card_directive`. A
-name already taken where the helper lands is skipped for the next candidate.
+passed to. An Extract Method plan does not name its helper: it writes the
+placeholder `extracted_helper` (`extractedHelper` in camelCase languages, numbered
+when the name is taken where the helper lands), and the plan and its prompt ask you
+to rename it for what it returns or does, since the code alone rarely says what
+a block is for.
 
 An empty list means no detector found work that clears its gates. It does not mean
 the code needs no attention: check the findings in
@@ -277,8 +278,7 @@ Most plans answer a health finding, so per-path marker rules in
   declares them. In TypeScript, an optional parameter is written `T | undefined`,
   and a type an earlier guard narrows (`if (!x) return;`) is written narrowed, or
   a note asks for the narrowed type. Plan detail shows both with a copy button.
-  Where the code names no helper or type, the text reads `<name>` or `<type>` for
-  you to fill in.
+  Where the code names no type, the text reads `<type>` for you to fill in.
 - A Python, TypeScript or JavaScript function too complex for one helper can
   get a staged plan instead: several helpers the function calls in order, each
   small enough to leave the finding behind. Plan detail lists them as steps,

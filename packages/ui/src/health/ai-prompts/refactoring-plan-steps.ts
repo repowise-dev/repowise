@@ -137,7 +137,7 @@ function extractMethodSteps(plan: RefactoringPlan): string {
     ? `the span of \`${plan.target_symbol}\` that starts and ends with the lines shown (lines ${lines} when planned)`
     : `lines ${lines} of \`${plan.target_symbol}\``;
   return [
-    `Extract ${what} into \`${name}\`${em.suggested_name ? "" : " (name it for what the lines do)"}:`,
+    `Extract ${what} into \`${name}\`:`,
     "",
     ...rendered,
     `- **Parameters (in):** ${params}`,
@@ -150,6 +150,7 @@ function extractMethodSteps(plan: RefactoringPlan): string {
       : []),
     "",
     "Move exactly those lines into the new helper in the same scope, pass the parameters above, return the value(s) above, and replace the original lines with a single call to it. Preserve behavior exactly: change nothing outside the span and that one call site.",
+    `\`${name}\` is a placeholder: rename the helper for what it returns or does, in its header and its call.`,
     anchors ? `${SCRIPT_RULE_TEXT} ${LINE_RULE_TEXT}` : SCRIPT_RULE_TEXT,
   ].join("\n");
 }

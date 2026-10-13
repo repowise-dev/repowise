@@ -85,15 +85,16 @@ describe("helperSite namespace", () => {
 });
 
 describe("extract_method suggested_name reaches the rendered prompt", () => {
-  it("uses the computed name instead of the generic fallback", () => {
-    const prompt = buildRefactoringPlanPrompt({ plan: methodPlan("compute_average") });
-    expect(prompt).toContain("compute_average");
+  it("uses the plan's placeholder and asks the agent to rename it", () => {
+    const prompt = buildRefactoringPlanPrompt({ plan: methodPlan("_extracted_helper") });
+    expect(prompt).toContain("into `_extracted_helper`:");
+    expect(prompt).toContain("`_extracted_helper` is a placeholder: rename the helper");
     expect(prompt).not.toContain("a clearly named helper");
   });
 
-  it("asks the agent to fill the name placeholder when no name was anchored", () => {
+  it("asks the agent to name a helper stored without a name", () => {
     const prompt = buildRefactoringPlanPrompt({ plan: methodPlan(null) });
-    expect(prompt).toContain("`<name>` (name it for what the lines do)");
+    expect(prompt).toContain("`<name>` is a placeholder: rename the helper");
     expect(extractMethodPlan(methodPlan(null)).suggested_name).toBeNull();
   });
 

@@ -275,7 +275,7 @@ async def test_loader_reads_extractions_for_a_finding_without_a_plan(async_sessi
     await async_session.flush()
     loaded = await load_fix_first(async_session, rid)
     walk = next(i for i in loaded.items if i.target.file_path == "src/plain.py")
-    assert walk.action.steps[0].text == "Extract lines 12-20 of walk into step()"
+    assert walk.action.steps[0].text == "Extract lines 12-20 of walk into step(), renamed for what it returns or does"
     built = build_fix_first(
         metrics=METRICS,
         findings=FINDINGS,

@@ -99,13 +99,13 @@ def test_python_plan_carries_an_awaited_method_header_and_call():
     plan = _py_plan()
     sym = plan["new_symbol"]
     # No label or banner: named for the host and the value it returns.
-    assert plan["suggested_name"] == "_run_total"
+    assert plan["suggested_name"] == "_extracted_helper"
     assert sym["signature_text"] == (
-        "async def _run_total(self, items: list[int], limit: int) -> int:"
+        "async def _extracted_helper(self, items: list[int], limit: int) -> int:"
     )
     assert plan["call_site"] == {
         "replace_span": plan["span"],
-        "new_text": "total = await self._run_total(items, limit)",
+        "new_text": "total = await self._extracted_helper(items, limit)",
     }
     # The receiver is not a parameter of a method.
     assert sym["params"] == [
@@ -117,7 +117,7 @@ def test_python_plan_carries_an_awaited_method_header_and_call():
 
 def test_a_span_that_does_not_await_is_not_awaited():
     plan = _py_plan("print(-i)")
-    assert plan["new_symbol"]["signature_text"].startswith("def _run_total(items: list[int]")
+    assert plan["new_symbol"]["signature_text"].startswith("def _extracted_helper(items: list[int]")
     assert "await" not in plan["call_site"]["new_text"]
 
 

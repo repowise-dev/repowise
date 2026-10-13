@@ -64,7 +64,7 @@ FINDING_TITLE: dict[str, str] = {
 #: Imperative title for a composed refactoring, by its lead step's type.
 REFACTOR_TITLE: dict[str, str] = {
     "extract_method": "Extract a helper from {sym}",
-    "extract_method_span": "Extract lines {start}-{end} of {sym} into {name}",
+    "extract_method_span": "Extract lines {start}-{end} of {sym}",
     "extract_helper": "Replace the duplicated code in {sym} with one shared helper",
     "extract_class": "Extract a class from {sym}",
     "split_file": "Split {file} into smaller modules",

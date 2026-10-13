@@ -157,13 +157,29 @@ def _staged_steps(
         }
         steps.append(_step("add_helper", d.get("file_path"), None, text, new_symbol=symbol))
     for n, stage in enumerate(stages, 1):
-        step = _extract_step(d, stage)
+        step = _extract_step(d, stage, rename="each" if n == 1 else None)
         step["text"] = f"Stage {n} of {len(stages)}: {step['text']}"
         steps.append(step)
     return steps
 
 
-def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
+#: Said once per Extract Method plan: the plan's helper names are placeholders.
+RENAME_NOTE = (
+    "The helper's name is a placeholder: rename it for what it returns or does, "
+    "in its header and its call."
+)
+_RENAME_EACH = (
+    "Each stage's helper name is a placeholder: rename each helper for what it returns or does, "
+    "in its header and its call."
+)
+
+
+def _extract_step(
+    d: Mapping[str, Any], plan: Mapping[str, Any], *, rename: str | None = "one"
+) -> Step:
+    """One extract step. *rename* says the helper's name is a placeholder:
+    ``"one"`` for this helper, ``"each"`` for every stage of a staged plan
+    (said on its first stage), None to say nothing."""
     span = _dict(plan.get("span"))
     where = _span(span.get("start"), span.get("end"))
     host = _short(d.get("target_symbol"))
@@ -173,11 +189,6 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
         return _step("extract", d.get("file_path"), None, text)
     symbol = _dict(plan.get("new_symbol"))
     is_async = bool(symbol.get("async", plan.get("needs_async")))
-    named = (
-        " (a starting name; rename it if it collides)"
-        if plan.get("suggested_name")
-        else " (name it for what the lines do)"
-    )
     anchors = plan_anchors(plan.get("anchors"))
     lines = (
         f"the span of `{host}` that starts and ends with the lines shown "
@@ -186,9 +197,11 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
         else f"lines {where['start']}-{where['end']} of `{host}`"
     )
     text = (
-        f"Move {lines} into a new helper `{name}`{named} in the same scope, and replace "
+        f"Move {lines} into a new helper `{name}` in the same scope, and replace "
         f"{'it' if anchors else 'them'} with one call to it."
     )
+    if rename:
+        text += " " + (_RENAME_EACH if rename == "each" else RENAME_NOTE)
     return _step(
         "extract",
         d.get("file_path"),
@@ -686,6 +699,7 @@ __all__ = [
     "LINE_RULE",
     "PRECONDITION_KINDS",
     "RECIPE_ACTIONS",
+    "RENAME_NOTE",
     "SCRIPT_RULE",
     "TYPE_LABEL",
     "RecipeAction",

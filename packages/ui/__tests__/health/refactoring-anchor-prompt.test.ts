@@ -85,6 +85,13 @@ describe("Extract Method anchors", () => {
     expect(prompt).not.toContain(LINE_RULE_TEXT);
   });
 
+  it("says once that the helper's name is a placeholder to rename", () => {
+    const prompt = buildRefactoringPlanPrompt({ plan: plan() });
+    const note =
+      "`_sum_rows` is a placeholder: rename the helper for what it returns or does, in its header and its call.";
+    expect(prompt.split(note).length - 1).toBe(1);
+  });
+
   it("names no harness tool in the steps it renders", () => {
     for (const flavor of ["generic", "claude-code", "claude-code-mcp", "cursor"] as const) {
       const prompt = buildRefactoringPlanPrompt({

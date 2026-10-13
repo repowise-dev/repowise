@@ -94,7 +94,7 @@ def test_history_never_leads_and_rides_along_as_context() -> None:
 def test_text_quotes_the_stored_numbers() -> None:
     core = next(i for i in _build().items if i.kind == "refactor")
     assert core.title == (
-        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows"
+        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35"
     )
     # The size is a fact; the why says why it matters here.
     assert core.why == (
@@ -102,7 +102,7 @@ def test_text_quotes_the_stored_numbers() -> None:
         "9 files import it, changed 12 times in 90 days."
     )
     assert ("size", "CCN 44, 50 lines, nests 4 deep") in [(f.label, f.value) for f in core.facts]
-    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total, renamed for what it returns or does"
     assert core.action.steps[1].text == (
         "Extract lines 40-41 of run into <name>(); name it for what the lines do"
     )
@@ -214,7 +214,7 @@ def test_value_leads_tier_and_a_huge_function_says_so() -> None:
     big = {**FINDINGS[1], "details": {"ccn": 120, "nloc": 900, "max_nesting": 6}}
     planned = _build(findings=[big], performance=[]).lead
     assert planned.title == (
-        "Start breaking up run (CCN 120, 900 lines): first lift lines 20-35 into sum_rows"
+        "Start breaking up run (CCN 120, 900 lines): first lift lines 20-35"
     )
 
 
@@ -292,7 +292,7 @@ def test_a_due_item_carries_its_first_step_and_verify_inline() -> None:
     by_kind = {i.kind: i for i in _build().items}
     refactor, perf, finding = by_kind["refactor"], by_kind["perf_fix"], by_kind["finding"]
     assert refactor.compact()["first_step"] == {
-        "action": "Extract lines 20-35 of run into sum_rows(rows, limit) -> total",
+        "action": "Extract lines 20-35 of run into sum_rows(rows, limit) -> total, renamed for what it returns or does",
         "line": 20,
     }
     assert refactor.compact()["verify"] == {"command": "pytest tests/test_core_0.py"}
@@ -390,7 +390,7 @@ def test_a_staged_lead_plan_names_its_helpers_and_stage_one() -> None:
     core = next(i for i in _build(plans=_staged_plans()).items if i.kind == "refactor")
     assert core.title == "Split run into 3 helpers (+1 more step)"
     assert core.action.steps[0].text == (
-        "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total "
+        "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total, renamed for what it returns or does "
         "(CCN 44 -> 9 after all 3)"
     )
     # Only the staged plan's step says so; the plan's next step reads as before.
@@ -404,7 +404,7 @@ def test_a_staged_plan_without_its_complexity_figures_leaves_them_out() -> None:
         i for i in _build(plans=_staged_plans(2, orchestrator={})).items if i.kind == "refactor"
     )
     assert core.action.steps[0].text == (
-        "Stage 1 of 2: Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+        "Stage 1 of 2: Extract lines 20-35 of run into sum_rows(rows, limit) -> total, renamed for what it returns or does"
     )
 
 
@@ -413,7 +413,7 @@ def test_a_finding_borrowing_a_staged_span_says_it_is_staged() -> None:
     plans[0].update(file_path="src/core.py", target_symbol="src/core.py::run")
     lone = _build(plans=plans, refactoring=[], performance=[]).lead
     assert lone.action.steps[0].text == (
-        "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total "
+        "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total, renamed for what it returns or does "
         "(CCN 44 -> 9 after all 3)"
     )
 
@@ -439,17 +439,17 @@ def test_malformed_stages_never_crash_or_say_one_helper(stages, orchestrator) ->
     step = core.action.steps[0].text
     assert "into 1 helpers" not in step and "into 1 helpers" not in core.title
     if step.startswith("Stage 1 of 2"):
-        assert step.endswith("sum_rows(rows, limit) -> total")
+        assert step.endswith("sum_rows(rows, limit) -> total, renamed for what it returns or does")
     else:
-        assert step == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+        assert step == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total, renamed for what it returns or does"
 
 
 def test_an_unstaged_plan_reads_as_before() -> None:
     core = next(i for i in _build().items if i.kind == "refactor")
     assert core.title == (
-        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows"
+        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35"
     )
-    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total, renamed for what it returns or does"
 
 
 def _anchored_plans(anchors: dict, staged: bool = False) -> list:
@@ -463,7 +463,7 @@ def test_an_anchored_step_quotes_the_text_its_span_starts_and_ends_with() -> Non
     core = next(i for i in _build(plans=_anchored_plans(anchors)).items if i.kind == "refactor")
     step = core.action.steps[0]
     assert step.text == (
-        "Extract run from `    total = 0` to `    return total` into sum_rows(rows, limit) -> total"
+        "Extract run from `    total = 0` to `    return total` into sum_rows(rows, limit) -> total, renamed for what it returns or does"
     )
     # The line stays as a hint; the anchors replace the line range in the text.
     assert step.line == 20 and "lines 20-35" not in step.text
@@ -477,7 +477,7 @@ def test_a_staged_anchored_step_quotes_its_first_stage_with_the_helper_brief() -
     # because a surface that shows only the text has no header beside it.
     assert core.action.steps[0].text == (
         "Stage 1 of 3: Extract run from `a = 1` to `` b = `x` `` into "
-        "sum_rows(rows, limit) -> total (CCN 44 -> 9 after all 3)"
+        "sum_rows(rows, limit) -> total, renamed for what it returns or does (CCN 44 -> 9 after all 3)"
     )
     assert core.action.steps[0].signature == "def sum_rows(rows, limit):"
 
@@ -489,7 +489,7 @@ def test_an_anchor_unique_only_in_its_function_says_so() -> None:
     lone = _build(plans=plans, refactoring=[], performance=[]).lead
     # A finding with no plan of its own borrows the span with its anchors.
     assert lone.action.steps[0].text == (
-        "Extract run from `x = 1\n    y = 2` to `return y` into sum_rows(rows, limit) -> total. "
+        "Extract run from `x = 1\n    y = 2` to `return y` into sum_rows(rows, limit) -> total, renamed for what it returns or does. "
         f"{ELSEWHERE_NOTE}"
     )
 
@@ -498,7 +498,7 @@ def test_a_staged_anchor_unique_only_in_its_function_says_so_after_the_stage() -
     plans = _anchored_plans({"first": "a = 1", "last": "b = 2", "unique_in": "function"}, staged=True)
     core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
     assert core.action.steps[0].text == (
-        "Stage 1 of 3: Extract run from `a = 1` to `b = 2` into sum_rows(rows, limit) -> total "
+        "Stage 1 of 3: Extract run from `a = 1` to `b = 2` into sum_rows(rows, limit) -> total, renamed for what it returns or does "
         f"(CCN 44 -> 9 after all 3). {ELSEWHERE_NOTE}"
     )
 
@@ -506,7 +506,7 @@ def test_a_staged_anchor_unique_only_in_its_function_says_so_after_the_stage() -
 def test_malformed_anchors_fall_back_to_lines() -> None:
     plans = _anchored_plans({"first": "a = 1", "last": None})
     core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
-    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total, renamed for what it returns or does"
 
 
 def test_a_plan_that_leaves_its_function_above_the_bar_can_wait() -> None:
@@ -537,7 +537,7 @@ def test_a_finding_borrowing_a_plan_that_leaves_it_above_the_bar_says_so() -> No
     # The finding keeps its tier; only its step says the plan is not the whole fix.
     assert lone.tier != "later"
     assert lone.action.steps[0].text == (
-        "Extract lines 20-35 of run into sum_rows(rows, limit) -> total. This plan alone "
+        "Extract lines 20-35 of run into sum_rows(rows, limit) -> total, renamed for what it returns or does. This plan alone "
         "leaves run at CCN 41, still above the break-up bar; more stages needed."
     )
 

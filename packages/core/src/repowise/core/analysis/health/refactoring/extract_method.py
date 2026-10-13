@@ -46,12 +46,11 @@ no suggestion.
 Plan shape (open dict, no migration):
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
-  "returns": [str, ...], "suggested_name": str | None}`` -- the lines to lift,
-  the inferred signature, and a deterministic starting name (see
-  ``helper_naming``): a ``timed()`` stage label, a banner comment, or
-  ``compute_<out>`` for an effect-free span with one informative OUT value.
-  ``None`` when nothing anchors a name, or when the name is already taken in
-  the scope the helper lands in.
+  "returns": [str, ...], "suggested_name": str}`` -- the lines to lift, the
+  inferred signature, and a placeholder name for the helper
+  (``extracted_helper``, ``extracted_helper_2`` for the next one in the same
+  scope; ``helper_naming.placeholder_names``) that the agent applying the
+  plan replaces with a name for what the helper returns or does.
 - ``plan.needs_async`` -- the span awaits, so the helper is async and its call
   is awaited. An awaiting plan also carries ``async_host``: False when the
   enclosing function is not declared async, which makes the step a judgment
@@ -74,8 +73,8 @@ Plan shape (open dict, no migration):
   "new_text": str}`` is the statement replacing the span (``render``), and
   ``new_symbol.notes`` what they cannot say. Both texts are None when
   ``kind`` is; ``call_site`` also when an awaiting span sits in a host that
-  is not async. A missing name reads ``<name>`` in them,
-  and ``suggested_name`` is in the language's private form (Python ``_x``).
+  is not async. ``suggested_name`` is in the language's private form
+  (Python ``_x``).
 - ``plan.anchors`` = ``{"first": str, "last": str}`` -- the exact text the
   span starts and ends with, each unique in the function (``anchors``), so an
   agent finds it by text once earlier edits have moved its lines; every stage
@@ -123,7 +122,7 @@ from ..scoring import severity_deduction
 from . import render
 from .anchors import Scope, anchor_plan, file_source, function_scope
 from .declarative import declarative_flat
-from .helper_naming import ScopeNames, helper_names, out_value_name
+from .helper_naming import ScopeNames, placeholder_names
 from .models import RefactoringContext, RefactoringSuggestion
 from .narrowing import narrowed, narrowings
 from .registry import RefactoringDetector, register
@@ -245,17 +244,15 @@ class ExtractMethodDetector(RefactoringDetector):
             if anchor_plan(split.plan, scope):
                 out.append(split)
                 return
+            # The fallback span takes the first placeholder, not the next one.
+            names.release(analysis, _claimed(split.plan))
         if best is None:
             # Nothing to fall back to from a split no text anchors.
             if staged is not None:
                 _mark_refused(matched, "span_unanchored")
             return
         name = render.private_name(
-            ctx.language,
-            names.claim_first(
-                analysis,
-                helper_names(analysis, best, lmap, ctx.language, names.imports(fn_node)),
-            ),
+            ctx.language, names.claim_first(analysis, placeholder_names(ctx.language))
         )
         async_fields = _async_fields(analysis, best, lmap, ctx.language)
         symbol = _render_fields(
@@ -371,13 +368,6 @@ class ExtractMethodDetector(RefactoringDetector):
         return best[0], best[1], best[3]
 
     @staticmethod
-    def _suggested_name(
-        analysis: FunctionAnalysis, extraction: Extraction, language: str | None = None
-    ) -> str | None:
-        """The OUT-value name alone (:func:`helper_naming.out_value_name`)."""
-        return out_value_name(analysis, extraction, language)
-
-    @staticmethod
     def _confidence(extraction: Extraction, share: float) -> str:
         """High when the extraction is unambiguous and worth handing off: a
         clean signature and a real share of the function. Medium otherwise.
@@ -486,6 +476,12 @@ def _staged(
     return plan
 
 
+def _claimed(plan: dict[str, Any]) -> list[str]:
+    """The names a staged plan claimed: each stage's and the parameter object's."""
+    obj = plan.get("parameter_object") or {}
+    return [s["suggested_name"] for s in plan["stages"]] + ([obj["name"]] if obj else [])
+
+
 def _staged_fields(
     analysis: FunctionAnalysis,
     staged: StagePlan,
@@ -500,7 +496,6 @@ def _staged_fields(
     obj = _parameter_object(analysis, staged, dialect, language, names)
     # Without an object (no free variable name for it) the values stay plain.
     context = staged.context if obj else ()
-    imports = names.imports(analysis.fn_node)
     # The function's import goes with the last stage reading it, so the code
     # still runs when the stages before it are applied and tested alone.
     last = {
@@ -509,10 +504,7 @@ def _staged_fields(
     stages = []
     for i, (x, reimports) in enumerate(zip(staged.stages, staged.imports, strict=True)):
         name = render.private_name(
-            language,
-            names.claim_first(
-                analysis, helper_names(analysis, x, lmap, language, imports, sections=True)
-            ),
+            language, names.claim_first(analysis, placeholder_names(language))
         )
         carried = [p for p in x.params if p in context]
         own = replace(x, params=tuple(p for p in x.params if p not in context))
