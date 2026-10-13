@@ -188,6 +188,24 @@ async def test_get_why_path_not_found_skips_archaeology(setup_mcp):
     assert "alignment" not in result
 
 
+def test_a_path_outside_the_checkout_is_not_on_disk(tmp_path):
+    """Absolute paths, ``..`` escapes and symlinks out are not in the checkout."""
+    from repowise.server.mcp_server.tool_why.path_mode import _maybe_on_disk
+
+    root = tmp_path / "repo"
+    _write(root, "src/a.py")
+    _write(tmp_path, "outside.py")
+
+    assert _maybe_on_disk(root, "src/a.py")
+    assert not _maybe_on_disk(root, str(tmp_path / "outside.py"))
+    assert not _maybe_on_disk(root, "../outside.py")
+    try:
+        (root / "link.py").symlink_to(tmp_path / "outside.py")
+    except OSError:
+        pytest.skip("symlinks need privileges on this platform")
+    assert not _maybe_on_disk(root, "link.py")
+
+
 @pytest.mark.asyncio
 async def test_get_why_fallback_with_cross_references(setup_mcp, tmp_path):
     from repowise.server.mcp_server import get_why

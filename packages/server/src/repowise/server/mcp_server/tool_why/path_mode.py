@@ -145,8 +145,20 @@ async def _why_path(query: str, repo: str | None) -> dict:
 
 
 def _maybe_on_disk(repo_path: str | Path | None, path: str) -> bool:
-    """False only when the checkout is known and *path* is not in it."""
-    return not repo_path or (Path(repo_path) / path).exists()
+    """False only when the checkout is known and *path* is not in it.
+
+    Resolved and contained, like ``read_repo_file_text``: an absolute path,
+    a ``..`` escape or a symlink out of the checkout is not in it.
+    """
+    if not repo_path:
+        return True
+    root = Path(repo_path).resolve()
+    try:
+        candidate = (root / path).resolve()
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return candidate.exists()
 
 
 def _records_naming_path(all_decisions: list, path: str) -> list:
