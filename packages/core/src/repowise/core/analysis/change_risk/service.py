@@ -56,6 +56,10 @@ class ChangeRiskResult:
     # large repository). Distinguishes "no fixes here" from "we could not look",
     # which the surfaces would otherwise report identically.
     fix_history_available: bool = True
+    # The ref the fix history was read at (see ``history_ref``), so the
+    # line-scoped fix record can be read at the same point. ``None`` when the
+    # change came from file stats with no checkout behind it.
+    history_ref: str | None = None
 
 
 def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
@@ -215,7 +219,7 @@ def score_live_change(
             exclude_patterns=effective_excludes,
         )
 
-    return assess_change(
+    result = assess_change(
         features,
         fix_pressure=pressure,
         baseline_scores=scores_excluding(samples, excluded_ref),
@@ -224,6 +228,7 @@ def score_live_change(
         riskignore_excludes=from_riskignore,
         request_excludes=exclude_patterns,
     )
+    return replace(result, history_ref=history)
 
 
 def assess_change(

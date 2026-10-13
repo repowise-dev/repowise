@@ -21,6 +21,7 @@ from repowise.core.analysis.change_risk import (
     densities_excluding,
     fix_density_percentile,
     fix_pressure,
+    fixes_reachable_from,
     score_live_change,
 )
 from repowise.core.analysis.change_risk.fix_history import rename_target
@@ -152,6 +153,42 @@ def test_fix_history_excludes_the_change_being_scored(repo_with_history: Path) -
     result = score_live_change(str(repo_with_history), sha, baseline=0)
     # Scored against the parent's record — three prior fixes, not four.
     assert result.fix_density == pytest.approx(before["hot.py"], abs=0.05)
+
+
+def test_reachable_fixes_stop_at_the_ref(repo_with_history: Path) -> None:
+    """A fix at or after the change is not ground the change stood on."""
+    repo = str(repo_with_history)
+    first = _commit(repo_with_history, {"hot.py": "v = 50\n"}, "fix: earlier crash")
+    second = _commit(repo_with_history, {"hot.py": "v = 51\n"}, "fix: reviewed crash")
+    missing = "f" * 40
+    assert fixes_reachable_from(repo, f"{second}^", [first, second, missing]) == {first, missing}
+    assert fixes_reachable_from(repo, second, [first, second]) == {first, second}
+    root = subprocess.run(
+        ["git", "rev-list", "--max-parents=0", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    # Before the root commit there is no history at all.
+    assert fixes_reachable_from(repo, f"{root}^", [first]) == set()
+
+
+def test_reachable_fixes_raise_outside_a_repository(tmp_path: Path) -> None:
+    with pytest.raises(FixHistoryUnavailableError):
+        fixes_reachable_from(str(tmp_path), "HEAD", ["a" * 40])
+
+
+def test_result_carries_the_ref_its_history_was_read_at(repo_with_history: Path) -> None:
+    repo = str(repo_with_history)
+    sha = _commit(repo_with_history, {"hot.py": "v = 60\n"}, "fix: reviewed")
+    assert score_live_change(repo, sha, baseline=0).history_ref == f"{sha}^"
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD~2"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert score_live_change(repo, f"{base}..{sha}", baseline=0).history_ref == base
+    (repo_with_history / "hot.py").write_text("v = 61\n", encoding="utf-8")
+    assert score_live_change(repo, baseline=0).history_ref == "HEAD"
 
 
 def test_percentile_needs_enough_commits_to_rank_against() -> None:

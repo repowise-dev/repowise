@@ -108,7 +108,9 @@ here", not as an exact ledger. Every surface that shows symbol counts says so.
 how many past fixes it carries and how many of the change's lines fall inside a
 past fix's replaced ranges. Fix counts are exact (one commit fixing three files
 is one fix). Line overlap is marked `approximate`. Files are ranked by overlap
-then count, and a `truncated` flag marks a cut list. See
+then count, and a `truncated` flag marks a cut list. Only fixes from before the
+change count, at the same point the score reads its fix history: a commit's
+parent, a range's merge-base, or `HEAD` for uncommitted work. See
 [CHANGE_RISK.md](CHANGE_RISK.md).
 
 ## Tuning and suppressing

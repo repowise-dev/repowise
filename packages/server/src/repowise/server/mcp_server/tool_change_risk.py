@@ -22,7 +22,9 @@ from repowise.core.analysis.change_health.service import (
     DeltaRequest,
 )
 from repowise.core.analysis.change_risk import (
+    FixHistoryUnavailableError,
     change_risk_payload,
+    fixes_reachable_from,
     normalize_extensions,
     score_live_change,
 )
@@ -207,7 +209,7 @@ async def _attach_change_blocks(
     )
     if patch is not None:
         payload["patch_coverage"] = patch
-    prior_fixes = await _prior_fixes_block(ctx, changed)
+    prior_fixes = await _prior_fixes_block(ctx, changed, history_ref=result.history_ref)
     if prior_fixes is not None:
         # One fix record, not two. The blocks answered the same question
         # with different arithmetic (decayed pressure vs raw count) and a
@@ -932,7 +934,9 @@ async def _changed_with_label(
     return changed, None, label
 
 
-async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str, Any] | None:
+async def _prior_fixes_block(
+    ctx: Any, changed: dict[str, set[int]], *, history_ref: str | None = None
+) -> dict[str, Any] | None:
     """Past bug fixes that landed on the lines this change touches, or ``None``.
 
     Aggregate only. No inducing commit is named: file-level SZZ measured 74.5%
@@ -950,7 +954,7 @@ async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str
     not silent: it renders with ``status: "unavailable"``, because "we could not
     look" and "nothing has broken here" are opposite claims about the change.
     """
-    impact = await _read_prior_fixes(ctx, changed)
+    impact = await _read_prior_fixes(ctx, changed, history_ref=history_ref)
     if impact.status == "unsupported" or (impact.status == "available" and impact.is_empty):
         return None
     if impact.status != "available":
@@ -1004,8 +1008,14 @@ def _prior_fix_row(entry: PriorFixFile) -> dict[str, Any]:
     return row
 
 
-async def _read_prior_fixes(ctx: Any, changed: dict[str, set[int]]) -> PriorFixImpact:
+async def _read_prior_fixes(
+    ctx: Any, changed: dict[str, set[int]], *, history_ref: str | None = None
+) -> PriorFixImpact:
     """Collect fix events from the index. Collection only; core summarizes.
+
+    With *history_ref* (the score's own fix-history anchor) only fixes in that
+    ref's history count, so a reviewed commit and its successors in the index
+    are not read back as the ground it stood on.
 
     The four ways this can come back empty are not one state. An index that
     predates fix events has nothing to read (``unsupported``), while a query
@@ -1044,6 +1054,12 @@ async def _read_prior_fixes(ctx: Any, changed: dict[str, set[int]]) -> PriorFixI
     except SQLAlchemyError as exc:
         return unavailable_prior_fixes(_read_failure(exc))
 
+    if history_ref is not None:
+        try:
+            events = await _events_before(ctx, events, history_ref)
+        except FixHistoryUnavailableError as exc:
+            return unavailable_prior_fixes(f"could not place fixes in history: {exc}")
+
     return summarize_prior_fixes(
         (
             FixRecord(
@@ -1056,6 +1072,14 @@ async def _read_prior_fixes(ctx: Any, changed: dict[str, set[int]]) -> PriorFixI
         ),
         changed,
     )
+
+
+async def _events_before(ctx: Any, events: list[Any], history_ref: str) -> list[Any]:
+    """The fix events in *history_ref*'s history, so a review never counts itself."""
+    kept = await asyncio.to_thread(
+        fixes_reachable_from, str(ctx.path), history_ref, (event.fix_sha for event in events)
+    )
+    return [event for event in events if event.fix_sha in kept]
 
 
 def _read_failure(exc: SQLAlchemyError) -> str:
