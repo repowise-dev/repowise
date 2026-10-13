@@ -150,7 +150,7 @@ def _is_property_accessor(sym: Any) -> bool:
 
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
-PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp", "csharp", "go"})
+PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp", "csharp", "go", "java"})
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
@@ -1229,11 +1229,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         A receiver records one hop, but the parser keeps every link of a chain
         as its own site on the chain's first line, so the hop below is read
-        off the site *inner* names. Only C# reads it; elsewhere an inner call
-        is still typed as if nothing were chained under it. Go reads it too, so a
-        builder chain types each link from the one before.
+        off the site *inner* names. C#, Go and Java read it, so a builder chain
+        types each link from the one before; elsewhere an inner call is still
+        typed as if nothing were chained under it.
         """
-        if language not in ("csharp", "go"):
+        if language not in ("csharp", "go", "java"):
             return None
         sites = self._chained_sites.get(file_path)
         if sites is None:

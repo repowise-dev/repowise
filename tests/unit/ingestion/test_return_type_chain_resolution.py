@@ -215,7 +215,7 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
-    assert frozenset({"cpp", "csharp", "go"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+    assert frozenset({"cpp", "csharp", "go", "java"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
 
 
 def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
@@ -321,9 +321,9 @@ def test_a_table_admits_only_its_own_lane(tmp_path: Path) -> None:
     parsed = _parse(tmp_path, "Example.java", "java", source)
     call = _java_chain_call(parsed, "Example.java", "run")
 
-    resolved = CallResolver(parsed, {}, repo_path=str(tmp_path)).resolve_file(
-        "Example.java", [call]
-    )
+    resolved = CallResolver(
+        parsed, {}, repo_path=str(tmp_path), return_type_chain_languages=frozenset()
+    ).resolve_file("Example.java", [call])
     assert not any(edge.origin.startswith("return_type_") for edge in resolved)
 
 
