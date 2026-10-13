@@ -22,6 +22,7 @@ from sqlalchemy import or_, select
 from repowise.core.ingestion.symbol_identity import (
     base_symbol_id,
     id_segment_name,
+    split_symbol_id,
     untyped_symbol_id,
 )
 from repowise.core.persistence.models import WikiSymbol
@@ -234,13 +235,10 @@ async def resolve_symbol_rows(session, repo_id: str, symbol_id: str) -> list[Wik
     if rows:
         return order_candidates(rows, file_path)
 
-    if not name:
-        return []
-
     variants = name_variants(name)
 
     # 2. Match on (file_path, qualified_name) across name variants.
-    if file_path:
+    if file_path and name:
         res = await session.execute(
             select(WikiSymbol).where(
                 WikiSymbol.repository_id == repo_id,
@@ -285,4 +283,37 @@ async def resolve_symbol_rows(session, repo_id: str, symbol_id: str) -> list[Wik
         if rows:
             return order_candidates(rows, file_path)
 
+    # 5. A qualified name with no file ("Client.send", "Command::Find"): the
+    #    head is a class, not a path, so match the qualified_name tail
+    #    repo-wide. qualified_name is module-prefixed and dotted.
+    dotted = _pathless_qualified_name(symbol_id)
+    if dotted:
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.name == bare_name(dotted),
+                or_(
+                    WikiSymbol.qualified_name == dotted,
+                    WikiSymbol.qualified_name.like(
+                        f"%.{escape_like(dotted)}", escape=LIKE_ESCAPE
+                    ),
+                ),
+            )
+        )
+        return order_candidates(list(res.scalars().all()), None)
+
     return []
+
+
+def _pathless_qualified_name(symbol_id: str) -> str | None:
+    """The dotted ``Class.method`` a path-less target names, else None.
+
+    An overload discriminator is dropped, since qualified_name never carries
+    one, so ``Validate::notNull#1`` answers with the whole overload set.
+    """
+    base = split_symbol_id(symbol_id)[0]
+    head = base.partition("::")[0]
+    if "/" in head or "\\" in head:
+        return None
+    dotted = name_variants(base)[0] if base else ""
+    return dotted if "." in dotted else None

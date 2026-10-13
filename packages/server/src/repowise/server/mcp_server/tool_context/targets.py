@@ -518,6 +518,9 @@ async def _resolve_one_target(
                 )
                 sym_matches = list(res.scalars().all())
                 if not sym_matches:
+                    # "Client.send": a qualified name with no file.
+                    sym_matches = await resolve_symbol_rows(session, repo_id, target)
+                if not sym_matches:
                     res = await session.execute(
                         select(WikiSymbol)
                         .where(
@@ -647,7 +650,9 @@ async def _resolve_one_target(
                     collector=collector,
                     as_of_ts=as_of_ts,
                 )
-                if "error" not in card:
+                # Only a file card is the degrade; a symbol card for the head
+                # ("Command" of "Command::Nope") would claim the wrong symbol.
+                if "error" not in card and card.get("type") == "file":
                     card["target"] = target
                     card["resolved_to"] = file_part
                     card["note"] = (
