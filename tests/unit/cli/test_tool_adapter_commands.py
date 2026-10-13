@@ -892,12 +892,12 @@ def test_why_table_prints_each_commit_once_before_showing_new_git_log_rows(monke
         ]},
         "git_archaeology": {
             "file_commits": [
-                {"sha": shared, "date": "2026-01-02", "message": "repeated"},
+                {"sha": shared[:8], "date": "2026-01-02", "message": "origin"},
                 {"sha": second, "date": "2026-01-03", "message": "indexed"},
             ],
             "git_log": [
-                {"sha": shared, "date": "2026-01-04", "message": "repeated live"},
-                {"sha": second, "date": "2026-01-04", "message": "repeated indexed"},
+                {"sha": shared[:12], "date": "2026-01-04", "message": "origin"},
+                {"sha": second, "date": "2026-01-04", "message": "indexed"},
                 {"sha": new, "date": "2026-01-05", "message": "new live"},
                 *[
                     {"sha": f"{letter}123456789abcdef", "message": "another live"}
@@ -912,10 +912,10 @@ def test_why_table_prints_each_commit_once_before_showing_new_git_log_rows(monke
     assert result.stdout.count(second[:8]) == 2  # cross-references stay independent
     assert result.stdout.count(new[:8]) == 1
     assert "git log: c1234567" in result.stdout
-    assert "5 of 8 git log shown" in result.stdout  # duplicates count toward the cap
+    assert "5 of 8 git log inspected" in result.stdout  # duplicate slots still consume the cap
     assert "2026-01-02" not in result.stdout
     json_result = _invoke(monkeypatch, why_command, ["a.py", "--format", "json"], repo, payload)
-    assert json.loads(json_result.stdout)["git_archaeology"]["git_log"][0]["sha"] == shared
+    assert json.loads(json_result.stdout)["git_archaeology"]["git_log"][0]["sha"] == shared[:12]
 
 
 def test_why_nested_target_deduplicates_its_own_history(monkeypatch, repo):
@@ -944,6 +944,23 @@ def test_why_help_names_the_actual_repeatable_target_option():
     assert result.exit_code == 0
     assert "--target TEXT" in result.stdout
     assert "--targets" not in result.stdout
+
+
+def test_why_table_keeps_distinct_commits_with_the_same_display_prefix(monkeypatch, repo):
+    payload = {
+        "mode": "path", "path": "a.py",
+        "origin_story": {"available": True, "key_commits": [
+            {"sha": "abcdef0011111111", "message": "first commit"},
+        ]},
+        "git_archaeology": {"git_log": [
+            {"sha": "abcdef0022222222", "message": "distinct commit"},
+        ]},
+        "_meta": {},
+    }
+    result = _invoke(monkeypatch, why_command, ["a.py"], repo, payload)
+    assert "first commit" in result.stdout
+    assert "git log: abcdef00" in result.stdout
+    assert "distinct commit" in result.stdout
 
 
 def test_why_renders_a_targets_own_history(monkeypatch, repo):
