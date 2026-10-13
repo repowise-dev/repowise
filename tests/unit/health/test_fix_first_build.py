@@ -98,7 +98,7 @@ def test_text_quotes_the_stored_numbers() -> None:
     )
     # The size is a fact; the why says why it matters here.
     assert core.why == (
-        "run has many paths through it; smaller parts are easier to read and change; "
+        "run has many paths; easier to read and change once split; "
         "9 files import it, changed 12 times in 90 days."
     )
     assert ("size", "CCN 44, 50 lines, nests 4 deep") in [(f.label, f.value) for f in core.facts]
