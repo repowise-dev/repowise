@@ -473,14 +473,7 @@ class ReceiverTypingMixin:
         neither types nor binds is asked of the function around it, whose
         locals it captures and whose class fields it sees.
         """
-        body_types = self._declared_types_in(file_path, caller_id, language)
-        host = self._capture_host(file_path, caller_id, language, receiver_name, body_types)
-        while host is not None:
-            # Out through each enclosing function until one answers.
-            body_types = self._captured_types(file_path, host, caller_id, language)
-            caller_id, host = host, self._capture_host(
-                file_path, host, language, receiver_name, body_types
-            )
+        caller_id, body_types = self._typing_scope(file_path, caller_id, language, receiver_name)
         # A builtin type answers only when nothing else does, so a local
         # ``String data`` leaves ``this.data.m()``, which reaches here as
         # ``data.m()``, to the field.
@@ -793,6 +786,23 @@ class ReceiverTypingMixin:
         if receiver_name in self._bound_names_in(file_path, caller_id, language):
             return None
         return host
+
+    def _typing_scope(
+        self, file_path: str, caller_id: str, language: str, receiver_name: str
+    ) -> tuple[str, dict[str, str | None]]:
+        """The function whose body answers for *receiver_name*, with that body's types.
+
+        The caller's own, else, for an anonymous class member, out through each
+        enclosing function until one types or binds the name.
+        """
+        body_types = self._declared_types_in(file_path, caller_id, language)
+        host = self._capture_host(file_path, caller_id, language, receiver_name, body_types)
+        while host is not None:
+            body_types = self._captured_types(file_path, host, caller_id, language)
+            caller_id, host = host, self._capture_host(
+                file_path, host, language, receiver_name, body_types
+            )
+        return caller_id, body_types
 
     def _captured_types(
         self, file_path: str, host: str, caller_id: str, language: str

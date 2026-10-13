@@ -575,28 +575,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             decl_key = (sym.parent_name, sym.name)
             if sym.is_declaration:
                 declarations.append((path, index_id, decl_key))
-                # A declaration must never displace a definition already
-                # indexed under this name — a .cpp that forward-declares a
-                # helper above its own body holds both.
-                #
-                # A method declaration stays out: this index answers
-                # unqualified lookups from importing files, and no bare name
-                # can legally reach a method. The (class, method) index
-                # below still takes it.
-                if sym.parent_name is None:
-                    file_syms.setdefault(sym.name, index_id)
-                    top_level.setdefault(sym.name, index_id)
             else:
                 definitions[decl_key].append((path, index_id))
-                # File-level symbol index (top-level symbols and methods). An
-                # anonymous class member stays out: only its own class body
-                # names it bare, through the (class, method) index below. It is
-                # never top-level, so ``top_level`` needs no such check.
-                if sym.kind not in _EXTENSION_KINDS:
-                    if not is_anonymous_member(sym):
-                        file_syms[sym.name] = index_id
-                    if sym.parent_name is None:
-                        top_level[sym.name] = index_id
+            _index_bare_name(sym, index_id, file_syms, top_level)
 
             # Method index: (class_name, method_name) → symbol_id
             if sym.parent_name:
@@ -1497,13 +1478,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> tuple[bool, ResolvedCall | None]:
         """Tier 1, as ``(handled, edge)``: a handled None is a refusal."""
         own = self._enclosing_class_method(file_path, call, caller_id)
-        anonymous = self._anonymous_member(own)
-        if anonymous is not None:
-            # An anonymous class body names its own members before any flat
-            # name, a same-file top-level function included. Recursion: no edge.
-            if anonymous == caller_id:
-                return True, None
-            return True, ResolvedCall(caller_id, anonymous, 0.95, call.line, "same_file")
+        if self._is_anonymous_id(own):
+            return True, _own_member_call(caller_id, own, call)
         callee_id = self._file_symbols.get(file_path, {}).get(call.target_name)
         if callee_id is None:
             return False, None
@@ -1516,11 +1492,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return True, ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
         return False, None
 
-    def _anonymous_member(self, sym_id: str | None) -> str | None:
-        """*sym_id* when it names an anonymous class member, else None."""
-        if sym_id is None or not is_anonymous_member(self._symbols_by_id[sym_id]):
-            return None
-        return sym_id
+    def _is_anonymous_id(self, sym_id: str | None) -> bool:
+        """Does *sym_id* name an anonymous class member?"""
+        return sym_id is not None and is_anonymous_member(self._symbols_by_id[sym_id])
 
     def _bound_import_call(
         self,
@@ -2189,6 +2163,44 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         names = frozenset(found)
         _store_capped(self._repo_rebound_names, file_path, names, _SOURCE_CACHE_FILES)
         return names
+
+
+def _index_bare_name(
+    sym: Symbol, index_id: str, file_syms: dict[str, str], top_level: dict[str, str]
+) -> None:
+    """Index *sym* under its bare name in one file's flat and top-level tables."""
+    if sym.is_declaration:
+        # A declaration must never displace a definition already
+        # indexed under this name — a .cpp that forward-declares a
+        # helper above its own body holds both.
+        #
+        # A method declaration stays out: this index answers
+        # unqualified lookups from importing files, and no bare name
+        # can legally reach a method. The (class, method) index
+        # still takes it.
+        if sym.parent_name is None:
+            file_syms.setdefault(sym.name, index_id)
+            top_level.setdefault(sym.name, index_id)
+        return
+    if sym.kind in _EXTENSION_KINDS:
+        return
+    # Top-level symbols and methods. An anonymous class member stays out: only
+    # its own class body names it bare, through the (class, method) index. It
+    # is never top-level, so ``top_level`` needs no such check.
+    if not is_anonymous_member(sym):
+        file_syms[sym.name] = index_id
+    if sym.parent_name is None:
+        top_level[sym.name] = index_id
+
+
+def _own_member_call(caller_id: str, own: str, call: CallSite) -> ResolvedCall | None:
+    """An anonymous class body's call to its own member *own*, before any flat name.
+
+    A same-file top-level function of the name included. Recursion: no edge.
+    """
+    if own == caller_id:
+        return None
+    return ResolvedCall(caller_id, own, 0.95, call.line, "same_file")
 
 
 def _rivals_a_class_method(symbol_id: str) -> bool:
