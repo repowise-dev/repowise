@@ -187,14 +187,14 @@ docstrings, framework-aware edges and code-health markers.
 
 ### Framework-aware edges
 
-Routes connect to handlers, DI registrations to implementations, and test
-fixtures to the tests that use them.
+Depending on the framework, routes connect to handlers, DI registrations to
+implementations, and test fixtures to the tests that use them.
 
 | Language | Frameworks |
 |----------|-----------|
 | Python | Django, FastAPI, Flask, Celery, pytest fixtures |
 | Ruby | Rails (routes to controller actions, Zeitwerk), RSpec mirror edges |
-| Java / Kotlin | Spring, Jakarta / JPA, Quarkus, Micronaut, Android manifest |
+| Java / Kotlin | Spring (stereotypes, field, constructor and Lombok injection, `@Bean` factories, Spring Data repositories, autoconfig imports; request-mapped handlers are entry points), Jakarta / JPA, Quarkus, Micronaut, Android manifest |
 | C# | ASP.NET (attribute and minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
 | Go | net/http, gin, echo, chi, gRPC server registration |
 | Rust | Axum, Actix |

@@ -130,8 +130,8 @@ and infers the parameters and return values a behaviour-preserving signature nee
 | 2009 | Cormack, Clarke and Büttcher, *Reciprocal rank fusion outperforms Condorcet and individual rank learning methods*, SIGIR | Merging full-text and semantic results | `packages/server/src/repowise/server/mcp_server/tool_search.py` |
 
 **How we checked it.** On 42 sealed retrieval tasks, held out from every round of
-tuning and graded without a model, `get_answer` found 0.876 of the files a fix needed,
-against 0.610 for the next tool (sign test p = 0.00004).
+tuning and graded without a model, `search_codebase` found 0.747 of the files a fix
+needed, against 0.610 for the next tool (sign test p = 0.049).
 [BENCHMARKS.md](BENCHMARKS.md#1-finding-the-right-files)
 
 ---

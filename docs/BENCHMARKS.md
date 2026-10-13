@@ -14,9 +14,9 @@ Where another tool beats us, the row is on this page too. The research each meth
 
 | Claim | Number | Sample | Measured on |
 |---|---|---|---|
-| [Call graph checked by the compiler](#8-the-same-question-against-an-answer-key-we-do-not-control) (Go, TypeScript) | No tool that finds as much of the graph gets more of it right, in **7 of 7** cells. Our precision **0.976 to 0.995** | 7 cells, 37,853 compiler edges, 5 tools | repowise main `4fccb31ec`, 2026-10-03; competitors August 2026 |
-| [Call graph accuracy by language](#accuracy-by-language) | Precision: C **0.95 to 0.98**, Python **0.96 to 0.98** (attrs 0.50), Rust **0.85 to 0.90**, C# **0.73 to 0.92**, C++ **0.75**, Java **0.73 to 0.78** | 16 repositories, 6 languages, recall beside every figure | repowise main `4fccb31ec`, 2026-10-03 |
-| [Finding the right files](#1-finding-the-right-files) | **0.876** of the needed files found, against **0.610** for the next tool | 42 sealed instances, p = 0.00004 | repowise `081a59fa`, August 2026 |
+| [Call graph checked by the compiler](#8-the-same-question-against-an-answer-key-we-do-not-control) (Go, TypeScript) | No tool that finds as much of the graph gets more of it right, in **7 of 7** cells. Our precision **0.976 to 0.995** | 7 cells, 37,853 compiler edges, 5 tools | repowise main `4fccb31ec`, 2026-10-03, re-verified on 0.56.0; competitors August 2026 |
+| [Call graph accuracy by language](#accuracy-by-language) | Precision: C **0.95 to 0.98**, Python **0.96 to 0.98** (attrs 0.50), Rust **0.85 to 0.90**, C# **0.73 to 0.92**, C++ **0.75**, Java **0.73 to 0.78** | 16 repositories, 6 languages, recall beside every figure | repowise main `4fccb31ec`, 2026-10-03, re-verified on 0.56.0 |
+| [Finding the right files](#1-finding-the-right-files) | `search_codebase` finds **0.747** of the needed files, against **0.610** for the next tool | 42 sealed instances, p = 0.049 | repowise main `4fccb31ec`, 2026-10-03 |
 | [Work saved in an agent loop](#2-what-changes-in-a-real-agent-loop) | **31.6% less** agent output than no tool, 3.8 tool calls against 7.2 | 43 django questions on Codex, p < 0.0001 | repowise `081a59fa`, August 2026 |
 | [Health score against CodeScene](#5-code-health-predicts-defects) | **2.3x** the later-defective files inside a 20% review budget | 2,770 files, 21 repositories, p = 0.003 | May 2026 |
 | [Which tests cover a file, with no coverage run](#test-intelligence) | **95.7%** precision on what reaches a file, **97.5%** on the list of tests to run | 46 claims and 47 targets, checked against per-test coverage | this repository, August 2026 |
@@ -64,6 +64,8 @@ our edges it confirms (**precision**) and how many of its edges we found
 Repowise main `4fccb31ec`, freshly indexed from source for every cell,
 2026-10-03. No competitor was run in this section; the five-tool comparison is
 the [next section](#8-the-same-question-against-an-answer-key-we-do-not-control).
+Re-verified on 0.56.0: every re-run cell gave the same figures (the two C cells
+were not re-run).
 
 | Language | Repository | Set | Answer key | Compiler edges | Precision | Recall |
 |---|---|---|---|---:|---:|---:|
@@ -143,7 +145,8 @@ The answer key is the **Go team's own call graph** (`golang.org/x/tools`, RTA,
 over the fully type-checked program) and, on TypeScript, **`tsc`'s own
 resolution** of every call site. Anyone with the toolchain can regenerate both.
 Five tools, seven cells, **37,853 compiler edges**. Each cell is
-precision / recall.
+precision / recall. Re-verified on 0.56.0: the Repowise column moved only within
+its confidence intervals, and the 7 of 7 result holds.
 
 | Cell | repowise main (2026-10-03) | CodeGraph 1.5.0 | codebase-memory-mcp 0.10.8 | Graphify 0.9.31 | code-review-graph 2.3.7 |
 |---|---|---|---|---|---|
@@ -298,30 +301,22 @@ reproducible result on the page.
 
 The 112 instances were split 70 / 42 by instance id before any work started, and
 the 42 stayed sealed until the final measurement. Every figure below is from the
-sealed 42. Measured August 2026 on repowise `081a59fa`.
-
-<div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../.github/assets/bench/file-coverage-dark.svg" />
-  <img src="../.github/assets/bench/file-coverage.svg" alt="File coverage on 42 sealed ContextBench instances: repowise get_answer 0.876, repowise search_codebase 0.742, CodeGraph 0.610, Graphify 0.546, code-review-graph 0.445, cocoindex 0.361" width="100%" />
-</picture>
-</div>
+sealed 42. Repowise was measured on main `4fccb31ec` on 2026-10-03, the other
+tools in August 2026, on the same instances and grading.
 
 | Tool | File coverage | n | Precision | Files served |
 |---|---:|---:|---:|---:|
-| **repowise** (`get_answer`) | **0.876** | 42 | 0.087 | 19.2 |
-| **repowise** (`search_codebase`) | **0.742** | 42 | 0.168 | 8.2 |
+| **repowise** (`search_codebase`) | **0.747** | 42 | 0.228 | 7.0 |
 | CodeGraph | 0.610 | 42 | 0.093 | 14.0 |
 | Graphify | 0.546 | 42 | 0.033 | 34.5 |
 | code-review-graph | 0.445 | 42 | **0.240** | 5.4 |
 | cocoindex | 0.361 | 41 | 0.092 | 7.1 |
 
-Per instance against CodeGraph: `get_answer` **19 wins, 1 loss, 22 ties, sign
-test p = 0.00004**; `search_codebase` 13 wins, 3 losses, 26 ties, p = 0.021.
+Per instance against CodeGraph: `search_codebase` **13 wins, 4 losses, 25 ties,
+sign test p = 0.049**.
 
-The two repowise tools have different profiles. `get_answer` finds the most,
-from a list of about 19 files. `search_codebase` finds 0.742 from 8.2 files, the
-best coverage per file served in the table. Precision is not our column:
+`search_codebase` finds the most files from a short list: 0.747 of them from 7.0
+files served, the best coverage per file served in the table. On precision,
 code-review-graph's 0.240 is the highest, partly because precision rises for
 whoever returns the fewest files.
 
@@ -331,22 +326,16 @@ whoever returns the fewest files.
 **Why this is not tuned to the questions.** Our first run came last, at 0.228,
 and we published it. A query-time gate was discarding most candidates before
 ranking; fixing it is what moved the number, for every user. The split is the
-check:
+check, measured in August 2026 on repowise `081a59fa`:
 
 | | Other half (n=70) | **Sealed half (n=42)** |
 |---|---:|---:|
-| repowise (`get_answer`) | 0.810 | **0.876** |
-| repowise (`search_codebase`) | 0.684 | 0.742 |
+| repowise (`search_codebase`) | 0.684 | **0.742** |
 | CodeGraph | 0.6093 | 0.6095 |
 
 Overfitting makes the unseen half score worse. Ours scores better, and CodeGraph,
 which nobody tuned against either half, scores the same on both, so the halves
 are equally hard. We do not quote a pooled 112-instance figure.
-
-**The grader never reads `confidence`.** File coverage compares returned paths
-with the gold files and nothing else. A `get_answer` reply can cover every gold
-file and report `confidence: low`, or the reverse, without moving this number.
-The 0.876 says nothing about how well that field is calibrated.
 
 **cocoindex was measured on 2026-08-09**, the others between 2026-08-02 and
 2026-08-06, on the same instances and grading. Its n is 41 because one instance
@@ -694,10 +683,6 @@ repowise main `4fccb31ec` with a keyless index, 2026-10-03:
 raw diff, because it returns every symbol in each file with its signature and
 location. One payload is not a session; the agent-loop section is the measure
 of work saved.
-
-An earlier version of this page reported 393 tokens per commit. That figure came
-from a harness run that was receiving error responses in place of context, and it
-has been withdrawn.
 
 ---
 

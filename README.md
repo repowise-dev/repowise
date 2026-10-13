@@ -219,10 +219,11 @@ there are a lot of tools in this category. We think tokens are a symptom. An age
 burns them because it does not know the codebase, so it searches, opens files, opens
 more files, and searches again. Give it an index that already knows, and the savings
 show up on their own. They also happen to be the best we have measured: in a paired
-agent loop over 43 questions on `django/django`, Repowise cut the agent's own output
-by **31.6%** (p&lt;0.0001) and got there in **3.8 tool calls instead of 7.2**, ahead
-of every other context tool in the same run. On 42 sealed retrieval tasks it found
-**0.876** of the files a fix needed, against **0.610** for the next tool.
+agent loop over 43 questions on `django/django` (August 2026, before `get_answer`
+replies were made leaner), Repowise cut the agent's own output by **31.6%**
+(p&lt;0.0001) and got there in **3.8 tool calls instead of 7.2**, ahead of every
+other context tool in the same run. On 42 sealed retrieval tasks `search_codebase`
+found **0.747** of the files a fix needed, against **0.610** for the next tool.
 [Method and every row we lose →](docs/BENCHMARKS.md)
 
 **Context arrives before the agent asks.** Optional [hooks](docs/agent/HOOKS.md) push
@@ -626,20 +627,18 @@ rows we lose beside the rows we win.
 
 <div align="center">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bench/file-coverage-dark.svg" />
-  <img src=".github/assets/bench/file-coverage.svg" alt="File coverage on 42 sealed ContextBench instances: repowise get_answer 0.876, repowise search_codebase 0.742, CodeGraph 0.610, Graphify 0.546, code-review-graph 0.445, cocoindex 0.361" width="100%" />
-</picture>
-<picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bench/agent-output-tokens-dark.svg" />
   <img src=".github/assets/bench/agent-output-tokens.svg" alt="Output tokens an agent writes to reach an answer across 43 django questions on Codex: repowise 1,250, CodeGraph 1,383, Serena 1,550, Graphify 1,658, code-review-graph 1,710, bare agent 1,828" width="100%" />
 </picture>
 </div>
 
-- **Finds the right files.** 0.876 file coverage against CodeGraph's 0.610 on a
-  **sealed** 42-instance split held out from every improvement round. 19 wins, 1 loss.
-  Deterministic grading, no LLM judge. *n=42, sign test p=0.00004.*
+- **Finds the right files.** `search_codebase` reaches 0.747 file coverage against
+  CodeGraph's 0.610 on a **sealed** 42-instance split held out from every improvement
+  round, from 7 files served. Deterministic grading, no LLM judge. *n=42, sign test
+  p=0.049.*
 - **Less work in a real agent loop.** -31.6% output tokens against a bare agent, leaner
-  on 37 of 44 questions. *n=43, p&lt;0.0001.* CodeGraph is a genuine second at -24.4%.
+  on 37 of 44 questions, measured in August 2026 before `get_answer` replies were made
+  leaner. *n=43, p&lt;0.0001.* CodeGraph is a genuine second at -24.4%.
 - **Fewer steps.** 3.8 tool calls where the bare agent needed 7.2, and 3.0 files opened
   instead of 7.2: the mechanism behind the saving, visible directly.
 - **A call graph the compiler agrees with.** Against the Go team's own call graph and
@@ -672,7 +671,7 @@ rows we lose live. Unmarked rows are capability presence, not measurements.
 | Self-hostable, open source | ✅ AGPL-3.0 | ✅ | ✅ | ❌ cloud only |
 | Private repo, no cloud | ✅ | ✅ | ✅ | ❌ OSS forks only |
 | MCP tools served | 10 default + 7 opt-in | 1 | 29 | 3 |
-| **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42 sealed)* | ✅ **0.876** | 0.610 | not in this run | not measured |
+| **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42 sealed)* | ✅ **0.747** | 0.610 | not in this run | not measured |
 | **Output tokens vs a bare agent** *([measured](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop), n=43)* | ✅ **-31.6%** | -24.4% | -14.8% | not measured |
 | **Memory to build the graph** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run), 5 tools, 35 repos)* | ✅ **75 MB**, lowest on 35 of 35 | 757 MB | not measured | n/a, cloud |
 | **Time to build the graph** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run), same run)* | **2.77s**, fastest on 14 of 35 | **3.65s**, fastest on 16 | not measured | n/a, cloud |
@@ -702,8 +701,9 @@ drawing almost nothing, and recall alone by drawing everything, so the claim is 
 pair.
 
 <sub>Competitors measured at CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0 and
-code-review-graph 2.3.7 in August 2026. Repowise compiler-graded figures are from main
-on 2026-10-03; the other Repowise rows are from `081a59fa`, August 2026.</sub>
+code-review-graph 2.3.7 in August 2026. Repowise compiler-graded and file-retrieval
+figures are from main on 2026-10-03 (compiler-graded re-verified on 0.56.0); the other
+Repowise rows are from `081a59fa`, August 2026.</sub>
 
 ### As a code health tool
 
