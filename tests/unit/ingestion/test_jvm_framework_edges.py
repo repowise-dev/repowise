@@ -208,6 +208,6 @@ class TestAndroidManifest:
         graph = _seed_graph(parsed)
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx)
-        manifest_rel = "app/src/main/AndroidManifest.xml"
         activity_rel = "app/src/main/java/com/x/MainActivity.java"
-        assert graph.has_edge(manifest_rel, activity_rel)
+        assert graph.has_edge("framework:android", activity_rel)
+        assert graph.nodes[activity_rel].get("is_entry_point") is True

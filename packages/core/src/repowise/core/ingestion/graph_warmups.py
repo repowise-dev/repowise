@@ -66,6 +66,31 @@ def _stamp_entry(graph: Any, parsed_files: dict, path: str) -> None:
         setattr(info, flag, True)
 
 
+def _is_android_test_project(plugins: frozenset[str]) -> bool:
+    """Whether a Gradle module applies ``com.android.test``, directly or through
+    a version-catalog alias (``android.test``) or a convention plugin named for
+    it (``nowinandroid.android.test``)."""
+    return any(p == "android.test" or p.endswith(".android.test") for p in plugins)
+
+
+def _default_package_definers(graph: Any, index: Any, names: set[str]) -> set[str]:
+    """JVM files outside every package that define a top-level class in *names*."""
+    found: set[str] = set()
+    for path in list(graph.nodes()):
+        if not str(path).endswith((".java", ".kt")) or index.package_for_file(path):
+            continue
+        for succ in graph.successors(path):
+            sym = graph.nodes[succ]
+            if (
+                sym.get("node_type") == "symbol"
+                and sym.get("name") in names
+                and not sym.get("parent_name")
+                and graph.edges[path, succ].get("edge_type") == "defines"
+            ):
+                found.add(path)
+    return found
+
+
 def _warmup_jvm(ctx: ResolverContext) -> None:
     from .resolvers.jvm_workspace import get_or_build_jvm_index
 
@@ -92,11 +117,14 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
 
     entry_fqns.update(build_script_class_names(ctx))
 
-    for fqn in entry_fqns:
-        for path in index.files_for_fqn(fqn):
-            node = graph.nodes.get(path)
-            if node is not None:
-                node["is_reachability_root"] = True
+    root_paths = {path for fqn in entry_fqns for path in index.files_for_fqn(fqn)}
+    # A bare name is a default-package class, which the index does not key.
+    if bare := {n for n in entry_fqns if "." not in n}:
+        root_paths.update(_default_package_definers(graph, index, bare))
+    for path in root_paths:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_reachability_root"] = True
 
     # Stamp every JVM source file under a non-``main`` Gradle source-set
     # (``testFixtures``, ``integrationTest``, ``javaPoet``, ``jcstress``,
@@ -107,7 +135,9 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
     # beyond the hardcoded never-flag globs and picks up arbitrary
     # repo-defined names (Caffeine's ``javaPoet`` and ``jcstress`` are
     # not Gradle-builtin conventions). The check uses the workspace
-    # source-set ``src_dirs`` discovered by ``jvm_gradle.py``.
+    # source-set ``src_dirs`` discovered by ``jvm_gradle.py``. Every source
+    # set of an Android test module (benchmarks, baseline profiles) counts:
+    # the instrumentation runner runs its ``main`` too.
     try:
         from .resolvers.jvm_gradle import get_or_build_jvm_gradle_index
 
@@ -119,8 +149,9 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
         non_main_prefixes: list[str] = []
         for project in gradle_index.projects.values():
             base = project.root_dir.rstrip("/")
+            android_test = _is_android_test_project(project.plugins)
             for ss in project.source_sets.values():
-                if ss.is_main:
+                if ss.is_main and not android_test:
                     continue
                 for src_dir in ss.src_dirs:
                     prefix = f"{base}/{src_dir}/" if base else f"{src_dir}/"

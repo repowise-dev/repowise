@@ -64,6 +64,11 @@ _ROOT_PROJECT_NAME_RE = re.compile(r'rootProject\s*\.\s*name\s*=\s*"([^"]+)"')
 # A quoted fully-qualified class name: lowercase package segments, then a
 # capitalised type (``'org.elasticsearch.system.indices.SystemIndicesQA'``).
 _QUOTED_FQN_RE = re.compile(r"""['"]((?:[a-z_]\w*\.)+[A-Z]\w*)['"]""")
+# A default-package class (``build-logic`` convention plugins) has no dots, so
+# only a class-naming key vouches for the bare name.
+_KEYED_BARE_CLASS_RE = re.compile(
+    r"""\b(?:implementationClass|mainClass)\s*(?:=|\.set\s*\()\s*['"]([A-Z]\w*)['"]"""
+)
 
 _DEFAULT_MAIN_SRC_ROOTS = ("src/main/java", "src/main/kotlin")
 _DEFAULT_TEST_SRC_ROOTS = ("src/test/java", "src/test/kotlin")
@@ -441,13 +446,14 @@ def build_jvm_gradle_index(
 
 
 def build_script_class_names(ctx: ResolverContext) -> set[str]:
-    """Fully-qualified class names quoted in any Gradle build script.
+    """Class names quoted in any Gradle build script, fully qualified or bare.
 
     A build names a class it loads by reflection: a plugin's
     ``esplugin { classname '...' }``, ``gradlePlugin`` ``implementationClass``,
     an application ``mainClass``. Every build script in the tree is read,
     since a settings file that adds projects by walking directories names
     none of them. A name only counts once it resolves to a class in the repo.
+    A name without a package is the default package's class.
     """
     names: set[str] = set()
     if ctx.repo_path is None:
@@ -459,9 +465,11 @@ def build_script_class_names(ctx: ResolverContext) -> set[str]:
         prune_nested_git=ctx.prune_nested_git,
     ):
         try:
-            names.update(_QUOTED_FQN_RE.findall(script.read_text(encoding="utf-8", errors="ignore")))
+            text = script.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        names.update(_QUOTED_FQN_RE.findall(text))
+        names.update(_KEYED_BARE_CLASS_RE.findall(text))
     return names
 
 

@@ -2177,8 +2177,15 @@ class DeadCodeAnalyzer:
         # with a top-level ``main`` (Dart ``lib/main.dart``). A root alone is
         # not enough: a Rust ``lib.rs`` is a root and the library's surface.
         # One program file is enough, even a stray script: this errs toward
-        # not calling a package dead.
-        files = [f for f in files if not self.graph.nodes.get(f, {}).get("is_test")]
+        # not calling a package dead. A build-run source set (``is_never_flag``)
+        # counts as a test. Files only: a test file's symbols carry no test flag.
+        files = [
+            f
+            for f in files
+            if (nd := self.graph.nodes.get(f, {})).get("node_type") != "symbol"
+            and not nd.get("is_test")
+            and not nd.get("is_never_flag")
+        ]
         if any(
             is_program(f, self._source_map.get(f, b""))
             or defines_main(self.graph, f)
