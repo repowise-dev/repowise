@@ -922,7 +922,7 @@ _STRING_STOP = {
 _NOT_NEWLINE = re.compile(r"[^\n]")
 
 
-def _mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
+def mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
     """Blank common comments (and strings, unless *strings* is false), keeping offsets.
 
     Strings are still tracked when they are kept, so a ``#`` or ``//`` inside
@@ -1127,7 +1127,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
 
     def mask(strings: bool = True) -> tuple[str, list[str]]:
         if strings not in masks:
-            text = source if is_prose else _mask_comments_and_strings(source, strings=strings)
+            text = source if is_prose else mask_comments_and_strings(source, strings=strings)
             masks[strings] = (text, lines if is_prose else source_lines(text))
         return masks[strings]
 
@@ -1296,7 +1296,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
             )
 
     uncommented = (
-        source_lines(_mask_comments_and_strings(source, strings=False))
+        source_lines(mask_comments_and_strings(source, strings=False))
         if "pragma: allowlist" in source
         else lines
     )

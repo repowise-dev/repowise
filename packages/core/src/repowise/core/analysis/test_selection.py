@@ -505,8 +505,9 @@ class SelectionInput:
     (:func:`doc_readers`); *plugin_loader* is a file loading pytest plugins by
     name (:func:`plugin_loader`); *unplaced_tests* are tests the graph cannot
     see into (not indexed, or with no resolved edge), and *always_run_tests*
-    maps each test the indexer found walking the source tree or running the
-    project in a child process to why; every subset runs both.
+    maps each test the indexer found reaching code outside its imports (a tree
+    walk, a child process, a Spring application context) to why; every subset
+    runs both.
     """
 
     changed: Collection[str]
@@ -796,8 +797,8 @@ def _notes(
             )
         if detected:
             out.append(
-                f"{len(detected)} test file(s) that list source files or run the project in "
-                f"a child process run with every selection (e.g. {detected[0]}: "
+                f"{len(detected)} test file(s) that reach code outside their imports run "
+                f"with every selection (e.g. {detected[0]}: "
                 f"{inp.always_run_tests[detected[0]]})."
             )
     if not inp.map_current and inp.tiers.get("covered"):

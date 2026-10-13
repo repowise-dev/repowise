@@ -409,9 +409,9 @@ def test_a_test_the_indexer_found_walking_the_tree_runs_with_every_subset(repo) 
     # src/a.py changed: tests/test_b.py stays out, the tree walker comes in.
     assert result.stdout == "tests/test_a.py tests/test_lint.py\n"
     assert (
-        "1 test file(s) that list source files or run the project in a child process run with "
-        "every selection (e.g. tests/test_lint.py: it lists and reads files under a source "
-        "directory)." in _err(result)
+        "1 test file(s) that reach code outside their imports run with every selection "
+        "(e.g. tests/test_lint.py: it lists and reads files under a source directory)."
+        in _err(result)
     )
 
 
@@ -420,8 +420,8 @@ def test_an_index_that_never_checked_its_tests_runs_everything(repo) -> None:
     result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == ":all\n"
     assert (
-        "The index has not checked 1 test file(s) for walking the source tree or running "
-        "the project (e.g. tests/test_b.py); run `repowise update`." in _err(result)
+        "The index has not checked 1 test file(s) for reaching code outside their imports "
+        "(e.g. tests/test_b.py); run `repowise update`." in _err(result)
     )
 
 

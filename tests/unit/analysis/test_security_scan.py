@@ -232,10 +232,10 @@ class TestScanFile:
     def test_masking_blanks_comments_and_strings_in_place(
         self, source: str, code: str, uncommented: str
     ) -> None:
-        from repowise.core.analysis.security_scan import _mask_comments_and_strings
+        from repowise.core.analysis.security_scan import mask_comments_and_strings
 
-        assert _mask_comments_and_strings(source) == code
-        assert _mask_comments_and_strings(source, strings=False) == uncommented
+        assert mask_comments_and_strings(source) == code
+        assert mask_comments_and_strings(source, strings=False) == uncommented
 
     def test_file_without_a_call_word_skips_the_call_scan(self) -> None:
         from repowise.core.analysis.security_scan import _call_findings

@@ -288,12 +288,12 @@ async def _place_tests(session, repo_id: str, out: dict) -> None:
     except Exception as exc:
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
         return
-    # An index older than the check cannot say which tests walk the tree, so
-    # it is out of date like any other; unplaced tests run anyway.
+    # An index older than the check cannot say which tests reach past their
+    # imports, so it is out of date like any other; unplaced tests run anyway.
     if unscanned and out["index_problem"] is None:
         out["index_problem"] = (
-            f"The index has not checked {len(unscanned)} test file(s) for walking the source "
-            f"tree or running the project (e.g. {unscanned[0]}); run `repowise update`."
+            f"The index has not checked {len(unscanned)} test file(s) for reaching code "
+            f"outside their imports (e.g. {unscanned[0]}); run `repowise update`."
         )
 
 

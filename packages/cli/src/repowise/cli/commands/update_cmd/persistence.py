@@ -1837,8 +1837,8 @@ def parser_changed(repo_path: Path) -> bool:
     checkout. A store that cannot be read, has no repository row, or has no
     edges to reconcile, is not.
 
-    Also true when a test file was never checked for walking the source tree
-    (an index built before that check): selection would run everything until
+    Also true when a test file was never checked for reaching code outside its
+    imports (an index built before that check): selection would run everything until
     the re-parse stamps it, so a quiet repo must not take the shortcut.
     """
     from repowise.cli.helpers import get_db_url_for_repo

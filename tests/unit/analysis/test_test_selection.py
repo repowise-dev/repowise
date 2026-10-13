@@ -863,9 +863,9 @@ def test_a_test_found_walking_the_tree_runs_with_every_subset_and_says_why() -> 
     # A detected test the checkout no longer has is left out.
     assert sel.tests == ("tests/test_a.py", "tests/test_no_copies.py")
     assert (
-        "1 test file(s) that list source files or run the project in a child process run "
-        "with every selection (e.g. tests/test_no_copies.py: it lists and reads files under "
-        "a source directory)." in sel.reasons
+        "1 test file(s) that reach code outside their imports run with every selection "
+        "(e.g. tests/test_no_copies.py: it lists and reads files under a source directory)."
+        in sel.reasons
     )
     assert sel.why == {
         "tests/test_a.py": "src/a.py changed (import-graph)",
@@ -873,6 +873,23 @@ def test_a_test_found_walking_the_tree_runs_with_every_subset_and_says_why() -> 
             "runs with every subset: it lists and reads files under a source directory"
         ),
     }
+
+
+def test_a_spring_boot_test_runs_when_a_controller_changes() -> None:
+    controller = "src/main/java/org/x/owner/OwnerController.java"
+    slice_test = "src/test/java/org/x/owner/OwnerControllerTests.java"
+    boot_test = "src/test/java/org/x/PetClinicIntegrationTests.java"
+    spring = "it loads the whole Spring application context (@SpringBootTest)"
+    tiers = _tiers(inferred=[_inferred(controller, slice_test, "import-graph")])
+    sel = _select(
+        [controller],
+        tiers,
+        always_run_tests={boot_test: spring},
+        known_tests=[slice_test, boot_test],
+    )
+    assert not sel.run_all
+    assert sel.tests == (slice_test, boot_test)
+    assert sel.why[boot_test] == f"runs with every subset: {spring}"
 
 
 def test_explain_says_what_selected_a_test_or_that_nothing_did() -> None:

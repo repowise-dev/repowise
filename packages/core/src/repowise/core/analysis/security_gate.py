@@ -44,8 +44,8 @@ from .changed_lines import DIFF_ARGS, parse_unified_diff
 from .security_scan import (
     SECRET_KINDS,
     _detect_secrets_allowlisted,
-    _mask_comments_and_strings,
     marker_silences,
+    mask_comments_and_strings,
     masked_snippet,
     scan_source,
     source_lines,
@@ -432,7 +432,7 @@ def _scoped(
     ]
     custom, long_lines = _custom_entries(text, lines)
     uncommented = (
-        source_lines(_mask_comments_and_strings(source, strings=False))
+        source_lines(mask_comments_and_strings(source, strings=False))
         if "pragma: allowlist" in source
         else text.lines
     )

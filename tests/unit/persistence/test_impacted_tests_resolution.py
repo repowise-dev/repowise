@@ -632,3 +632,54 @@ async def test_the_ranking_orders_by_the_hops_the_collection_measures(async_sess
         ("tests/test_near.py", "direct", 1),
         ("tests/test_far.py", "transitive", 2),
     ]
+
+
+_CONTROLLER = "src/main/java/org/x/owner/OwnerController.java"
+_SLICE_TEST = "src/test/java/org/x/owner/OwnerControllerTests.java"
+_BOOT_TEST = "src/test/java/org/x/PetClinicIntegrationTests.java"
+_SPRING = "it loads the whole Spring application context (@SpringBootTest)"
+
+
+async def _spring_graph(session, repo_id, *, slice_reason, boot_reason) -> dict:
+    """A slice test importing the controller; a boot test reaching it only by URL."""
+    from sqlalchemy import update
+
+    from repowise.core.analysis.test_collection import _place_tests
+    from repowise.core.persistence.models import GraphNode
+
+    await _graph(
+        session,
+        repo_id,
+        tests={_SLICE_TEST, _BOOT_TEST},
+        files={_CONTROLLER, "src/main/java/org/x/App.java"},
+        imports=[(_SLICE_TEST, _CONTROLLER), (_BOOT_TEST, "src/main/java/org/x/App.java")],
+    )
+    for node_id, reason in ((_SLICE_TEST, slice_reason), (_BOOT_TEST, boot_reason)):
+        await session.execute(
+            update(GraphNode)
+            .where(GraphNode.repository_id == repo_id, GraphNode.node_id == node_id)
+            .values(always_run_reason=reason)
+        )
+    await session.commit()
+    out = _empty_result(1)
+    await _resolve_impacted(session, repo_id, {_CONTROLLER: {1}}, set(), out)
+    await _place_tests(session, repo_id, out)
+    return out
+
+
+async def test_a_spring_boot_test_is_read_back_as_always_run(async_session) -> None:
+    repo = await insert_repo(async_session)
+    out = await _spring_graph(async_session, repo.id, slice_reason="", boot_reason=_SPRING)
+    assert _pairs(out, _CONTROLLER) == {_SLICE_TEST: "import-graph"}
+    assert out["always_run_tests"] == {_BOOT_TEST: _SPRING}
+    assert out["index_problem"] is None
+
+
+async def test_an_index_that_never_judged_its_jvm_tests_asks_for_an_update(async_session) -> None:
+    repo = await insert_repo(async_session)
+    out = await _spring_graph(async_session, repo.id, slice_reason=None, boot_reason=None)
+    assert out["always_run_tests"] == {}
+    assert out["index_problem"] == (
+        f"The index has not checked 2 test file(s) for reaching code outside their imports "
+        f"(e.g. {_BOOT_TEST}); run `repowise update`."
+    )
