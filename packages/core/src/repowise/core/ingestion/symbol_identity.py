@@ -151,10 +151,14 @@ def _erased_parameter_type(parameter: str) -> str:
     return "_".join(re.split(r"\.|::", w)[-1] for w in words) + marks
 
 
+def erased_parameter_types(symbol: Symbol) -> list[str]:
+    """``["String", "int[]"]``: each parameter's erased type, as an id spells it."""
+    return [_erased_parameter_type(p) for p in signature_parameters(symbol.signature or "") or []]
+
+
 def _parameter_types(symbol: Symbol) -> str:
     """``(String,int[])``: the erased types that split a same-count overload."""
-    parameters = signature_parameters(symbol.signature or "") or []
-    return "(" + ",".join(_erased_parameter_type(p) for p in parameters) + ")"
+    return "(" + ",".join(erased_parameter_types(symbol)) + ")"
 
 
 # Which discriminator tells colliding members apart, per language. A build

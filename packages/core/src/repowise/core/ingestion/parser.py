@@ -91,6 +91,7 @@ from .models import (
 )
 from .parser_helpers import (
     TYPE_HEAD_EXTRACTORS,
+    _argument_literal_types,
     _build_qualified_name,
     _classify_param_origin,
     _collect_error_nodes,
@@ -2148,6 +2149,7 @@ class ASTParser:
                         line=line,
                         argument_count=arg_count,
                         receiver_call=receiver_call,
+                        argument_types=_argument_literal_types(file_info.language, arg_nodes, src),
                         scope_name=scope_name,
                         edge_type=(
                             "references"

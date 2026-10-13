@@ -75,7 +75,8 @@ STORE_FORMAT_VERSION: int = 2
 #: load, and a VS Code extension test to the entry its package declares; the
 #: first update writes those edges for unchanged files too.
 #:
-#: v8: Java, C# and C++ overloads of one arity carry their erased parameter
+#: v8: a Java call site records its literal arguments' types, which break a
+#: same-arity overload tie. Java, C# and C++ overloads of one arity carry their erased parameter
 #: types (``put#1(String)``, ``put#1(int)``), and a method in a Java enum
 #: constant's body sits under the constant (``Op::PLUS::apply``), and a Java
 #: ``@interface`` and its elements are an ``interface`` and its methods; the first

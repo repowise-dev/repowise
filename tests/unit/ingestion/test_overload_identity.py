@@ -294,7 +294,7 @@ class TestJavaOverloads:
             "  public S append(String s) { return emit(s); }\n"
             "  public S append(char c) { return emit(String.valueOf(c)); }\n"
             "  S emit(String s) { return this; }\n"
-            "  void use() { append('x'); }\n"
+            "  void use(String v) { append(v); }\n"
             "}\n"
         )
         edges = _edges(tmp_path, {"S.java": ("java", text)})
@@ -302,8 +302,8 @@ class TestJavaOverloads:
         # Each overload's own call is attributed to its own node.
         assert (base + "append#1(String)", base + "emit") in edges
         assert (base + "append#1(char)", base + "emit") in edges
-        # A count cannot choose between them: the set's representative, the
-        # first declared, answers, as the shared node did before.
+        # A count cannot choose between them, nor a literal argument: the set's
+        # representative, the first declared, answers, as the shared node did before.
         assert {c for a, c in edges if a == base + "use"} == {base + "append#1(String)"}
 
     def test_a_record_keeps_its_canonical_constructor_beside_an_overload(self) -> None:
@@ -702,7 +702,8 @@ class TestNarrowingShapes:
 class TestOverloadTies:
     """A tie lands on a member that admits the call.
 
-    Call sites carry no argument types, so same-arity members tie. A tie keeps
+    Call sites carry no argument types beyond a Java literal's, so same-arity
+    members tie unless the literals fit one closest (``TestJavaLiteralArguments``). A tie keeps
     the representative, the first member declared, when it is tied; a tie
     among others takes the first tied member in declaration order. Before, a
     tie always answered with the representative, even when its own arity
@@ -855,3 +856,99 @@ class TestOverloadTies:
         # members type the chain only when they agree; the first one's type
         # alone (Tag) is not taken.
         assert (("Out.cs::Out::Use", "Cs.cs::Tag::Label") in edges) is typed
+
+
+class TestJavaLiteralArguments:
+    """Literal arguments break a same-arity tie when they fit one member closest."""
+
+    _ATTR = (
+        "package app;\npublic class Attr {\n"
+        "  public Attr value(String s) { return this; }\n"
+        "  public Attr value(boolean b) { return this; }\n"
+        "  public Attr value(int i) { return this; }\n"
+        "  public Attr value(Object o) { return this; }\n"
+        "  void use(Attr a) {\n    a.value(ARG);\n  }\n}\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("argument", "member"),
+        [
+            ("true", "value#1(boolean)"),
+            ('"x"', "value#1(String)"),
+            ("-1", "value#1(int)"),
+            ("'c'", "value#1(int)"),
+            ("1L", "value#1(Object)"),
+            # Every reference parameter takes null: still a tie, kept on the first.
+            ("null", "value#1(String)"),
+        ],
+    )
+    def test_the_closest_member_takes_the_literal(
+        self, tmp_path: Path, argument: str, member: str
+    ) -> None:
+        text = self._ATTR.replace("ARG", argument)
+        edges = _edges(tmp_path, {"app/Attr.java": ("java", text)})
+        assert edges == {("app/Attr.java::Attr::use", f"app/Attr.java::Attr::{member}")}
+
+    def test_literal_types_are_read_per_argument(self) -> None:
+        text = (
+            "class A {\n  void go(int x) {\n"
+            '    f(true, 2, 3L, 1.5, 1.5f, \'c\', "s", null, -1, x);\n  }\n}\n'
+        )
+        (call,) = _parse("A.java", "java", text).calls
+        assert call.argument_types == (
+            "boolean", "int", "long", "double", "float", "char", "String", "null", "int", None
+        )
+
+    def test_a_unary_operator_promotes_its_literal(self) -> None:
+        text = (
+            "class A {\n  void go() {\n"
+            "    f(-'a', +'a', ~'a', ~1L, !true, -1.5f, !1, -\"s\");\n  }\n}\n"
+        )
+        (call,) = _parse("A.java", "java", text).calls
+        assert call.argument_types == ("int", "int", "int", "long", "boolean", "float", None, None)
+
+    def test_a_tie_that_differs_on_a_non_literal_argument_is_not_broken(
+        self, tmp_path: Path
+    ) -> None:
+        """``value(obj, 1)``: the literal fits ``(String, int)`` better, but ``obj`` decides."""
+        text = (
+            "package app;\npublic class V {\n"
+            "  public V value(Object o, long l) { return this; }\n"
+            "  public V value(String s, int i) { return this; }\n"
+            "  void use(Object obj) {\n    value(obj, 1);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/V.java": ("java", text)})
+        # The tie stays on the first declared member, as before literals were read.
+        assert edges == {("app/V.java::V::use", "app/V.java::V::value#2(Object,long)")}
+
+    def test_a_varargs_array_takes_the_trailing_arguments(self, tmp_path: Path) -> None:
+        """``add(0, node)``: both members take ``node`` as an ``N``, so the literal decides."""
+        text = (
+            "package app;\npublic class N {\n"
+            "  public void add(N... nodes) { }\n"
+            "  public void add(int at, N... nodes) { }\n"
+            "  void use(N node) {\n    add(0, node);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/N.java": ("java", text)})
+        assert edges == {("app/N.java::N::use", "app/N.java::N::add#2")}
+
+    @pytest.mark.parametrize(
+        ("call", "member"),
+        [
+            ("f(1)", "f#1(int[])"),
+            ('f("a", "b")', "f#1(String[])"),
+            ('g("a", 1, 2)', "g#2(String,int[])"),
+        ],
+    )
+    def test_a_literal_through_varargs_is_judged_against_the_element_type(
+        self, tmp_path: Path, call: str, member: str
+    ) -> None:
+        text = (
+            "package app;\npublic class V {\n"
+            "  public void f(String... xs) { }\n  public void f(int... xs) { }\n"
+            "  public void g(String s, String... xs) { }\n  public void g(String s, int... xs) { }\n"
+            f"  void use() {{\n    {call};\n  }}\n}}\n"
+        )
+        edges = _edges(tmp_path, {"app/V.java": ("java", text)})
+        assert edges == {("app/V.java::V::use", f"app/V.java::V::{member}")}
+

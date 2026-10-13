@@ -338,6 +338,9 @@ class CallSite:
     # Handed straight to a task scheduler (``asyncio.create_task(f())``): it runs
     # later, beside its caller, so the caller neither waits for it nor repeats it.
     spawned: bool = False
+    # Java: each argument's type where it is a literal (``"String"``, ``"int"``,
+    # ``"null"``), else None; None overall when no argument is one.
+    argument_types: tuple[str | None, ...] | None = None
 
 
 # Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);
