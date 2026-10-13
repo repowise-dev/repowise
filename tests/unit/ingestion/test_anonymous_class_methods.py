@@ -1,0 +1,277 @@
+"""Java anonymous-class and Kotlin object-expression methods, end to end.
+
+Each member is a symbol named by the declarations holding its class and the
+class's supertype (``Gson::FILTER::Filter::check``), so two anonymous classes
+overriding one method keep two nodes, and the calls inside them resolve with
+the method as caller. Dead code never flags them.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from repowise.core.analysis.dead_code import DeadCodeAnalyzer
+from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+_FILES = {
+    "src/app/Filter.java": """\
+package app;
+
+public interface Filter {
+    boolean check(Class<?> c);
+}
+""",
+    "src/app/Gson.java": """\
+package app;
+
+import java.util.Comparator;
+
+public class Gson {
+    static final Filter FILTER = new Filter() {
+        public boolean check(Class<?> c) {
+            return helper();
+        }
+
+        boolean helper() {
+            return true;
+        }
+    };
+
+    static final Filter OTHER = new Filter() {
+        public boolean check(Class<?> c) {
+            return go();
+        }
+    };
+
+    boolean go() {
+        return true;
+    }
+
+    boolean helper() {
+        return false;
+    }
+
+    Object make() {
+        run(new Runnable() {
+            public void run() {
+                go();
+            }
+        });
+        run(new Runnable() {
+            public void run() {
+                helper();
+            }
+        });
+        Comparator<String> byLength = new java.util.Comparator<String>() {
+            public int compare(String a, String b) {
+                return a.length() - b.length();
+            }
+        };
+        return byLength;
+    }
+
+    void run(Runnable r) {
+        r.run();
+    }
+
+    enum Op {
+        PLUS {
+            int apply() {
+                return new Object() {
+                    int one() {
+                        return 1;
+                    }
+                }.one();
+            }
+        };
+
+        abstract int apply();
+    }
+}
+""",
+    "src/app/Alloc.java": """\
+package app;
+
+public abstract class Alloc {
+    public abstract Object make();
+
+    static Alloc create() {
+        Store store = new Store();
+        return new Alloc() {
+            public Object make() {
+                store.save();
+                tidy();
+                return null;
+            }
+
+            private void tidy() {}
+        };
+    }
+}
+""",
+    "src/app/Store.java": """\
+package app;
+
+public class Store {
+    void save() {}
+}
+
+class Disk {
+    void save() {}
+}
+""",
+    "src/app/User.java": """\
+package app;
+
+class User {
+    static final Alloc INSTANCE = Alloc.create();
+
+    Object use() {
+        return User.INSTANCE.make();
+    }
+}
+""",
+    "src/app/Deck.kt": """\
+package app
+
+class Tape {
+    fun play() {}
+}
+
+class Reel {
+    fun play() {}
+}
+
+class Deck {
+    fun watch(): Runnable {
+        val tape = Tape()
+        return object : Runnable {
+            override fun run() {
+                tape.play()
+            }
+
+            fun spin() {
+                listOf(Reel()).forEach { tape -> tape.play() }
+            }
+        }
+    }
+}
+""",
+    "src/app/Screen.kt": """\
+package app
+
+class Screen {
+    val listener = object : Callback<Int>(), Closeable {
+        override fun onEvent() {
+            refresh()
+        }
+    }
+
+    fun start() {
+        val task = object : Runnable {
+            override fun run() {
+                refresh()
+            }
+        }
+        post(object {
+            fun tick() {}
+        })
+    }
+
+    fun refresh() {}
+
+    fun post(any: Any) {}
+}
+
+fun untilReady(): Condition = object : Condition() {
+    override fun apply() = true
+}
+""",
+}
+
+
+def _build(tmp_path: Path):
+    for rel, text in _FILES.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    builder = GraphBuilder(tmp_path)
+    parser = ASTParser()
+    source_map: dict[str, bytes] = {}
+    for fi in FileTraverser(tmp_path).traverse():
+        src = Path(fi.abs_path).read_bytes()
+        builder.add_file(parser.parse_file(fi, src))
+        source_map[fi.path] = src
+    builder.set_source_map(source_map)
+    builder.build()
+    graph = builder.graph()
+    report = DeadCodeAnalyzer(
+        graph, {}, parsed_files=builder._parsed_files, source_map=source_map, repo_root=tmp_path
+    ).analyze({"detect_unused_internals": True})
+    calls = {(u, v) for u, v, d in graph.edges(data=True) if d.get("edge_type") == "calls"}
+    return graph, calls, report
+
+
+GSON = "src/app/Gson.java::"
+SCREEN = "src/app/Screen.kt::"
+
+
+def test_each_anonymous_method_is_its_own_node(tmp_path: Path) -> None:
+    graph, _, _ = _build(tmp_path)
+    lines = {
+        "Gson::FILTER::Filter::check": 7,
+        "Gson::FILTER::Filter::helper": 11,
+        "Gson::OTHER::Filter::check": 17,
+        "Gson::make::Runnable::run": 32,
+        # A second same-typed class in one declaration takes javac's ordinal.
+        "Gson::make::Runnable$2::run": 37,
+        "Gson::make::byLength::Comparator::compare": 42,
+        "Op::PLUS::apply": 55,
+        "Op::PLUS::apply::Object::one": 57,
+    }
+    for sym, line in lines.items():
+        assert graph.nodes[GSON + sym]["start_line"] == line, sym
+        assert graph.nodes[GSON + sym]["kind"] == "method"
+    assert graph.nodes[SCREEN + "Screen::listener::Callback::onEvent"]["start_line"] == 5
+    assert graph.nodes[SCREEN + "Screen::start::task::Runnable::run"]["start_line"] == 12
+    assert graph.nodes[SCREEN + "Screen::start::object::tick"]["start_line"] == 17
+    # A top-level function's object expression is qualified by the function.
+    assert graph.nodes[SCREEN + "untilReady::Condition::apply"]["start_line"] == 27
+    assert SCREEN + "apply" not in graph
+
+
+def test_calls_resolve_from_the_anonymous_method(tmp_path: Path) -> None:
+    _, calls, _ = _build(tmp_path)
+    # Its own member first, then the enclosing class's.
+    assert (GSON + "Gson::FILTER::Filter::check", GSON + "Gson::FILTER::Filter::helper") in calls
+    assert (GSON + "Gson::OTHER::Filter::check", GSON + "Gson::go") in calls
+    assert (GSON + "Gson::make::Runnable::run", GSON + "Gson::go") in calls
+    assert (GSON + "Gson::make::Runnable$2::run", GSON + "Gson::helper") in calls
+    assert (GSON + "Gson::make", GSON + "Gson::go") not in calls
+    assert (SCREEN + "Screen::listener::Callback::onEvent", SCREEN + "Screen::refresh") in calls
+    assert (SCREEN + "Screen::start::task::Runnable::run", SCREEN + "Screen::refresh") in calls
+    assert (SCREEN + "Screen::start", SCREEN + "Screen::refresh") not in calls
+
+
+def test_an_anonymous_member_is_named_only_from_its_own_body(tmp_path: Path) -> None:
+    _, calls, _ = _build(tmp_path)
+    alloc = "src/app/Alloc.java::Alloc::"
+    # A local of the method around the class types its receiver.
+    assert (alloc + "create::Alloc::make", "src/app/Store.java::Store::save") in calls
+    assert (alloc + "create::Alloc::make", alloc + "create::Alloc::tidy") in calls
+    # A bare name from another file never reaches the anonymous override.
+    assert ("src/app/User.java::User::use", alloc + "create::Alloc::make") not in calls
+
+
+def test_a_name_the_anonymous_body_binds_is_not_the_captured_one(tmp_path: Path) -> None:
+    _, calls, _ = _build(tmp_path)
+    deck = "src/app/Deck.kt::Deck::watch::Runnable::"
+    assert (deck + "run", "src/app/Deck.kt::Tape::play") in calls
+    # The lambda's own ``tape`` shadows the captured local.
+    assert (deck + "spin", "src/app/Deck.kt::Tape::play") not in calls
+
+
+def test_dead_code_never_flags_the_new_methods(tmp_path: Path) -> None:
+    _, _, report = _build(tmp_path)
+    flagged = {f.symbol_name for f in report.findings if f.symbol_name}
+    assert not flagged & {"check", "helper", "run", "compare", "one", "onEvent", "tick"}

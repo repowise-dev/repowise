@@ -71,6 +71,10 @@ class LanguageConfig:
     # Node types that indicate a class context (used with "nesting" mode)
     parent_class_types: frozenset[str] = field(default_factory=frozenset)
 
+    # Anonymous class expressions (Java ``new Foo() {..}``, Kotlin ``object : Foo {..}``)
+    # whose members are symbols named under the declaration holding them.
+    anonymous_class_types: frozenset[str] = field(default_factory=frozenset)
+
     # Node types whose symbols are bodiless declarations. C/C++ headers declare
     # what a .cpp defines, so both sides land as same-named symbols; this is
     # what tells them apart downstream (see ``Symbol.is_declaration``).
@@ -223,6 +227,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(
             {"class_declaration", "interface_declaration", "enum_declaration", "record_declaration"}
         ),
+        anonymous_class_types=frozenset({"object_creation_expression"}),
     ),
     "cpp": LanguageConfig(
         symbol_node_types={
@@ -279,6 +284,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "object_declaration"}),
+        anonymous_class_types=frozenset({"object_literal"}),
     ),
     "ruby": LanguageConfig(
         symbol_node_types={

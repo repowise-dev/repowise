@@ -42,6 +42,7 @@ from .call_receiver_typing import (
     _store_capped,
 )
 from .decorator_names import decorator_base
+from .lang_helpers.anonymous_classes import is_anonymous_member
 from .language_data import (
     get_builtin_methods,
     get_builtin_types,
@@ -587,9 +588,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                     top_level.setdefault(sym.name, index_id)
             else:
                 definitions[decl_key].append((path, index_id))
-                # File-level symbol index (top-level symbols and methods)
+                # File-level symbol index (top-level symbols and methods). An
+                # anonymous class member stays out: only its own class body
+                # names it bare, through the (class, method) index below. It is
+                # never top-level, so ``top_level`` needs no such check.
                 if sym.kind not in _EXTENSION_KINDS:
-                    file_syms[sym.name] = index_id
+                    if not is_anonymous_member(sym):
+                        file_syms[sym.name] = index_id
                     if sym.parent_name is None:
                         top_level[sym.name] = index_id
 
@@ -626,9 +631,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if _is_property_accessor(sym):
             self._property_accessor_ids.add(index_id)
         # Same rules as the per-file index, for the global-unique tier.
-        if not (sym.is_declaration and sym.parent_name is not None) and (
-            sym.kind not in _EXTENSION_KINDS
-        ):
+        bodiless_method = sym.is_declaration and sym.parent_name is not None
+        if not (bodiless_method or sym.kind in _EXTENSION_KINDS or is_anonymous_member(sym)):
             self._global_symbols[sym.name].append(index_id)
 
     def _index_overload_sets(self, parsed: ParsedFile) -> dict[str, str]:
@@ -1360,16 +1364,22 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         class ``A`` would bind to class ``B``'s ``foo`` when ``B`` came later in
         the file. ``_file_methods`` carries the class. A member call on its bare
         fallback has an explicit receiver, so the caller's class is not it.
+        An anonymous class or enum-constant body (``Gson::FILTER::Filter``)
+        sees its own members first, then those of the class around it.
         """
         parsed = self._parsed_files.get(file_path)
         if parsed is None or parsed.file_info.language not in _IMPLICIT_RECEIVER_LANGUAGES:
             return None
         if call.receiver_name:
             return None
+        methods = self._file_methods.get(file_path, {})
         caller_class = _extract_class_from_symbol_id(caller_id)
-        if not caller_class:
-            return None
-        return self._file_methods.get(file_path, {}).get((caller_class, call.target_name))
+        while caller_class:
+            own = methods.get((caller_class, call.target_name))
+            if own is not None:
+                return own
+            caller_class = caller_class.rpartition("::")[0]
+        return None
 
     def _partial_fragment_member(self, file_path: str, caller_id: str, name: str) -> str | None:
         """The caller's class member *name* declared in another fragment of it.
@@ -1486,10 +1496,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         caller_id: str,
     ) -> tuple[bool, ResolvedCall | None]:
         """Tier 1, as ``(handled, edge)``: a handled None is a refusal."""
-        callee_id = self._file_symbols.get(file_path, {}).get(call.target_name)
+        own = self._enclosing_class_method(file_path, call, caller_id)
+        # The flat index leaves anonymous class members out; their own body names them.
+        callee_id = self._file_symbols.get(file_path, {}).get(
+            call.target_name
+        ) or self._anonymous_member(own)
         if callee_id is None:
             return False, None
-        own = self._enclosing_class_method(file_path, call, caller_id)
         if own is not None and own != callee_id and _rivals_a_class_method(callee_id):
             if own == caller_id:
                 # Recursion the flat index handed to a stranger. No edge.
@@ -1498,6 +1511,12 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if callee_id != caller_id:  # no self-recursion edges for now
             return True, ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
         return False, None
+
+    def _anonymous_member(self, sym_id: str | None) -> str | None:
+        """*sym_id* when it names an anonymous class member, else None."""
+        if sym_id is None or not is_anonymous_member(self._symbols_by_id[sym_id]):
+            return None
+        return sym_id
 
     def _bound_import_call(
         self,
@@ -2221,8 +2240,12 @@ def _extract_class_id(symbol_id: str) -> str | None:
 
 
 def _extract_class_from_symbol_id(symbol_id: str) -> str | None:
-    """Extract parent class name from a symbol ID like 'path::ClassName::method'."""
+    """The parent from a symbol ID like 'path::ClassName::method'.
+
+    Every segment between path and name, the key ``_file_methods`` uses: an
+    anonymous class or enum-constant body spans several (``Op::PLUS``).
+    """
     parts = symbol_id.split("::")
     if len(parts) >= 3:
-        return parts[-2]
+        return "::".join(parts[1:-1])
     return None

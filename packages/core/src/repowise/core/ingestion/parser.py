@@ -123,6 +123,8 @@ from .parser_helpers import (
     _rust_shadowed_by_type_param,
     _ts_nested_object_method_owner,
     import_load_kind,
+    in_anonymous_class,
+    scope_segment,
 )
 from .python_local_refs import local_refs_from_tree, parse_python_module
 from .python_overload import is_python_overload as _is_python_overload
@@ -1403,9 +1405,16 @@ def _parent_type_name(ancestor: Node, src: str) -> str | None:
 
 
 def _java_enum_constant(def_node: Node, config: LanguageConfig, src: str) -> str | None:
-    """The enum constant whose body declares *def_node*, before any enclosing type."""
+    """The enum constant whose body declares *def_node*, before any enclosing type.
+
+    An anonymous class is such a type: ``_find_parent`` names its members.
+    """
     ancestor = def_node.parent
-    while ancestor is not None and ancestor.type not in config.parent_class_types:
+    while (
+        ancestor is not None
+        and ancestor.type not in config.parent_class_types
+        and ancestor.type not in config.anonymous_class_types
+    ):
         if ancestor.type == "enum_constant":
             name = ancestor.child_by_field_name("name")
             return _node_text(name, src) if name else None
@@ -1722,7 +1731,10 @@ class ASTParser:
             language,
             src,
             cpp_exports.container_ids,
-            keep_nested=object_owner is not None,
+            # An anonymous class member is a method of its own class, even
+            # inside another method's body; ``_find_parent`` names it.
+            keep_nested=object_owner is not None
+            or in_anonymous_class(def_node, config.anonymous_class_types),
         )
         if kind is None:
             return None
@@ -1903,15 +1915,25 @@ class ASTParser:
             return None
 
         if config.parent_extraction in ("nesting", "impl"):
-            # Walk up the AST to find a class/impl ancestor
-            ancestor = def_node.parent
+            # Walk up the AST to find a class/impl ancestor. An anonymous class
+            # is a class of its own, so its members gain segments below it:
+            # ``Gson::FILTER::Filter::check``.
+            segments: list[str] = []
+            child, ancestor = def_node, def_node.parent
             while ancestor is not None:
                 if ancestor.type in config.parent_class_types:
                     name = _parent_type_name(ancestor, src)
                     if name is not None:
-                        return name
-                ancestor = ancestor.parent
-            return None
+                        return "::".join([name, *reversed(segments)])
+                else:
+                    segment = scope_segment(
+                        ancestor, child, bool(segments), config.anonymous_class_types, src
+                    )
+                    if segment is not None:
+                        segments.append(segment)
+                child, ancestor = ancestor, ancestor.parent
+            # A Kotlin top-level function's object expression: ``f::Foo``.
+            return "::".join(reversed(segments)) or None
 
         return None  # "none" mode
 
