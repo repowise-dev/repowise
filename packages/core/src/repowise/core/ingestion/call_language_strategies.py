@@ -349,15 +349,16 @@ class LanguageStrategiesMixin:
         synthesized ``copy`` or a ViewModel's ``onClick`` is reached through a
         receiver, an ancestor or a scope function, never by the package alone.
         A nested type and a constructor (named for its class) are not members.
+        A member indexed last under the name hides no top-level symbol of it.
         """
         sym_id = self._file_symbols.get(sibling, {}).get(name)
-        if sym_id is None or sym_id == caller_id:
+        if sym_id is None:
             return None
         symbol = self._symbols_by_id[sym_id]
         parent = symbol.parent_name
         if parent is not None and symbol.name != parent and symbol.kind not in _TYPE_KINDS:
-            return None
-        return sym_id
+            sym_id = self._file_top_level.get(sibling, {}).get(name)
+        return None if sym_id == caller_id else sym_id
 
     def _resolve_jvm_receiver_same_package(
         self,

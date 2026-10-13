@@ -190,6 +190,24 @@ class TestUnpinnedStrategies:
         )
         assert not [e for e in _edges(parsed, tmp_path) if e[1].endswith("::copy")]
 
+    def test_jvm_bare_call_reaches_a_top_level_function_a_later_member_shares(
+        self, tmp_path: Path
+    ) -> None:
+        """A sibling's member indexed after its top-level ``load`` does not hide it."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/p/Util.kt": (
+                    "kotlin",
+                    "package p\n\nfun load() {}\n\nclass Cache {\n    fun load() {}\n}\n",
+                ),
+                "src/p/Main.kt": ("kotlin", "package p\n\nfun main() {\n    load()\n}\n"),
+            },
+        )
+        assert ("src/p/Main.kt::main", "src/p/Util.kt::load", 0.90, "same_package") in _edges(
+            parsed, tmp_path
+        )
+
     def test_a_target_name_declared_nowhere_resolves_to_nothing(self, tmp_path: Path) -> None:
         """The population the cascade spends most of its budget on."""
         parsed = _parse_all(
