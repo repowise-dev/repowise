@@ -19,7 +19,7 @@ empirical predictors are no longer suppressed by uniform severity values.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -974,13 +974,16 @@ def compute_kpis(
     hotspot_paths: set[str],
     *,
     unanalysed: int = 0,
+    deductions: Mapping[str, float] | None = None,
 ) -> dict[str, object]:
     """Repo-level KPIs derived from per-file metrics.
 
     - ``hotspot_health``: NLOC-weighted average over files in *hotspot_paths*.
     - ``average_health``: NLOC-weighted average over all files.
-    - ``worst_performer``: lowest-scoring production file + score, and
-      ``worst_test_performer`` the same over test files, reported separately.
+    - ``worst_performer``: the worst file in Fix first's scope + score, and
+      ``worst_test_performer`` the worst test, as ``ranking.worst_in_scope``
+      names them; *deductions* (``ranking.deduction_by_path``) breaks score
+      ties the way every ranked list does.
     - ``maintainability_average`` / ``maintainability_hotspot``: the same two
       NLOC-weighted averages over the per-file ``maintainability_score``, so the
       maintainability pillar surfaces a repo headline alongside the defect one.
@@ -1009,10 +1012,11 @@ def compute_kpis(
 
     hotspots = [m for m in metrics if field(m, "file_path") in hotspot_paths]
 
-    production, tests = split_tests(metrics)
-    # Production first; a test file names the worst only in a tests-only repo.
-    worst = min(production or metrics, key=_row_score)
-    worst_test = min(tests, key=_row_score) if tests else None
+    # Imported here: ``ranking`` reads this module's score ceiling.
+    from .ranking import worst_kpis
+
+    # ``production_average`` keeps its own rule: every non-test file.
+    production, _ = split_tests(metrics)
     maint_avg = nloc_weighted_attr(metrics, "maintainability_score")
     maint_hotspot = nloc_weighted_attr(hotspots, "maintainability_score")
     perf_avg = nloc_weighted_attr(metrics, "performance_score")
@@ -1031,10 +1035,7 @@ def compute_kpis(
     return {
         "hotspot_health": hotspot_kpi if hotspot_kpi is not None else 10.0,
         "average_health": round(nloc_weighted_score(metrics), 2),
-        "worst_performer_path": field(worst, "file_path"),
-        "worst_performer_score": round(_row_score(worst), 2),
-        "worst_test_path": field(worst_test, "file_path") if worst_test is not None else None,
-        "worst_test_score": round(_row_score(worst_test), 2) if worst_test is not None else None,
+        **worst_kpis(metrics, deductions or {}),
         "file_count": len(metrics),
         "maintainability_average": round(maint_avg, 2) if maint_avg is not None else None,
         "maintainability_hotspot": round(maint_hotspot, 2) if maint_hotspot is not None else None,

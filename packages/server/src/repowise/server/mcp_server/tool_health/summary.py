@@ -8,7 +8,7 @@ from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
 from repowise.core.analysis.health.grading import TARGET_SCORE, analysed_share, headline_band
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
-from repowise.core.analysis.health.rows import split_tests
+from repowise.core.analysis.health.ranking import worst_kpis
 from repowise.core.analysis.health.scoring import (
     hotspot_health,
     nloc_weighted_attr,
@@ -142,9 +142,11 @@ def _compute_kpis(
     performance_findings: int = 0,
     coverage: PerfCoverage | None = None,
     unanalysed: int = 0,
+    deductions: dict[str, float],
 ) -> dict[str, Any]:
     """*metrics* are scored rows; *unanalysed* counts the files left out of
-    them because health has no dialect for their language."""
+    them because health has no dialect for their language. *deductions* is the
+    worst-first tiebreak ``get_health_metrics`` ranks with."""
     if not metrics:
         return {
             "file_count": 0,
@@ -165,10 +167,6 @@ def _compute_kpis(
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
-    # Production first; test files are ranked apart and named on their own.
-    production, tests = split_tests(metrics)
-    worst = min(production or metrics, key=lambda r: r.score)
-    worst_test = min(tests, key=lambda r: r.score) if tests else None
     share = analysed_share(len(metrics), unanalysed)
     return {
         "file_count": len(metrics),
@@ -182,10 +180,8 @@ def _compute_kpis(
         "band": headline_band(round(avg, 2), share),
         # Only said when some files were left out, as ``unanalysed_file_count`` is.
         **({"analysed_share": share} if unanalysed else {}),
-        "worst_performer_path": worst.file_path,
-        "worst_performer_score": round(worst.score, 2),
-        "worst_test_path": worst_test.file_path if worst_test else None,
-        "worst_test_score": round(worst_test.score, 2) if worst_test else None,
+        # The heads of ``worst_files`` and ``test_worst_files``, as REST names them.
+        **worst_kpis(metrics, deductions),
         # ``None`` until the pillar is measured.
         "maintainability_average": _avg(metrics, "maintainability_score"),
         "performance_average": _avg(metrics, "performance_score"),

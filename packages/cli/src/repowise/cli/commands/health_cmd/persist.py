@@ -114,6 +114,7 @@ def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.cli.helpers import repo_index_session
+    from repowise.core.analysis.health.ranking import deduction_by_path
     from repowise.core.analysis.health.scoring import compute_kpis
     from repowise.core.persistence.crud import (
         get_file_language_map,
@@ -133,7 +134,7 @@ def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str
             findings = await get_health_findings(session, repo_id)
             hotspots = await get_hotspot_file_paths(session, repo_id)
             languages = await get_file_language_map(session, repo_id)
-        kpis = compute_kpis(metrics, hotspots)
+        kpis = compute_kpis(metrics, hotspots, deductions=deduction_by_path(findings))
         return SimpleNamespace(metrics=metrics, findings=findings, kpis=kpis), hotspots, languages
 
     try:

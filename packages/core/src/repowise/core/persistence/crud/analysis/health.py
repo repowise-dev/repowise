@@ -30,9 +30,9 @@ from ....analysis.health.grading import analysed_share
 from ....analysis.health.ranking import (
     deduction_by_path,
     sort_metrics_worst_first,
-    worst_metric,
+    worst_kpis,
 )
-from ....analysis.health.rows import detail_map, split_tests, split_unscored
+from ....analysis.health.rows import detail_map, split_unscored
 from ....analysis.health.scope import scores_language
 from ....analysis.health.scoring import ADVISORY_DIMENSION, SCORE_FIELDS, nloc_weighted_attr
 from ....analysis.health.worth import LowPriority, finding_priorities
@@ -854,15 +854,10 @@ async def get_health_summary(
         findings = await _open_finding_totals_rows(session, repository_id)
 
     # Ranked with the same key as ``get_health_metrics``, off the findings this
-    # function already holds. Previously a plain ``min`` on the score, which
-    # agreed with the worst-files list only because every caller happened to
-    # pass an already-ranked list — a floor tie made the headline and the list
-    # under it disagree the moment one did not.
-    deductions = deduction_by_path(findings)
-    worst = worst_metric(metrics, deductions)
-    # The worst production file heads the page; the worst test file is named
-    # apart, under the same ranking, so a weak test is not lost behind it.
-    worst_test = worst_metric(split_tests(metrics)[1], deductions)
+    # function already holds, and in Fix first's scope: the file ``get_health``
+    # lists first, so a script or schema scoring lowest is not named. The worst
+    # test is named apart, so a weak test is not lost behind it.
+    worst = worst_kpis(metrics, deduction_by_path(findings))
 
     by_dim: dict[str, int] = {}
     for finding in findings:
@@ -888,10 +883,7 @@ async def get_health_summary(
         "unanalysed_file_count": unanalysed,
         "analysed_share": analysed_share(len(metrics), unanalysed),
         "average_health": _rounded(avg),
-        "worst_performer_path": worst.file_path,
-        "worst_performer_score": round(worst.score, 2),
-        "worst_test_path": worst_test.file_path if worst_test is not None else None,
-        "worst_test_score": round(worst_test.score, 2) if worst_test is not None else None,
+        **worst,
         "open_findings": open_finding_count(findings),
         "maintainability_average": _rounded(maintainability_average),
         "performance_average": _rounded(performance_average),

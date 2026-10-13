@@ -34,6 +34,7 @@ from repowise.core.analysis.health.counts import (
     project as project_counts,
 )
 from repowise.core.analysis.health.models import split_by_origin
+from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.rows import detail_map, split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
@@ -311,7 +312,12 @@ def health_command(
         # Every figure the controls select for. Defect accuracy below is not
         # one of them: it scores the ranking against `prior_defect`, and
         # narrowing leaves it no labels to be accurate about.
-        report.kpis = compute_kpis(metrics, hotspots, unanalysed=unanalysed)
+        report.kpis = compute_kpis(
+            metrics,
+            hotspots,
+            unanalysed=unanalysed,
+            deductions=deduction_by_path(report.findings),
+        )
     metrics_sorted = sorted(metrics, key=lambda m: m.score)
 
     findings = report.findings

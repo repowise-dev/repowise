@@ -2014,6 +2014,7 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
     """
     from sqlalchemy import select
 
+    from repowise.core.analysis.health.ranking import deduction_by_path
     from repowise.core.analysis.health.scoring import compute_kpis
     from repowise.core.analysis.health.trends import snapshot_fields
     from repowise.core.persistence.crud import get_hotspot_file_paths, save_health_snapshot
@@ -2043,7 +2044,11 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
             .scalars()
             .all()
         )
-        kpis = compute_kpis(metrics, await get_hotspot_file_paths(session, repo_id))
+        kpis = compute_kpis(
+            metrics,
+            await get_hotspot_file_paths(session, repo_id),
+            deductions=deduction_by_path(findings),
+        )
         fields = snapshot_fields(kpis, metrics, findings)
         if fields is not None:
             await save_health_snapshot(session, repo_id, **fields)

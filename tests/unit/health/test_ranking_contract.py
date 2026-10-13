@@ -17,9 +17,10 @@ from repowise.core.analysis.health.ranking import (
     deduction_by_path,
     sort_metrics_worst_first,
     worst_first_key,
+    worst_in_scope,
     worst_metric,
 )
-from repowise.core.analysis.health.scoring import SCORE_FLOOR
+from repowise.core.analysis.health.scoring import SCORE_FLOOR, compute_kpis
 
 
 @dataclass
@@ -164,6 +165,22 @@ def test_worst_metric_agrees_with_the_head_of_the_sorted_list() -> None:
 
 def test_worst_metric_is_none_for_no_rows() -> None:
     assert worst_metric([], {}) is None
+
+
+def test_worst_in_scope_skips_files_fix_first_leaves_out() -> None:
+    """A script or generated file scoring lowest is not named; KPIs agree."""
+    rows = [
+        {**_dict("scripts/migrate.py", 1.0), "code_origin": "tooling"},
+        {**_dict("src/gen/schema_pb2.py", 1.0), "code_origin": "generated"},
+        {**_dict("tests/test_app.py", 2.0), "is_test": True},
+        _dict("src/app.py", 3.0),
+    ]
+    worst, worst_test = worst_in_scope(rows, {})
+    assert (worst["file_path"], worst_test["file_path"]) == ("src/app.py", "tests/test_app.py")
+    kpis = compute_kpis(rows, set())
+    assert kpis["worst_performer_path"] == "src/app.py"
+    assert kpis["worst_test_path"] == "tests/test_app.py"
+    assert worst_in_scope(rows[:2], {}) == (None, None)
 
 
 def test_the_deduction_map_has_no_default() -> None:

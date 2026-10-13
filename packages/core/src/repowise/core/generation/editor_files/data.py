@@ -67,8 +67,8 @@ class CodeHealthBlock:
 
     hotspot_health: float
     average_health: float
-    worst_score: float
-    worst_path: str
+    worst_score: float | None
+    worst_path: str | None
     # The band word for ``average_health``, so the line reads the same
     # direction as every other surface: a bare "6.9/10" beside a risk-shaped
     # label is the one reading that inverts.

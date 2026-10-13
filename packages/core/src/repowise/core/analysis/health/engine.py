@@ -73,6 +73,7 @@ from .perf import (
 )
 from .perf.lazy_load import collect_lazy_loads
 from .perf.unbounded_reduction import collect_unbounded_reductions
+from .ranking import deduction_by_path
 from .refactoring import (
     PerformancePlanPolicy,
     RefactoringContext,
@@ -1163,7 +1164,7 @@ class HealthAnalyzer:
         # KPIs are repo-wide; on an incremental run they would be biased
         # by the changed-files subset. Skip them in that case — the
         # ``persist`` step recomputes KPIs from the merged DB rows.
-        kpis = self._kpis(metrics) if changed_files is None else {}
+        kpis = self._kpis(metrics, findings) if changed_files is None else {}
         with timed(timings, "analysis.health.finalize"):
             execution_roles = self._mark_perf_entry_reachability(findings)
             suggestions = self._with_performance_plans(run, findings, suggestions)
@@ -1256,9 +1257,11 @@ class HealthAnalyzer:
                 on_step(path)
         return metrics, findings, suggestions
 
-    def _kpis(self, metrics: list[HealthFileMetricData]) -> dict[str, Any]:
+    def _kpis(
+        self, metrics: list[HealthFileMetricData], findings: list[HealthFindingData]
+    ) -> dict[str, Any]:
         hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
-        return compute_kpis(metrics, hotspot_paths)
+        return compute_kpis(metrics, hotspot_paths, deductions=deduction_by_path(findings))
 
     def _with_performance_plans(
         self,

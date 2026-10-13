@@ -19,8 +19,11 @@ from repowise.core.analysis.health.churn_complexity import churn_complexity_poin
 from repowise.core.analysis.health.fix_first import FixFirstQueue
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
-from repowise.core.analysis.health.queue.eligibility import path_verdict
-from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
+from repowise.core.analysis.health.ranking import (
+    deduction_by_path,
+    scope_reason,
+    sort_metrics_worst_first,
+)
 from repowise.core.analysis.health.refactoring.serving import parse_query as parse_refactoring_query
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import project_scope
@@ -214,10 +217,7 @@ def _scope_reasons(metrics: list[HealthFileMetric]) -> dict[str, str | None]:
     Ceiling: recomputed per process (about 0.3 s cold on 5k files, 1.2 s on 18k; 0.02 s
     warm). Upgrade path: persist the verdict per file when the health pass finalizes.
     """
-    return {
-        m.file_path: path_verdict(m.file_path, m.is_test, origin=m.code_origin).reason
-        for m in metrics
-    }
+    return {m.file_path: scope_reason(m) for m in metrics}
 
 
 async def _read_test_paths(

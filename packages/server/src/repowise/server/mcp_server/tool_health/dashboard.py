@@ -79,15 +79,13 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
         # KPIs keep test files unless ``scope`` narrows them. Tests score better
         # than production code, so narrowing lowers the number with no new defect
         # found: a caller should ask for it knowingly.
-        "kpis": lambda: _name_listed_worst(
-            _compute_kpis(
-                all_metrics,
-                hotspot_paths=data.hotspot_paths,
-                performance_findings=data.perf_findings_count,
-                coverage=data.perf_coverage,
-                unanalysed=len(pop.unanalysed_paths),
-            ),
-            data,
+        "kpis": lambda: _compute_kpis(
+            all_metrics,
+            hotspot_paths=data.hotspot_paths,
+            performance_findings=data.perf_findings_count,
+            coverage=data.perf_coverage,
+            unanalysed=len(pop.unanalysed_paths),
+            deductions=data.deductions,
         ),
         "distribution": lambda: health_distribution(all_metrics),
         # Where the gap to the target concentrates: a short list of files.
@@ -169,18 +167,6 @@ def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict
 def _finding_rows(data: HealthData, rows: list[Any]) -> list[dict[str, Any]]:
     labels = data.findings.lower_priority
     return [_serialize_finding(f, data.reference_repository, labels.get(f.id)) for f in rows]
-
-
-def _name_listed_worst(kpis: dict[str, Any], data: HealthData) -> dict[str, Any]:
-    """The worst file and worst test the KPIs name are the heads of the lists,
-    so a script left out of ``worst_files`` is not named worst either."""
-    if not kpis.get("file_count"):
-        return kpis
-    for prefix, rows in (("worst_performer", data.metric_rows), ("worst_test", data.test_metric_rows)):
-        head = rows[0] if rows else None
-        kpis[f"{prefix}_path"] = head.file_path if head else None
-        kpis[f"{prefix}_score"] = round(head.score, 2) if head else None
-    return kpis
 
 
 def _metric_row(data: HealthData, m: Any) -> dict[str, Any]:

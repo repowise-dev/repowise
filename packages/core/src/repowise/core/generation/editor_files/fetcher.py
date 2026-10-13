@@ -23,7 +23,8 @@ from repowise.core.analysis.health.grading import (
     headline_band,
 )
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
-from repowise.core.analysis.health.rows import split_tests, split_unscored
+from repowise.core.analysis.health.ranking import worst_in_scope
+from repowise.core.analysis.health.rows import split_unscored
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
@@ -388,10 +389,11 @@ class EditorFileDataFetcher:
         # zero-total-weight fallback to a plain mean. The empty case cannot
         # reach it — ``metric_rows`` is checked above.
         avg = nloc_weighted_score(metric_rows)
-        # The worst file names a production file: a test is not the file an
-        # agent should be told to handle with care.
-        production, tests = split_tests(metric_rows)
-        worst = min(production or tests, key=lambda m: m.score)
+        # The worst file is the one ``get_overview`` and ``get_health`` name:
+        # in Fix first's scope, so not a test, script or generated file.
+        worst, _ = worst_in_scope(
+            metric_rows, await crud.get_deduction_by_path(self._session, self._repo_id)
+        )
 
         # Hotspot-flagged paths, and the hotspot KPI over them. Both come from
         # the shared owners now; this file used to re-derive the same weighted
@@ -476,8 +478,8 @@ class EditorFileDataFetcher:
             average_health=round(avg, 2),
             band=BAND_LABEL[band] if band is not None else "",
             analysed_note=analysed_note(len(metric_rows), unanalysed),
-            worst_score=round(worst.score, 2),
-            worst_path=worst.file_path,
+            worst_score=round(worst.score, 2) if worst is not None else None,
+            worst_path=worst.file_path if worst is not None else None,
             hotspot_trend=hotspot_trend(history),
             maintainability_average=(
                 round(maintainability_average, 2) if maintainability_average is not None else None
