@@ -201,6 +201,15 @@ def test_cli_code_ships_for_code_shape_but_not_for_performance() -> None:
     assert [i.target.file_path for i in queue.items] == [path]
 
 
+def test_a_production_file_under_a_samples_package_is_eligible() -> None:
+    path = "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
+    row = {**METRICS[0], "file_path": path, "code_origin": "production"}
+    finding = {**FINDINGS[1], "file_path": path}
+    queue = _build(metrics=[row], findings=[finding], refactoring=[], performance=[])
+    assert queue.totals.eligible > 0
+    assert [i.target.file_path for i in queue.items] == [path]
+
+
 def test_value_leads_tier_and_a_huge_function_says_so() -> None:
     """A function far past every bar outranks tidy work that is safer to start."""
     huge = {**FINDINGS[1], "file_path": "src/plain.py", "function_name": "walk",
