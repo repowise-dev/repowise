@@ -411,6 +411,7 @@ _TARGET_IDENTITY_KEYS = frozenset(
         "path",
         "error",
         "suggestions",
+        "did_you_mean",
         "docs",
         "parent_page",
         "freshness",

@@ -153,6 +153,7 @@ Per target, under `targets`:
 | decisions | Titles by default. With `include=["decisions"]`, three lanes: `decisions` (accepted, governing), `candidates` (proposed, at most 3), `history` (accepted then withdrawn, at most 2) |
 | `file_preview` | For a file with no indexed symbols: `lines`, `chars`, and for a markdown or reST document `heading_count` with the first three `headings`; otherwise the first three non-empty lines as `head` |
 | `resolved_to`, `note` | A `path::Name` target whose symbol did not resolve answers with the file's card instead |
+| `did_you_mean` | On a symbol miss: up to five ids of the closest-named symbols (in that file when the file is real, else repo-wide), omitted when none is close |
 | `cross_repo` | Workspace mode: `co_changes_with` partners in other repos and contract `consumers` / `providers` |
 | `*_basis` | Beside an empty `callers`, `callees` or `used_by`: the language, how many call edges the index resolved for it, and the share that are guesses. An empty list means no resolved edge, not proof of none |
 
@@ -162,7 +163,7 @@ Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor c
 
 **doc_drift.** `references` lists documents that name this file and still resolve to it. `documents_with_drift` says a listed document carries some assertion that no longer holds, anywhere in it, not necessarily about this file. Do not merge the two claims. `references_basis` states the limits; documents dropped by exclude rules are counted in `references_excluded`. An answer the store cannot support is a refusal: `{"unavailable": "not_computed"}` (the pass has not run yet), `"index_predates_doc_drift"`, or `"drift_read_failed"`.
 
-**Several targets under one budget.** Each target gets an equal share, and a small target's unused share passes to the others. A target over its share drops symbols first, then its optional blocks largest first (named in `dropped_blocks`). Miss `suggestions` and ambiguity `candidates` are never shed. When even the identity cards cannot all fit, whole targets go first; the response leads with `dropped_targets` and a `recovery` call narrowed to them.
+**Several targets under one budget.** Each target gets an equal share, and a small target's unused share passes to the others. A target over its share drops symbols first, then its optional blocks largest first (named in `dropped_blocks`). Miss `suggestions`, `did_you_mean` and ambiguity `candidates` are never shed. When even the identity cards cannot all fit, whole targets go first; the response leads with `dropped_targets` and a `recovery` call narrowed to them.
 
 ---
 

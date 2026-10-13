@@ -17,7 +17,9 @@ matched as given, since ``.`` and ``/`` are meaningful inside them.
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+import difflib
+
+from sqlalchemy import func, or_, select
 
 from repowise.core.ingestion.symbol_identity import (
     base_symbol_id,
@@ -317,3 +319,92 @@ def _pathless_qualified_name(symbol_id: str) -> str | None:
         return None
     dotted = name_variants(base)[0] if base else ""
     return dotted if "." in dotted else None
+
+
+
+#: How many "did you mean" ids a missed target carries.
+NEAREST_LIMIT = 5
+#: ``difflib.get_close_matches`` cutoff. A ratio is 2*M/(a+b) with M <= the
+#: shorter length, so a name outside [3a/7, 7a/3] of the query's length ``a``
+#: can never pass it; the pools below filter on that window in SQL.
+_NEAREST_CUTOFF = 0.6
+#: Backstop caps. Names are read closest length first, so the cap drops the
+#: least likely names; past it a match is missed (a trigram index on ``name``
+#: is the upgrade). Rows per pool are capped the same way.
+_NEAREST_NAME_POOL = 2000
+_NEAREST_ROW_POOL = 500
+
+
+def _length_window(n: int) -> tuple[int, int]:
+    # [ceil(3n/7), floor(7n/3)] for the 0.6 cutoff, in integers so a boundary
+    # length (n=7 allows 3) is not lost to float rounding.
+    return (3 * n + 6) // 7, 7 * n // 3
+
+
+async def _close_values(session, column, query: str, *where) -> list[str]:
+    """Values of ``column`` close to ``query``, from a bounded SQL pool.
+
+    The pool is values sharing the query's first letter in either case
+    (``lower()`` on both sides, so SQLite and PostgreSQL agree) inside the
+    length window, closest length first.
+    """
+    lo, hi = _length_window(len(query))
+    res = await session.execute(
+        select(column)
+        .where(
+            *where,
+            func.lower(column).like(f"{escape_like(query[0].lower())}%", escape=LIKE_ESCAPE),
+            func.length(column).between(lo, hi),
+        )
+        .group_by(column)
+        .order_by(func.abs(func.length(column) - len(query)), column)
+        .limit(_NEAREST_NAME_POOL)
+    )
+    values = [v for v in res.scalars().all() if v]
+    return difflib.get_close_matches(query, values, n=NEAREST_LIMIT, cutoff=_NEAREST_CUTOFF)
+
+
+async def nearest_symbol_ids(
+    session, repo_id: str, query: str, file_path: str | None = None
+) -> list[str]:
+    """Up to five symbol ids whose names read closest to ``query``, best first.
+
+    ``query`` is the name a target missed (``sned``, ``Clinet.send``). With
+    ``file_path`` the pool is that file's symbols, else names repo-wide; a
+    qualified query (``Clinet.send``) also narrows by the closest parent
+    names, so a common method name cannot crowd out the class asked for.
+    Each candidate is compared on as many trailing qualified-name segments
+    as the query has. Empty when nothing is close.
+    """
+    dotted = name_variants(query)[0] if query else ""
+    bare = bare_name(dotted)
+    if not bare:
+        return []
+    where = [WikiSymbol.repository_id == repo_id]
+    if file_path:
+        where.append(WikiSymbol.file_path == file_path)
+    else:
+        close = await _close_values(session, WikiSymbol.name, bare, *where)
+        if not close:
+            return []
+        where.append(WikiSymbol.name.in_(close))
+        qualifier = dotted.rsplit(".", 2)[-2] if "." in dotted else ""
+        if qualifier:
+            parents = await _close_values(session, WikiSymbol.parent_name, qualifier, *where)
+            if parents:
+                where.append(WikiSymbol.parent_name.in_(parents))
+    res = await session.execute(
+        select(WikiSymbol.symbol_id, WikiSymbol.name, WikiSymbol.qualified_name)
+        .where(*where)
+        .order_by(WikiSymbol.symbol_id)
+        .limit(_NEAREST_ROW_POOL)
+    )
+    depth = dotted.count(".") + 1
+    by_key: dict[str, list[str]] = {}
+    for sid, name, qualified in res.all():
+        key = ".".join(_dotted(qualified or name).split(".")[-depth:])
+        by_key.setdefault(key, []).append(sid)
+    keys = difflib.get_close_matches(
+        dotted, list(by_key), n=NEAREST_LIMIT, cutoff=_NEAREST_CUTOFF
+    )
+    return [sid for key in keys for sid in by_key[key]][:NEAREST_LIMIT]

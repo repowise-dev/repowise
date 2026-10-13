@@ -58,7 +58,11 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._meta import uncommitted_targets
 from repowise.server.mcp_server._references import path_identity, symbol_identity
-from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows, symbol_id_variants
+from repowise.server.mcp_server._symbol_lookup import (
+    nearest_symbol_ids,
+    resolve_symbol_rows,
+    symbol_id_variants,
+)
 from repowise.server.mcp_server.tool_context.enrichment import (
     _DOC_DRIFT_PATH,
     _resolve_call_graph,
@@ -103,6 +107,28 @@ _CALLABLE_KINDS = frozenset({"function", "method", "macro", "decorator"})
 def _kind_rank(kind: str | None) -> int:
     kind = (kind or "").lower()
     return 0 if kind in _TYPE_KINDS else 1 if kind in _CALLABLE_KINDS else 2
+
+
+async def _did_you_mean(
+    session: AsyncSession, repo_id: str, target: str, file_path: str | None = None
+) -> dict[str, list[str]]:
+    """``{"did_you_mean": [...]}``: the nearest symbol ids to a missed name, or ``{}``.
+
+    The missed name follows the file head when ``file_path`` is given or the
+    head is a path (``src/a.py::sned``), else it is the whole target
+    (``Clinet.send``, ``httpx.Client::send``); a plain path has none. A path
+    has a separator, as in ``resolve_symbol_rows``' path-less rung.
+    """
+    head, sep, tail = target.partition("::")
+    path_head = any(c in head for c in "/\\")
+    if file_path or (sep and path_head):
+        query = tail
+    elif path_head:
+        return {}
+    else:
+        query = target
+    ids = await nearest_symbol_ids(session, repo_id, query, file_path)
+    return {"did_you_mean": [symbol_identity(sid) for sid in ids]} if ids else {}
 
 
 async def _compact_symbol_rows(
@@ -638,12 +664,13 @@ async def _resolve_one_target(
             file_part = target.split("::", 1)[0]
             if file_part and file_part != target and not is_excluded(file_part, exclude_spec):
                 # file_part contains no "::", so this recursion is depth-1. The
-                # caller is hunting for a name, so the symbol list is uncapped.
+                # caller is hunting for a name: ``did_you_mean`` picks the
+                # closest from every symbol of the file, so the list keeps its cap.
                 card = await _resolve_one_target(
                     session,
                     repository,
                     file_part,
-                    None if include is None else include | {"symbols"},
+                    include,
                     compact,
                     exclude_spec=exclude_spec,
                     repo_root=repo_root,
@@ -655,10 +682,16 @@ async def _resolve_one_target(
                 if "error" not in card and card.get("type") == "file":
                     card["target"] = target
                     card["resolved_to"] = file_part
+                    nearest = await _did_you_mean(session, repo_id, target, file_part)
+                    card.update(nearest)
                     card["note"] = (
                         f"No symbol matched {target.split('::', 1)[1]!r} in this file; "
-                        f"showing the card for {file_part!r} instead. Pick the symbol "
-                        "you meant from the symbol list."
+                        f"showing the card for {file_part!r} instead. "
+                        + (
+                            "Closest names are in did_you_mean."
+                            if nearest
+                            else "Pass include=['symbols'] for the full symbol list."
+                        )
                     )
                     return card
 
@@ -689,13 +722,11 @@ async def _resolve_one_target(
                 )
                 suggestions = [row[0] for row in res.all() if row[0] != target]
             suggestions = filter_path_list(suggestions, exclude_spec)
+            miss: dict[str, Any] = {"target": target, "error": f"Target not found: '{target}'"}
             if suggestions:
-                return {
-                    "target": target,
-                    "error": f"Target not found: '{target}'",
-                    "suggestions": suggestions,
-                }
-            return {"target": target, "error": f"Target not found: '{target}'"}
+                miss["suggestions"] = suggestions
+            miss.update(await _did_you_mean(session, repo_id, target))
+            return miss
 
     result_data["target"] = target
     result_data["type"] = target_type
