@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING, Any
 
 import pathspec
 
+from ..phpunit_roots import PhpunitRoots
 from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots
 from ..support_paths import DOC_EXTENSIONS
 from ..test_paths import is_test_path, is_test_related_path, is_test_support_path
@@ -449,13 +450,23 @@ def is_test_helper(path: str) -> bool:
     )
 
 
-def is_runnable_test(path: str, roots: PytestRoots | None = None) -> bool:
+def is_runnable_test(
+    path: str,
+    roots: PytestRoots | None = None,
+    *,
+    phpunit_roots: PhpunitRoots | None = None,
+) -> bool:
     """A test-shaped file name with an extension a runner collects tests from.
 
     With *roots*, a Python file pytest's config leaves out of collection
     (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
+    With *phpunit_roots*, a PHP file PHPUnit leaves out of collection is not runnable.
     """
-    return _runnable_name(path) and (roots is None or is_test_path(path, roots=roots))
+    return (
+        _runnable_name(path)
+        and (roots is None or is_test_path(path, roots=roots))
+        and (phpunit_roots is None or is_test_path(path, phpunit_roots=phpunit_roots))
+    )
 
 
 @functools.lru_cache(maxsize=_PATH_MEMO)

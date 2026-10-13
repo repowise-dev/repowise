@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import pathspec
 import structlog
@@ -31,6 +31,13 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 
 from ..code_origin import is_generated_header
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..phpunit_roots import (
+    PHPUNIT_CONFIG_NAMES,
+    PhpunitConfigUnreadableError,
+    PhpunitRoots,
+    parse_phpunit_options,
+    phpunit_roots,
+)
 from ..pytest_roots import (
     PYTEST_CONFIG_NAMES,
     PytestRoots,
@@ -458,6 +465,11 @@ class FileTraverser:
         return self._console_script_tables().pytest_roots
 
     @property
+    def phpunit_roots(self) -> PhpunitRoots:
+        """Where PHPUnit collects, from the configs the console-script pass read."""
+        return self._console_script_tables().phpunit_roots
+
+    @property
     def _console_script_names(self) -> frozenset[str]:
         return self._console_script_tables().names
 
@@ -811,8 +823,12 @@ class FileTraverser:
             _is_console_script_target(rel_str, self._console_script_modules)
             or rel_str in self._distribution_inits
         )
+        tables = self._console_script_tables()
         is_test = is_test_related_path(
-            rel_str, language, self._console_script_tables().pytest_roots
+            rel_str,
+            language,
+            tables.pytest_roots,
+            phpunit_roots=tables.phpunit_roots,
         )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
@@ -1160,6 +1176,8 @@ class ConsoleScriptTables(NamedTuple):
     """Repo-relative ``__init__.py`` of each distribution's own import package."""
     pytest_roots: PytestRoots = PytestRoots()
     """Where a bare pytest run collects tests, which decides a test-named module."""
+    phpunit_roots: PhpunitRoots = PhpunitRoots()
+    """Where PHPUnit collects tests, which decides a test-named PHP class."""
 
 
 def _collect_console_scripts(
@@ -1173,7 +1191,8 @@ def _collect_console_scripts(
     before the colon is the module it imports; ``[project].name`` is the
     distribution. Best-effort: unparsable files are skipped. The pytest
     configs (``pytest.ini``, ``tox.ini``, ``setup.cfg`` and the same
-    ``pyproject.toml``) come off this one walk and one read each.
+    ``pyproject.toml``) and PHPUnit configs (``phpunit.xml``,
+    ``phpunit.dist.xml``, ``phpunit.xml.dist``) come off this one walk.
     """
     from repowise.core.fs_walk import iter_glob
 
@@ -1183,33 +1202,49 @@ def _collect_console_scripts(
     inits: set[str] = set()
     pytest_configs: list[tuple[str, dict]] = []
     unreadable: list[str] = []
+    phpunit_configs: list[tuple[str, Any]] = []
+    phpunit_unreadable: list[str] = []
+    all_configs = tuple(PYTEST_CONFIG_NAMES | PHPUNIT_CONFIG_NAMES)
     try:
         config_files = list(
-            iter_glob(repo_root, tuple(PYTEST_CONFIG_NAMES), prune_nested_git=prune_nested_git)
+            iter_glob(repo_root, all_configs, prune_nested_git=prune_nested_git)
         )
     except OSError:
         return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
-        project, options, parsed = _read_python_config(config_file)
+        name = config_file.name
         rel = config_file.relative_to(repo_root).as_posix()
-        if options is not None:
-            pytest_configs.append((rel, options))
-        if not parsed:
-            unreadable.append(rel)
-        if project is None:
-            continue
-        dist = project.get("name")
-        if isinstance(dist, str) and dist.strip():
-            distributions.add(dist.strip())
-            if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
-                inits.add(init)
-        _add_script_targets(project, names, modules)
+        if name in PHPUNIT_CONFIG_NAMES:
+            try:
+                text = config_file.read_text(encoding="utf-8")
+                options = parse_phpunit_options(text)
+                if options is not None:
+                    phpunit_configs.append((rel, options))
+                else:
+                    phpunit_unreadable.append(rel)
+            except (OSError, UnicodeDecodeError, PhpunitConfigUnreadableError):
+                phpunit_unreadable.append(rel)
+        if name in PYTEST_CONFIG_NAMES:
+            project, options, parsed = _read_python_config(config_file)
+            if options is not None:
+                pytest_configs.append((rel, options))
+            if not parsed:
+                unreadable.append(rel)
+            if project is None:
+                continue
+            dist = project.get("name")
+            if isinstance(dist, str) and dist.strip():
+                distributions.add(dist.strip())
+                if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
+                    inits.add(init)
+            _add_script_targets(project, names, modules)
     return ConsoleScriptTables(
         frozenset(names),
         frozenset(modules),
         frozenset(distributions),
         frozenset(inits),
         pytest_roots(pytest_configs, unreadable),
+        phpunit_roots(phpunit_configs, phpunit_unreadable),
     )
 
 
