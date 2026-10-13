@@ -77,10 +77,10 @@ Go, Rust, Java, Kotlin and Ruby tests get a command too, for the package that ow
 them: `go test ./internal/cart`, `cargo test -p parser`, `./mvnw -pl core -am test`
 or `./gradlew :app:test`, and `bundle exec rspec` or `bundle exec rake test`. A test
 whose build file or runner the repository does not have gets no command.
-A C# test runs through `dotnet test` on the test project that holds it
-(`dotnet test tests/Shop.Tests/Shop.Tests.csproj --filter CartTests.TotalIsZero`),
-or on the repository's solution when no single test project does. With neither,
-the plan has no command.
+A C# test runs `dotnet test` on the test project that holds it
+(`dotnet test tests/Shop.Tests/Shop.Tests.csproj`), narrowed with `--filter` to
+the named tests, or on the repository's solution when no single test project
+does. With neither, the plan has no command.
 
 In a plan with several steps, such as a performance fix at several call sites,
 plan detail adds a `verify` to each step whose tests differ from the plan's: the
