@@ -157,6 +157,74 @@ class Deck {
     }
 }
 """,
+    "src/app/Shapes.java": """\
+package app;
+
+class Over {
+    void over(int a) {
+        new Runnable() {
+            public void run() {
+                ping();
+            }
+        }.run();
+    }
+
+    void over(String a) {
+        new Runnable() {
+            public void run() {}
+        }.run();
+    }
+
+    void ping() {}
+}
+
+class Blocks {
+    static { Runnable r = new Runnable() { public void run() {} }; }
+    static { Runnable r = new Runnable() { public void run() {} }; }
+
+    void m() {
+        { Runnable q = new Runnable() { public void run() {} }; }
+        { Runnable q = new Runnable() { public void run() {} }; }
+    }
+}
+
+class Leak {
+    void make2() {
+        Runnable s = new Runnable() {
+            public void run() {
+                Bar y = null;
+            }
+        };
+        Runnable u = new Runnable() {
+            public void run() {
+                y.miss();
+            }
+        };
+    }
+}
+
+class Twice {
+    Runnable outer(Bar b) {
+        return new Runnable() {
+            public void run() {
+                new Runnable() {
+                    public void run() {
+                        b.miss();
+                    }
+                }.run();
+            }
+        };
+    }
+}
+
+class Bar {
+    void miss() {}
+}
+
+class Baz {
+    void miss() {}
+}
+""",
     "src/app/Screen.kt": """\
 package app
 
@@ -269,6 +337,28 @@ def test_a_name_the_anonymous_body_binds_is_not_the_captured_one(tmp_path: Path)
     assert (deck + "run", "src/app/Deck.kt::Tape::play") in calls
     # The lambda's own ``tape`` shadows the captured local.
     assert (deck + "spin", "src/app/Deck.kt::Tape::play") not in calls
+
+
+def test_overloads_and_sibling_blocks_keep_their_anonymous_classes_apart(tmp_path: Path) -> None:
+    graph, calls, _ = _build(tmp_path)
+    shapes = "src/app/Shapes.java::"
+    # The host's overload discriminator is carried into the holder segment.
+    for host in ("Over::over#1(int)", "Over::over#1(String)"):
+        assert graph.nodes[shapes + host + "::Runnable::run"]["kind"] == "method"
+    assert (shapes + "Over::over#1(int)::Runnable::run", shapes + "Over::ping") in calls
+    # One name held twice in one scope, in sibling blocks or static blocks.
+    for holder in ("Blocks::r", "Blocks::m::q"):
+        assert shapes + holder + "::Runnable::run" in graph
+        assert shapes + holder + "::Runnable$2::run" in graph
+
+
+def test_a_sibling_anonymous_body_does_not_type_a_capture(tmp_path: Path) -> None:
+    _, calls, _ = _build(tmp_path)
+    shapes = "src/app/Shapes.java::"
+    assert (shapes + "Leak::make2::u::Runnable::run", shapes + "Bar::miss") not in calls
+    # A capture two anonymous classes deep is typed by the outermost function.
+    inner = shapes + "Twice::outer::Runnable::run::Runnable::run"
+    assert (inner, shapes + "Bar::miss") in calls
 
 
 def test_dead_code_never_flags_the_new_methods(tmp_path: Path) -> None:

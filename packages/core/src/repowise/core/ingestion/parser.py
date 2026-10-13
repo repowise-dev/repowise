@@ -122,8 +122,10 @@ from .parser_helpers import (
     _run_query,
     _rust_shadowed_by_type_param,
     _ts_nested_object_method_owner,
+    follow_renamed_hosts,
     import_load_kind,
     in_anonymous_class,
+    is_anonymous_member,
     scope_segment,
 )
 from .python_local_refs import local_refs_from_tree, parse_python_module
@@ -1578,8 +1580,12 @@ class ASTParser:
             existing = {(s.id, symbol_discriminator(s)) for s in symbols}
             symbols.extend(s for s in synthetic if (s.id, symbol_discriminator(s)) not in existing)
         # Before calls and references are extracted, so both attribute to the
-        # final ids.
-        disambiguate_colliding_ids(symbols, lang)
+        # final ids. Anonymous members go last, once the overloads holding them
+        # carry their discriminators.
+        anonymous = [s for s in symbols if is_anonymous_member(s)]
+        disambiguate_colliding_ids([s for s in symbols if not is_anonymous_member(s)], lang)
+        follow_renamed_hosts(symbols)
+        disambiguate_colliding_ids(anonymous, lang)
         imports = self._extract_imports(matches, config, file_info, src)
         calls = self._extract_calls(matches, config, file_info, src, symbols)
         # An SFC instantiates a component by writing its tag in the markup

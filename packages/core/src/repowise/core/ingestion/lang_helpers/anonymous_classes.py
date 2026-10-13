@@ -16,6 +16,7 @@ from tree_sitter import Node
 from ..extractors import node_text
 from ..language_configs import LANGUAGE_CONFIGS
 from ..models import Symbol
+from ..symbol_identity import split_symbol_id
 from ..type_names import bare_type_name
 
 # Declarations that name an anonymous class they hold: a field, local or
@@ -31,8 +32,12 @@ _HOLDER_TYPES = frozenset(
     }
 )
 
-# Where an ordinal is counted: the nearest holder, else the enclosing body.
-_ORDINAL_SCOPES = _HOLDER_TYPES | {"class_body"}
+# Holders a block can declare twice: ``{ Runnable r = .. } { Runnable r = .. }``.
+_VARIABLE_HOLDERS = frozenset({"variable_declarator", "property_declaration"})
+
+# Where an ordinal is counted: the nearest method, function, constructor or
+# enum constant, else the class body (field initializers, ``static {}``).
+_ORDINAL_SCOPES = (_HOLDER_TYPES - _VARIABLE_HOLDERS) | {"class_body"}
 
 
 def in_anonymous_class(def_node: Node, anonymous_types: frozenset[str]) -> bool:
@@ -56,6 +61,28 @@ def is_anonymous_member(symbol: Symbol) -> bool:
     return bool(
         config and config.anonymous_class_types and "::" in (symbol.parent_name or "")
     )
+
+
+def follow_renamed_hosts(symbols: list[Symbol]) -> None:
+    """Move anonymous members under a host whose id gained an overload discriminator.
+
+    A holder segment spells its method's bare name (``A::over::Runnable``), so
+    once ``over`` reads ``over#1(int)`` its members follow it and two
+    overloads' anonymous classes keep two ids. A host that is itself an
+    anonymous member is not followed: a ceiling of one level.
+    """
+    members = [s for s in symbols if is_anonymous_member(s)]
+    for host in symbols:
+        base, payload = split_symbol_id(host.id)
+        if payload is None or host.kind not in ("function", "method"):
+            continue
+        path = host.id.partition("::")[0]
+        old, new = base[len(path) + 2 :] + "::", host.id[len(path) + 2 :] + "::"
+        for member in members:
+            parent = member.parent_name or ""
+            if parent.startswith(old) and host.start_line <= member.start_line <= host.end_line:
+                member.parent_name = new + parent[len(old) :]
+                member.id = f"{path}::{member.parent_name}::{member.name}"
 
 
 def scope_segment(
@@ -98,20 +125,29 @@ def _supertype_name(node: Node, src: str) -> str:
 
 
 def _anonymous_class_segment(node: Node, src: str) -> str:
-    name = _supertype_name(node, src)
-    scope = _ordinal_scope(node)
+    """The supertype, with an ordinal on the second and later same-keyed class."""
+    scope, key = _ordinal_scope(node), _ordinal_key(node, src)
     ordinal = 1
     for other in _descendants(scope):
         if other.start_byte >= node.start_byte:
             break
-        if (
-            other.type == node.type
-            and any(c.type == "class_body" for c in other.children)
-            and _ordinal_scope(other) == scope
-            and _supertype_name(other, src) == name
-        ):
-            ordinal += 1
-    return name if ordinal == 1 else f"{name}${ordinal}"
+        if _is_anonymous_class(other, node.type) and _ordinal_scope(other) == scope:
+            ordinal += _ordinal_key(other, src) == key
+    return key[0] if ordinal == 1 else f"{key[0]}${ordinal}"
+
+
+def _is_anonymous_class(node: Node, anonymous_type: str) -> bool:
+    return node.type == anonymous_type and any(c.type == "class_body" for c in node.children)
+
+
+def _ordinal_key(node: Node, src: str) -> tuple[str, str | None]:
+    """The supertype and the nearest variable holding *node* within its scope."""
+    ancestor = node.parent
+    while ancestor is not None and ancestor.type not in _ORDINAL_SCOPES:
+        if ancestor.type in _VARIABLE_HOLDERS:
+            return _supertype_name(node, src), _holder_name(ancestor, src)
+        ancestor = ancestor.parent
+    return _supertype_name(node, src), None
 
 
 def _ordinal_scope(node: Node) -> Node:

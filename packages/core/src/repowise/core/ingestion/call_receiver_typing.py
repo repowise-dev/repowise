@@ -475,8 +475,12 @@ class ReceiverTypingMixin:
         """
         body_types = self._declared_types_in(file_path, caller_id, language)
         host = self._capture_host(file_path, caller_id, language, receiver_name, body_types)
-        if host is not None:
-            return self._receiver_type_and_scope(file_path, host, language, receiver_name)
+        while host is not None:
+            # Out through each enclosing function until one answers.
+            body_types = self._captured_types(file_path, host, caller_id, language)
+            caller_id, host = host, self._capture_host(
+                file_path, host, language, receiver_name, body_types
+            )
         # A builtin type answers only when nothing else does, so a local
         # ``String data`` leaves ``this.data.m()``, which reaches here as
         # ``data.m()``, to the field.
@@ -789,6 +793,26 @@ class ReceiverTypingMixin:
         if receiver_name in self._bound_names_in(file_path, caller_id, language):
             return None
         return host
+
+    def _captured_types(
+        self, file_path: str, host: str, caller_id: str, language: str
+    ) -> dict[str, str | None]:
+        """``{name: type}`` for the *host* locals its anonymous member *caller_id* sees.
+
+        Those declared above the member, outside every symbol nested in the
+        host, such as another anonymous class's method. A lambda is no symbol,
+        so its locals still read as the host's, as they do for the host's own
+        calls.
+        """
+        spans = self._spans_for(file_path)
+        start, end = spans[host][0], spans[caller_id][0] - 1
+        nested = merge_spans(
+            span for sym_id, span in spans.items() if sym_id != host and start < span[0] <= end
+        )
+        declarations = tuple(
+            d for d in self._declarations_for(file_path, language) if not in_spans(nested, d.line)
+        )
+        return types_in_span(declarations, start, end)
 
     def _capturing_function(self, caller_id: str) -> str | None:
         """The function an anonymous class member *caller_id* is declared in.
