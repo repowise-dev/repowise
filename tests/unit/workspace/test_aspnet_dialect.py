@@ -178,3 +178,63 @@ public class NonAttributeController : ApiController
     contracts = _extract(content)
     assert "http::GET::/api/v3/real" in contracts
     assert len(contracts) == 1
+
+
+def test_class_route_template_with_bracket_token_and_custom_attributes():
+    """Class route template [Route("api/[controller]")] preserves prefix even with bracketed attributes and comments."""
+    content = """\
+[ApiController]
+[Route("api/[controller]")]
+// Some controller documentation
+[Custom("[tag]")]
+public class UsersController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult GetAll() { return Ok(); }
+}
+"""
+    contracts = _extract(content)
+    assert "http::GET::/api/{param}" in contracts
+    assert contracts["http::GET::/api/{param}"] == "aspnet:GET api/[controller]"
+
+
+def test_action_route_template_with_bracket_token():
+    """Action route containing bracket token like [id] is not truncated or dropped."""
+    content = """\
+[RoutePrefix("api")]
+public class ItemsController : ApiController
+{
+    [Route("items/[id]")]
+    [HttpGet]
+    public IHttpActionResult GetById(int id) { return Ok(); }
+
+    [HttpPost, Route("items/[id]/update")]
+    public IHttpActionResult Update(int id) { return Ok(); }
+}
+"""
+    contracts = _extract(content)
+    assert "http::GET::/api/items/{param}" in contracts
+    assert "http::POST::/api/items/{param}/update" in contracts
+    assert len(contracts) == 2
+
+
+def test_inline_url_on_prior_line_does_not_hang():
+    """An inline URL on a prior line (e.g. var u = "http://host";) does not cause infinite scan."""
+    content = """\
+[RoutePrefix("api")]
+public class HostController : ApiController
+{
+    public void Init()
+    {
+        var u = "http://host";
+    }
+
+    [HttpGet]
+    [Route("ping")]
+    public IHttpActionResult Ping() { return Ok(); }
+}
+"""
+    contracts = _extract(content)
+    assert "http::GET::/api/ping" in contracts
+    assert len(contracts) == 1
+
