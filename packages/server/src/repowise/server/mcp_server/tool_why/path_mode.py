@@ -69,11 +69,20 @@ async def _why_path(query: str, repo: str | None) -> dict:
 
         # Load git metadata for origin story
         git_meta = await _git_metadata_for(session, repository.id, query)
+        matched = _records_naming_path(all_decisions, query)
+        # A typo or a stale path: nothing to excavate, so say so before the
+        # archaeology fallback mines unrelated commits for it.
+        if git_meta is None and not matched and not _maybe_on_disk(ctx.path, query):
+            return {
+                "mode": "path",
+                "path": query,
+                "error": f"Path not found: '{query}' is neither in the checkout "
+                "nor in the indexed git history.",
+            }
 
         # Pre-load all git metadata for cross-file search (used by fallback)
         all_git_meta = await _all_git_metadata(session, repository.id)
 
-        matched = _records_naming_path(all_decisions, query)
         # A record with no acceptance row is a candidate whatever its status.
         # Over every record, since alignment reads records this path did not match.
         currencies = await decision_currencies(session, repository.id, all_decisions)
@@ -133,6 +142,11 @@ async def _why_path(query: str, repo: str | None) -> dict:
         _cap_episodes(result_data, episodes, collector)
         _cap_path_decision_lanes(result_data, collector)
         return _fit_path_response(result_data, ctx.path, collector=collector)
+
+
+def _maybe_on_disk(repo_path: str | Path | None, path: str) -> bool:
+    """False only when the checkout is known and *path* is not in it."""
+    return not repo_path or (Path(repo_path) / path).exists()
 
 
 def _records_naming_path(all_decisions: list, path: str) -> list:

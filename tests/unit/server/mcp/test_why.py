@@ -127,9 +127,24 @@ async def test_get_why_file_no_git_metadata(setup_mcp):
     assert alignment["candidate_count"] >= 1
 
 
+def _write(root, path: str) -> None:
+    """Put *path* in the checkout, so path mode treats it as a real file."""
+    (root / path).parent.mkdir(parents=True, exist_ok=True)
+    (root / path).write_text("x = 1\n", encoding="utf-8")
+
+
 @pytest.mark.asyncio
-async def test_get_why_file_ungoverned(setup_mcp):
+async def test_get_why_file_ungoverned(session, setup_mcp, tmp_path):
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
     from repowise.server.mcp_server import get_why
+
+    # An accepted decision exists, just not one naming this file.
+    await accept_decision(
+        session, await session.get(DecisionRecord, "dec2"), accepter="test", evidence=["pr#1"]
+    )
+    await session.flush()
+    _write(tmp_path, "src/other/utils.py")
 
     # Use a path that has no decisions — triggers git archaeology fallback
     result = await get_why("src/other/utils.py")
@@ -148,8 +163,37 @@ async def test_get_why_file_ungoverned(setup_mcp):
 
 
 @pytest.mark.asyncio
-async def test_get_why_fallback_with_cross_references(setup_mcp):
+async def test_get_why_says_when_the_index_has_no_accepted_decisions(setup_mcp, tmp_path):
+    """With nothing accepted anywhere, "ungoverned" would blame the file."""
     from repowise.server.mcp_server import get_why
+
+    _write(tmp_path, "src/other/utils.py")
+    result = await get_why("src/other/utils.py")
+
+    explanation = result["alignment"]["explanation"]
+    assert "holds no accepted decisions" in explanation
+    assert "ungoverned" not in explanation
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_not_found_skips_archaeology(setup_mcp):
+    """A path in neither the checkout nor git history gets a short answer."""
+    from repowise.server.mcp_server import get_why
+
+    result = await get_why("src/nowhere/typo.py")
+
+    assert result["mode"] == "path"
+    assert "Path not found" in result["error"]
+    assert "git_archaeology" not in result
+    assert "alignment" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_why_fallback_with_cross_references(setup_mcp, tmp_path):
+    from repowise.server.mcp_server import get_why
+
+    # A new file with no history yet: on disk, absent from git metadata.
+    _write(tmp_path, "src/auth/new_handler.py")
 
     # src/auth/service.py has git metadata with commits mentioning "auth"
     # Query a nonexistent auth file — cross-references should find commits

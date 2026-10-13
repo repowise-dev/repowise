@@ -567,9 +567,14 @@ async def test_every_single_repository_mode_is_exactly_accounted_after_middlewar
 
 
 @pytest.mark.asyncio
-async def test_no_decision_and_unsupported_modes_remain_compatible(setup_mcp) -> None:
+async def test_no_decision_and_unsupported_modes_remain_compatible(
+    setup_mcp, tmp_path
+) -> None:
     from repowise.server.mcp_server import get_why
 
+    # On disk, so path mode answers rather than reporting the path missing.
+    (tmp_path / "src/other").mkdir(parents=True)
+    (tmp_path / "src/other/utils.py").write_text("x = 1\n", encoding="utf-8")
     fallback = await get_why("src/other/utils.py")
     assert list(fallback)[:5] == [
         "mode",
