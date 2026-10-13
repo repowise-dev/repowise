@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Collection
 
+    from .dotnet_test_projects import DotnetTestProjects
     from .pytest_roots import PytestRoots
 
 # Directory segments that mark every file beneath them as test material,
@@ -417,7 +418,12 @@ def _has_wildcard_pair(
     )
 
 
-def _classify(path: str, language: str | None, roots: PytestRoots | None = None) -> str:
+def _classify(
+    path: str,
+    language: str | None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
+) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
 
     One traversal, so the two public predicates cannot disagree with each other
@@ -451,7 +457,11 @@ def _classify(path: str, language: str | None, roots: PytestRoots | None = None)
 
     # A test name outside a test directory still needs pytest to collect it.
     needs_test_dir = not named_test or _pytest_skips(path, filename, roots)
-    if needs_test_dir and not _is_test_dir(segments, original_segments, filename, language):
+    if (
+        needs_test_dir
+        and not _is_test_dir(segments, original_segments, filename, language)
+        and not _dotnet_project_collects(path, filename, dotnet_projects)
+    ):
         return ""
 
     # Inside test material. A test-shaped filename wins; otherwise a
@@ -459,6 +469,17 @@ def _classify(path: str, language: str | None, roots: PytestRoots | None = None)
     if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
         return "support"
     return "test"
+
+
+def _dotnet_project_collects(
+    path: str, filename: str, dotnet_projects: DotnetTestProjects | None
+) -> bool:
+    """Whether a .cs file is governed by a .NET test project."""
+    return (
+        dotnet_projects is not None
+        and filename.lower().endswith(".cs")
+        and dotnet_projects.collects(path) is True
+    )
 
 
 def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
@@ -471,7 +492,10 @@ def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
 
 
 def is_test_path(
-    path: str, language: str | None = None, roots: PytestRoots | None = None
+    path: str,
+    language: str | None = None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
 ) -> bool:
     """Whether *path* is a test.
 
@@ -480,13 +504,17 @@ def is_test_path(
     *language* when it is known: it decides the ambiguous ``spec/``/``t/``
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
     and specification or miscellaneous folders for everything else. Pass
-    *roots* to let pytest's config overrule a test-shaped Python name.
+    *roots* to let pytest's config overrule a test-shaped Python name. Pass
+    *dotnet_projects* to recognize C# files governed by a test project.
     """
-    return _classify(path, language, roots) == "test"
+    return _classify(path, language, roots, dotnet_projects) == "test"
 
 
 def is_test_support_path(
-    path: str, language: str | None = None, roots: PytestRoots | None = None
+    path: str,
+    language: str | None = None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
 ) -> bool:
     """Whether *path* is test infrastructure rather than a test.
 
@@ -494,11 +522,14 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots) == "support"
+    return _classify(path, language, roots, dotnet_projects) == "support"
 
 
 def is_test_related_path(
-    path: str, language: str | None = None, roots: PytestRoots | None = None
+    path: str,
+    language: str | None = None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
 ) -> bool:
     """Whether *path* is a test **or** test support.
 
@@ -507,7 +538,8 @@ def is_test_related_path(
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
-    return _classify(path, language, roots) != ""
+    return _classify(path, language, roots, dotnet_projects) != ""
+
 
 
 def in_test_tree(path: str, language: str | None = None) -> bool:

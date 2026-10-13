@@ -13,6 +13,7 @@ SPEC = LanguageSpec(
     # singular Foo.UnitTest (#2662). Case-sensitive whole-suffix matches, so a
     # shipped Foo.Testing/ library stays production code.
     test_camel_suffixes=("Test", "Tests", "Spec", "Specs"),
+    fixture_camel_suffixes=("Fixture", "Fixtures"),
     test_dir_suffixes=(
         ".Tests",
         ".Specs",

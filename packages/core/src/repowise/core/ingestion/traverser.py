@@ -30,6 +30,7 @@ import structlog
 from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatternError
 
 from ..code_origin import is_generated_header
+from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
 from ..pytest_roots import (
     PYTEST_CONFIG_NAMES,
@@ -458,6 +459,11 @@ class FileTraverser:
         return self._console_script_tables().pytest_roots
 
     @property
+    def dotnet_test_projects(self) -> DotnetTestProjects:
+        """The .NET test projects, from the .csproj files the config pass read."""
+        return self._console_script_tables().dotnet_test_projects
+
+    @property
     def _console_script_names(self) -> frozenset[str]:
         return self._console_script_tables().names
 
@@ -811,8 +817,12 @@ class FileTraverser:
             _is_console_script_target(rel_str, self._console_script_modules)
             or rel_str in self._distribution_inits
         )
+        scripts = self._console_script_tables()
         is_test = is_test_related_path(
-            rel_str, language, self._console_script_tables().pytest_roots
+            rel_str,
+            language,
+            roots=scripts.pytest_roots,
+            dotnet_projects=scripts.dotnet_test_projects,
         )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
@@ -1148,7 +1158,7 @@ def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
 
 
 class ConsoleScriptTables(NamedTuple):
-    """What one pass over the repo's Python project configs yields."""
+    """What one pass over the repo's Python and .NET project configs yields."""
 
     names: frozenset[str]
     """Launcher names an installer drops in the environment's script dir."""
@@ -1160,6 +1170,8 @@ class ConsoleScriptTables(NamedTuple):
     """Repo-relative ``__init__.py`` of each distribution's own import package."""
     pytest_roots: PytestRoots = PytestRoots()
     """Where a bare pytest run collects tests, which decides a test-named module."""
+    dotnet_test_projects: DotnetTestProjects = DotnetTestProjects()
+    """.NET test projects, which govern .cs files beneath them."""
 
 
 def _collect_console_scripts(
@@ -1183,13 +1195,23 @@ def _collect_console_scripts(
     inits: set[str] = set()
     pytest_configs: list[tuple[str, dict]] = []
     unreadable: list[str] = []
+    csproj_files: list[tuple[str, str]] = []
+    manifest_patterns = (*PYTEST_CONFIG_NAMES, "*.csproj")
     try:
         config_files = list(
-            iter_glob(repo_root, tuple(PYTEST_CONFIG_NAMES), prune_nested_git=prune_nested_git)
+            iter_glob(repo_root, manifest_patterns, prune_nested_git=prune_nested_git)
         )
     except OSError:
         return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
+        if config_file.name.endswith(".csproj"):
+            rel = config_file.relative_to(repo_root).as_posix()
+            try:
+                text = config_file.read_text(encoding="utf-8", errors="replace")
+                csproj_files.append((rel, text))
+            except Exception:
+                csproj_files.append((rel, ""))
+            continue
         project, options, parsed = _read_python_config(config_file)
         rel = config_file.relative_to(repo_root).as_posix()
         if options is not None:
@@ -1210,6 +1232,7 @@ def _collect_console_scripts(
         frozenset(distributions),
         frozenset(inits),
         pytest_roots(pytest_configs, unreadable),
+        read_dotnet_test_projects(csproj_files),
     )
 
 

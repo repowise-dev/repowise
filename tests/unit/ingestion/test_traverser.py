@@ -438,6 +438,30 @@ class TestFileTraverser:
         assert files["tests/test_demo.py"] is True
         assert files["tools/test_cli.py"] is True
 
+    def test_csharp_test_project_classifies_files_as_tests(self, tmp_path: Path) -> None:
+        (tmp_path / "acceptance" / "Acme.Acceptance.csproj").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "acceptance" / "Acme.Acceptance.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup>\n"
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.0" />\n'
+            '    <PackageReference Include="xunit" Version="2.9.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n"
+        )
+        (tmp_path / "acceptance" / "Authentication" / "AuthSteps.cs").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "acceptance" / "Authentication" / "AuthSteps.cs").write_text("public class AuthSteps {}\n")
+        (tmp_path / "acceptance" / "Authentication" / "AuthenticationTests.cs").write_text(
+            "public class AuthenticationTests {}\n"
+        )
+        (tmp_path / "src" / "App" / "Program.cs").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "App" / "Program.cs").write_text("public class Program {}\n")
+
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["acceptance/Authentication/AuthSteps.cs"] is True
+        assert files["acceptance/Authentication/AuthenticationTests.cs"] is True
+        assert files["src/App/Program.cs"] is False
+
     def test_file_info_fields(self, tmp_path: Path) -> None:
         (tmp_path / "calc.py").write_text("class Calc: pass")
         traverser = FileTraverser(tmp_path)
