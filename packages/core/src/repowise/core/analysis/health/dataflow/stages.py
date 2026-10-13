@@ -68,6 +68,7 @@ from .slice import (
     _declaration_escapes,
     _declaration_lines,
     _declared_before_read,
+    _definition_ends,
     _function_lines,
     _hoisted_bindings,
     _identifiers,
@@ -320,6 +321,7 @@ class _FunctionFacts:
         def_use = analysis.def_use
         self.def_lines, self.use_lines = _var_lines(def_use)
         self.declared_first = _declared_before_read(def_use)
+        self.ends = _definition_ends(analysis, lmap)
         self.hoisted = _hoisted_bindings(self.def_lines, self.use_lines)
         self.decl_lines = _declaration_lines(def_use)
         self.shared = _closure_state(def_use, self.def_lines, self.use_lines)
@@ -354,6 +356,7 @@ class _Cutter:
         self.max_returns = max_returns
         self.def_lines, self.use_lines = facts.def_lines, facts.use_lines
         self.declared_first = facts.declared_first
+        self.ends = facts.ends
         self.hoisted = facts.hoisted
         self.decl_lines = facts.decl_lines
         self.shared = facts.shared
@@ -432,7 +435,7 @@ class _Cutter:
         if any(s <= ln <= e for v in self.rereads for ln in self.def_lines.get(v, ())):
             return None
         params, returns = _infer_in_out(
-            self.def_lines, self.use_lines, s, e, self.declared_first, reads=self.reads
+            self.def_lines, self.use_lines, s, e, self.declared_first, self.ends, reads=self.reads
         )
         returns = self._own_bindings_dropped(span, s, e, returns)
         if self.carried:

@@ -1280,7 +1280,15 @@ def _span_in_out(src: str, s: int, e: int):
     def_lines, use_lines = slicer._var_lines(fn.def_use)
     declared_first = slicer._declared_before_read(fn.def_use)
     reads = slicer._reads_observing(fn, def_lines)
-    return slicer._infer_in_out(def_lines, use_lines, s, e, declared_first, reads=reads)
+    ends = slicer._definition_ends(fn, get_language_map("python"))
+    return slicer._infer_in_out(def_lines, use_lines, s, e, declared_first, reads=reads, ends=ends)
+
+
+def test_self_assignment_reads_the_previous_value_before_writing():
+    multiline = "def f(x,k):\n match k:\n  case 1:\n   x=[i\n    for i in x]\n return x\n"
+    assert _span_in_out(multiline, 4, 5) == (("x",), ("x",))
+    walrus = "def f(x):\n x=((x:=1),\n    x)\n return x\n"
+    assert _span_in_out(walrus, 2, 3) == ((), ("x",))
 
 
 def test_a_comprehension_binder_is_not_a_parameter():

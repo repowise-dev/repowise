@@ -190,6 +190,7 @@ def find_extractions(
     def_lines, use_lines = _var_lines(analysis.def_use)
     import_reads = _import_reads(analysis)
     declared_first = _declared_before_read(analysis.def_use)
+    ends = _definition_ends(analysis, lmap)
     # Built on the first span that clears the cheap gates.
     reads: dict[str, list[tuple[int, frozenset[int]]]] | None = None
     hoisted = _hoisted_bindings(def_lines, use_lines)
@@ -251,7 +252,7 @@ def find_extractions(
                 if reads is None:
                     reads = _reads_observing(analysis, def_lines)
                 params, returns = _infer_in_out(
-                    def_lines, use_lines, s, e, declared_first, reads=reads
+                    def_lines, use_lines, s, e, declared_first, reads=reads, ends=ends
                 )
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
@@ -694,12 +695,38 @@ def _statements_by_line(cfg: CFG) -> dict[int, tuple[int, int]]:
     return {line: (bid, start) for line, (_w, bid, start) in best.items()}
 
 
+def _definition_ends(fn: FunctionAnalysis, lmap: LanguageNodeMap) -> dict[tuple[str, int], int]:
+    """End line of the nearest write node owning each definition."""
+    kinds = lmap.assignment_kinds | lmap.augmented_assign_kinds | lmap.local_decl_kinds
+    ends: dict[tuple[str, int], int] = {}
+    for d in fn.def_use.definitions:
+        point = (d.line - 1, d.column)
+        node = fn.fn_node.descendant_for_point_range(
+            point, (point[0], point[1] + len(d.var.encode()))
+        )
+        key, end = (d.var, d.line), d.line
+        while node is not None:
+            if node.type in kinds and _writes_var(node, d.var):
+                owns = any(
+                    (target := node.child_by_field_name(field)) is not None
+                    and tuple(target.start_point) <= point < tuple(target.end_point)
+                    for field in ("left", "pattern", "declarator", "name")
+                )
+                if owns:
+                    end = node.end_point[0] + 1
+                    break
+            node = node.parent
+        ends[key] = min(ends.get(key, end), end)
+    return ends
+
+
 def _infer_in_out(
     def_lines: dict[str, list[int]],
     use_lines: dict[str, list[int]],
     s: int,
     e: int,
     declared_first: dict[str, frozenset[int]],
+    ends: dict[tuple[str, int], int] | None = None,
     *,
     reads: dict[str, list[tuple[int, frozenset[int]]]],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -718,6 +745,7 @@ def _infer_in_out(
     """
     params: list[str] = []
     returns: list[str] = []
+    ends = ends or {}
     for var in sorted(set(def_lines) | set(use_lines)):
         dl = def_lines.get(var, [])
         ul = use_lines.get(var, [])
@@ -727,7 +755,8 @@ def _infer_in_out(
         if u_lo < u_hi and d_lo > 0:
             first_use = ul[u_lo]
             declared = first_use in declared_first.get(var, ())
-            if not declared and not (d_lo < d_hi and dl[d_lo] < first_use):
+            preceded = any(ends.get((var, line), line) < first_use for line in dl[d_lo:d_hi])
+            if not declared and not preceded:
                 params.append(var)
 
         if d_lo < d_hi and any(
