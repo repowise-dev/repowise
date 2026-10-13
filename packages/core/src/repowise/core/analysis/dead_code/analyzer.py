@@ -77,6 +77,7 @@ from .file_reachability import (
 from .go_name_uses import drop_go_package_uses
 from .jvm_reachability import defines_main
 from .kotlin_multiplatform import settle_platform_declarations
+from .meta_annotations import framework_meta_annotations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .module_strings import drop_named_modules
 from .name_occurrences import (
@@ -185,7 +186,9 @@ def _declared_deliberately_unused(decorators: Iterable[str]) -> bool:
     return False
 
 
-def _is_framework_registered(decorators: list[str]) -> bool:
+def _is_framework_registered(
+    decorators: list[str], meta_annotations: frozenset[str] = frozenset()
+) -> bool:
     """Whether any decorator wires the symbol into a framework dispatcher.
 
     Both dead-code passes ask this question, and both asked it with the same
@@ -207,9 +210,16 @@ def _is_framework_registered(decorators: list[str]) -> bool:
       ``@register``, ``@register_drainer``, ``@Field.register_lookup``. Held to
       ``register`` exactly or a ``register_`` stem so that a past participle
       guarding a handler (``@registered_only``) is not read as one.
+
+    A qualified annotation (``@androidx.compose.ui.tooling.preview.Preview``)
+    is also matched by its type name, and *meta_annotations* names the repo's
+    own annotation classes that carry one of these (a Compose multipreview).
     """
     bases = _decorator_bases(decorators)
-    if any(b.startswith(_FRAMEWORK_DECORATORS) for b in bases):
+    type_names = [n for n in (b.rsplit(".", 1)[-1] for b in bases) if n[:1].isupper()]
+    if any(b.startswith(_FRAMEWORK_DECORATORS) for b in (*bases, *type_names)):
+        return True
+    if not meta_annotations.isdisjoint(type_names):
         return True
     if any(b.endswith(_FRAMEWORK_DECORATOR_SUFFIXES) for b in bases):
         return True
@@ -939,6 +949,15 @@ class DeadCodeAnalyzer:
         self._guard_cache: dict[str, list[tuple[str, str, str]]] = {}
         # {base id: overload member ids}, built on first use.
         self._overload_units: dict[str, list[str]] | None = None
+        # Repo annotation classes that register what they annotate, built on first use.
+        self._meta_annotations: frozenset[str] | None = None
+
+    def _framework_meta_annotations(self) -> frozenset[str]:
+        if self._meta_annotations is None:
+            self._meta_annotations = framework_meta_annotations(
+                self._source_map, _is_framework_registered
+            )
+        return self._meta_annotations
 
     def _reachability_rescues(self, whitelist: AbstractSet[str]) -> ReachabilityRescues:
         """Assemble the rescue state the shared predicate reads."""
@@ -1592,7 +1611,7 @@ class DeadCodeAnalyzer:
         sym_name = sym.get("name", "")
         decorators = sym.get("decorators", [])
 
-        if _is_framework_registered(decorators):
+        if _is_framework_registered(decorators, self._framework_meta_annotations()):
             return True
         if _declared_deliberately_unused(decorators):
             return True
@@ -2098,7 +2117,8 @@ class DeadCodeAnalyzer:
         # method is invoked by the container, not by a source call.
         decorators = node_data.get("decorators") or []
         return not (
-            _is_framework_registered(decorators) or _declared_deliberately_unused(decorators)
+            _is_framework_registered(decorators, self._framework_meta_annotations())
+            or _declared_deliberately_unused(decorators)
         )
 
     def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:

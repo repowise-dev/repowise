@@ -33,6 +33,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from ...entry_candidacy import is_reachability_root
+from ...ingestion.decorator_names import decorator_base
 from .entry_shape import defines_main_function
 
 # Class-level annotation names (without the leading ``@``) that mark the
@@ -79,6 +80,7 @@ _STEREOTYPE_ANNOTATIONS: frozenset[str] = frozenset({
     "Endpoint",
     "RestControllerEndpoint",
     "RegisterForReflection",
+    "Module",                   # Dagger / Hilt
     # JMH runs these by reflection; ``Benchmark`` sits on the methods.
     "State",
     "BenchmarkMode",
@@ -109,12 +111,8 @@ def build_jvm_package_files(graph: Any) -> dict[str, list[str]]:
 
 
 def _annotation_base(decorator: str) -> str:
-    """Strip ``@``, generic args, and arg list from a decorator string."""
-    s = decorator.lstrip("@")
-    for sep in ("(", "<"):
-        pos = s.find(sep)
-        if pos >= 0:
-            s = s[:pos]
+    """Strip ``@``, generic args, arg list and trailing modifiers from a decorator string."""
+    s = decorator_base(decorator).partition("<")[0]
     # Spring annotations may be FQN ('org.springframework.stereotype.Service');
     # we match the bare type name.
     if "." in s:

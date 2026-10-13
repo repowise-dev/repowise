@@ -885,6 +885,14 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Modified",
     "PactTestFor",
     "Pact",
+    # Dagger / Hilt: the generated component loads modules and calls their
+    # provider methods (prefix match covers ``BindsInstance``).
+    "Module",
+    "Provides",
+    "Binds",
+    # Compose previews, rendered by the IDE (prefix match covers
+    # ``PreviewLightDark``, ``PreviewScreenSizes`` and the other presets).
+    "Preview",
     # ---- JVM: test method markers -----------------------------------
     "Test",
     "ParameterizedTest",
