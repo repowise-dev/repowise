@@ -151,6 +151,16 @@ def test_safe_only_note_explains_an_empty_safe_only_view() -> None:
     assert "safe_only_note" not in build_summary(summary_counts(unproven), 1, _filters(), {})
 
 
+def test_a_withheld_type_names_where_it_was_measured() -> None:
+    # The reason is served for any repository, so it states its corpus rather
+    # than reading as a fact about the code at hand (here Kotlin).
+    filters = _filters(withheld_kinds=frozenset({"unused_internal"}))
+    _shown, withheld = filters.split_withheld([_row("src/App.kt", 0.9, kind="unused_internal")])
+    summary = build_summary(summary_counts([]), 0, filters, withheld)
+    reason = summary["withheld_types"]["unused_internal"]["reason"]
+    assert reason.startswith("Measured on TS/Python code:")
+
+
 def test_serialization_is_the_same_for_rows_and_mappings() -> None:
     row = _ROWS[0]
     as_dict = serialize_finding(row, repository="r")

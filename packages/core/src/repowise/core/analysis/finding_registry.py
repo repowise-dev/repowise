@@ -66,8 +66,8 @@ REGISTRY: dict[str, FindingTypeStatus] = {
         corpus=f"{_LABELLED}, 1,511 in all",
         measured_on="2026-09-29",
         reason=(
-            "Private-symbol findings were almost all false: TS/JS/Python emit no "
-            "'reads' edges, so same-file uses are invisible to the graph."
+            "Measured on TS/Python code: private-symbol findings were almost all "
+            "false, because same-file uses leave no 'reads' edge there."
         ),
     ),
     "duplicated_assertion_block": FindingTypeStatus(
