@@ -282,6 +282,10 @@ _JPMS_EXPORTS_RE = re.compile(
     r"\bexports\s+([\w.]+)",
     re.MULTILINE,
 )
+_JAVA_COMMENT_OR_STRING_RE = re.compile(
+    r'"(?:[^"\\]|\\.)*"|//[^\n]*|/\*.*?\*/',
+    re.DOTALL,
+)
 
 
 def _scan_jpms_provides(
@@ -321,7 +325,7 @@ def _scan_jpms_exports(
     Keyed by module directory (relative to repo_root). For paths containing
     ``/src/``, the module directory is the path before ``/src/``; for root
     or top-level module files, it is the enclosing directory (or ``""`` for root).
-    Ignores test ``module-info.java`` files.
+    Ignores test ``module-info.java`` files and comments/strings.
     """
     out: dict[str, set[str]] = {}
     for mi in glob_via(
@@ -343,8 +347,9 @@ def _scan_jpms_exports(
             text = mi.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        clean_text = _JAVA_COMMENT_OR_STRING_RE.sub(" ", text)
         pkgs = set()
-        for m in _JPMS_EXPORTS_RE.finditer(text):
+        for m in _JPMS_EXPORTS_RE.finditer(clean_text):
             pkg = m.group(1).strip()
             if pkg:
                 pkgs.add(pkg)

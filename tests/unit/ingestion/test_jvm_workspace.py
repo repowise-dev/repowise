@@ -162,6 +162,9 @@ class TestJvmWorkspaceIndex:
         mi_caffeine.parent.mkdir(parents=True)
         mi_caffeine.write_text(
             "module caffeine {\n"
+            "    // exports com.example.commented;\n"
+            "    /* exports com.example.blockcomment; */\n"
+            '    String s = "exports com.example.string";\n'
             "    exports com.github.benmanes.caffeine.cache;\n"
             "    exports com.github.benmanes.caffeine.cache.stats;\n"
             "}\n"
@@ -179,6 +182,9 @@ class TestJvmWorkspaceIndex:
             "com.github.benmanes.caffeine.cache",
             "com.github.benmanes.caffeine.cache.stats",
         })
+        assert "com.example.commented" not in index.jpms_exports["caffeine"]
+        assert "com.example.blockcomment" not in index.jpms_exports["caffeine"]
+        assert "com.example.string" not in index.jpms_exports["caffeine"]
         assert index.jpms_exports["javalin"] == frozenset({"io.javalin"})
 
 

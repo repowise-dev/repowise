@@ -162,3 +162,19 @@ class TestJvmGradleIndex:
         assert not is_publishing_gradle_project(
             JvmGradleProject(id="app", root_dir="app", plugins=app_plugins)
         )
+
+        (tmp_path / "lib_comment").mkdir()
+        (tmp_path / "lib_comment" / "build.gradle.kts").write_text(
+            "plugins {\n"
+            "    `java-library`\n"
+            "    // application is not used here\n"
+            "    /* application */\n"
+            "    alias(libs.plugins.some.tool)\n"
+            "}\n"
+        )
+        lib_comment_plugins = _detect_plugins(tmp_path / "lib_comment")
+        assert "application" not in lib_comment_plugins
+        assert "java-library" in lib_comment_plugins
+        assert is_publishing_gradle_project(
+            JvmGradleProject(id="lib_comment", root_dir="lib_comment", plugins=lib_comment_plugins)
+        )

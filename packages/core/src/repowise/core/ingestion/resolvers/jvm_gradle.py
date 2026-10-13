@@ -51,9 +51,14 @@ _PLUGIN_ID_RE = re.compile(r'id\s*\(\s*["\']([^"\']+)["\']\s*\)')
 _PLUGIN_ID_GROOVY_RE = re.compile(r"id\s+['\"]([^'\"]+)['\"]")
 _APPLY_PLUGIN_RE = re.compile(r"apply\s+plugin:\s*['\"]([^'\"]+)['\"]")
 _APPLY_PLUGIN_KTS_RE = re.compile(r'apply\s*\(\s*plugin\s*=\s*["\']([^"\']+)["\']\s*\)')
+_ALIAS_PLUGIN_RE = re.compile(r"alias\s*\(\s*([^)]+)\s*\)")
 _PLUGINS_BLOCK_RE = re.compile(r"plugins\s*\{([^}]+)\}", re.DOTALL)
 _KTS_BACKTICK_PLUGIN_RE = re.compile(r"`([^`]+)`")
-_KTS_BARE_CORE_PLUGIN_RE = re.compile(r"\b(application|java-library|maven-publish|java)\b")
+_KTS_BARE_CORE_PLUGIN_RE = re.compile(
+    r"^\s*(application|java-library|maven-publish|java)\s*$", re.MULTILINE
+)
+_GRADLE_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_GRADLE_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)", re.MULTILINE)
 _ROOT_PROJECT_NAME_RE = re.compile(r'rootProject\s*\.\s*name\s*=\s*"([^"]+)"')
 # A quoted fully-qualified class name: lowercase package segments, then a
@@ -249,10 +254,20 @@ def _detect_plugins(module_dir: Path) -> frozenset[str]:
             text = build.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
+        clean_text = _GRADLE_BLOCK_COMMENT_RE.sub(
+            lambda m: "\n" * m.group(0).count("\n"), text
+        )
+        clean_text = _GRADLE_LINE_COMMENT_RE.sub("", clean_text)
         for pat in (_PLUGIN_ID_RE, _PLUGIN_ID_GROOVY_RE, _APPLY_PLUGIN_RE, _APPLY_PLUGIN_KTS_RE):
-            for m in pat.finditer(text):
+            for m in pat.finditer(clean_text):
                 plugins.append(m.group(1))
-        for blk in _PLUGINS_BLOCK_RE.finditer(text):
+        for m in _ALIAS_PLUGIN_RE.finditer(clean_text):
+            raw_alias = m.group(1).strip()
+            if "plugins." in raw_alias:
+                plugin_sub = raw_alias.split("plugins.", 1)[1].strip()
+                plugins.append(plugin_sub)
+                plugins.append(plugin_sub.replace(".", "-"))
+        for blk in _PLUGINS_BLOCK_RE.finditer(clean_text):
             block_content = blk.group(1)
             for m in _KTS_BACKTICK_PLUGIN_RE.finditer(block_content):
                 plugins.append(m.group(1))
