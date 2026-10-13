@@ -98,8 +98,8 @@ def test_text_quotes_the_stored_numbers() -> None:
     )
     # The size is a fact; the why says why it matters here.
     assert core.why == (
-        "run has many independent paths through it; 9 files import it, "
-        "changed 12 times in 90 days."
+        "run has many paths through it; smaller parts are easier to read and change; "
+        "9 files import it, changed 12 times in 90 days."
     )
     assert ("size", "CCN 44, 50 lines, nests 4 deep") in [(f.label, f.value) for f in core.facts]
     assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"

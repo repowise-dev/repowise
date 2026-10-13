@@ -91,7 +91,9 @@ finding in a file with no plan. It gives what to change and where, why, the firs
 edit, the expected gain, the effort and the tests to run.
 Among items of the same value, a function that many commits have changed comes
 before an equally complex one that rarely changes, and its reason says how many
-commits changed it.
+commits changed it. A "Break up X" item's reason names the function's shape and what
+splitting it buys: smaller parts that are easier to read and change, and less
+duplicated code when part of it is a copy.
 
 Left out, and counted with a reason:
 

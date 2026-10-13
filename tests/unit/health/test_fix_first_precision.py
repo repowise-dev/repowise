@@ -7,7 +7,10 @@ nearest case where it must not.
 
 from __future__ import annotations
 
-from repowise.core.analysis.health.fix_first import build_fix_first
+import re
+
+from repowise.core.analysis.health.fix_first import build_fix_first, text
+from repowise.core.analysis.health.worth import SIZE_MARKERS
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS
 
 _COMPLEX = FINDINGS[1]  # run in src/core.py: CCN 14, 50 lines, nests 4 deep
@@ -422,9 +425,18 @@ def test_why_says_why_it_matters_not_the_titles_size() -> None:
     assert item.title == "Break up run (CCN 249, 1,280 lines)"
     assert "249" not in item.why and "1,280" not in item.why and "CCN" not in item.why
     assert item.why == (
-        "run has many independent paths through it; 9 files import it, "
-        "changed 12 times in 90 days."
+        "run has many paths through it; smaller parts are easier to read and change; "
+        "9 files import it, changed 12 times in 90 days."
     )
+
+
+def test_break_up_why_says_what_the_split_buys_not_defects() -> None:
+    """A split is a readability and change-cost claim: every phrase a Break up
+    why can carry says what improves and names no defect."""
+    phrases = [text.PROBLEM[m] for m in sorted(SIZE_MARKERS)] + [text.PROBLEM["god_class"]]
+    for phrase in [*phrases, text.CLONED]:
+        assert not re.search(r"bug|defect|break|fail|error|risk", phrase), phrase
+    assert all("easier to read and change" in phrase for phrase in phrases)
 
 
 def test_why_names_coverage_when_a_report_measured_it() -> None:
