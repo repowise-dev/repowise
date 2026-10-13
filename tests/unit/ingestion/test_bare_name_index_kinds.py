@@ -381,3 +381,22 @@ class TestSwiftExtensionsAreNotConstructors:
         )
         callees = {e[1] for e in _edges(parsed, tmp_path)}
         assert callees == {"Ext.swift::Text::styled"}
+
+    def test_an_extension_in_its_types_own_file_leaves_the_type_alone(
+        self, tmp_path: Path
+    ) -> None:
+        """Both share ``Foo.swift::Foo``; the type keeps the symbol and its kind."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Foo.swift": (
+                    "swift",
+                    "struct Foo {}\nextension Foo {\n    func bar() {}\n}\n",
+                ),
+                "Use.swift": ("swift", "func use() { _ = Foo() }\n"),
+            },
+        )
+        assert _kinds(parsed, "Foo") == {"class"}
+        assert ("Use.swift::use", "Foo.swift::Foo", "global_unique") in _edges(
+            parsed, tmp_path
+        )
