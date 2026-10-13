@@ -285,7 +285,8 @@ _BLOCKED_FILENAME_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines(
 _GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
 # Package-root manifests for monorepo detection, from the language registry.
-# .NET is absent: its ``.csproj`` glob is not an exact filename.
+# Exact names only: a .NET project (``*.csproj``) is a package root for module
+# attribution but not a monorepo package, which reads a manifest by its name.
 _MANIFEST_FILES: frozenset[str] = _LANG_REGISTRY.package_manifest_filenames()
 
 # Entry-point evidence from the registry: exact filenames, "*"-prefixed
@@ -861,8 +862,8 @@ class FileTraverser:
 
         for rel_pkg, found in sorted(self.package_manifests().items()):
             pkg_dir = self.repo_root / rel_pkg
-            manifests = sorted(found)
-            if is_test_or_example_path(f"{rel_pkg}/{manifests[0]}"):
+            manifests = sorted(found & _MANIFEST_FILES)
+            if not manifests or is_test_or_example_path(f"{rel_pkg}/{manifests[0]}"):
                 continue
             declaring = [m for m in manifests if rel_pkg in members.get(m, ())]
             if not declaring and (

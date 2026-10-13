@@ -15,19 +15,21 @@ monorepos silently got the top-level-directory fallback. Reading the manifests'
 *paths* off disk needs no parse, no embedding and no ingestion: a package root
 is a directory name, and nothing here opens a manifest.
 
-.NET is **not** among the languages this fixes, and deliberately so: the file
-that declares a .NET package is the ``.csproj``, which is a glob and therefore
-cannot live in a spec's exact-filename ``manifest_files``. Every name C# does
-declare is MSBuild/NuGet configuration and is excluded as such, so C#
-contributes no package roots and a .NET monorepo keeps the top-level fallback.
-Closing that needs glob support in the manifest list, which is its own change.
+A manifest whose name varies per package, the .NET ``.csproj``, is a glob
+(:meth:`LanguageRegistry.package_manifest_globs`) matched in the same walk, and
+the scan records the matching file names (``Shop.csproj``). Exact-name readers
+of the manifest list (monorepo detection among them) never see these names.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import os
+import re
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
+from collections.abc import Set as AbstractSet
+from functools import cache
 from pathlib import Path
 
 from ..fs_walk import walk_repo
@@ -37,6 +39,20 @@ from .languages.registry import REGISTRY as _LANG_REGISTRY
 def package_manifest_names() -> frozenset[str]:
     """The manifest filenames that mark a directory as a package root."""
     return _LANG_REGISTRY.package_manifest_filenames()
+
+
+@cache
+def _glob_manifest() -> Callable[[str], object]:
+    """Matches a file name against every manifest glob, ignoring case."""
+    globs = sorted(_LANG_REGISTRY.package_manifest_globs())
+    if not globs:
+        return lambda _name: None
+    return re.compile("|".join(map(fnmatch.translate, globs)), re.IGNORECASE).match
+
+
+def _manifests_in(filenames: Collection[str], names: frozenset[str]) -> frozenset[str]:
+    """The package manifests among *filenames*: exact *names* and glob matches."""
+    return names.intersection(filenames).union(filter(_glob_manifest(), filenames))
 
 
 def _default_prune(repo_root: Path) -> Callable[[Path], bool]:
@@ -152,14 +168,14 @@ def _walk_manifests(
         dirnames[:] = [d for d in dirnames if not prune(rel_dir / d)]
         if rel_dir == Path():
             continue
-        matched = names.intersection(filenames)
+        matched = _manifests_in(filenames, names)
         if matched:
             roots[rel_dir.as_posix()] = matched
 
     return roots
 
 
-def module_for(rel_path: str, package_roots: set[str]) -> str | None:
+def module_for(rel_path: str, package_roots: AbstractSet[str]) -> str | None:
     """The package boundary *rel_path* belongs to, or its top-level directory.
 
     ``module`` is the directory/package axis and nothing else. It used to be
@@ -229,6 +245,6 @@ def package_roots_from_paths(all_paths: set[str]) -> set[str]:
         if "/" not in norm:
             continue
         head, base = norm.rsplit("/", 1)
-        if base in names:
+        if _manifests_in((base,), names):
             roots.add(head)
     return roots
