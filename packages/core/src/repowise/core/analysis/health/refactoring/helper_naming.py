@@ -1,10 +1,9 @@
 """The name an Extract Method plan gives the helper it asks for: a placeholder.
 
 A plan does not assert a name. The agent applying it reads the lines it
-lifts and names the helper for what it returns or does; a blind test judged
-those names acceptable far more often than any name derived from the code (a
-stage label, a banner comment, the OUT value, the host and the span's
-subject). The placeholder is ``extracted_helper`` in the language's casing,
+lifts and names the helper for what it returns or does, which reads better
+than a name derived from the code (a stage label, a banner comment, the OUT
+value, the host and the span's subject) far more often. The placeholder is ``extracted_helper`` in the language's casing,
 numbered (``extracted_helper_2``) when the name is taken where the helper
 lands, so the header and the call stay valid code until it is renamed.
 """
