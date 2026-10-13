@@ -79,6 +79,14 @@ _SCOPE_BOUNDARIES = frozenset({"lambda_expression"})
 _CALLEE_NAME_KINDS = frozenset({"identifier", "qualified_identifier", "template_function"})
 
 
+def _is_static(declaration: Node) -> bool:
+    """Whether a ``declaration`` carries the ``static`` storage class."""
+    return any(
+        child.type == "storage_class_specifier" and child.text == b"static"
+        for child in declaration.children
+    )
+
+
 def _declarator_name(fn_node: Node) -> Node | None:
     """The innermost node of a definition's ``declarator`` chain (its name),
     None for a lambda, which has no declarator."""
@@ -289,10 +297,11 @@ class CppDefUseDialect(BaseDefUseDialect):
                     self._process(child.child_by_field_name("value"), defs, uses)
                 elif child.type in self.identifier_kinds or child.type in _DECLARATOR_WRAPPERS:
                     # ``int x;`` / ``int* p;`` — a binding with no initialiser.
+                    # A ``static`` one is zero-initialised, which is a value.
                     binder = self._binder_identifier(child)
                     if binder is not None:
                         defs.append(self._occ(binder))
-                    self._declare(defs, start, child)
+                    self._declare(defs, start, child, valueless=not _is_static(node))
             return
         if t == _CALL:
             self.collect_reads(node, uses)

@@ -199,8 +199,10 @@ class JavaDefUseDialect(BaseDefUseDialect):
                     continue
                 start = len(defs)
                 self._targets(declarator.child_by_field_name("name"), defs, uses)
-                self._declare(defs, start, declarator)
-                self._process(declarator.child_by_field_name("value"), defs, uses)
+                value = declarator.child_by_field_name("value")
+                # ``List<T> xs;``: a local must be assigned before it is read.
+                self._declare(defs, start, declarator, valueless=value is None)
+                self._process(value, defs, uses)
             return
         if t == _METHOD_INVOCATION:  # the ``name`` is a method, not a variable
             self._process(node.child_by_field_name("object"), defs, uses)

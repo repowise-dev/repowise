@@ -246,8 +246,13 @@ class TsJsDefUseDialect(BaseDefUseDialect):
                     continue
                 start = len(defs)
                 self._targets(declarator.child_by_field_name("name"), defs, uses)
-                self._declare(defs, start, declarator, binds=t != _VAR_DECL)
-                self._process(declarator.child_by_field_name("value"), defs, uses)
+                value = declarator.child_by_field_name("value")
+                # ``let x;`` holds nothing yet: TypeScript rejects a read of a
+                # typed one before it is assigned.
+                self._declare(
+                    defs, start, declarator, binds=t != _VAR_DECL, valueless=value is None
+                )
+                self._process(value, defs, uses)
             return
         if t == _CATCH:  # a nested scope's handler, walked whole
             sdu = self.handler_def_use(node)

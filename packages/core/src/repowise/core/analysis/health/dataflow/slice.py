@@ -190,6 +190,7 @@ def find_extractions(
     def_lines, use_lines = _var_lines(analysis.def_use)
     import_reads = _import_reads(analysis)
     declared_first = _declared_before_read(analysis.def_use)
+    valueless = _valueless_lines(analysis.def_use)
     # Built on the first span that clears the cheap gates.
     reads: dict[str, list[tuple[int, frozenset[int]]]] | None = None
     hoisted = _hoisted_bindings(def_lines, use_lines)
@@ -251,7 +252,7 @@ def find_extractions(
                 if reads is None:
                     reads = _reads_observing(analysis, def_lines)
                 params, returns = _infer_in_out(
-                    def_lines, use_lines, s, e, declared_first, reads=reads
+                    def_lines, use_lines, s, e, declared_first, reads=reads, valueless=valueless
                 )
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
@@ -642,6 +643,16 @@ def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
     return {var: frozenset(lines) for var, lines in declared.items()}
 
 
+def _valueless_lines(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
+    """Per variable, the lines of the declarations that give it no value
+    (``Definition.valueless``): Java's ``List<T> xs;``, ``let x;``."""
+    lines: dict[str, set[int]] = defaultdict(set)
+    for d in def_use.definitions:
+        if d.valueless:
+            lines[d.var].add(d.line)
+    return {var: frozenset(at) for var, at in lines.items()}
+
+
 def _reads_observing(
     analysis: FunctionAnalysis, def_lines: dict[str, list[int]]
 ) -> dict[str, list[tuple[int, frozenset[int]]]]:
@@ -702,6 +713,7 @@ def _infer_in_out(
     declared_first: dict[str, frozenset[int]],
     *,
     reads: dict[str, list[tuple[int, frozenset[int]]]],
+    valueless: dict[str, frozenset[int]] | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Infer IN (parameters) and OUT (return) variables for span ``[s, e]``.
 
@@ -709,12 +721,18 @@ def _infer_in_out(
     an in-span write, and which has a definition before the span (a parameter or
     an earlier assignment). A write on the same line as that read precedes it
     only where *declared_first* (:func:`_declared_before_read`) says the line
-    declares the name first. OUT: a variable written in the span with a read
-    after it that may observe one of those writes (*reads*,
-    :func:`_reads_observing`). A read before the span that a write in it
-    reaches around a loop is not an OUT: :func:`_loop_carry_free` refuses
-    those spans. Both line lists are sorted (:func:`_var_lines`), so the
-    span tests are bisects.
+    declares the name first. An earlier in-span write covers a later read only
+    on the paths that run it, so a variable is also IN when some in-span read
+    of it may still observe a definition from before the span (*reads*,
+    :func:`_reads_observing`): the write sits under an ``if``, in a loop
+    body, or in an arm. A declaration that gives the name no value
+    (*valueless*, :func:`_valueless_lines`) is not such a definition: the
+    compiler has proved the read assigned where the may-analysis cannot, and
+    a call that passed the name would not compile. OUT: a variable written in
+    the span with a read after it that may observe one of those writes
+    (*reads* again). A read before the span that a write in it reaches around
+    a loop is not an OUT: :func:`_loop_carry_free` refuses those spans. Both
+    line lists are sorted (:func:`_var_lines`), so the span tests are bisects.
     """
     params: list[str] = []
     returns: list[str] = []
@@ -726,8 +744,15 @@ def _infer_in_out(
 
         if u_lo < u_hi and d_lo > 0:
             first_use = ul[u_lo]
-            declared = first_use in declared_first.get(var, ())
-            if not declared and not (d_lo < d_hi and dl[d_lo] < first_use):
+            declaring = declared_first.get(var, ())
+            bare = valueless.get(var, ()) if valueless else ()
+            uncovered = first_use not in declaring and not (d_lo < d_hi and dl[d_lo] < first_use)
+            if uncovered or any(
+                s <= ln <= e
+                and ln not in declaring
+                and any(d < s and d not in bare for d in seen)
+                for ln, seen in reads.get(var, ())
+            ):
                 params.append(var)
 
         if d_lo < d_hi and any(

@@ -51,6 +51,8 @@ class Definition:
     imports: bool = False
     #: The write may not happen (``Occurrence.may``).
     may: bool = False
+    #: The declaration gives the name no value (``Occurrence.valueless``).
+    valueless: bool = False
 
 
 @dataclass
@@ -117,6 +119,7 @@ def compute_def_use(
             declares=occ.declares,
             imports=occ.imports,
             may=occ.may,
+            valueless=occ.valueless,
         )
         counter += 1
         bdu.defs.append(definition)
