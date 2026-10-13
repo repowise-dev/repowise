@@ -1497,10 +1497,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> tuple[bool, ResolvedCall | None]:
         """Tier 1, as ``(handled, edge)``: a handled None is a refusal."""
         own = self._enclosing_class_method(file_path, call, caller_id)
-        # The flat index leaves anonymous class members out; their own body names them.
-        callee_id = self._file_symbols.get(file_path, {}).get(
-            call.target_name
-        ) or self._anonymous_member(own)
+        anonymous = self._anonymous_member(own)
+        if anonymous is not None:
+            # An anonymous class body names its own members before any flat
+            # name, a same-file top-level function included. Recursion: no edge.
+            if anonymous == caller_id:
+                return True, None
+            return True, ResolvedCall(caller_id, anonymous, 0.95, call.line, "same_file")
+        callee_id = self._file_symbols.get(file_path, {}).get(call.target_name)
         if callee_id is None:
             return False, None
         if own is not None and own != callee_id and _rivals_a_class_method(callee_id):

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+from repowise.core.ingestion.lang_helpers.anonymous_classes import is_anonymous_member
 
 _FILES = {
     "src/app/Filter.java": """\
@@ -225,6 +226,27 @@ class Baz {
     void miss() {}
 }
 """,
+    "src/app/Clock.kt": """\
+package app
+
+fun tick() {}
+
+class Clock {
+    fun start() {
+        val r = object : Runnable {
+            override fun run() {
+                tick()
+            }
+
+            fun tick() {}
+        }
+    }
+
+    class Leaf {
+        fun leaf() {}
+    }
+}
+""",
     "src/app/Screen.kt": """\
 package app
 
@@ -359,6 +381,21 @@ def test_a_sibling_anonymous_body_does_not_type_a_capture(tmp_path: Path) -> Non
     # A capture two anonymous classes deep is typed by the outermost function.
     inner = shapes + "Twice::outer::Runnable::run::Runnable::run"
     assert (inner, shapes + "Bar::miss") in calls
+
+
+def test_an_anonymous_member_outranks_a_top_level_function(tmp_path: Path) -> None:
+    _, calls, _ = _build(tmp_path)
+    clock = "src/app/Clock.kt::"
+    run = clock + "Clock::start::r::Runnable::run"
+    assert (run, clock + "Clock::start::r::Runnable::tick") in calls
+    assert (run, clock + "tick") not in calls
+    # A named nested class keeps its bare parent, so it is no anonymous member.
+    parsed = {
+        fi.path: ASTParser().parse_file(fi, Path(fi.abs_path).read_bytes())
+        for fi in FileTraverser(tmp_path).traverse()
+    }
+    leaf = next(s for s in parsed["src/app/Clock.kt"].symbols if s.name == "leaf")
+    assert leaf.parent_name == "Leaf" and not is_anonymous_member(leaf)
 
 
 def test_dead_code_never_flags_the_new_methods(tmp_path: Path) -> None:
