@@ -432,7 +432,7 @@ async def test_a_conftest_only_patching_the_route_runs_one_import_check(async_se
     assert _pairs(out, "src/app/util.py") == {"tests/test_a.py": "conftest-import-check"}
 
 
-async def _add_edge(session, repo_id, source, target, edge_type, hint=None) -> None:
+async def _add_edge(session, repo_id, source, target, edge_type, hint=None, **flags) -> None:
     from repowise.core.persistence.models import GraphEdge
 
     session.add(
@@ -442,6 +442,7 @@ async def _add_edge(session, repo_id, source, target, edge_type, hint=None) -> N
             target_node_id=target,
             edge_type=edge_type,
             hint_source=hint,
+            **flags,
         )
     )
     await session.commit()
@@ -484,6 +485,36 @@ async def test_an_unresolved_conftest_import_keeps_every_test(async_session) -> 
     repo = await insert_repo(async_session)
     await _conftest_graph(async_session, repo.id, stamped=True)
     await _add_edge(async_session, repo.id, "tests/test_c.py", "external:conftest", "imports")
+
+    out = await _narrowed(async_session, repo.id)
+
+    assert "tests/conftest.py" in _pairs(out, "src/app/util.py")
+    assert any("could not resolve" in n for n in out["conftest_notes"])
+
+
+async def test_an_unresolved_type_only_conftest_import_keeps_the_narrowing(
+    async_session,
+) -> None:
+    """An import under ``if TYPE_CHECKING:`` never runs, so it hides no importer."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    await _add_edge(
+        async_session, repo.id, "tests/test_c.py", "external:conftest", "imports", type_only=True
+    )
+
+    out = await _narrowed(async_session, repo.id)
+
+    assert "tests/conftest.py" not in _pairs(out, "src/app/util.py")
+    assert not any("could not resolve" in n for n in out["conftest_notes"])
+
+
+async def test_an_unresolved_deferred_conftest_import_keeps_every_test(async_session) -> None:
+    """A function-body import does run, so it still blocks the narrowing."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    await _add_edge(
+        async_session, repo.id, "tests/test_c.py", "external:conftest", "imports", deferred=True
+    )
 
     out = await _narrowed(async_session, repo.id)
 

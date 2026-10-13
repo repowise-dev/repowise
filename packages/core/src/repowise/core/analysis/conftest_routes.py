@@ -487,11 +487,12 @@ async def _edges_into_scopes(
 
     One query. The second part is a range on the indexed target column: an
     import of ``conftest`` the resolver could not place lands on an
-    ``external:`` node, and the importer it hides must not be dropped.
+    ``external:`` node, and the importer it hides must not be dropped. A
+    type-only import (``if TYPE_CHECKING:``) never runs, so it hides nothing.
     """
     if not targets:
         return []
-    params: dict[str, Any] = {"repo_id": repo_id}
+    params: dict[str, Any] = {"repo_id": repo_id, "type_only": False}
     tgt = _in_clause("p", targets, params)
     rows = await session.execute(
         text(
@@ -500,7 +501,8 @@ async def _edges_into_scopes(
             f"(target_node_id IN ({tgt}) "
             "AND edge_type IN ('framework', 'framework_binds', 'calls')) "
             "OR (target_node_id >= 'external:' AND target_node_id < 'external;' "
-            "AND target_node_id LIKE '%conftest' AND edge_type = 'imports'))"
+            "AND target_node_id LIKE '%conftest' AND edge_type = 'imports' "
+            "AND type_only = :type_only))"
         ),
         params,
     )
