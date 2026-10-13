@@ -460,17 +460,19 @@ def is_shallow_root(repo_path: str, rev: str) -> bool:
 
 
 def index_gap(repo_path: str, indexed_commit: str | None, change: ChangeSet) -> list[str] | None:
-    """Files outside *change* that differ between *indexed_commit* and its base.
+    """Files outside *change* that its base changed and *indexed_commit* lacks.
 
-    What an index built at another commit cannot see. Empty when the index was
-    built at either end of the change; ``None`` when that cannot be told (no
-    recorded commit, no base, or a commit this clone lacks).
+    What an index built at another commit cannot see. Only the base's side
+    counts (``indexed...base``, from their merge-base), so an index built after
+    the base is never said to predate it. Empty when the index was built at
+    either end of the change or later; ``None`` when that cannot be told (no
+    recorded commit, no base, a commit this clone lacks, or no merge-base).
     """
     if indexed_commit and indexed_commit in (change.base, change.head):
         return []
     if not indexed_commit or not change.base:
         return None
-    args = ["diff", "--name-only", "-z", "--no-renames", indexed_commit, change.base]
+    args = ["diff", "--name-only", "-z", "--no-renames", f"{indexed_commit}...{change.base}"]
     try:
         listing = _git(args, repo_path)
     except (subprocess.SubprocessError, OSError):
