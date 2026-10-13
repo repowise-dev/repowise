@@ -329,3 +329,55 @@ class TestTheImportMergedTierRefusesAStdName:
         assert [
             e for e in edges if e[1] == "parser.py::unwrap" and e[2] == "import_merged"
         ]
+
+
+class TestSwiftExtensionsAreNotConstructors:
+    """``extension Text {}`` adds members to a type; it declares no ``Text``.
+
+    Stored as a ``class`` it answered every ``Text(..)``, ``Label(..)`` and
+    ``Color(..)`` call: 363 of 1,952 Swift call edges on IceCubesApp.
+    """
+
+    _EXT = "extension Text {\n    func styled() -> Text { self }\n}\n"
+
+    def test_an_extension_of_an_external_type_takes_no_constructor_call(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Ext.swift": ("swift", self._EXT + "func local() { _ = Text(\"a\") }\n"),
+                "Use.swift": ("swift", "func use() { _ = Text(\"hi\") }\n"),
+            },
+        )
+        assert _kinds(parsed, "Text") == {"impl"}
+        assert not [e for e in _edges(parsed, tmp_path) if e[1] == "Ext.swift::Text"]
+
+    def test_an_extension_of_a_repo_type_leaves_its_constructor_to_the_type(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Foo.swift": ("swift", "struct Foo {\n    init(x: Int) {}\n}\n"),
+                "Ext.swift": ("swift", "extension Foo {\n    func bar() {}\n}\n"),
+                "Use.swift": ("swift", "func use() { _ = Foo(x: 1) }\n"),
+            },
+        )
+        assert ("Use.swift::use", "Foo.swift::Foo", "global_unique") in _edges(
+            parsed, tmp_path
+        )
+
+    def test_extension_methods_still_resolve(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Ext.swift": ("swift", self._EXT),
+                "Use.swift": (
+                    "swift",
+                    "func use() {\n    let t = Text(\"hi\")\n    t.styled()\n}\n",
+                ),
+            },
+        )
+        callees = {e[1] for e in _edges(parsed, tmp_path)}
+        assert callees == {"Ext.swift::Text::styled"}

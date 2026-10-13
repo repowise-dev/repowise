@@ -134,6 +134,12 @@ _MAX_ANCESTOR_EXPAND_DEPTH = 3
 # other language spells its fields ``variable``, indistinguishable by kind.
 _NON_CALLABLE_KINDS = frozenset({"property"})
 
+# A Rust ``impl`` or Swift ``extension`` block is named for the type it adds
+# members to and declares nothing itself, so no bare name means it: ``Text(..)``
+# constructs SwiftUI's ``Text``, not the repo's ``extension Text``. Kept out of
+# the bare-name indices; its members still resolve through the method index.
+_EXTENSION_KINDS = frozenset({"impl"})
+
 # A getter and its setter are two declarations under one id, which reads as an
 # overload set and is not one: the name is an attribute, not a callable.
 _PROPERTY_DECORATORS = frozenset({"property", "cached_property"})
@@ -561,9 +567,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             else:
                 definitions[decl_key].append((path, index_id))
                 # File-level symbol index (top-level symbols and methods)
-                file_syms[sym.name] = index_id
-                if sym.parent_name is None:
-                    top_level[sym.name] = index_id
+                if sym.kind not in _EXTENSION_KINDS:
+                    file_syms[sym.name] = index_id
+                    if sym.parent_name is None:
+                        top_level[sym.name] = index_id
 
             # Method index: (class_name, method_name) → symbol_id
             if sym.parent_name:
@@ -597,8 +604,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             self._non_callable_ids.add(index_id)
         if _is_property_accessor(sym):
             self._property_accessor_ids.add(index_id)
-        # Same rule as the per-file index, for the global-unique tier.
-        if not (sym.is_declaration and sym.parent_name is not None):
+        # Same rules as the per-file index, for the global-unique tier.
+        if not (sym.is_declaration and sym.parent_name is not None) and (
+            sym.kind not in _EXTENSION_KINDS
+        ):
             self._global_symbols[sym.name].append(index_id)
 
     def _index_overload_sets(self, parsed: ParsedFile) -> dict[str, str]:

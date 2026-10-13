@@ -55,6 +55,7 @@ from .extractors import (
     refine_go_type_kind,
     refine_kotlin_class_kind,
     refine_pascal_type_kind,
+    refine_swift_class_kind,
 )
 from .extractors.bindings.elixir import elixir_import_modules
 from .extractors.bindings.python import expand_bare_relative_imports
@@ -722,6 +723,9 @@ def _refine_symbol_kind(
     # Refine "class" kind for Kotlin (interface / enum class share class_declaration)
     if kind == "class" and language == "kotlin" and node_type == "class_declaration":
         kind = refine_kotlin_class_kind(def_node)
+
+    if kind == "class" and language == "swift" and node_type == "class_declaration":
+        kind = refine_swift_class_kind(def_node)
 
     # Pascal ``declType`` wraps class, record, interface, enum and more.
     if kind == "class" and language == "pascal" and node_type == "declType":
