@@ -15,7 +15,7 @@ Where another tool beats us, the row is on this page too. The research each meth
 | Claim | Number | Sample | Measured on |
 |---|---|---|---|
 | [Call graph checked by the compiler](#8-the-same-question-against-an-answer-key-we-do-not-control) (Go, TypeScript) | No tool that finds as much of the graph gets more of it right, in **7 of 7** cells. Our precision **0.976 to 0.995** | 7 cells, 37,853 compiler edges, 5 tools | repowise main `4fccb31ec`, 2026-10-03; competitors August 2026 |
-| [Call graph accuracy by language](#accuracy-by-language) | Precision: C **0.95 to 0.98**, Python **0.96 to 0.98** (attrs 0.50), Rust **0.85 to 0.90**, C# **0.73 to 0.92**, C++ **0.75**, Java **0.73 to 0.78** | 16 repositories, 6 languages, recall beside every figure | repowise main `4fccb31ec`, 2026-10-03 |
+| [Call graph accuracy by language](#accuracy-by-language) | Precision: Dart **0.99**, C **0.95 to 0.98**, Python **0.96 to 0.98** (attrs 0.50), Java **0.86 to 0.94**, Rust **0.85 to 0.90**, C# **0.72 to 0.92**, C++ **0.78** | 18 repositories, 7 languages, recall beside every figure | repowise main `1a37148e4` (Java, C# Polly, C++, Dart), 2026-10-14; other rows main `4fccb31ec`, 2026-10-03 |
 | [Finding the right files](#1-finding-the-right-files) | **0.876** of the needed files found, against **0.610** for the next tool | 42 sealed instances, p = 0.00004 | repowise `081a59fa`, August 2026 |
 | [Work saved in an agent loop](#2-what-changes-in-a-real-agent-loop) | **31.6% less** agent output than no tool, 3.8 tool calls against 7.2 | 43 django questions on Codex, p < 0.0001 | repowise `081a59fa`, August 2026 |
 | [Health score against CodeScene](#5-code-health-predicts-defects) | **2.3x** the later-defective files inside a 20% review budget | 2,770 files, 21 repositories, p = 0.003 | May 2026 |
@@ -61,8 +61,9 @@ own compiler: the compiler resolves every call site, and we count how many of
 our edges it confirms (**precision**) and how many of its edges we found
 (**recall**). We did not write any of these answer keys and cannot tune them.
 
-Repowise main `4fccb31ec`, freshly indexed from source for every cell,
-2026-10-03. No competitor was run in this section; the five-tool comparison is
+Repowise main, freshly indexed from source for every cell, one run per cell:
+the Java, C# Polly, C++ and Dart rows on `1a37148e4` (2026-10-14), the others on
+`4fccb31ec` (2026-10-03). No competitor was run in this section; the five-tool comparison is
 the [next section](#8-the-same-question-against-an-answer-key-we-do-not-control).
 
 | Language | Repository | Set | Answer key | Compiler edges | Precision | Recall |
@@ -70,27 +71,32 @@ the [next section](#8-the-same-question-against-an-answer-key-we-do-not-control)
 | Go | gitleaks | dev | scip-go (Go compiler) | 1,596 | **0.996** | 0.985 |
 | TypeScript | zod | dev | `tsc` | 1,269 | **0.995** | 0.796 |
 | TypeScript | hono | dev | `tsc` | 706 | **0.976** | 0.806 |
-| Java | jsoup | dev | scip-java (javac) | 4,329 | 0.781 | 0.682 |
-| Java | gson | dev | scip-java (javac) | 1,760 | 0.737 | 0.701 |
-| Java | javapoet | held out | scip-java (javac) | 698 | 0.725 | 0.695 |
+| Java | jsoup | dev | scip-java (javac) | 4,332 | **0.940** | 0.901 |
+| Java | gson | dev | scip-java (javac) | 1,760 | **0.920** | 0.901 |
+| Java | javapoet | held out | scip-java (javac) | 698 | 0.866 | 0.842 |
+| Java | jackson-core | held out | scip-java (javac) | 4,832 | **0.912** | 0.892 |
+| Java | joda-time | held out | scip-java (javac) | 8,164 | 0.858 | 0.840 |
 | C# | FluentValidation | dev | scip-dotnet (Roslyn) | 629 | **0.916** | 0.506 |
-| C# | Polly (4 projects) | dev | scip-dotnet (Roslyn) | 1,172 | 0.731 | 0.200 |
+| C# | Polly (4 projects) | dev | scip-dotnet (Roslyn) | 1,171 | 0.724 | 0.233 |
 | C# | AutoMapper | held out | scip-dotnet (Roslyn) | 3,157 | 0.863 | 0.321 |
 | C | redis | dev | scip-clang (clang) | 34,349 | **0.950** | 0.709 |
 | C | git | held out | scip-clang (clang) | 28,118 | **0.979** | 0.830 |
-| C++ | fmt | dev | scip-clang (clang) | 1,596 | 0.750 | 0.368 |
+| C++ | fmt | dev | scip-clang (clang) | 1,636 | 0.777 | 0.385 |
 | Rust | ripgrep | dev | rust-analyzer | 4,555 | 0.852 | 0.532 |
 | Rust | fd | dev | rust-analyzer | 231 | 0.899 | 0.619 |
 | Python | httpx | dev | jedi (not a compiler) | 1,753 | **0.983** | 0.696 |
 | Python | click | dev | jedi (not a compiler) | 2,246 | **0.958** | 0.717 |
 | Python | typer | held out | jedi (not a compiler) | 2,099 | **0.960** | 0.782 |
 | Python | attrs | held out | jedi (not a compiler) | 1,328 | 0.500 | 0.368 |
+| Dart | pub | dev | Dart analyzer (`package:analyzer`) | 2,311 | **0.992** | 0.827 |
 
 **Dev and held out.** Dev repositories are the ones accuracy fixes were
 developed against. Held-out repositories were chosen in advance and never used
 to pick a fix, so they are the fairer read of what you will see on your own
 code. On every held-out repository except attrs, main is more precise than the
-released 0.54.0 build was: javapoet by 30 points, AutoMapper by 4, typer by 2.
+released 0.54.0 build was: javapoet by 44 points, AutoMapper by 4, typer by 2.
+jackson-core and joda-time were added as Java held-out repositories on
+2026-10-13, with their predictions written down before scoring.
 On git it is level within 0.2 points while recall rose 21 points.
 
 **How it is scored.** An edge matches when the caller and the callee land on the
@@ -102,18 +108,19 @@ see. Every cell carries a 95% confidence interval in the published artifacts.
 
 **Limits, stated plainly:**
 
-- **C# Polly lost precision.** It fell from 0.774 on 0.54.0 to 0.731 on main,
-  while recall rose from 0.125 to 0.200. Constructor calls now become edges, and
-  repowise keeps one graph node per overload set, so a call to the right
-  constructor can land on the wrong overload and the compiler counts it as
-  wrong. Polly is also measured on 4 of its projects only.
+- **C# Polly is below its 0.54.0 precision**: 0.724 against 0.774, while recall
+  rose from 0.125 to 0.233. Constructor calls now become edges, and a call to
+  the right method can land on the wrong overload; counting any overload of
+  the right method as correct, Polly reads 0.886. Polly is also measured on 4
+  of its projects only.
 - **Python attrs is low at 0.50 precision.** attrs exports its API through
   chained module aliases (`s = attributes = attrs`), and calls through those
   aliases bind to the alias line. That gap is open.
-- **Overloads explain much of the Java and C# gap.** Counting a call that lands
-  on any overload of the right method as correct, Java reads 0.76 to 0.80 and C#
-  0.83 to 0.93.
-- **Recall is below 0.80 almost everywhere** outside Go and TypeScript. Dynamic
+- **Overload choice is most of what is left in Java.** Each overload is now its
+  own graph node. Counting a call that lands on any overload of the right
+  method as correct, Java reads 0.91 to 0.98.
+- **Recall is below 0.80 almost everywhere** outside Go, TypeScript, Java and
+  Dart. Dynamic
   dispatch is the main reason, as the next section shows for Go.
 - **Not reported:** TypeScript through SCIP (that method did not agree with
   `tsc`, so TypeScript comes from `tsc` directly), Kotlin (not run), C++ and
@@ -123,8 +130,8 @@ see. Every cell carries a 95% confidence interval in the published artifacts.
   codebase has and how much it dispatches dynamically.
 
 Reference versions: scip-go 0.2.7, scip-java 0.13.1, scip-dotnet 0.2.14,
-scip-clang 0.3.1, rust-analyzer 1.96.0, jedi 0.20.0. Per-repository scores,
-confidence intervals and the scoring code:
+scip-clang 0.3.1, rust-analyzer 1.96.0, jedi 0.20.0, Dart analyzer 14.5.0.
+Per-repository scores, confidence intervals and the scoring code:
 **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)**.
 
 ---
@@ -254,10 +261,11 @@ ties. At n=30 the interval is about ±16 points near 60%, so C++ is a tie despit
 looking like a 20-point lead.
 
 **Read our number the other way round: about one call edge in seven is wrong.**
-Rust, C++ and Java are where that concentrates. The compiler-graded table above
-agrees for those three, and adds C#: the hand audit read C# at 30/30, while the
-compiler reads 0.73 to 0.92 across three repositories. For C#, plan against the
-compiler figure.
+Rust, C++ and Java are where that concentrates in this audit. The
+compiler-graded table above agrees for Rust and C++; Java has since moved to
+0.86 to 0.94 against the compiler on main. It also adds C#: the hand audit read
+C# at 30/30, while the compiler reads 0.72 to 0.92 across three repositories.
+For C#, plan against the compiler figure.
 
 <details>
 <summary><b>Method and limits</b></summary>
@@ -705,7 +713,7 @@ has been withdrawn.
 
 - **Retrieval and agent-loop numbers are Python and Go**, and the agent loop is
   one repository at one commit. The graph sections are wider: nine languages
-  hand-graded, Go and TypeScript against a compiler across five tools, and six
+  hand-graded, Go and TypeScript against a compiler across five tools, and seven
   more languages against a compiler for repowise alone. A JavaScript and
   TypeScript retrieval corpus is built, but its sealed half is unrun, so nothing
   from it is quoted.
