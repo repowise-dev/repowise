@@ -14,6 +14,7 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
+[`policies.yaml`](#repowisepoliciesyaml) ·
 [The `security:` block](#the-security-block) ·
 [The `attribution:` block](#the-attribution-block) ·
 [The `refactoring:` block](#the-refactoring-block) ·
@@ -570,6 +571,28 @@ re-extraction.
 ### `.repowise/components.yaml`
 
 Components name the parts of a repository that health, hotspots, bus factor, test reach and dead code roll up to. The file is multi-document Backstage YAML (`Component`, `System` and `Group` on `backstage.io/v1alpha1`), with Repowise data in `repowise.dev/paths` (gitignore-style globs written with `/`, matched case-sensitively), `repowise.dev/criticality` (`low`, `medium`, `high`, `critical`), `repowise.dev/tags` and `repowise.dev/capability` annotations; a repo-root `catalog-info.yaml` is read the same way, so a developer portal and Repowise share one file. Without a file, components are derived from workspace services, then module pages, then top-level directories; a declared component claims the files its globs match (where two match a file, the first declared wins), and one named like a derived component replaces it and, with no paths of its own, keeps its directory. See [examples/components](../../examples/components/components.yaml) and `repowise components check`.
+
+### `.repowise/policies.yaml`
+
+The change policy `repowise check` evaluates. Each rule selects components (`match`, `exclude`), tests conditions over the change's evidence (`when`, all must hold) and names an action: `warn`, `require_owner_review`, `require_tests` or `fail`. A rule can instead wrap an existing gate (`security`, `coverage` or `doc_drift`) with that command's options under `with`; it runs exactly as the command does on its own.
+
+```yaml
+version: 1
+rules:
+  - name: agent-pci-needs-owner
+    match:
+      components: {tags: [pci]}          # also names, criticality; each list is any-of
+    when:
+      attribution: agent                 # agent, human_attested or unknown
+      reaching_tests: missing            # a changed file in scope has no reaching test
+    action: require_owner_review
+  - name: no-new-secrets
+    gate: security
+    with: {fail_on: high, baseline: .security-baseline.json}
+    action: fail                         # the default for a gate
+```
+
+Conditions are `attribution`, `agent_tier` (1, 2 or 3), `reaching_tests` (`missing` or `present`), `contract_break`, `decision_crossed` and `bus_factor_below`; there is no risk-score condition. A condition whose evidence is not available (no index, attribution off) leaves the rule not evaluated, and it never fires. Exit 2 (`policy_invalid`, every problem listed) on an unknown key, condition or gate option, a bad action, or a duplicate rule name.
 
 ### The `security:` block
 

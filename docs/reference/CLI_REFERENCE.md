@@ -36,6 +36,7 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`dead-code`](#repowise-dead-code-path) ·
 [`doc-drift`](#repowise-doc-drift-path) ·
 [`security`](#repowise-security) ·
+[`check`](#repowise-check-revspec) ·
 [`impacted-tests`](#repowise-impacted-tests-revspec) ·
 [`coverage`](#repowise-coverage) ·
 [`components`](#repowise-components) ·
@@ -1600,6 +1601,18 @@ Merged changes read back from git at each index and update: one per first-parent
 repowise changes list [--path PATH] [--category C] [--shape merge|squash|commit] [--grep TEXT] [--limit N] [--offset N] [--format table|json]
 repowise changes show REF [--path PATH] [--format table|json|in-toto]
 ```
+
+---
+
+### `repowise check [REVSPEC]`
+
+Evaluates `.repowise/policies.yaml` (see [CONFIG.md](CONFIG.md#repowisepoliciesyaml)) against a change: components touched and their tags, provenance from public git markers, and, with an index, reaching tests, governing decisions crossed and bus factor. Rules that wrap a gate run `security check`, `coverage check` or `doc-drift --check` exactly as those commands run alone, and without a policy file every gate behaves as before while `check` reports nothing to evaluate. Exit 1 when a `fail` rule fires, 2 when the policy is invalid or a `fail` gate cannot be evaluated, else 0; `--sarif-file` writes SARIF 2.1.0 for code scanning or reviewdog and `--junit-file` a JUnit report from the same run.
+
+```bash
+repowise check [REVSPEC] [--path PATH] [--policies FILE] [--sarif-file FILE] [--junit-file FILE] [--format table|json|sarif|junit]
+```
+
+Teams that already run OPA can use the `evidence` object of `repowise check --format json` as OPA `input`: it is the change's evidence checklist, one item per kind (`components_touched`, `provenance`, `reaching_tests`, `decisions_crossed`, `contracts`) with its status, basis and per-file details. `opa eval --input check.json --data policy.rego 'data.repowise.deny'` then evaluates Rego rules over `input.evidence.items` next to, or instead of, `policies.yaml`.
 
 ---
 
