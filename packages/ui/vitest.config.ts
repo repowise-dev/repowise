@@ -31,6 +31,7 @@ export default defineConfig({
       "@repowise-dev/types/doc-drift": path.resolve(__dirname, "../types/src/doc-drift.ts"),
       "@repowise-dev/types/symbols": path.resolve(__dirname, "../types/src/symbols.ts"),
       "@repowise-dev/types/chat": path.resolve(__dirname, "../types/src/chat.ts"),
+      "@repowise-dev/types/cards": path.resolve(__dirname, "../types/src/cards.ts"),
       "@repowise-dev/types/workspace": path.resolve(__dirname, "../types/src/workspace.ts"),
       "@repowise-dev/types/blast-radius": path.resolve(__dirname, "../types/src/blast-radius.ts"),
       "@repowise-dev/types/jobs": path.resolve(__dirname, "../types/src/jobs.ts"),

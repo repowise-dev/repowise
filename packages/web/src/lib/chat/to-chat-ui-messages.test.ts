@@ -213,4 +213,42 @@ describe("toChatUiMessages grounding and truncation", () => {
 
     expect(toChatUiMessages(stored)[0]).not.toHaveProperty("followUps");
   });
+
+  it("keeps the stored cards that validate and drops the rest", () => {
+    const card = {
+      schema_version: 1,
+      kind: "answer",
+      title: "Where sessions live",
+      question: "Where are sessions stored?",
+      facts: [],
+      evidence: [
+        {
+          statement: "Store owns session state",
+          basis: { kind: "inferred", source: "import graph" },
+        },
+      ],
+      links: [],
+      generated_at: "2026-10-14T00:00:00Z",
+    };
+    const stored: ChatMessageResponse[] = [
+      {
+        id: "m1",
+        conversation_id: "c1",
+        role: "assistant",
+        content: { text: "x", cards: [card, { kind: "answer", author: "someone" }] },
+        created_at: "2026-10-14T00:00:00Z",
+      },
+      {
+        id: "m2",
+        conversation_id: "c1",
+        role: "assistant",
+        content: { text: "y", cards: [{ kind: "unknown" }] },
+        created_at: "2026-10-14T00:00:00Z",
+      },
+    ];
+
+    const [withCards, withoutCards] = toChatUiMessages(stored);
+    expect(withCards?.cards).toEqual([card]);
+    expect(withoutCards).not.toHaveProperty("cards");
+  });
 });

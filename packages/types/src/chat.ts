@@ -11,6 +11,7 @@ import type { GraphExport } from "./graph.js";
 import type { Hotspot } from "./git.js";
 import type { DeadCodeFinding } from "./dead-code.js";
 import type { DecisionRecord } from "./decisions.js";
+import type { EvidenceCard } from "./cards.js";
 
 // ---------------------------------------------------------------------------
 // Product context surrounding a chat composer
@@ -124,6 +125,8 @@ export interface ChatMessage {
     truncated?: boolean;
     /** Next steps derived from the artifacts this turn produced. */
     follow_ups?: ChatSuggestion[];
+    /** Evidence cards for this turn, unvalidated until parsed. */
+    cards?: unknown[];
   };
   created_at: string;
 }
@@ -157,6 +160,8 @@ export interface ChatUIMessage {
   truncated?: boolean;
   /** Next steps this turn earned. Absent on a turn that called no tool. */
   followUps?: ChatSuggestion[];
+  /** Validated evidence cards for this turn. */
+  cards?: EvidenceCard[];
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,13 @@
 import type { ChatMessageResponse } from "@/lib/api/types";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
 import { getLegacyChatArtifactType } from "@repowise-dev/ui/chat";
+import { parseEvidenceCards } from "@repowise-dev/api-client/cards";
+
+/** Stored cards are untrusted wire data; only the ones that validate render. */
+function storedCards(message: ChatMessageResponse): Pick<ChatUIMessage, "cards"> {
+  const cards = parseEvidenceCards(message.content.cards);
+  return cards.length ? { cards } : {};
+}
 
 /** Normalize stored API messages into the same shape produced while streaming. */
 export function toChatUiMessages(
@@ -56,5 +63,6 @@ export function toChatUiMessages(
     ...(message.content.follow_ups?.length
       ? { followUps: message.content.follow_ups }
       : {}),
+    ...storedCards(message),
   }));
 }

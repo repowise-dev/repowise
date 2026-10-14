@@ -18,6 +18,7 @@ export * from "./dead-code.js";
 export * from "./doc-drift.js";
 export * from "./symbols.js";
 export * from "./chat.js";
+export * from "./cards.js";
 export * from "./workspace.js";
 export * from "./blast-radius.js";
 export * from "./risk-semantics.js";
