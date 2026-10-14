@@ -10,6 +10,7 @@ the pass parade — dots, PASSED lines, ok lines — which is replaced by counts
 from __future__ import annotations
 
 import re
+from collections import deque
 from typing import ClassVar
 
 from repowise.core.distill.filters.base import OutputFilter, cap_block, is_error_line
@@ -172,31 +173,47 @@ def _distill_pytest(lines: list[str]) -> str:
 
 
 class _TestBuffer:
-    """Bounded per-test buffer that preserves error-classified diagnostics."""
+    """Bounded per-test buffer holding head and tail lines while preserving errors."""
 
-    def __init__(self, max_lines: int = _GO_MAX_BUFFERED_TEST_LINES) -> None:
-        self.lines: list[str] = []
-        self.max_lines = max_lines
+    def __init__(
+        self,
+        head_lines: int = 10,
+        tail_lines: int = 10,
+        max_middle_errors: int = 20,
+    ) -> None:
+        self.head_lines = head_lines
+        self.tail_lines = tail_lines
+        self.max_middle_errors = max_middle_errors
+        self.head: list[str] = []
+        self.middle_errors: list[str] = []
+        self.tail: deque[str] = deque(maxlen=tail_lines)
 
     def append(self, line: str) -> None:
-        self.lines.append(line)
-        if len(self.lines) > self.max_lines:
-            # Evict the oldest non-error line so error diagnostics cannot be evicted.
-            for idx, ln in enumerate(self.lines):
-                if not is_error_line(ln):
-                    self.lines.pop(idx)
-                    break
-            else:
-                self.lines.pop(0)
+        if len(self.head) < self.head_lines:
+            self.head.append(line)
+        elif is_error_line(line):
+            if len(self.middle_errors) >= self.max_middle_errors:
+                self.middle_errors.pop(0)
+            self.middle_errors.append(line)
+        else:
+            self.tail.append(line)
 
     def drain(self) -> list[str]:
-        lines = self.lines
-        self.lines = []
-        return lines
+        out = list(self.head)
+        out.extend(self.middle_errors)
+        out.extend(self.tail)
+        self.head.clear()
+        self.middle_errors.clear()
+        self.tail.clear()
+        return out
 
     def drain_errors(self) -> list[str]:
-        errors = [ln for ln in self.lines if is_error_line(ln)]
-        self.lines = []
+        errors = [ln for ln in self.head if is_error_line(ln)]
+        errors.extend(self.middle_errors)
+        errors.extend(ln for ln in self.tail if is_error_line(ln))
+        self.head.clear()
+        self.middle_errors.clear()
+        self.tail.clear()
         return errors
 
 

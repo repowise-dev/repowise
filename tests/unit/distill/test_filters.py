@@ -169,9 +169,10 @@ def test_go_chatty_test_buffer_capped_to_20() -> None:
     f = filter_registry.get("test_output")
     distilled = f.distill(raw, command="go test -v ./...")
     assert "--- FAIL: TestChattyFail (0.05s)" in distilled
-    assert "log output line 0" not in distilled
+    assert "log output line 0" in distilled
+    assert "log output line 9" in distilled
     assert "log output line 14" not in distilled
-    assert "log output line 15" in distilled
+    assert "log output line 25" in distilled
     assert "log output line 34" in distilled
 
 
@@ -228,7 +229,7 @@ def test_go_failure_message_not_evicted_by_many_logs() -> None:
     distilled = f.distill(raw, command="go test -v ./...")
     assert "assertion error: expected 1 got 2" in distilled
     assert "debug message 29" in distilled
-    assert "debug message 0" not in distilled
+    assert "debug message 15" not in distilled
 
 
 def test_go_parent_diagnostics_survive_subtests() -> None:
@@ -262,10 +263,33 @@ def test_go_error_heavy_test_strictly_bounded_to_20() -> None:
     f = filter_registry.get("test_output")
     distilled = f.distill(raw, command="go test -v ./...")
     assert "--- FAIL: TestManyErrors (0.05s)" in distilled
-    assert "error message 0" not in distilled
+    assert "error message 0" in distilled
+    assert "error message 9" in distilled
     assert "error message 14" not in distilled
     assert "error message 15" in distilled
     assert "error message 34" in distilled
+
+
+def test_go_failure_diagnostic_survives_many_subsequent_logs() -> None:
+    lines = [
+        "=== RUN   TestPick",
+        "    pick_test.go:10: got \"alpha\" want \"beta\"",
+    ]
+    for i in range(30):
+        lines.append(f"    pick_test.go:{20 + i}: debug output line {i}")
+    lines.extend(
+        [
+            "--- FAIL: TestPick (0.05s)",
+            "FAIL",
+        ]
+    )
+    raw = "\n".join(lines)
+    f = filter_registry.get("test_output")
+    distilled = f.distill(raw, command="go test -v ./...")
+    assert "--- FAIL: TestPick (0.05s)" in distilled
+    assert "got \"alpha\" want \"beta\"" in distilled
+    assert "debug output line 29" in distilled
+    assert "debug output line 15" not in distilled
 
 
 def test_cargo_failures_section_survives(load_fixture) -> None:
