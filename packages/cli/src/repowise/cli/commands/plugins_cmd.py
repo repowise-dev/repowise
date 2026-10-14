@@ -32,8 +32,12 @@ def plugins_command(fmt: str) -> None:
             f"No plugins loaded. Install one that declares a [bold]{ENTRY_POINT_GROUP}[/bold] "
             f"entry point, or list modules in [bold]{ENV_VAR}[/bold]."
         )
+    colors = {"loaded": "green", "failed": "red", "skipped": "yellow"}
     for r in records:
-        status = "[green]loaded[/green]" if r.status == "loaded" else f"[red]failed[/red]: {escape(r.error or '')}"
+        color = colors.get(r.status, "red")
+        status = f"[{color}]{r.status}[/{color}]"
+        if r.error:
+            status += f": {escape(r.error)}"
         console.print(f"[bold]{escape(r.name)}[/bold]  {r.source}  {escape(r.target)}  {status}")
         if r.seams:
             console.print(f"  registered: {escape(', '.join(r.seams))}")

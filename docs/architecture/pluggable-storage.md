@@ -220,7 +220,8 @@ registrations land in the registries above. A plugin that fails to load is
 reported by `repowise plugins` and never stops startup. Named seams use
 `SeamRegistry` from `repowise.core.registry.plugins`: the local default
 registers first and stays chosen unless the plugin passes `default=True` or
-`REPOWISE_SEAM_<NAME>` names another implementation.
+`REPOWISE_SEAM_<NAME>` names another implementation. Both variables are read
+from the process environment only, never from a repo's `.repowise/.env`.
 
 ---
 

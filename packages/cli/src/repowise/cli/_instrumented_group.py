@@ -79,7 +79,7 @@ class InstrumentedGroup(click.Group):
         from repowise.core.registry.plugins import load_plugins
 
         load_plugins()
-        cli_registry.apply(self)
+        cli_registry.apply(self, replace=False)
         return True
 
     def main(self, *args, **kwargs):

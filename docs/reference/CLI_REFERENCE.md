@@ -2200,7 +2200,8 @@ repowise telemetry disable
 List the plugins repowise loaded (from `repowise.plugins` entry points and
 `REPOWISE_PLUGINS`), whether each loaded or why it failed, the seams each
 registered, and the implementation chosen for each seam. `--format json` gives
-the same as JSON. See [pluggable storage and capability seams](../architecture/pluggable-storage.md).
+the same as JSON. Commands a plugin adds load only when you run a name the CLI
+does not know or list the commands. See [pluggable storage and capability seams](../architecture/pluggable-storage.md).
 
 ---
 

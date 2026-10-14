@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -92,9 +93,12 @@ def test_env_var_specs_load_modules_and_callables(monkeypatch, make_module):
 def test_broken_plugins_are_reported_not_raised(monkeypatch, make_module):
     raises = make_module("def register():\n    raise RuntimeError('boom')\n")
     exits = make_module("import sys\nsys.exit(3)\n")
+    exits_on_call = make_module("import sys\ndef register():\n    sys.exit('nope')\n")
     good = make_module("loaded = True\n")
     monkeypatch.setenv(
-        plugins.ENV_VAR, f"no_such_module_xyz,{raises}:register,{exits},{good}:missing_attr,{good}"
+        plugins.ENV_VAR,
+        f"no_such_module_xyz,{raises}:register,{exits},{exits_on_call}:register,"
+        f"{good}:missing_attr,{good}",
     )
 
     records = load_plugins()
@@ -103,6 +107,7 @@ def test_broken_plugins_are_reported_not_raised(monkeypatch, make_module):
     assert "ModuleNotFoundError" in status["no_such_module_xyz"][1]
     assert status[f"{raises}:register"] == ("failed", "RuntimeError: boom")
     assert status[exits] == ("failed", "SystemExit: 3")
+    assert status[f"{exits_on_call}:register"] == ("failed", "SystemExit: nope")
     assert status[f"{good}:missing_attr"][0] == "failed"
     assert status[good] == ("loaded", None)
 
@@ -115,8 +120,35 @@ def test_loading_is_idempotent_and_deduplicated(monkeypatch, make_module):
 
     first = load_plugins()
     assert load_plugins() == first
-    assert len(first) == 1
+    assert [(r.source, r.status) for r in first] == [("entry point", "loaded"), ("env", "skipped")]
+    assert first[1].error == "duplicate of the entry point plugin"
     assert sys.modules[mod].calls == [1]
+
+
+def test_a_plugin_may_resolve_a_seam_while_loading(monkeypatch, make_module):
+    seam = SeamRegistry("demo")
+    seam.register("local", "LOCAL")
+    mod = make_module(
+        """
+        from repowise.core.registry.plugins import seams
+        seen = []
+
+        def register():
+            seen.append(seams()["demo"].get())
+        """
+    )
+    monkeypatch.setenv(plugins.ENV_VAR, f"{mod}:register")
+    [record] = load_plugins()
+    assert record.status == "loaded"
+    assert sys.modules[mod].seen == ["LOCAL"]
+
+
+def test_an_interrupt_mid_load_lets_a_later_call_retry(monkeypatch, make_module):
+    mod = make_module("def register():\n    raise KeyboardInterrupt\n")
+    monkeypatch.setenv(plugins.ENV_VAR, f"{mod}:register")
+    with pytest.raises(KeyboardInterrupt):
+        load_plugins()
+    assert plugins._records is None
 
 
 def test_local_default_wins_until_something_selects_another(monkeypatch):
@@ -127,7 +159,7 @@ def test_local_default_wins_until_something_selects_another(monkeypatch):
     assert seam.get() == "LOCAL"
     assert seam.get("other") == "OTHER"
 
-    monkeypatch.setenv("REPOWISE_SEAM_DEMO_SEAM", "other")
+    monkeypatch.setenv("REPOWISE_SEAM_DEMO_SEAM", " other ")
     assert seam.get() == "OTHER"
     monkeypatch.delenv("REPOWISE_SEAM_DEMO_SEAM")
 
@@ -143,8 +175,10 @@ def test_seam_errors_are_loud():
     seam.register("local", "LOCAL")
     with pytest.raises(KeyError, match="no implementation 'missing'"):
         seam.get("missing")
-    with pytest.raises(ValueError):
-        SeamRegistry("demo")
+    assert SeamRegistry("demo") is seam  # a reload reuses what plugins registered
+    for bad in ("", "1st", "has space", "a.b"):
+        with pytest.raises(ValueError):
+            SeamRegistry(bad)
 
 
 def test_a_discovered_plugin_adds_a_cli_command(monkeypatch, make_module):
@@ -173,6 +207,53 @@ def test_a_discovered_plugin_adds_a_cli_command(monkeypatch, make_module):
     ctx = click.Context(root)
     assert "acme-hello" in root.list_commands(ctx)
     assert root.get_command(ctx, "acme-hello").name == "acme-hello"
+
+
+def test_a_plugin_cannot_take_a_builtin_name_even_after_help(monkeypatch, make_module):
+    isolated = CLIRegistry()
+    monkeypatch.setattr(registry_pkg, "cli_registry", isolated)
+    mod = make_module(
+        """
+        import click
+        from repowise.core import registry
+
+        @click.command("expand")
+        def impostor():
+            click.echo("impostor")
+
+        registry.cli_registry.register(impostor)
+        """
+    )
+    monkeypatch.setenv(plugins.ENV_VAR, mod)
+    root = InstrumentedGroup("root", discover_plugins=True)
+    root.add_lazy_command("expand", "repowise.cli.commands.expand_cmd:expand_command")
+
+    assert CliRunner().invoke(root, ["--help"]).exit_code == 0  # the listing loads plugins
+    assert plugins._records is not None
+    resolved = root.get_command(click.Context(root), "expand")
+    assert resolved is not sys.modules[mod].impostor
+
+
+def test_dotenv_never_sets_plugin_or_seam_selection(tmp_path, monkeypatch, capsys):
+    from repowise.cli.ui import env_persistence
+
+    monkeypatch.setattr(env_persistence, "_warned_plugin_keys", False)
+    monkeypatch.delenv("REPOWISE_SEAM_AUTHENTICATOR", raising=False)
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / ".env").write_text(
+        "REPOWISE_PLUGINS=evil_module:run\n"
+        "export REPOWISE_SEAM_AUTHENTICATOR=evil\n"
+        "RW_TEST_DOTENV_KEY=kept\n",
+        encoding="utf-8",
+    )
+    try:
+        env_persistence.load_dotenv(tmp_path)
+        assert plugins.ENV_VAR not in os.environ
+        assert "REPOWISE_SEAM_AUTHENTICATOR" not in os.environ
+        assert os.environ["RW_TEST_DOTENV_KEY"] == "kept"
+    finally:
+        os.environ.pop("RW_TEST_DOTENV_KEY", None)
+    assert capsys.readouterr().err.count("ignoring") == 1
 
 
 def test_plugins_command_json_and_table(monkeypatch, make_module):
