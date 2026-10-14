@@ -31,6 +31,9 @@ def test_every_project_file_a_writer_names_is_listed(tmp_path: Path) -> None:
     assert [path for path in named if not _covered(path)] == []
 
 
+_TAGS = ("REPOWISE", "REPOWISE_AGENTS")
+
+
 def test_every_writers_marker_is_stripped() -> None:
     from repowise.cli.agent_targets.instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
     from repowise.cli.agent_targets.targets.copilot import OWNER_END, OWNER_START
@@ -39,7 +42,7 @@ def test_every_writers_marker_is_stripped() -> None:
     pairs = [
         (DISTILL_MARKER_START, DISTILL_MARKER_END),
         (OWNER_START, OWNER_END),
-        (Gen.MARKER_START_FMT.format(tag="REPOWISE"), Gen.MARKER_END_FMT.format(tag="REPOWISE")),
+        *((Gen.MARKER_START_FMT.format(tag=t), Gen.MARKER_END_FMT.format(tag=t)) for t in _TAGS),
     ]
     for start, end in pairs:
         assert only_repowise_differs("AGENTS.md", "# Mine\n", f"# Mine\n\n{start}\nbody\n{end}\n")
@@ -47,6 +50,7 @@ def test_every_writers_marker_is_stripped() -> None:
 
 def test_a_file_a_writer_creates_is_repowise_s_alone() -> None:
     """New file: the writer's placeholder sits above its block, and both are ours."""
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
     from repowise.cli.agent_targets.targets.cursor import RULES_PREFIX
     from repowise.cli.editor_integrations.codex_config import _NEW_FILE_PLACEHOLDER
     from repowise.core.generation.editor_files.agents_md import AgentsMdGenerator
@@ -55,7 +59,7 @@ def test_a_file_a_writer_creates_is_repowise_s_alone() -> None:
         WorkspaceClaudeMdGenerator,
     )
 
-    block = "<!-- REPOWISE_DISTILL:START -->\nbody\n<!-- REPOWISE_DISTILL:END -->"
+    block = f"{DISTILL_MARKER_START}\nbody\n{DISTILL_MARKER_END}"
     for prefix, path in (
         (ClaudeMdGenerator.user_placeholder, ".claude/CLAUDE.md"),
         (WorkspaceClaudeMdGenerator.user_placeholder, ".claude/CLAUDE.md"),
@@ -101,7 +105,14 @@ def test_hook_and_permission_edits_are_matched_exactly() -> None:
     assert not only_repowise_differs(path, _settings([], []), _settings([], [lookalike]))
 
 
-_START, _END = "<!-- REPOWISE:START -->", "<!-- REPOWISE:END -->"
+def _generator_pair(tag: str) -> tuple[str, str]:
+    from repowise.core.generation.editor_files.base import BaseEditorFileGenerator as Gen
+
+    return Gen.MARKER_START_FMT.format(tag=tag), Gen.MARKER_END_FMT.format(tag=tag)
+
+
+_START, _END = _generator_pair("REPOWISE")
+_USER_START, _USER_END = "<!-- REPOWISE_USER:START -->", "<!-- REPOWISE_USER:END -->"
 
 
 @pytest.mark.parametrize(
@@ -111,6 +122,14 @@ _START, _END = "<!-- REPOWISE:START -->", "<!-- REPOWISE:END -->"
         ("AGENTS.md", f"x\n{_START}\nv1\n{_END}\n", f"x\n{_START}\nv2\n{_END}\n", True),
         ("AGENTS.md", "x\n", f"x\n\n{_START}\nv\n{_END}\n", True),
         ("AGENTS.md", "x\n", f"y\n{_START}\nv\n{_END}\n", False),
+        # A block fenced by markers no writer emits is the user's, whatever its name.
+        (
+            "AGENTS.md",
+            f"x\n{_USER_START}\nv1\n{_USER_END}\n",
+            f"x\n{_USER_START}\nv2\n{_USER_END}\n",
+            False,
+        ),
+        ("AGENTS.md", "", "<!-- REPOWISE:START -->\nv\n<!-- REPOWISE:END -->\n", False),
         # A user's own comment or a bare title is content, not a placeholder.
         ("AGENTS.md", "x\n", "x\n<!-- my note -->\n", False),
         (".claude/CLAUDE.md", "", "# CLAUDE.md\n", False),

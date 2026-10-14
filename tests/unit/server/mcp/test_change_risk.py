@@ -578,8 +578,10 @@ async def test_get_change_risk_untracked_only_tree_is_one_change(tmp_path, monke
     _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
     (repo / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
     (repo / ".github").mkdir()
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+
     (repo / ".github" / "copilot-instructions.md").write_text(
-        "<!-- REPOWISE_DISTILL:START -->\nx\n<!-- REPOWISE_DISTILL:END -->\n", encoding="utf-8"
+        f"{DISTILL_MARKER_START}\nx\n{DISTILL_MARKER_END}\n", encoding="utf-8"
     )
 
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")

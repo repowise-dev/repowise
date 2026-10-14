@@ -36,7 +36,7 @@ OWNED_PATTERNS: tuple[str, ...] = (
     ".kiro/steering/repowise.md",
 )
 
-#: Root-relative. Markdown holds ``<!-- REPOWISE*:START -->`` blocks: the
+#: Root-relative. Markdown holds the writers' exactly marked blocks: the
 #: CLAUDE.md and AGENTS.md generators, and the instruction blocks of the codex,
 #: opencode, hermes, copilot, vscode and cursor targets. The JSON and TOML
 #: files hold a ``repowise`` server entry, hook or extension recommendation
@@ -77,9 +77,14 @@ CURSOR_RULES_PREFIX = (
     "Repowise only updates the managed section between markers. -->\n"
 )
 
+#: The CLI targets' marker pairs: the instruction block the codex, opencode,
+#: hermes, vscode and cursor targets write in the generators' format, and the
+#: bare pair the copilot target writes beside it as its claim. A test checks
+#: them against the targets' own constants.
+_DISTILL_TAG = "REPOWISE_DISTILL"
+_COPILOT_OWNER_PAIR = ("<!-- REPOWISE_COPILOT_CLI:START -->", "<!-- REPOWISE_COPILOT_CLI:END -->")
+
 _HOOK_COMMANDS = (COVERAGE_HOOK_COMMAND, CODEX_HOOK_COMMAND)
-#: Every writer fences its block as ``<!-- TAG:START ... -->`` / ``<!-- TAG:END -->``.
-_BLOCK = re.compile(r"<!-- (REPOWISE\w*):START\b.*?-->.*?<!-- \1:END -->", re.DOTALL)
 #: The server entry's key in every target's config (each target's ``SERVER_NAME``).
 _SERVER_NAME = "repowise"
 
@@ -94,8 +99,11 @@ def _without_repowise(path: str, text: str) -> object:
     """*text* minus repowise's part, in a form two versions compare by; ``None`` if unreadable."""
     if not path.endswith((".json", ".jsonc", ".toml")):
         placeholder = next((p for p in _placeholders() if text.startswith(p)), "")
+        text = text[len(placeholder) :]
+        for start, end in _marker_pairs():
+            text = re.sub(re.escape(start) + ".*?" + re.escape(end), "", text, flags=re.DOTALL)
         # Only the ends: a block is appended after a blank line and ends the file.
-        return _BLOCK.sub("", text[len(placeholder) :]).strip()
+        return text.strip()
     if not text.strip():
         return {}
     try:
@@ -135,6 +143,18 @@ def _is_ours(item: object) -> bool:
 def _lost_its_hooks(group: object, pruned: object) -> bool:
     """A hook group whose every hook was ours: the writers add the group with them."""
     return isinstance(group, dict) and bool(group.get("hooks")) and "hooks" not in pruned
+
+
+def _marker_pairs() -> list[tuple[str, str]]:
+    """The exact ``(start, end)`` markers every writer fences its block with."""
+    from .generation.editor_files.agents_md import AgentsMdGenerator
+    from .generation.editor_files.base import BaseEditorFileGenerator as Gen
+    from .generation.editor_files.claude_md import ClaudeMdGenerator, WorkspaceClaudeMdGenerator
+
+    generators = (ClaudeMdGenerator, WorkspaceClaudeMdGenerator, AgentsMdGenerator)
+    tags = {*(g.marker_tag for g in generators), _DISTILL_TAG}
+    pairs = [(Gen.MARKER_START_FMT.format(tag=t), Gen.MARKER_END_FMT.format(tag=t)) for t in tags]
+    return [*pairs, _COPILOT_OWNER_PAIR]
 
 
 def _placeholders() -> tuple[str, ...]:
