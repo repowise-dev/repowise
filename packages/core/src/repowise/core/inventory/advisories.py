@@ -21,6 +21,7 @@ packages so it can look them up.
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,7 +91,10 @@ def from_purl(purl: str) -> tuple[str | None, str | None, str | None]:
         return None, None, None
     body = purl[4:].split("#", 1)[0].split("?", 1)[0]
     kind, _, rest = body.partition("/")
-    path, _, version = rest.partition("@")
+    # The version follows the last "@" after the last "/": a raw npm scope
+    # (``@scope/pkg@1.0``) keeps its own "@".
+    at = rest.rfind("@", rest.rfind("/") + 1)
+    path, version = (rest[:at], rest[at + 1 :]) if at > 0 else (rest, "")
     parts = [unquote(p) for p in path.split("/") if p]
     if not parts:
         return None, None, None
@@ -141,9 +145,9 @@ def _spdx(doc: dict) -> list[PackageMention]:
 
 def _cyclonedx(doc: dict) -> list[PackageMention]:
     out: list[PackageMention] = []
-    stack = list(doc.get("components") or [])
+    stack = deque(doc.get("components") or [])
     while stack:
-        comp = stack.pop(0)
+        comp = stack.popleft()
         if not isinstance(comp, dict):
             continue
         stack.extend(comp.get("components") or [])
@@ -223,13 +227,20 @@ class FileAdvisorySource:
 
     def read(self, location: str, *, packages: Sequence[tuple[str, str]] = ()) -> SourceDocument:
         path = Path(location)
-        if path.stat().st_size > MAX_FILE_BYTES:
-            raise ValueError(f"{location}: larger than {MAX_FILE_BYTES} bytes; not read")
         try:
+            if path.stat().st_size > MAX_FILE_BYTES:
+                raise ValueError(f"{location}: larger than {MAX_FILE_BYTES} bytes; not read")
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
+        except OSError as exc:
+            raise ValueError(f"{location}: cannot be read ({exc.strerror or exc})") from exc
+        except RecursionError as exc:
+            raise ValueError(f"{location}: JSON nested too deeply to read") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"{location}: not valid UTF-8 JSON") from exc
-        return parse_document(data)
+        try:
+            return parse_document(data)
+        except RecursionError as exc:
+            raise ValueError(f"{location}: document nested too deeply to read") from exc
 
 
 def _merge(mentions: Sequence[PackageMention]) -> dict[tuple[str | None, str], dict[str, Any]]:

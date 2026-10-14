@@ -94,6 +94,14 @@ def test_unknown_documents_are_refused(tmp_path):
     bad.write_text("{nope", encoding="utf-8")
     with pytest.raises(ValueError):
         FileAdvisorySource().read(str(bad))
+    with pytest.raises(ValueError, match="cannot be read"):
+        FileAdvisorySource().read(str(tmp_path / "missing.json"))
+    with pytest.raises(ValueError, match="cannot be read"):
+        FileAdvisorySource().read(str(tmp_path))  # a directory
+    deep = tmp_path / "deep.json"
+    deep.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    with pytest.raises(ValueError, match="nested too deeply"):
+        FileAdvisorySource().read(str(deep))
 
 
 def test_from_purl():
@@ -108,6 +116,9 @@ def test_from_purl():
         "v1.2.0",
     )
     assert from_purl("not a purl") == (None, None, None)
+    # A raw npm scope keeps its "@"; the version is after the last "@".
+    assert from_purl("pkg:npm/@scope/pkg@1.0.0") == ("npm", "@scope/pkg", "1.0.0")
+    assert from_purl("pkg:npm/@scope/pkg") == ("npm", "@scope/pkg", None)
 
 
 async def test_join_by_name_reports_usage_and_unfound_advisories(session, tmp_path):  # noqa: F811
