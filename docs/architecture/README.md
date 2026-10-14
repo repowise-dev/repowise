@@ -12,6 +12,7 @@ curious; you don't need them to *use* repowise (start with
 | [change-risk.md](change-risk.md) | The change-risk model: features, offline calibration and why the score is reported as a size statistic, PR structural impact, and the public risk-scale inventory |
 | [bug-history.md](bug-history.md) | Bug-fix history internals: fix-shape classification, the `fix_events` table, the bug-magnet rollup, and the inducing-commit (SZZ) work that was measured and not shipped |
 | [decisions.md](decisions.md) | Decision capture internals: the source registry, evidence verification, confidence, currency, session mining and hook delivery |
+| [security.md](security.md) | Security signals internals: per-kind matching rules, placeholder skipping, baseline keys, and the JS/TS precision checks |
 | [test-intelligence.md](test-intelligence.md) | The inferred test tier: call and import walks, their measured precision and recall, the resolution-origin filter, and why nothing is stored |
 | [language-support.md](language-support.md) | The language pipeline internals and the step-by-step recipe for adding a new language |
 | [forges.md](forges.md) | Git host support: the forges package, its invariants, and the recipes for adding a host or a CI system |

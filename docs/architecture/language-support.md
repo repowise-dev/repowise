@@ -32,7 +32,9 @@ new language needs one only when it hits the same kind of wall.
 - [Call resolution](#call-resolution) · [the strategy seam](#the-per-language-strategy-seam) · [resolution origins](#resolution-origins) · [receiver typing](#receiver-typing) · [inherited dispatch](#inherited-dispatch)
 - [The edge vocabulary](#the-edge-vocabulary)
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
+- [Extensions and import resolution](#extensions-and-import-resolution)
 - [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
+- [Known gaps per language](#known-gaps-per-language)
 - [Optional language-specific passes](#optional-language-specific-passes)
 - [The three code-health dialect registries](#the-three-code-health-dialect-registries) · [test-quality markers per language](#test-quality-markers-per-language)
 - [Workspace contract extraction](#workspace-contract-extraction)
@@ -693,6 +695,41 @@ The same steps would fit Astro components; only the locator changes.
 
 ---
 
+## Extensions and import resolution
+
+The file extensions each Full and Good language claims, and the build files and
+conventions its import resolver reads. Good-tier languages resolve the
+dependency surface their syntax supports.
+
+| Tier | Language | Extensions | Import resolution |
+|------|----------|-----------|-------------------|
+| Full | **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
+| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
+| Full | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` and `require()`, including CommonJS re-export shapes |
+| Full | **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and `#` subpath imports |
+| Full | **Vue** | `.vue` | The TS/JS resolver plus config aliases, directory-index components, router `import()` specifiers |
+| Full | **Java** | `.java` | Maven and Gradle reactor discovery, JPMS, `import static`, package fan-out |
+| Full | **Kotlin** | `.kt` `.kts` | Shares the JVM index with Java, so resolution is cross-language |
+| Full | **Go** | `.go` | Multi-module `go.mod` discovery; a package import fans out to every file in the package |
+| Full | **Rust** | `.rs` | `use crate::` / `super::` / `self::` with `Cargo.toml` |
+| Full | **C++** | `.cpp` `.cc` `.cxx` `.h` `.hh` `.hpp` `.hxx` `.inl` `.ipp` `.tpp` `.inc` | `#include` via `compile_commands.json` plus CMake and Bazel header maps, header/implementation pairing |
+| Full | **C#** | `.cs` | `using`, `global using` and aliases via `.csproj` / `.sln`, MSBuild project graph, `partial` class linking |
+| Full | **Scala** | `.scala` | The shared JVM index, with SBT and Mill build parsing as fallback |
+| Full | **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, Rails / Zeitwerk autoloading |
+| Good | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
+| Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
+| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
+| Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
+| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via unit-name to file-stem match; project files as entry points |
+| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Literal `CALL` and `PERFORM` targets; dynamic calls and `COPY` stay silent |
+| Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
+| Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
+| Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |
+| Good | **F#** | `.fs` `.fsx` `.fsi` | `open` against a declared-name index plus the fsproj compile order; `.fsi` files contribute imports only |
+| Good | **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the header-stem index |
+
+---
+
 ## Per-language mechanics
 
 The resolution shapes that are specific to one language and are not derivable
@@ -921,6 +958,28 @@ Dart makes nothing visible across files without an import, so that requirement
 both settles a name two files declare and refuses a class that merely shadows a
 framework widget. A class reached through an `export` barrel is missed, which
 costs an edge rather than inventing one.
+
+### Known gaps per language
+
+- **Template dialects are invisible.** Django/Jinja, Go templates, ERB,
+  Handlebars, Blade and Thymeleaf parse as HTML and yield nothing.
+- **Svelte and Vue binding forms are skipped.** `{#each x as y}` and
+  `v-for="x in xs"` are not resolved, and the unused-export pass is off for
+  both, since props are set by the parent as markup attributes.
+- **Object Pascal type kinds collapse** to `kind="class"`, and its `extends`
+  vs `implements` split follows the `I`-prefix naming convention.
+- **COBOL is COBOL-85 shaped.** `COPY` does not create an edge; dynamic program
+  names and dialect extensions stay silent.
+- **Razor has no import edges**, because every directive is blanked by the
+  projection.
+- **GDScript string dispatch is unresolved**, and a script without `class_name`
+  gets no class symbol.
+- **VB.NET leaves a few constructs unparsed**, XML and tuple literals among them.
+- **C has no performance risk support.** Extract Method reuses the C++
+  def/use dialect; C carries none of the C++-only nodes, so the same plan
+  fires for both.
+- **Scala import resolution is partial**, and ScalaTest's infix DSL
+  (`x shouldBe y`) is not counted as an assertion.
 
 ---
 

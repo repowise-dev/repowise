@@ -55,6 +55,19 @@ Change-risk `fix_history` uses its own 365-day half-life
 pushes a fresh fix into the future west of UTC and makes its age vanish. The
 fix lives once, upstream of every consumer.
 
+## Measurements
+
+- **Fix-shape classifier.** 98.3% agreement with hand labels on 240 fix
+  commits: 60/60 on repowise, flask and django each, 56/60 on zod. The four
+  misses are all "a code-extension file changed but no product code did".
+- **Per-symbol attribution.** Inside the indexed symbol range for 97.4% of
+  django's 2,179 events, 96.3% of flask's 125, 96.8% of repowise's 1,145 and
+  81.8% of zod's 337. Old fixes drift because symbol spans are current; zod's
+  misses are test files with few named symbols.
+- **Filtering and the health score.** Re-running the defect calibration with
+  filtered counts moves pooled AUC by +0.0002, so the health score does not
+  change with filtering.
+
 ## Inducing-commit attribution (SZZ): measured, not shipped
 
 A refactor-aware SZZ pass was built: blame each fix's replaced lines back

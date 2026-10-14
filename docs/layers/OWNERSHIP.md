@@ -85,7 +85,7 @@ rest of [code health](CODE_HEALTH.md) and appear in its findings list.
 
 | Detector | Fires when | Severity |
 |---|---|---|
-| `knowledge_loss` | The file is still changing (a commit in 90 days, or a hotspot; never a file marked stable), its bus factor is 1, and the primary owner is no longer the recent owner or the recent owner makes under 20% of recent commits | High on a hotspot; medium when both conditions hold; otherwise low |
+| `knowledge_loss` | The file is still changing (a commit in 90 days, or a hotspot; never a file marked stable), its bus factor is 1, and the primary owner is not the recent owner or the recent owner makes under 20% of recent commits | High on a hotspot; medium when both conditions hold; otherwise low |
 | `ownership_risk` | The file has 5 or more commits and either 3 or more minor contributors (each under 5% of commits) or no author above 40% | Critical at 6+ minor contributors on a hotspot; high at 5+, or 3+ on a hotspot; medium at 3+; otherwise low. Low on a file under 40 code lines |
 | `developer_congestion` | 5 or more contributors, the file is in the top quarter of churn for this repository, and nobody holds half the commits | High at 10+ contributors and 20+ commits in 90 days; medium at 7+ contributors or 12+ commits; otherwise low |
 
@@ -165,12 +165,12 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 - Identity merging is conservative: beyond `.mailmap` and GitHub `noreply`
   folding, two addresses are only merged on guarded evidence, so some people may
   still appear twice. A false merge is treated as worse than a split.
-- In the health score's defect calibration, `ownership_risk` showed positive
-  lift and carries a higher weight than the default. `developer_congestion` and
-  `knowledge_loss` showed weak signal and deduct less than the default; they are
-  kept as findings a team can act on. All three share the change-history
+- In the health score's defect calibration, `ownership_risk` has positive lift
+  and carries a higher weight than the default. `developer_congestion` and
+  `knowledge_loss` carry weak signal and deduct less than the default; they
+  stay as findings a team can act on. All three share the change-history
   category cap. Method: [BENCHMARKS.md](../BENCHMARKS.md).
-- A contributor profile's 90-day commit count is measured back from the newest
+- A contributor profile's 90-day commit count counts back from the newest
   commit, and stays empty when the stored commits do not reach back that far.
 - Truncated history (shallow clone, low `--commit-limit`) can make an early
   author vanish, which can both hide and invent a `knowledge_loss` finding.
