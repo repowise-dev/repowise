@@ -105,6 +105,23 @@ def test_capture_takes_the_lower_level(
     assert settings.capture == effective
 
 
+@pytest.mark.parametrize("value", ["off", "no", "false", "OFF", "'off'"])
+def test_yaml_boolean_off_reads_as_off(home: Path, tmp_path: Path, value: str) -> None:
+    settings = load_attribution_settings(_repo(tmp_path, f"attribution:\n  capture: {value}\n"))
+    assert settings.capture == "off"
+    assert settings.repo.capture == "off"
+    assert settings.errors == ()
+
+
+@pytest.mark.parametrize("value", ["on", "yes", "true"])
+def test_yaml_boolean_true_capture_is_invalid(home: Path, tmp_path: Path, value: str) -> None:
+    _write(home / ".repowise" / "config.yaml", "attribution:\n  capture: local\n")
+    settings = load_attribution_settings(_repo(tmp_path, f"attribution:\n  capture: {value}\n"))
+    assert settings.capture == "off"
+    assert len(settings.errors) == 1
+    assert "use local or notes" in settings.errors[0]
+
+
 def test_agents_are_the_intersection(home: Path, tmp_path: Path) -> None:
     _write(
         home / ".repowise" / "config.yaml",

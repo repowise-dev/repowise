@@ -104,6 +104,7 @@ import contextlib
 import json
 import sys
 from pathlib import Path
+from typing import TextIO
 
 import click
 
@@ -135,6 +136,11 @@ from .wrong_path import _handle_tool_failure
 #: Free at module scope: ``agent_adapters`` is stdlib-only by its own hot-path
 #: contract, and ``tests/unit/cli/test_augment_hook_perf.py`` holds that.
 _ADAPTERS: dict[str, object] = {}
+
+#: Where :func:`_emit_response` writes; ``None`` is ``sys.stdout``. The hook
+#: entry sets it and points ``sys.stdout`` at stderr, so a library that prints
+#: (structlog does by default) cannot corrupt the JSON response.
+_response_stream: TextIO | None = None
 
 
 def _adapter(client: str | None):
@@ -171,6 +177,11 @@ def augment_command(
 ) -> None:
     """Enrich AI agent tool calls with codebase graph context (hook mode)."""
     configure_cli_logging(verbose=verbose)
+    # stdout carries the hook response; logs go to stderr.
+    with contextlib.suppress(ImportError):
+        import structlog
+
+        structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
     try:
         _run_augment(client=client, coverage_only=coverage_only)
     except (SystemExit, KeyboardInterrupt):
@@ -346,8 +357,9 @@ def _emit_response(event: str, result: HookResult | str, session_id: str = "") -
         payload["additionalContext"] = result.context
     if replacement:
         payload["updatedToolOutput"] = replacement
-    sys.stdout.write(json.dumps({"hookSpecificOutput": payload}))
-    sys.stdout.flush()
+    out = _response_stream or sys.stdout
+    out.write(json.dumps({"hookSpecificOutput": payload}))
+    out.flush()
 
 
 # Window within which an identical (event, context) emission is treated as a

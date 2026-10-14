@@ -102,6 +102,12 @@ def _parse_layer(
         errors.append(f"{source}: attribution.enabled must be true or false")
         enabled = False
     capture = block.get("capture")
+    # YAML reads a bare off/no/false as False (the documented ``capture: off``).
+    if capture is False:
+        capture = "off"
+    if capture is True:
+        errors.append(f"{source}: attribution.capture: true names no level; use local or notes")
+        capture = "off"
     if capture is not None:
         capture = str(capture).strip().lower()
         if capture not in CAPTURE_LEVELS:

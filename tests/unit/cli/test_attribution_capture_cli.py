@@ -136,3 +136,35 @@ def test_cursor_capture_hook_needs_the_user_to_opt_in(
 
     target.uninstall(Scope.USER)
     assert not cursor_hooks_json.exists()
+
+
+def test_hook_stdout_stays_json_with_an_invalid_config(repo: Path, user_config: Path) -> None:
+    """A config warning goes to stderr; stdout is the agent's JSON channel."""
+    import os
+    import sys
+
+    _opt_in(repo, user_config, "everything")
+    target = repo / "a.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    payload = {
+        "session_id": "s1",
+        "cwd": str(repo),
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(target), "old_string": "x = 1", "new_string": "x = 2"},
+        "tool_response": {"filePath": str(target), "structuredPatch": []},
+    }
+    env = dict(os.environ)
+    env["HOME"] = env["USERPROFILE"] = str(user_config.parent.parent)
+    out = subprocess.run(
+        [sys.executable, "-c", "from repowise.cli.augment_hook import main; main()"],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=repo,
+    )
+    assert out.returncode == 0
+    assert "attribution_config_invalid" in out.stderr  # the warning did fire
+    if out.stdout.strip():
+        json.loads(out.stdout)
