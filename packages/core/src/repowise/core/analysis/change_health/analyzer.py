@@ -14,6 +14,7 @@ from pathlib import PurePosixPath
 from ...ingestion.graph.builder import GraphBuilder
 from ...ingestion.models import EXTENSION_TO_LANGUAGE, SPECIAL_FILENAMES, FileInfo, ParsedFile
 from ...ingestion.parser import parse_file
+from ...pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots, read_pytest_roots
 from ...test_paths import is_test_related_path
 from ..health import HealthAnalyzer, HealthFindingData
 from ..health.complexity.languages import has_health_dialect
@@ -63,6 +64,8 @@ class RevisionAnalysis:
     skipped: dict[str, str] = field(default_factory=dict)
     #: Dependents count per file, as this side's centrality gates read it.
     dependents: dict[str, int] = field(default_factory=dict)
+    #: Paths identified as tests (from FileInfo.is_test).
+    test_paths: set[str] = field(default_factory=set)
 
     def findings_for(self, paths: set[str]) -> list[HealthFindingData]:
         return [f for f in self.findings if f.file_path in paths]
@@ -96,6 +99,7 @@ class RevisionHealthAnalyzer:
         """
         result = RevisionAnalysis()
         parsed, usable = self._parse(sources, result)
+        result.test_paths = {pf.file_info.path for pf in parsed if pf.file_info.is_test}
         if not parsed:
             return result
         analyzer = HealthAnalyzer(
@@ -116,6 +120,13 @@ class RevisionHealthAnalyzer:
     def _parse(
         self, sources: dict[str, bytes], result: RevisionAnalysis
     ) -> tuple[list[ParsedFile], dict[str, bytes]]:
+        configs = [
+            (path, raw.decode("utf-8", errors="replace"))
+            for path, raw in sources.items()
+            if PurePosixPath(path).name in PYTEST_CONFIG_NAMES
+        ]
+        roots = read_pytest_roots(configs) if configs else None
+
         parsed: list[ParsedFile] = []
         usable: dict[str, bytes] = {}
         for path, raw in sorted(sources.items()):
@@ -126,7 +137,7 @@ class RevisionHealthAnalyzer:
             language = language_for(path)
             assert language is not None  # _reject already screened this
             try:
-                parsed.append(parse_file(_file_info(path, language, raw), raw))
+                parsed.append(parse_file(_file_info(path, language, raw, roots=roots), raw))
             except Exception:
                 result.skipped[path] = "parse_failed"
                 continue
@@ -154,7 +165,7 @@ class RevisionHealthAnalyzer:
         return builder.build()
 
 
-def _file_info(path: str, language: str, raw: bytes) -> FileInfo:
+def _file_info(path: str, language: str, raw: bytes, roots: PytestRoots | None = None) -> FileInfo:
     """A FileInfo whose ``abs_path`` is the repo-relative key.
 
     The health pass reads every byte through the injected source reader, which
@@ -167,7 +178,7 @@ def _file_info(path: str, language: str, raw: bytes) -> FileInfo:
         size_bytes=len(raw),
         git_hash="",
         last_modified=datetime.now(UTC),
-        is_test=is_test_related_path(path, language),
+        is_test=is_test_related_path(path, language, roots=roots),
         is_config=False,
         is_api_contract=False,
         is_entry_point=False,
