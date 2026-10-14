@@ -13,7 +13,11 @@ import pytest
 from repowise.server.mcp_server._hit_symbols import _stem
 from repowise.server.mcp_server._prose_symbols import _rarest_terms, _SymbolTextIndex
 from repowise.server.mcp_server.tool_answer.bodies import _gather_body_candidates
-from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+from repowise.server.mcp_server.tool_answer.config import _INLINE_BODY_MAX_LINES
+from repowise.server.mcp_server.tool_answer.symbols import (
+    _anchor_symbol_hits,
+    drop_ruled_out_files,
+)
 
 
 class _Sym:
@@ -185,6 +189,88 @@ async def test_a_prose_word_is_not_scanned_for(tmp_path):
     )
     assert not any(h.get("_anchor_symbols") for h in out)
 
+
+
+def _class_file(name: str, length: int = 200) -> str:
+    lines = [f"public class {name} {{", "  int x;", "", "", f"  {name}(int x) {{", "  }"]
+    return "\n".join(lines + ["  // body"] * (length - len(lines) - 1) + ["}"]) + "\n"
+
+
+def _class_and_constructors(name: str, path: str, ctors: int, end: int = 200) -> list[_Sym]:
+    rows = [_Sym(name, path, 1, end, kind="class")]
+    rows += [_Sym(name, path, 5, 6, kind="method", parent_name=name) for _ in range(ctors)]
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_a_class_and_its_constructors_are_one_definition(tmp_path):
+    path = "stream/JsonReader.java"
+    _write(tmp_path, path, _class_file("JsonReader"))
+    rows = _class_and_constructors("JsonReader", path, 2)
+    hits = [{"target_path": path, "score": 3.0}]
+    out, homonyms = await _anchor_symbol_hits(
+        _Session(list(rows)), "r", {"JsonReader"}, hits, repo_root=tmp_path,
+        question="How does JsonReader skip the non-execute prefix?",
+    )
+    assert not homonyms["union"]
+    assert out[0]["target_path"] == path and out[0]["_symbol_anchored"]
+    # Prose: the class head a cap would cut answers nothing; its file still leads.
+    assert not out[0].get("_anchor_symbols")
+    # A bare lookup still serves the class.
+    out, _ = await _anchor_symbol_hits(
+        _Session(list(rows)), "r", {"JsonReader"}, [], repo_root=tmp_path, question="JsonReader"
+    )
+    assert [(a["name"], a["kind"]) for a in out[0]["_anchor_symbols"]] == [("JsonReader", "class")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra, stashed", [(0, True), (1, False)])
+async def test_a_class_head_is_skipped_exactly_when_the_inline_cap_cuts_it(tmp_path, extra, stashed):
+    end = 1 + _INLINE_BODY_MAX_LINES + extra
+    path = "stream/JsonReader.java"
+    _write(tmp_path, path, _class_file("JsonReader", end))
+    out, _ = await _anchor_symbol_hits(
+        _Session(_class_and_constructors("JsonReader", path, 1, end)), "r", {"JsonReader"},
+        [{"target_path": path, "score": 3.0}], repo_root=tmp_path,
+        question="How does JsonReader skip the non-execute prefix?",
+    )
+    assert bool(out[0].get("_anchor_symbols")) is stashed
+
+
+@pytest.mark.asyncio
+async def test_a_plain_word_project_name_does_not_anchor_its_class(tmp_path):
+    # ``Gson`` names the project, its main class and its constructors.
+    path = "src/main/java/com/google/gson/Gson.java"
+    _write(tmp_path, path, _class_file("Gson"))
+    for i in range(4):
+        _write(tmp_path, f"src/main/java/com/google/gson/Use{i}.java", "Gson g = new Gson();\n")
+    hits = [{"target_path": path, "score": 3.0}]
+    out, homonyms = await _anchor_symbol_hits(
+        _Session(_class_and_constructors("Gson", path, 2)), "r", {"Gson", "Java"}, hits,
+        repo_root=tmp_path,
+        question="Where does Gson throw the duplicate key error on a Java map?",
+    )
+    assert not homonyms["union"]
+    assert not any(h.get("_symbol_anchored") for h in out)
+
+
+def test_a_file_the_question_rules_out_leaves_the_hits():
+    hits = [
+        {"target_path": "core/symbol_identity.py"},
+        {"target_path": "core/symbol_identity.py::split_id"},
+        {"target_path": "core/call_resolver.py"},
+        {"target_path": "legacy/old.py"},
+    ]
+    kept = drop_ruled_out_files(hits, "Which code parses the suffix, outside symbol_identity.py?")
+    assert [h["target_path"] for h in kept] == ["core/call_resolver.py", "legacy/old.py"]
+    kept = drop_ruled_out_files(hits, "Who reads the suffix other than legacy/?")
+    assert [h["target_path"] for h in kept][-1] == "core/call_resolver.py"
+    # A path with a directory rules out only that file; a bare name, every file of it.
+    twins = [{"target_path": "a/utils.py"}, {"target_path": "b/utils.py"}]
+    assert drop_ruled_out_files(twins, "who escapes it outside b/utils.py?") == twins[:1]
+    assert drop_ruled_out_files(twins, "who escapes it outside utils.py?") == []
+    # Prose and a dotted module path rule nothing out.
+    assert drop_ruled_out_files(hits, "what runs outside the loop, besides a.b.c?") == hits
 
 
 @pytest.mark.asyncio

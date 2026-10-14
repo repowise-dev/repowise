@@ -22,6 +22,7 @@ from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._line_hits import production_lines
 from repowise.server.mcp_server._query_shape import (
     _WORD_CHAIN_RE,
+    _folds_case,
     _identifier_shaped,
     _looks_like_code_name,
 )
@@ -35,6 +36,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _HOMONYM_UNION_BODY_MAX_LINES,
     _HOMONYM_UNION_CHAR_BUDGET,
     _HOMONYM_UNION_PROSE_DEF_CEILING,
+    _INLINE_BODY_MAX_LINES,
     _INLINE_BODY_MAX_SYMBOLS,
     _LITERAL_SCAN_MAX_TOKENS,
     _SPECIFIC_TOKEN_MAX_FILES,
@@ -267,6 +269,7 @@ async def _anchor_symbol_hits(
         if not row.file_path or row.kind not in _ANCHOR_KINDS:
             continue
         by_name.setdefault(row.name, []).append(row)
+    by_name = {name: _without_constructors(cands) for name, cands in by_name.items()}
 
     # Verify bounds before slicing: union and anchored bodies are served at
     # high trust, so a drifted row would ground them in the wrong lines.
@@ -288,15 +291,16 @@ async def _anchor_symbol_hits(
         return d
 
     literal: dict[str, list] = {}
-    if question and repo_root is not None and not is_symbol_lookup_question(question, question_ids):
+    prose = bool(question) and not is_symbol_lookup_question(question, question_ids)
+    if prose and repo_root is not None:
         guard = _TopicGuard(repo_root, hits, question, qids_lower)
-        by_name = await _trusted_over_topic(by_name, qids_lower, guard)
+        by_name = await _trusted_over_topic(by_name, question_ids, guard)
         literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
 
-    chosen = await _choose_anchor_symbols(by_name, qids_lower, _verified_dict, homonyms)
+    chosen = await _choose_anchor_symbols(by_name, question_ids, _verified_dict, homonyms)
     if not chosen and not literal:
         return hits, homonyms
-    await _anchor_chosen_symbols(hits, chosen, _verified_dict)
+    await _anchor_chosen_symbols(hits, chosen, _verified_dict, prose=prose)
     for token, rows in literal.items():
         await _anchor_chosen_symbols(hits, rows, _verified_dict, named_by=token)
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
@@ -332,7 +336,9 @@ class _TopicGuard:
         return self._lines[token]
 
     async def trusts(self, token: str, row) -> bool:
-        if row.file_path in self.topical:
+        # A plain capitalised word (``Gson``, ``Client``) is also prose, often the
+        # project's own name, so its file ranking high proves nothing.
+        if row.file_path in self.topical and _folds_case(token):
             return True
         # Before the count: a name only tests write counts zero production files.
         if is_test_related_path(row.file_path) and not self.about_tests:
@@ -346,7 +352,7 @@ class _TopicGuard:
 
 
 async def _trusted_over_topic(
-    by_name: dict[str, list], qids_lower: set[str], guard: _TopicGuard
+    by_name: dict[str, list], question_ids: set[str], guard: _TopicGuard
 ) -> dict[str, list]:
     """*by_name* without the defs an exact name may not anchor (see :class:`_TopicGuard`).
 
@@ -357,7 +363,7 @@ async def _trusted_over_topic(
         trusted = [
             c
             for c in cands
-            if _question_names_parent(c, qids_lower) or await guard.trusts(name, c)
+            if _question_names_parent(c, question_ids) or await guard.trusts(name, c)
         ]
         if trusted:
             kept[name] = trusted
@@ -416,18 +422,41 @@ def _innermost_holders(defs: list, rows: list[dict]) -> Counter:
     return held
 
 
-def _question_names_parent(cand, qids_lower: set[str]) -> bool:
-    """Whether the question names this def's parent, or a qualifier of it."""
-    if (cand.parent_name or "").lower() in qids_lower:
+def _without_constructors(cands: list) -> list:
+    """*cands* without the constructors of a class that is itself among them.
+
+    A constructor shares its class's name, so a question writing ``Gson`` would
+    otherwise get the class's overloaded constructors as homonyms of each other,
+    each one "named by its parent". The name means the class.
+    """
+    classes = {(c.file_path, c.name) for c in cands if c.kind in ("class", "interface")}
+    return [
+        c
+        for c in cands
+        if not (
+            (c.file_path, c.name) in classes
+            and (c.parent_name or "").rsplit(".", 1)[-1] == c.name
+        )
+    ]
+
+
+def _question_names_parent(cand, question_ids: set[str]) -> bool:
+    """Whether the question names this def's parent, or a qualifier of it.
+
+    A qualifier must be written as code: a plain word (``Java``) also spells a
+    directory of the qualified name.
+    """
+    if (cand.parent_name or "").lower() in {q.lower() for q in question_ids}:
         return True
     qualified = (cand.qualified_name or "").lower()
     name = (cand.name or "").lower()
-    return any(q in qualified for q in qids_lower if len(q) >= 4 and q != name)
+    code = {q.lower() for q in question_ids if "." in q or _folds_case(q)}
+    return any(q in qualified for q in code if len(q) >= 4 and q != name)
 
 
 async def _choose_anchor_symbols(
     by_name: dict[str, list],
-    qids_lower: set[str],
+    question_ids: set[str],
     verified_dict: Callable[[Any], Awaitable[dict]],
     homonyms: dict[str, Any],
 ) -> list:
@@ -437,7 +466,7 @@ async def _choose_anchor_symbols(
     *homonyms* instead, as a union or a qualified miss.
     """
     # Qualifiers the question used (dotted forms like ``decisionextractor.extract_all``).
-    qualifiers = {q for q in qids_lower if "." in q}
+    qualifiers = {q.lower() for q in question_ids if "." in q}
     chosen: list = []
     for name, cands in by_name.items():
         if len(cands) == 1:
@@ -445,7 +474,7 @@ async def _choose_anchor_symbols(
             continue
         # Disambiguate a homonym when the question names its parent or the
         # parent appears in the qualified name.
-        narrowed = [c for c in cands if _question_names_parent(c, qids_lower)]
+        narrowed = [c for c in cands if _question_names_parent(c, question_ids)]
         if len(narrowed) == 1:
             chosen.append(narrowed[0])
             continue
@@ -470,11 +499,14 @@ async def _anchor_chosen_symbols(
     chosen: list,
     verified_dict: Callable[[Any], Awaitable[dict]],
     named_by: str | None = None,
+    prose: bool = False,
 ) -> None:
     """Boost (or insert) each chosen def's file and stash the def on it.
 
     ``named_by`` is the identifier the question wrote when the def holds it
-    rather than being named by it.
+    rather than being named by it. On a ``prose`` question a class the inline
+    cap would cut is not stashed: its head answers no "how does X do Y", and
+    its file still leads.
     """
     by_path = {h.get("target_path"): h for h in hits}
     top_score = max((h.get("score", 0.0) for h in hits), default=0.0)
@@ -492,6 +524,13 @@ async def _anchor_chosen_symbols(
         # symbol still boosts its file.
         vd = await verified_dict(sym)
         if vd.get("_approx"):
+            continue
+        # The cap's own test: ``_read_symbol_source`` cuts past start + max_lines.
+        if (
+            prose
+            and sym.kind in ("class", "interface")
+            and vd["end_line"] > vd["start_line"] + _INLINE_BODY_MAX_LINES
+        ):
             continue
         target.setdefault("_anchor_symbols", []).append(
             {
@@ -517,6 +556,36 @@ def lead_with_files(hits: list[dict], paths: list[str]) -> list[dict]:
     ]
     led_ids = {id(h) for h in led}
     return led + [h for h in hits if id(h) not in led_ids]
+
+
+# "outside foo.py", "other than src/legacy/": a file or directory the question
+# rules out. Only a name with an extension or a slash counts, so prose such as
+# "outside the loop" rules out nothing.
+_RULED_OUT_RE = re.compile(
+    r"\b(?:outside(?:\s+of)?|other\s+than|except(?:\s+(?:for|in))?|excluding|besides|"
+    r"apart\s+from)\s+(?:the\s+)?[`'\"]?((?:[\w.-]+/)*[\w-]+\.\w+(?!\.?\w)|(?:[\w.-]+/)+)",
+    re.IGNORECASE,
+)
+
+
+def drop_ruled_out_files(hits: list[dict], question: str) -> list[dict]:
+    """``hits`` without the files the question explicitly rules out.
+
+    "Which code parses X outside foo.py" asks for everything but foo.py, which
+    is also the file its words match best.
+    """
+    ruled = [m.lower() for m in _RULED_OUT_RE.findall(question)]
+    if not ruled:
+        return hits
+
+    # Matched as a path suffix, so "pkg/utils.py" rules out only that file. A bare
+    # "utils.py" rules out every utils.py: the question gives nothing to tell
+    # them apart (ceiling; a ranked pick would need the question's other words).
+    def out(path: str) -> bool:
+        p = "/" + path.split("::", 1)[0].lower()
+        return any(p.endswith("/" + r) if not r.endswith("/") else "/" + r in p for r in ruled)
+
+    return [h for h in hits if not out(h.get("target_path") or "")]
 
 
 # A file defining a named identifier is a milder signal than a trace frame: it
