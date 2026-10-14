@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+from repowise.server.mcp_server._basis import same_file_basis
 from repowise.server.mcp_server.tool_context.targets import _MAX_USED_BY, _resolve_one_target
 
 _FILE = "src/auth/service.py"
@@ -229,9 +230,33 @@ async def test_the_symbols_own_file_is_not_listed_as_its_user(
     )
     await session.commit()
 
-    used_by = (await _card(session, repository, "AuthService"))["docs"]["used_by"]
+    docs = (await _card(session, repository, "AuthService"))["docs"]
 
-    assert _FILE not in used_by
+    assert _FILE not in docs["used_by"]
+    # The empty list must not then claim no resolved edge reaches the symbol.
+    assert docs["used_by"] == []
+    assert docs["used_by_basis"] == same_file_basis(1)
+
+
+async def test_a_recursive_call_is_not_a_same_file_user(
+    session, repository, populated_db
+) -> None:
+    session.add(
+        GraphEdge(
+            id="ge-recursive",
+            repository_id=populated_db,
+            source_node_id=_SYMBOL,
+            target_node_id=_SYMBOL,
+            edge_type="calls",
+            imported_names_json="[]",
+        )
+    )
+    await session.commit()
+
+    docs = (await _card(session, repository, "AuthService"))["docs"]
+
+    # The resolver-coverage basis, not the same-file one.
+    assert "language" in docs["used_by_basis"]
 
 
 async def test_ranking_survives_a_chunked_rank_lookup(

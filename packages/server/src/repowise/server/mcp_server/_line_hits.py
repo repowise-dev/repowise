@@ -461,6 +461,28 @@ async def _attach(
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons
+    if response["lines"]:
+        _reconcile_symbol_miss(response, literal_scan=not sets)
+
+
+def _reconcile_symbol_miss(response: dict, *, literal_scan: bool) -> None:
+    """Keep the symbol stage's miss advice from contradicting the lines found.
+
+    ``grep_hint`` and the no-exact-symbol ``note`` were written before any
+    line was read, and tell the reader to recheck spelling or grep. With
+    lines in hand both are wrong; ``exact_match: false`` still says no symbol
+    has the name, so the note stays only to label fuzzy results.
+    """
+    response.pop("grep_hint", None)
+    if not literal_scan or response.get("exact_match") is not False:
+        return
+    if response.get("results"):
+        response["note"] = (
+            "No indexed symbol has this exact name: the results are other "
+            "symbols, and `lines` are where the text occurs."
+        )
+    else:
+        response.pop("note", None)
 
 
 def _lines_after_budget(result: dict[str, Any]) -> None:

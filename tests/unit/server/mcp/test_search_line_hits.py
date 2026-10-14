@@ -146,6 +146,39 @@ async def test_quoted_string_is_scanned_as_a_substring(tree):
 
 
 @pytest.mark.asyncio
+async def test_a_name_with_no_symbol_but_live_lines_is_not_reported_missing(tree):
+    """The symbol stage's miss advice is written before any line is read.
+
+    Next to the lines it found, "recheck the spelling" and "grep the name" say
+    the opposite of what the reply holds; ``exact_match`` still says no symbol.
+    """
+    out = await search_codebase("connect", mode="symbol")
+
+    assert _rows(out) == [("app/widget.py", 4, "match")]
+    assert out["complete"] is True
+    assert out["exact_match"] is False
+    assert "grep_hint" not in out
+    assert "note" not in out
+
+
+def test_fuzzy_results_beside_literal_lines_keep_a_short_label():
+    out = {"results": [{"name": "connect_pool"}], "exact_match": False, "note": "x", "grep_hint": "y"}
+
+    _line_hits._reconcile_symbol_miss(out, literal_scan=True)
+
+    assert "grep_hint" not in out
+    assert "other symbols" in out["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_name_with_no_symbol_and_no_lines_keeps_its_miss_advice(tree):
+    out = await search_codebase("disconnect", mode="symbol")
+
+    assert "lines" not in out or out["lines"] == []
+    assert "grep_hint" in out
+
+
+@pytest.mark.asyncio
 async def test_cap_hit_marks_lines_incomplete(tree, monkeypatch):
     monkeypatch.setattr(_line_hits, "MAX_LINES_PER_FILE", 0)
 

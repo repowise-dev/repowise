@@ -43,7 +43,7 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
-from repowise.server.mcp_server._basis import call_resolution_basis
+from repowise.server.mcp_server._basis import call_resolution_basis, same_file_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._edit_sites import reference_edit_set
 from repowise.server.mcp_server._helpers import (
@@ -1008,12 +1008,18 @@ async def _resolve_one_target(
             )
             # An id the graph no longer holds still names its file, so fall
             # back to the path half rather than dropping a real user.
-            user_files = {
-                file_path or source_node_id.split("::", 1)[0]
+            sources = {
+                source_node_id: file_path or source_node_id.split("::", 1)[0]
                 for source_node_id, file_path in res.all()
             }
+            user_files = set(sources.values())
             # A same-file caller is a real use, but naming the file already
             # being read spends a capped row; ``callers`` has it at symbol grain.
+            # Counted first (a recursive call is not a user), so an empty list
+            # can still say they exist.
+            same_file_users = sum(
+                1 for s, p in sources.items() if p == sym.file_path and s != sym_node_id
+            )
             user_files.discard(sym.file_path)
             # Looked up by the folded path, not joined above: a source whose
             # symbol node is missing has no file to join through and would rank
@@ -1042,7 +1048,10 @@ async def _resolve_one_target(
             )
             # No users found says nothing on its own until the reader knows how
             # much of this language's call graph the resolver actually bound.
-            if not docs.get("used_by"):
+            # Same-file users make the zero a fact about other files instead.
+            if not docs.get("used_by") and same_file_users:
+                docs["used_by_basis"] = same_file_basis(same_file_users)
+            elif not docs.get("used_by"):
                 docs["used_by_basis"] = await call_resolution_basis(
                     session,
                     repo_id,
