@@ -23,6 +23,8 @@ _INCLUDE_BLOCKS = (
     "skeleton+",
     "doc_drift",
     "symbols",
+    "changes",
+    "provenance",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.
