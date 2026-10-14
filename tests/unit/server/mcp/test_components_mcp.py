@@ -189,3 +189,36 @@ async def test_several_component_targets_resolve_components_once(setup_mcp, monk
     assert len(calls) == 1
     await get_context(targets=["component:auth"])
     assert len(calls) == 1  # cached for the same index and catalog state
+
+
+@pytest.mark.asyncio
+async def test_a_component_batch_reads_each_fact_table_once(setup_mcp, tmp_path, monkeypatch):
+    from repowise.core.components import store
+
+    (tmp_path / "catalog-info.yaml").write_text(
+        "apiVersion: backstage.io/v1alpha1\nkind: Component\n"
+        "metadata:\n  name: middleware\n"
+        "  annotations: {repowise.dev/paths: src/auth/middleware.py}\n"
+        "spec: {type: service, lifecycle: production, owner: platform}\n",
+        encoding="utf-8",
+    )
+    reads: list[int] = []
+    runs: list[int] = []
+    real_rows, real_ran = store._rows_for, store.dead_code_ran
+
+    async def rows_for(*args, **kwargs):
+        reads.append(1)
+        return await real_rows(*args, **kwargs)
+
+    async def ran(*args, **kwargs):
+        runs.append(1)
+        return await real_ran(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_rows_for", rows_for)
+    monkeypatch.setattr(store, "dead_code_ran", ran)
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(targets=["component:auth", "component:db", "component:middleware"])
+    assert all("facts" in result["targets"][t] for t in result["targets"])
+    # git, health and dead-code rows once each, and the run status once, for three components.
+    assert (len(reads), len(runs)) == (3, 1)

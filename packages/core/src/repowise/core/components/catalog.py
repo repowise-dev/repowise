@@ -181,27 +181,10 @@ def _parse_entity(catalog: Catalog, doc: Any, source: str, seen_here: set[str]) 
     def issue(severity: str, message: str, entity: str | None = None) -> None:
         catalog.issues.append(CatalogIssue(severity, message, source, entity))
 
-    if not isinstance(doc, dict):
-        issue("error", "a document is not a mapping")
+    identity = _identify(doc, issue)
+    if identity is None:
         return
-    kind = doc.get("kind")
-    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
-    name = metadata.get("name")
-    label = f"{kind}:{name}" if name else str(kind)
-    if kind in SKIPPED_KINDS:
-        return
-    if kind not in READ_KINDS:
-        issue("error", f"unknown kind {kind!r}; expected Component, System or Group", label)
-        return
-    if doc.get("apiVersion") != API_VERSION:
-        issue("error", f"apiVersion must be {API_VERSION!r}, got {doc.get('apiVersion')!r}", label)
-        return
-    if not isinstance(name, str) or not name:
-        issue("error", f"{kind} has no metadata.name")
-        return
-    if len(name) > _NAME_MAX or not _NAME_RE.match(name):
-        issue("error", f"metadata.name {name!r} is not a valid Backstage name", label)
-        return
+    kind, name, label, metadata = identity
     if label in seen_here:
         issue("error", "declared twice in this file", label)
         return
@@ -215,57 +198,105 @@ def _parse_entity(catalog: Catalog, doc: Any, source: str, seen_here: set[str]) 
         if spec.get(key) in (None, ""):
             issue("error", f"spec.{key} is required for a {kind}", label)
     annotations = _annotations(metadata, label, issue)
-    title = _text(metadata.get("title"))
-    description = _text(metadata.get("description"))
-
     if kind == "System":
-        catalog.systems.append(
-            System(name, title, description, _text(spec.get("owner")), declared_in=source)
+        catalog.systems.append(_system(name, metadata, spec, source))
+    elif kind == "Group":
+        catalog.groups.append(_group(name, metadata, spec, source))
+    else:
+        criticality = _criticality(annotations.get(CRITICALITY_ANNOTATION), label, issue)
+        catalog.components.append(
+            _component(name, metadata, spec, annotations, criticality, source)
         )
-        return
-    if kind == "Group":
-        children = spec.get("children") if isinstance(spec.get("children"), list) else []
-        profile = spec.get("profile") if isinstance(spec.get("profile"), dict) else {}
-        catalog.groups.append(
-            Group(
-                name,
-                title or _text(profile.get("displayName")),
-                _text(spec.get("type")),
-                _text(spec.get("parent")),
-                tuple(str(c) for c in children),
-                declared_in=source,
-            )
-        )
-        return
 
-    criticality = annotations.get(CRITICALITY_ANNOTATION)
-    if criticality is not None:
-        criticality = criticality.strip().lower()
-        if criticality not in CRITICALITY_LEVELS:
-            issue(
-                "error",
-                f"{CRITICALITY_ANNOTATION} must be one of {', '.join(CRITICALITY_LEVELS)}",
-                label,
-            )
-            criticality = None
+
+def _identify(doc: Any, issue: Any) -> tuple[str, str, str, dict] | None:
+    """``(kind, name, label, metadata)`` for an entity Repowise reads, else ``None``.
+
+    Kinds Backstage defines and Repowise skips return ``None`` silently; every
+    other refusal is reported through *issue*.
+    """
+    if not isinstance(doc, dict):
+        issue("error", "a document is not a mapping")
+        return None
+    kind = doc.get("kind")
+    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+    name = metadata.get("name")
+    label = f"{kind}:{name}" if name else str(kind)
+    if kind in SKIPPED_KINDS:
+        return None
+    if kind not in READ_KINDS:
+        issue("error", f"unknown kind {kind!r}; expected Component, System or Group", label)
+        return None
+    if doc.get("apiVersion") != API_VERSION:
+        issue("error", f"apiVersion must be {API_VERSION!r}, got {doc.get('apiVersion')!r}", label)
+        return None
+    if not isinstance(name, str) or not name:
+        issue("error", f"{kind} has no metadata.name")
+        return None
+    if len(name) > _NAME_MAX or not _NAME_RE.match(name):
+        issue("error", f"metadata.name {name!r} is not a valid Backstage name", label)
+        return None
+    return kind, name, label, metadata
+
+
+def _system(name: str, metadata: dict, spec: dict, source: str) -> System:
+    return System(
+        name,
+        _text(metadata.get("title")),
+        _text(metadata.get("description")),
+        _text(spec.get("owner")),
+        declared_in=source,
+    )
+
+
+def _group(name: str, metadata: dict, spec: dict, source: str) -> Group:
+    children = spec.get("children") if isinstance(spec.get("children"), list) else []
+    profile = spec.get("profile") if isinstance(spec.get("profile"), dict) else {}
+    return Group(
+        name,
+        _text(metadata.get("title")) or _text(profile.get("displayName")),
+        _text(spec.get("type")),
+        _text(spec.get("parent")),
+        tuple(str(c) for c in children),
+        declared_in=source,
+    )
+
+
+def _criticality(value: str | None, label: str, issue: Any) -> str | None:
+    if value is None:
+        return None
+    level = value.strip().lower()
+    if level in CRITICALITY_LEVELS:
+        return level
+    levels = ", ".join(CRITICALITY_LEVELS)
+    issue("error", f"{CRITICALITY_ANNOTATION} must be one of {levels}", label)
+    return None
+
+
+def _component(
+    name: str,
+    metadata: dict,
+    spec: dict,
+    annotations: dict[str, str],
+    criticality: str | None,
+    source: str,
+) -> Component:
     meta_tags = metadata.get("tags") if isinstance(metadata.get("tags"), list) else []
     tags = [str(t).strip().lower() for t in meta_tags]
     tags += _split(annotations.get(TAGS_ANNOTATION))
-    catalog.components.append(
-        Component(
-            name=name,
-            title=title,
-            description=description,
-            type=_text(spec.get("type")),
-            lifecycle=_text(spec.get("lifecycle")),
-            owner=_text(spec.get("owner")),
-            system=_text(spec.get("system")),
-            paths=tuple(_split(annotations.get(PATHS_ANNOTATION), lower=False)),
-            criticality=criticality,
-            tags=tuple(dict.fromkeys(t for t in tags if t)),
-            capability=_text(annotations.get(CAPABILITY_ANNOTATION)),
-            declared_in=source,
-        )
+    return Component(
+        name=name,
+        title=_text(metadata.get("title")),
+        description=_text(metadata.get("description")),
+        type=_text(spec.get("type")),
+        lifecycle=_text(spec.get("lifecycle")),
+        owner=_text(spec.get("owner")),
+        system=_text(spec.get("system")),
+        paths=tuple(_split(annotations.get(PATHS_ANNOTATION), lower=False)),
+        criticality=criticality,
+        tags=tuple(dict.fromkeys(t for t in tags if t)),
+        capability=_text(annotations.get(CAPABILITY_ANNOTATION)),
+        declared_in=source,
     )
 
 

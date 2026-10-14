@@ -14,7 +14,7 @@ from typing import Any
 from repowise.core.components.catalog import CATALOG_FILES, Component
 from repowise.core.components.store import (
     RepoComponents,
-    component_rollup,
+    component_rollups,
     load_repo_components,
     services_from_system_graph,
 )
@@ -126,13 +126,23 @@ async def component_cards(
     alias: str | None,
     exclude_spec: Any,
 ) -> dict[str, dict[str, Any]]:
-    """get_context cards for ``component:<name>`` *targets*, read one after another
-    on *session*, with the components resolved once for the whole batch."""
+    """get_context cards for ``component:<name>`` *targets*: components resolved
+    once and each fact table read once for the whole batch, in turn on *session*."""
     found = await _load(session, repository, repo_root, alias, exclude_spec)
+    wanted = {t: found.resolved.get(t[len(COMPONENT_PREFIX) :].strip()) for t in targets}
+    to_fold = {
+        c.name: found.resolved.files[c.name]
+        for c in wanted.values()
+        if c is not None and found.resolved.files[c.name]
+    }
+    rollups = (
+        await component_rollups(session, repository.id, to_fold, found.test_files)
+        if to_fold
+        else {}
+    )
     cards: dict[str, dict[str, Any]] = {}
-    for target in targets:
+    for target, comp in wanted.items():
         name = target[len(COMPONENT_PREFIX) :].strip()
-        comp = found.resolved.get(name)
         if comp is None:
             cards[target] = {
                 "target": target,
@@ -150,7 +160,7 @@ async def component_cards(
                 for k in _FACTS
             }
         else:
-            facts = await component_rollup(session, repository.id, files, found.test_files)
+            facts = dict(rollups[comp.name])
             facts.pop("file_count")
             card["sample_files"] = files[:_SAMPLE_FILES]
             card["facts"] = facts
