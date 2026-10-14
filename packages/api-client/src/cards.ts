@@ -70,9 +70,24 @@ const value: Check = (v, p, e) => {
     e.push(`${p}: expected a string or a finite number`);
   }
 };
-const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+const ISO_8601 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+/** Date.parse rolls impossible dates over (Feb 30 becomes Mar 2), so the fields are compared back. */
+function isIsoTimestamp(v: string): boolean {
+  const m = ISO_8601.exec(v);
+  if (!m) return false;
+  const [y, mo, d, h, mi, sec] = m.slice(1, 7).map((x) => Number(x ?? 0));
+  const t = new Date(Date.UTC(y!, mo! - 1, d!, h!, mi!, sec!));
+  return (
+    t.getUTCFullYear() === y &&
+    t.getUTCMonth() === mo! - 1 &&
+    t.getUTCDate() === d &&
+    t.getUTCHours() === h &&
+    t.getUTCMinutes() === mi &&
+    t.getUTCSeconds() === sec
+  );
+}
 const timestamp: Check = (v, p, e) => {
-  if (typeof v !== "string" || !ISO_8601.test(v) || Number.isNaN(Date.parse(v))) {
+  if (typeof v !== "string" || !isIsoTimestamp(v)) {
     e.push(`${p}: expected an ISO 8601 timestamp with a time zone`);
   }
 };

@@ -134,6 +134,11 @@ const INVALID: Array<[string, unknown, string]> = [
   ["prose date", { ...VALID.answer, generated_at: "March 5" }, "card.generated_at"],
   ["timestamp without a zone", { ...VALID.answer, generated_at: "2026-10-14T09:30:00" }, "card.generated_at"],
   ["impossible month", { ...VALID.answer, generated_at: "2026-13-14T09:30:00Z" }, "card.generated_at"],
+  ["February 30", { ...VALID.answer, generated_at: "2026-02-30T09:30:00Z" }, "card.generated_at"],
+  ["April 31", { ...VALID.answer, generated_at: "2026-04-31T09:30:00Z" }, "card.generated_at"],
+  ["February 29 in a common year", { ...VALID.answer, generated_at: "2026-02-29T09:30:00Z" }, "card.generated_at"],
+  ["hour 24", { ...VALID.answer, generated_at: "2026-10-14T24:00:00Z" }, "card.generated_at"],
+  ["second 60", { ...VALID.answer, generated_at: "2026-10-14T09:30:60Z" }, "card.generated_at"],
   [
     "end before start",
     { ...VALID.change, links: [{ label: "x", ref: { type: "file", id: "a", start_line: 9, end_line: 3 } }] },
@@ -181,6 +186,10 @@ describe("evidence card conformance", () => {
     expect(
       validateEvidenceCard({ ...VALID.answer, generated_at: "2026-10-14T09:30:00.123+05:30" }).ok,
     ).toBe(true);
+  });
+
+  it("accepts February 29 in a leap year", () => {
+    expect(validateEvidenceCard({ ...VALID.answer, generated_at: "2028-02-29T09:30:00Z" }).ok).toBe(true);
   });
 
   it("reads at most the per-message cap of cards", () => {
