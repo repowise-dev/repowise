@@ -151,6 +151,8 @@ def test_baseline_samples_filters_excluded_paths(git_repo: Path) -> None:
     samples = baseline_samples(str(git_repo), "HEAD", 2, (), exclude_patterns=("tests/",))
 
     assert len(samples) == 1
+    # Inclusion is the same filter from the other side.
+    assert len(baseline_samples(str(git_repo), "HEAD", 2, (), include_paths=("tests/",))) == 1
 
 
 def test_densities_excluding_omits_target_ref(git_repo: Path) -> None:

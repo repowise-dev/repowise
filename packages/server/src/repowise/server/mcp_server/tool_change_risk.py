@@ -12,7 +12,6 @@ from collections import OrderedDict
 from functools import partial
 from typing import Any
 
-import pathspec
 import structlog
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
@@ -30,6 +29,7 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.change_risk.features import revspec_head
 from repowise.core.analysis.change_risk.render import LIMITS, size_text
+from repowise.core.analysis.git_cli import path_filter
 from repowise.core.analysis.prior_fix_impact import (
     FixRecord,
     PriorFixFile,
@@ -167,6 +167,7 @@ async def _score_change(
     revspec: str | None,
     extensions: list[str] | None,
     exclude_patterns: list[str] | None,
+    include_paths: tuple[str, ...],
     baseline: int,
 ) -> tuple[Any, dict | None]:
     """Score the live change: ``(result, None)``, or ``(None, error reply)``."""
@@ -177,6 +178,7 @@ async def _score_change(
             revspec,
             extensions=tuple(extensions or ()),
             exclude_patterns=tuple(exclude_patterns or ()),
+            include_paths=include_paths,
             baseline=baseline,
         )
     except ValueError as exc:
@@ -205,6 +207,7 @@ async def _attach_change_blocks(
     extensions: list[str] | None,
     changed_read: tuple[Any, Any],
     collector: OmissionCollector,
+    include_paths: tuple[str, ...] = (),
 ) -> None:
     """Attach the tests, patch coverage, prior fixes and cross-repo blocks, in that order."""
     changed, changed_error = changed_read
@@ -223,6 +226,7 @@ async def _attach_change_blocks(
         normalize_extensions(tuple(extensions or ())),
         result.riskignore_excludes + result.request_excludes,
         (changed, changed_error),
+        include_paths,
     )
     patch = await _patch_coverage_block(
         ctx, patch_changed, patch_error, patch_revspec, result, collector, label=patch_label
@@ -354,7 +358,10 @@ async def get_change_risk(
         return _unsupported_repo_all("get_change_risk")
     ctx = await _resolve_repo_context(repo)
     started = time.perf_counter()
-    result, error = await _score_change(ctx.path, revspec, extensions, exclude_patterns, baseline)
+    includes = _path_patterns(include_paths)
+    result, error = await _score_change(
+        ctx.path, revspec, extensions, exclude_patterns, includes, baseline
+    )
     if error is not None:
         return error
     ignored: list[dict] = []
@@ -365,7 +372,7 @@ async def get_change_risk(
         return await _nothing_to_score(ctx, payload["ref"], scored, started)
     payload = {"ref": payload.pop("ref"), "scored_repo": scored, **payload}
     # Changed lines over the SAME file universe the score counted (its
-    # extensions + riskignore + request excludes), so nothing downstream
+    # extensions, includes, riskignore + request excludes), so nothing downstream
     # disagrees with the score about which files the change touches. Read once
     # and shared: both blocks below need it and git is the expensive part.
     # The test and fix blocks need the index and the cross-repo block needs
@@ -376,6 +383,7 @@ async def get_change_risk(
         revspec,
         normalize_extensions(tuple(extensions or ())),
         result.riskignore_excludes + result.request_excludes,
+        includes,
         working_tree=result.working_tree,
     )
     collector = OmissionCollector("get_change_risk", repo_root=ctx.path)
@@ -388,12 +396,12 @@ async def get_change_risk(
             revspec,
             tuple(extensions or ()),
             tuple(result.riskignore_excludes + result.request_excludes),
-            _path_patterns(include_paths),
+            includes,
         )
     )
     try:
         await _attach_change_blocks(
-            ctx, payload, result, revspec, extensions, (changed, changed_error), collector
+            ctx, payload, result, revspec, extensions, (changed, changed_error), collector, includes
         )
         independent = await _attach_branch_blocks(
             ctx, payload, changed, collector, revspec, finding_id
@@ -607,7 +615,7 @@ async def _nothing_to_score(ctx: Any, ref: str, scored: dict[str, Any], started:
         "status": "nothing_to_score",
         "warning": (
             f"No counted file changes in {ref!r} "
-            "(check the revspec, extensions, or exclusion filters)."
+            "(check the revspec, extensions, or include/exclude filters)."
         ),
         "scored_repo": scored,
         "_meta": _build_meta(
@@ -666,23 +674,16 @@ def _filter_changed(
     changed: dict[str, set[int]],
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
+    include_paths: tuple[str, ...] = (),
 ) -> dict[str, set[int]]:
     """Restrict changed-line files to the score's counted universe.
 
-    ``changed_lines`` applies no suffix/exclude filtering, so without this a
-    change scored ``nf == 0`` under an extension filter could still surface
-    impacted tests for the filtered-out files. Uses the same ``endswith`` +
-    gitwildmatch rules as the numstat accumulator.
+    ``changed_lines`` applies no suffix/include/exclude filtering, so without
+    this a change scored ``nf == 0`` under a filter could still surface impacted
+    tests for the filtered-out files. Uses the score's own path rule.
     """
-    spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
-    out: dict[str, set[int]] = {}
-    for path, lines in changed.items():
-        if extensions and not path.endswith(extensions):
-            continue
-        if spec.match_file(path):
-            continue
-        out[path] = lines
-    return out
+    counts = path_filter(extensions, exclude_patterns, include_paths)
+    return {path: lines for path, lines in changed.items() if counts(path)}
 
 
 def _cross_repo_block(
@@ -914,6 +915,7 @@ async def _changed_in_scope(
     revspec: str | None,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
+    include_paths: tuple[str, ...] = (),
     *,
     working_tree: bool = False,
 ) -> tuple[dict[str, set[int]], tuple[str, str] | None]:
@@ -925,7 +927,7 @@ async def _changed_in_scope(
     two blocks want the same answer.
     """
     changed, error, _label = await _changed_with_label(
-        repo_path, revspec, extensions, exclude_patterns, working_tree=working_tree
+        repo_path, revspec, extensions, exclude_patterns, include_paths, working_tree=working_tree
     )
     return changed, error
 
@@ -935,6 +937,7 @@ async def _changed_with_label(
     revspec: str | None,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
+    include_paths: tuple[str, ...] = (),
     *,
     working_tree: bool = False,
     base: str | None = None,
@@ -964,7 +967,7 @@ async def _changed_with_label(
     except (subprocess.SubprocessError, OSError):
         return {}, ("unknown", "Could not read changed lines from git."), label
 
-    changed = _filter_changed(changed, extensions, exclude_patterns)
+    changed = _filter_changed(changed, extensions, exclude_patterns, include_paths)
     if not changed:
         return {}, ("no_source_line_changes", "No changed source lines to map to tests."), label
     return changed, None, label
@@ -1252,6 +1255,7 @@ async def _push_change(
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
     scored: tuple[dict[str, set[int]], tuple[str, str] | None],
+    include_paths: tuple[str, ...] = (),
 ) -> tuple[dict[str, set[int]], tuple[str, str] | None, str | None, str | None]:
     """``(changed, error, label, revspec)`` the patch-coverage block measures.
 
@@ -1270,7 +1274,13 @@ async def _push_change(
         return changed, error, None, revspec
     branch = None if working_tree else f"{base}...HEAD"
     found, found_error, label = await _changed_with_label(
-        repo_path, branch, extensions, exclude_patterns, working_tree=working_tree, base=base
+        repo_path,
+        branch,
+        extensions,
+        exclude_patterns,
+        include_paths,
+        working_tree=working_tree,
+        base=base,
     )
     if found_error is not None and branch is not None:
         # No merge-base with the base (a shallow clone): measure the commit as scored.

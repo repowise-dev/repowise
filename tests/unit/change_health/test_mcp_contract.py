@@ -302,3 +302,32 @@ async def test_include_paths_as_a_string_filters_like_the_list(tool, make_repo):
     assert await changed(include_paths="docs/, vendor/") == 1
     # A filtered result is never served to the unfiltered call.
     assert await changed() == 2
+
+
+async def test_include_paths_scope_the_score_and_every_block_that_reads_the_files(
+    tool, make_repo, monkeypatch
+):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n"})
+    repo.commit(
+        "add",
+        {"app.py": python_complex("a", 16), "vendor/lib.py": python_complex("b", 16)},
+    )
+    module = tool(repo)
+    # The changed-lines read every enrichment block shares, seen at the cross-repo join.
+    seen: list[list[str]] = []
+
+    async def cross_repo_tests(_alias, files):
+        seen.append(files)
+
+    monkeypatch.setattr(module, "cross_repo_tests", cross_repo_tests)
+
+    result = await module.get_change_risk(
+        "HEAD", baseline=0, include_paths="vendor/", include=["diagnostics"]
+    )
+
+    assert result["features"]["nf"] == 1
+    assert result["health_delta"]["scope"]["changed"] == 1
+    assert seen == [["vendor/lib.py"]]
+    nothing = await module.get_change_risk("HEAD", baseline=0, include_paths="docs/")
+    assert nothing["status"] == "nothing_to_score"

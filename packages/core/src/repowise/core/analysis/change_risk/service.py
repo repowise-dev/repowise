@@ -168,6 +168,7 @@ def score_live_change(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
     baseline: int = 200,
 ) -> ChangeRiskResult:
     """Score a commit or ``base..head`` range with optional live filters.
@@ -193,7 +194,10 @@ def score_live_change(
         # block or entry is repowise's output too, while the user's edits count.
         worktree_ignores = from_riskignore + generated_worktree_paths(repo_path)
         uncommitted = extract_worktree_features(
-            repo_path, extensions=extensions, exclude_patterns=worktree_ignores + exclude_patterns
+            repo_path,
+            extensions=extensions,
+            exclude_patterns=worktree_ignores + exclude_patterns,
+            include_paths=include_paths,
         )
     # A tree dirty only in paths the filters drop is not a change this command
     # can score, so fall through to HEAD rather than answer "empty change".
@@ -214,6 +218,7 @@ def score_live_change(
             head,
             extensions=extensions,
             exclude_patterns=effective_excludes,
+            include_paths=include_paths,
             sep=sep,
         )
         # The baseline shares the fix history's anchor: the range's merge-base.
@@ -221,7 +226,11 @@ def score_live_change(
         excluded_ref = ""
     else:
         features = extract_commit_features(
-            repo_path, target, extensions=extensions, exclude_patterns=effective_excludes
+            repo_path,
+            target,
+            extensions=extensions,
+            exclude_patterns=effective_excludes,
+            include_paths=include_paths,
         )
         anchor, excluded_ref = _commit_anchor(repo_path, target)
 
@@ -238,6 +247,7 @@ def score_live_change(
             baseline,
             extensions,
             exclude_patterns=baseline_excludes,
+            include_paths=include_paths,
         )
 
     result = assess_change(

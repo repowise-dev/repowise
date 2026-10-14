@@ -1,5 +1,5 @@
-"""The git helpers every change reader shares: split a revspec, run git, list
-the untracked files and the managed files only repowise edited.
+"""The git helpers every change reader shares: split a revspec, run git, filter
+changed paths, list the untracked files and the managed files only repowise edited.
 
 A leaf (only the owned-path list beside it), so a caller that only needs the
 diff shape (changed lines, the drift gate's scope) does not load change risk's
@@ -9,6 +9,7 @@ baseline and, through it, GitPython.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pathspec
@@ -33,6 +34,33 @@ def split_revspec(revspec: str) -> tuple[str, str, str] | None:
         return None
     base, _, head = revspec.partition(sep)
     return base or "HEAD", sep, head or "HEAD"
+
+
+def path_filter(
+    extensions: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
+) -> Callable[[str], bool]:
+    """Whether a changed path counts under a caller's suffix, include and exclude filters.
+
+    One rule for every reader of a change (the score, its baseline, the changed
+    lines, the health delta), so they agree on which files the change touches.
+    Patterns are gitignore-style; an empty filter keeps everything.
+    """
+    exts = tuple(e if e.startswith(".") else f".{e}" for e in extensions)
+    drop = (
+        pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns) if exclude_patterns else None
+    )
+    keep = pathspec.PathSpec.from_lines("gitwildmatch", include_paths) if include_paths else None
+
+    def counts(path: str) -> bool:
+        if exts and not path.endswith(exts):
+            return False
+        if keep is not None and not keep.match_file(path):
+            return False
+        return drop is None or not drop.match_file(path)
+
+    return counts
 
 
 def _git(args: list[str], cwd: str, *, check: bool = True) -> str:

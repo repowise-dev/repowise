@@ -169,10 +169,11 @@ async def test_repository_is_none_without_a_factory_or_a_repository_row(factory)
 # ---------------------------------------------------------------------------
 
 
-def test_filter_changed_applies_the_scores_suffixes_and_excludes():
+def test_filter_changed_applies_the_scores_suffixes_includes_and_excludes():
     changed = {"src/a.py": {1}, "src/b.ts": {2}, "docs/c.py": {3}}
     assert tool._filter_changed(changed, (".py",), ("docs/",)) == {"src/a.py": {1}}
     assert tool._filter_changed(changed, (), ()) == changed
+    assert tool._filter_changed(changed, (), ("src/b.ts",), ("src/",)) == {"src/a.py": {1}}
 
 
 @pytest.mark.asyncio
