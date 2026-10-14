@@ -197,24 +197,9 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
     if isinstance(resolved, list):
         raise ValueError(
             "repo='all' must be handled explicitly by each tool. "
-            "Use _resolve_all_contexts() instead."
+            "Fan out with _federation.Federation instead."
         )
     return await registry.get(resolved)
-
-
-async def _resolve_all_contexts() -> list[Any]:
-    """Return ``RepoContext`` objects for all repos in the workspace.
-
-    In single-repo mode, returns a single-element list wrapping ``_state``.
-    """
-    registry = _state._registry
-    if registry is None:
-        ctx = await _resolve_repo_context(None)
-        return [ctx]
-    contexts = []
-    for alias in registry.get_all_aliases():
-        contexts.append(await registry.get(alias))
-    return contexts
 
 
 def _unsupported_repo_all(tool_name: str) -> dict:

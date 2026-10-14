@@ -36,11 +36,12 @@ from repowise.server.mcp_server._budget import (
     register_post_enforce,
     register_post_shed,
 )
+from repowise.server.mcp_server._federation import Federation, merge_ranked
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     _get_exclude_spec,
     _get_repo,
-    _resolve_all_contexts,
+    _is_workspace_mode,
     _resolve_repo_context,
     attach_ignored_arguments,
     filter_dicts_by_key,
@@ -898,30 +899,37 @@ async def _search_single_repo(
     return _collapse_by_file(output)[:limit]
 
 
+def _neg_score(key: str):
+    """Best-first sort key on a row's *key* score, for :func:`merge_ranked`."""
+    return lambda item: -(item.get(key) or 0.0)
+
+
 async def _federated_search(
-    query: str, limit: int, page_type: str | None, kind: str | None = None
+    query: str, limit: int, page_type: str | None, kind: str | None, fed: Federation
 ) -> dict:
     """Search across all repos using Reciprocal Rank Fusion."""
-    contexts = await _resolve_all_contexts()
-    all_results = []
 
-    for ctx in contexts:
+    async def _one_repo(ctx) -> list[dict]:
         repo_results = await _search_single_repo(ctx, query, limit, page_type, kind)
         for rank, item in enumerate(repo_results):
             item["repo"] = ctx.alias
             item["rrf_score"] = 1.0 / (rank + 60)  # RRF constant k=60
-        all_results.extend(repo_results)
+        return repo_results
 
-    # Sort by RRF score and take top N
-    all_results.sort(key=lambda x: x.get("rrf_score", 0), reverse=True)
+    answered = await fed.run(_one_repo)
+    contexts = [ctx for ctx, _ in answered]
+    all_results = merge_ranked(
+        (rows for _, rows in answered), _neg_score("rrf_score"), per_repo_cap=limit
+    )
     output = all_results[:limit]
 
     # Derive confidence from RRF position
     _assign_confidence(output, "rrf_score", "confidence_score")
 
-    # No freshness here: results come from several repos at once, so there is
-    # no single indexed commit to compare a live HEAD against.
+    # No single indexed commit to compare a live HEAD against: per-repo
+    # freshness rides on ``repos_stale`` and the rows' ``stale`` flag instead.
     response: dict = {"results": output, "_meta": _build_meta()}
+    fed.annotate(response, output)
     # Drawn from every repo's ranked list, not the merged cut: a workspace
     # search that spends its window on module pages should still be able to
     # name files.
@@ -996,11 +1004,12 @@ def _grep_hint_for(query: str, names: Container[str] | None = None) -> str | Non
     return None
 
 
-async def _contexts_for(repo: str | None) -> list:
-    """The repo contexts a structured search runs over (one, or all in 'all')."""
-    if repo == "all":
-        return await _resolve_all_contexts()
-    return [await _resolve_repo_context(repo)]
+async def _per_repo(repo: str | None, fed: Federation | None, fn) -> list[tuple[Any, Any]]:
+    """``(context, fn(context))`` for the one repo asked for, or every repo via *fed*."""
+    if fed is not None:
+        return await fed.run(fn)
+    ctx = await _resolve_repo_context(repo)
+    return [(ctx, await fn(ctx))]
 
 
 def _lead_candidates(response: dict, issue: IssueFiles | None, limit: int) -> None:
@@ -1054,6 +1063,7 @@ async def _structured_search(
     mode: str,
     grep_hint: str | None,
     names: Container[str] | None = None,
+    fed: Federation | None = None,
 ) -> dict:
     """Run symbol / path / hybrid search and shape the response.
 
@@ -1062,16 +1072,7 @@ async def _structured_search(
     single-repo helpers). The grep_hint is attached only as a fallback — when
     the structural index produced nothing, the agent still has a path forward.
     """
-    contexts = await _contexts_for(repo)
-    multi = len(contexts) > 1
-
-    symbols: list[dict] = []
-    # Symbol rows past each repo's ``limit``: they only backfill slots that
-    # collapsing same-file rows frees, and never steer the exact-match signal.
-    spare: list[dict] = []
-    files: list[dict] = []
-    indexed_paths: list[str] = []
-    concepts: list[dict] = []
+    multi = fed is not None and _is_workspace_mode()
 
     # A hybrid query is prose wrapped around an identifier ("where is X
     # defined"). The symbol scorer ranks on token overlap, so handing it the
@@ -1094,32 +1095,41 @@ async def _structured_search(
     fetch = limit * _FILE_WINDOW_OVERFETCH if mode == "hybrid" else limit
     if mode == "symbol":
         fetch = _MAX_CANDIDATES
-    for ctx in contexts:
+
+    async def _one_repo(ctx) -> tuple[list[dict], list[dict], list[str], list[dict]]:
+        s: list[dict] = []
+        f: list[dict] = []
+        paths: list[str] = []
+        c: list[dict] = []
         if mode in ("symbol", "hybrid"):
             s = await search_symbols_single(
                 ctx, symbol_query, fetch, symbol_kind=symbol_kind, kind=kind
             )
-            _tag_repo(s, ctx, multi)
-            symbols.extend(s[:limit])
-            spare.extend(s[limit:])
         if mode == "path":
             f = await search_paths_single(ctx, query, limit)
             async with get_session(ctx.session_factory) as session:
-                index = await file_path_index(session, (await _get_repo(session)).id)
-            indexed_paths.extend(index.paths)
-            _tag_repo(f, ctx, multi)
-            files.extend(f)
+                paths = (await file_path_index(session, (await _get_repo(session)).id)).paths
         if mode == "hybrid":
             c = await _search_single_repo(ctx, query, limit, page_type, kind)
             for item in c:
                 item["type"] = "page"
             await attach_hit_symbols(ctx, query, c)
-            _tag_repo(c, ctx, multi)
-            concepts.extend(c)
+        for rows in (s, f, c):
+            _tag_repo(rows, ctx, multi)
+        return s, f, paths, c
 
-    symbols.sort(key=lambda x: -(x.get("score") or 0.0))
-    spare.sort(key=lambda x: -(x.get("score") or 0.0))
-    files.sort(key=lambda x: -(x.get("score") or 0.0))
+    answered = await _per_repo(repo, fed, _one_repo)
+    contexts = [ctx for ctx, _ in answered]
+    parts = [part for _, part in answered]
+    # Symbol rows past each repo's ``limit``: they only backfill slots that
+    # collapsing same-file rows frees, and never steer the exact-match signal.
+    symbols = merge_ranked((p[0] for p in parts), _neg_score("score"), per_repo_cap=limit)
+    spare = merge_ranked((p[0][limit:] for p in parts), _neg_score("score"))
+    files = merge_ranked((p[1] for p in parts), _neg_score("score"))
+    indexed_paths = [path for p in parts for path in p[2]]
+    # Re-ranked by relevance so a strong page in repo B isn't buried under
+    # repo A's weak ones.
+    concepts = merge_ranked((p[3] for p in parts), _neg_score("relevance_score"))
     candidates = _identifier_candidates(query, mode, names)
     if mode == "symbol":
         symbols = _protect_exact_symbols(query, symbols)
@@ -1153,10 +1163,6 @@ async def _structured_search(
     elif mode == "path":
         results = files[:limit]
     else:  # hybrid: interleave symbol matches and concept pages for new files
-        # Federation appends per-repo concept lists in repo order — re-rank by
-        # relevance so a strong page in repo B isn't buried under repo A's weak
-        # ones. (Single-repo: already sorted upstream; this is a no-op.)
-        concepts.sort(key=lambda x: -(x.get("relevance_score") or 0.0))
         window = _hybrid_window(query, symbols, concepts, limit, exact, names)
         # One row per file, so ``limit`` buys distinct files (mode "symbol"
         # stays row-per-symbol: overloads there are the answer). Collapsing
@@ -1174,7 +1180,7 @@ async def _structured_search(
             results = [item for item in results if hit_file_path(item)]
 
     repository = None
-    if not multi:
+    if not multi and contexts:
         async with get_session(contexts[0].session_factory) as session:
             repository = await _get_repo(session)
 
@@ -1231,6 +1237,8 @@ async def _structured_search(
             )
     if grep_hint and not results:
         response["grep_hint"] = grep_hint
+    if fed is not None:
+        fed.annotate(response, results)
     # Last, so nothing above has to know the field is on its way out. Paths
     # first, so a page whose target_path is dropped keeps its page_id.
     _slim_served_rows(
@@ -1319,8 +1327,13 @@ async def search_codebase(
     if mode is not None and mode.lower() in _VALID_MODES:
         mode = mode.lower()
     mode = resolve_enum_argument(mode, _VALID_MODES, argument="mode", ignored=ignored)
+    # One fan-out state for the whole call: a repo that fails one stage is
+    # skipped by the next and reported once.
+    fed = Federation() if repo == "all" else None
     # Loaded once so routing, candidates, ordering and the hint validate alike.
-    names = await indexed_names(await _contexts_for(repo), query)
+    names: set[str] = set()
+    for _, repo_names in await _per_repo(repo, fed, lambda ctx: indexed_names([ctx], query)):
+        names |= repo_names
     grep_hint = _grep_hint_for(query, names)
     resolved_mode = _resolve_mode(query, mode, names)
     # Single repo only: a federated list has no one tree to name files in.
@@ -1333,17 +1346,17 @@ async def search_codebase(
 
     if resolved_mode in ("symbol", "path", "hybrid"):
         structured = await _structured_search(
-            query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names
+            query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names, fed
         )
         _lead_candidates(structured, issue, limit)
         await attach_line_hits(structured, query, resolved_mode, names, repo)
         attach_ignored_arguments(structured, ignored)
         return structured
 
-    if repo == "all":
+    if fed is not None:
         # kind is filtered per-repo inside _search_single_repo, before each
         # repo's limit cut, so the fused list is already kind-pure and full.
-        federated = await _federated_search(query, limit, page_type, kind)
+        federated = await _federated_search(query, limit, page_type, kind, fed)
         if grep_hint and not federated.get("results"):
             federated["grep_hint"] = grep_hint
         attach_ignored_arguments(federated, ignored)

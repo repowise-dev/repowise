@@ -529,6 +529,8 @@ Only four tools answer across every repo with `repo="all"`. The rest return an e
 
 With `repo` omitted, `get_context`, `get_symbol`, `get_risk` and `get_health` route each path or `path::Name` target to its repo: the default repo when the file exists there, else the one other repo whose checkout has it. Write `<alias>:<target>` (for example `web:src/app.ts::App`) to name the repo outright. A path found in several other repos returns its `candidates`. A path in no repo gets the default repo's usual not-found answer plus a `hint` naming `search_codebase(repo="all")` and the `<alias>:<path>` form; routed results carry `repo`. `get_context` takes a batch spanning repos, while `get_risk` and `get_health` answer one repo per call and name the per-repo calls when a batch spans several.
 
+A `repo="all"` call queries up to 4 repos at a time and gives each 60 seconds (`REPOWISE_WORKSPACE_CONCURRENCY`, `REPOWISE_WORKSPACE_REPO_TIMEOUT_S`). A repo that fails to open, errors or times out is listed in `repos_failed` with its reason while the other repos still answer. A repo whose index is behind its checkout is listed in `repos_stale` with `indexed_commit` and `live_head`, and its rows carry `stale: true`. Both keys appear only when non-empty.
+
 Single-repo tools also gain cross-repo evidence in workspace mode:
 
 - `get_context` adds a per-target `cross_repo` block: co-change partners in other repos and contract consumers or providers.

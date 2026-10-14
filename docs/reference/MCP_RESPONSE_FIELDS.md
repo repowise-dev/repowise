@@ -45,7 +45,7 @@ Routine responses carry a lean envelope. `get_overview`, called once per session
 | `floor` | When a count comes from walking the graph | Names those fields. Their values are lower bounds: an unresolved edge is uncounted, not proven absent |
 | `state` | Only when something fired | `degraded` with `degraded_reasons`, `partial`, `truncated`. A roll-up of the response's own flags |
 
-`list_repos`, `get_architecture`, `get_blast_radius`, `get_conformance` and `get_dependency_path` carry no freshness fields. Neither does a workspace-wide `search_codebase(repo="all")`, since there is no single indexed commit to compare.
+`list_repos`, `get_architecture`, `get_blast_radius`, `get_conformance` and `get_dependency_path` carry no freshness fields. Neither does a workspace-wide `repo="all"` call, since there is no single indexed commit to compare; it names stale repos in a top-level `repos_stale` instead.
 
 ---
 

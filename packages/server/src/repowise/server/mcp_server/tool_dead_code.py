@@ -35,11 +35,11 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._basis import call_resolution_bases
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._federation import Federation, merge_findings
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     _is_workspace_mode,
-    _resolve_all_contexts,
     _resolve_repo_context,
     attach_ignored_arguments,
     filter_rows_by_attr,
@@ -64,38 +64,37 @@ async def _get_dead_code_all_repos(
     apply_limit_note: Callable[[dict[str, Any]], None],
 ) -> dict:
     """Aggregate dead-code findings across every repo in the workspace."""
-    contexts = await _resolve_all_contexts()
-    merged_findings: list[dict] = []
-    count_parts: list[dict[str, Any]] = []
-    merged_withheld: dict[str, dict] = {}
-    merged_gated: dict[str, dict] = {}
 
-    for ctx in contexts:
+    async def _one_repo(ctx: Any) -> tuple[list[dict], dict[str, Any], dict, dict]:
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-
             repo_findings = filter_rows_by_attr(
                 await get_dead_code_findings(session, repository.id, include_withheld=True),
                 "file_path",
                 _get_exclude_spec(ctx.path),
             )
-            repo_findings, repo_withheld = filters.split_withheld(repo_findings)
-            repo_findings, repo_gated = filters.split_gated(repo_findings)
-            for into, held in ((merged_withheld, repo_withheld), (merged_gated, repo_gated)):
-                for name, entry in held.items():
-                    merged = into.setdefault(name, {**entry, "count": 0})
-                    merged["count"] += entry["count"]
-
+            repo_findings, withheld = filters.split_withheld(repo_findings)
+            repo_findings, gated = filters.split_gated(repo_findings)
             git_meta_map = await _load_git_meta_map(session, repository.id, repo_findings)
+        serialized = [
+            serialize_finding(f, git_meta_map, repository=ctx.alias)
+            for f in apply_filters(repo_findings, filters)
+        ]
+        return serialized, summary_counts(repo_findings), withheld, gated
 
-        for f in apply_filters(repo_findings, filters):
-            serialized = serialize_finding(f, git_meta_map, repository=ctx.alias)
-            serialized["repo"] = ctx.alias
-            merged_findings.append(serialized)
-        count_parts.append(summary_counts(repo_findings))
+    fed = Federation()
+    answered = await fed.run(_one_repo)
+    merged_findings = merge_findings((ctx.alias, part[0]) for ctx, part in answered)
+    merged_withheld: dict[str, dict] = {}
+    merged_gated: dict[str, dict] = {}
+    for _, (_, _, withheld, gated) in answered:
+        for into, held in ((merged_withheld, withheld), (merged_gated, gated)):
+            for name, entry in held.items():
+                merged = into.setdefault(name, {**entry, "count": 0})
+                merged["count"] += entry["count"]
 
     summary = build_summary(
-        merge_summary_counts(count_parts),
+        merge_summary_counts([part[1] for _, part in answered]),
         len(merged_findings),
         filters,
         merged_withheld,
@@ -112,6 +111,7 @@ async def _get_dead_code_all_repos(
     }
     apply_limit_note(result_ws)
     result_ws["_meta"] = _build_meta()
+    fed.annotate(result_ws, merged_findings)
     return result_ws
 
 
@@ -248,23 +248,29 @@ async def get_dead_code(
     # --- repo="all": aggregate dead code across all repos ---
     if repo == "all":
         if finding_id:
-            for candidate_ctx in await _resolve_all_contexts():
-                resolved = await get_dead_code(
-                    repo=candidate_ctx.alias,
+            fed = Federation()
+            probes = await fed.run(
+                lambda ctx: get_dead_code(
+                    repo=ctx.alias if _is_workspace_mode() else None,
                     min_confidence="low",
                     finding_id=finding_id,
                 )
+            )
+            # Workspace order decides between two repos that both claim the id.
+            for _, resolved in probes:
                 if resolved.get("resolved"):
                     resolved["workspace"] = True
-                    return resolved
-            return {
-                "mode": "finding",
-                "finding_id": finding_id,
-                "finding": None,
-                "resolved": False,
-                "workspace": True,
-                "_meta": _build_meta(),
-            }
+                    return fed.annotate(resolved)
+            return fed.annotate(
+                {
+                    "mode": "finding",
+                    "finding_id": finding_id,
+                    "finding": None,
+                    "resolved": False,
+                    "workspace": True,
+                    "_meta": _build_meta(),
+                }
+            )
         result_ws = await _get_dead_code_all_repos(filters, limit, tier, _maybe_limit_note)
         attach_ignored_arguments(result_ws, ignored)
         return result_ws

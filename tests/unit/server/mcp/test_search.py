@@ -1879,16 +1879,10 @@ class TestPathlessPagesInCodeLocationModes:
         assert f"{file_page['page_type']}:{file_page['path']}" == "file_page:pkg/cmd/release/list.go"
 
     @pytest.mark.asyncio
-    async def test_federated_rows_carry_path(self, setup_mcp, monkeypatch):
-        from repowise.server.mcp_server import search_codebase, tool_search
+    async def test_federated_rows_carry_path(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
 
         await self._seed()
-        ctx = await tool_search._resolve_repo_context(None)
-
-        async def one_context():
-            return [ctx]
-
-        monkeypatch.setattr(tool_search, "_resolve_all_contexts", one_context)
         res = await search_codebase("listing releases in order", mode="concept", repo="all")
         by_type = {r["page_type"]: r for r in res["results"]}
         assert by_type["file_page"]["path"] == "pkg/cmd/release/list.go"
