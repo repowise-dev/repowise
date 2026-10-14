@@ -154,6 +154,13 @@ _INVOKE_OPERATOR = "invoke"
 _OPERATOR_MODIFIER = "operator"
 
 
+def _imports_a_library(imp: Import) -> bool:
+    """Does *imp* name a JVM library namespace the repository does not hold?"""
+    if classify_jvm_import(imp.module_path, kotlin=True) is None:
+        return False
+    return not imp.resolved_file or imp.resolved_file.startswith(_EXTERNAL_PREFIX)
+
+
 def _is_kotlin_alias(sym: Symbol | None) -> bool:
     return sym is not None and sym.kind == "type_alias" and sym.language == "kotlin"
 
@@ -1422,10 +1429,49 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         declaration types, or a type with no such operator, falls through to
         the function tiers too.
         """
-        if call.receiver_call is not None or self._language_of(file_path) != "kotlin":
+        if not self._may_invoke(file_path, call):
             return None
-        if _INVOKE_OPERATOR not in self._method_names():
+        typed = self._invoked_value_type(file_path, call, caller_id)
+        if typed is None:
             return None
+        type_name, scope, typing_file = typed
+        as_member = replace(call, receiver_name=call.target_name, target_name=_INVOKE_OPERATOR)
+        if "::" in type_name:
+            hit = self._call_typed_receiver(file_path, as_member, caller_id, type_name)
+            return hit if hit is not None and self._is_operator_invoke(hit.callee_id) else None
+        found = self._invoke_target(typing_file, as_member, caller_id, type_name)
+        if found is None:
+            return None
+        typed_call = self._field_typed_call if scope == "field" else self._body_typed_call
+        return typed_call(caller_id, found[0], found[1], call.line)
+
+    def _may_invoke(self, file_path: str, call: CallSite) -> bool:
+        """Is *call* a bare Kotlin call in a repo that declares some ``invoke`` method?"""
+        return (
+            call.receiver_call is None
+            and self._language_of(file_path) == "kotlin"
+            and _INVOKE_OPERATOR in self._method_names()
+        )
+
+    def _invoke_target(
+        self, typing_file: str, as_member: CallSite, caller_id: str, type_name: str
+    ) -> tuple[str, str] | None:
+        """``(operator invoke id, tier)`` *type_name* declares or inherits, if any."""
+        found = self._typed_receiver_target(
+            typing_file, as_member, caller_id, type_name
+        ) or self._inherited_typed_target(
+            typing_file, as_member, caller_id, id_segment_name(type_name)
+        )
+        return found if found is not None and self._is_operator_invoke(found[0]) else None
+
+    def _invoked_value_type(
+        self, file_path: str, call: CallSite, caller_id: str
+    ) -> tuple[str, str, str] | None:
+        """``(type, scope, typing file)`` of the value a bare Kotlin call names, if it may invoke.
+
+        None for an untyped or builtin-typed name, and for a property (not a
+        local or parameter) whose scope also declares a function of the name.
+        """
         name = call.target_name
         type_name, scope, typing_file = self._receiver_type_and_scope(
             file_path, caller_id, "kotlin", name
@@ -1436,20 +1482,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         if scope != "body" and self._function_in_scope(file_path, call, caller_id):
             return None
-        as_member = replace(call, receiver_name=name, target_name=_INVOKE_OPERATOR)
-        if "::" in type_name:
-            hit = self._call_typed_receiver(file_path, as_member, caller_id, type_name)
-            return hit if hit is not None and self._is_operator_invoke(hit.callee_id) else None
-        found = self._typed_receiver_target(
-            typing_file, as_member, caller_id, type_name
-        ) or self._inherited_typed_target(
-            typing_file, as_member, caller_id, id_segment_name(type_name)
-        )
-        if found is None or not self._is_operator_invoke(found[0]):
-            return None
-        if scope == "field":
-            return self._field_typed_call(caller_id, found[0], found[1], call.line)
-        return self._body_typed_call(caller_id, found[0], found[1], call.line)
+        return type_name, scope, typing_file
 
     def _is_operator_invoke(self, sym_id: str) -> bool:
         symbol = self._symbols_by_id.get(sym_id)
@@ -2008,15 +2041,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if names is not None:
             return names
         parsed = self._parsed_files.get(file_path)
-        found: set[str] = set()
-        if parsed is not None and parsed.file_info.language == "kotlin":
-            for imp in parsed.imports:
-                if classify_jvm_import(imp.module_path, kotlin=True) is None:
-                    continue
-                if imp.resolved_file and not imp.resolved_file.startswith(_EXTERNAL_PREFIX):
-                    continue
-                found.update(imp.local_names or [imp.module_path.rsplit(".", 1)[-1]])
-        names = frozenset(found - {"*"})
+        kotlin = parsed is not None and parsed.file_info.language == "kotlin"
+        imports = parsed.imports if kotlin else ()
+        names = frozenset(
+            name
+            for imp in imports
+            if _imports_a_library(imp)
+            for name in imp.local_names or [imp.module_path.rsplit(".", 1)[-1]]
+        ) - {"*"}
         self._library_names[file_path] = names
         return names
 
