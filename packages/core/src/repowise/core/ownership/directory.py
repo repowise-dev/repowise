@@ -68,7 +68,8 @@ class Team:
 class OwnerRef:
     """A declared owner: a team, or an individual (a login or an email)."""
 
-    kind: str  # "team" | "individual"
+    #: "unresolved" is a bare ``@name`` that may be a person or a GitLab group.
+    kind: str  # "team" | "individual" | "unresolved"
     #: The team name, or the individual's login or email (lower-cased).
     name: str
     team: Team | None = None
@@ -89,8 +90,10 @@ class DeclaredOwnership:
         return self._matcher.owners(path)
 
     def from_codeowners(self, owner: str) -> OwnerRef:
-        """``@org/team`` is a team (named by its last segment), an email is an
-        individual, and ``@name`` is a team only when one is declared by that name."""
+        """``@org/team`` is a team (named by its last segment) and an email an
+        individual. A bare ``@name`` is a declared team of that name, else an
+        individual in ``.github/CODEOWNERS`` (GitHub has no bare team handles),
+        else unresolved: on GitLab it may name a group."""
         token = owner.strip()
         if not token.startswith("@"):
             return OwnerRef("individual", token.lower())
@@ -100,7 +103,9 @@ class DeclaredOwnership:
         team = self.teams.get(handle.lower())
         if team is not None:
             return OwnerRef("team", team.name, team)
-        return OwnerRef("individual", handle.lower())
+        if self.codeowners_file == ".github/CODEOWNERS":
+            return OwnerRef("individual", handle.lower())
+        return OwnerRef("unresolved", handle.lower())
 
     def from_backstage(self, owner: str) -> OwnerRef:
         """A Backstage owner ref; without a kind it names a Group, as in Backstage."""
@@ -148,8 +153,14 @@ def _read_teams(path: Path, issues: list[str]) -> list[Team]:
             issues.append(f"{TEAMS_FILE}: larger than {_MAX_TEAMS_BYTES} bytes; not read")
             return []
         docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8")) if d is not None]
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        issues.append(f"{TEAMS_FILE}: cannot read: {exc}")
+    except yaml.YAMLError as exc:
+        # A fixed message: PyYAML quotes the source, which holds member emails.
+        mark = getattr(exc, "problem_mark", None)
+        where = f" near line {mark.line + 1}" if mark is not None else ""
+        issues.append(f"{TEAMS_FILE}: invalid YAML{where}; not read")
+        return []
+    except (OSError, UnicodeDecodeError):
+        issues.append(f"{TEAMS_FILE}: cannot be read as UTF-8 text; not read")
         return []
     teams: list[Team] = []
     for doc in docs:

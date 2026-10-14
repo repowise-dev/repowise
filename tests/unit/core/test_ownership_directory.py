@@ -78,9 +78,10 @@ def test_owner_refs_from_codeowners_and_backstage(tmp_path) -> None:
     assert declared.from_codeowners("@acme/platform") == OwnerRef("team", "platform", platform)
     assert declared.from_codeowners("@gitlab-org/sub/platform").team is platform
     assert declared.from_codeowners("@acme/unknown") == OwnerRef("team", "unknown", None)
-    # A bare handle is a team only when one is declared by that name.
+    # A bare handle is a team only when one is declared by that name; outside
+    # .github/ it may be a GitLab group, so it stays unresolved.
     assert declared.from_codeowners("@platform").kind == "team"
-    assert declared.from_codeowners("@Someone") == OwnerRef("individual", "someone")
+    assert declared.from_codeowners("@Someone") == OwnerRef("unresolved", "someone")
     assert declared.from_codeowners("Dev@Example.com") == OwnerRef("individual", "dev@example.com")
     assert declared.from_backstage("group:default/payments-team").kind == "team"
     assert declared.from_backstage("platform").team is platform
@@ -96,3 +97,33 @@ def test_nothing_declared_is_an_empty_directory(tmp_path) -> None:
     declared = LocalTeamDirectory().load(tmp_path)
     assert (declared.teams, declared.rules, declared.issues) == ({}, [], [])
     assert declared.codeowners_of("a.py") == ()
+
+
+def test_bare_handle_is_an_individual_only_in_a_github_file(tmp_path) -> None:
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "CODEOWNERS").write_text("* @someone\n", encoding="utf-8")
+    declared = LocalTeamDirectory().load(tmp_path)
+    assert declared.from_codeowners("@someone") == OwnerRef("individual", "someone")
+
+
+def test_gitlab_bare_group_handle_is_unresolved(tmp_path) -> None:
+    (tmp_path / ".gitlab").mkdir()
+    (tmp_path / ".gitlab" / "CODEOWNERS").write_text(
+        "[Backend] @backend-group\n/src/\n", encoding="utf-8"
+    )
+    declared = LocalTeamDirectory().load(tmp_path)
+    (owner,) = declared.codeowners_of("src/a.py")
+    assert declared.from_codeowners(owner) == OwnerRef("unresolved", "backend-group")
+
+
+def test_malformed_teams_file_never_echoes_its_content(tmp_path) -> None:
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "teams.yaml").write_text(
+        "kind: Group\nmetadata:\n  annotations:\n"
+        '    repowise.dev/member-emails: "secret.person@acme.com\n  bad: [unclosed\n',
+        encoding="utf-8",
+    )
+    declared = LocalTeamDirectory().load(tmp_path)
+    assert len(declared.issues) == 1
+    assert declared.issues[0].startswith(".repowise/teams.yaml: invalid YAML")
+    assert "secret" not in declared.issues[0] and "acme" not in declared.issues[0]

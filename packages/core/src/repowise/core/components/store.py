@@ -264,8 +264,9 @@ async def component_ownership(
     repo_root: Path | str,
     components: list[tuple[Component, list[str]]],
     bus_factors: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, dict[str, Any]]:
-    """The ``ownership`` block per component name (see :mod:`.ownership`)."""
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """The ``ownership`` block per component name (see :mod:`.ownership`), and
+    the team directory's read problems."""
     from repowise.core.ownership.directory import team_directories
 
     declared = team_directories.get().load(Path(repo_root))
@@ -277,7 +278,4 @@ async def component_ownership(
         )
         for comp, paths in components
     }
-    if declared.issues:
-        for block in out.values():
-            block["directory_issues"] = list(declared.issues)
-    return out
+    return out, list(declared.issues)

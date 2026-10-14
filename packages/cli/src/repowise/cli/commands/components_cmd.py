@@ -185,16 +185,16 @@ async def _ownership(root: Path) -> dict[str, Any]:
                 session, repo_id, {n: p for n, p in files.items() if p}, found.test_files
             )
             comps = [(c, files[c.name]) for c in found.resolved.components]
-            blocks = await component_ownership(
+            blocks, issues = await component_ownership(
                 session, repo_id, root, comps, {n: r["bus_factor"] for n, r in rollups.items()}
             )
-            return {"indexed": True, "components": comps, "blocks": blocks}
+            return {"indexed": True, "components": comps, "blocks": blocks, "issues": issues}
     data = await _list(root)
     declared = team_directories.get().load(root)
     resolved = data["resolved"]
     comps = [(c, resolved.files[c.name]) for c in resolved.components]
     blocks = {c.name: assess_component(c, p, declared, Activity()) for c, p in comps}
-    return {"indexed": False, "components": comps, "blocks": blocks}
+    return {"indexed": False, "components": comps, "blocks": blocks, "issues": declared.issues}
 
 
 @components_group.command("ownership")
@@ -206,14 +206,18 @@ def components_ownership(repo: str | None, fmt: str) -> None:
     data = run_async(_ownership(root))
     blocks = data["blocks"]
     if fmt == "json":
-        emit_json(
-            {
-                "indexed": data["indexed"],
-                "components": [{"name": c.name, **blocks[c.name]} for c, _ in data["components"]],
-            }
-        )
+        out = {
+            "indexed": data["indexed"],
+            "components": [{"name": c.name, **blocks[c.name]} for c, _ in data["components"]],
+        }
+        if data["issues"]:
+            out["directory_issues"] = data["issues"]
+        emit_json(out)
         return
     from rich.markup import escape
+
+    for issue in data["issues"]:
+        console.print(f"[yellow]warning[/yellow] {escape(issue)}")
 
     findings = [(c.name, f) for c, _ in data["components"] for f in blocks[c.name]["findings"]]
     for name, f in findings:

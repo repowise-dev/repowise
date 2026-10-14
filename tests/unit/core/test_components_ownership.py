@@ -27,7 +27,9 @@ def _activity(recent: list[tuple[str, str, str, str]]) -> Activity:
 
 def _declared(codeowners: str = "", teams: list[Team] | None = None) -> DeclaredOwnership:
     return DeclaredOwnership(
-        teams={t.name.lower(): t for t in teams or []}, rules=parse_codeowners(codeowners)
+        teams={t.name.lower(): t for t in teams or []},
+        codeowners_file=".github/CODEOWNERS",
+        rules=parse_codeowners(codeowners),
     )
 
 
@@ -138,3 +140,12 @@ def test_no_history_leaves_activity_unavailable() -> None:
     assert block["basis"] == "unavailable"
     assert "recent" not in block
     assert block["declared_teams"][0]["activity"] == "unknown"
+
+
+def test_unresolved_bare_handle_counts_as_owner_but_raises_nothing() -> None:
+    declared = _declared("/src/pay/ @payments-group\n")
+    declared.codeowners_file = ".gitlab/CODEOWNERS"
+    block = assess_component(_comp(criticality="critical"), _FILES, declared, _activity([]))
+    assert block["declared_unresolved"] == 1
+    assert block["findings"] == []
+    assert "payments-group" not in json.dumps(block)

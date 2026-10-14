@@ -54,7 +54,7 @@ class Activity:
 
     def keys_of(self, ref: OwnerRef) -> set[str] | None:
         """The identities *ref* covers that history knows; ``None`` when none is known."""
-        if self.resolve is None:
+        if self.resolve is None or ref.kind == "unresolved":
             return None
         if ref.kind == "team":
             team = ref.team
@@ -123,6 +123,7 @@ def assess_component(
     owned = _declared_files(comp, files, declared)
     teams: list[dict[str, Any]] = []
     individuals = {"count": 0, "no_recent_changes": 0, "unknown": 0}
+    unresolved = 0
     states: list[str] = []
     for ref, paths in owned.items():
         state = _activity_state(ref, paths, activity)
@@ -140,6 +141,8 @@ def assess_component(
                         f"{len(paths)} file(s) here in the last {ACTIVITY_WINDOW_DAYS} days.",
                     )
                 )
+        elif ref.kind == "unresolved":
+            unresolved += 1
         else:
             individuals["count"] += 1
             if state in ("no_recent_changes", "unknown"):
@@ -159,6 +162,9 @@ def assess_component(
         out["declared_teams"] = sorted(teams, key=lambda t: (-t["files"], t["team"]))
     if individuals["count"]:
         out["declared_individuals"] = individuals
+    if unresolved:
+        # Bare handles that may be a person or a group: counted, never named.
+        out["declared_unresolved"] = unresolved
     if activity.available:
         out["recent"] = {
             "commits": len({s for p in files for s in activity.recent_commits.get(p, ())}),

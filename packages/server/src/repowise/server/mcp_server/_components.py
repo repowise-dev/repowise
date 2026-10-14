@@ -2,9 +2,10 @@
 
 Both are opt-in: a ``component:<name>`` target, or ``include=["components"]``.
 Neither runs on a default call. A component card gains declared against
-observed ownership only with ``include=["ownership"]``. The resolved components are cached per repo,
-index state, catalog file times, workspace graph and exclusion rules, so a
-batch of component targets and a later overview resolve them once.
+observed ownership only with ``include=["ownership"]``. The resolved
+components are cached per repo, index state, catalog file times, workspace
+graph and exclusion rules, so a batch of component targets and a later
+overview resolve them once.
 """
 
 from __future__ import annotations
@@ -145,9 +146,10 @@ async def component_cards(
         else {}
     )
     owners: dict[str, dict[str, Any]] = {}
+    directory_issues: list[str] = []
     if ownership:
         found_comps = {c.name: c for c in wanted.values() if c is not None}
-        owners = await component_ownership(
+        owners, directory_issues = await component_ownership(
             session,
             repository.id,
             repo_root,
@@ -179,7 +181,11 @@ async def component_cards(
             card["sample_files"] = files[:_SAMPLE_FILES]
             card["facts"] = facts
         if comp.name in owners:
-            card["ownership"] = owners[comp.name]
+            card["ownership"] = dict(owners[comp.name])
+            if directory_issues:
+                # Once per call, on the first card that carries ownership.
+                card["ownership"]["directory_issues"] = directory_issues
+                directory_issues = []
         cards[target] = card
     return cards
 
