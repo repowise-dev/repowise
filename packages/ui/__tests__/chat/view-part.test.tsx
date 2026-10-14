@@ -53,9 +53,12 @@ describe("ViewPartList", () => {
     render(<ViewPartList views={[BAR]} buildRefHref={href} />);
     const figure = part("c1");
 
-    fireEvent.click(within(figure).getByRole("button", { name: "Data" }));
+    const toggle = within(figure).getByRole("button", { name: "Data" });
+    fireEvent.click(toggle);
 
-    expect(within(figure).getByRole("button", { name: "Hide data" })).toHaveAttribute("aria-expanded", "true");
+    // The label stays put; aria-expanded carries the state.
+    expect(toggle).toHaveTextContent(/^Data$/);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
     const data = figure.querySelector("[data-view-data]") as HTMLElement;
     expect(data).not.toHaveClass("hidden");
     const table = within(data).getByRole("table");
@@ -102,6 +105,59 @@ describe("ViewPartList", () => {
     expect(part("c3").querySelector("[data-view-stale]")).toHaveTextContent(
       "Index behind the code it read",
     );
+  });
+
+  it("plots five series and points to the data table for the rest", () => {
+    const keys = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"];
+    const { sort: _sort, ...unsorted } = BAR;
+    const wide: ChartView = {
+      ...unsorted,
+      id: "w1",
+      data: {
+        columns: [
+          { key: "component", label: "Component" },
+          ...keys.map((key) => ({ key, label: key.toUpperCase(), unit: "changes" })),
+        ],
+        rows: [
+          { component: "auth", ...Object.fromEntries(keys.map((k, i) => [k, i + 1])) },
+          { component: "search", ...Object.fromEntries(keys.map((k, i) => [k, i + 2])) },
+        ],
+        total_rows: 2,
+        truncated: false,
+      },
+      series: keys,
+    };
+    render(<ViewPartList views={[wide]} />);
+    const figure = part("w1");
+    const legend = within(figure).getByRole("list");
+
+    expect(within(legend).getAllByRole("listitem")).toHaveLength(6);
+    expect(legend).toHaveTextContent("S5");
+    expect(legend).not.toHaveTextContent("S6");
+    expect(legend.querySelector("[data-view-undrawn]")).toHaveTextContent("2 more series in the data table");
+    expect(figure.querySelectorAll(".recharts-bar")).toHaveLength(5);
+    // The table keeps every series.
+    expect(within(figure).getAllByRole("columnheader")).toHaveLength(8);
+  });
+
+  it("separates stacked segments with a seam and lines with dashes", () => {
+    const lines: ChartView = { ...STACKED, id: "l2", chart_type: "line" };
+    render(<ViewPartList views={[STACKED, lines]} />);
+
+    const segment = part("c2").querySelector(".recharts-bar-rectangle path");
+    expect(segment).toHaveAttribute("stroke", "var(--color-bg-surface)");
+    const dashes = [...part("l2").querySelectorAll(".recharts-line-curve")].map((el) =>
+      el.getAttribute("stroke-dasharray"),
+    );
+    expect(dashes).toHaveLength(2);
+    expect(new Set(dashes).size).toBe(2);
+  });
+
+  it("draws nothing for a donut with no series instead of failing", () => {
+    render(<ViewPartList views={[{ ...DONUT, id: "d0", series: [] }]} />);
+
+    expect(part("d0").querySelector("svg.recharts-surface")).toBeNull();
+    expect(within(part("d0")).queryByRole("list")).toBeNull();
   });
 
   it("labels each donut part with its value", () => {

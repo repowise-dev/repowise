@@ -37,10 +37,11 @@ import { BasisNote, RefView, refLabel, type RefHref } from "../cards/evidence-ca
 import { cn } from "../lib/cn";
 
 /**
- * Series fills in fixed order, never cycled: the share steps (ink stepped
- * toward the well, each clearing 3:1) then the neutral steps for series six
- * to eight. No hue, so a series never reads as navigation, model work or a
- * health verdict, and the legend names every one.
+ * Series fills in fixed order, never cycled: the share steps, ink stepped
+ * toward the well, each clearing 3:1 on the page and a card. No hue, so a
+ * series never reads as navigation, model work or a health verdict. Only
+ * five clear the floor, so a chart plots its first five series and the
+ * legend points to the data table for the rest.
  */
 const SERIES_FILLS = [
   "var(--color-share-1)",
@@ -48,12 +49,14 @@ const SERIES_FILLS = [
   "var(--color-share-3)",
   "var(--color-share-4)",
   "var(--color-share-5)",
-  "var(--color-neutral-1)",
-  "var(--color-neutral-2)",
-  "var(--color-neutral-3)",
 ] as const;
+/** Lines differ by dash as well as lightness, one pattern per fill. */
+const LINE_DASHES = ["", "6 3", "2 3", "8 3 2 3", "1 2"] as const;
 
 const seriesFill = (i: number): string => SERIES_FILLS[Math.min(i, SERIES_FILLS.length - 1)]!;
+const lineDash = (i: number): string => LINE_DASHES[Math.min(i, LINE_DASHES.length - 1)]!;
+/** The series a chart draws; the rest stay in its data table. */
+const drawnSeries = (view: ChartView): string[] => view.series.slice(0, SERIES_FILLS.length);
 
 const COVERAGE_LABEL: Record<string, string> = {
   attribution: "Attribution coverage",
@@ -193,7 +196,8 @@ function ProvenanceLine({ part }: { part: TableView | ChartView }) {
 
 function legendItems(view: ChartView): Array<{ label: string; fill: string; value?: ViewCell }> {
   if (view.chart_type === "donut") {
-    const key = view.series[0]!;
+    const key = view.series[0];
+    if (key === undefined) return [];
     return view.data.rows.map((row, i) => ({
       label: cellText(row[view.x] ?? null),
       fill: seriesFill(i),
@@ -202,32 +206,45 @@ function legendItems(view: ChartView): Array<{ label: string; fill: string; valu
   }
   if (view.series.length < 2) return [];
   const labels = new Map(view.data.columns.map((c) => [c.key, c.label]));
-  return view.series.map((key, i) => ({ label: labels.get(key) ?? key, fill: seriesFill(i) }));
+  return drawnSeries(view).map((key, i) => ({ label: labels.get(key) ?? key, fill: seriesFill(i) }));
 }
 
 function ChartLegend({ view }: { view: ChartView }) {
   const items = legendItems(view);
+  const undrawn = view.chart_type === "donut" ? 0 : view.series.length - drawnSeries(view).length;
   if (items.length === 0) return null;
   return (
     <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-secondary)]">
       {items.map((item, i) => (
         <li key={i} className="inline-flex items-center gap-1.5">
-          <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: item.fill }} />
+          {view.chart_type === "line" ? (
+            <svg aria-hidden width="16" height="6" className="shrink-0">
+              <line x1="0" y1="3" x2="16" y2="3" stroke={item.fill} strokeWidth="2" strokeDasharray={lineDash(i)} />
+            </svg>
+          ) : (
+            <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: item.fill }} />
+          )}
           <span>{item.label}</span>
           {item.value !== undefined && (
             <span className="tabular-nums text-[var(--color-text-tertiary)]">{cellText(item.value)}</span>
           )}
         </li>
       ))}
+      {undrawn > 0 && (
+        <li data-view-undrawn={undrawn} className="text-[var(--color-text-tertiary)]">
+          {undrawn} more series in the data table
+        </li>
+      )}
     </ul>
   );
 }
 
 function ChartPlot({ view }: { view: ChartView }) {
+  const series = drawnSeries(view);
   const labels = new Map(view.data.columns.map((c) => [c.key, c.label]));
   const rows = view.data.rows.map((row) => {
     const point: Record<string, string | number | null> = { [X_KEY]: cellText(row[view.x] ?? null) };
-    for (const key of view.series) {
+    for (const key of series) {
       const value = row[key];
       point[key] = typeof value === "number" ? value : null;
     }
@@ -242,7 +259,8 @@ function ChartPlot({ view }: { view: ChartView }) {
   );
 
   if (view.chart_type === "donut") {
-    const key = view.series[0]!;
+    const key = series[0];
+    if (key === undefined) return null;
     return (
       <div style={{ height: 180 }}>
         <ResponsiveContainer width="100%" height="100%">
@@ -276,12 +294,13 @@ function ChartPlot({ view }: { view: ChartView }) {
             <XAxis dataKey={X_KEY} tick={AXIS_TICK} axisLine={false} tickLine={false} tickFormatter={(v: string) => short(v, 14)} />
             <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} />
             {tooltip}
-            {view.series.map((key, i) => (
+            {series.map((key, i) => (
               <Line
                 key={key}
                 type="monotone"
                 dataKey={key}
                 stroke={seriesFill(i)}
+                strokeDasharray={lineDash(i)}
                 strokeWidth={2}
                 dot={rows.length <= 24}
                 connectNulls={false}
@@ -314,12 +333,13 @@ function ChartPlot({ view }: { view: ChartView }) {
             tickFormatter={(v: string) => short(v)}
           />
           {tooltip}
-          {view.series.map((key, i) => (
+          {series.map((key, i) => (
             <Bar
               key={key}
               dataKey={key}
               fill={seriesFill(i)}
-              {...(stacked ? { stackId: "parts" } : {})}
+              // A surface-coloured seam keeps stacked segments apart beyond their lightness.
+              {...(stacked ? { stackId: "parts", stroke: "var(--color-bg-surface)", strokeWidth: 1 } : {})}
               maxBarSize={18}
               isAnimationActive={false}
             />
@@ -374,7 +394,7 @@ function ChartPart({ view, buildRefHref, domId }: PartProps & { view: ChartView 
         onClick={() => setShowData((open) => !open)}
         className="inline-flex min-h-8 items-center rounded-md text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] print:hidden"
       >
-        {showData ? "Hide data" : "Data"}
+        Data
       </button>
       {/* Always mounted so print shows it; hidden on screen until asked for. */}
       <div id={tableId} data-view-data="" className={cn(!showData && "hidden print:block")}>
