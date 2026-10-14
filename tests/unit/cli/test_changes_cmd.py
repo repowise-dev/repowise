@@ -158,15 +158,13 @@ def test_export_windows_and_formats(tmp_path, monkeypatch):
         ["export", "--path", str(root), "--since", "2026-02-01", "--until", "2026-04-01"],
     )
     assert inside.exit_code == 0, inside.output
-    data = json.loads(inside.stdout)
+    records = [json.loads(line) for line in inside.stdout.splitlines()]
     assert "evidence 1/1: pr-5" in inside.stderr
-    assert [c["id"] for c in data["changes"]] == ["pr-5"]
-    assert data["changes"][0]["evidence"]["items"][0]["kind"] == "owners"
+    assert [c["id"] for c in records] == ["pr-5"]
+    assert records[0]["evidence"]["items"][0]["kind"] == "owners"
 
-    outside = json.loads(
-        runner.invoke(changes_group, ["export", "--path", str(root), "--since", "2026-03-02"]).stdout
-    )
-    assert outside["changes"] == []
+    outside = runner.invoke(changes_group, ["export", "--path", str(root), "--since", "2026-03-02"])
+    assert outside.exit_code == 0 and outside.stdout == ""
 
     csv_out = runner.invoke(changes_group, ["export", "--path", str(root), "--format", "csv"])
     lines = csv_out.stdout.strip().splitlines()

@@ -50,13 +50,20 @@ function valueText(item: EvidenceItem): string {
 async function EvidenceChecklist({ repoId, changeId }: { repoId: string; changeId: string }) {
   const t = await getTranslations("views.changes");
   let evidence;
+  let building = false;
   try {
-    evidence = (await getChange(repoId, changeId, { evidence: true })).evidence;
+    const change = await getChange(repoId, changeId, { evidence: true });
+    evidence = change.evidence;
+    building = change.evidence_building ?? false;
   } catch {
     evidence = null;
   }
   if (!evidence) {
-    return <p className="text-xs text-[var(--color-text-tertiary)]">{t("evidenceUnavailable")}</p>;
+    return (
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        {t(building ? "evidenceBuilding" : "evidenceUnavailable")}
+      </p>
+    );
   }
   return (
     <>

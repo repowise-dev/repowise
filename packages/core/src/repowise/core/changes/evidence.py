@@ -11,6 +11,19 @@ delta, tests, contracts, risk) plus the index facts in :class:`EvidenceInputs`
 and decides each item's status here, so the CLI, REST, MCP and a PR comment
 cannot reach different verdicts from the same facts. Gathering those facts is
 :mod:`.collect`'s job; nothing here does IO.
+
+Detail rows a policy reads have fixed keys (the local change policy in
+``repowise.core.policy`` evaluates them):
+
+* ``components_touched``: ``{name, source, owner, criticality, tags, files,
+  bus_factor}``; ``owner`` is a team name or ``None``, ``bus_factor`` an int
+  when measured, else ``None``;
+* ``reaching_tests``: one row per changed source file, ``{path, tests, ...}``;
+  ``tests`` lists test ids, ``[]`` only for a measured absence, ``None`` when
+  nothing knows;
+* ``contracts``: ``{path, breaking, ...}``;
+* ``provenance``: one row per commit, ``{sha, label, tier}``;
+* ``decisions_crossed``: ``{id, title, authority, status, paths}``.
 """
 
 from __future__ import annotations
@@ -130,21 +143,23 @@ class EvidenceInputs:
     #: Touched production paths (no tests), used to judge owner and test gaps.
     #: ``None`` takes every manifest path.
     code_paths: Sequence[str] | None = None
-    #: ``{name, source, owner, criticality, tags, files}`` per touched component.
+    #: ``{name, source, owner, criticality, tags, files, bus_factor}`` per
+    #: touched component.
     components: Sequence[Mapping[str, Any]] | Unavailable | None = None
     #: ``{path: [owner, ...]}`` from CODEOWNERS and component owners; a path
     #: with no declared owner is absent. ``owner_sources`` names what was read.
     owners: Mapping[str, Sequence[str]] | Unavailable | None = None
     owner_sources: Sequence[str] = ()
-    #: ``{name, paths, reasons}``, best first, without scores.
+    #: ``{name, paths, reasons}``, by name; no score, count or rank.
     reviewers: Sequence[Mapping[str, Any]] | Unavailable | None = None
-    #: ``{contract_id, type, role, file}`` for workspace contracts in touched files.
+    #: ``{path, contract_id, type, role}`` for workspace contracts in touched files.
     contracts: Sequence[Mapping[str, Any]] | Unavailable | None = None
     #: ``{repo, file, contract_id, provider_file}`` for other repos' consumers.
     consumers: Sequence[Mapping[str, Any]] | Unavailable | None = None
     #: ``{id, title, authority, status, path}`` per governing decision crossed.
     decisions: Sequence[Mapping[str, Any]] | Unavailable | None = None
-    #: The Change Record's provenance block (``label``, counts, ``coverage``).
+    #: The provenance summary (``label``, counts, ``coverage``) plus
+    #: ``commits``: ``[{sha, label, tier}]``.
     provenance: Mapping[str, Any] | Unavailable | None = None
 
 
@@ -265,32 +280,48 @@ def _tests(bundle: ChangeReviewBundle, code: list[str]) -> EvidenceItem:
         return _unknown(kind, label, bundle.lane("tests").reason or "not gathered", source)
     by_basis = tests.get("recommendations_by_primary_basis") or {}
     files = {row["source_file"]: row for row in tests.get("files") or []}
-    wanted = set(code)
-    untested = sorted(
-        p for p, row in files.items() if p in wanted and row.get("status") == "unknown"
-    )
-    measured = int(by_basis.get("measured", 0))
-    inferred = int(by_basis.get("inferred", 0))
     coverage = tests.get("coverage") or {}
-    details: list[dict[str, Any]] = [
-        {
-            "path": p,
-            "status": row.get("status"),
-            "measured_tests": row.get("measured_tests_total", 0),
-            "inferred_tests": row.get("inferred_tests_total", 0),
-        }
-        for p, row in sorted(files.items())
-        if p in wanted
-    ]
-    if not coverage.get("map_present"):
-        details.append({"note": "no measured coverage map; reach is graph-inferred"})
+    # An empty answer is a known absence only against a current measured map.
+    map_current = bool(coverage.get("map_present")) and (
+        (coverage.get("freshness") or {}).get("status") == "current"
+    )
+    rows: list[dict[str, Any]] = []
+    for path in sorted(set(code)):
+        row = files.get(path)
+        measured = list(row.get("measured_tests") or []) if row else []
+        found = sorted(set(measured) | set(row.get("inferred_tests") or [])) if row else []
+        if found:
+            reach: list[str] | None = found
+        elif row is not None and map_current:
+            reach = []
+        else:
+            reach = None
+        rows.append(
+            {
+                "path": path,
+                "tests": reach,
+                "measured": bool(measured) or reach == [],
+                "measured_tests": len(measured),
+                "inferred_tests": (row or {}).get("inferred_tests_total", 0),
+            }
+        )
+    absent = sum(r["tests"] == [] for r in rows)
+    unknown = sum(r["tests"] is None for r in rows)
+    value = {
+        "measured": int(by_basis.get("measured", 0)),
+        "inferred": int(by_basis.get("inferred", 0)),
+        "files_without_tests": absent,
+        "files_unknown": unknown,
+    }
+    if rows and unknown == len(rows):
+        return EvidenceItem(kind, label, "unknown", "unresolved", value, rows, source)
     return EvidenceItem(
         kind,
         label,
-        "attention" if untested else "ok",
-        "measured" if measured else "inferred",
-        {"measured": measured, "inferred": inferred, "files_without_tests": len(untested)},
-        details,
+        "attention" if absent or unknown else "ok",
+        "measured" if rows and all(r["measured"] for r in rows) else "inferred",
+        value,
+        rows,
         source,
     )
 
@@ -303,8 +334,8 @@ def _contracts(bundle: ChangeReviewBundle, inputs: EvidenceInputs) -> EvidenceIt
     if reason and symbol is None:
         return _unknown(kind, label, reason, source)
     rows = [] if reason else [dict(r) for r in inputs.contracts]  # type: ignore[union-attr]
-    details = rows + [
-        {"symbol_id": c.symbol_id, "change": c.change, "file": c.file, "breaking": True}
+    details = [{**r, "breaking": False} for r in rows] + [
+        {"path": c.file, "symbol_id": c.symbol_id, "change": c.change, "breaking": True}
         for c in breaking
     ]
     return EvidenceItem(
@@ -393,14 +424,17 @@ def _provenance(inputs: EvidenceInputs) -> EvidenceItem:
     if reason := _missing(inputs.provenance):
         return _unknown(kind, label, reason, source)
     block = dict(inputs.provenance)  # type: ignore[arg-type]
-    # Unknown is never human: a change with any unattributed commit stays unknown.
+    commits = [dict(c) for c in block.pop("commits", None) or []]
+    # Unknown is never human: a change with any unattributed commit stays
+    # unknown, and an unknown label answers nothing.
+    unknown = block["label"] == "unknown"
     return EvidenceItem(
         kind,
         label,
-        "unknown" if block["label"] == "unknown" else "ok",
-        "measured",
-        {"label": block["label"], "coverage": block.get("coverage")},
-        [block],
+        "unknown" if unknown else "ok",
+        "unresolved" if unknown else "measured",
+        block,
+        commits,
         source,
     )
 

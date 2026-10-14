@@ -3,13 +3,14 @@
 ``list`` pages the indexed changes newest first; ``show`` prints one with its
 evidence checklist, as the native versioned JSON record or, with
 ``--format in-toto``, as an in-toto Statement v1; ``export`` writes every
-change merged in a window with its checklist, as JSON or CSV. All read the
+change merged in a window with its checklist, as JSON Lines or CSV. All read the
 index; ``repowise init`` or ``update`` fills it. A checklist is built on first
 read (seconds per change) and kept on the change until ``--refresh``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -71,9 +72,18 @@ async def _show(root: Path, ref: str, *, evidence: bool, refresh: bool) -> dict 
         return record
 
 
+#: Changes read from the index per page during an export.
+_EXPORT_PAGE = 50
+
+
 async def _export(
-    root: Path, since: datetime | None, until: datetime | None, refresh: bool
-) -> list[dict] | None:
+    root: Path,
+    since: datetime | None,
+    until: datetime | None,
+    refresh: bool,
+    emit: Callable[[dict], None],
+) -> int | None:
+    """Emit each change in the window with its checklist, a page at a time; the count."""
     from repowise.core.attribution import attribution_enabled
     from repowise.core.changes.collect import change_evidence
     from repowise.core.changes.record import change_record
@@ -83,19 +93,26 @@ async def _export(
         if opened is None:
             return None
         session, repo_id = opened
-        rows, total = await list_changes(session, repo_id, since=since, until=until, limit=None)
         on = attribution_enabled(root)
-        out = []
-        for i, row in enumerate(rows, 1):
-            if refresh or not row.evidence_json:
-                click.echo(f"evidence {i}/{total}: {row.change_id}", err=True)
-            record = change_record(row, attribution=on)
-            got = await change_evidence(session, repo_id, root, row, refresh=refresh)
-            record["evidence"] = got.to_dict()
-            out.append(record)
-            # Kept as it goes, so an interrupted export resumes where it stopped.
-            await session.commit()
-        return out
+        done = 0
+        while True:
+            rows, total = await list_changes(
+                session, repo_id, since=since, until=until, limit=_EXPORT_PAGE, offset=done
+            )
+            for row in rows:
+                done += 1
+                if refresh or not row.evidence_json:
+                    click.echo(f"evidence {done}/{total}: {row.change_id}", err=True)
+                record = change_record(row, attribution=on)
+                record["evidence"] = (
+                    await change_evidence(session, repo_id, root, row, refresh=refresh)
+                ).to_dict()
+                # Kept as it goes, so an interrupted export resumes where it stopped.
+                await session.commit()
+                emit(record)
+            session.expunge_all()
+            if len(rows) < _EXPORT_PAGE:
+                return done
 
 
 _STATUS_STYLE = {"ok": "green", "attention": "yellow", "unknown": "dim"}
@@ -144,30 +161,28 @@ _CSV_COLUMNS = (
 )
 
 
-def _csv(records: list[dict]) -> str:
-    """One row per change and evidence item; ``value`` is its JSON."""
+def _csv_rows(record: dict) -> str:
+    """One CSV row per evidence item of *record*; ``value`` is its JSON."""
     import csv
     import io
     import json
 
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(_CSV_COLUMNS)
-    for r in records:
-        for item in r["evidence"]["items"]:
-            writer.writerow(
-                [
-                    r["id"],
-                    r["merged_at"] or "",
-                    r["title"],
-                    item["kind"],
-                    item["label"],
-                    item["status"],
-                    item["basis"],
-                    json.dumps(item["value"], sort_keys=True),
-                    item["source"],
-                ]
-            )
+    for item in record["evidence"]["items"]:
+        writer.writerow(
+            [
+                record["id"],
+                record["merged_at"] or "",
+                record["title"],
+                item["kind"],
+                item["label"],
+                item["status"],
+                item["basis"],
+                json.dumps(item["value"], sort_keys=True),
+                item["source"],
+            ]
+        )
     return buf.getvalue()
 
 
@@ -295,26 +310,36 @@ def changes_show(ref: str, repo: str | None, fmt: str, evidence: bool, refresh: 
     "--since", type=click.DateTime(), default=None, help="Merged on or after this date (UTC)."
 )
 @click.option("--until", type=click.DateTime(), default=None, help="Merged before this date (UTC).")
-@format_option(choices=("json", "csv"), default="json", help="JSON records or CSV rows.")
+@format_option(
+    choices=("json", "csv"),
+    default="json",
+    help="json: one record per line (JSON Lines); csv: one row per change and item.",
+)
 @click.option("--refresh", is_flag=True, help="Rebuild every evidence checklist.")
 def changes_export(
     repo: str | None, since: datetime | None, until: datetime | None, fmt: str, refresh: bool
 ) -> None:
-    """Export the changes merged in a window, each with its evidence checklist."""
+    """Export the changes merged in a window, each with its evidence checklist.
+
+    A change without a kept checklist has one built and kept first, which
+    costs a few seconds per change (about 7 to 9s measured on a mid-size
+    repository); kept checklists are read back at no cost. Records stream as
+    they are ready, and progress goes to stderr.
+    """
+    import json
     from datetime import UTC
 
     root = _repo_root(repo)
     since, until = (d.replace(tzinfo=UTC) if d else None for d in (since, until))
-    records = run_async(_export(root, since, until, refresh))
-    if records is None:
-        _no_index()
     if fmt == "csv":
-        click.echo(_csv(records), nl=False)
-        return
-    emit_json(
-        {
-            "since": since.isoformat() if since else None,
-            "until": until.isoformat() if until else None,
-            "changes": records,
-        }
-    )
+        click.echo(",".join(_CSV_COLUMNS))
+
+        def emit(record: dict) -> None:
+            click.echo(_csv_rows(record), nl=False)
+    else:
+
+        def emit(record: dict) -> None:
+            click.echo(json.dumps(record, default=str))
+
+    if run_async(_export(root, since, until, refresh, emit)) is None:
+        _no_index()

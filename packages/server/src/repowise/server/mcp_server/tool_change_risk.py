@@ -435,6 +435,7 @@ async def get_change_risk(
             delta,
             tuple(extensions or ()),
             tuple(result.riskignore_excludes + result.request_excludes),
+            scoped=bool(extensions or exclude_patterns or includes or baseline != 200),
         )
     # source: live_git marks that the *score* is computed from the working
     # checkout's git. The two blocks above are index-backed, so the freshness
@@ -459,16 +460,20 @@ async def _evidence_block(
     delta: Any,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
+    *,
+    scoped: bool,
 ) -> dict[str, Any]:
     """The change's evidence checklist, reusing the score and delta already computed.
 
-    A revspec naming a stored change's head commit carries that change's id
-    and stored provenance, so this is the same record ``changes show`` serves.
+    A revspec naming a stored change, asked with no filters of the caller's
+    own, returns that change's kept record (building and keeping it when
+    there is none), so this and ``repowise changes show`` serve the same one.
     """
     from repowise.core.changes.collect import (
+        NO_INDEX,
+        change_evidence,
         evidence_for_revspec,
         stored_change_at,
-        stored_provenance,
     )
     from repowise.core.persistence.database import get_session
 
@@ -478,25 +483,25 @@ async def _evidence_block(
         "extensions": extensions,
         "exclude_patterns": exclude_patterns,
     }
+    no_index = NO_INDEX
     session_factory = getattr(ctx, "session_factory", None)
     if session_factory is not None:
         try:
             async with get_session(session_factory) as session:
                 repo = await _get_repo(session)
                 row = await stored_change_at(session, repo.id, ctx.path, revspec)
-                if row is not None:
-                    kwargs.update(
-                        change_id=row.change_id,
-                        author_email=row.author_email,
-                        provenance=stored_provenance(row, ctx.path),
+                if row is not None and not scoped and not result.riskignore_excludes:
+                    evidence = await change_evidence(
+                        session, repo.id, ctx.path, row, risk=result, health=delta
                     )
-                evidence = await evidence_for_revspec(
-                    session, repo.id, ctx.path, revspec, **kwargs
-                )
+                else:
+                    evidence = await evidence_for_revspec(
+                        session, repo.id, ctx.path, revspec, row=row, **kwargs
+                    )
                 return evidence.to_dict()
-        except (LookupError, SQLAlchemyError):
-            pass
-    evidence = await evidence_for_revspec(None, "", ctx.path, revspec, **kwargs)
+        except (LookupError, SQLAlchemyError) as exc:
+            no_index = f"the index could not be read: {type(exc).__name__}: {exc}"
+    evidence = await evidence_for_revspec(None, "", ctx.path, revspec, no_index=no_index, **kwargs)
     return evidence.to_dict()
 
 

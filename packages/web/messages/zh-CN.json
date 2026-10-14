@@ -277,6 +277,7 @@
       "detailEvidence": "证据清单",
       "evidenceLoading": "正在生成证据清单。首次查看一个变更需要几秒钟。",
       "evidenceUnavailable": "无法为此变更生成证据清单。",
+      "evidenceBuilding": "证据清单仍在生成中，请稍后重新加载页面。",
       "evidenceGenerated": "生成于 {date}",
       "statusOk": "正常",
       "statusAttention": "需关注",

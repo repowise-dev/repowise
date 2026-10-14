@@ -99,6 +99,8 @@ class ChangeRecord(ChangeSummary):
     metadata: ChangeForgeMetadata
     # Present only when the request asked for it (``?evidence=true``).
     evidence: ChangeEvidence | None = None
+    # True when the checklist is still being built; ask again shortly.
+    evidence_building: bool = False
 
 
 class ChangeListResponse(BaseModel):

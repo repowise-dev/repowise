@@ -1,8 +1,9 @@
-"""Gather a change's evidence from git and the index, and cache it on its row.
+"""Gather a change's evidence from git and the index, and keep it on its row.
 
 :func:`evidence_for_revspec` reviews any commit, range or the working tree;
-:func:`change_evidence` does it for a stored Change Record and keeps the
-result on ``changes.evidence_json``. Both end in
+:func:`build_stored_evidence` does it for a stored Change Record without
+writing, :func:`save_evidence` keeps the result on ``changes.evidence_json``,
+and :func:`change_evidence` does both. All end in
 :func:`~repowise.core.changes.evidence.build_change_evidence`.
 
 A review costs seconds per change (the health comparison parses both sides),
@@ -15,12 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+# Module-level so a move of these names breaks at import, not on first use.
+from repowise.core.analysis.patch_coverage.suggest import CODEOWNERS_PATHS, _codeowners_rules
 from repowise.core.changes.evidence import (
     EVIDENCE_SCHEMA_VERSION,
     ChangeEvidence,
@@ -34,8 +38,15 @@ logger = structlog.get_logger(__name__)
 #: Reviewers listed per change; more is no better than none.
 REVIEWER_LIMIT = 5
 
+NO_INDEX = "the repository has no index"
+
 #: Decision statuses that no longer bind anything.
 _RETIRED = frozenset({"dismissed", "superseded", "deprecated"})
+
+#: The basis kind behind a reviewer, never a weight or a count.
+_REVIEWER_REASONS = {"touched": "owns path", "co-change history": "co-change"}
+
+_CO_AUTHOR = re.compile(r"^\s*(.*?)\s*<([^>]*)>\s*$")
 
 
 # -- review -------------------------------------------------------------------
@@ -90,19 +101,19 @@ async def evidence_for_revspec(
     revspec: str | None,
     *,
     change_id: str | None = None,
-    provenance: dict[str, Any] | Unavailable | None = None,
-    author_email: str | None = None,
+    row: Any = None,
     risk: Any = None,
     health: Any = None,
     extensions: Sequence[str] = (),
     exclude_patterns: Sequence[str] = (),
+    no_index: str = NO_INDEX,
 ) -> ChangeEvidence:
     """The checklist for *revspec* (``None`` is the working tree).
 
-    *risk* and *health* are results the caller already computed; omitted, the
-    review computes them. *provenance* omitted is read from the stored commit
-    labels of the range. Without a *session* (no index) only the git-derived
-    items are filled.
+    *row* is the stored change *revspec* names, when there is one: its id,
+    commits and stored provenance are used. *risk* and *health* are results
+    the caller already computed; omitted, the review computes them. Without a
+    *session* only the git-derived items are filled, and *no_index* says why.
     """
     from repowise.core.analysis.test_impact import analyze_test_impact
     from repowise.core.persistence.crud import get_repository
@@ -114,7 +125,7 @@ async def evidence_for_revspec(
     except (ValueError, OSError) as exc:
         statuses, missing = {}, str(exc)
     else:
-        missing = None if session is not None else "the repository has no index"
+        missing = None if session is not None else no_index
     tests = None
     if statuses and session is not None:
         try:
@@ -133,6 +144,8 @@ async def evidence_for_revspec(
         extensions=ext,
         exclude_patterns=excl,
     )
+    if row is not None:
+        change_id = row.change_id
     if missing:
         gone = Unavailable(missing)
         inputs = EvidenceInputs(
@@ -142,19 +155,18 @@ async def evidence_for_revspec(
             contracts=gone,
             consumers=gone,
             decisions=gone,
-            provenance=provenance or gone,
+            provenance=gone,
         )
         index_commit = None
     else:
-        if provenance is None:
-            provenance = await _range_provenance(session, repo_id, root, revspec)
+        shas = await asyncio.to_thread(_change_commits, root, revspec, row)
         inputs = await gather_inputs(
             session,
             repo_id,
             Path(root),
             [e.path for e in bundle.manifest],
-            provenance=provenance,
-            author_email=author_email,
+            shas=shas,
+            row=row,
         )
         index_commit = getattr(await get_repository(session, repo_id), "head_commit", None)
     return build_change_evidence(
@@ -165,43 +177,58 @@ async def evidence_for_revspec(
 # -- stored changes -------------------------------------------------------------
 
 
-async def change_evidence(
-    session: Any, repo_id: str, repo_root: Path | str, row: Any, *, refresh: bool = False
+async def build_stored_evidence(
+    session: Any,
+    repo_id: str,
+    repo_root: Path | str,
+    row: Any,
+    *,
+    risk: Any = None,
+    health: Any = None,
 ) -> ChangeEvidence:
-    """The stored change's checklist: the kept one, or built and kept now.
+    """The stored change's checklist, built now and not written.
 
     The change is its head commit against that commit's first parent.
     """
+    return await evidence_for_revspec(
+        session, repo_id, repo_root, row.head_sha, row=row, risk=risk, health=health
+    )
+
+
+async def save_evidence(
+    session: Any, repo_id: str, change_id: str, evidence: ChangeEvidence
+) -> None:
+    """Keep *evidence* on its change row."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import Change
+
+    await session.execute(
+        update(Change)
+        .where(Change.repository_id == repo_id, Change.change_id == change_id)
+        .values(evidence_json=json.dumps(evidence.to_dict()))
+    )
+
+
+async def change_evidence(
+    session: Any,
+    repo_id: str,
+    repo_root: Path | str,
+    row: Any,
+    *,
+    refresh: bool = False,
+    risk: Any = None,
+    health: Any = None,
+) -> ChangeEvidence:
+    """The stored change's checklist: the kept one, or built and kept now."""
     if not refresh and (cached := cached_evidence(row)) is not None:
         return cached
-    evidence = await evidence_for_revspec(
-        session,
-        repo_id,
-        repo_root,
-        row.head_sha,
-        change_id=row.change_id,
-        provenance=stored_provenance(row, repo_root),
-        author_email=row.author_email,
+    evidence = await build_stored_evidence(
+        session, repo_id, repo_root, row, risk=risk, health=health
     )
     row.evidence_json = json.dumps(evidence.to_dict())
     await session.flush()
     return evidence
-
-
-def stored_provenance(row: Any, repo_root: Path | str) -> dict[str, Any] | Unavailable:
-    """The stored change's provenance block, or why there is none."""
-    from repowise.core.attribution import attribution_enabled
-    from repowise.core.changes.record import change_record
-
-    on = attribution_enabled(repo_root)
-    block = change_record(row, attribution=on)["provenance"]
-    if block is not None:
-        return block
-    return Unavailable(
-        "no attribution was stored for this change"
-        if on
-        else "AI attribution is off for this repository"
-    )
 
 
 async def stored_change_at(
@@ -241,10 +268,13 @@ async def gather_inputs(
     repo_root: Path,
     paths: list[str],
     *,
-    provenance: dict[str, Any] | Unavailable | None = None,
-    author_email: str | None = None,
+    shas: list[str],
+    row: Any = None,
 ) -> EvidenceInputs:
-    """Index facts for *paths*. A source that fails reads as ``Unavailable``."""
+    """Index facts for *paths* and the change's commits *shas*.
+
+    A source that fails reads as ``Unavailable``, with the reason.
+    """
     components = await _guard(_components(session, repo_id, repo_root, paths))
     owners, owner_sources = await _guard_pair(_owners(repo_root, paths, components))
     contracts, consumers = await _guard_pair(asyncio.to_thread(_workspace, repo_root, paths))
@@ -253,11 +283,11 @@ async def gather_inputs(
         components=components,
         owners=owners,
         owner_sources=owner_sources,
-        reviewers=await _guard(_reviewers(session, repo_id, repo_root, paths, author_email)),
+        reviewers=await _guard(_reviewers(session, repo_id, repo_root, paths, shas)),
         contracts=contracts,
         consumers=consumers,
         decisions=await _guard(_decisions(session, repo_id, paths)),
-        provenance=provenance,
+        provenance=await _guard(_provenance(session, repo_id, repo_root, shas, row)),
     )
 
 
@@ -266,7 +296,7 @@ async def _guard(coro: Any) -> Any:
         return await coro
     except Exception as exc:
         logger.debug("evidence_input_failed", error=str(exc))
-        return Unavailable(f"could not be read: {type(exc).__name__}")
+        return Unavailable(f"could not be read: {type(exc).__name__}: {exc}")
 
 
 async def _guard_pair(coro: Any) -> tuple[Any, Any]:
@@ -286,7 +316,8 @@ async def _components(
     session: Any, repo_id: str, repo_root: Path, paths: list[str]
 ) -> list[dict[str, Any]]:
     from repowise.core.components import resolve_components
-    from repowise.core.components.store import load_repo_components
+    from repowise.core.components.catalog import owner_group_name
+    from repowise.core.components.store import component_rollups, load_repo_components
 
     loaded = await load_repo_components(session, repo_id, repo_root)
     known = loaded.resolved.components
@@ -295,27 +326,35 @@ async def _components(
     mine = resolve_components(
         [c for c in known if c.declared], [c for c in known if not c.declared], paths
     )
-    return [
-        {
-            "name": c.name,
-            "source": c.source,
-            "owner": c.owner,
-            "criticality": c.criticality,
-            "tags": list(c.tags),
-            "files": mine.files[c.name],
-        }
-        for c in mine.components
-        if mine.files.get(c.name)
-    ]
+    touched = [c for c in mine.components if mine.files.get(c.name)]
+    # The bus factor is the whole component's, not just the changed files'.
+    rollups = await component_rollups(
+        session,
+        repo_id,
+        {c.name: loaded.resolved.files.get(c.name) or mine.files[c.name] for c in touched},
+        loaded.test_files,
+    )
+    rows = []
+    for c in touched:
+        bus = (rollups.get(c.name) or {}).get("bus_factor") or {}
+        rows.append(
+            {
+                "name": c.name,
+                "source": c.source,
+                "owner": owner_group_name(c.owner),
+                "criticality": c.criticality,
+                "tags": list(c.tags),
+                "files": mine.files[c.name],
+                "bus_factor": int(bus["value"]) if bus.get("basis") == "measured" else None,
+            }
+        )
+    return rows
 
 
 async def _owners(
     repo_root: Path, paths: list[str], components: Any
 ) -> tuple[dict[str, list[str]], list[str]]:
     """``{path: owners}`` from CODEOWNERS (last match wins), else the component owner."""
-    from repowise.core.analysis.patch_coverage.suggest import CODEOWNERS_PATHS
-    from repowise.core.components.catalog import owner_group_name
-
     sources: list[str] = []
     rules: list[tuple[Any, list[str]]] = []
     for rel in CODEOWNERS_PATHS:
@@ -327,9 +366,9 @@ async def _owners(
     by_component: dict[str, str] = {}
     if not isinstance(components, Unavailable):
         for comp in components:
-            if group := owner_group_name(comp.get("owner")):
+            if comp.get("owner"):
                 for path in comp["files"]:
-                    by_component[path] = group
+                    by_component[path] = comp["owner"]
         if by_component:
             sources.append("component catalog")
     owners: dict[str, list[str]] = {}
@@ -345,8 +384,6 @@ async def _owners(
 def _codeowners(text: str) -> list[tuple[Any, list[str]]]:
     import pathspec
 
-    from repowise.core.analysis.patch_coverage.suggest import _codeowners_rules
-
     out = []
     for pattern, owners in _codeowners_rules(text):
         try:
@@ -358,8 +395,9 @@ def _codeowners(text: str) -> list[tuple[Any, list[str]]]:
 
 
 async def _reviewers(
-    session: Any, repo_id: str, repo_root: Path, paths: list[str], author_email: str | None
+    session: Any, repo_id: str, repo_root: Path, paths: list[str], shas: list[str]
 ) -> list[dict[str, Any]] | Unavailable:
+    """People with history in these files, by name, leaving out the change's own."""
     from sqlalchemy import select
 
     from repowise.core.analysis.reviewers import cochange_paths, suggest_reviewers
@@ -378,14 +416,53 @@ async def _reviewers(
         return list((await session.execute(q)).scalars().all())
 
     direct = await rows(paths)
-    ranked = suggest_reviewers(direct, await rows(cochange_paths(direct)), limit=REVIEWER_LIMIT + 1)
-    author = (author_email or "").strip().lower()
-    # Ordered best first; the score itself is left out, so no one is ranked by a number.
-    return [
-        {"name": s["name"], "paths": s["owned_paths"], "reasons": s["reasons"]}
-        for s in ranked
-        if not author or (s["email"] or "").strip().lower() != author
+    own = await asyncio.to_thread(_change_people, str(repo_root), shas)
+    candidates = suggest_reviewers(direct, await rows(cochange_paths(direct)), limit=50)
+    kept = [
+        s
+        for s in candidates
+        if (s["email"] or "").strip().lower() not in own
+        and (s["name"] or "").strip().lower() not in own
     ][:REVIEWER_LIMIT]
+    # Listed by name: the order says nothing about who matters more.
+    return sorted(
+        (
+            {
+                "name": s["name"],
+                "paths": s["owned_paths"],
+                "reasons": sorted({_REVIEWER_REASONS.get(r, r) for r in s["reasons"]}),
+            }
+            for s in kept
+        ),
+        key=lambda r: r["name"].casefold(),
+    )
+
+
+def _change_people(repo_root: str, shas: list[str]) -> set[str]:
+    """Lower-cased names and emails of the change's authors and co-authors."""
+    from repowise.core.git_refs import _read
+
+    if not shas:
+        return set()
+    raw = _read(
+        repo_root,
+        [
+            "log",
+            "--no-walk=unsorted",
+            "--format=%an%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1e)%x1d",
+            *shas,
+        ],
+    )
+    people: set[str] = set()
+    for record in raw.split("\x1d"):
+        parts = record.strip().split("\x1f")
+        if len(parts) < 2:
+            continue
+        people.update({parts[0], parts[1]})
+        for trailer in (parts[2] if len(parts) > 2 else "").split("\x1e"):
+            if m := _CO_AUTHOR.match(trailer):
+                people.update(m.groups())
+    return {p.strip().lower() for p in people if p and p.strip()}
 
 
 def _workspace(
@@ -408,10 +485,10 @@ def _workspace(
     touched = set(paths)
     contracts = [
         {
+            "path": c.file_path,
             "contract_id": c.contract_id,
             "type": c.contract_type,
             "role": c.role,
-            "file": c.file_path,
         }
         for c in store.contracts
         if c.repo == alias and c.file_path in touched
@@ -442,8 +519,12 @@ async def _decisions(session: Any, repo_id: str, paths: list[str]) -> list[dict[
         return []
     rows = (
         await session.execute(
-            select(DecisionRecord.id, DecisionRecord.title, DecisionRecord.status,
-                   DecisionNodeLink.node_id)
+            select(
+                DecisionRecord.id,
+                DecisionRecord.title,
+                DecisionRecord.status,
+                DecisionNodeLink.node_id,
+            )
             .join(DecisionNodeLink, DecisionNodeLink.decision_id == DecisionRecord.id)
             .where(
                 DecisionNodeLink.repository_id == repo_id,
@@ -471,42 +552,75 @@ async def _decisions(session: Any, repo_id: str, paths: list[str]) -> list[dict[
     return sorted(out.values(), key=lambda r: (r["authority"] != "accepted", r["title"]))
 
 
-async def _range_provenance(
-    session: Any, repo_id: str, repo_root: str, revspec: str | None
+async def _provenance(
+    session: Any, repo_id: str, repo_root: Path, shas: list[str], row: Any
 ) -> dict[str, Any] | Unavailable:
-    """Three-state provenance over the commits *revspec* names."""
-    from repowise.core.attribution import attribution_enabled
+    """Three-state provenance over the change's commits, with one row per commit."""
+    from sqlalchemy import select
+
+    from repowise.core.attribution import UNKNOWN, attribution_enabled, commit_label
     from repowise.core.changes.record import provenance_block
     from repowise.core.changes.store import change_provenance
-    from repowise.core.git_refs import split_revspec
-    from repowise.core.persistence.crud import get_commit_labels
+    from repowise.core.persistence.models import GitCommit
 
     if not attribution_enabled(repo_root):
         return Unavailable("AI attribution is off for this repository")
-    if not revspec:
+    if not shas:
         return Unavailable("uncommitted work carries no commit markers")
+    stored: dict[str, tuple[str | None, str | None, int | None]] = {}
+    for i in range(0, len(shas), 500):
+        found = await session.execute(
+            select(
+                GitCommit.sha,
+                GitCommit.attribution,
+                GitCommit.agent_name,
+                GitCommit.agent_autonomy_tier,
+            ).where(GitCommit.repository_id == repo_id, GitCommit.sha.in_(shas[i : i + 500]))
+        )
+        for sha, attribution, agent, tier in found.tuples():
+            stored[sha] = (attribution, agent, tier)
+    commits = []
+    for sha in shas:
+        attribution, agent, tier = stored.get(sha, (None, None, None))
+        label = commit_label(attribution, agent) if sha in stored else UNKNOWN
+        commits.append({"sha": sha, "label": label, "tier": tier if label == "agent" else None})
+    block = None
+    if row is not None and row.provenance is not None:
+        block = provenance_block(
+            row.provenance, row.provenance_agent, row.provenance_known, len(shas)
+        )
+    if block is None:
+        labels = {sha: stored[sha][:2] for sha in stored}
+        block = provenance_block(*change_provenance(shas, labels), len(shas))
+    if block is None:
+        return Unavailable("no attribution was stored for these commits")
+    return {**block, "commits": commits}
+
+
+def _change_commits(repo_root: str, revspec: str | None, row: Any) -> list[str]:
+    """The change's commits: the stored list, else those *revspec* names."""
+    from repowise.core.git_refs import _read, split_revspec
+
+    if row is not None:
+        try:
+            return list(json.loads(row.commit_shas_json or "[]"))
+        except (TypeError, ValueError):
+            return [row.head_sha]
+    if not revspec:
+        return []
     parts = split_revspec(revspec)
     span = f"{parts[0]}..{parts[2]}" if parts else f"{revspec}^!"
-    shas = await asyncio.to_thread(_rev_list, repo_root, span)
-    if not shas:
-        return Unavailable(f"git could not list the commits of {revspec!r}")
-    labels = await get_commit_labels(session, repo_id, shas)
-    label, agent, known = change_provenance(shas, labels)
-    return provenance_block(label, agent, known, len(shas)) or Unavailable("no commits")
-
-
-def _rev_list(repo_root: str, span: str) -> list[str]:
-    from repowise.core.git_refs import _read
-
     return _read(repo_root, ["rev-list", span]).split()
 
 
 __all__ = [
+    "NO_INDEX",
     "REVIEWER_LIMIT",
+    "build_stored_evidence",
     "cached_evidence",
     "change_evidence",
     "evidence_for_revspec",
     "gather_inputs",
+    "save_evidence",
     "stored_change_at",
-    "stored_provenance",
 ]

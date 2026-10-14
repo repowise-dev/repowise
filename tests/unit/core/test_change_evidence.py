@@ -57,19 +57,30 @@ def _finding(kind: str = "introduced") -> ChangeFinding:
     )
 
 
-def _tests(files: dict[str, str], measured: int = 0, inferred: int = 0) -> dict:
-    return {
-        "recommendations_by_primary_basis": {"measured": measured, "inferred": inferred},
-        "files": [
+def _tests(files: dict[str, str], *, map_current: bool = False) -> dict:
+    """A test-impact result: per file ``inferred``, ``measured`` or ``unknown`` (none found)."""
+    rows = []
+    for p, s in files.items():
+        stem = p.rsplit("/", 1)[-1]
+        rows.append(
             {
                 "source_file": p,
                 "status": s,
-                "measured_tests_total": 0,
+                "measured_tests": [f"tests/test_{stem}::t"] if s == "measured" else [],
+                "inferred_tests": [f"tests/test_{stem}"] if s == "inferred" else [],
                 "inferred_tests_total": 1 if s == "inferred" else 0,
             }
-            for p, s in files.items()
-        ],
-        "coverage": {"map_present": measured > 0},
+        )
+    return {
+        "recommendations_by_primary_basis": {
+            "measured": sum(s == "measured" for s in files.values()),
+            "inferred": sum(s == "inferred" for s in files.values()),
+        },
+        "files": rows,
+        "coverage": {
+            "map_present": map_current,
+            "freshness": {"status": "current" if map_current else "unknown"},
+        },
     }
 
 
@@ -125,19 +136,34 @@ def test_statuses_follow_the_facts():
     bundle = _bundle(
         paths,
         health=_delta([_finding()]),
-        tests=_tests({"src/a.py": "inferred", "src/b.py": "unknown", "tests/test_a.py": "unknown"}, inferred=1),
+        tests=_tests({"src/a.py": "inferred", "src/b.py": "unknown", "tests/test_a.py": "unknown"}),
         risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200),
     )
     inputs = EvidenceInputs(
         code_paths=["src/a.py", "src/b.py"],
-        components=[{"name": "core", "source": "declared", "files": ["src/a.py"]}],
+        components=[
+            {
+                "name": "core",
+                "source": "declared",
+                "owner": "team-core",
+                "criticality": "high",
+                "tags": ["pci"],
+                "files": ["src/a.py"],
+                "bus_factor": 1,
+            }
+        ],
         owners={"src/a.py": ["@team-core"]},
         owner_sources=["CODEOWNERS"],
-        reviewers=[{"name": "Bob", "paths": ["src/a.py"], "reasons": ["touched"]}],
+        reviewers=[{"name": "Bob", "paths": ["src/a.py"], "reasons": ["owns path"]}],
         contracts=[],
         consumers=[{"repo": "web", "file": "x.ts", "contract_id": "http::GET::/a", "provider_file": "src/a.py"}],
         decisions=[{"id": "d1", "title": "Keep a pure", "authority": "accepted", "paths": ["src/a.py"]}],
-        provenance={"label": "agent", "coverage": 1.0, "agent_commits": 1},
+        provenance={
+            "label": "agent",
+            "coverage": 1.0,
+            "agent_commits": 1,
+            "commits": [{"sha": "abc", "label": "agent", "tier": 2}],
+        },
     )
     evidence = build_change_evidence(bundle, inputs, change_id="pr-1", revspec="abc")
     by = {i.kind: i for i in evidence.items}
@@ -149,12 +175,23 @@ def test_statuses_follow_the_facts():
     assert by["suggested_reviewers"].value == ["Bob"] and "score" not in by["suggested_reviewers"].details[0]
     tests = by["reaching_tests"]
     assert tests.status == "attention" and tests.basis == "inferred"
-    assert tests.value == {"measured": 0, "inferred": 1, "files_without_tests": 1}
+    assert tests.value == {
+        "measured": 0,
+        "inferred": 1,
+        "files_without_tests": 0,
+        "files_unknown": 1,
+    }
+    # No current measured map: an empty answer is "nobody knows", not absence.
+    assert [(r["path"], r["tests"]) for r in tests.details] == [
+        ("src/a.py", ["tests/test_a.py"]),
+        ("src/b.py", None),
+    ]
     assert by["cross_repo_consumers"].status == "attention"
     assert by["cross_repo_consumers"].value == {"repos": ["web"], "links": 1}
     assert by["decisions_crossed"].status == "attention"
     assert by["health_delta"].status == "attention" and by["health_delta"].value["introduced"] == 1
     assert by["provenance"].status == "ok" and by["provenance"].value["label"] == "agent"
+    assert by["provenance"].details == [{"sha": "abc", "label": "agent", "tier": 2}]
     # A high diff-size rank is one row and never a verdict.
     assert by["risk_score"].status == "ok" and by["risk_score"].value == {"percentile": 97.5}
 
@@ -167,10 +204,137 @@ def test_unknown_provenance_stays_unknown_and_unavailable_inputs_name_why():
     )
     evidence = build_change_evidence(_bundle(["a.py"]), inputs, change_id=None, revspec=None)
     by = {i.kind: i for i in evidence.items}
-    assert by["provenance"].status == "unknown"
+    assert by["provenance"].status == "unknown" and by["provenance"].basis == "unresolved"
     assert by["owners"].details == [{"reason": "could not be read: OSError"}]
     # Only a candidate: listed, but nothing anyone has signed.
     assert by["decisions_crossed"].status == "ok" and by["decisions_crossed"].basis == "inferred"
+
+
+def test_reaching_tests_absence_is_known_only_against_a_current_map():
+    bundle = _bundle(
+        ["src/a.py", "src/b.py", "src/c.py"],
+        tests=_tests({"src/a.py": "measured", "src/b.py": "unknown"}, map_current=True),
+    )
+    evidence = build_change_evidence(bundle, change_id=None, revspec=None)
+    tests = {i.kind: i for i in evidence.items}["reaching_tests"]
+    by_path = {r["path"]: r["tests"] for r in tests.details}
+    assert by_path == {"src/a.py": ["tests/test_a.py::t"], "src/b.py": [], "src/c.py": None}
+    # c.py is missing from the result: unknown, so the item is neither measured nor ok.
+    assert tests.status == "attention" and tests.basis == "inferred"
+
+
+def _full_inputs() -> EvidenceInputs:
+    return EvidenceInputs(
+        code_paths=["src/a.py"],
+        components=[
+            {
+                "name": "core",
+                "source": "declared",
+                "owner": "team-core",
+                "criticality": "high",
+                "tags": ["pci"],
+                "files": ["src/a.py"],
+                "bus_factor": None,
+            }
+        ],
+        owners={"src/a.py": ["@team-core"]},
+        owner_sources=["CODEOWNERS"],
+        reviewers=[{"name": "Bob", "paths": ["src/a.py"], "reasons": ["co-change", "owns path"]}],
+        contracts=[
+            {"path": "src/a.py", "contract_id": "http::GET::/a", "type": "http", "role": "provider"}
+        ],
+        consumers=[],
+        decisions=[
+            {"id": "d1", "title": "t", "authority": "accepted", "status": "active", "paths": ["src/a.py"]}
+        ],
+        provenance={
+            "label": "agent",
+            "coverage": 1.0,
+            "commits": [{"sha": "s1", "label": "agent", "tier": None}],
+        },
+    )
+
+
+def test_detail_rows_keep_the_policy_contract():
+    """The row keys and types the local change policy reads, kind by kind."""
+    from repowise.core.analysis.change_contracts import ContractImpact, SymbolContractChange
+
+    impact = ContractImpact(
+        changes=[
+            SymbolContractChange(
+                file="src/a.py",
+                name="run",
+                symbol_id="src/a.py::run",
+                kind="function",
+                change="signature",
+                start_line=1,
+                end_line=3,
+                outside_production_callers=["src/b.py::use"],
+            )
+        ]
+    )
+    base = _bundle(["src/a.py"], tests=_tests({"src/a.py": "inferred"}))
+    bundle = ChangeReviewBundle(
+        request=base.request,
+        base=None,
+        head=None,
+        manifest=base.manifest,
+        directive=base.directive,
+        lanes={**base.lanes, "contracts": LaneState("available")},
+        tests=base.tests,
+        contracts=impact,
+    )
+    items = build_change_evidence(bundle, _full_inputs(), change_id="c", revspec="r").items
+    by = {i.kind: i for i in items}
+
+    for row in by["components_touched"].details:
+        assert {"name", "criticality", "tags", "owner", "files", "bus_factor"} <= set(row)
+        assert row["owner"] is None or isinstance(row["owner"], str)
+        assert row["bus_factor"] is None or isinstance(row["bus_factor"], int)
+        assert isinstance(row["tags"], list) and isinstance(row["files"], list)
+    for row in by["reaching_tests"].details:
+        assert isinstance(row["path"], str)
+        assert row["tests"] is None or all(isinstance(t, str) for t in row["tests"])
+    contracts = by["contracts"].details
+    assert contracts and all(
+        isinstance(r["path"], str) and isinstance(r["breaking"], bool) for r in contracts
+    )
+    assert [r["breaking"] for r in contracts] == [False, True]
+    for row in by["provenance"].details:
+        assert set(row) == {"sha", "label", "tier"}
+        assert row["label"] in ("agent", "human_attested", "unknown")
+        assert row["tier"] is None or row["tier"] in (1, 2, 3)
+    assert isinstance(by["provenance"].value, dict) and by["provenance"].value["label"] == "agent"
+    for row in by["decisions_crossed"].details:
+        assert {"id", "title", "paths"} <= set(row) and isinstance(row["paths"], list)
+    for row in by["suggested_reviewers"].details:
+        assert set(row) == {"name", "paths", "reasons"}
+        assert set(row["reasons"]) <= {"owns path", "recent change", "co-change"}
+
+
+@pytest.mark.asyncio
+async def test_an_older_store_gains_evidence_json_on_init_db(tmp_path):
+    """A local SQLite index from before the column gets it from the startup reconcile."""
+    import sqlite3
+
+    from repowise.core.persistence import create_engine, init_db
+
+    db = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db.as_posix()}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+    with sqlite3.connect(db) as conn:
+        conn.execute("ALTER TABLE changes DROP COLUMN evidence_json")
+        assert "evidence_json" not in {r[1] for r in conn.execute("PRAGMA table_info(changes)")}
+    engine = create_engine(f"sqlite+aiosqlite:///{db.as_posix()}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+    with sqlite3.connect(db) as conn:
+        assert "evidence_json" in {r[1] for r in conn.execute("PRAGMA table_info(changes)")}
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +375,13 @@ def repo(tmp_path: Path) -> tuple[Path, str]:
     (root / "src" / "core" / "a.py").write_text("def a():\n    return 2\n", encoding="utf-8")
     (root / "src" / "web.py").write_text("def w():\n    return 3\n", encoding="utf-8")
     _git(root, "add", ".")
-    _git(root, "commit", "-q", "-m", "feat: a and web (#7)")
+    _git(
+        root,
+        "commit",
+        "-q",
+        "-m",
+        "feat: a and web (#7)\n\nCo-authored-by: Carol <carol@example.com>",
+    )
     return root, _git(root, "rev-parse", "HEAD")
 
 
@@ -256,6 +426,19 @@ async def _index(tmp_path: Path, root: Path, head: str):
                 }
             ],
         )
+        from repowise.core.persistence.crud import upsert_git_metadata
+
+        authors = [
+            {"name": n, "email": f"{n.lower()}@example.com", "commit_count": c}
+            for n, c in (("Zed", 1), ("Ann", 9), ("Carol", 5), ("Bob", 3))
+        ]
+        await upsert_git_metadata(
+            session,
+            repository_id=repo.id,
+            file_path="src/core/a.py",
+            top_authors_json=json.dumps(authors),
+            commit_count_90d=4,
+        )
         await upsert_decision(
             session,
             repository_id=repo.id,
@@ -289,10 +472,18 @@ async def test_stored_change_evidence_is_gathered_then_kept(tmp_path, repo):
         decisions = by["decisions_crossed"]
         assert decisions.value == {"accepted": 0, "candidate": 1}
         assert decisions.details[0]["paths"] == ["src/core/a.py"]
-        assert by["provenance"].value == {"label": "unknown", "coverage": 0.0}
+        provenance = by["provenance"]
+        assert provenance.value["label"] == "unknown" and provenance.basis == "unresolved"
+        assert provenance.details == [{"sha": head, "label": "unknown", "tier": None}]
         assert by["health_delta"].basis == "measured"
-        # The only author is the change's own: no one else to suggest.
-        assert by["suggested_reviewers"].status == "unknown"
+        # Ann wrote the change and Carol co-wrote it; the rest are listed by name.
+        reviewers = by["suggested_reviewers"]
+        assert reviewers.value == ["Bob", "Zed"]
+        assert reviewers.details[0] == {
+            "name": "Bob",
+            "paths": ["src/core/a.py"],
+            "reasons": ["owns path"],
+        }
         assert by["cross_repo_consumers"].basis == "unresolved"
 
         async with get_session(factory) as session:

@@ -460,6 +460,7 @@ export interface ChangeRecord {
   files: ChangeFile[];
   metadata: ChangeForgeMetadata;
   evidence?: ChangeEvidence | null;
+  evidence_building?: boolean;
 }
 
 export interface ChangeSummary {

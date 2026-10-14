@@ -277,6 +277,7 @@
       "detailEvidence": "Evidence checklist",
       "evidenceLoading": "Building the evidence checklist. The first view of a change takes a few seconds.",
       "evidenceUnavailable": "The evidence checklist could not be built for this change.",
+      "evidenceBuilding": "The evidence checklist is still being built. Reload the page in a moment.",
       "evidenceGenerated": "Generated {date}",
       "statusOk": "ok",
       "statusAttention": "attention",
