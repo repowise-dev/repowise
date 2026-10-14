@@ -186,6 +186,8 @@ class _TestBuffer:
                 if not is_error_line(ln):
                     self.lines.pop(idx)
                     break
+            else:
+                self.lines.pop(0)
 
     def drain(self) -> list[str]:
         lines = self.lines
@@ -209,6 +211,13 @@ def _distill_go(lines: list[str]) -> str:
     def parse_test_name(line: str) -> str | None:
         m = _GO_STATUS_PARSE_RE.match(line)
         return m.group("name") if m else None
+
+    def active_parent(test_name: str | None) -> str | None:
+        if test_name and "/" in test_name:
+            parent = test_name.rsplit("/", 1)[0]
+            if parent in buffers:
+                return parent
+        return None
 
     for line in lines:
         if line.startswith("exit status "):
@@ -247,20 +256,21 @@ def _distill_go(lines: list[str]) -> str:
             test_name = parse_test_name(line) if is_test_fail else current_test
             if test_name and test_name in buffers:
                 out.extend(buffers.pop(test_name).drain())
-            current_test = None
+            current_test = active_parent(test_name)
             continue
 
         if _GO_PASS_RE.match(line) or line.lstrip().startswith("--- SKIP"):
             in_fail_block = False
-            current_test = None
             if line.startswith(("ok", "PASS")):
                 out.append(line)
+                current_test = None
             else:
                 if not line.lstrip().startswith("--- SKIP"):
                     passes += 1
                 test_name = parse_test_name(line)
                 if test_name and test_name in buffers:
                     out.extend(buffers.pop(test_name).drain_errors())
+                current_test = active_parent(test_name)
             continue
 
         if current_test is not None:

@@ -231,6 +231,43 @@ def test_go_failure_message_not_evicted_by_many_logs() -> None:
     assert "debug message 0" not in distilled
 
 
+def test_go_parent_diagnostics_survive_subtests() -> None:
+    raw = "\n".join(
+        [
+            "=== RUN   TestParent",
+            "=== RUN   TestParent/sub",
+            "--- PASS: TestParent/sub (0.01s)",
+            "    parent_test.go:25: got 1, want 2",
+            "--- FAIL: TestParent (0.02s)",
+            "FAIL",
+        ]
+    )
+    f = filter_registry.get("test_output")
+    distilled = f.distill(raw, command="go test -v ./...")
+    assert "--- FAIL: TestParent (0.02s)" in distilled
+    assert "parent_test.go:25: got 1, want 2" in distilled
+
+
+def test_go_error_heavy_test_strictly_bounded_to_20() -> None:
+    lines = ["=== RUN   TestManyErrors"]
+    for i in range(35):
+        lines.append(f"    fail_test.go:{i}: error message {i}")
+    lines.extend(
+        [
+            "--- FAIL: TestManyErrors (0.05s)",
+            "FAIL",
+        ]
+    )
+    raw = "\n".join(lines)
+    f = filter_registry.get("test_output")
+    distilled = f.distill(raw, command="go test -v ./...")
+    assert "--- FAIL: TestManyErrors (0.05s)" in distilled
+    assert "error message 0" not in distilled
+    assert "error message 14" not in distilled
+    assert "error message 15" in distilled
+    assert "error message 34" in distilled
+
+
 def test_cargo_failures_section_survives(load_fixture) -> None:
     _raw, distilled = _distill(load_fixture, "cargo_test_fail.txt", "test_output", "cargo test")
     assert "store::tests::test_ttl_prune" in distilled
