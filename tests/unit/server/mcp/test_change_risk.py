@@ -446,7 +446,40 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     # when the weaker tier is allowed to speak.
     assert it["why"] == {"tests/test_round_trips.py": "src/app.py changed (import-graph)"}
     assert "line_coverage" not in it
-    assert it["summary"].startswith("1 test(s) to run for this change")
+    # The only test file there is: a whole-suite selection never reads as targeted.
+    assert it["summary"] == "1 test(s) to run for this change, every test file there is."
+
+
+@pytest.mark.parametrize(
+    ("files", "summary"),
+    [
+        (
+            ("tests/test_a.py",),
+            "2 test(s) to run for this change (1 of 4 test files); the rest can be skipped.",
+        ),
+        (
+            ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py"),
+            "2 test(s) to run for this change, every test file there is.",
+        ),
+        # As many files as the suite holds is not the suite: one is not a known test.
+        (
+            ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "other/test_x.py"),
+            "2 test(s) to run for this change (3 of 4 test files); the rest can be skipped.",
+        ),
+    ],
+)
+def test_a_selection_summary_says_how_much_of_the_suite_it_is(files, summary) -> None:
+    from repowise.core.analysis.test_selection import Selection
+    from repowise.server.mcp_server._test_selection import _summary
+
+    selection = Selection(
+        run_all=False,
+        reasons=(),
+        tests=("t1", "t2"),
+        test_files=files,
+        known_tests=("tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py"),
+    )
+    assert _summary(selection, 2, 0, 10) == summary
 
 
 @pytest.mark.asyncio

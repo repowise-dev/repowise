@@ -271,6 +271,7 @@ def test_a_route_through_a_test_package_init_selects_the_tests_under_it() -> Non
     sel = _select(["src/a.py"], tiers, known_tests=_KNOWN)
     assert not sel.run_all, sel.reasons
     assert sel.tests == ("other/test_c.py", "tests/unit/test_a.py", "tests/unit/sub/test_b.py")
+    assert sel.known_tests == _KNOWN
 
 
 def test_a_route_through_another_helper_still_runs_everything() -> None:

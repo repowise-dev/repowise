@@ -29,12 +29,13 @@ through its imports can break a test through either:
 
 Granularity is the module, not the function: a fixture that names anything in
 a module on the route to the change counts as reaching it, however deep the
-change is. One exception: reading a literal constant of a module on the route
-(a name it binds once, at top level, to a literal, a tuple or a ``frozenset``
-of literals) depends on that module's text alone, so it reaches a change only
-in that module (:func:`literal_constants`). A binding the conftest never
-reads (``import app.models  # registers them``) is imported for its side
-effects, which every test sees, so it keeps every test.
+change is. One exception: reading a literal constant of a module on the route,
+or calling a function of it that uses nothing the module imports beyond standard
+modules that cannot load code by name (:func:`local_names`), depends on that
+module's text alone, so it reaches a change only in that module, not one in a
+module it merely imports. A binding the conftest never reads (``import
+app.models  # registers them``) is imported for its side effects, which every
+test sees, so it keeps every test.
 
 Fails closed, keeping every test under the conftest with the reason, when the
 conftest does not parse, loads plugins, star-imports a module on the route, has
@@ -48,14 +49,19 @@ Ceiling: an import-time side effect of the changed module itself (it registers
 itself in a shared registry) that a test observes without any import route of
 its own to that module is seen only through the import check. So is an
 import-time side effect (plugin registration, a patch) elsewhere in the closure
-of a module whose literal constant the conftest reads, since that read still
-imports it. Upgrade path: a per-test map built from a coverage run, which
-records what each test executed.
+of a module whose local name the conftest reads, since that read still
+imports it. A local function that reads or runs repo files by path (``open``,
+``Path.read_text``, ``os.system``) is judged by its imports only, as the module
+grain already was. Upgrade path: a per-test map built from a coverage run,
+which records what each test executed.
 """
 
 from __future__ import annotations
 
 import ast
+import builtins
+import symtable
+from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
@@ -71,6 +77,7 @@ from ..ingestion.framework_edges.pytest_edges import (
     fixture_declaration,
 )
 from ..ingestion.languages.python_modules import module_parts
+from ..ingestion.languages.python_strings import PY_DYNAMIC_LOAD_MARKERS
 from .test_reachability import _in_clause
 from .test_selection import is_runnable_test, scope_kind
 
@@ -79,6 +86,39 @@ from .test_selection import is_runnable_test, scope_kind
 # Probing (`hasattr`) or removing (`delattr`) depends on the module, so counts.
 _TARGET_CALLS = frozenset({"setattr"})
 _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+# Builtins that run code or reach any module by name (``breakpoint`` and ``help``
+# import one named by the environment or the argument).
+_RUNS_BY_NAME = frozenset(
+    {"eval", "exec", "compile", "globals", "vars", "breakpoint", "help", "__import__"}
+)
+# Standard modules a local function may use: none of them imports or runs a
+# module named by a string, unlike ``importlib``, ``runpy``, ``pickle``,
+# ``pydoc``, ``unittest.mock``, ``logging.config`` or ``sys.modules``. An
+# allowlist so anything not vetted keeps the module grain.
+_NO_LOAD_BY_NAME = frozenset(
+    {
+        "__future__", "abc", "dataclasses", "enum", "types", "typing",  # declarations
+        "collections", "functools", "itertools", "operator", "heapq", "bisect",
+        "copy", "weakref", "contextlib",  # values and callables passed in
+        "re", "string", "textwrap", "json", "base64", "struct", "hashlib", "uuid",
+        "math", "random", "statistics", "decimal", "fractions", "numbers",  # data
+        "datetime", "time", "calendar", "threading", "warnings",
+        "os", "pathlib", "shutil", "tempfile", "glob", "fnmatch", "stat", "errno",
+        "io",  # files and processes by path: see the module ceiling
+    }
+)  # fmt: skip
+# Attributes through which an allowed module still runs code by name or hops to
+# a denied one (``os.system('python -m app')``, ``shutil.os``, ``re.sys``); any
+# dunder attribute and any ``exec*``/``spawn*`` one count as well.
+_RUNS_BY_ATTRIBUTE = frozenset(
+    {
+        "system", "popen", "startfile", "posix_spawn", "posix_spawnp",
+        "register_archive_format", "register_unpack_format",
+        "sys", "_sys", "os", "modules",
+    }
+)  # fmt: skip
+# The ``functools`` decorators whose ``cache_clear`` empties a function's cache.
+_CACHE_DECORATORS = frozenset({"cache", "lru_cache"})
 
 
 @dataclass(frozen=True)
@@ -253,16 +293,211 @@ def _assigned(stmt: ast.stmt) -> tuple[str, ast.AST] | None:
     return (target.id, value) if isinstance(target, ast.Name) and value is not None else None
 
 
-def literal_constants(source: str) -> frozenset[str]:
-    """Names a Python module binds once, at its top level, to an immutable literal.
+def _stdlib_import(stmt: ast.stmt) -> bool:
+    """Whether *stmt* imports only from :data:`_NO_LOAD_BY_NAME`, by absolute name.
 
-    Reading one depends on that module's text alone, not on what it imports.
-    A name bound anywhere else in the module (a local, a ``global``, an import)
-    is left out, and so is everything when the module star-imports. Ceiling:
-    another module rebinding it at runtime (``mod.NAME = ...``) is not seen.
+    Ceiling: a repo module shadowing one of them on the import path is not seen.
+    """
+    if isinstance(stmt, ast.Import):
+        tops = [a.name.split(".")[0] for a in stmt.names]
+    elif isinstance(stmt, ast.ImportFrom) and not stmt.level and stmt.module:
+        tops = [stmt.module.split(".")[0]]
+    else:
+        return False
+    return all(t in _NO_LOAD_BY_NAME for t in tops)
+
+
+def _is_reset(attr: ast.AST, method: str, parents: Mapping[int, ast.AST]) -> bool:
+    """Whether *attr* is ``<x>.method`` called with no arguments as a statement."""
+    call = parents.get(id(attr))
+    return (
+        isinstance(attr, ast.Attribute)
+        and attr.attr == method
+        and isinstance(call, ast.Call)
+        and call.func is attr
+        and not call.args
+        and not call.keywords
+        and isinstance(parents.get(id(call)), ast.Expr)
+    )
+
+
+def _functools_bindings(body: list[ast.stmt]) -> tuple[set[str], set[str]]:
+    """``(names bound to functools.cache or lru_cache, names bound to functools)``."""
+    decorators: set[str] = set()
+    modules: set[str] = set()
+    for stmt in body:
+        if isinstance(stmt, ast.ImportFrom) and not stmt.level and stmt.module == "functools":
+            decorators |= {a.asname or a.name for a in stmt.names if a.name in _CACHE_DECORATORS}
+        elif isinstance(stmt, ast.Import):
+            modules |= {a.asname or a.name for a in stmt.names if a.name == "functools"}
+    return decorators, modules
+
+
+def _cached(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, outside: Collection[str], body: list[ast.stmt]
+) -> bool:
+    """Whether *node*'s one decorator is ``functools.cache`` or ``functools.lru_cache``."""
+    if len(node.decorator_list) != 1:
+        return False
+    deco = node.decorator_list[0]
+    target = deco.func if isinstance(deco, ast.Call) else deco
+    decorators, modules = _functools_bindings(body)
+    named = (
+        target.id in decorators
+        if isinstance(target, ast.Name)
+        else isinstance(target, ast.Attribute)
+        and target.attr in _CACHE_DECORATORS
+        and getattr(target.value, "id", None) in modules
+    )
+    return named and all(n.id in outside for n in ast.walk(deco) if isinstance(n, ast.Name))
+
+
+@dataclass(frozen=True)
+class _ModuleNames:
+    """How a module binds its top-level names, as :func:`local_names` reads them."""
+
+    parents: Mapping[int, ast.AST]
+    # Names bound once at top level to an immutable literal.
+    literals: frozenset[str]
+    # Names that resolve to the standard library or a builtin.
+    outside: frozenset[str]
+    # Names whose standard-library state one method empties, and that method.
+    resets: Mapping[str, str]
+    functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef]
+
+
+def _runs_by_attribute(attr: str) -> bool:
+    """Whether reading *attr* may run or reach code by name (:data:`_RUNS_BY_ATTRIBUTE`)."""
+    return (
+        attr in _RUNS_BY_ATTRIBUTE
+        or attr.startswith(("exec", "spawn"))
+        or (attr.startswith("__") and attr.endswith("__"))
+    )
+
+
+def _globals_used(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, scope: symtable.SymbolTable
+) -> set[str] | None:
+    """The module names *node* reads, or None when it imports or assigns outside itself."""
+    if any(m in ast.unparse(node) for m in PY_DYNAMIC_LOAD_MARKERS) or any(
+        (isinstance(sub, (ast.Import, ast.ImportFrom)) and not _stdlib_import(sub))
+        or (isinstance(sub, ast.Attribute) and _runs_by_attribute(sub.attr))
+        for sub in ast.walk(node)
+    ):
+        return None
+    # Decorators and defaults run in the module's scope, the body in its own.
+    defaults = [*node.decorator_list, *node.args.defaults, *node.args.kw_defaults]
+    used = {sub.id for e in defaults if e for sub in ast.walk(e) if isinstance(sub, ast.Name)}
+    tables = [scope]
+    while tables:
+        table = tables.pop()
+        tables += table.get_children()
+        for sym in (s for s in table.get_symbols() if s.is_global()):
+            if sym.is_assigned():
+                return None
+            if sym.is_referenced():
+                used.add(sym.get_name())
+    return used
+
+
+def _only_resets(node: ast.AST, name: str, names: _ModuleNames) -> bool:
+    """Whether every use of *name* in *node* empties it with its reset method."""
+    method = names.resets.get(name)
+    return method is not None and all(
+        _is_reset(names.parents.get(id(sub)), method, names.parents)
+        for sub in ast.walk(node)
+        if isinstance(sub, ast.Name) and sub.id == name
+    )
+
+
+def _function_deps(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    scope: symtable.SymbolTable | None,
+    names: _ModuleNames,
+) -> set[str] | None:
+    """The module functions *node* uses, or None when it uses anything not local."""
+    used = _globals_used(node, scope) if scope is not None else None
+    if used is None:
+        return None
+    deps: set[str] = set()
+    for name in used:
+        if _only_resets(node, name, names):
+            continue
+        if name in names.functions:
+            deps.add(name)
+        elif name not in names.literals and name not in names.outside:
+            return None
+    return deps
+
+
+def _module_names(tree: ast.Module, counts: Mapping[str, int]) -> _ModuleNames:
+    """How *tree* binds its top-level names, given how often each is bound."""
+    once = {n for n, c in counts.items() if c == 1}
+    assigned = dict(a for stmt in tree.body if (a := _assigned(stmt)) and a[0] in once)
+    # Dunder names (``__loader__``, ``__spec__``, ``__builtins__``) reach module machinery.
+    plain = (n for n in dir(builtins) if not (n.startswith("__") and n.endswith("__")))
+    outside = {n for n in plain if n not in counts and n not in _RUNS_BY_NAME} | {
+        n
+        for stmt in tree.body
+        if _stdlib_import(stmt)
+        for alias in getattr(stmt, "names", ())
+        if (n := _bound_names(alias)[0]) in once
+    }
+    literals = {n for n, value in assigned.items() if _is_literal(value, counts)}
+    functions = {
+        s.name: s
+        for s in tree.body
+        if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name in once
+    }
+    # A container's import-time contents could come from anywhere, so the module
+    # may only name it where it builds it.
+    at_import = Counter(
+        sub.id for node in _module_level(tree.body)[2] for sub in ast.walk(node)
+        if isinstance(sub, ast.Name)
+    )  # fmt: skip
+    resets = {
+        n: "clear"
+        for n, value in assigned.items()
+        if n not in literals
+        and at_import[n] == 1
+        and isinstance(value, (ast.Call, ast.Dict, ast.List, ast.Set))
+        and all(s.id in outside for s in ast.walk(value) if isinstance(s, ast.Name))
+    } | {n: "cache_clear" for n, node in functions.items() if _cached(node, outside, tree.body)}
+    return _ModuleNames(_parents(tree), frozenset(literals), frozenset(outside), resets, functions)
+
+
+def _not_local(deps: Mapping[str, set[str] | None]) -> set[str]:
+    """The functions that use something not local, directly or through another function."""
+    bad = {n for n, d in deps.items() if d is None}
+    grew = True
+    while grew:
+        grew = False
+        for name, d in deps.items():
+            if name not in bad and d and d & bad:
+                bad.add(name)
+                grew = True
+    return bad
+
+
+def local_names(source: str) -> frozenset[str]:
+    """Names a Python module binds once, at its top level, whose use is its own text alone.
+
+    A literal constant (a literal, a tuple or a ``frozenset`` of literals), and
+    a function whose decorators, defaults and body name only its own locals,
+    builtins, modules in :data:`_NO_LOAD_BY_NAME` and other such names of the
+    module: reading or calling either runs nothing the module imports from
+    elsewhere. Emptying state the standard library holds leaves the same state
+    whatever filled it, so ``NAME.cache_clear`` for a ``functools`` cache and
+    ``NAME.clear`` for a container the module names only where it builds it
+    are listed too (dotted), and a local function may call them. A name bound
+    anywhere else in the module (a local, a ``global``, an import) is left out,
+    and so is everything when the module star-imports. Ceiling: another module
+    rebinding it at runtime (``mod.NAME = ...``) is not seen, nor is an
+    import-time side effect that patches the standard library.
     """
     try:
         tree = ast.parse(source)
+        table = symtable.symtable(source, "<module>", "exec")
     except (SyntaxError, ValueError):
         return frozenset()
     counts: dict[str, int] = {}
@@ -271,9 +506,16 @@ def literal_constants(source: str) -> frozenset[str]:
             counts[n] = counts.get(n, 0) + 1
     if "*" in counts:
         return frozenset()
-    assigned = (a for stmt in tree.body if (a := _assigned(stmt)))
+    names = _module_names(tree, counts)
+    functions = (t for t in table.get_children() if t.get_type() == "function")
+    scopes = {(t.get_name(), t.get_lineno()): t for t in functions}
+    deps = {
+        name: _function_deps(node, scopes.get((name, node.lineno)), names)
+        for name, node in names.functions.items()
+    }
+    local = set(names.functions) - _not_local(deps)
     return frozenset(
-        name for name, value in assigned if counts[name] == 1 and _is_literal(value, counts)
+        names.literals | local | {f"{n}.{method}" for n, method in names.resets.items()}
     )
 
 
@@ -439,18 +681,18 @@ class ConftestFacts:
             }
 
     def use(
-        self, entries: Collection[str], constants: Mapping[str, Collection[str]] | None = None
+        self, entries: Collection[str], local: Mapping[str, Collection[str]] | None = None
     ) -> ConftestUse:
         """What the conftest does with *entries*, the files it imports on a route.
 
-        *constants* are, per entry the change is not in, its literal constants
-        (:func:`literal_constants`): reading one does not reach the change.
+        *local* are, per entry the change is not in, its local names
+        (:func:`local_names`): reading or calling one does not reach the change.
         """
         if self.error:
             return ConftestUse(run_all=self.error)
         # Sorted: an import binds the first entry it names, so order must not vary.
         targets = [module_parts(e) for e in sorted(entries)]
-        stable = {module_parts(e): names for e, names in (constants or {}).items()}
+        stable = {module_parts(e): names for e, names in (local or {}).items()}
         star_import = ConftestUse(run_all=f"{self.path} star-imports a module on the route")
         hot, matched, star = self._bind(self.imports, targets)
         if star:
@@ -478,7 +720,7 @@ class ConftestFacts:
             if (
                 load.id in hot
                 and not _patch_target(load, self.parents)
-                and not self._reads_constant(load, hot[load.id], stable)
+                and not self._reads_local(load, hot[load.id], stable)
             ):
                 return ConftestUse(run_all=f"module-level code in {self.path} uses {load.id}")
             if load.id in self.units:
@@ -522,24 +764,29 @@ class ConftestFacts:
                 continue
             if _patch_target(load, self.parents):
                 r.patch = r.patch or load.id
-            elif not self._reads_constant(load, path, stable):
+            elif not self._reads_local(load, path, stable):
                 r.run = r.run or load.id
         # A local import nothing reads is there for its side effects.
         if r.run is None and (unread := sorted(set(local) - {n.id for n in unit.loads})):
             r.run = unread[0]
         return r
 
-    def _reads_constant(
+    def _reads_local(
         self,
         load: ast.Name,
         path: tuple[str, ...],
         stable: Mapping[tuple[str, ...], Collection[str]],
     ) -> bool:
-        """Whether *load* (bound to *path*) only reads a literal constant of a *stable* entry."""
+        """Whether *load* (bound to *path*) only reads or calls a local name of a *stable* entry."""
         outer, attrs = _dotted_read(load, self.parents)
+        if any(_runs_by_attribute(a) for a in attrs):
+            return False
         full = (*path, *attrs)
+        # ``NAME.cache_clear()`` and the like: listed dotted, and only as the call itself.
+        reset = len(full) > 2 and _is_reset(outer, full[-1], self.parents)
         return isinstance(getattr(outer, "ctx", None), ast.Load) and any(
-            full[k] in names and _names(full[:k], entry, package=False)
+            (full[k] in names or (reset and k == len(full) - 2 and ".".join(full[k:]) in names))
+            and _names(full[:k], entry, package=False)
             for entry, names in stable.items()
             for k in range(1, len(full))
         )
@@ -593,10 +840,10 @@ def conftest_use(
     source: str,
     path: str,
     entries: Collection[str],
-    constants: Mapping[str, Collection[str]] | None = None,
+    local: Mapping[str, Collection[str]] | None = None,
 ) -> ConftestUse:
     """What the conftest at *path* (text *source*) does with *entries*. Pure."""
-    return ConftestFacts.parse(source, path).use(entries, constants)
+    return ConftestFacts.parse(source, path).use(entries, local)
 
 
 @dataclass(frozen=True)
@@ -695,7 +942,7 @@ async def scoped_candidates(
     *found* are the walks' picks per target and *entries* the files each was
     reached through; *parents* the test files importing each test file and
     *parent_entries* the files each importer reached it through; *read* returns
-    a conftest's text and *read_source* any file's, for the literal constants a
+    a conftest's text and *read_source* any file's, for the local names a
     conftest reads (without it, every read counts as reaching). Every conftest
     on a route that this module cannot narrow keeps today's answer: every test
     under it.
@@ -756,10 +1003,10 @@ def _judge_routes(
         if conf not in facts:
             source = read(conf)
             facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
-        # The changed file's own constants may be what changed.
+        # The changed file's own local names may be what changed.
         others = route.entries - {target}
         for e in others - set(consts) if read_source else ():
-            consts[e] = literal_constants(read_source(e) or "")
+            consts[e] = local_names(read_source(e) or "")
         stable = {e: consts[e] for e in others if consts.get(e)}
         _judge(conf, route, facts[conf], plugin_loader, uses, stable)
 

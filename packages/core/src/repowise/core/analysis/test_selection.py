@@ -275,7 +275,9 @@ class Selection:
     nothing was asked (no index), or a scope's ``ecosystem``,
     ``package-importers``, ``named-by`` or ``owner-package``. ``why`` says, per
     selected test file, what put it in: the changed file and evidence that
-    reached it, or the reason it runs with every subset.
+    reached it, or the reason it runs with every subset. ``known_tests`` are
+    the checkout's runnable test files (empty when not read), so a selection
+    can say how much of the suite it is.
     """
 
     run_all: bool
@@ -287,6 +289,7 @@ class Selection:
     skipped_files: tuple[str, ...] = ()
     basis: Mapping[str, str] = field(default_factory=dict)
     why: Mapping[str, str] = field(default_factory=dict)
+    known_tests: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -605,6 +608,7 @@ def select_tests(inp: SelectionInput) -> Selection:
         skipped_files=tuple(triage.skipped),
         basis=basis,
         why={**scope_why, **gap_why, **_why(triage.code, per_file, evidence), **always},
+        known_tests=tuple(inp.known_tests),
     )
 
 

@@ -283,7 +283,7 @@ over the change's diff, so a measured map at either end of it matches by line:
     "covered": [...],
     "no_coverage_data": [...]
   },
-  "summary": "23 test(s) to run for this change; showing first 10; the rest can be skipped."
+  "summary": "23 test(s) to run for this change (9 of 412 test files); showing first 10; the rest can be skipped."
 }
 ```
 

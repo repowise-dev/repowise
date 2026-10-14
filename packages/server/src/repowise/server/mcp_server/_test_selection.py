@@ -271,5 +271,11 @@ def _summary(selection: Selection, total: int, always: int, limit: int) -> str:
         return f"Run every test: {lead}{named}"
     if not total:
         return "No test needs to run for this change."
+    # The share of the suite, so a selection holding most of it never reads as targeted.
+    known = set(selection.known_tests)
+    held = len(known & set(selection.test_files))
+    share = f" ({held} of {len(known)} test files)" if known else ""
     rule = f", {always} of them because they run with every subset" if always else ""
-    return f"{total} test(s) to run for this change{rule}{shown}; the rest can be skipped."
+    if known and held == len(known):
+        return f"{total} test(s) to run for this change, every test file there is{rule}{shown}."
+    return f"{total} test(s) to run for this change{share}{rule}{shown}; the rest can be skipped."

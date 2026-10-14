@@ -9,6 +9,8 @@ test. The diff parser and CRUD line-intersection are tested separately.
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.coverage import TestCoverage
 from repowise.core.analysis.test_collection import empty_result as _empty_result
 from repowise.core.analysis.test_collection import resolve_impacted as _resolve_impacted
@@ -461,6 +463,41 @@ async def test_an_autouse_fixture_reading_a_constant_reaches_only_the_defining_m
     assert picks["src/app/util.py"] == {"tests/test_a.py": "conftest-import-check"}
     # The change is in the module the constant is read from.
     assert "tests/conftest.py" in picks["src/app/store.py"]
+
+
+@pytest.mark.parametrize(
+    ("body", "narrowed"),
+    [("_seen.clear()", True), ("util.flush()", False)],
+)
+async def test_an_autouse_fixture_calling_a_function_reaches_only_what_the_function_uses(
+    async_session, body: str, narrowed: bool
+) -> None:
+    """``store.reset()`` reaches a change behind store only when reset uses what store imports."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    source = (
+        "import pytest\nfrom app import store\n\n\n@pytest.fixture(autouse=True)\n"
+        "def _fresh():\n    store.reset()\n"
+    )
+    store = f"from app import util\n\n_seen = {{}}\n\ndef reset():\n    {body}\n"
+    files = {"src/app/store.py": store}
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/app/util.py": None},
+        set(),
+        out,
+        pytest_texts={"tests/conftest.py": source},
+        read_source=files.get,
+    )
+
+    picks = _pairs(out, "src/app/util.py")
+    if narrowed:
+        assert picks == {"tests/test_a.py": "conftest-import-check"}
+    else:
+        assert "tests/conftest.py" in picks
 
 
 async def _add_edge(session, repo_id, source, target, edge_type, hint=None, **flags) -> None:

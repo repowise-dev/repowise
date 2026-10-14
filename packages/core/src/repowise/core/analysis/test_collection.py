@@ -232,7 +232,7 @@ async def collect(
     import route from that test to a changed file is looked up as well.
     *pytest_texts* are the checkout's conftests and pytest configs by path;
     without them no conftest route is narrowed. *read_source* (``Checkout.read``)
-    lets that narrowing read the modules a conftest takes constants from.
+    lets that narrowing read the modules a conftest takes names from.
     """
     from ..persistence.crud import get_health_metrics, get_test_coverage_summary
     from ..persistence.crud.analysis.coverage_map import MAX_TEST_COVERAGE_ROWS
