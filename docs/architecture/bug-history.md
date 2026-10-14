@@ -100,3 +100,14 @@ that concentration and mostly describes who authored the five largest commits.
 
 What ships answers "this code has broken before, recently, and roughly here".
 Nothing answers "and this commit caused it".
+
+### Change outcomes: explicit links only
+
+A Change Record's `outcomes` item (`core/changes/outcomes.py`) links a change
+only to later commits that name it: reverts, by the decision-supersession
+rules, and fixes that call it the cause in their own words. Hand-checked on 14
+repositories, reverts held 16 of 16 and the kept phrases ("regression
+from/in/since", "caused by", "broken by") 6 of 6, with `Fixes: <sha>` trailers
+resolving to the quoted commit 59 of 59 on the kernel. `Fixes #N` (about 2 of
+7), "introduced in #N" (about 5 of 14) and a fix commit quoting a sha (0 of
+15) fell below 90% and are not read.

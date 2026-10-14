@@ -14,7 +14,9 @@ from repowise.core.changes.collect import (
     cached_evidence,
     evidence_summary,
     list_needing_attention,
+    outcomes_stale,
     save_evidence,
+    with_current_outcomes,
 )
 from repowise.core.changes.evidence import ChangeEvidence
 from repowise.core.changes.record import change_record
@@ -117,10 +119,11 @@ async def get_change(
     record = change_record(row, attribution=attribution)
     if evidence:
         kept = None if refresh else cached_evidence(row)
-        if kept is None:
-            repo = await crud.get_repository(session, repo_id)
+        repo = await crud.get_repository(session, repo_id)
+        # A kept checklist is current but for ``outcomes``, which follows HEAD.
+        if kept is None or await outcomes_stale(repo.local_path, kept):
             factory = resolve_request_session_factory(request)
-            task = _build(factory, repo_id, row.change_id, repo.local_path)
+            task = _build(factory, repo_id, row.change_id, repo.local_path, kept)
             try:
                 kept = await asyncio.wait_for(asyncio.shield(task), EVIDENCE_WAIT_SECONDS)
             except TimeoutError:
@@ -130,22 +133,34 @@ async def get_change(
     return ChangeRecord(**record, commit_count=len(record["commits"]))
 
 
-def _build(factory: Any, repo_id: str, change_id: str, root: str) -> asyncio.Task[ChangeEvidence]:
-    """The running build for this change, or a new one; a finished build leaves the map."""
+def _build(
+    factory: Any, repo_id: str, change_id: str, root: str, kept: ChangeEvidence | None = None
+) -> asyncio.Task[ChangeEvidence]:
+    """The running build for this change, or a new one; a finished build leaves the map.
+
+    With *kept* only its outcomes are read again; a full build already running
+    reads them too, so either answers the request.
+    """
     key = (repo_id, change_id)
     task = _BUILDS.get(key)
     if task is None:
-        task = asyncio.create_task(_build_and_keep(factory, repo_id, change_id, root))
+        task = asyncio.create_task(_build_and_keep(factory, repo_id, change_id, root, kept))
         _BUILDS[key] = task
         task.add_done_callback(lambda _t: _BUILDS.pop(key, None))
     return task
 
 
-async def _build_and_keep(factory: Any, repo_id: str, change_id: str, root: str) -> ChangeEvidence:
+async def _build_and_keep(
+    factory: Any, repo_id: str, change_id: str, root: str, kept: ChangeEvidence | None
+) -> ChangeEvidence:
     """Build outside any write, then keep the result in a short transaction of its own."""
     async with get_session(factory) as session:
         row = await crud.get_change(session, repo_id, change_id)
-        evidence = await build_stored_evidence(session, repo_id, root, row)
-    async with get_session(factory) as session:
-        await save_evidence(session, repo_id, change_id, evidence)
+        if kept is not None:
+            evidence = await with_current_outcomes(session, repo_id, root, row, kept)
+        else:
+            evidence = await build_stored_evidence(session, repo_id, root, row)
+    if evidence is not kept:
+        async with get_session(factory) as session:
+            await save_evidence(session, repo_id, change_id, evidence)
     return evidence

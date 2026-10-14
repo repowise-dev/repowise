@@ -45,5 +45,6 @@ export const EVIDENCE_KINDS = [
   "health_delta",
   "provenance",
   "risk_score",
+  "outcomes",
 ] as const;
 export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];

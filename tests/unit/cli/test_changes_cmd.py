@@ -208,3 +208,25 @@ def test_list_needs_attention_reads_kept_checklists_only(tmp_path):
     assert flagged["total"] == 1 and flagged["changes"][0]["id"] == "pr-5"
     features = json.loads(runner.invoke(changes_group, [*args, "--category", "feature"]).output)
     assert features["total"] == 0
+
+
+def test_outcomes_read_in_their_words_and_never_as_a_cause():
+    from repowise.cli.commands.changes_cmd import outcome_lines
+
+    item = {
+        "kind": "outcomes",
+        "status": "attention",
+        "details": [
+            {"kind": "revert", "sha": "b" * 40, "change_id": "pr-9", "evidence": 'Revert "x"', "in_force": False},
+            {"kind": "fix_reference", "sha": "c" * 40, "change_id": None, "evidence": "regression from #5"},
+            {"kind": "file_fix_rate", "files": 4, "files_fixed": 1, "days": 30, "window_complete": False},
+        ],
+    }
+    assert outcome_lines(item) == [
+        f'reverted by pr-9 ({"b" * 12}) (no longer in force): Revert "x"',
+        f'referenced as the cause by a later fix, {"c" * 12} (their words): "regression from #5"',
+        "files later received fixes: 1 of 4 within 30 days (window still open)",
+    ]
+    rate_only = {**item, "details": item["details"][2:]}
+    assert outcome_lines(rate_only)[0].startswith("no later commit in this history reverts")
+    assert not any("caused" in line for line in outcome_lines(item) + outcome_lines(rate_only))

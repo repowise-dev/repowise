@@ -819,7 +819,10 @@ async def test_evidence_for_a_stored_change_is_its_kept_record(tmp_path, monkeyp
     monkeypatch.setattr(module, "_get_repo", _repo)
     # No filters of the caller's own: the same record `changes show` serves.
     same = await module.get_change_risk("HEAD", include=["evidence"])
-    assert same["evidence"] == kept
+    # Kept as it was, but for the outcomes item, which follows HEAD.
+    items = same["evidence"].pop("items")
+    assert same["evidence"] == {k: v for k, v in kept.items() if k != "items"}
+    assert [i["kind"] for i in items] == ["outcomes"]
 
     async def _broken(_session):
         raise OperationalError("SELECT 1", {}, Exception("database is locked"))

@@ -9,7 +9,10 @@ and :func:`change_evidence` does both. All end in
 A review costs seconds per change (the health comparison parses both sides),
 so it is computed on first read, never during an index or update, and kept:
 a merged change's checklist is a snapshot stamped with ``generated_at`` and
-the ``index_commit`` it read, rebuilt only on request (``refresh``).
+the ``index_commit`` it read, rebuilt only on request (``refresh``). The
+``outcomes`` item is the exception: it describes history after the change, so
+a kept checklist has that one item rebuilt when HEAD moves
+(:func:`with_current_outcomes`), which costs one history read per HEAD.
 """
 
 from __future__ import annotations
@@ -228,13 +231,17 @@ async def change_evidence(
     health: Any = None,
 ) -> ChangeEvidence:
     """The stored change's checklist: the kept one, or built and kept now."""
+    from repowise.core.persistence.crud.changes import dump_evidence
+
     if not refresh and (cached := cached_evidence(row)) is not None:
-        return cached
+        current = await with_current_outcomes(session, repo_id, repo_root, row, cached)
+        if current is not cached:
+            row.evidence_json = dump_evidence(current.to_dict())
+            await session.flush()
+        return current
     evidence = await build_stored_evidence(
         session, repo_id, repo_root, row, risk=risk, health=health
     )
-    from repowise.core.persistence.crud.changes import dump_evidence
-
     row.evidence_json = dump_evidence(evidence.to_dict())
     await session.flush()
     return evidence
@@ -254,6 +261,36 @@ async def stored_change_at(
         return None
     row = await get_change(session, repo_id, sha)
     return row if row is not None and row.head_sha == sha else None
+
+
+async def outcomes_stale(repo_root: Path | str, evidence: ChangeEvidence) -> bool:
+    """Whether the kept ``outcomes`` item was read at another HEAD or window."""
+    from repowise.core.changes.outcomes import fix_days
+    from repowise.core.git_refs import resolve
+
+    item = evidence.item("outcomes")
+    if item is None or not isinstance(item.value, dict):
+        return True
+    head = await asyncio.to_thread(resolve, str(repo_root), "HEAD")
+    return item.value.get("as_of") != head or item.value.get("days") != fix_days(repo_root)
+
+
+async def with_current_outcomes(
+    session: Any, repo_id: str, repo_root: Path | str, row: Any, evidence: ChangeEvidence
+) -> ChangeEvidence:
+    """*evidence* with its ``outcomes`` item read at HEAD; the same object when it already was."""
+    from dataclasses import replace
+
+    from repowise.core.changes.evidence import _outcomes
+
+    if not await outcomes_stale(repo_root, evidence):
+        return evidence
+    found = await _guard(_change_outcomes(session, repo_id, Path(repo_root), row))
+    item = _outcomes(EvidenceInputs(outcomes=found))
+    if item == evidence.item("outcomes"):  # still unknown, for the same reason
+        return evidence
+    items = [i for i in evidence.items if i.kind != "outcomes"] + [item]
+    return replace(evidence, items=items)
 
 
 def cached_evidence(row: Any) -> ChangeEvidence | None:
@@ -336,6 +373,11 @@ async def gather_inputs(
         consumers=consumers,
         decisions=await _guard(_decisions(session, repo_id, paths)),
         provenance=await _guard(_provenance(session, repo_id, repo_root, shas, row)),
+        outcomes=(
+            await _guard(_change_outcomes(session, repo_id, repo_root, row))
+            if row is not None
+            else Unavailable("not a merged change in the index")
+        ),
     )
 
 
@@ -630,6 +672,31 @@ async def _provenance(
     return {**block, "commits": commits}
 
 
+async def _change_outcomes(
+    session: Any, repo_id: str, repo_root: Path, row: Any
+) -> dict[str, Any] | Unavailable:
+    """Links to the change from later history, and its files' later fix rate."""
+    from repowise.core.changes.outcomes import file_fix_rate, fix_days, outcome_links, target_of
+    from repowise.core.git_refs import is_shallow, resolve
+    from repowise.core.persistence.crud import get_change
+
+    root = str(repo_root)
+    head = await asyncio.to_thread(resolve, root, "HEAD")
+    if not head:
+        return Unavailable("the repository has no HEAD commit")
+    if await asyncio.to_thread(is_shallow, root):
+        return Unavailable("a shallow clone cuts off the history outcomes are read from")
+    target = target_of(row)
+    days = fix_days(repo_root)
+    links = await asyncio.to_thread(outcome_links, repo_root, head, target)
+    rows = []
+    for link in links:
+        later = await get_change(session, repo_id, link.sha)
+        rows.append({**link.to_dict(), "change_id": later.change_id if later else None})
+    rate = await asyncio.to_thread(file_fix_rate, repo_root, head, target, days)
+    return {"as_of": head, "days": days, "links": rows, "file_fix_rate": rate}
+
+
 def _change_commits(repo_root: str, revspec: str | None, row: Any) -> list[str]:
     """The change's commits: the stored list, else those *revspec* names."""
     from repowise.core.git_refs import _read, split_revspec
@@ -654,6 +721,8 @@ __all__ = [
     "change_evidence",
     "evidence_for_revspec",
     "gather_inputs",
+    "outcomes_stale",
     "save_evidence",
     "stored_change_at",
+    "with_current_outcomes",
 ]

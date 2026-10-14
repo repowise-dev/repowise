@@ -134,7 +134,12 @@ def _fake_build(monkeypatch, seen: list[str], gate=None):
             ],
         )
 
+    async def _current(_root, _evidence):
+        return False
+
     monkeypatch.setattr(route, "build_stored_evidence", _build)
+    # These tests are about the checklist build; outcomes stay as built.
+    monkeypatch.setattr(route, "outcomes_stale", _current)
     return route
 
 
@@ -299,3 +304,38 @@ def test_evidence_summary_never_reads_missing_or_unknown_status_as_clean() -> No
     }
     empty = evidence_summary(SimpleNamespace(evidence_json=_checklist("pr-1")))
     assert empty is not None and (empty["ok"], empty["attention"], empty["unknown"]) == (0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_kept_evidence_has_only_its_outcomes_read_again_when_head_moved(
+    client: AsyncClient, app, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    from repowise.core.changes.evidence import EvidenceItem
+
+    seen: list[str] = []
+    route = _fake_build(monkeypatch, seen)
+    refreshed: list[str] = []
+
+    async def _stale(_root, evidence):
+        return evidence.item("outcomes") is None
+
+    async def _outcomes(session, repo_id, root, row, evidence):
+        refreshed.append(row.change_id)
+        item = EvidenceItem("outcomes", "Outcomes since merge", "ok", "declared", {"as_of": "h"})
+        return replace(evidence, items=[*evidence.items, item])
+
+    monkeypatch.setattr(route, "outcomes_stale", _stale)
+    monkeypatch.setattr(route, "with_current_outcomes", _outcomes)
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    base = f"/api/repos/{repo['id']}/changes/pr-1"
+
+    await client.get(base, params={"evidence": "true"})
+    record = (await client.get(base, params={"evidence": "true"})).json()
+    kinds = [i["kind"] for i in record["evidence"]["items"]]
+    assert kinds == ["health_delta", "outcomes"] and seen == ["pr-1"] and refreshed == ["pr-1"]
+    # Kept with its outcomes: the next read rebuilds nothing.
+    await client.get(base, params={"evidence": "true"})
+    assert seen == ["pr-1"] and refreshed == ["pr-1"]

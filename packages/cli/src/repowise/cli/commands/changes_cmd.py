@@ -5,7 +5,9 @@ evidence checklist, as the native versioned JSON record or, with
 ``--format in-toto``, as an in-toto Statement v1; ``export`` writes every
 change merged in a window with its checklist, as JSON Lines or CSV. All read the
 index; ``repowise init`` or ``update`` fills it. A checklist is built on first
-read (seconds per change) and kept on the change until ``--refresh``.
+read (seconds per change) and kept on the change until ``--refresh``; its
+``outcomes`` item (reverts, later fixes naming the change, the files' later
+fix rate) is read again whenever HEAD has moved.
 """
 
 from __future__ import annotations
@@ -144,10 +146,48 @@ def _print_checklist(evidence: dict) -> None:
         )
     console.print(table)
     console.print(f"[dim]generated {evidence['generated_at']}; `--refresh` rebuilds it.[/dim]")
+    outcomes = next((i for i in evidence["items"] if i["kind"] == "outcomes"), None)
+    if outcomes is not None and outcomes["status"] != "unknown":
+        console.print("[bold]Outcomes[/bold]")
+        for line in outcome_lines(outcomes):
+            console.print(f"  {escape(line)}")
+
+
+def outcome_lines(item: dict) -> list[str]:
+    """The outcomes item in words: links quote their message, the rate states its basis."""
+    lines = []
+    for row in item["details"]:
+        later = row.get("sha", "")[:12]
+        if row.get("change_id"):
+            later = f"{row['change_id']} ({later})"
+        if row["kind"] == "revert":
+            held = "" if row.get("in_force") else " (no longer in force)"
+            lines.append(f"reverted by {later}{held}: {row['evidence']}")
+        elif row["kind"] == "fix_reference":
+            lines.append(
+                f"referenced as the cause by a later fix, {later} (their words): \"{row['evidence']}\""
+            )
+        elif row["kind"] == "file_fix_rate":
+            open_ = "" if row["window_complete"] else " (window still open)"
+            lines.append(
+                f"files later received fixes: {row['files_fixed']} of {row['files']}"
+                f" within {row['days']} days{open_}"
+            )
+    if not any(r["kind"] in ("revert", "fix_reference") for r in item["details"]):
+        lines.insert(0, "no later commit in this history reverts this change or names it as a cause")
+    return lines
 
 
 def _value_text(item: dict) -> str:
     value = item["value"]
+    if item["kind"] == "outcomes" and isinstance(value, dict):
+        rate = (
+            f"{value['files_fixed']} of {value['files']} files fixed within {value['days']} days"
+            if value.get("files") is not None
+            else ""
+        )
+        said = f"{value['reverts']} revert(s), {value['fix_references']} cause reference(s)"
+        return ", ".join(x for x in (said, rate) if x)
     if value is None:
         reasons = [d.get("reason") for d in item["details"] if d.get("reason")]
         return reasons[0] if reasons else ""
