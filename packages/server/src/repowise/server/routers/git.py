@@ -29,6 +29,13 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.owners import people_resolver
 from repowise.core.analysis.risk_semantics import change_risk_authority
+from repowise.core.attribution import (
+    AGENT,
+    COVERAGE_FLOOR,
+    HUMAN_ATTESTED,
+    attribution_share,
+    commit_label,
+)
 from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT, parse_partners
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
@@ -40,7 +47,11 @@ from repowise.core.persistence.models import GitCommit, GitMetadata, Repository
 from repowise.core.persistence.sql import is_missing_table
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server.tool_risk import _check_test_gap
-from repowise.server.routers._local_git import resolve_local_repo, revision_exists
+from repowise.server.routers._local_git import (
+    repo_attribution_on,
+    resolve_local_repo,
+    revision_exists,
+)
 from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
@@ -156,9 +167,16 @@ async def _author_commit_counts(session: AsyncSession, repo_id: str) -> dict[str
 
 
 def _commit_fields(
-    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+    r: GitCommit,
+    normalizer: RiskNormalizer,
+    author_counts: dict[str, int] | None = None,
+    *,
+    attribution_on: bool,
 ) -> dict:
-    """Shared CommitResponse field map (raw row + repo-relative normalization)."""
+    """Shared CommitResponse field map (raw row + repo-relative normalization).
+
+    Attribution fields stay None when attribution is off for the repository.
+    """
     risk = _commit_risk(r)
     top_driver = risk.top_driver.label if risk and risk.top_driver else None
     return {
@@ -186,16 +204,28 @@ def _commit_fields(
             if author_counts is not None
             else None
         ),
-        "agent_name": r.agent_name,
-        "agent_autonomy_tier": r.agent_autonomy_tier,
-        "agent_confidence": r.agent_confidence,
+        **(
+            {
+                "agent_name": r.agent_name,
+                "agent_autonomy_tier": r.agent_autonomy_tier,
+                "agent_confidence": r.agent_confidence,
+                "attribution": commit_label(r.attribution, r.agent_name),
+            }
+            if attribution_on
+            else {}
+        ),
     }
 
 
 def _commit_from_row(
-    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+    r: GitCommit,
+    normalizer: RiskNormalizer,
+    author_counts: dict[str, int] | None = None,
+    *,
+    attribution_on: bool,
 ) -> CommitResponse:
-    return CommitResponse(**_commit_fields(r, normalizer, author_counts))
+    fields = _commit_fields(r, normalizer, author_counts, attribution_on=attribution_on)
+    return CommitResponse(**fields)
 
 
 async def _commit_files(session: AsyncSession, repo_id: str, sha: str) -> list[CommitFileResponse]:
@@ -269,6 +299,8 @@ def _commit_detail_from_row(
     author_counts: dict[str, int] | None = None,
     files: list[CommitFileResponse] | None = None,
     health: CommitHealthResponse | None = None,
+    *,
+    attribution_on: bool,
 ) -> CommitDetailResponse:
     """Map a commit row to its detail view, recomputing the risk-driver
     breakdown from the persisted Kamei features + author experience.
@@ -288,9 +320,9 @@ def _commit_detail_from_row(
         for d in (risk.top_drivers if risk else [])
     ]
     return CommitDetailResponse(
-        **_commit_fields(r, normalizer, author_counts),
+        **_commit_fields(r, normalizer, author_counts, attribution_on=attribution_on),
         drivers=drivers,
-        agent_channel=r.agent_channel,
+        agent_channel=r.agent_channel if attribution_on else None,
         files=files or [],
         health=health,
     )
@@ -300,7 +332,7 @@ def _commit_detail_from_row(
 async def get_commits(
     repo_id: str,
     sort: str = Query("date", pattern="^(risk|date)$"),
-    authorship: str = Query("all", pattern="^(all|agent|human)$"),
+    authorship: str = Query("all", pattern="^(all|agent|human|unknown)$"),
     kind: str = Query("all", pattern="^(all|high|fixes)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -310,11 +342,15 @@ async def get_commits(
 
     ``sort=date`` (default) orders by recency; ``sort=risk`` orders by the
     supporting diff-shape score descending. ``authorship`` narrows to
-    agent-attributed or human commits, and ``kind`` to the ``high``
+    agent-attributed, human-attested or unknown commits (ignored when
+    attribution is off), and ``kind`` to the ``high``
     review-priority band or to ``fixes``. Each commit carries a
     **repo-relative** ``risk_percentile`` + ``review_priority`` so the ranking
     is portable across repos (the absolute calibration band is not).
     """
+    attribution_on = await repo_attribution_on(session, repo_id)
+    if not attribution_on:
+        authorship = "all"
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
     # The high band is a tercile of the repo's own scores, so the boundary has
     # to be resolved before the page is cut rather than derived per row.
@@ -333,7 +369,10 @@ async def get_commits(
         high_cut=high_cut,
     )
     author_counts = await _author_commit_counts(session, repo_id)
-    items = [_commit_from_row(r, normalizer, author_counts) for r in rows]
+    items = [
+        _commit_from_row(r, normalizer, author_counts, attribution_on=attribution_on)
+        for r in rows
+    ]
     next_offset = offset + limit if offset + limit < total else None
     return Paginated[CommitResponse](
         items=items,
@@ -348,56 +387,70 @@ async def get_agent_trend(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),
 ) -> AgentTrendResponse:
-    """Monthly agent-vs-human commit volume across the indexed window.
+    """Monthly commits by attribution label across the indexed window.
 
-    Buckets the bounded ``git_commits`` table in Python (portable across
-    SQLite/Postgres date functions). Months with zero commits are omitted.
+    Each month and the window carry agent, human-attested and unknown counts,
+    the coverage (known / all) and the agent share of covered commits, withheld
+    below the coverage floor. Buckets the bounded ``git_commits`` table in
+    Python (portable across SQLite/Postgres date functions). Months with zero
+    commits are omitted.
     """
+    floor_pct = COVERAGE_FLOOR * 100.0
+    if not await repo_attribution_on(session, repo_id):
+        return AgentTrendResponse(enabled=False, coverage_floor_pct=floor_pct)
     result = await session.execute(
         select(
             GitCommit.committed_at,
             GitCommit.agent_name,
             GitCommit.agent_autonomy_tier,
+            GitCommit.attribution,
         ).where(GitCommit.repository_id == repo_id)
     )
-    buckets: dict[str, dict] = {}
-    total = 0
-    agent_total = 0
+    buckets: dict[str, Counter[str]] = {}
+    tiers: dict[str, Counter[str]] = {}
+    window: Counter[str] = Counter()
     names: dict[str, int] = {}
-    for committed_at, agent_name, tier in result.all():
+    for committed_at, agent_name, tier, attribution in result.all():
         if committed_at is None:
             continue
         month = committed_at.strftime("%Y-%m")
-        b = buckets.setdefault(month, {"total": 0, "agent": 0, "tiers": {}})
-        b["total"] += 1
-        total += 1
-        if agent_name:
-            b["agent"] += 1
-            agent_total += 1
+        label = commit_label(attribution, agent_name)
+        for counts in (buckets.setdefault(month, Counter()), window):
+            counts["total"] += 1
+            counts[label] += 1
+        if label == AGENT and agent_name:
             names[agent_name] = names.get(agent_name, 0) + 1
             if tier is not None:
-                key = str(tier)
-                b["tiers"][key] = b["tiers"].get(key, 0) + 1
+                tiers.setdefault(month, Counter())[str(tier)] += 1
     return AgentTrendResponse(
+        coverage_floor_pct=floor_pct,
         buckets=[
-            AgentTrendBucket(
-                month=m,
-                total_commits=b["total"],
-                agent_commits=b["agent"],
-                agent_pct=(b["agent"] / b["total"] * 100.0) if b["total"] else 0.0,
-                tier_counts=b["tiers"],
-            )
-            for m, b in sorted(buckets.items())
+            AgentTrendBucket(month=m, tier_counts=dict(tiers.get(m, {})), **_share_fields(c))
+            for m, c in sorted(buckets.items())
         ],
-        total_commits=total,
-        agent_commits=agent_total,
-        agent_pct=(agent_total / total * 100.0) if total else 0.0,
+        **_share_fields(window),
         agent_names=sorted(
             [{"name": k, "count": v} for k, v in names.items()],
             key=lambda x: x["count"],
             reverse=True,
         ),
     )
+
+
+def _share_fields(counts: Counter[str]) -> dict:
+    """``AttributionShareFields`` from per-label commit counts, in percent."""
+    share = attribution_share(counts[AGENT], counts[HUMAN_ATTESTED], counts["total"])
+    return {
+        "total_commits": share.total,
+        "agent_commits": share.agent,
+        "human_attested_commits": share.human_attested,
+        "unknown_commits": share.unknown,
+        "coverage_pct": share.coverage * 100.0 if share.coverage is not None else None,
+        "agent_pct_of_covered": (
+            share.agent_share * 100.0 if share.agent_share is not None else None
+        ),
+        "suppressed_reason": share.suppressed_reason,
+    }
 
 
 @router.get("/{repo_id}/commits/stats", response_model=CommitStatsResponse)
@@ -422,10 +475,21 @@ async def get_commit_stats(
                 func.sum(case((GitCommit.is_fix.is_(True), 1), else_=0)),
                 func.avg(GitCommit.entropy),
                 func.sum(case((GitCommit.agent_name.is_not(None), 1), else_=0)),
+                func.sum(case((GitCommit.attribution == HUMAN_ATTESTED, 1), else_=0)),
             ).where(GitCommit.repository_id == repo_id)
         )
     ).one()
-    fix_count, avg_entropy, agent_count = agg
+    fix_count, avg_entropy, agent_count, human_count = agg
+    attribution: dict = {}
+    if await repo_attribution_on(session, repo_id):
+        counts = Counter({AGENT: int(agent_count or 0), HUMAN_ATTESTED: int(human_count or 0)})
+        counts["total"] = total
+        fields = _share_fields(counts)
+        attribution = {
+            "agent_commit_count": fields["agent_commits"],
+            "agent_pct_of_covered": fields["agent_pct_of_covered"],
+            "attribution_coverage_pct": fields["coverage_pct"],
+        }
 
     scores = await crud.get_commit_risk_scores(session, repo_id)
     normalizer = RiskNormalizer.from_scores(scores)
@@ -435,7 +499,7 @@ async def get_commit_stats(
         total_commits=total,
         high_priority_count=high_priority,
         fix_commit_count=int(fix_count or 0),
-        agent_commit_count=int(agent_count or 0),
+        **attribution,
         avg_entropy=float(avg_entropy or 0.0),
         risk_histogram=_risk_histogram(normalizer.scores),
         moderate_cut=normalizer.moderate_cut,
@@ -557,7 +621,14 @@ async def get_commit(
     author_counts = await _author_commit_counts(session, repo_id)
     files = await _commit_files(session, repo_id, row.sha)
     health = await _commit_health(session, repo_id, row.sha)
-    return _commit_detail_from_row(row, normalizer, author_counts, files, health)
+    return _commit_detail_from_row(
+        row,
+        normalizer,
+        author_counts,
+        files,
+        health,
+        attribution_on=await repo_attribution_on(session, repo_id),
+    )
 
 
 @router.get("/{repo_id}/git-metadata", response_model=GitMetadataResponse)
@@ -570,7 +641,9 @@ async def get_git_metadata(
     meta = await crud.get_git_metadata(session, repo_id, file_path)
     if meta is None:
         raise HTTPException(status_code=404, detail="Git metadata not found")
-    response = GitMetadataResponse.from_orm(meta)
+    response = GitMetadataResponse.from_orm(
+        meta, attribution_on=await repo_attribution_on(session, repo_id)
+    )
     response.test_gap = await _check_test_gap(session, repo_id, file_path)
     return response
 

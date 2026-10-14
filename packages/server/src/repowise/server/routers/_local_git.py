@@ -53,3 +53,12 @@ def revision_exists(repo_path: str, rev: str) -> bool:
         text=True,
     )
     return result.returncode == 0
+
+
+async def repo_attribution_on(session: AsyncSession, repo_id: str) -> bool:
+    """Whether AI attribution may be shown for this repository (its config and
+    the user's); a repository without a checkout reads the user config only."""
+    from repowise.core.attribution import attribution_enabled
+
+    repo = await crud.get_repository(session, repo_id)
+    return attribution_enabled(repo.local_path if repo is not None else None)

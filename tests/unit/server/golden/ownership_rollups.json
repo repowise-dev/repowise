@@ -173,7 +173,8 @@
       "agent_collab": {
         "files_with_agent_commits": 1,
         "agent_commit_count": 10,
-        "agent_share_pct": 20.0,
+        "agent_share_pct": null,
+        "coverage_pct": 20.0,
         "tier_counts": {
           "confirmed": 6,
           "likely": 4
@@ -258,12 +259,7 @@
         "fix": 0,
         "feature": 1
       },
-      "agent_collab": {
-        "files_with_agent_commits": 0,
-        "agent_commit_count": 0,
-        "agent_share_pct": 0.0,
-        "tier_counts": {}
-      }
+      "agent_collab": null
     },
     "name:Carol": {
       "key": "name:Carol",

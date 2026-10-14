@@ -599,9 +599,14 @@ async def test_commits_authorship_filter(client: AsyncClient, app) -> None:
     assert agents.json()["total"] == 1
     assert agents.json()["items"][0]["agent_name"] == "claude-code"
 
+    # No commit carries a human attestation: unmarked commits are unknown, never human.
     humans = await client.get(f"/api/repos/{repo['id']}/commits", params={"authorship": "human"})
-    assert humans.json()["total"] == 3
-    assert all(c["agent_name"] is None for c in humans.json()["items"])
+    assert humans.json()["total"] == 0
+    unknown = await client.get(
+        f"/api/repos/{repo['id']}/commits", params={"authorship": "unknown"}
+    )
+    assert unknown.json()["total"] == 3
+    assert all(c["attribution"] == "unknown" for c in unknown.json()["items"])
 
 
 @pytest.mark.asyncio
@@ -647,9 +652,15 @@ async def test_agent_trend(client: AsyncClient, app) -> None:
     resp = await client.get(f"/api/repos/{repo['id']}/commits/agent-trend")
     assert resp.status_code == 200
     data = resp.json()
+    assert data["enabled"] is True
     assert data["total_commits"] == 4
     assert data["agent_commits"] == 1
-    assert data["agent_pct"] == 25.0
+    assert data["unknown_commits"] == 3
+    assert data["human_attested_commits"] == 0
+    # 1 of 4 commits has a known source: below the floor, so no share is shown.
+    assert data["coverage_pct"] == 25.0
+    assert data["agent_pct_of_covered"] is None
+    assert data["suppressed_reason"] == "coverage_below_floor"
     assert data["agent_names"] == [{"name": "claude-code", "count": 1}]
     # All four fixture commits share the epoch-1970 month bucket.
     assert len(data["buckets"]) == 1

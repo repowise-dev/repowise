@@ -84,9 +84,11 @@ class OwnerAgentCollab(BaseModel):
 
     files_with_agent_commits: int
     agent_commit_count: int
-    # Commit-weighted share of agent-attributed commits across owned files,
-    # 0-100. None when no owned file has a provenance-aware rollup yet.
+    # Agent share of the owned files' commits with a known source, 0-100,
+    # beside that coverage (known / all, 0-100). None below the coverage floor:
+    # unknown commits are never counted as human.
     agent_share_pct: float | None
+    coverage_pct: float | None = None
     tier_counts: dict = {}
 
 

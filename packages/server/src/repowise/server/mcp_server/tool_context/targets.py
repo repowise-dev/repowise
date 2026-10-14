@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.communities import has_community
 from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.attribution import attribution_enabled, file_share
 from repowise.core.generation.page_selection import STALE_STATUSES
 from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
@@ -1164,10 +1165,17 @@ async def _resolve_one_target(
                 if recent and recent != meta.primary_owner_name:
                     ownership["recent_owner"] = recent
                     ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
-                # Agent provenance — only surfaced when agent-attributed
-                # commits exist, so human-only files stay noise-free.
-                if getattr(meta, "agent_commit_count", 0):
-                    ownership["agent_authored_pct"] = getattr(meta, "agent_authored_pct", None)
+                # Agent provenance, only when agent-attributed commits exist
+                # and attribution is on. The share is of commits with a known
+                # source, with its coverage; unknown is never human.
+                if getattr(meta, "agent_commit_count", 0) and attribution_enabled(
+                    repository.local_path
+                ):
+                    ownership["agent_share"] = file_share(
+                        meta.agent_commit_count,
+                        getattr(meta, "attribution_known_count", 0),
+                        meta.commit_count_total,
+                    ).summary()
                     ownership["agent_commit_count"] = meta.agent_commit_count
                     with contextlib.suppress(TypeError, ValueError):
                         ownership["agent_tier_counts"] = json.loads(

@@ -23,6 +23,7 @@ from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
+from repowise.core.attribution import attribution_enabled
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence import crud
@@ -45,6 +46,7 @@ from repowise.server.routers.code_health import (
     _score_breakdown_from_findings,
 )
 from repowise.server.routers.git import _hotspot_from_row
+from repowise.server.schemas.git import file_attribution_fields
 
 router = APIRouter(
     prefix="/api/repos",
@@ -331,11 +333,12 @@ async def file_detail(
         git["fix_symbol_counts"] = _json_or(git_meta.fix_symbol_counts_json, {})
         # The blame owner's share of current lines, next to their commit share.
         git["primary_owner_line_pct"] = git_meta.primary_owner_line_pct
-        git["agent"] = {
-            "agent_commit_count": git_meta.agent_commit_count or 0,
-            "agent_authored_pct": git_meta.agent_authored_pct,
-            "tier_counts": _json_or(git_meta.agent_tier_counts_json, {}),
-        }
+        # None when attribution is off for the repository. This view has always
+        # named the tier map ``tier_counts``.
+        agent = file_attribution_fields(git_meta, attribution_enabled(repo.local_path))
+        if agent:
+            agent["tier_counts"] = agent.pop("agent_tier_counts")
+        git["agent"] = agent or None
         git["first_commit_at"] = (
             git_meta.first_commit_at.isoformat() if git_meta.first_commit_at else None
         )

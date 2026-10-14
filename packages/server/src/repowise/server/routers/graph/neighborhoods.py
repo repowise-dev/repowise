@@ -15,6 +15,7 @@ from repowise.core.persistence.models import (
     GraphNode,
 )
 from repowise.server.deps import get_db_session
+from repowise.server.routers._local_git import repo_attribution_on
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import (
     DeadCodeGraphNodeResponse,
@@ -109,7 +110,13 @@ async def ego_graph(
         )
     )
     git_row = git_result.scalar_one_or_none()
-    git_meta = GitMetadataResponse.from_orm(git_row) if git_row else None
+    git_meta = (
+        GitMetadataResponse.from_orm(
+            git_row, attribution_on=await repo_attribution_on(session, repo_id)
+        )
+        if git_row
+        else None
+    )
 
     signals = await collect_node_signals(session, repo_id, list(ego_node_ids))
 

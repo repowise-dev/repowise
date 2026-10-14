@@ -12,7 +12,9 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.attribution import attribution_share
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.routers._local_git import repo_attribution_on
 from repowise.server.schemas import (
     OwnerCoAuthor,
     OwnerFileEntry,
@@ -57,7 +59,9 @@ def _to_list_entry(acc: _OwnerAccumulator, module_totals: dict[str, int]) -> Own
     )
 
 
-def _to_profile(acc: _OwnerAccumulator, module_totals: dict[str, int]) -> OwnerProfileResponse:
+def _to_profile(
+    acc: _OwnerAccumulator, module_totals: dict[str, int], *, attribution_on: bool
+) -> OwnerProfileResponse:
     shares = module_share(acc, module_totals)
 
     modules = [
@@ -112,15 +116,17 @@ def _to_profile(acc: _OwnerAccumulator, module_totals: dict[str, int]) -> OwnerP
         )
 
     agent_collab: OwnerAgentCollab | None = None
-    if acc.owned_attributed_commits > 0 or acc.owned_agent_commits > 0:
+    if attribution_on and acc.owned_agent_commits > 0:
+        share = attribution_share(
+            acc.owned_agent_commits,
+            acc.owned_known_commits - acc.owned_agent_commits,
+            acc.owned_attributed_commits,
+        )
         agent_collab = OwnerAgentCollab(
             files_with_agent_commits=acc.owned_files_with_agents,
             agent_commit_count=acc.owned_agent_commits,
-            agent_share_pct=(
-                acc.owned_agent_commits / acc.owned_attributed_commits * 100.0
-                if acc.owned_attributed_commits
-                else None
-            ),
+            agent_share_pct=share.agent_share * 100.0 if share.agent_share is not None else None,
+            coverage_pct=share.coverage * 100.0 if share.coverage is not None else None,
             tier_counts=dict(acc.owned_agent_tier_counts),
         )
 
@@ -226,4 +232,6 @@ async def get_owner(
                 break
     if acc is None:
         raise HTTPException(status_code=404, detail="Owner not found")
-    return _to_profile(acc, module_totals)
+    return _to_profile(
+        acc, module_totals, attribution_on=await repo_attribution_on(session, repo_id)
+    )

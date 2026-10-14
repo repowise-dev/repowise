@@ -116,7 +116,8 @@ async def test_owner_profile_agent_collab_and_totals(client: AsyncClient, app) -
             repository_id=repo["id"],
             file_path="src/main.py",
             agent_commit_count=10,
-            agent_authored_pct=0.2,
+            attribution_known_count=20,
+            agent_authored_pct=0.5,
             agent_tier_counts_json=json.dumps({"2": 7, "3": 3}),
         )
 
@@ -128,7 +129,10 @@ async def test_owner_profile_agent_collab_and_totals(client: AsyncClient, app) -
     assert collab is not None
     assert collab["files_with_agent_commits"] == 1
     assert collab["agent_commit_count"] == 10
-    assert collab["agent_share_pct"] == 20.0  # 10 of 50 commits on main.py
+    # 10 agent of the 20 commits with a known source, 20 of 50 known: the
+    # share is of covered commits and travels with its coverage.
+    assert collab["agent_share_pct"] == 50.0
+    assert collab["coverage_pct"] == 40.0
     assert collab["tier_counts"] == {"2": 7, "3": 3}
     # Truncation totals match the (small) fixture exactly.
     assert data["files_touched_total"] == len(data["top_files"])
