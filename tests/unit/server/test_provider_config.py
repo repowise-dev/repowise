@@ -382,3 +382,82 @@ def test_configured_active_provider_needs_the_key_chat_needs(clean_env, tmp_path
 
     _make_repo(repo, env="ANTHROPIC_API_KEY=sk-ant-test\n")
     assert pc.get_configured_active_provider(repo_path=repo) == ("anthropic", "claude-x")
+
+
+# ---------------------------------------------------------------------------
+# Auto-detect must not treat "needs no key" as a reason to pick a provider.
+# ---------------------------------------------------------------------------
+
+
+def _default_model(provider_id: str) -> str:
+    return pc._CATALOG_BY_ID[provider_id]["default_model"]
+
+
+def test_no_credentials_does_not_autodetect_a_keyless_provider(clean_env):
+    """No API key and no ``OLLAMA_BASE_URL`` is the setup state, not Ollama."""
+    assert pc.get_configured_active_provider() == (None, None)
+    assert pc._resolve_active_for_repo(None, {}, {}) == (None, None)
+
+    status = pc.list_provider_status()
+    assert status["active"]["provider"] is None
+    # The picker still marks an unselected Ollama configured: it needs no key.
+    # Only auto-detect stopped treating that as a reason to select it.
+    ollama = next(p for p in status["providers"] if p["id"] == "ollama")
+    assert ollama["configured"] is True
+
+
+def test_ollama_base_url_in_process_env_autodetects_ollama(clean_env):
+    clean_env["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434"
+    assert pc.get_configured_active_provider() == ("ollama", _default_model("ollama"))
+    assert pc._resolve_active_for_repo(None, {}, {}) == ("ollama", _default_model("ollama"))
+
+
+def test_ollama_base_url_in_repo_env_autodetects_ollama(clean_env, tmp_path):
+    repo = _make_repo(
+        tmp_path / "repo",
+        config="embedder: mock\n",
+        env="OLLAMA_BASE_URL=http://127.0.0.1:11434\n",
+    )
+    assert pc.get_configured_active_provider(repo_path=repo) == (
+        "ollama",
+        _default_model("ollama"),
+    )
+
+
+def test_config_yaml_provider_ollama_resolves_without_base_url(clean_env, tmp_path):
+    repo = _make_repo(
+        tmp_path / "repo",
+        config="provider: ollama\nmodel: llama3.2\n",
+    )
+    assert pc.get_configured_active_provider(repo_path=repo) == ("ollama", "llama3.2")
+    status = pc.list_provider_status(repo_path=repo)
+    ollama = next(p for p in status["providers"] if p["id"] == "ollama")
+    assert ollama["configured"] is True
+    assert status["active"]["provider"] == "ollama"
+
+
+@pytest.mark.parametrize("provider_id", ["claude_cli", "codex_cli", "opencode"])
+def test_repowise_provider_selects_a_keyless_cli(clean_env, provider_id):
+    clean_env["REPOWISE_PROVIDER"] = provider_id
+    assert pc.get_configured_active_provider() == (provider_id, _default_model(provider_id))
+    status = pc.list_provider_status()
+    row = next(p for p in status["providers"] if p["id"] == provider_id)
+    assert row["configured"] is True
+    assert status["active"]["provider"] == provider_id
+
+
+def test_per_repo_ui_selection_of_keyless_provider_counts(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    pc.set_active_provider("opencode", repo_id="r1")
+    assert pc.get_configured_active_provider(repo_id="r1", repo_path=repo) == (
+        "opencode",
+        _default_model("opencode"),
+    )
+
+
+def test_openai_key_beats_ollama_autodetect(clean_env):
+    """A keyed provider earlier in the shared auto-detect order wins."""
+    clean_env["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434"
+    clean_env["OPENAI_API_KEY"] = "sk-test"
+    assert pc._resolve_active_for_repo(None, {}, {})[0] == "openai"
+    assert pc.get_configured_active_provider()[0] == "openai"

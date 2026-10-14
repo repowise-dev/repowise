@@ -13,7 +13,9 @@ resolution chains run here, both most-specific-first:
 **Active provider/model** (:func:`_resolve_active_for_repo`): per-repo UI
 selection > the repo's ``config.yaml`` > server-global active selection >
 ``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env > auto-detect the first provider
-with a usable key. See that function's docstring for the full rationale.
+in ``PROVIDER_AUTODETECT_ORDER`` whose named credentials are present. A
+provider that needs no env var is not auto-detected. See that function's
+docstring for the full rationale.
 
 Because the CLI resolves keys from ``.repowise/.env`` (step 2) and never sees
 the server store, :func:`set_api_key` mirrors a UI-added key into that file so a
@@ -40,8 +42,8 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Provider catalog, derived from the provider specs. Flag-only providers
-# (mock) are left out. Order matters: auto-detect below takes the first entry
-# that is usable.
+# (mock) are left out. This order is what the picker shows. Auto-detect does
+# not walk it: a keyless entry would win on a machine that never set one up.
 # ---------------------------------------------------------------------------
 
 PROVIDER_CATALOG: list[dict[str, Any]] = [
@@ -238,7 +240,13 @@ def _get_base_url_for_provider(
 
 
 def _provider_configured(provider_id: str, repo_env: dict[str, str] | None = None) -> bool:
-    """Whether chat can build ``provider_id``: it needs no key or has one."""
+    """Whether chat can build ``provider_id``: it needs no key, or it has one.
+
+    The picker's ``configured`` flag and :func:`get_configured_active_provider`
+    use this after a provider has already been chosen. Auto-detect does not.
+    A keyless provider is configured once the user selects it, and that is
+    not a reason to select it.
+    """
     catalog = _CATALOG_BY_ID.get(provider_id)
     if catalog is None:
         return False
@@ -261,7 +269,11 @@ def _resolve_active_for_repo(
          ``repowise init`` — the seamless default.
       3. The server-global ``active_provider`` (legacy single-repo UI state).
       4. ``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env vars.
-      5. Auto-detect the first provider with a usable key.
+      5. Auto-detect, in ``PROVIDER_AUTODETECT_ORDER``, the first provider
+         whose named credentials are set in the process env or the repo
+         ``.env``. Needing no key is not a credential: Ollama is chosen only
+         when ``OLLAMA_BASE_URL`` is set, and the agent CLIs are never chosen
+         here. An explicit selection of one of those is steps 1–4.
     """
     config = _load_config()
 
@@ -291,10 +303,26 @@ def _resolve_active_for_repo(
     if env_provider in _CATALOG_BY_ID:
         return _with_default(env_provider, os.environ.get("REPOWISE_MODEL"))
 
-    # 5. Auto-detect
-    for p in PROVIDER_CATALOG:
-        if _provider_configured(p["id"], repo_env):
-            return _with_default(p["id"], None)
+    # 5. Auto-detect. Same rule as ``get_answer`` synthesis and the CLI:
+    # walk PROVIDER_AUTODETECT_ORDER and take the first provider whose named
+    # credentials are present. ``provider_credentials_present`` is false for a
+    # provider that needs no env var, so a keyless runtime cannot hijack a
+    # machine that never configured it. No network probe: status calls this.
+    from repowise.core.providers.llm.registry import (
+        PROVIDER_AUTODETECT_ORDER,
+        provider_credentials_present,
+    )
+
+    overlay = repo_env or {}
+
+    def _getenv(name: str) -> str | None:
+        # Process env wins; the repo ``.env`` fills only what it left unset.
+        # Same overlay ``tool_answer`` synthesis uses.
+        return os.environ.get(name) or overlay.get(name) or None
+
+    for candidate in PROVIDER_AUTODETECT_ORDER:
+        if provider_credentials_present(candidate, _getenv):
+            return _with_default(candidate, None)
 
     return None, None
 
