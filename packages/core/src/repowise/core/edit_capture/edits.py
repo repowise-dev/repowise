@@ -194,7 +194,9 @@ def parse_apply_patch(patch: str) -> list[FileEdit]:
 
 
 _JS_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
-_PATCH_LITERAL = re.compile(r"([\"'`])\*\*\* Begin Patch")
+_APPLY_PATCH_CALL = re.compile(r"tools\.apply_patch\s*\(\s*")
+_JS_NAME = re.compile(r"[A-Za-z_$][\w$]*")
+_HEX = re.compile(r"[0-9a-fA-F]+")
 
 
 def _js_escape(source: str, i: int) -> tuple[str, int] | None:
@@ -207,18 +209,17 @@ def _js_escape(source: str, i: int) -> tuple[str, int] | None:
     if esc == "\n":
         return "", i + 1
     if esc == "x":
-        digits, end = source[i + 1 : i + 3], i + 3
+        digits, end, size = source[i + 1 : i + 3], i + 3, 2
     elif esc == "u" and source[i + 1 : i + 2] == "{":
         close = source.find("}", i)
-        digits, end = (source[i + 2 : close], close + 1) if close > 0 else ("", i)
+        digits, end, size = (source[i + 2 : close], close + 1, 0) if close > 0 else ("", i, 0)
     elif esc == "u":
-        digits, end = source[i + 1 : i + 5], i + 5
+        digits, end, size = source[i + 1 : i + 5], i + 5, 4
     else:
         return esc, i + 1  # \\ \" \' \` and identity escapes
-    try:
-        return chr(int(digits, 16)), end
-    except ValueError:
+    if not _HEX.fullmatch(digits) or (size and len(digits) != size) or int(digits, 16) > 0x10FFFF:
         return None
+    return chr(int(digits, 16)), end
 
 
 def _js_string(source: str, start: int) -> str | None:
@@ -248,14 +249,29 @@ def _js_string(source: str, start: int) -> str | None:
     return None
 
 
+def _apply_patch_argument(source: str, call: re.Match[str]) -> str | None:
+    """The string literal a ``tools.apply_patch(`` call receives: written in
+    place, or the literal last assigned to the variable it passes."""
+    start = call.end()
+    if source[start : start + 1] in ("\"", "'", "`"):
+        return _js_string(source, start)
+    name = _JS_NAME.match(source, start)
+    if name is None:
+        return None
+    assign = rf"(?<![\w$.]){re.escape(name.group(0))}\s*=\s*(?=[\"'`])"
+    found = list(re.finditer(assign, source[: call.start()]))
+    return _js_string(source, found[-1].end()) if found else None
+
+
 def _exec_cell_patches(source: str) -> list[str]:
-    """Patches a Codex code-mode cell passes to ``tools.apply_patch`` as string literals.
+    """Patches a Codex code-mode cell passes to ``tools.apply_patch``.
 
     The cell is JavaScript (``const patch = "*** Begin Patch\\n..."; await
     tools.apply_patch(patch)``), so the envelope sits escaped inside a literal.
+    A literal the call does not receive is never read.
     """
-    found = (_js_string(source, m.start()) for m in _PATCH_LITERAL.finditer(source))
-    return [patch for patch in found if patch]
+    found = (_apply_patch_argument(source, m) for m in _APPLY_PATCH_CALL.finditer(source))
+    return [p for p in found if p and p.lstrip().startswith("*** Begin Patch")]
 
 
 def _response_text(tool_response: Any) -> str:
@@ -297,10 +313,9 @@ def codex_edits(tool_name: str, tool_input: Any, tool_response: Any) -> list[Fil
         patch = tool_input
     if "*** Begin Patch" not in patch:
         return []
-    if "tools.apply_patch" in patch:
-        cell = _exec_cell_patches(patch)
-        return [edit for body in cell for edit in parse_apply_patch(body)]
-    return parse_apply_patch(patch)
+    if patch.lstrip().startswith("*** Begin Patch"):
+        return parse_apply_patch(patch)
+    return [edit for body in _exec_cell_patches(patch) for edit in parse_apply_patch(body)]
 
 
 def cursor_edits(tool_name: str, tool_input: Any, tool_response: Any) -> list[FileEdit]:

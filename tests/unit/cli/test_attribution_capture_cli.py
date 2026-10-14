@@ -212,7 +212,7 @@ def test_backfill_reports_and_status_shows_the_run(
     report = json.loads(result.output)
     assert report["bound"] == 1 and report["commits_scanned"] >= 1
     assert report["covered_after"] == report["covered_before"] + 1
-    assert report["index_relabel_on_next_update"] is False  # no index here
+    assert report["relabel_command"] == "repowise init --force"
 
     status = CliRunner().invoke(attribution_group, ["status", str(repo), "--format", "json"])
     assert json.loads(status.output)["backfill"]["bound"] == 1

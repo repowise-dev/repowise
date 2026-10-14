@@ -14,8 +14,15 @@ from pathlib import Path
 import pytest
 
 from repowise.core.edit_capture import backfill as bf
-from repowise.core.edit_capture.edits import CAPTURE_ADAPTERS, codex_edits
-from repowise.core.edit_capture.store import EVENTS, load_state, read_jsonl, sidecar_dir
+from repowise.core.edit_capture.binder import bind_pending
+from repowise.core.edit_capture.edits import CAPTURE_ADAPTERS, CapturedCall, FileEdit, codex_edits
+from repowise.core.edit_capture.store import (
+    EVENTS,
+    load_state,
+    read_jsonl,
+    record_call,
+    sidecar_dir,
+)
 from repowise.core.sessions.adapters import get_adapter
 from repowise.core.sessions.events import ToolResult, ToolUse
 
@@ -128,6 +135,32 @@ def test_every_js_literal_form_decodes_the_same(cell: str) -> None:
     assert (edit.path, edit.added) == ("a.py", ["it's = \"x\""])
 
 
+def test_a_direct_patch_that_mentions_the_cell_api_is_still_a_direct_patch() -> None:
+    patch = (
+        "*** Begin Patch\n*** Add File: docs/codex.md\n"
+        "+Code-mode cells call tools.apply_patch(patch) with a JavaScript literal.\n"
+        "*** End Patch"
+    )
+    (edit,) = codex_edits("apply_patch", {"command": patch}, "Exit code: 0\nSuccess.")
+    assert edit.path == "docs/codex.md" and len(edit.added) == 1
+
+
+def test_only_the_literal_apply_patch_receives_is_read() -> None:
+    cell = (
+        'const draft = "*** Begin Patch\\n*** Add File: draft.py\\n+draft = 1\\n*** End Patch";\n'
+        'let patch = "*** Begin Patch\\n*** Add File: old.py\\n+old = 1\\n*** End Patch";\n'
+        'patch = "*** Begin Patch\\n*** Add File: real.py\\n+real = 1\\n*** End Patch";\n'
+        "text(await tools.apply_patch(patch));\n"
+    )
+    assert [e.path for e in codex_edits("edit_file", {"command": cell}, None)] == ["real.py"]
+
+
+@pytest.mark.parametrize("escape", ["\\x4g", "\\x+4", "\\u00 1", "\\u{+41}", "\\u{}"])
+def test_a_malformed_hex_escape_leaves_the_literal_unread(escape: str) -> None:
+    cell = f'await tools.apply_patch("*** Begin Patch\\n*** Add File: a.py\\n+v = {escape}\\n*** End Patch");'
+    assert codex_edits("edit_file", {"command": cell}, None) == []
+
+
 def test_an_interpolated_template_is_not_read() -> None:
     cell = "const p = `*** Begin Patch\n*** Add File: ${name}\n+x = 1\n*** End Patch`;\nawait tools.apply_patch(p);"
     assert codex_edits("edit_file", {"command": cell}, None) == []
@@ -205,7 +238,8 @@ def layout(tmp_path: Path) -> dict[str, str]:
 
 
 def _map(layout: dict[str, str]) -> bf.PathMap:
-    return bf.PathMap([layout["main"], layout["live"]], {"src/ledger.py", "README.md", "app/main.py"})
+    known = {"src/ledger.py", "README.md", "app/main.py", "src/index.ts", "packages/app/index.ts"}
+    return bf.PathMap(layout["main"], [layout["live"]], known)
 
 
 def test_paths_in_the_checkout_and_a_live_worktree_map(layout) -> None:
@@ -215,13 +249,24 @@ def test_paths_in_the_checkout_and_a_live_worktree_map(layout) -> None:
     # Windows separators and a path relative to the call's cwd.
     assert m(layout["live"].replace("/", "\\") + "\\src\\ledger.py", "") == "src/ledger.py"
     assert m("src\\ledger.py", layout["live"]) == "src/ledger.py"
-    assert m("../live/src/ledger.py", f"{layout['live']}/docs") == "src/ledger.py"
+    assert m("../src/ledger.py", f"{layout['live']}/docs") == "src/ledger.py"
 
 
 def test_a_removed_worktree_maps_only_with_a_two_segment_path(layout) -> None:
     m = _map(layout)
     assert m(f"{layout['removed']}/src/ledger.py", "") == "src/ledger.py"
     assert m(f"{layout['removed']}/README.md", "") is None
+
+
+def test_a_vanished_foreign_project_needs_a_longer_suffix(layout, tmp_path: Path) -> None:
+    """A deleted directory that is not beside a worktree may have been any project."""
+    m = _map(layout)
+    gone = str(tmp_path / "deleted-app").replace("\\", "/")
+    assert m(f"{gone}/src/index.ts", "") is None
+    assert m(f"{gone}/packages/app/index.ts", "") == "packages/app/index.ts"
+    # Inside a worktrees/ directory it is taken for one of ours.
+    old = str(tmp_path / "x" / "worktrees" / "old").replace("\\", "/")
+    assert m(f"{old}/src/index.ts", "") == "src/index.ts"
 
 
 def test_another_repo_and_a_sibling_repo_never_map(layout) -> None:
@@ -320,8 +365,46 @@ def test_backfill_records_its_run_and_reads_only_new_lines_next_time(scene) -> N
     bf.backfill(repo.root, ["claude-code", "codex"], capture="local", projects_roots=roots)
     state = load_state(repo.root)
     assert state["backfill"]["bound"] == 1 and state["cursor"] == sha
+    cursors = json.loads((sidecar_dir(repo.root) / bf.CURSORS).read_text(encoding="utf-8"))
+    assert all(c["offset"] == Path(f).stat().st_size for f, c in cursors.items())
     again = bf.backfill(repo.root, ["claude-code", "codex"], capture="local", projects_roots=roots)
     assert again.edits == 0 and again.bindings == []
+    # One line appended: the next run reads that edit and nothing before it.
+    t = ClaudeTranscript(roots["claude-code"] / "C--repo" / "s1.jsonl", str(repo.root))
+    t.n = 100
+    t.call("Write", {"file_path": str(repo.root / "src" / "next.py"), "content": "\n".join(LATER)},
+           time.time() - 60, result={"type": "create"})
+    with open(t.path, "a", encoding="utf-8") as handle:
+        handle.write("".join(json.dumps(x) + "\n" for x in t.lines))
+    third = bf.backfill(repo.root, ["claude-code"], capture="local", projects_roots=roots)
+    assert third.edits == 1
+
+
+def test_backfill_leaves_the_live_cursor_for_waiting_hook_events(scene) -> None:
+    repo, _, roots = scene
+    live = _body("live", 3)
+    call = CapturedCall(tool="Edit", edits=[FileEdit("src/live.py", live)], session_id="h", cwd=str(repo.root))
+    assert record_call(repo.root, "claude_code", call) == 1
+    repo.write("src/live.py", "\n".join(live) + "\n")
+    live_sha = repo.commit("live work")
+    bf.backfill(repo.root, ["claude-code", "codex"], capture="local", projects_roots=roots)
+    assert "cursor" not in load_state(repo.root)
+    assert [b["commit"] for b in bind_pending(repo.root, capture="local")] == [live_sha]
+
+
+def test_edits_outside_any_path_of_the_repo_are_dropped_as_read(layout, tmp_path: Path) -> None:
+    path = tmp_path / "t.jsonl"
+    t = ClaudeTranscript(path, layout["other"])
+    for name in ("ours", "theirs"):
+        rel = "src/ledger.py" if name == "ours" else "lib/elsewhere.py"
+        t.call("Write", {"file_path": f"{layout['main']}/{rel}" if name == "ours" else f"{layout['other']}/{rel}",
+                         "content": "\n".join(_body(name))}, time.time(), result={"type": "create"})
+    t.write()
+    adapter = get_adapter("claude_code")
+    recorder = bf.TranscriptEditRecorder(keep=_map(layout))
+    for _ in recorder.observe(adapter, "claude_code", adapter.iter_events(path)):
+        pass
+    assert recorder.edits == 2 and [r["path"] for r, _ in recorder._rows] == [f"{layout['main']}/src/ledger.py"]
 
 
 def test_unbound_recent_edits_wait_for_the_next_commit(scene, tmp_path: Path) -> None:

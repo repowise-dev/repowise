@@ -2253,7 +2253,7 @@ repowise attribution backfill [PATH] --agent claude-code,codex [--format json]  
 repowise attribution purge [PATH] [--yes]            # delete derived attribution, captured edits and our notes
 ```
 
-`backfill` reads the Claude Code and Codex transcripts on this machine, keeps only line hashes of edits to this repository (worktrees included), and binds them to commits made within 14 days after each edit. It runs only when you ask, for agents that `capture` and `agents` allow in both configs, and prints the commits scanned, bound, and their coverage before and after; the next `repowise update` labels them in the index. A second run reads only what the agents wrote since.
+`backfill` reads the Claude Code and Codex transcripts on this machine, keeps only line hashes of edits to this repository (worktrees included), and binds them to commits made within 14 days after each edit. It runs only when you ask, for agents that `capture` and `agents` allow in both configs, and prints the commits scanned, bound, and their coverage before and after; past commits take the labels in the index on a full re-index (`repowise init --force`). The first run reads every transcript these agents keep (about 4 minutes for 7 GB on a laptop); a later run reads only what they wrote since.
 
 `purge` deletes the index labels, the `.repowise/attribution/` sidecar and the git-ai notes Repowise wrote locally. Git history, trailers and notes written by anything else stay as they are.
 Settings live in the `attribution:` block of [CONFIG.md](CONFIG.md#the-attribution-block).

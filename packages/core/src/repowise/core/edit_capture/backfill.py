@@ -24,11 +24,13 @@ Precision first, as in the live binder, plus two backfill rules:
 Paths: a transcript records the absolute path the agent wrote, often in a
 worktree. An edit maps to this repo when the longest suffix of its path that
 some candidate commit touched sits under the main checkout or a live worktree,
-or under a directory that no longer exists (a removed worktree; the suffix then
-needs two segments). A suffix under an existing directory that is neither is
-another checkout or a sibling repo, and the edit is dropped. A path no commit
-touched yet maps only under a live root with no nested checkout on the way, so
-work still in progress waits for its commit.
+or under a directory that no longer exists. A vanished directory beside a live
+worktree, or inside a ``worktrees/`` directory, is taken for a removed worktree
+and needs a two-segment suffix; any other vanished directory may have been any
+project, so it needs three. A suffix under an existing directory that is
+neither is another checkout or a sibling repo, and the edit is dropped. A path
+no commit touched yet maps only under a live root with no nested checkout on
+the way, so work still in progress waits for its commit.
 """
 
 from __future__ import annotations
@@ -58,6 +60,7 @@ from .store import (
     append_jsonl,
     bound_commits,
     load_state,
+    read_jsonl,
     save_state,
     sidecar_dir,
 )
@@ -68,7 +71,7 @@ from .store import (
 WINDOW_SECONDS = 14 * 24 * 3600
 
 #: Substantive lines a backfilled run needs (live capture needs 2). Measured on
-#: this repo (1,861 commits, 10,419 mapped edits) against a control that moves
+#: this repo (1,861 commits, 13,399 mapped edits) against a control that moves
 #: every edit 16 days later, so any bind it makes is spurious: control binds
 #: per real bind 11% at 2, 6% at 3, 2.6% at 4, 1.8% at 5, 1.0% at 6, 0.7% at 7.
 #: At 6 it binds 583 commits (665 at 2), one of them a contributor's.
@@ -134,7 +137,9 @@ class TranscriptEditRecorder:
     known only once every transcript has been read.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, keep: Callable[[str, str], Any] | None = None) -> None:
+        #: Drops at record time an edit no path of this repo could match.
+        self._keep = keep
         self._rows: list[tuple[dict[str, Any], str]] = []
         self._seen: set[tuple[str, str, str]] = set()
         self._pending: dict[str, tuple[Any, Any]] = {}
@@ -191,6 +196,8 @@ class TranscriptEditRecorder:
         )
         for row in event_rows(agent, call, ts=ts):
             key = (agent, row["call"], row["path"])
+            if self._keep is not None and self._keep(row["path"], call.cwd) is None:
+                continue
             if key not in self._seen:
                 self._seen.add(key)
                 self._rows.append((row, call.cwd))
@@ -229,11 +236,17 @@ def _absolute(path: str, cwd: str) -> str | None:
 class PathMap:
     """Maps a transcript path to this repo's path; see the module docstring."""
 
-    def __init__(self, live_roots: Iterable[str], known: Iterable[str]) -> None:
+    def __init__(self, main: str, worktrees: Iterable[str], known: Iterable[str]) -> None:
         self._fold = str.lower if os.name == "nt" else str
-        self._live = {self._fold(root.replace("\\", "/").rstrip("/")) for root in live_roots}
+        trees = [self._root(root) for root in worktrees]
+        self._live = {self._root(main), *trees}
+        # Where this repo's worktrees live: a vanished sibling was most likely one.
+        self._tree_parents = {posixpath.dirname(root) for root in trees}
         self._known = {self._fold(path): path for path in known}
         self._exists: dict[str, bool] = {}
+
+    def _root(self, root: str) -> str:
+        return self._fold(root.replace("\\", "/").rstrip("/"))
 
     def __call__(self, path: str, cwd: str) -> str | None:
         absolute = _absolute(path, cwd)
@@ -248,10 +261,14 @@ class PathMap:
             root = "/".join(segments[:i])
             if self._fold(root) in self._live:
                 return rel
-            if i < len(segments) - 1 and not self._exists_on_disk(root):
+            if not self._exists_on_disk(root) and len(segments) - i >= self._suffix_needed(root):
                 return rel
             return None
         return self._uncommitted(segments)
+
+    def _suffix_needed(self, root: str) -> int:
+        parent = self._fold(posixpath.dirname(root))
+        return 2 if parent in self._tree_parents or posixpath.basename(parent) == "worktrees" else 3
 
     def _uncommitted(self, segments: list[str]) -> str | None:
         """A path no candidate commit touched yet, under a live root, with no
@@ -280,11 +297,10 @@ def worktree_roots(repo: Path) -> list[str]:
     return roots or [str(repo)]
 
 
-def _paths_since(repo: Path, since: float) -> set[str]:
-    out = _git(
-        repo, "log", "--no-merges", f"--since={int(since) - COMMIT_GRACE_SECONDS}",
-        "--format=", "--name-only", "HEAD",
-    )
+def _paths_since(repo: Path, since: float | None) -> set[str]:
+    """Paths commits since *since* touched; every path ever with None."""
+    window = [] if since is None else [f"--since={int(since) - COMMIT_GRACE_SECONDS}"]
+    out = _git(repo, "log", "--no-merges", *window, "--format=", "--name-only", "HEAD")
     return {line for line in out.splitlines() if line}
 
 
@@ -347,7 +363,11 @@ def backfill(
     from repowise.core.sessions.cursor import CursorStore
 
     now = time.time() if now is None else now
-    recorder = TranscriptEditRecorder()
+    roots = worktree_roots(repo)
+    # Ceiling: one string per path the history ever held, so memory grows with
+    # the repo's history, not with the transcripts; edits elsewhere are dropped
+    # as they are read.
+    recorder = TranscriptEditRecorder(keep=PathMap(roots[0], roots[1:], _paths_since(repo, None)))
     cursors = CursorStore(sidecar_dir(repo) / CURSORS)
     result = BackfillResult(
         transcripts=read_transcripts(agents, recorder, cursors, projects_roots=projects_roots)
@@ -356,7 +376,7 @@ def backfill(
     oldest = recorder.oldest
     if oldest is not None:
         result.commits = _commits_to_bind(repo, oldest, None)
-        path_map = PathMap(worktree_roots(repo), _paths_since(repo, oldest))
+        path_map = PathMap(roots[0], roots[1:], _paths_since(repo, oldest))
         rows = recorder.rows(path_map)
         result.edits_in_repo = len(rows)
         done = bound_commits(repo)
@@ -381,6 +401,7 @@ def _persist(
     window: float,
 ) -> None:
     directory = sidecar_dir(repo)
+    live_pending = bool(read_jsonl(directory / EVENTS))
     append_jsonl(directory / BINDINGS, result.bindings)
     if capture == "notes" and result.bindings:
         write_notes(repo, result.bindings)
@@ -388,10 +409,12 @@ def _persist(
     append_jsonl(directory / EVENTS, left)
     result.handed_over = len(left)
     state = load_state(repo)
-    # Every commit up to HEAD has been tried: the live binder starts after it,
-    # so an edit this run left unbound never meets an older commit there.
+    # With no live events waiting, every commit up to HEAD has been tried: the
+    # live binder may start after it, so an edit this run left unbound never
+    # meets an older commit under the live rule. Live events waiting for those
+    # commits keep the cursor where it is.
     head = _git(repo, "rev-parse", "HEAD").strip()
-    if head and not state.get("cursor"):
+    if head and not state.get("cursor") and not live_pending:
         state["cursor"] = head
     state["backfill"] = {
         "at": now,
