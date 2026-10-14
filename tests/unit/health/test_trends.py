@@ -42,9 +42,9 @@ def _series(values: list[float]) -> list[_S]:
     return [_S(taken_at=_ts(i), hotspot_health=v, average_health=v) for i, v in enumerate(values)]
 
 
-def test_diff_empty_history_neutral():
+def test_diff_empty_history_has_no_hotspot_figure():
     summary = diff_snapshots([])
-    assert summary.current_hotspot_health == 10.0
+    assert summary.current_hotspot_health is None
     assert summary.hotspot_delta is None
     assert summary.alerts == []
 
