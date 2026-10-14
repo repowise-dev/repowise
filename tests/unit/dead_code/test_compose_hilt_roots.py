@@ -12,6 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+from repowise.core.analysis.dead_code.analyzer import _is_framework_registered
+from repowise.core.analysis.dead_code.meta_annotations import MetaAnnotations
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
 _UI = "ui/src/main/kotlin/org/sample/ui"
@@ -92,3 +94,36 @@ def test_hilt_module_is_loaded_by_the_component(tmp_path: Path):
     assert "JankStatsModule.kt" not in _of(report, DeadCodeKind.UNREACHABLE_FILE)
     flagged = _of(report, DeadCodeKind.UNUSED_EXPORT) | _of(report, DeadCodeKind.UNUSED_INTERNAL)
     assert flagged.isdisjoint({"JankStatsModule", "providesListener", "bindsListener"})
+
+
+# Two annotation classes named ``ThemeShots``: only ``org.sample.ui``'s is a
+# multipreview. A use counts only where that one is the class in scope.
+_UI_SHOTS = "package org.sample.ui\n\n@Preview\nannotation class ThemeShots\n"
+_OTHER_SHOTS = "package org.sample.other\n\nannotation class ThemeShots\n"
+_USERS = {
+    "app/SamePackage.kt": "package org.sample.ui\n",
+    "app/Imported.kt": "package org.sample.app\n\nimport org.sample.ui.ThemeShots\n",
+    "app/Star.kt": "package org.sample.app\n\nimport org.sample.ui.*\n",
+    "app/Aliased.kt": "package org.sample.app\n\nimport org.sample.ui.ThemeShots as UiShots\n",
+    "app/OtherImport.kt": "package org.sample.app\n\nimport org.sample.other.ThemeShots\n",
+    "app/OtherPackage.kt": "package org.sample.other\n",
+    "app/Unrelated.kt": "package org.sample.app\n",
+}
+
+
+def test_same_named_annotation_counts_only_where_it_is_in_scope():
+    sources = {
+        "ui/ThemeShots.kt": _UI_SHOTS.encode(),
+        "other/ThemeShots.kt": _OTHER_SHOTS.encode(),
+        **{path: text.encode() for path, text in _USERS.items()},
+    }
+    meta = MetaAnnotations(sources, _is_framework_registered)
+    assert meta.visible_in("app/SamePackage.kt") == {"ThemeShots"}
+    assert meta.visible_in("app/Imported.kt") == {"ThemeShots"}
+    assert meta.visible_in("app/Star.kt") == {"ThemeShots"}
+    assert meta.visible_in("app/Aliased.kt") == {"UiShots"}
+    for path in ("app/OtherImport.kt", "app/OtherPackage.kt", "app/Unrelated.kt"):
+        assert meta.visible_in(path) == frozenset(), path
+    # Unique repo-wide, the name counts wherever it is used.
+    unique = MetaAnnotations({"ui/ThemeShots.kt": _UI_SHOTS.encode()}, _is_framework_registered)
+    assert unique.visible_in("app/Unrelated.kt") == {"ThemeShots"}

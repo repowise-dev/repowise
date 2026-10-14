@@ -77,7 +77,7 @@ from .file_reachability import (
 from .go_name_uses import drop_go_package_uses
 from .jvm_reachability import defines_main
 from .kotlin_multiplatform import settle_platform_declarations
-from .meta_annotations import framework_meta_annotations
+from .meta_annotations import MetaAnnotations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .module_strings import drop_named_modules
 from .name_occurrences import (
@@ -950,14 +950,13 @@ class DeadCodeAnalyzer:
         # {base id: overload member ids}, built on first use.
         self._overload_units: dict[str, list[str]] | None = None
         # Repo annotation classes that register what they annotate, built on first use.
-        self._meta_annotations: frozenset[str] | None = None
+        self._meta_annotations: MetaAnnotations | None = None
 
-    def _framework_meta_annotations(self) -> frozenset[str]:
+    def _framework_meta_annotations(self, path: str) -> frozenset[str]:
+        """Names of repo annotation classes that register what they annotate in *path*."""
         if self._meta_annotations is None:
-            self._meta_annotations = framework_meta_annotations(
-                self._source_map, _is_framework_registered
-            )
-        return self._meta_annotations
+            self._meta_annotations = MetaAnnotations(self._source_map, _is_framework_registered)
+        return self._meta_annotations.visible_in(path)
 
     def _reachability_rescues(self, whitelist: AbstractSet[str]) -> ReachabilityRescues:
         """Assemble the rescue state the shared predicate reads."""
@@ -1611,7 +1610,8 @@ class DeadCodeAnalyzer:
         sym_name = sym.get("name", "")
         decorators = sym.get("decorators", [])
 
-        if _is_framework_registered(decorators, self._framework_meta_annotations()):
+        meta = self._framework_meta_annotations(sym.get("file_path", ""))
+        if _is_framework_registered(decorators, meta):
             return True
         if _declared_deliberately_unused(decorators):
             return True
@@ -2116,9 +2116,9 @@ class DeadCodeAnalyzer:
         # private ``@PostConstruct``/``@EventListener``/``@Scheduled``
         # method is invoked by the container, not by a source call.
         decorators = node_data.get("decorators") or []
+        meta = self._framework_meta_annotations(node_data.get("file_path", ""))
         return not (
-            _is_framework_registered(decorators, self._framework_meta_annotations())
-            or _declared_deliberately_unused(decorators)
+            _is_framework_registered(decorators, meta) or _declared_deliberately_unused(decorators)
         )
 
     def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
