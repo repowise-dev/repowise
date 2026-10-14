@@ -96,29 +96,41 @@ async def list_changes(
 
 
 async def get_change(session: AsyncSession, repository_id: str, ref: str) -> Change | None:
-    """A change by its id, or the change that landed a commit (a sha of 7+ hex)."""
+    """A change by its id, or the newest change that landed a commit (a sha of 7+ hex)."""
+    found = await find_changes(session, repository_id, ref, limit=1)
+    return found[0] if found else None
+
+
+async def find_changes(
+    session: AsyncSession, repository_id: str, ref: str, *, limit: int = 2
+) -> list[Change]:
+    """Changes *ref* names, newest first: the one with that id, else up to
+    *limit* that landed a commit starting with *ref* (7+ hex). More than one
+    means a short sha is ambiguous.
+    """
     row = (
         await session.execute(
             select(Change).where(Change.repository_id == repository_id, Change.change_id == ref)
         )
     ).scalar_one_or_none()
-    if row is not None or len(ref) < 7 or any(c not in "0123456789abcdef" for c in ref.lower()):
-        return row
+    if row is not None:
+        return [row]
+    if len(ref) < 7 or any(c not in "0123456789abcdef" for c in ref.lower()):
+        return []
     sha = escape_like(ref.lower())
-    return (
-        await session.execute(
-            select(Change)
-            .where(
-                Change.repository_id == repository_id,
-                or_(
-                    Change.head_sha.like(f"{sha}%", escape=LIKE_ESCAPE),
-                    Change.commit_shas_json.like(f'%"{sha}%', escape=LIKE_ESCAPE),
-                ),
-            )
-            .order_by(Change.merged_at.desc().nulls_last())
-            .limit(1)
+    rows = await session.execute(
+        select(Change)
+        .where(
+            Change.repository_id == repository_id,
+            or_(
+                Change.head_sha.like(f"{sha}%", escape=LIKE_ESCAPE),
+                Change.commit_shas_json.like(f'%"{sha}%', escape=LIKE_ESCAPE),
+            ),
         )
-    ).scalar_one_or_none()
+        .order_by(Change.merged_at.desc().nulls_last())
+        .limit(limit)
+    )
+    return list(rows.scalars().all())
 
 
 async def get_commit_labels(

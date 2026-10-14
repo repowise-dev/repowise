@@ -1,9 +1,8 @@
 """Change Records on the MCP surface.
 
 ``change:<id>`` cards for get_context, recent changes per file behind
-``include=["changes"]`` (get_context, get_risk), the get_overview change
-summary, and the named change a commit landed in for get_why. Everything but
-get_why's citation is opt-in.
+``include=["changes"]`` (get_context, get_risk) and the get_overview change
+summary. All of it is opt-in.
 
 Provenance follows :mod:`repowise.core.attribution`: three-state, coverage
 beside every share, unknown never counted as human, and nothing about AI while
@@ -13,7 +12,6 @@ attribution is off for the repo.
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -28,24 +26,20 @@ from repowise.core.attribution import (
     file_share,
 )
 from repowise.core.changes.record import change_record
-from repowise.core.persistence.crud import get_change
-from repowise.core.persistence.database import get_session
+from repowise.core.persistence.crud import find_changes
 from repowise.core.persistence.models import Change, GitMetadata
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
-from repowise.server.mcp_server._helpers import _get_repo
 
 CHANGE_PREFIX = "change:"
-#: Recent changes listed per file; ``recent_changes_total`` counts them all.
+#: Recent changes listed per file; ``recent_changes_total`` counts the rest.
 FILE_CHANGES_CAP = 5
+#: Newest candidate rows scanned per call for recent changes. Ceiling: a file
+#: whose changes all sit past this many newer candidates lists none.
+_FILE_SCAN_CAP = 500
 #: Files a change card lists; the rest go to the omission store.
 _CARD_FILES_CAP = 25
 OVERVIEW_WINDOW_DAYS = 90
-#: Distinct commits get_why looks up per response.
-_CITE_CAP = 50
-#: Only a change a forge or Gerrit named is worth citing over its sha.
-_NAMED_KINDS = ("pr", "change_id")
-_HEX = re.compile(r"^[0-9a-f]{7,40}$")
 _ATTRIBUTION_OFF = {"unavailable": "attribution_off"}
 
 
@@ -92,13 +86,11 @@ async def change_cards(
     cards: dict[str, dict[str, Any]] = {}
     for target in targets:
         ref = target[len(CHANGE_PREFIX) :].strip()
-        row = await get_change(session, repository.id, ref) if ref else None
-        if row is None:
-            cards[target] = {
-                "target": target,
-                "error": f"No change {ref!r}. Ids look like pr-123; a commit sha also works.",
-            }
+        found = await find_changes(session, repository.id, ref) if ref else []
+        if len(found) != 1:
+            cards[target] = _change_miss(target, ref, found)
             continue
+        row = found[0]
         record = change_record(row, attribution=attribution)
         card: dict[str, Any] = {"target": target, "type": "change", "id": record["id"]}
         if record["forge_ref"]:
@@ -134,37 +126,70 @@ async def change_cards(
     return cards
 
 
+def _change_miss(target: str, ref: str, found: list[Any]) -> dict[str, Any]:
+    if found:
+        return {
+            "target": target,
+            "error": f"{ref!r} starts commits in several changes; name one.",
+            "candidates": [f"{CHANGE_PREFIX}{r.change_id}" for r in found],
+        }
+    return {
+        "target": target,
+        "error": (
+            f"No change {ref!r}. Ids: pr-123 (a PR or MR number), change-I<hex> "
+            "(a Gerrit Change-Id), merge-<sha> or commit-<sha>; a commit sha "
+            "of 7+ characters also works."
+        ),
+    }
+
+
 # -- include=["changes"]: recent changes touching a file -----------------------
 
 
 def _touches(path: str) -> Any:
-    # files_json is json.dumps of {"path": ..., ...}; matching the quoted
-    # value whole means a.py never matches a.pyc. Ceiling: a change past
-    # MAX_STORED_FILES keeps only its first files.
+    # A coarse prefilter: SQLite's LIKE folds ASCII case, so the stored file
+    # list is checked exactly in :func:`file_changes`.
     needle = escape_like(f'"path": {json.dumps(path)}')
     return Change.files_json.like(f"%{needle}%", escape=LIKE_ESCAPE)
 
 
 async def file_changes(
-    session: Any, repository: Any, path: str, *, attribution: bool
-) -> dict[str, Any]:
-    """``recent_changes`` (newest first, capped) and, past the cap, the total."""
-    clauses = (Change.repository_id == repository.id, _touches(path))
+    session: Any, repository: Any, paths: list[str], *, attribution: bool
+) -> dict[str, dict[str, Any]]:
+    """Per path: ``recent_changes`` (newest first, capped) and, past the cap,
+    ``recent_changes_total``. One query for every path.
+
+    Ceiling: a change keeps only its first ``MAX_STORED_FILES`` files, and the
+    newest ``_FILE_SCAN_CAP`` candidate rows are read.
+    """
+    wanted = list(dict.fromkeys(paths))
+    if not wanted:
+        return {}
     rows = (
         await session.execute(
             select(Change)
-            .where(*clauses)
+            .where(Change.repository_id == repository.id, or_(*(_touches(p) for p in wanted)))
             .order_by(Change.merged_at.desc().nulls_last(), Change.change_id)
-            .limit(FILE_CHANGES_CAP + 1)
+            .limit(_FILE_SCAN_CAP)
         )
     ).scalars().all()
-    out: dict[str, Any] = {
-        "recent_changes": [change_row(r, attribution) for r in rows[:FILE_CHANGES_CAP]]
-    }
-    if len(rows) > FILE_CHANGES_CAP:
-        out["recent_changes_total"] = (
-            await session.execute(select(func.count()).select_from(Change).where(*clauses))
-        ).scalar_one()
+    hits: dict[str, list[Any]] = {p: [] for p in wanted}
+    for row in rows:
+        try:
+            files = {f.get("path") for f in json.loads(row.files_json or "[]")}
+        except (TypeError, ValueError, AttributeError):
+            continue
+        for path in wanted:
+            if path in files:
+                hits[path].append(row)
+    out: dict[str, dict[str, Any]] = {}
+    for path, matched in hits.items():
+        block: dict[str, Any] = {
+            "recent_changes": [change_row(r, attribution) for r in matched[:FILE_CHANGES_CAP]]
+        }
+        if len(matched) > FILE_CHANGES_CAP:
+            block["recent_changes_total"] = len(matched)
+        out[path] = block
     return out
 
 
@@ -184,13 +209,14 @@ def file_provenance(meta: Any | None, attribution: bool) -> dict[str, Any]:
 
 
 def _share_block(share: Any, *, unit: str) -> dict[str, Any]:
-    block: dict[str, Any] = {
-        f"agent_{unit}": share.agent,
-        f"human_attested_{unit}": share.human_attested,
-        f"unknown_{unit}": share.unknown,
-        "coverage": round(share.coverage, 4) if share.coverage is not None else None,
-        "agent_share": round(share.agent_share, 4) if share.agent_share is not None else None,
-    }
+    block: dict[str, Any] = {}
+    # A withheld share keeps no agent or human counts: they would restate it.
+    if not share.suppressed_reason:
+        block[f"agent_{unit}"] = share.agent
+        block[f"human_attested_{unit}"] = share.human_attested
+    block[f"unknown_{unit}"] = share.unknown
+    block["coverage"] = round(share.coverage, 4) if share.coverage is not None else None
+    block["agent_share"] = round(share.agent_share, 4) if share.agent_share is not None else None
     if share.suppressed_reason:
         block["suppressed_reason"] = share.suppressed_reason
     if share.total:
@@ -258,77 +284,3 @@ async def overview_changes(session: Any, repository: Any) -> dict[str, Any]:
         share = attribution_share(labels[AGENT], labels[HUMAN_ATTESTED], len(rows))
         block["provenance"] = _share_block(share, unit="changes")
     return block
-
-
-# -- get_why: the change a commit landed in -------------------------------------
-
-
-def _commit_rows(value: Any, out: list[tuple[dict[str, Any], str]]) -> None:
-    if isinstance(value, dict):
-        for key in ("commit", "sha"):
-            sha = value.get(key)
-            if isinstance(sha, str) and _HEX.match(sha.lower()):
-                out.append((value, sha.lower()))
-                break
-        for key, child in value.items():
-            if key not in ("evidence_refs", "_meta"):
-                _commit_rows(child, out)
-    elif isinstance(value, list):
-        for child in value:
-            _commit_rows(child, out)
-
-
-async def _named_changes(session: Any, repo_id: str, shas: list[str]) -> dict[str, Any]:
-    """``sha -> change`` for shas that land in exactly one named change."""
-    matches = or_(
-        *(
-            or_(
-                Change.head_sha.like(f"{sha}%", escape=LIKE_ESCAPE),
-                Change.commit_shas_json.like(f'%"{sha}%', escape=LIKE_ESCAPE),
-            )
-            for sha in shas
-        )
-    )
-    rows = (
-        await session.execute(
-            select(Change).where(
-                Change.repository_id == repo_id,
-                Change.identity_kind.in_(_NAMED_KINDS),
-                matches,
-            )
-        )
-    ).scalars().all()
-    found: dict[str, Any] = {}
-    for sha in shas:
-        hits = [
-            r
-            for r in rows
-            if r.head_sha.startswith(sha)
-            or any(c.startswith(sha) for c in json.loads(r.commit_shas_json or "[]"))
-        ]
-        if len(hits) == 1:  # a short sha in two changes cites neither
-            found[sha] = hits[0]
-    return found
-
-
-async def cite_changes(result: dict[str, Any], session_factory: Any) -> None:
-    """Give each commit row the named change (PR or MR) it landed in."""
-    rows: list[tuple[dict[str, Any], str]] = []
-    _commit_rows(result, rows)
-    shas = list(dict.fromkeys(sha for _, sha in rows))[:_CITE_CAP]
-    if not shas:
-        return
-    async with get_session(session_factory) as session:
-        found = await _named_changes(session, (await _get_repo(session)).id, shas)
-    for row, sha in rows:
-        change = found.get(sha)
-        if change is None:
-            continue
-        cite: dict[str, Any] = {"id": change.change_id}
-        if change.forge_ref:
-            cite["ref"] = change.forge_ref
-        # A squash commit's message is already the change's title.
-        message = str(row.get("message") or row.get("subject") or "")
-        if change.title and change.title != message.split("\n", 1)[0]:
-            cite["title"] = change.title
-        row["change"] = cite

@@ -1,13 +1,14 @@
 """Change Records and attribution on the MCP surface.
 
 ``change:<id>`` targets and ``include=["changes", "provenance"]`` in get_context,
-``include=["changes"]`` in get_risk and get_overview, and get_why citing the
-change a commit landed in. Default responses stay byte-identical.
+``include=["changes"]`` in get_risk and get_overview. Default responses,
+get_why's included, stay byte-identical.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from repowise.core.persistence.models import GitMetadata
 _FULL = {
     "abc1234": "abc1234" + "0" * 33,
     "def5678": "def5678" + "0" * 33,
-}
+}  # commits the fixture's get_why archaeology names
 
 
 @pytest.fixture(autouse=True)
@@ -135,7 +136,8 @@ async def test_change_target_card(setup_mcp, session):
     # A commit sha resolves to the change that landed it.
     assert result["targets"]["change:def5678"]["id"] == "pr-1"
     assert result["targets"]["change:pr-4"]["provenance"] == {"unavailable": "not_recorded"}
-    assert "No change 'pr-99'" in result["targets"]["change:pr-99"]["error"]
+    miss = result["targets"]["change:pr-99"]["error"]
+    assert "No change 'pr-99'" in miss and "change-I" in miss and "MR" in miss
     assert "Ann" not in json.dumps(card)
 
 
@@ -215,6 +217,8 @@ async def test_file_provenance_carries_coverage_and_withholds_below_the_floor(
     assert withheld["agent_share"] is None
     assert withheld["suppressed_reason"] == "coverage_below_floor"
     assert withheld["unknown_commits"] == 13  # unknown is its own band
+    # A withheld share carries no counts that would restate it.
+    assert "agent_commits" not in withheld and "human_attested_commits" not in withheld
 
     _attribution_off(tmp_path)
     off = await get_context(targets=["src/auth/service.py"], include=["provenance"])
@@ -282,6 +286,8 @@ async def test_overview_agent_share_is_withheld_below_the_floor(setup_mcp, sessi
     assert prov["coverage"] == 0.2
     assert prov["agent_share"] is None
     assert prov["suppressed_reason"] == "coverage_below_floor"
+    assert "agent_changes" not in prov and "human_attested_changes" not in prov
+    assert prov["unknown_changes"] == 4
 
 
 @pytest.mark.asyncio
@@ -291,52 +297,65 @@ async def test_overview_changes_without_records(setup_mcp):
     assert (await get_overview(include=["changes"]))["changes"] == {"total": 0}
 
 
-# -- get_why --------------------------------------------------------------------
-
-
-def _commit_rows(value, out):
-    if isinstance(value, dict):
-        if isinstance(value.get("sha"), str) or isinstance(value.get("commit"), str):
-            out.append(value)
-        for key, child in value.items():
-            if key != "evidence_refs":
-                _commit_rows(child, out)
-    elif isinstance(value, list):
-        for child in value:
-            _commit_rows(child, out)
-    return out
-
-
 @pytest.mark.asyncio
-async def test_why_cites_the_change_a_commit_landed_in(setup_mcp, session):
-    from repowise.server.mcp_server import get_why
+async def test_a_short_sha_in_several_changes_lists_candidates(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
 
-    before = await get_why(query="src/auth/service.py")
-    assert not any("change" in r for r in _commit_rows(before, []))
-    await _seed(session)
-    after = await get_why(query="src/auth/service.py")
-    cited = {r["sha"]: r["change"] for r in _commit_rows(after, []) if "change" in r}
-    # A squash commit's message is the change's title, so only the id and ref ride along.
-    assert cited["def5678"] == {"id": "pr-1", "ref": "#1"}
-    assert cited["abc1234"] == {
-        "id": "pr-4",
-        "ref": "#4",
-        "title": "Merge pull request #4 from ann/auth",
-    }
-
-
-@pytest.mark.asyncio
-async def test_why_cites_nothing_for_unnamed_changes(setup_mcp, session):
-    from repowise.server.mcp_server import get_why
-
-    before = _without_meta(await get_why(query="src/auth/service.py"))
     await _seed(
         session,
         [
-            _row("commit-x", 1, ["src/auth/service.py"], sha=_FULL["def5678"], identity_kind="commit", forge_ref=None),
+            _row("pr-1", 1, ["a.py"], sha="cafe123" + "1" * 33),
+            _row("pr-2", 2, ["a.py"], sha="cafe123" + "2" * 33),
         ],
     )
-    assert _without_meta(await get_why(query="src/auth/service.py")) == before
+    result = await get_context(targets=["change:cafe123", "change:cafe1232"])
+    card = result["targets"]["change:cafe123"]
+    assert "several changes" in card["error"]
+    assert sorted(card["candidates"]) == ["change:pr-1", "change:pr-2"]
+    assert result["targets"]["change:cafe1232"]["id"] == "pr-2"
+
+
+@pytest.mark.asyncio
+async def test_recent_changes_match_the_exact_path_only(setup_mcp, session):
+    """LIKE wildcards and SQLite's ASCII case folding never widen the match."""
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server._changes import file_changes
+
+    await _seed(
+        session,
+        [
+            _row("pr-1", 1, ["src/a_b.py"]),
+            _row("pr-2", 2, ["src/aXb.py"]),
+            _row("pr-3", 3, ["src/100%.py"]),
+            _row("pr-4", 4, ["src/100x.py"]),
+            _row("pr-5", 5, ["src/A_B.py"]),
+        ],
+    )
+    repository = await session.get(Repository, "repo1")
+    found = await file_changes(
+        session, repository, ["src/a_b.py", "src/100%.py"], attribution=True
+    )
+    ids = {path: [r["id"] for r in block["recent_changes"]] for path, block in found.items()}
+    assert ids == {"src/a_b.py": ["pr-1"], "src/100%.py": ["pr-3"]}
+
+
+@pytest.mark.asyncio
+async def test_risk_reads_every_cards_changes_in_one_query(setup_mcp, session, monkeypatch):
+    from repowise.server.mcp_server import _changes, get_risk
+
+    await _seed(session)
+    calls = []
+    original = _changes.file_changes
+
+    async def counted(*args, **kwargs):
+        calls.append(args[2])
+        return await original(*args, **kwargs)
+
+    module = sys.modules["repowise.server.mcp_server.tool_risk.get_risk"]
+    monkeypatch.setattr(module, "file_changes", counted)
+    result = await get_risk(targets=["src/auth/service.py", "src/db/models.py"], include=["changes"])
+    assert len(calls) == 1 and sorted(calls[0]) == ["src/auth/service.py", "src/db/models.py"]
+    assert [r["id"] for r in result["targets"]["src/db/models.py"]["recent_changes"]] == ["pr-2"]
 
 
 # -- defaults never grow ----------------------------------------------------------
@@ -344,13 +363,14 @@ async def test_why_cites_nothing_for_unnamed_changes(setup_mcp, session):
 
 @pytest.mark.asyncio
 async def test_default_responses_are_byte_identical_with_change_records(setup_mcp, session):
-    from repowise.server.mcp_server import get_context, get_overview, get_risk
+    from repowise.server.mcp_server import get_context, get_overview, get_risk, get_why
 
     async def defaults() -> list[str]:
         return [
             _without_meta(await get_context(targets=["src/auth/service.py"])),
             _without_meta(await get_risk(targets=["src/auth/service.py"])),
             _without_meta(await get_overview()),
+            _without_meta(await get_why(query="src/auth/service.py")),
         ]
 
     before = await defaults()

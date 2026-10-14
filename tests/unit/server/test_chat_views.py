@@ -322,7 +322,7 @@ def test_attribution_below_the_floor_is_refused_with_its_coverage(ratio, refused
         assert turn.parts[0]["coverage"]["ratio"] == ratio
 
 
-def _overview_changes(coverage: float = 0.5, **provenance: Any) -> dict:
+def _overview_changes(coverage: float = 0.5, /, **provenance: Any) -> dict:
     return {
         "changes": {
             "window": {"days": 90, "since": "2025-12-15T00:00:00+00:00", "until": "2026-03-15"},
@@ -368,7 +368,12 @@ def test_changes_provenance_keeps_unknown_as_its_own_band():
 @pytest.mark.parametrize(
     ("data", "code", "coverage"),
     [
-        (_overview_changes(coverage=0.2), "insufficient_coverage", 0.2),
+        (_overview_changes(0.2), "insufficient_coverage", 0.2),
+        (
+            _overview_changes(unknown_changes=4, coverage=0.2, agent_share=None),
+            "insufficient_coverage",
+            0.2,
+        ),
         (_overview_changes(unavailable="attribution_off"), "attribution_off", None),
         ({"changes": {"total": 0}}, "view_unavailable", None),
     ],

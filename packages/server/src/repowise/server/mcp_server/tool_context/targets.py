@@ -1233,11 +1233,10 @@ async def _resolve_one_target(
     }:
         attribution = attribution_enabled(repository.local_path)
         if "changes" in include:
-            result_data.update(
-                await file_changes(
-                    session, repository, file_path_for_git, attribution=attribution
-                )
+            found = await file_changes(
+                session, repository, [file_path_for_git], attribution=attribution
             )
+            result_data.update(found[file_path_for_git])
         if "provenance" in include:
             meta = await load_file_meta(session, repo_id, file_path_for_git) if attribution else None
             result_data["provenance"] = file_provenance(meta, attribution)

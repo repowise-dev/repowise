@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._changes import cite_changes
 from repowise.server.mcp_server._helpers import (
     _is_path,
     _is_workspace_mode,
-    _resolve_repo_context,
     _unsupported_repo_all,
 )
 from repowise.server.mcp_server.tool_why.basis import _stamp_answer_basis
@@ -20,8 +17,6 @@ from repowise.server.mcp_server.tool_why.path_mode import _why_path, _why_target
 from repowise.server.mcp_server.tool_why.reference import _why_reference
 from repowise.server.mcp_server.tool_why.search import _why_search
 from repowise.server.mcp_server.tool_why.workspace import _why_workspace_search
-
-_log = logging.getLogger("repowise.mcp.why")
 
 
 @mcp.tool(
@@ -57,8 +52,7 @@ async def get_why(
     means nobody has yet. ``answer_basis`` names the strongest lane the response
     rests on (decision, episode, rationale, archaeology, documentation,
     candidate); only ``decision`` is a ruling, and ``candidate`` is the weakest
-    -- it means nothing cleared that bar. A commit row that landed in a PR or
-    MR carries ``change`` (its id, ref and title).
+    -- it means nothing cleared that bar.
 
     Args:
         query: question, file/module path, or omit for the dashboard.
@@ -74,7 +68,7 @@ async def get_why(
     if id:
         if repo == "all":
             return _unsupported_repo_all("get_why (reference lookup)")
-        return await _cited(await _why_reference(id, repo, reference=reference), repo)
+        return _stamp_answer_basis(await _why_reference(id, repo, reference=reference))
 
     # --- repo="all": search decisions across ALL repos ---
     if repo == "all":
@@ -86,30 +80,16 @@ async def get_why(
     # Targets first: naming files and asking nothing asks about those files.
     if not query:
         if targets:
-            return await _cited(await _why_targets(list(targets), repo), repo)
+            return _stamp_answer_basis(await _why_targets(list(targets), repo))
         # An orientation call, not an answer: no basis to name.
         return await _why_health_dashboard(repo)
 
     # --- Mode 2: Path → decisions, origin story, alignment ---
     if _is_path(query):
-        return await _cited(await _why_path(query, repo), repo)
+        return _stamp_answer_basis(await _why_path(query, repo))
 
     # --- Mode 3: Natural language → target-aware search ---
-    return await _cited(await _why_search(query, targets, repo), repo)
-
-
-async def _cited(result: dict, repo: str | None) -> dict:
-    """Stamp the basis and cite the change each commit row landed in.
-
-    Single-repo modes only: a workspace search mixes repos' commits.
-    """
-    if isinstance(result, dict) and "error" not in result:
-        try:
-            ctx = await _resolve_repo_context(repo)
-            await cite_changes(result, ctx.session_factory)
-        except Exception:  # the answer stands without its citations
-            _log.warning("get_why: change citation failed", exc_info=True)
-    return _stamp_answer_basis(result)
+    return _stamp_answer_basis(await _why_search(query, targets, repo))
 
 
 def _reference_coordinates(

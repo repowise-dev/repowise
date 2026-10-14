@@ -295,7 +295,7 @@ Why code is shaped the way it is: decision records, with git archaeology and min
 
 Modes: a question searches decision records; a path returns that file's `decisions`, `candidates` and `history` plus its origin story and `alignment`; `targets` alone asks about those files; no arguments returns the health dashboard (stale decisions, conflicts, ungoverned hotspots); `id` resolves one record directly.
 
-**Key return fields:** `decisions` (accepted, binding), `candidates` (inferred, nobody accepted them: hints, not rules), `history` (accepted, since withdrawn), `answer_basis` (the strongest lane served; only `decision` is a ruling), `alignment`, `git_archaeology`, `evidence_refs`. A commit row that landed in a PR or MR carries `change` (`id`, `ref`, and `title` when the commit message is not already the title).
+**Key return fields:** `decisions` (accepted, binding), `candidates` (inferred, nobody accepted them: hints, not rules), `history` (accepted, since withdrawn), `answer_basis` (the strongest lane served; only `decision` is a ruling), `alignment`, `git_archaeology`, `evidence_refs`.
 
 ```
 get_why(query="why JWT over sessions?")

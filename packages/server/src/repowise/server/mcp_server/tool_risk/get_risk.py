@@ -357,11 +357,14 @@ async def _attach_changes(results: list[dict], ctx: Any) -> None:
         repository = await _get_repo(session)
         attribution = attribution_enabled(repository.local_path)
         root = served_root(repository, ctx.path)
-        for card in results:
-            if card.get("resolved") is False:
-                continue
-            path = normalize_target_path(card["target"], repo_root=root)
-            card.update(await file_changes(session, repository, path, attribution=attribution))
+        cards = {
+            normalize_target_path(card["target"], repo_root=root): card
+            for card in results
+            if card.get("resolved") is not False
+        }
+        found = await file_changes(session, repository, list(cards), attribution=attribution)
+        for path, card in cards.items():
+            card.update(found[path])
 
 
 async def _change_tests(ctx: Any, paths: list[str]) -> ChangeTests:
