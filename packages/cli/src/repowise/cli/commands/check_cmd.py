@@ -40,6 +40,8 @@ _GATES: dict[str, tuple[tuple[str, ...], str, bool]] = {
     "coverage": (("coverage", "check"), "coverage_check_cmd:coverage_check", True),
     "doc_drift": (("doc-drift", "--check"), "doc_drift_cmd:doc_drift_command", False),
 }
+#: A gate still running after this is reported as not evaluated.
+GATE_TIMEOUT_SECONDS = 1800
 #: Options ``repowise check`` sets itself, or that would write files.
 _RESERVED = frozenset(
     {"format", "path", "repo", "staged", "write_baseline", "check", "json", "no_workspace"}
@@ -106,7 +108,8 @@ def check_command(
     gate_runs = {r.name: _run_gate(root, r, resolved) for r in policy.rules if r.gate}
     evidence = _gather(root, change) if any(not r.gate for r in policy.rules) else None
     results = evaluate(policy, evidence, gate_runs)
-    _emit(fmt, policy, results, evidence, change.label, sarif_file, junit_file)
+    anchor = min([*change.files, *change.deleted], default=None)
+    _emit(fmt, policy, results, evidence, change.label, sarif_file, junit_file, anchor=anchor)
     code = exit_code(results)
     if code:
         raise click.exceptions.Exit(code)
@@ -166,50 +169,78 @@ def _check_gate_options(policy: Any) -> None:
 
 def _gate_argv(rule: Any, revspec: str) -> list[str]:
     argv, _cmd, takes_revspec = _GATES[rule.gate]
-    out = [*argv, *([revspec] if takes_revspec else [])]
-    for key, value in rule.gate_args.items():
+    out = [*argv]
+    args = dict(rule.gate_args)
+    if not takes_revspec:
+        # doc-drift judges the tree; scope it to this change unless the rule says otherwise.
+        args.setdefault("since", revspec)
+    for key, value in args.items():
         flag = "--" + key.replace("_", "-")
         if value is True:
             out.append(flag)
         elif value is False:
             continue
         else:
-            for v in value if isinstance(value, list) else [value]:
-                out += [flag, str(v)]
-    return [*out, "--format", "json"]
+            # ``--flag=value`` so a value starting with "-" is never read as an option.
+            out += [f"{flag}={v}" for v in (value if isinstance(value, list) else [value])]
+    out += ["--format", "json"]
+    # ``--`` ends the options, so REVSPEC is always the positional argument.
+    return [*out, "--", revspec] if takes_revspec else out
+
+
+def _verdict(kind: str, doc: Any) -> bool | None:
+    """Whether the gate's own JSON verdict says it failed; ``None`` when there is none."""
+    gate = doc.get("gate") if isinstance(doc, dict) else None
+    if kind == "coverage":
+        return gate == "fail" if isinstance(gate, str) else None
+    passed = gate.get("passed") if isinstance(gate, dict) else None
+    return (not passed) if isinstance(passed, bool) else None
 
 
 def _run_gate(root: Path, rule: Any, revspec: str) -> Any:
-    """Run the gate as its own command does, in a child process, and read its verdict."""
+    """Run the gate as its own command does, in a child process, and read its verdict.
+
+    Only a JSON verdict that agrees with the exit code counts: a crash, a
+    refusal or anything else unreadable is "could not be evaluated", never a
+    fired rule.
+    """
+    import os
+
     from repowise.core.policy import GateRun
 
     argv = _gate_argv(rule, revspec)
-    shown = "repowise " + " ".join(argv[:-2])
+    shown = "repowise " + " ".join(a for a in argv if a not in ("--format", "json", "--"))
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "repowise.cli.main", *argv],
             cwd=root,
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             stdin=subprocess.DEVNULL,
+            timeout=GATE_TIMEOUT_SECONDS,
             check=False,
         )
+    except subprocess.TimeoutExpired:
+        return GateRun(2, f"{shown} did not finish within {GATE_TIMEOUT_SECONDS} seconds")
     except OSError as exc:
         return GateRun(2, f"could not start {shown}: {exc}")
     try:
         doc = json.loads(proc.stdout or "null")
     except ValueError:
         doc = None
-    if proc.returncode == 2:
+    failed = _verdict(rule.gate, doc)
+    if failed is None or proc.returncode != int(failed):
         message = doc.get("message") if isinstance(doc, dict) else None
-        return GateRun(2, message or (proc.stderr.strip().splitlines() or [shown])[-1])
-    locations: list[tuple[str, int | None]] = []
-    if isinstance(doc, dict) and isinstance(doc.get("gate"), dict):
-        for f in doc["gate"].get("failing") or ():
-            line = None if f.get("commit") else f.get("line_number")
-            locations.append((str(f.get("file_path")), line))
+        last = (proc.stderr.strip().splitlines() or [""])[-1]
+        return GateRun(2, message or last or f"{shown} exited {proc.returncode} with no verdict")
+    locations = []
+    for f in (doc["gate"].get("failing") or ()) if isinstance(doc["gate"], dict) else ():
+        line = None if f.get("commit") else f.get("line_number")
+        locations.append((str(f.get("file_path")), line, f.get("fingerprint")))
     return GateRun(proc.returncode, f"Reproduce with: {shown}", tuple(locations))
 
 
@@ -236,11 +267,14 @@ def _emit(
     junit_file: Path | None,
     *,
     notice: str | None = None,
+    anchor: str | None = None,
 ) -> None:
     from repowise.cli import __version__
     from repowise.core.policy.report import render_junit, render_sarif
 
-    sarif = render_sarif(policy, results, tool_version=__version__, revspec=revspec)
+    sarif = render_sarif(
+        policy, results, tool_version=__version__, revspec=revspec, fallback_path=anchor
+    )
     junit = render_junit(results, revspec=revspec)
     if sarif_file:
         sarif_file.write_text(json.dumps(sarif, indent=2), encoding="utf-8")

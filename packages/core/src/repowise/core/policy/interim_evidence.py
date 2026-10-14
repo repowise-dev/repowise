@@ -205,26 +205,33 @@ async def _reaching_tests(session: Any, repo_id: str, root: Path, change: Any) -
     out = await collect(session, repo_id, root, change)
     if out.get("index_problem") or out.get("graph_error"):
         return _unknown("reaching_tests", label, str(out.get("index_problem") or out["graph_error"]))
-    tests: dict[str, dict[str, str]] = {}
+    # A file nothing knows a test for is a known absence only when a current,
+    # complete coverage map measured it; otherwise it is not known.
+    measured = not (out.get("map_empty") or out.get("map_truncated")) and out.get("map_current")
+    tests: dict[str, dict[str, str] | None] = {}
     for test_id, row in (out.get("covered") or {}).items():
         for path in row.get("source_files") or ():
             tests.setdefault(path, {})[test_id] = "measured"
     for row in out.get("inferred") or ():
-        tests.setdefault(row["source_file"], {}).setdefault(row["test_file"], "inferred")
+        found = tests.setdefault(row["source_file"], {})
+        found.setdefault(row["test_file"], "inferred")
     for path in out.get("unknown") or ():
-        tests.setdefault(path, {})
+        tests.setdefault(path, {} if measured else None)
     rows = [
         {
             "path": path,
-            "tests": sorted(found),
-            "basis": "measured" if "measured" in found.values() else ("inferred" if found else None),
+            "tests": None if found is None else sorted(found),
+            "basis": "unresolved"
+            if found is None
+            else ("measured" if not found or "measured" in found.values() else "inferred"),
         }
         for path, found in sorted(tests.items())
     ]
-    measured = not out.get("map_empty")
+    if rows and all(r["tests"] is None for r in rows):
+        return _unknown("reaching_tests", label, "no measured coverage and no test found")
     return _item(
         "reaching_tests", label, "ok", "measured" if measured else "inferred",
-        sum(1 for r in rows if not r["tests"]), rows, "coverage map and dependency graph",
+        sum(1 for r in rows if r["tests"] == []), rows, "coverage map and dependency graph",
     )
 
 

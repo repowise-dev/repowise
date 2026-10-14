@@ -17,10 +17,11 @@ from __future__ import annotations
 import hashlib
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
+from pathlib import PurePath, PureWindowsPath
 from typing import Any
 
 from repowise.core.ci import sarif
-from repowise.core.policy.rules import TRIGGERED, UNKNOWN, Policy, RuleResult
+from repowise.core.policy.rules import POLICIES_FILE, TRIGGERED, UNKNOWN, Policy, RuleResult
 
 TOOL_NAME = "repowise-check"
 FINGERPRINT_KEY = "repowisePolicy/v1"
@@ -31,8 +32,18 @@ def _rule_id(name: str) -> str:
 
 
 def render_sarif(
-    policy: Policy, results: Sequence[RuleResult], *, tool_version: str, revspec: str
+    policy: Policy,
+    results: Sequence[RuleResult],
+    *,
+    tool_version: str,
+    revspec: str,
+    fallback_path: str | None = None,
 ) -> dict:
+    """*fallback_path* (repo-relative) locates file-less results when the policy
+    file lies outside the repository, so every uri stays relative to it."""
+    anchor = policy.source
+    if PurePath(anchor).is_absolute() or PureWindowsPath(anchor).is_absolute():
+        anchor = fallback_path or POLICIES_FILE
     rules = [
         sarif.rule(
             _rule_id(r.name),
@@ -52,7 +63,8 @@ def render_sarif(
                 properties[key] = getattr(res, key)
         if res.evidence:
             properties["evidence"] = res.evidence
-        for path, line in res.locations or [(policy.source, None)]:
+        for path, line, own in res.locations or [(anchor, None, None)]:
+            ident = own or f"{path}:{line or 0}"
             out.append(
                 sarif.result(
                     _rule_id(res.rule.name),
@@ -61,7 +73,7 @@ def render_sarif(
                     path,
                     line,
                     FINGERPRINT_KEY,
-                    hashlib.sha256(f"{res.rule.name}\0{path}".encode()).hexdigest()[:32],
+                    hashlib.sha256(f"{res.rule.name}|{ident}".encode()).hexdigest()[:32],
                     properties,
                 )
             )
@@ -86,7 +98,7 @@ def render_junit(results: Sequence[RuleResult], *, revspec: str) -> str:
         case = ET.SubElement(suite, "testcase", name=res.rule.name, classname=f"{TOOL_NAME}.{res.rule.action}")
         if res.fails:
             failure = ET.SubElement(case, "failure", message=res.message, type=res.rule.action)
-            failure.text = "\n".join(f"{p}{f':{ln}' if ln else ''}" for p, ln in res.locations) or None
+            failure.text = "\n".join(f"{p}{f':{ln}' if ln else ''}" for p, ln, _fp in res.locations) or None
         elif res.outcome == UNKNOWN:
             ET.SubElement(case, "skipped", message=res.message)
         elif res.outcome == TRIGGERED:

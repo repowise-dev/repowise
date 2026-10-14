@@ -135,7 +135,8 @@ def test_security_gate_wrapped_as_a_rule(repo):
     assert dirty.exit_code == 1, dirty.output
     (row,) = json.loads(dirty.stdout)["results"]
     assert row["outcome"] == "triggered" and row["locations"][0]["path"] == "cfg.py"
-    assert "repowise security check main...HEAD --fail-on high" in row["message"]
+    assert "repowise security check --fail-on=high main...HEAD" in row["message"]
+    assert row["locations"][0]["fingerprint"]
 
 
 @pytest.mark.parametrize(
@@ -153,3 +154,75 @@ def test_invalid_policy_exits_two(repo, policy, problem):
     assert result.exit_code == 2
     doc = json.loads(result.stdout)
     assert doc["error"] == "policy_invalid" and problem in doc["message"]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [
+        (1, "Traceback (most recent call last):\n  ...\nRuntimeError: boom\n"),
+        (1, '{"gate": {"passed": true}}'),
+        (0, '{"gate": {"passed": false}}'),
+        (1, ""),
+    ],
+)
+def test_a_gate_without_a_matching_verdict_is_not_evaluated(repo, monkeypatch, returncode, stdout):
+    import subprocess
+
+    from repowise.cli.commands import check_cmd
+
+    real = subprocess.run
+
+    def crashed(argv, **kwargs):
+        if "repowise.cli.main" not in argv:
+            return real(argv, **kwargs)
+        return subprocess.CompletedProcess(argv, returncode, stdout, "RuntimeError: boom\n")
+
+    monkeypatch.setattr(check_cmd.subprocess, "run", crashed)
+    _policy(repo, "rules: [{name: sec, gate: security}]")
+    _commit(repo, "app.py", "x = 2\n")
+    result = _check(repo, "--format", "json")
+    assert result.exit_code == 2, result.output
+    (row,) = json.loads(result.stdout)["results"]
+    assert row["outcome"] == "unknown"
+
+
+def test_a_gate_that_runs_too_long_is_not_evaluated(repo, monkeypatch):
+    import subprocess
+
+    from repowise.cli.commands import check_cmd
+
+    real = subprocess.run
+
+    def slow(argv, **kwargs):
+        if "repowise.cli.main" not in argv:
+            return real(argv, **kwargs)
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(check_cmd.subprocess, "run", slow)
+    _policy(repo, "rules: [{name: sec, gate: security, action: warn}]")
+    _commit(repo, "app.py", "x = 2\n")
+    result = _check(repo, "--format", "json")
+    assert result.exit_code == 0
+    (row,) = json.loads(result.stdout)["results"]
+    assert row["outcome"] == "unknown" and "did not finish" in row["message"]
+
+
+def test_gate_arguments_scope_doc_drift_and_end_options_before_revspec():
+    from repowise.cli.commands.check_cmd import _gate_argv
+    from repowise.core.policy import parse_policy
+
+    sec, drift, pinned = parse_policy(
+        """\
+rules:
+  - {name: s, gate: security, with: {baseline: -odd.json}}
+  - {name: d, gate: doc_drift}
+  - {name: p, gate: doc_drift, with: {since: auto}}
+"""
+    ).rules
+    assert _gate_argv(sec, "-x...HEAD") == [
+        "security", "check", "--baseline=-odd.json", "--format", "json", "--", "-x...HEAD"
+    ]
+    assert _gate_argv(drift, "main...HEAD") == [
+        "doc-drift", "--check", "--since=main...HEAD", "--format", "json"
+    ]
+    assert "--since=auto" in _gate_argv(pinned, "main...HEAD")

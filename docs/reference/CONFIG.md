@@ -574,7 +574,7 @@ Components name the parts of a repository that health, hotspots, bus factor, tes
 
 ### `.repowise/policies.yaml`
 
-The change policy `repowise check` evaluates. Each rule selects components (`match`, `exclude`), tests conditions over the change's evidence (`when`, all must hold) and names an action: `warn`, `require_owner_review`, `require_tests` or `fail`. A rule can instead wrap an existing gate (`security`, `coverage` or `doc_drift`) with that command's options under `with`; it runs exactly as the command does on its own.
+The change policy `repowise check` evaluates. Each rule selects components (`match`, `exclude`), tests conditions over the change's evidence (`when`, all must hold) and names an action: `warn`, `require_owner_review`, `require_tests` or `fail`. A rule can instead wrap an existing gate (`security`, `coverage` or `doc_drift`) with that command's options under `with`; it runs exactly as the command does on its own, and `doc_drift` is scoped to the change (`since`) unless the rule sets it. `require_owner_review` and `require_tests` are advisory: they are reported in every format and `repowise check` still exits 0; only `fail` exits 1.
 
 ```yaml
 version: 1

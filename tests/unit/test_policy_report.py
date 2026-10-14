@@ -102,3 +102,29 @@ def test_empty_results_render_valid_documents():
     log = render_sarif(empty, [], tool_version="1", revspec="")
     assert log["runs"][0]["results"] == []
     assert ET.fromstring(render_junit([], revspec="")).find("testsuite").get("tests") == "0"
+
+
+def test_findings_in_one_file_keep_their_own_fingerprints():
+    policy = parse_policy("rules: [{name: sec, gate: security}]")
+    run = GateRun(1, "x", (("a.py", 3, "f1"), ("a.py", 9, "f2"), ("a.py", 12, None)))
+    log = render_sarif(policy, evaluate(policy, None, {"sec": run}), tool_version="1", revspec="")
+    prints = {r["partialFingerprints"]["repowisePolicy/v1"] for r in log["runs"][0]["results"]}
+    assert len(prints) == 3
+
+
+def test_a_policy_outside_the_repository_locates_on_a_repo_file():
+    policy = parse_policy(
+        "rules: [{name: d, when: {decision_crossed: true}, action: warn}]",
+        "C:/elsewhere/policies.yaml",
+    )
+    evidence = {
+        "items": [
+            {"kind": "decisions_crossed", "status": "ok", "basis": "declared",
+             "details": [{"id": "d1", "title": "T"}]},
+        ]
+    }
+    log = render_sarif(
+        policy, evaluate(policy, evidence), tool_version="1", revspec="", fallback_path="src/a.py"
+    )
+    (res,) = log["runs"][0]["results"]
+    assert res["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "src/a.py"

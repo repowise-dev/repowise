@@ -147,7 +147,7 @@ def test_agent_change_to_untested_pci_component_requires_owner_review():
     assert result.outcome == "triggered"
     assert result.components == ["payments"] and result.owners == ["payments-team"]
     # Only the untested file inside the matched component is located.
-    assert result.locations == [("src/pay/charge.py", None)]
+    assert result.locations == [("src/pay/charge.py", None, None)]
     assert "payments-team" in result.message
     assert result.evidence == {
         "components_touched": "declared",
@@ -225,7 +225,7 @@ rules:
     decisions, contracts, bus = evaluate(policy, evidence)
     assert decisions.outcome == "triggered" and decisions.fails
     assert "Use Stripe" in decisions.message
-    assert decisions.locations == [("src/pay/charge.py", None)]
+    assert decisions.locations == [("src/pay/charge.py", None, None)]
     assert contracts.outcome == "passed"
     assert bus.outcome == "triggered" and "payments (1)" in bus.message
     assert exit_code([decisions, contracts, bus]) == 1
@@ -241,12 +241,29 @@ def test_gate_runs_map_to_outcomes_and_exit_codes():
     policy = parse_policy(
         "rules: [{name: sec, gate: security}, {name: cov, gate: coverage, action: warn}]"
     )
-    failed = evaluate(policy, None, {"sec": GateRun(1, "x", (("a.py", 3),)), "cov": GateRun(1, "y")})
+    failed = evaluate(policy, None, {"sec": GateRun(1, "x", (("a.py", 3, "fp1"),)), "cov": GateRun(1, "y")})
     assert [r.outcome for r in failed] == ["triggered", "triggered"]
-    assert failed[0].locations == [("a.py", 3)] and exit_code(failed) == 1
+    assert failed[0].locations == [("a.py", 3, "fp1")] and exit_code(failed) == 1
 
     broken = evaluate(policy, None, {"sec": GateRun(2, "no report"), "cov": GateRun(0, "")})
     assert [r.outcome for r in broken] == ["unknown", "passed"] and exit_code(broken) == 2
 
     warn_only = evaluate(policy, None, {"sec": GateRun(0, ""), "cov": GateRun(2, "no report")})
     assert exit_code(warn_only) == 0
+
+
+def test_a_file_nothing_knows_a_test_for_is_not_missing():
+    policy = parse_policy(PCI_RULE)
+    unknown = _tests(**{"src/pay/charge.py": None, "src/pay/refund.py": ["t2"]})
+    (result,) = evaluate(policy, _evidence(_components(PAYMENTS), _provenance("agent"), unknown))
+    assert result.outcome == "unknown"
+    # A measured absence elsewhere in scope still fires.
+    mixed = _tests(**{"src/pay/charge.py": None, "src/pay/refund.py": []})
+    (fired,) = evaluate(policy, _evidence(_components(PAYMENTS), _provenance("agent"), mixed))
+    assert fired.outcome == "triggered" and fired.locations == [("src/pay/refund.py", None, None)]
+
+
+def test_no_changed_source_file_in_scope_is_not_missing():
+    policy = parse_policy("rules: [{name: t, when: {reaching_tests: missing}, action: fail}]")
+    (result,) = evaluate(policy, _evidence(_tests()))
+    assert result.outcome == "passed"

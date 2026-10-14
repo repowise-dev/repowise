@@ -76,8 +76,8 @@ async def test_index_adds_bus_factor_tests_and_decisions(async_session, tmp_path
     assert items["provenance"]["details"][0]["tier"] == 3
     (decision,) = items["decisions_crossed"]["details"]
     assert decision["title"] == "Use idempotent charges" and decision["paths"] == ["src/pay/m0.py"]
-    tests = {r["path"]: r["tests"] for r in items["reaching_tests"]["details"]}
-    assert tests.get("src/pay/m0.py") == []
+    # An empty coverage map and no test found: not a measured absence.
+    assert items["reaching_tests"]["status"] == "unknown"
     assert items["contracts"]["status"] == "unknown"
 
     policy = parse_policy(
@@ -85,13 +85,38 @@ async def test_index_adds_bus_factor_tests_and_decisions(async_session, tmp_path
 rules:
   - name: pci-agent
     match: {components: {tags: [pci]}}
-    when: {attribution: agent, agent_tier: [3], reaching_tests: missing, decision_crossed: true, bus_factor_below: 2}
+    when: {attribution: agent, agent_tier: [3], decision_crossed: true, bus_factor_below: 2}
     action: require_owner_review
+  - name: pci-untested
+    match: {components: {tags: [pci]}}
+    when: {reaching_tests: missing}
+    action: fail
 """
     )
-    (result,) = evaluate(policy, evidence)
-    assert result.outcome == "triggered", result.message
-    assert result.owners == ["payments-team"]
+    fired, untested = evaluate(policy, evidence)
+    assert fired.outcome == "triggered", fired.message
+    assert fired.owners == ["payments-team"]
+    assert untested.outcome == "unknown"
+
+
+async def test_a_measured_map_makes_an_untested_file_a_known_absence(
+    async_session, tmp_path, monkeypatch
+):
+    from repowise.core.analysis import test_collection
+
+    async def measured(*args, **kwargs):
+        out = test_collection.empty_result(1)
+        out.update(map_empty=False, map_current=True, unknown=["src/pay/m0.py"])
+        return out
+
+    monkeypatch.setattr(test_collection, "collect", measured)
+    root = _repo(tmp_path)
+    repo = await insert_repo(async_session, local_path=str(root))
+    change = change_set(str(root), "main...HEAD")
+    evidence = await gather_evidence(root, change, session=async_session, repo_id=repo.id)
+    (item,) = [i for i in evidence["items"] if i["kind"] == "reaching_tests"]
+    assert item["status"] == "ok" and item["basis"] == "measured"
+    assert item["details"] == [{"path": "src/pay/m0.py", "tests": [], "basis": "measured"}]
 
 
 async def test_git_alone_reads_declared_components_and_provenance(tmp_path):

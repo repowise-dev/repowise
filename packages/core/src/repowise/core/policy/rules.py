@@ -16,7 +16,8 @@ source}]}``, and only these detail fields:
 * ``provenance``: ``value`` is the change's label (``agent``,
   ``human_attested`` or ``unknown``), or a mapping holding it as ``label``;
   rows ``{sha, label, tier}``;
-* ``reaching_tests``: one row per changed source file, ``{path, tests}``;
+* ``reaching_tests``: one row per changed source file, ``{path, tests}``; ``tests``
+  is ``[]`` only for a known absence and ``null`` when nothing knows;
 * ``contracts``: rows ``{path, breaking}``;
 * ``decisions_crossed``: rows ``{id, title, paths}``.
 
@@ -301,14 +302,18 @@ def _parse_when(raw: Any, at: str, problems: list[str]) -> dict[str, Any]:
 # -- evaluating ---------------------------------------------------------------
 
 
+#: ``(path, line or None, the finding's own fingerprint or None)``.
+Location = tuple[str, int | None, str | None]
+
+
 @dataclass(frozen=True)
 class GateRun:
     """What a wrapped gate command returned: its exit code and a one-line summary."""
 
     exit_code: int
     summary: str
-    #: ``(path, line or None)`` for each finding the gate failed on.
-    locations: tuple[tuple[str, int | None], ...] = ()
+    #: One per finding the gate failed on.
+    locations: tuple[Location, ...] = ()
 
 
 @dataclass
@@ -319,7 +324,7 @@ class RuleResult:
     reasons: list[str] = field(default_factory=list)
     components: list[str] = field(default_factory=list)
     owners: list[str] = field(default_factory=list)
-    locations: list[tuple[str, int | None]] = field(default_factory=list)
+    locations: list[Location] = field(default_factory=list)
     #: Evidence kinds the rule read, with the basis each had.
     evidence: dict[str, str] = field(default_factory=dict)
 
@@ -337,7 +342,10 @@ class RuleResult:
             "reasons": self.reasons,
             "components": self.components,
             "owners": self.owners,
-            "locations": [{"path": p, "line": ln} for p, ln in self.locations],
+            "locations": [
+                {"path": p, "line": ln, **({"fingerprint": fp} if fp else {})}
+                for p, ln, fp in self.locations
+            ],
             "evidence": self.evidence,
         }
 
@@ -403,7 +411,7 @@ def _rule_result(rule: Rule, items: Mapping[str, Mapping[str, Any]]) -> RuleResu
 
     reasons: list[str] = []
     unknown: list[str] = []
-    locations: list[tuple[str, int | None]] = []
+    locations: list[Location] = []
     for cond, want in rule.when.items():
         verdict, why, where, kind = _CHECKS[cond](want, items, scope, matched)
         if kind:
@@ -423,7 +431,7 @@ def _rule_result(rule: Rule, items: Mapping[str, Mapping[str, Any]]) -> RuleResu
             reasons=reasons, components=names, evidence=used,
         )
     if not locations and scope:
-        locations = [(p, None) for p in sorted(scope)[:1]]
+        locations = [(p, None, None) for p in sorted(scope)[:1]]
     return RuleResult(
         rule,
         TRIGGERED,
@@ -451,12 +459,12 @@ def _basis(item: Mapping[str, Any] | None) -> str:
     return str(item.get("basis") or "unresolved") if _known(item) else "unresolved"
 
 
-def _dedupe(locations: Iterable[tuple[str, int | None]]) -> list[tuple[str, int | None]]:
+def _dedupe(locations: Iterable[Location]) -> list[Location]:
     return list(dict.fromkeys(locations))
 
 
 # Each check returns (verdict: True/False/None for unknown, reason, locations, evidence kind).
-Check = tuple[bool | None, str, list[tuple[str, int | None]], str]
+Check = tuple[bool | None, str, list[Location], str]
 
 
 def _provenance_label(item: Mapping[str, Any]) -> str | None:
@@ -485,16 +493,18 @@ def _reaching_tests(want, items, scope, matched) -> Check:
     item = items.get("reaching_tests")
     if not _known(item):
         return None, "reaching tests are not known", [], "reaching_tests"
-    rows = [r for r in _rows(item) if scope is None or r.get("path") in scope]
-    untested = [str(r["path"]) for r in rows if r.get("path") and not r.get("tests")]
-    if want == "missing":
-        return (
-            bool(untested),
-            f"{len(untested)} changed file(s) with no reaching test",
-            [(p, None) for p in untested],
-            "reaching_tests",
-        )
-    return bool(rows) and not untested, "every changed file has a reaching test", [], "reaching_tests"
+    rows = [r for r in _rows(item) if r.get("path") and (scope is None or r["path"] in scope)]
+    # ``tests: []`` is a known absence; a missing or null list is not known.
+    untested = [str(r["path"]) for r in rows if r.get("tests") == []]
+    unknown = [r for r in rows if not isinstance(r.get("tests"), list)]
+    if untested:
+        why = f"{len(untested)} changed file(s) with no reaching test"
+        return want == "missing", why, [(p, None, None) for p in untested], "reaching_tests"
+    if not rows:
+        return False, "no changed source file in scope", [], "reaching_tests"
+    if unknown:
+        return None, "reaching tests are not known for every changed file", [], "reaching_tests"
+    return want == "present", "every changed file has a reaching test", [], "reaching_tests"
 
 
 def _contract_break(want, items, scope, matched) -> Check:
@@ -507,7 +517,7 @@ def _contract_break(want, items, scope, matched) -> Check:
     ]
     found = bool(broken)
     why = f"{len(broken)} breaking contract change(s)" if found else "no breaking contract change"
-    return found == want, why, [(p, None) for p in broken], "contracts"
+    return found == want, why, [(p, None, None) for p in broken], "contracts"
 
 
 def _decision_crossed(want, items, scope, matched) -> Check:
@@ -515,13 +525,13 @@ def _decision_crossed(want, items, scope, matched) -> Check:
     if not _known(item):
         return None, "decisions crossed are not known", [], "decisions_crossed"
     hits: list[str] = []
-    where: list[tuple[str, int | None]] = []
+    where: list[Location] = []
     for r in _rows(item):
         paths = [str(p) for p in r.get("paths") or ()]
         inside = paths if scope is None else [p for p in paths if p in scope]
         if inside or (not paths and scope is None):
             hits.append(str(r.get("title") or r.get("id")))
-            where += [(p, None) for p in inside]
+            where += [(p, None, None) for p in inside]
     found = bool(hits)
     why = f"crosses decision(s): {', '.join(hits)}" if found else "crosses no governing decision"
     return found == want, why, where, "decisions_crossed"
