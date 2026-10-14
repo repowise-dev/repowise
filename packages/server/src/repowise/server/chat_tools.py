@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from repowise.core.registry import ToolEntry
+from repowise.server.auth import Principal, current_principal, get_authorizer
 from repowise.server.mcp_server._tool_selection import (
     get_registered_tool,
     selected_tool_entries,
@@ -25,10 +26,16 @@ class ChatToolContract:
     parameters: dict[str, Any]
 
 
-def get_tool_catalog(repo_path: str | None) -> list[ChatToolContract]:
-    """Return the repository's configured MCP surface with generated schemas."""
+def get_tool_catalog(
+    repo_path: str | None, principal: Principal | None = None
+) -> list[ChatToolContract]:
+    """Return the repository's configured MCP surface with generated schemas,
+    narrowed to ``principal``'s tool scope when one is given."""
     catalog: list[ChatToolContract] = []
+    authorizer = get_authorizer()
     for entry in selected_tool_entries(repo_path):
+        if principal is not None and not authorizer.can_use_tool(principal, entry.name):
+            continue
         registered = get_registered_tool(entry.name)
         if registered is None:
             logger.error("Registered MCP entry has no FastMCP contract: %s", entry.name)
@@ -43,7 +50,9 @@ def get_tool_catalog(repo_path: str | None) -> list[ChatToolContract]:
     return catalog
 
 
-def get_tool_schemas_for_llm(repo_path: str | None) -> list[dict[str, Any]]:
+def get_tool_schemas_for_llm(
+    repo_path: str | None, principal: Principal | None = None
+) -> list[dict[str, Any]]:
     """Return OpenAI-format definitions from FastMCP's canonical schemas."""
     return [
         {
@@ -54,7 +63,7 @@ def get_tool_schemas_for_llm(repo_path: str | None) -> list[dict[str, Any]]:
                 "parameters": tool.parameters,
             },
         }
-        for tool in get_tool_catalog(repo_path)
+        for tool in get_tool_catalog(repo_path, principal)
     ]
 
 
@@ -70,9 +79,20 @@ def _make_json_serializable(obj: Any) -> Any:
     return str(obj)
 
 
-def _scope_repo_arg(entry: ToolEntry, arguments: dict[str, Any], repo: str | None) -> None:
-    """Backstop a model-supplied repo value with the active workspace alias."""
-    if not repo or "repo" not in inspect.signature(entry.fn).parameters:
+def _scope_repo_arg(
+    entry: ToolEntry, arguments: dict[str, Any], repo: str | None, pinned: str | None = None
+) -> None:
+    """Backstop a model-supplied repo value with the active workspace alias.
+
+    ``pinned`` (set for repo-restricted principals) always wins, so neither
+    ``"all"`` nor another alias can widen the call.
+    """
+    if "repo" not in inspect.signature(entry.fn).parameters:
+        return
+    if pinned is not None:
+        arguments["repo"] = pinned
+        return
+    if not repo:
         return
 
     import repowise.server.mcp_server as mcp_mod
@@ -93,8 +113,21 @@ async def execute_entry(
     *,
     repo: str | None = None,
     confirmed: bool = False,
+    principal: Principal | None = None,
+    repo_id: str | None = None,
 ) -> dict[str, Any]:
-    """Execute one selected registry entry under its safety contract."""
+    """Execute one selected registry entry under its safety contract.
+
+    With a ``principal``, the tool must be in its scope, and a repo-restricted
+    principal is pinned to ``repo`` (or ``repo_id`` outside a workspace).
+    """
+    if principal is not None and not get_authorizer().can_use_tool(principal, entry.name):
+        return {
+            "error": f"Tool is outside this credential's scope: {entry.name}",
+            "error_code": "tool_not_in_scope",
+        }
+    restricted = principal is not None and principal.repo_scope is not None
+    pinned = (repo or repo_id) if restricted else None
     if entry.safety == "mutating" and not confirmed:
         return {
             "error": f"{entry.name} requires explicit confirmation before it can run",
@@ -103,13 +136,16 @@ async def execute_entry(
             "tool_name": entry.name,
         }
 
+    reset = current_principal.set(principal)
     try:
         scoped_arguments = dict(arguments)
-        _scope_repo_arg(entry, scoped_arguments, repo)
+        _scope_repo_arg(entry, scoped_arguments, repo, pinned)
         return _make_json_serializable(await entry.fn(**scoped_arguments))
     except Exception as exc:
         logger.exception("Tool execution failed: %s", entry.name)
         return {"error": f"{type(exc).__name__}: {exc}", "error_code": "tool_failed"}
+    finally:
+        current_principal.reset(reset)
 
 
 async def execute_tool(
@@ -119,6 +155,8 @@ async def execute_tool(
     repo_path: str | None = None,
     repo: str | None = None,
     confirmed: bool = False,
+    principal: Principal | None = None,
+    repo_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a tool only when it belongs to the configured MCP surface."""
     entry = _catalog_entry(name, repo_path)
@@ -127,7 +165,9 @@ async def execute_tool(
             "error": f"Tool is not enabled for this repository: {name}",
             "error_code": "tool_not_enabled",
         }
-    return await execute_entry(entry, arguments, repo=repo, confirmed=confirmed)
+    return await execute_entry(
+        entry, arguments, repo=repo, confirmed=confirmed, principal=principal, repo_id=repo_id
+    )
 
 
 def _catalog_entry(tool_name: str, repo_path: str | None) -> ToolEntry | None:

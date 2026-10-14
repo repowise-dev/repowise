@@ -19,7 +19,12 @@ from fastapi.security import APIKeyHeader, SecurityScopes
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.database import get_session
-from repowise.server.auth import Principal, get_authenticator, get_authorizer
+from repowise.server.auth import (
+    PER_CALL_TOOL_SCOPE,
+    Principal,
+    get_authenticator,
+    get_authorizer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +175,16 @@ def request_principal(request: Request) -> Principal | None:
     return getattr(request.state, "principal", None)
 
 
+def scoped_repo_id(request: Request) -> str | None:
+    """The repo a repo-restricted principal was authorised for on this request;
+    None for unrestricted callers. Routes that load an object by its own id
+    check it belongs to this repo."""
+    principal = request_principal(request)
+    if principal is None or principal.repo_scope is None:
+        return None
+    return request.path_params.get("repo_id") or request.query_params.get("repo_id")
+
+
 async def verify_api_key(
     security_scopes: SecurityScopes,
     request: Request,
@@ -185,13 +200,20 @@ async def verify_api_key(
 
     ``auth`` is read again by the authenticator; declaring it here keeps the
     bearer scheme in the OpenAPI document. ``Security(verify_api_key,
-    scopes=["tool:<name>"])`` additionally requires those tools in scope.
+    scopes=["tool:<name>"])`` additionally requires those tools in scope. A
+    tool-scoped principal is refused on any route that declares neither tool
+    scopes nor ``PER_CALL_TOOL_SCOPE``.
     """
     principal = await get_authenticator().authenticate(request)
     request.state.principal = principal
     await _enforce_repo_scope(request, principal)
+    scopes = security_scopes.scopes
+    if principal.tool_scope is not None and not any(
+        s == PER_CALL_TOOL_SCOPE or s.startswith("tool:") for s in scopes
+    ):
+        raise HTTPException(status_code=403, detail="This credential is limited to tools")
     authorizer = get_authorizer()
-    for scope in security_scopes.scopes:
+    for scope in scopes:
         tool = scope.removeprefix("tool:")
         if tool != scope and not authorizer.can_use_tool(principal, tool):
             raise HTTPException(

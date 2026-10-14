@@ -12,20 +12,33 @@ authenticator therefore plugs in by listing its ``authorization_servers``.
 from __future__ import annotations
 
 import json
+import os
+import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.auth_context import auth_context_var
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from starlette.authentication import AuthCredentials
+from starlette.datastructures import Headers
 from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from repowise.server.auth import Authenticator, Principal, get_authenticator, get_authorizer
 
+#: Lists repos rather than reading one; it filters its own output to the scope.
+_SELF_SCOPED_TOOLS = frozenset({"list_repos"})
+
 WELL_KNOWN = "/.well-known/oauth-protected-resource"
+#: Externally visible base URL (``https://host[/prefix]``) for the metadata and
+#: the 401 challenge, for servers behind a proxy. Otherwise a validated Host.
+PUBLIC_URL_ENV = "REPOWISE_PUBLIC_URL"
+_HOST_RE = re.compile(r"^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$")
 _TOOL_PREFIX = "tool:"
 _ALL_TOOLS = "tool:*"
 
@@ -84,43 +97,74 @@ def protected_resource_metadata(resource: str, authorization_servers: tuple[str,
     return doc
 
 
+def _origin_and_prefix(scope: Scope) -> tuple[str, str]:
+    """``scheme://host`` and any path prefix the public URL adds. The Host
+    header is used only when it is a plain host[:port]."""
+    public = os.environ.get(PUBLIC_URL_ENV, "").strip().rstrip("/")
+    if public:
+        parts = urlsplit(public)
+        return f"{parts.scheme}://{parts.netloc}", parts.path
+    scheme = scope.get("scheme") if scope.get("scheme") in ("http", "https") else "http"
+    host = Headers(scope=scope).get("host", "")
+    if not _HOST_RE.match(host):
+        server = scope.get("server")
+        host = f"{_bracket(server[0])}:{server[1]}" if server else "localhost"
+    return f"{scheme}://{host}", ""
+
+
+def _bracket(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _quoted(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _metadata_doc(scope: Scope, resource_path: str) -> dict:
+    origin, prefix = _origin_and_prefix(scope)
+    servers = tuple(getattr(get_authenticator(), "authorization_servers", ()))
+    return protected_resource_metadata(origin + prefix + resource_path, servers)
+
+
 class BearerGate:
     """ASGI wrapper: serves the metadata document, rejects missing or invalid
-    bearers with 401, and hands the principal to the MCP app."""
+    bearers with 401, and hands the principal to the MCP app.
 
-    def __init__(
-        self,
-        app: ASGIApp,
-        endpoint: str,
-        verifier: TokenVerifier,
-        authorization_servers: tuple[str, ...] = (),
-    ) -> None:
+    Whether a credential is configured is checked per request, so a tokens
+    file created after start-up gates the transport too; with none, requests
+    pass straight through as before.
+    """
+
+    def __init__(self, app: ASGIApp, endpoint: str) -> None:
         self.app = app
         self.endpoint = endpoint
-        self.verifier = verifier
-        self.authorization_servers = authorization_servers
+        self.verifier = PrincipalTokenVerifier()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] != "http" or not get_authenticator().configured():
             await self.app(scope, receive, send)
             return
-        request = Request(scope)
-        base = str(request.base_url).rstrip("/")
-        if scope["path"] in (WELL_KNOWN, WELL_KNOWN + self.endpoint):
-            doc = protected_resource_metadata(base + self.endpoint, self.authorization_servers)
-            await _send_json(send, 200, doc, [])
+        root = scope.get("root_path", "")
+        path = scope["path"]
+        relative = path[len(root) :] if root and path.startswith(root) else path
+        resource_path = root + self.endpoint
+        if relative in (WELL_KNOWN, WELL_KNOWN + self.endpoint) or path == WELL_KNOWN + resource_path:
+            await _send_json(send, 200, _metadata_doc(scope, resource_path), [])
             return
 
         access = None
-        auth = request.headers.get("authorization", "")
+        auth = Headers(scope=scope).get("authorization", "")
         if auth.lower().startswith("bearer "):
             access = await self.verifier.verify_token(auth[7:])
             if access is not None and access.expires_at and access.expires_at < int(time.time()):
                 access = None
         if access is None:
+            origin, prefix = _origin_and_prefix(scope)
+            # RFC 9728 3.1: the well-known segment goes between host and path.
+            metadata_url = f"{origin}{WELL_KNOWN}{prefix}{resource_path}"
             challenge = (
                 'Bearer error="invalid_token", error_description="Authentication required", '
-                f'resource_metadata="{base}{WELL_KNOWN}{self.endpoint}"'
+                f'resource_metadata="{_quoted(metadata_url)}"'
             )
             body = {"error": "invalid_token", "error_description": "Authentication required"}
             await _send_json(send, 401, body, [(b"www-authenticate", challenge.encode())])
@@ -137,6 +181,23 @@ class BearerGate:
             auth_context_var.reset(reset)
 
 
+def gate(app: ASGIApp, endpoint: str) -> BearerGate:
+    """Wrap an MCP transport app served at ``endpoint`` (``/mcp`` or ``/sse``)."""
+    return BearerGate(app, endpoint)
+
+
+def metadata_route(resource_path: str) -> Route:
+    """The host-root RFC 9728 route for an MCP app mounted under a sub-path,
+    e.g. ``metadata_route("/sub/mcp")`` beside ``Mount("/sub", app=...)``."""
+
+    async def endpoint(request: Request) -> Response:
+        if not get_authenticator().configured():
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        return JSONResponse(_metadata_doc(request.scope, resource_path))
+
+    return Route(WELL_KNOWN + resource_path, endpoint, methods=["GET"])
+
+
 async def _send_json(send: Send, status: int, body: dict, headers: list) -> None:
     raw = json.dumps(body).encode()
     await send(
@@ -151,19 +212,6 @@ async def _send_json(send: Send, status: int, body: dict, headers: list) -> None
         }
     )
     await send({"type": "http.response.body", "body": raw})
-
-
-def gate_if_configured(app: ASGIApp, endpoint: str) -> ASGIApp:
-    """Wrap ``app`` when a credential is configured; otherwise return it as is."""
-    authenticator = get_authenticator()
-    if not authenticator.configured():
-        return app
-    return BearerGate(
-        app,
-        endpoint,
-        PrincipalTokenVerifier(authenticator),
-        tuple(getattr(authenticator, "authorization_servers", ())),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +243,9 @@ def call_denial(principal: Principal, tool: str, arguments: dict[str, Any]) -> s
     authorizer = get_authorizer()
     if not authorizer.can_use_tool(principal, tool):
         return f"Tool '{tool}' is outside this credential's scope."
-    if principal.repo_scope is not None:
+    if principal.repo_scope is not None and tool not in _SELF_SCOPED_TOOLS:
+        if arguments.get("repo") == "all":
+            return "repo='all' is not available to a repository-scoped credential."
         for identifiers in _call_targets(arguments):
             if not authorizer.can_access_repo(principal, identifiers):
                 return "Repository is outside this credential's scope."

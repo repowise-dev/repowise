@@ -8,13 +8,14 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Security
 from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.providers.llm.base import ChatProvider, ProviderError
+from repowise.server.auth import PER_CALL_TOOL_SCOPE
 from repowise.server.chat_artifacts import (
     create_artifact_envelope,
     find_artifact,
@@ -46,6 +47,7 @@ from repowise.server.chat_tools import (
 )
 from repowise.server.deps import (
     get_db_session,
+    request_principal,
     resolve_request_session_factory,
     verify_api_key,
 )
@@ -66,9 +68,10 @@ from repowise.server.schemas.chat import ChatPageContext
 
 logger = logging.getLogger(__name__)
 
+# Chat checks tool scope on every tool it runs, so tool-scoped tokens may use it.
 router = APIRouter(
     tags=["chat"],
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Security(verify_api_key, scopes=[PER_CALL_TOOL_SCOPE])],
 )
 
 _MAX_AGENTIC_LOOPS = 10
@@ -192,9 +195,13 @@ class _AgentTurn:
         repo_alias: str | None,
         provider: ChatProvider,
         llm_messages: list[dict[str, Any]],
+        principal: Any = None,
+        repo_id: str | None = None,
     ) -> None:
         self.repo_path = repo_path
         self.repo_alias = repo_alias
+        self.principal = principal
+        self.repo_id = repo_id
         self.provider = provider
         self.llm_messages = llm_messages
         self.text_parts: list[str] = []
@@ -205,7 +212,14 @@ class _AgentTurn:
 
     async def execute(self, name: str, args: dict) -> dict:
         """Run one tool scoped to this repo; also handed to providers that loop internally."""
-        return await execute_tool(name, args, repo_path=self.repo_path, repo=self.repo_alias)
+        return await execute_tool(
+            name,
+            args,
+            repo_path=self.repo_path,
+            repo=self.repo_alias,
+            principal=self.principal,
+            repo_id=self.repo_id,
+        )
 
     async def ground(self, page_context: Any, tool_catalog: list) -> str | None:
         """Make the one read the page already justifies, before the first model turn.
@@ -369,6 +383,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     # In workspace mode the MCP tools address repos by alias, not by the id
     # in this URL, so resolve it once and scope every tool call to it.
     repo_alias = _workspace_alias(request, repo_path, repo_name)
+    principal = request_principal(request)
 
     # An override (the UI model picker) applies to this request only; without
     # one the repo's own config and ``.env`` pick the provider, as for update.
@@ -403,11 +418,13 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
             conv_id, user_msg_id, created = opened
 
             llm_messages = await _llm_history(factory, conv_id, body.context)
-            tool_catalog = get_tool_catalog(repo_path)
+            tool_catalog = get_tool_catalog(repo_path, principal)
             system_prompt = _build_system_prompt(repo_name, repo_path, tool_catalog, body.context)
-            tool_schemas = get_tool_schemas_for_llm(repo_path)
+            tool_schemas = get_tool_schemas_for_llm(repo_path, principal)
 
-            turn = _AgentTurn(repo_path, repo_alias, provider, llm_messages)
+            turn = _AgentTurn(
+                repo_path, repo_alias, provider, llm_messages, principal=principal, repo_id=repo_id
+            )
             grounded = await turn.ground(body.context, tool_catalog)
             if grounded is not None:
                 yield grounded
@@ -491,13 +508,16 @@ async def chat_suggestions(
         # banner over a composer.
         return {"suggestions": []}
 
-    tool_catalog = get_tool_catalog(repo_path)
+    principal = request_principal(request)
+    tool_catalog = get_tool_catalog(repo_path, principal)
     plan = plan_grounding(context, (tool.entry for tool in tool_catalog))
     if plan is None:
         return {"suggestions": []}
 
     async def _execute(name: str, args: dict) -> dict:
-        return await execute_tool(name, args, repo_path=repo_path, repo=repo_alias)
+        return await execute_tool(
+            name, args, repo_path=repo_path, repo=repo_alias, principal=principal, repo_id=repo_id
+        )
 
     grounding = await run_grounding(plan, _execute)
     if grounding is None:

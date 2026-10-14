@@ -151,13 +151,16 @@ setting change is picked up without a restart.
 
 Scoped tokens are an optional second credential: list them in
 `~/.repowise/tokens.yaml` (or the file named by `REPOWISE_TOKENS_FILE`) as
-`{id, sha256, repos?, tools?}` entries, where `sha256` is the hex digest of the
-token and `repos`/`tools` narrow what it reaches by repository id or name and
-MCP tool name. Every check returns a `Principal`, and the same check guards the
+`{id, sha256, repos?, tools?, expires_at?}` entries, where `sha256` is the hex
+digest of the token, `repos`/`tools` narrow what it reaches by repository id or
+name and MCP tool name, and `expires_at` is an ISO 8601 time. A token with
+`tools` is refused on every REST route except chat, which runs only the tools
+in its scope. Every check returns a `Principal`, and the same check guards the
 MCP streamable HTTP and SSE transports, which answer a missing bearer with
 `401` and `WWW-Authenticate: Bearer resource_metadata="..."` pointing at an RFC
-9728 document under `/.well-known/oauth-protected-resource`. With no key and no
-tokens file, every surface behaves exactly as described below.
+9728 document under `/.well-known/oauth-protected-resource` (set
+`REPOWISE_PUBLIC_URL` when serving behind a proxy). With no key and no tokens
+file, every surface behaves exactly as described below.
 
 ### 2.2 What happens when the header is absent
 

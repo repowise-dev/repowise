@@ -21,7 +21,9 @@ import hmac
 import logging
 import os
 from collections.abc import Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -30,6 +32,9 @@ from fastapi import HTTPException, Request
 logger = logging.getLogger(__name__)
 
 TOKENS_FILE_ENV = "REPOWISE_TOKENS_FILE"
+#: Declared by a REST route that checks tool scope on each tool it runs (chat);
+#: every other route refuses a tool-scoped principal.
+PER_CALL_TOOL_SCOPE = "tools:per-call"
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,10 @@ class Principal:
 LOCAL_PRINCIPAL = Principal(id="local", kind="local")
 #: A caller holding ``REPOWISE_API_KEY``.
 SHARED_KEY_PRINCIPAL = Principal(id="shared-key", kind="shared-key")
+
+#: The principal a tool is running for (MCP HTTP and chat), so a tool that
+#: lists repos can filter to its scope. None outside an authenticated call.
+current_principal: ContextVar[Principal | None] = ContextVar("current_principal", default=None)
 
 
 @runtime_checkable
@@ -92,6 +101,10 @@ class ScopedToken:
     sha256: str
     repos: frozenset[str] | None
     tools: frozenset[str] | None
+    expires_at: datetime | None = None
+
+
+_TOKEN_KEYS = frozenset({"id", "sha256", "repos", "tools", "expires_at"})
 
 
 def tokens_file_path() -> Path:
@@ -127,6 +140,9 @@ def _parse_tokens(raw: Any) -> tuple[ScopedToken, ...]:
         token_id, digest = entry.get("id"), entry.get("sha256")
         if not isinstance(token_id, str) or not token_id:
             raise ValueError("each token needs an 'id'")
+        unknown = set(entry) - _TOKEN_KEYS
+        if unknown:
+            raise ValueError(f"token '{token_id}' has unknown keys: {sorted(unknown)}")
         if not isinstance(digest, str) or len(digest) != 64:
             raise ValueError(f"token '{token_id}' needs a 64-character 'sha256'")
         tokens.append(
@@ -135,9 +151,37 @@ def _parse_tokens(raw: Any) -> tuple[ScopedToken, ...]:
                 sha256=digest.lower(),
                 repos=_optional_set(entry, "repos"),
                 tools=_optional_set(entry, "tools"),
+                expires_at=_expiry(token_id, entry.get("expires_at")),
             )
         )
     return tuple(tokens)
+
+
+def _expiry(token_id: str, value: Any) -> datetime | None:
+    """ISO 8601; a time without an offset is read as UTC."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):  # YAML parses unquoted timestamps itself
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"token '{token_id}' has an invalid 'expires_at'") from exc
+    else:
+        raise ValueError(f"token '{token_id}' has an invalid 'expires_at'")
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _tokens_file_present(path: Path) -> bool:
+    """True when the file exists or cannot be checked (fail closed)."""
+    try:
+        path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def load_scoped_tokens(path: Path | None = None) -> tuple[ScopedToken, ...]:
@@ -147,8 +191,10 @@ def load_scoped_tokens(path: Path | None = None) -> tuple[ScopedToken, ...]:
     path = path or tokens_file_path()
     try:
         stat = path.stat()
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return ()
+    except OSError as exc:
+        raise ValueError(str(exc)) from exc
     key = (str(path), stat.st_mtime_ns, stat.st_size)
     if _cache is not None and _cache[0] == key:
         return _cache[1]
@@ -181,11 +227,12 @@ class LocalAuthenticator:
     authorization_servers: tuple[str, ...] = ()
 
     def configured(self) -> bool:
-        return _shared_key() is not None or tokens_file_path().is_file()
+        return _shared_key() is not None or _tokens_file_present(tokens_file_path())
 
     async def verify_token(self, token: str) -> Principal | None:
         key = _shared_key()
-        if key is not None and hmac.compare_digest(token, key):
+        # Bytes, so a non-ASCII bearer is a mismatch rather than a TypeError.
+        if key is not None and hmac.compare_digest(token.encode("utf-8"), key.encode("utf-8")):
             return SHARED_KEY_PRINCIPAL
         try:
             tokens = load_scoped_tokens()
@@ -198,6 +245,8 @@ class LocalAuthenticator:
         digest = hash_token(token)
         for entry in tokens:
             if hmac.compare_digest(digest, entry.sha256):
+                if entry.expires_at is not None and entry.expires_at <= datetime.now(UTC):
+                    return None
                 return Principal(
                     id=f"token:{entry.id}",
                     kind="token",

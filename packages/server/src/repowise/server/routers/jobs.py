@@ -47,7 +47,7 @@ async def authorize_job_stream(
     if auth and auth.startswith("Bearer "):
         principal = await get_authenticator().verify_token(auth[7:])
         # Jobs name no repo, so only an unrestricted principal may use the bearer path.
-        if principal is not None and principal.repo_scope is None:
+        if principal is not None and principal.repo_scope is None and principal.tool_scope is None:
             return
     if verify_stream_token(token, job_id):
         return

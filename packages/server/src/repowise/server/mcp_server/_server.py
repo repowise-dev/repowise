@@ -753,14 +753,14 @@ class _RepowiseMCP(FastMCP):
     """
 
     def streamable_http_app(self):  # type: ignore[override]
-        from repowise.server.mcp_server._http_auth import gate_if_configured
+        from repowise.server.mcp_server._http_auth import gate
 
-        return gate_if_configured(super().streamable_http_app(), self.settings.streamable_http_path)
+        return gate(super().streamable_http_app(), self.settings.streamable_http_path)
 
     def sse_app(self, mount_path: str | None = None):  # type: ignore[override]
-        from repowise.server.mcp_server._http_auth import gate_if_configured
+        from repowise.server.mcp_server._http_auth import gate
 
-        return gate_if_configured(super().sse_app(mount_path), self.settings.sse_path)
+        return gate(super().sse_app(mount_path), self.settings.sse_path)
 
     def _request_principal(self) -> Any:
         try:
@@ -790,7 +790,13 @@ class _RepowiseMCP(FastMCP):
             denial = call_denial(principal, name, arguments)
             if denial is not None:
                 raise ToolError(denial)
-        return await super().call_tool(name, arguments)
+        from repowise.server.auth import current_principal
+
+        reset = current_principal.set(principal)
+        try:
+            return await super().call_tool(name, arguments)
+        finally:
+            current_principal.reset(reset)
 
 
 mcp = _RepowiseMCP(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.auth import current_principal, get_authorizer
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._references import repository_identity
@@ -74,11 +75,18 @@ async def list_repos() -> dict[str, Any]:
     """
     registry = _state._registry
     if registry is not None:
+        repos = _workspace_repos(registry)
+        principal = current_principal.get()
+        if principal is not None and principal.repo_scope is not None:
+            authorizer = get_authorizer()
+            repos = [
+                r for r in repos if authorizer.can_access_repo(principal, (r["alias"], r["path"]))
+            ]
         return {
             "workspace": True,
             "workspace_root": registry.workspace_root.as_posix(),
             "default_repo": repository_identity(registry.get_default_alias()),
-            "repos": _workspace_repos(registry),
+            "repos": repos,
             "hint": (
                 "Pass any emitted alias, path, or absolute_path unchanged as repo "
                 "on workspace-aware tools."

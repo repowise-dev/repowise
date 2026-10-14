@@ -351,8 +351,15 @@ async def test_a_page_with_findings_gets_chips_that_name_them():
     texts = [entry["text"] for entry in body["suggestions"]]
     assert "Explain the 28 bug fixes in a.py" in texts
     assert all(entry["source"] == "page" for entry in body["suggestions"])
+    from repowise.server.auth import LOCAL_PRINCIPAL
+
     execute.assert_awaited_once_with(
-        "get_risk", {"targets": ["src/a.py"]}, repo_path="/tmp/repo", repo=None
+        "get_risk",
+        {"targets": ["src/a.py"]},
+        repo_path="/tmp/repo",
+        repo=None,
+        principal=LOCAL_PRINCIPAL,
+        repo_id="repo-1",
     )
 
 
