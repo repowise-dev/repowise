@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import Callable
 from typing import Any
 
 from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
@@ -18,9 +19,13 @@ from repowise.server.mcp_server._why_evidence import annotate_response_evidence_
 from repowise.server.mcp_server._why_relevance import (
     clears_floor,
     query_scorer,
+    question_terms,
     recovery_note,
     redirect_for,
     redirect_when_served,
+    relevance,
+    term_idf,
+    word_set,
 )
 from repowise.server.mcp_server.tool_why.archaeology import question_commits
 from repowise.server.mcp_server.tool_why.basis import _has_archaeology
@@ -109,47 +114,112 @@ def _focus_target_context(
     recall = f"get_why(targets={json.dumps(targets)})"
     # Term weights from the whole decision corpus: a card's few rows are too
     # small a sample for ``term_idf`` (see its warning).
-    score = query_scorer(query, corpus)
+    record_score = query_scorer(query, corpus)
+
+    def relevant(row: Any) -> bool:
+        return clears_floor(record_score(json.dumps(row, default=str)))
+
     for entry in target_context.values():
         if not isinstance(entry, dict):
             continue
 
         # ``governing_decisions`` is exempt: an accepted rule binds whatever the
         # question. A candidate binds nothing, so it must earn its place.
-        _keep_relevant(entry, "candidate_decisions", score, recall)
+        _keep_relevant(entry, "candidate_decisions", relevant, recall)
 
         # Only the origin's decision lane; the author and first commit are
         # cheap and wanted whatever the question.
         origin = entry.get("origin")
         if isinstance(origin, dict):
-            _keep_relevant(origin, "linked_decisions", score, recall)
+            _keep_relevant(origin, "linked_decisions", relevant, recall)
 
         arch = entry.get("git_archaeology")
         if isinstance(arch, dict):
-            _focus_archaeology(arch, score, recall)
+            _focus_archaeology(arch, query, recall)
 
 
-def _focus_archaeology(
-    arch: dict[str, Any], score: Any, recall: str
-) -> None:
-    """Keep the commits that carry the question's terms, count the rest.
+_COMMIT_LANES = ("file_commits", "cross_references", "git_log")
+# A commit carrying one question word shares a word with the question, no more.
+_MIN_COMMIT_TERMS = 2
+# The served commits must beat every other commit by this factor; a near tie
+# says the question does not single any commit out, so the card serves none.
+_COMMIT_MARGIN = 1.25
+# Ties are equal sums of the same weights, up to float rounding.
+_TIE_EPSILON = 1e-9
+
+
+def _focus_archaeology(arch: dict[str, Any], query: str, recall: str) -> None:
+    """Keep the card's best commits for *query*, count the rest.
 
     Here no decision cleared the floor, so these commits are the best evidence
-    left.
+    left. Scored on their messages by the question's prose terms, rarity over
+    this card's commits; not the decision corpus, whose rarity is zero for every
+    term on a store with no records.
+
+    Nor the decision floor: a subject is one line, and the commits that answered
+    measured questions carried 0.18 to 0.48 of their weight, so the floor served
+    none. A card serves its strongest commits instead, ties kept, when they
+    carry at least two of the question's terms and clear the margin.
     """
-    for lane in ("file_commits", "cross_references", "git_log"):
-        _keep_relevant(arch, lane, score, recall)
+    # One entry per commit: the indexed lane and the live log repeat commits,
+    # abbreviating the sha to different lengths (seven is git's own).
+    words: dict[str, frozenset[str]] = {}
+    for lane in _COMMIT_LANES:
+        for r in arch.get(lane) or []:
+            if isinstance(r, dict):
+                words.setdefault(_short_sha(r), _message_words(r))
+    idf = term_idf(question_terms(query, prose=True), list(words.values()))
+    score = {sha: relevance(w, idf) for sha, w in words.items()}
+    eligible = {
+        sha: s for sha, s in score.items() if sum(t in words[sha] for t in idf) >= _MIN_COMMIT_TERMS
+    }
+    best = max(eligible.values(), default=0.0)
+    serve = {sha for sha, s in eligible.items() if best > 0 and s >= best - _TIE_EPSILON}
+    runner_up = max((s for sha, s in score.items() if sha not in serve), default=0.0)
+    if best < _COMMIT_MARGIN * runner_up:
+        serve = set()
+
+    served: set[str] = set()
+    for lane in _COMMIT_LANES:
+        rows = arch.get(lane)
+        if not isinstance(rows, list) or not rows:
+            continue
+        kept, dropped = [], 0
+        for r in rows:
+            sha = _short_sha(r) if isinstance(r, dict) else None
+            if sha in serve and sha not in served:
+                served.add(sha)
+                kept.append(r)
+            elif sha not in serve:
+                dropped += 1
+            # else: served in an earlier lane; not a suppressed commit.
+        if kept:
+            arch[lane] = kept
+        else:
+            arch.pop(lane)
+            if dropped:
+                arch[f"{lane}_omitted"] = recovery_note(dropped, recall)
 
 
-def _keep_relevant(block: dict[str, Any], key: str, score: Any, recall: str) -> None:
-    """Keep the rows of ``block[key]`` that clear the floor for *score*.
+def _short_sha(row: dict) -> str:
+    return str(row.get("sha") or "")[:7]
 
-    When none do, the lane becomes ``<key>_omitted``: a count and the recall.
+
+def _message_words(row: dict) -> frozenset[str]:
+    return word_set(str(row.get("message") or ""))
+
+
+def _keep_relevant(
+    block: dict[str, Any], key: str, relevant: Callable[[Any], bool], recall: str
+) -> None:
+    """Keep the rows of ``block[key]`` that are ``relevant``.
+
+    When none are, the lane becomes ``<key>_omitted``: a count and the recall.
     """
     rows = block.get(key)
     if not isinstance(rows, list) or not rows:
         return
-    kept = [r for r in rows if clears_floor(score(json.dumps(r, default=str)))]
+    kept = [r for r in rows if relevant(r)]
     if kept:
         block[key] = kept
     else:
