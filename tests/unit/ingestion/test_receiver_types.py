@@ -845,6 +845,39 @@ class TestKotlinSwiftDartCallAssignments:
         body = "f() {\n  val r = make()\n  r.load()\n}"
         assert scan_call_assignments(body, "kotlin") == (CallAssignment(2, "r", None, "make"),)
 
+    @pytest.mark.parametrize(
+        ("statement", "expected"),
+        [
+            ("if let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
+            ("if var r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
+            ("guard let r = findRepo() else { return }", CallAssignment(2, "r", None, "findRepo")),
+            ("while let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
+        ],
+    )
+    def test_swift_optional_binding(
+        self, statement: str, expected: CallAssignment
+    ) -> None:
+        body = f"f() {{\n  {statement}\n}}"
+        assert scan_call_assignments(body, "swift") == (expected,)
+
+    def test_swift_optional_binding_multiple_clauses(self) -> None:
+        body = "f() {\n  if let o = makeRepo(), let r = findRepo() {\n  }\n}"
+        assert scan_call_assignments(body, "swift") == (
+            CallAssignment(2, "o", None, "makeRepo"),
+            CallAssignment(2, "r", None, "findRepo"),
+        )
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "let r = makeRepo() { Other() }",
+            "if case let .some(r) = findRepo() {",
+        ],
+    )
+    def test_swift_call_without_a_binding_is_refused(self, statement: str) -> None:
+        body = f"f() {{\n  {statement}\n}}"
+        assert scan_call_assignments(body, "swift") == ()
+
 
 class TestClassScope:
     """What counts as a field, given that a class span contains every method.

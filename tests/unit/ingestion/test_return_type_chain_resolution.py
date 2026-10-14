@@ -903,6 +903,7 @@ _SWIFT_LOCALS = (
     "class Repo {\n    func load() {}\n}\n"
     "class Other {\n    func load() {}\n}\n"
     "func makeRepo() throws -> Repo { return Repo() }\n"
+    "func findRepo() -> Repo? { return nil }\n"
     "func mk(a: Int) -> Repo { return Repo() }\nfunc mk(a: String) -> Other { return Other() }\n"
     "func fetch() async -> Repo { return Repo() }\n"
     "enum Factory {\n    static func other() async -> Other { return Other() }\n}\n"
@@ -936,6 +937,11 @@ def _last_line_callees(tmp_path: Path, language: str, body: str) -> set[str]:
         ("swift", "let r = await Factory.other()\nr.load()", "a.swift::Other::load"),
         ("swift", "let r = try? makeRepo()\nr?.load()", "a.swift::Repo::load"),
         ("swift", "async let r = fetch()\nawait r.load()", "a.swift::Repo::load"),
+        ("swift", "if let r = findRepo() {\nr.load()", "a.swift::Repo::load"),
+        ("swift", "if var r = findRepo() {\nr.load()", "a.swift::Repo::load"),
+        ("swift", "guard let r = findRepo() else { return }\nr.load()", "a.swift::Repo::load"),
+        ("swift", "while let r = findRepo() {\nr.load()", "a.swift::Repo::load"),
+        ("swift", "if let o = makeRepo(), let r = findRepo() {\nr.load()", "a.swift::Repo::load"),
     ],
 )
 def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
@@ -953,6 +959,8 @@ def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
         ("kotlin", "val r = makeRepo()\n    ?: Other()"),
         ("kotlin", "val r = makeRepo()\n    as Other"),
         ("swift", "let r = try makeRepo()\n    as! Other"),
+        ("swift", "let r = makeRepo() { Other() }"),
+        ("swift", "if case let .some(r) = findRepo() {"),
         ("kotlin", "val r = mk(1)"),  # overloads of one arity that return different types
         ("swift", "let r = mk(a: 1)"),
         ("kotlin", "val r = gen()"),  # a type parameter is no class
