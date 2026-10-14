@@ -1376,10 +1376,37 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         caller_id: str,
     ) -> ResolvedCall | None:
         """A receiver-less call, refused where it lands on an extension it has no receiver for."""
+        invoked = self._operator_invoke_call(file_path, call, caller_id)
+        if invoked is not None:
+            return invoked
         hit = self._resolve_free_call(file_path, call, caller_id)
         if hit is None or call.receiver_call is not None:
             return hit
         return None if self._lacks_extension_receiver(file_path, call, hit.callee_id) else hit
+
+    def _operator_invoke_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``useCase(args)`` on a Kotlin value whose type declares ``operator fun invoke``.
+
+        The name is typed as the receiver of ``useCase.invoke(args)``: a local,
+        a parameter or a property. A value in scope outranks a package function
+        of the name, as in Kotlin. A name no declaration types, or a type with
+        no such operator, falls through to the function tiers.
+        """
+        if call.receiver_call is not None or self._language_of(file_path) != "kotlin":
+            return None
+        if "invoke" not in self._method_names():
+            return None
+        as_member = replace(call, receiver_name=call.target_name, target_name="invoke")
+        hit = self._resolve_typed_receiver(file_path, as_member, caller_id)
+        callee = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
+        if callee is None or callee.name != "invoke" or "operator" not in callee.modifiers:
+            return None
+        return hit
 
     def _with_props(self, res: ResolvedCall | None, call: CallSite) -> ResolvedCall | None:
         if res is not None and call.supplied_props is not None:
