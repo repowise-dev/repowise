@@ -48,7 +48,7 @@ from .languages.receiver_types import (
 )
 from .models import CallSite, NamedBinding, ParsedFile, Symbol, symbol_id_language
 from .resolved_call import ResolvedCall
-from .return_types import declared_return_type, go_first_result
+from .return_types import declared_return_type, go_first_result, signature_parameter_count
 from .symbol_identity import id_segment_name, outer_scope, symbol_id_path
 from .type_names import (
     POINTER_LIKE_MEMBERS,
@@ -1478,9 +1478,11 @@ class ReceiverTypingMixin:
         # A repo-wide guess at the callee is not evidence of what it returns.
         if resolved is None or "global" in resolved.origin:
             return None
-        return self._returned_type_id(resolved.callee_id, awaited)
+        return self._returned_type_id(resolved.callee_id, awaited, site.argument_count)
 
-    def _returned_type_id(self, callee_id: str, awaited: bool = False) -> str | None:
+    def _returned_type_id(
+        self, callee_id: str, awaited: bool = False, argument_count: int | None = None
+    ) -> str | None:
         """The repository type a call to *callee_id* yields, as a symbol id.
 
         A go ``T`` is looked up in the callee's own package and ``pkg.T`` in the
@@ -1491,7 +1493,8 @@ class ReceiverTypingMixin:
         read in the callee's file as a chain hop reads a field's type. A
         property is read, not called, and an ``async def`` returns a coroutine
         unless the call is *awaited*. Any other language's declared return
-        type is read by ``_written_returned_class``.
+        type is read by ``_written_returned_class``. Overloads that disagree
+        on what they return type nothing.
         """
         symbol = self._symbols_by_id.get(callee_id)
         path = self._symbol_paths_by_id.get(callee_id)
@@ -1499,11 +1502,26 @@ class ReceiverTypingMixin:
             return None
         if symbol.kind in _TYPE_KINDS:
             return callee_id  # a conversion, ``T(x)``
+        if self._overloads_disagree(symbol, path, argument_count):
+            return None
         if symbol.language == "go":
             return self._go_returned_type_id(symbol, path)
         if symbol.language == "python":
             return self._python_call_returns(symbol, path, awaited)
         return self._written_returned_class(symbol, path, awaited)
+
+    def _overloads_disagree(self, symbol: Symbol, path: str, argument_count: int | None) -> bool:
+        """Do the overloads a call to *symbol* may mean declare different return types?
+
+        Asked at the call's argument count and at the symbol's own parameter
+        count: overloads sharing an id keep one declaration, and an extension
+        is called one argument short of its parameters.
+        """
+        counts = {argument_count, signature_parameter_count(symbol.signature or "")}
+        return any(
+            len(self._overload_return_types.get((path, symbol.parent_name, symbol.name, n), ())) > 1
+            for n in counts
+        )
 
     def _python_call_returns(self, symbol: Symbol, path: str, awaited: bool) -> str | None:
         """``_returned_type_id`` for a Python function.

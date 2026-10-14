@@ -894,6 +894,8 @@ _KOTLIN_LOCALS = (
     "class Repo {\n    fun load() {}\n}\n"
     "class Other {\n    fun load() {}\n}\n"
     "fun makeRepo(): Repo = Repo()\n"
+    "fun mk(a: Int): Repo = Repo()\nfun mk(a: String): Other = Other()\n"
+    "fun <T> gen(): T = TODO()\n"
     "object Factory {\n    fun other(): Other = Other()\n}\n"
     "class Use {\n    fun go() {\n{body}\n    }\n}\n"
 )
@@ -901,6 +903,8 @@ _SWIFT_LOCALS = (
     "class Repo {\n    func load() {}\n}\n"
     "class Other {\n    func load() {}\n}\n"
     "func makeRepo() throws -> Repo { return Repo() }\n"
+    "func mk(a: Int) -> Repo { return Repo() }\nfunc mk(a: String) -> Other { return Other() }\n"
+    "func fetch() async -> Repo { return Repo() }\n"
     "enum Factory {\n    static func other() async -> Other { return Other() }\n}\n"
     "class Use {\n    func go() async throws {\n{body}\n    }\n}\n"
 )
@@ -930,6 +934,8 @@ def _last_line_callees(tmp_path: Path, language: str, body: str) -> set[str]:
         ("kotlin", "val r = Factory.other()\nr.load()", "a.kt::Other::load"),
         ("swift", "let r = try makeRepo()\nr.load()", "a.swift::Repo::load"),
         ("swift", "let r = await Factory.other()\nr.load()", "a.swift::Other::load"),
+        ("swift", "let r = try? makeRepo()\nr?.load()", "a.swift::Repo::load"),
+        ("swift", "async let r = fetch()\nawait r.load()", "a.swift::Repo::load"),
     ],
 )
 def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
@@ -944,9 +950,15 @@ def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
         ("kotlin", "val r = makeRepo()\n    .let { Other() }"),
         ("kotlin", "val r = makeRepo()\n    ?.let { Other() }"),
         ("swift", "var r = try makeRepo()\n    .other()"),
+        ("kotlin", "val r = makeRepo()\n    ?: Other()"),
+        ("kotlin", "val r = makeRepo()\n    as Other"),
+        ("swift", "let r = try makeRepo()\n    as! Other"),
+        ("kotlin", "val r = mk(1)"),  # overloads of one arity that return different types
+        ("swift", "let r = mk(a: 1)"),
+        ("kotlin", "val r = gen()"),  # a type parameter is no class
     ],
 )
-def test_kotlin_and_swift_continued_call_types_no_local(
+def test_kotlin_and_swift_local_without_a_typed_call_binds_nothing(
     tmp_path: Path, language: str, body: str
 ) -> None:
     callees = _last_line_callees(tmp_path, language, body + "\nr.load()")

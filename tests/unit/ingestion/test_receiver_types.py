@@ -802,35 +802,48 @@ class TestKotlinSwiftDartCallAssignments:
     """``val x = f(..)``, ``let x = try f(..)``, ``final x = await f(..);``."""
 
     @pytest.mark.parametrize(
-        ("body", "language", "expected"),
+        ("language", "statement", "expected"),
         [
-            ("fun f() {\n    val r = repo.make(1)\n}", "kotlin", CallAssignment(2, "r", "repo", "make")),
-            ("func f() {\n  let r = try await make()\n}", "swift", CallAssignment(2, "r", None, "make")),
-            ("func f() {\n  var r = try? A.make()\n}", "swift", CallAssignment(2, "r", "A", "make")),
+            ("kotlin", "val r = repo.make(1)", CallAssignment(2, "r", "repo", "make")),
+            ("swift", "let r = try await make()", CallAssignment(2, "r", None, "make")),
+            ("swift", "var r = try? A.make()", CallAssignment(2, "r", "A", "make")),
             (
-                "void f() async {\n  final r = await make(\n    ')');\n}",
                 "dart",
+                "final r = await make(\n    ')');",
                 CallAssignment(2, "r", None, "make", awaited=True),
             ),
-            ("void f() {\n  var r = Repo.create();\n}", "dart", CallAssignment(2, "r", "Repo", "create")),
+            ("dart", "var r = Repo.create();", CallAssignment(2, "r", "Repo", "create")),
         ],
     )
-    def test_a_whole_statement_call(self, body: str, language: str, expected: CallAssignment) -> None:
+    def test_a_whole_statement_call(
+        self, language: str, statement: str, expected: CallAssignment
+    ) -> None:
+        body = f"f() {{\n  {statement}\n}}"
         assert scan_call_assignments(body, language) == (expected,)
 
     @pytest.mark.parametrize(
-        ("body", "language"),
+        ("language", "statement"),
         [
-            ("fun f() {\n    val r = make()\n        .other()\n}", "kotlin"),
-            ("fun f() {\n    val r = make()\n        ?.other()\n}", "kotlin"),
-            ("fun f() {\n    val r: Repo = make()\n}", "kotlin"),  # its declaration types it
-            ("func f() {\n  let r = make()\n    .other()\n}", "swift"),
-            ("void f() {\n  final r = make()\n    .other();\n}", "dart"),
-            ("void f() {\n  final r = make()\n    ..other();\n}", "dart"),
+            ("kotlin", "val r = make()\n    .other()"),
+            ("kotlin", "val r = make()\n    ?.other()"),
+            ("kotlin", "val r = make()\n    ?: Other()"),
+            ("kotlin", "val r = make()\n    as Other"),
+            ("kotlin", "val r = make()\n    && ok"),
+            ("kotlin", "val r: Repo = make()"),  # its declaration types it
+            ("swift", "let r = make()\n    .other()"),
+            ("swift", "let r = make()\n    as! Other"),
+            ("dart", "final r = make()\n    .other();"),
+            ("dart", "final r = make()\n    ..other();"),
         ],
     )
-    def test_a_call_continued_on_the_next_line_is_refused(self, body: str, language: str) -> None:
-        assert scan_call_assignments(body, language) == ()
+    def test_a_call_continued_on_the_next_line_is_refused(
+        self, language: str, statement: str
+    ) -> None:
+        assert scan_call_assignments(f"f() {{\n  {statement}\n}}", language) == ()
+
+    def test_a_new_statement_on_the_next_line_keeps_the_call(self) -> None:
+        body = "f() {\n  val r = make()\n  r.load()\n}"
+        assert scan_call_assignments(body, "kotlin") == (CallAssignment(2, "r", None, "make"),)
 
 
 class TestClassScope:

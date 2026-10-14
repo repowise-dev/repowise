@@ -1071,16 +1071,15 @@ class CallAssignment(NamedTuple):
     awaited: bool = False
 
 
+# The call a local is assigned from: ``[receiver.]target(``. A Kotlin, Swift or
+# Dart local annotated with its type is typed by its declaration instead.
+_CALL_HEAD = r"(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*\("
+
 # ``x = f(..)``, ``x = await obj.f(..)``: a plain statement-start assignment
 # that ends its line. The resolver refuses a name the body also binds elsewhere.
 _PY_CALL_ASSIGNMENT = re.compile(
-    r"(?m)^[ \t]*(?P<name>[a-z_]\w*)[ \t]*=[ \t]*(?P<awaited>await[ \t]+)?"
-    r"(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*\("
+    rf"(?m)^[ \t]*(?P<name>[a-z_]\w*)[ \t]*=[ \t]*(?P<awaited>await[ \t]+)?{_CALL_HEAD}"
 )
-
-# The call after the ``=`` of an untyped Kotlin, Swift or Dart local:
-# ``[receiver.]target(``. An annotated local is typed by its declaration.
-_CALL_HEAD = r"(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*\("
 
 # ``val x = f(..)``, ``let x = try await obj.f(..)``, ``final x = await f(..);``.
 # Swift's ``try?`` value still calls the callee type's methods. A Dart
@@ -1110,8 +1109,12 @@ _STATEMENT_ENDS = frozenset("\n;}")
 # A Python ``;`` may rebind the name later on the line, where no scan sees it.
 # Dart ends a statement only at ``;``, so ``f()\n.g()`` is one statement.
 _LANGUAGE_STATEMENT_ENDS = {"python": frozenset("\n"), "dart": frozenset(";")}
-# Kotlin and Swift carry a statement onto a line that starts with ``.``/``?.``.
-_LEADING_DOT_CONTINUES = frozenset({"kotlin", "swift"})
+# Kotlin and Swift may carry a statement onto a line that starts with a member
+# access or an operator (``.f()``, ``?: x``, ``as T``, ``&& y``). Refused
+# wholesale: a new statement starting so only costs the local its type.
+_NEXT_LINE_CONTINUES = {
+    language: re.compile(r"[.?:+\-*/%&|=!<>]|(?:as|is)\b") for language in ("kotlin", "swift")
+}
 
 
 def _call_end(text: str, index: int) -> int:
@@ -1142,7 +1145,8 @@ def _call_ends_statement(cleaned: str, opened: int, language: str) -> bool:
     rest = cleaned[end:].lstrip(" \t\n" if language == "dart" else " \t")
     if rest and rest[0] not in _LANGUAGE_STATEMENT_ENDS.get(language, _STATEMENT_ENDS):
         return False
-    return not (language in _LEADING_DOT_CONTINUES and rest.lstrip().startswith((".", "?.")))
+    continues = _NEXT_LINE_CONTINUES.get(language)
+    return continues is None or not continues.match(rest.lstrip())
 
 
 def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...]:

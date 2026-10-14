@@ -1664,12 +1664,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         symbol_path = self._symbol_paths_by_id.get(callee_id)
         if symbol_path is None:
             return None
-        # Overloads the arguments may mean, and declarations sharing this id
-        # (an extension is called one argument short of its parameters).
-        for count in {argument_count, signature_parameter_count(symbol.signature or "")}:
-            key = (symbol_path, symbol.parent_name, symbol.name, count)
-            if len(self._overload_return_types.get(key, ())) > 1:
-                return None
+        if self._overloads_disagree(symbol, symbol_path, argument_count):
+            return None
         if type_name is not None and language == "java":
             # Read where the method declares it, with its member types in scope.
             return self._read_java_type(symbol_path, callee_id, type_name)
