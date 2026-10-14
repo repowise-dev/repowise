@@ -165,6 +165,7 @@ class ChangeHealthDeltaService:
             str(PERFORMANCE_MODEL_VERSION),
             ",".join(request.extensions),
             ",".join(request.exclude_patterns),
+            ",".join(request.include_paths),
         )
         return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 

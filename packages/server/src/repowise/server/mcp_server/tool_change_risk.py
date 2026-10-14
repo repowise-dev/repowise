@@ -153,6 +153,15 @@ _DIFF_SIZE_LABELS = {
 }
 
 
+def _path_patterns(value: list[str] | str | None) -> tuple[str, ...]:
+    """A list of patterns, or one comma-separated string, as a pattern tuple.
+
+    ``tuple("src/")`` would be one pattern per character, which matches nothing.
+    """
+    items = value.split(",") if isinstance(value, str) else value or ()
+    return tuple(item.strip() for item in items if item.strip())
+
+
 async def _score_change(
     repo_path: Any,
     revspec: str | None,
@@ -377,7 +386,7 @@ async def get_change_risk(
             revspec,
             tuple(extensions or ()),
             tuple(result.riskignore_excludes + result.request_excludes),
-            tuple(include_paths or ()),
+            _path_patterns(include_paths),
         )
     )
     try:

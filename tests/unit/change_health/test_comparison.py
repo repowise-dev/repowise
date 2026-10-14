@@ -496,6 +496,22 @@ def test_include_paths_keep_only_the_named_paths(make_repo):
     assert included.scope.changed == 1
 
 
+def test_include_paths_match_deleted_and_renamed_files_by_their_path(make_repo):
+    repo = make_repo()
+    repo.commit(
+        "seed",
+        {"app.py": "x = 1\n", "vendor/old.py": "y = 1\n", "lib/moved.py": "z = 1\n"},
+    )
+    repo.remove("vendor/old.py")
+    repo.move("lib/moved.py", "vendor/moved.py")
+    repo.commit("change", {"app.py": "x = 2\n", "vendor/new.py": "w = 1\n"})
+
+    included = compare(repo, "HEAD", include_paths=("vendor/",))
+
+    # A deletion has no head path; it is kept by its base path, a rename by its new path.
+    assert included.scope.changed == 3
+
+
 def test_change_finding_ids_are_deterministic_across_runs(make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": "x = 1\n"})

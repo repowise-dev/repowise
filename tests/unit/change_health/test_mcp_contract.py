@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -264,3 +265,36 @@ def test_a_working_tree_comparison_is_keyed_by_content_not_by_head(make_repo):
 
     assert first.introduced_total >= 1
     assert second.introduced_total == 0
+
+
+def test_every_request_filter_is_part_of_the_cache_key(make_repo):
+    repo = seeded(make_repo)
+    service = ChangeHealthDeltaService(repo_path=str(repo.path))
+    pair = service.source.resolve("HEAD")
+    plain = DeltaRequest(str(repo.path), "HEAD")
+    # repo_path and revspec reach the key through the service and the resolved pair.
+    for field in dataclasses.fields(DeltaRequest):
+        if field.name in ("repo_path", "revspec"):
+            continue
+        narrowed = dataclasses.replace(plain, **{field.name: ("vendor/",)})
+        assert service._cache_key(narrowed, pair) != service._cache_key(plain, pair), field.name
+
+
+async def test_include_paths_as_a_string_filters_like_the_list(tool, make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n"})
+    repo.commit(
+        "add",
+        {"app.py": python_complex("a", 16), "vendor/lib.py": python_complex("b", 16)},
+    )
+    module = tool(repo)
+
+    async def changed(**kwargs):
+        result = await module.get_change_risk("HEAD", baseline=0, **kwargs)
+        return result["health_delta"]["scope"]["changed"]
+
+    assert await changed(include_paths="vendor/") == 1
+    assert await changed(include_paths=["vendor/"]) == 1
+    assert await changed(include_paths="docs/, vendor/") == 1
+    # A filtered result is never served to the unfiltered call.
+    assert await changed() == 2

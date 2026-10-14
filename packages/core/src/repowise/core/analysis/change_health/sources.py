@@ -370,7 +370,7 @@ def _counts(
     path = change.head_path or change.base_path or ""
     if not path:
         return False
-    if keep is not None and not keep.match_file(change.head_path):  # type: ignore[attr-defined]
+    if keep is not None and not keep.match_file(path):  # type: ignore[attr-defined]
         return False
     if spec is not None and spec.match_file(path):  # type: ignore[attr-defined]
         return False
