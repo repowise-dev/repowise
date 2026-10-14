@@ -43,7 +43,8 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         node_type == "function_signature" and def_node.child_by_field_name("parameters")
     ):
         # TS/JS use return_type; Go uses result
-        return f"function {name}{params_text}{_ret(('return_type', 'result'))}"
+        returns = _ret(("return_type", "result")) or _kotlin_return(def_node, src)
+        return f"function {name}{params_text}{returns}"
     if node_type == "function_signature":
         # Dart: the return type is the unfielded nodes ahead of the name.
         name_node = def_node.child_by_field_name("name")
@@ -113,3 +114,19 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}{params_text}"
     # Fallback
     return f"{name}{params_text}"
+
+
+def _kotlin_return(def_node: Node, src: str) -> str:
+    """`` -> T`` for a Kotlin function: the unfielded type after ``(..):``."""
+    after_parameters = False
+    colon = False
+    for child in def_node.children:
+        if child.type == "function_value_parameters":
+            after_parameters = True
+        elif after_parameters and child.type == ":":
+            colon = True
+        elif colon:
+            return f" -> {node_text(child, src)}"
+        elif after_parameters:
+            return ""
+    return ""

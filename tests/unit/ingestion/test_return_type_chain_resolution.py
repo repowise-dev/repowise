@@ -855,3 +855,118 @@ def test_dart_constructor_initializers_are_not_calls(tmp_path: Path) -> None:
     parsed = _parse(tmp_path, "b.dart", "dart", source)
 
     assert parsed["b.dart"].calls == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "var a = r.item(1);\na.save();",
+        "final a = await r.later();\na.save();",  # an awaited Future yields its type
+        "final a = Repo.load('x');\na.close();",  # a factory constructor
+    ],
+)
+def test_dart_local_takes_the_type_its_call_returns(tmp_path: Path, body: str) -> None:
+    assert {e[1] for e in _dart_edges(tmp_path, body) if e[0] == 2} & _DART_OUTER
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "final a = r.later();\na.save();",  # an unawaited Future is not an Item
+        "var a = r.item(1);\na.close();",  # the returned class lacks the method
+        "final a = r.item(1)\n    .other();\na.save();",  # the call is not the whole value
+    ],
+)
+def test_dart_local_without_a_typed_call_binds_nothing(tmp_path: Path, body: str) -> None:
+    assert not {e for e in _dart_edges(tmp_path, body) if e[1] in _DART_OUTER}
+
+
+def test_kotlin_signature_carries_the_declared_return_type(tmp_path: Path) -> None:
+    source = "class Repo\nfun make(x: Int): Repo? = null\nfun none() = Repo()\n"
+    parsed = _parse(tmp_path, "a.kt", "kotlin", source)
+    signatures = {s.name: s.signature for s in parsed["a.kt"].symbols}
+
+    assert signatures["make"] == "function make(x: Int) -> Repo?"
+    assert signatures["none"] == "function none()"
+
+
+_KOTLIN_LOCALS = (
+    "class Repo {\n    fun load() {}\n}\n"
+    "class Other {\n    fun load() {}\n}\n"
+    "fun makeRepo(): Repo = Repo()\n"
+    "object Factory {\n    fun other(): Other = Other()\n}\n"
+    "class Use {\n    fun go() {\n{body}\n    }\n}\n"
+)
+_SWIFT_LOCALS = (
+    "class Repo {\n    func load() {}\n}\n"
+    "class Other {\n    func load() {}\n}\n"
+    "func makeRepo() throws -> Repo { return Repo() }\n"
+    "enum Factory {\n    static func other() async -> Other { return Other() }\n}\n"
+    "class Use {\n    func go() async throws {\n{body}\n    }\n}\n"
+)
+
+
+_LOCALS = {"kotlin": ("a.kt", _KOTLIN_LOCALS), "swift": ("a.swift", _SWIFT_LOCALS)}
+
+
+def _last_line_callees(tmp_path: Path, language: str, body: str) -> set[str]:
+    """Callees on the last line of *body*, held in ``Use.go``."""
+    path, source = _LOCALS[language]
+    text = source.replace("{body}", body)
+    parsed = _parse(tmp_path, path, language, text)
+    line = len(text.split("\n")) - 3
+    resolver = CallResolver(parsed, {path: set()})
+    return {
+        rc.callee_id
+        for rc in resolver.resolve_file(path, parsed[path].calls)
+        if rc.line == line
+    }
+
+
+@pytest.mark.parametrize(
+    ("language", "body", "callee"),
+    [
+        ("kotlin", "val r = makeRepo()\nr.load()", "a.kt::Repo::load"),
+        ("kotlin", "val r = Factory.other()\nr.load()", "a.kt::Other::load"),
+        ("swift", "let r = try makeRepo()\nr.load()", "a.swift::Repo::load"),
+        ("swift", "let r = await Factory.other()\nr.load()", "a.swift::Other::load"),
+    ],
+)
+def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
+    tmp_path: Path, language: str, body: str, callee: str
+) -> None:
+    assert _last_line_callees(tmp_path, language, body) == {callee}
+
+
+@pytest.mark.parametrize(
+    ("language", "body"),
+    [
+        ("kotlin", "val r = makeRepo()\n    .let { Other() }"),
+        ("kotlin", "val r = makeRepo()\n    ?.let { Other() }"),
+        ("swift", "var r = try makeRepo()\n    .other()"),
+    ],
+)
+def test_kotlin_and_swift_continued_call_types_no_local(
+    tmp_path: Path, language: str, body: str
+) -> None:
+    callees = _last_line_callees(tmp_path, language, body + "\nr.load()")
+
+    assert not {callee for callee in callees if callee.endswith("::load")}
+
+
+@pytest.mark.parametrize("imported", ["", "import java.net.Socket\n"])
+def test_kotlin_return_type_an_external_import_names_is_not_the_repo_class(
+    tmp_path: Path, imported: str
+) -> None:
+    """``Socket`` in a file importing ``java.net.Socket`` is not the repo's ``Socket``."""
+    source = (
+        f"package okio\n\n{imported}\ninterface Socket {{\n    fun source()\n}}\n"
+        "fun socket(): Socket = TODO()\n\n"
+        "class Use {\n    fun go() {\n        val s = socket()\n        s.source()\n    }\n}\n"
+    )
+    parsed = _parse(tmp_path, "Use.kt", "kotlin", source)
+    resolver = CallResolver(parsed, {"Use.kt": set()})
+    callees = {rc.callee_id for rc in resolver.resolve_file("Use.kt", parsed["Use.kt"].calls)}
+
+    assert ("Use.kt::Socket::source" in callees) == (not imported)
+

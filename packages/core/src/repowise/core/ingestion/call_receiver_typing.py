@@ -126,6 +126,8 @@ _MAX_CHAIN_FIELDS = 3
 # A chain is only as scoped as its weakest hop.
 _CHAIN_TIER_RANK = {"same_file": 0, "import": 1}
 _BODY_TYPE_CACHE_ENTRIES = 2048
+# What a Dart ``await`` unwraps: ``Future<T>`` / ``FutureOr<T>`` yield ``T``.
+_AWAITED_FUTURE = re.compile(r"(?:Future|FutureOr)<(.+)>\??")
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
@@ -1501,7 +1503,7 @@ class ReceiverTypingMixin:
             return self._go_returned_type_id(symbol, path)
         if symbol.language == "python":
             return self._python_call_returns(symbol, path, awaited)
-        return self._written_returned_class(symbol, path)
+        return self._written_returned_class(symbol, path, awaited)
 
     def _python_call_returns(self, symbol: Symbol, path: str, awaited: bool) -> str | None:
         """``_returned_type_id`` for a Python function.
@@ -1534,14 +1536,18 @@ class ReceiverTypingMixin:
         ]
         return found[0] if len(found) == 1 else None
 
-    def _written_returned_class(self, symbol: Symbol, path: str) -> str | None:
+    def _written_returned_class(
+        self, symbol: Symbol, path: str, awaited: bool = False
+    ) -> str | None:
         """The class *symbol*'s declared return type names, as its file *path* sees it.
 
-        One unqualified class name, nullable or not. Ceiling: a generic
+        One unqualified class name, nullable or not; an *awaited* Dart
+        ``Future<T>`` yields its ``T``. Ceiling: any other generic
         (``Result<T>``) or prefixed (``p.Foo``) return type types nothing.
         """
-        raw = declared_return_type(symbol.signature or "")
-        written = raw.rstrip("?") if raw else ""
+        raw = declared_return_type(symbol.signature or "") or ""
+        future = _AWAITED_FUTURE.fullmatch(raw) if awaited else None
+        written = (future.group(1) if future else raw).rstrip("?")
         if not written.isidentifier():
             return None
         found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
@@ -1553,8 +1559,11 @@ class ReceiverTypingMixin:
         """The edge a bare ``name(..)`` in *scope_id* draws, when it lands on a class.
 
         The tiers a constructor call takes say which class a name means in a
-        file. A repository-wide guess is no evidence of that and is not taken.
+        file. A repository-wide guess is no evidence of that and is not taken,
+        nor is a same-package class the file's import from outside shadows.
         """
+        if name in self._externally_bound_names(file_path):
+            return None
         probe = CallSite(
             target_name=name,
             receiver_name=None,

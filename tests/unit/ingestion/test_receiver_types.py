@@ -798,6 +798,41 @@ class TestPythonCallAssignments:
         assert scan_call_assignments("def f():\n    u = g(); u = 3\n", "python") == ()
 
 
+class TestKotlinSwiftDartCallAssignments:
+    """``val x = f(..)``, ``let x = try f(..)``, ``final x = await f(..);``."""
+
+    @pytest.mark.parametrize(
+        ("body", "language", "expected"),
+        [
+            ("fun f() {\n    val r = repo.make(1)\n}", "kotlin", CallAssignment(2, "r", "repo", "make")),
+            ("func f() {\n  let r = try await make()\n}", "swift", CallAssignment(2, "r", None, "make")),
+            ("func f() {\n  var r = try? A.make()\n}", "swift", CallAssignment(2, "r", "A", "make")),
+            (
+                "void f() async {\n  final r = await make(\n    ')');\n}",
+                "dart",
+                CallAssignment(2, "r", None, "make", awaited=True),
+            ),
+            ("void f() {\n  var r = Repo.create();\n}", "dart", CallAssignment(2, "r", "Repo", "create")),
+        ],
+    )
+    def test_a_whole_statement_call(self, body: str, language: str, expected: CallAssignment) -> None:
+        assert scan_call_assignments(body, language) == (expected,)
+
+    @pytest.mark.parametrize(
+        ("body", "language"),
+        [
+            ("fun f() {\n    val r = make()\n        .other()\n}", "kotlin"),
+            ("fun f() {\n    val r = make()\n        ?.other()\n}", "kotlin"),
+            ("fun f() {\n    val r: Repo = make()\n}", "kotlin"),  # its declaration types it
+            ("func f() {\n  let r = make()\n    .other()\n}", "swift"),
+            ("void f() {\n  final r = make()\n    .other();\n}", "dart"),
+            ("void f() {\n  final r = make()\n    ..other();\n}", "dart"),
+        ],
+    )
+    def test_a_call_continued_on_the_next_line_is_refused(self, body: str, language: str) -> None:
+        assert scan_call_assignments(body, language) == ()
+
+
 class TestClassScope:
     """What counts as a field, given that a class span contains every method.
 

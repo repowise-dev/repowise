@@ -1078,9 +1078,28 @@ _PY_CALL_ASSIGNMENT = re.compile(
     r"(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*\("
 )
 
+# The call after the ``=`` of an untyped Kotlin, Swift or Dart local:
+# ``[receiver.]target(``. An annotated local is typed by its declaration.
+_CALL_HEAD = r"(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*\("
+
+# ``val x = f(..)``, ``let x = try await obj.f(..)``, ``final x = await f(..);``.
+# Swift's ``try?`` value still calls the callee type's methods. A Dart
+# ``await`` unwraps the ``Future`` the callee declares.
+_KT_CALL_ASSIGNMENT = re.compile(rf"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*=\s*{_CALL_HEAD}")
+_SWIFT_CALL_ASSIGNMENT = re.compile(
+    rf"(?<![\w.])(?:let|var)\s+(?P<name>[a-z_]\w*)\s*=\s*(?:try[?!]?\s+)?(?:await\s+)?{_CALL_HEAD}"
+)
+_DART_CALL_ASSIGNMENT = re.compile(
+    rf"(?<![\w.])(?:final|var|const)\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<awaited>await\s+)?"
+    rf"(?:(?:new|const)\s+)?{_CALL_HEAD}"
+)
+
 _CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "dart": _DART_CALL_ASSIGNMENT,
     "go": _GO_CALL_DECL,
+    "kotlin": _KT_CALL_ASSIGNMENT,
     "python": _PY_CALL_ASSIGNMENT,
+    "swift": _SWIFT_CALL_ASSIGNMENT,
 }
 
 # Languages whose locals may be typed from a call's declared return type.
@@ -1089,7 +1108,10 @@ CALL_TYPED_LANGUAGES = frozenset(_CALL_ASSIGNMENT_PATTERNS)
 _QUOTES = frozenset("\"'`")
 _STATEMENT_ENDS = frozenset("\n;}")
 # A Python ``;`` may rebind the name later on the line, where no scan sees it.
-_LANGUAGE_STATEMENT_ENDS = {"python": frozenset("\n")}
+# Dart ends a statement only at ``;``, so ``f()\n.g()`` is one statement.
+_LANGUAGE_STATEMENT_ENDS = {"python": frozenset("\n"), "dart": frozenset(";")}
+# Kotlin and Swift carry a statement onto a line that starts with ``.``/``?.``.
+_LEADING_DOT_CONTINUES = frozenset({"kotlin", "swift"})
 
 
 def _call_end(text: str, index: int) -> int:
@@ -1112,6 +1134,17 @@ def _call_end(text: str, index: int) -> int:
     return -1
 
 
+def _call_ends_statement(cleaned: str, opened: int, language: str) -> bool:
+    """Does the call whose ``(`` ends just before *opened* end its statement?"""
+    end = _call_end(cleaned, opened)
+    if end < 0:
+        return False
+    rest = cleaned[end:].lstrip(" \t\n" if language == "dart" else " \t")
+    if rest and rest[0] not in _LANGUAGE_STATEMENT_ENDS.get(language, _STATEMENT_ENDS):
+        return False
+    return not (language in _LEADING_DOT_CONTINUES and rest.lstrip().startswith((".", "?.")))
+
+
 def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...]:
     """Every local *text* declares from a single call, in line order.
 
@@ -1123,12 +1156,9 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
         return ()
     cleaned = _without_comments(text, language)
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
-    ends = _LANGUAGE_STATEMENT_ENDS.get(language, _STATEMENT_ENDS)
     found: list[CallAssignment] = []
     for match in pattern.finditer(cleaned):
-        end = _call_end(cleaned, match.end())
-        rest = cleaned[end:].lstrip(" \t") if end >= 0 else ""
-        if end < 0 or (rest and rest[0] not in ends):
+        if not _call_ends_statement(cleaned, match.end(), language):
             continue
         found.append(
             CallAssignment(
