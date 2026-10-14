@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -161,13 +162,13 @@ def _focus_archaeology(arch: dict[str, Any], query: str, recall: str) -> None:
     none. A card serves its strongest commits instead, ties kept, when they
     carry at least two of the question's terms and clear the margin.
     """
-    # One entry per commit: the indexed lane and the live log repeat commits,
-    # abbreviating the sha to different lengths (seven is git's own).
+    # One entry per commit: the indexed lane and the live log repeat commits.
+    key = _commit_keys(arch)
     words: dict[str, frozenset[str]] = {}
     for lane in _COMMIT_LANES:
         for r in arch.get(lane) or []:
             if isinstance(r, dict):
-                words.setdefault(_short_sha(r), _message_words(r))
+                words.setdefault(key[id(r)], _message_words(r))
     idf = term_idf(question_terms(query, prose=True), list(words.values()))
     score = {sha: relevance(w, idf) for sha, w in words.items()}
     eligible = {
@@ -186,7 +187,7 @@ def _focus_archaeology(arch: dict[str, Any], query: str, recall: str) -> None:
             continue
         kept, dropped = [], 0
         for r in rows:
-            sha = _short_sha(r) if isinstance(r, dict) else None
+            sha = key.get(id(r))
             if sha in serve and sha not in served:
                 served.add(sha)
                 kept.append(r)
@@ -201,8 +202,43 @@ def _focus_archaeology(arch: dict[str, Any], query: str, recall: str) -> None:
                 arch[f"{lane}_omitted"] = recovery_note(dropped, recall)
 
 
-def _short_sha(row: dict) -> str:
-    return str(row.get("sha") or "")[:7]
+def _full_sha(row: dict) -> str | None:
+    """The row's full commit sha: its ``commit`` field or its commit evidence ref."""
+    refs = row.get("evidence_refs") or []
+    candidates = [row.get("commit"), row.get("sha")]
+    candidates += [r.get("commit") for r in refs if isinstance(r, dict) and r.get("kind") == "commit"]
+    for c in candidates:
+        if isinstance(c, str) and _FULL_SHA_RE.fullmatch(c):
+            return c.lower()
+    return None
+
+
+_FULL_SHA_RE = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
+
+
+def _commit_keys(arch: dict[str, Any]) -> dict[int, str]:
+    """``{id(row): commit key}`` for every commit row of *arch*.
+
+    The indexed lanes abbreviate a sha to eight characters and the live log to
+    twelve, and either may carry the full sha beside it. A full sha is the key;
+    an abbreviated one resolves to the card's single full sha it prefixes, else
+    stays its own key. A row with no sha is its own commit.
+    """
+    rows = [r for lane in _COMMIT_LANES for r in arch.get(lane) or [] if isinstance(r, dict)]
+    full = {id(r): _full_sha(r) for r in rows}
+    known = {f for f in full.values() if f}
+    keys: dict[int, str] = {}
+    for r in rows:
+        if full[id(r)]:
+            keys[id(r)] = full[id(r)]
+            continue
+        short = str(r.get("sha") or "").lower()
+        if not short:
+            keys[id(r)] = f"row:{id(r)}"
+            continue
+        matches = [f for f in known if f.startswith(short)]
+        keys[id(r)] = matches[0] if len(matches) == 1 else short
+    return keys
 
 
 def _message_words(row: dict) -> frozenset[str]:

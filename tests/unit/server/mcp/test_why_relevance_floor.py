@@ -385,15 +385,54 @@ def test_a_commit_in_two_lanes_is_served_once():
     from repowise.server.mcp_server.tool_why.search import _focus_archaeology
 
     message = "Allow running persistent run hooks of all parents"
+    full = "4cafa37a1b2c" + "0" * 28
     arch = {
         "file_commits": [_commit("4cafa37a", message)],
-        "git_log": [_commit("4cafa37a1b2c", message)],
+        "git_log": [{**_commit("4cafa37a1b2c", message), "commit": full}],
     }
     _focus_archaeology(arch, "why do persistent hooks of all parents run", "recall")
 
     assert [c["sha"] for c in arch["file_commits"]] == ["4cafa37a"]
     # Not suppressed: the commit was served from the other lane.
     assert "git_log" not in arch and "git_log_omitted" not in arch
+
+
+def test_commits_sharing_a_short_prefix_stay_distinct():
+    """Two commits whose shas share seven characters are two commits."""
+    from repowise.server.mcp_server.tool_why.search import _commit_keys
+
+    a, b = "abcdef1" + "1" * 33, "abcdef1" + "2" * 33
+    rows = [{**_commit(a[:12], "one"), "commit": a}, {**_commit(b[:12], "two"), "commit": b}]
+    keys = _commit_keys({"git_log": rows})
+
+    assert len(set(keys.values())) == 2
+
+
+def test_an_abbreviated_sha_resolves_to_the_full_one_it_prefixes():
+    from repowise.server.mcp_server.tool_why.search import _commit_keys
+
+    full = "abcdef12" + "3" * 32
+    indexed = _commit("abcdef12", "one")
+    live = {**_commit(full[:12], "one"), "commit": full}
+    keys = _commit_keys({"file_commits": [indexed], "git_log": [live]})
+
+    assert keys[id(indexed)] == keys[id(live)] == full
+
+
+def test_rows_without_a_sha_are_never_merged():
+    from repowise.server.mcp_server.tool_why.search import _focus_archaeology
+
+    arch = {
+        "git_log": [
+            {"message": "Allow running persistent run hooks of all parents"},
+            {"message": "Allow running persistent run hooks of all parents"},
+            {"message": "docs: update README"},
+        ]
+    }
+    _focus_archaeology(arch, "why do persistent hooks of all parents run", "recall")
+
+    # Two tied commits, not one row standing for both.
+    assert len(arch["git_log"]) == 2
 
 
 def test_a_near_tie_between_commits_serves_none():
