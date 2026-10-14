@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.server import chat_figures
 from repowise.server.chat_figures import check_figures
 
 _SOURCE = {
@@ -17,7 +18,7 @@ _SOURCE = {
 
 
 def _verdicts(answer: str, question: str = "") -> list[tuple[str, bool]]:
-    return [(f.text, f.verified) for f in check_figures(answer, [("a1", _SOURCE)], question)]
+    return [(f.text, f.verified) for f in check_figures(answer, [("a1", _SOURCE)], question).figures]
 
 
 @pytest.mark.parametrize(
@@ -89,7 +90,7 @@ def test_a_number_the_question_holds_is_not_checked():
 
 
 def test_a_verified_figure_cites_the_artifact_it_came_from():
-    figures = check_figures("63 commits", [("a1", {"n": 5}), ("a2", {"n": 63})])
+    figures = check_figures("63 commits", [("a1", {"n": 5}), ("a2", {"n": 63})]).figures
 
     assert [f.to_json() for f in figures] == [
         {"text": "63", "start": 0, "end": 2, "verified": True, "artifact_id": "a2"}
@@ -98,11 +99,55 @@ def test_a_verified_figure_cites_the_artifact_it_came_from():
 
 def test_offsets_are_utf16_units():
     answer = "\N{ROCKET} 99 bugs"
-    (figure,) = check_figures(answer, [])
+    (figure,) = check_figures(answer, []).figures
 
     assert (figure.start, figure.end) == (3, 5)
     assert answer.encode("utf-16-le")[figure.start * 2 : figure.end * 2].decode("utf-16-le") == "99"
 
 
 def test_an_answer_without_digits_is_not_checked():
-    assert check_figures("No numbers.", [("a1", _SOURCE)]) == []
+    assert check_figures("No numbers.", [("a1", _SOURCE)]).figures == []
+
+
+def test_a_signed_figure_matches_only_its_sign():
+    sources = [("a1", {"delta": 5, "drop": -7})]
+
+    def verdicts(answer):
+        return [(f.text, f.verified) for f in check_figures(answer, sources).figures]
+
+    assert verdicts("Health moved by -5.") == [("-5", False)]
+    assert verdicts("Health moved by -7, a drop of 7.") == [("-7", True), ("7", True)]
+    # A range keeps each end unsigned.
+    assert verdicts("Between 5-7 points.") == [("5", True), ("7", True)]
+
+
+def test_figures_in_cjk_prose_are_checked():
+    answer = "该文件有 63 次提交，覆盖率为75%。"
+
+    assert _verdicts(answer) == [("63", True), ("75%", False)]
+
+
+def test_earlier_turns_are_read_only_for_figures_this_turn_does_not_hold():
+    check = check_figures(
+        "3 callers and 63 commits",
+        [("now", {"callers": 3})],
+        earlier=[("before", {"commits": 63, "callers": 3})],
+    )
+
+    assert [(f.text, f.artifact_id) for f in check.figures] == [("3", "now"), ("63", "before")]
+
+
+def test_evidence_past_the_read_cap_leaves_unmatched_figures_not_checked(monkeypatch):
+    monkeypatch.setattr(chat_figures, "MAX_NODES_PER_ARTIFACT", 10)
+    rows = [{"n": i} for i in range(1000)]
+
+    # Evidence is read in document order, so the cap leaves the tail unread.
+    check = check_figures("Found 5 and 999.", [("a1", {"total": 5, "rows": rows})])
+
+    assert [(f.text, f.verified) for f in check.figures] == [("5", True)]
+    assert check.not_checked == 1
+    assert check.diagnostics() == {
+        "figures_checked": 1,
+        "figures_unverified": 0,
+        "figures_not_checked": 1,
+    }

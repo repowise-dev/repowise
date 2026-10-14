@@ -145,7 +145,12 @@ export interface ChatMessage {
     views?: unknown[];
     /** Each number the answer states, looked up in the turn's tool results. */
     figures?: ChatFigure[];
-    diagnostics?: { figures_checked?: number; figures_unverified?: number };
+    diagnostics?: {
+      figures_checked?: number;
+      figures_unverified?: number;
+      /** Figures left unchecked because the evidence was past the read cap. */
+      figures_not_checked?: number;
+    };
   };
   created_at: string;
 }
@@ -738,6 +743,7 @@ export type ChatSSEEvent =
       type: "diagnostics";
       figures_checked: number;
       figures_unverified: number;
+      figures_not_checked?: number;
       unverified_figures: ChatFigureSpan[];
     }
   /** Next steps for the turn that just finished, sent just before `done`.

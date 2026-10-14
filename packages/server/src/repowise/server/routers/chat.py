@@ -423,9 +423,6 @@ async def _find_session(request: Request, session_id: str) -> StoredConversation
 @router.post(
     "/api/chat/sessions/{session_id}/messages",
     response_model=ChatTurnResultResponse,
-    # Every top-level field is set; a nested optional the result left out
-    # (a citation's lines, a figure's artifact_id) stays absent, not null.
-    response_model_exclude_unset=True,
     responses={
         200: {"content": {"text/event-stream": {}}},
         409: {"description": "The idempotency key was already sent with another message"},

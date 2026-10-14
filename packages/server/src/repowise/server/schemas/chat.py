@@ -277,7 +277,8 @@ class ChatTurnResultResponse(BaseModel):
     cards: list[dict[str, Any]] = []
     views: list[dict[str, Any]] = []
     figures: list[ChatFigure] = []
-    #: ``figures_checked`` and ``figures_unverified``; empty when the answer states no figure.
+    #: ``figures_checked``, ``figures_unverified`` and, past the evidence read
+    #: cap, ``figures_not_checked``; empty when the answer states no figure.
     diagnostics: dict[str, int] = {}
     tool_trace: list[ChatToolTraceEntry] = []
     follow_ups: list[ChatSuggestion] = []

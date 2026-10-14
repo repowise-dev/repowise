@@ -572,29 +572,40 @@ class _Turn:
             content["follow_ups"] = follow_ups
         if self.views.parts:
             content["views"] = self.views.parts
-        figures = check_figures(content["text"], self._figure_sources(), self.question)
-        if figures:
-            content["figures"] = [figure.to_json() for figure in figures]
-            content["diagnostics"] = {
-                "figures_checked": len(figures),
-                "figures_unverified": sum(not figure.verified for figure in figures),
-            }
         return content
 
-    def _figure_sources(self) -> list[tuple[str | None, Any]]:
-        sources: list[tuple[str | None, Any]] = []
-        for call in [*self.prior_calls, *self.tool_calls]:
-            artifact = call.get("artifact") or {}
-            if isinstance(artifact, dict) and "data" in artifact:
-                sources.append((artifact.get("id"), artifact["data"]))
-        sources.extend((part["source"]["artifact_id"], part) for part in self.views.parts)
-        return sources
+    async def check_figures(self, content: dict[str, Any]) -> None:
+        """Add the numeric check to *content*; CPU-bound, so off the event loop."""
+        check = await asyncio.to_thread(
+            check_figures,
+            content["text"],
+            [
+                *_artifact_sources(self.tool_calls),
+                *((part["source"]["artifact_id"], part) for part in self.views.parts),
+            ],
+            self.question,
+            _artifact_sources(self.prior_calls),
+        )
+        if check.figures:
+            content["figures"] = [figure.to_json() for figure in check.figures]
+        if diagnostics := check.diagnostics():
+            content["diagnostics"] = diagnostics
 
     @property
     def answer_shift(self) -> int:
         """UTF-16 units streamed before the final answer's text."""
         answer = "".join(self.text_parts)
         return self.streamed_units - len(answer.encode("utf-16-le")) // 2
+
+
+def _artifact_sources(tool_calls: list[dict[str, Any]]) -> list[tuple[str | None, Any]]:
+    """``(artifact_id, data)`` of each stored tool call that has a result."""
+    sources: list[tuple[str | None, Any]] = []
+    for call in tool_calls:
+        artifact = call.get("artifact") or {}
+        if isinstance(artifact, dict) and "data" in artifact:
+            sources.append((artifact.get("id"), artifact["data"]))
+    return sources
 
 
 def _stored_tool_call(
@@ -911,6 +922,7 @@ class ChatSession:
             return
 
         content = turn.reply_content()
+        await turn.check_figures(content)
         title = conversation_title(message, tool_names(turn.tool_calls)) if opening else None
         message_id = await self.store.add_reply(
             self.id, content, title=title, usage=turn.usage

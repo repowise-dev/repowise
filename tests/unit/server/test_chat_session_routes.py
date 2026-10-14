@@ -80,10 +80,8 @@ async def test_send_returns_the_turn_result_as_json_and_replays_a_retry():
     assert result["stop_reason"] == "answered"
     (citation,) = result["citations"]
     assert citation["file_path"] == "src/a.py" and len(citation["artifact_id"]) == 32
-    # Optional fields the turn left out are absent, never null.
-    assert citation["ref"] == {"type": "file", "id": "src/a.py"}
-    assert "figures" in result and result["diagnostics"] == {}
-    assert result["message_id"] is not None and "error" in result
+    assert citation["ref"]["type"] == "file" and citation["ref"]["id"] == "src/a.py"
+    assert result["figures"] == [] and result["diagnostics"] == {}
     assert [t["name"] for t in result["tool_trace"]] == ["get_risk"]
     assert result["usage"]["model_calls"] == 2
     assert retry.json()["replayed"] is True
