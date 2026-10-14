@@ -9,6 +9,7 @@ the extension.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -236,6 +237,8 @@ def _resolve_files(tmp_path: Path, files: dict[str, str], caller_file: str) -> s
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+        if not rel.endswith(".kt"):
+            continue  # a build file, read off the disk
         info = FileInfo(
             path=rel,
             abs_path=str(path),
@@ -249,15 +252,19 @@ def _resolve_files(tmp_path: Path, files: dict[str, str], caller_file: str) -> s
             is_entry_point=False,
         )
         parsed[rel] = parse_file(info, text.encode("utf-8"))
-    # What the builder's import pass would record: `a.Foo` is the file in
-    # `src/a` declaring `Foo`.
+    # What the builder's import pass would record: `a.Foo` is the repo file
+    # whose package `a` declares `Foo`; any other import stays outside.
+    packages = {rel: re.match(r"package (\S+)", files[rel]) for rel in parsed}
     declaring = {
-        f"{rel.split('/')[1]}.{symbol.name}": rel for rel in parsed for symbol in parsed[rel].symbols
+        f"{package[1]}.{symbol.name}": rel
+        for rel, package in packages.items()
+        if package
+        for symbol in parsed[rel].symbols
     }
     for result in parsed.values():
         for imp in result.imports:
             imp.resolved_file = declaring.get(imp.module_path)
-    resolver = CallResolver(parsed, {rel: set() for rel in files}, repo_path=str(tmp_path))
+    resolver = CallResolver(parsed, {rel: set() for rel in parsed}, repo_path=str(tmp_path))
     return {rc.callee_id for rc in resolver.resolve_file(caller_file, parsed[caller_file].calls)}
 
 
@@ -320,3 +327,66 @@ def test_a_builtin_typed_local_binds_no_class_method(tmp_path: Path) -> None:
         "fun use(name: String) {\n    name.shout()\n}\n"
     )
     assert _resolve_files(tmp_path, {"src/a/Use.kt": source}, "src/a/Use.kt") == set()
+
+
+_USE = "fun use(foo: Foo) {\n    foo.ext()\n}\n"
+
+
+def test_an_extension_in_another_build_is_not_seen(tmp_path: Path) -> None:
+    """Same package name, but two Gradle builds side by side."""
+    files = {
+        "one/settings.gradle.kts": "",
+        "two/settings.gradle.kts": "",
+        "one/src/a/Foo.kt": _FOO,
+        "one/src/a/Ext.kt": "package a\n\nfun Foo.ext() = 1\n",
+        "two/src/a/Use.kt": "package a\n\n" + _USE,
+    }
+    assert _resolve_files(tmp_path, files, "two/src/a/Use.kt") == set()
+
+
+@pytest.mark.parametrize(
+    ("caller", "callee"),
+    [("src/Use.kt", "src/Ext.kt::ext"), ("other/Use.kt", None)],
+)
+def test_with_no_package_only_the_extensions_directory_sees_it(
+    tmp_path: Path, caller: str, callee: str | None
+) -> None:
+    """No package to compare, so the directory stands in for it (conservative)."""
+    files = {
+        "src/Foo.kt": "class Foo\n",
+        "src/Ext.kt": "fun Foo.ext() = 1\n",
+        caller: _USE,
+    }
+    assert _resolve_files(tmp_path, files, caller) == ({callee} if callee else set())
+
+
+@pytest.mark.parametrize(
+    ("extension_import", "callee"),
+    [
+        ("import lib.one.Request", "src/a/Ext.kt::ext"),
+        ("import lib.two.Request", None),  # another library's `Request`
+        ("", None),  # the package's own `Request`, not the caller's library one
+    ],
+)
+def test_a_library_receiver_must_be_the_same_import(
+    tmp_path: Path, extension_import: str, callee: str | None
+) -> None:
+    files = {
+        "src/a/Ext.kt": f"package a\n\n{extension_import}\n\nfun Request.ext() = 1\n",
+        "src/a/Use.kt": (
+            "package a\n\nimport lib.one.Request\n\n"
+            "fun use(request: Request) {\n    request.ext()\n}\n"
+        ),
+    }
+    found = _resolve_files(tmp_path, files, "src/a/Use.kt")
+    assert found == ({callee} if callee else set())
+
+
+def test_an_aliased_library_import_leaves_the_name_to_the_repo(tmp_path: Path) -> None:
+    """`import lib.Request as LibRequest` binds `LibRequest`; `Request` is still `a.Request`."""
+    files = {
+        "src/a/Request.kt": "package a\n\nclass Request\n",
+        "src/a/Ext.kt": "package a\n\nimport lib.Request as LibRequest\n\nfun Request.ext() = 1\n",
+        "src/a/Use.kt": "package a\n\nfun use(request: Request) {\n    request.ext()\n}\n",
+    }
+    assert _resolve_files(tmp_path, files, "src/a/Use.kt") == {"src/a/Ext.kt::ext"}

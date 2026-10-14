@@ -311,23 +311,20 @@ class ReceiverTypingMixin:
         """
         written = self._external_import(file_path, name)
         other = self._external_import(other_path, name)
-        if (written is None) != (other is None):
-            return False
-        return not (written and other and written != other)
+        return written == other
 
     def _external_import(self, file_path: str, name: str) -> str | None:
         """The path *file_path* imports *name* from outside the repo, else None.
 
-        Empty when the name is bound outside but no statement names it alone.
+        Read off the names the file writes, so an alias (``import a.B as C``)
+        binds ``C`` and leaves ``B`` free.
         """
-        if name not in self._externally_bound_names(file_path):
-            return None
         parsed = self._parsed_files.get(file_path)
         for imp in parsed.imports if parsed else ():
             outside = not imp.resolved_file or imp.resolved_file.startswith("external:")
             if outside and name in imp.local_names:
                 return imp.module_path
-        return ""
+        return None
 
     def _typed_receiver_language(self, file_path: str, call: CallSite) -> str | None:
         """The language receiver typing may run in here, or None to decline.
