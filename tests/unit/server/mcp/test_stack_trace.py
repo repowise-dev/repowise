@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.stack_trace import Frame, map_to_repo_paths, parse_trace
 from repowise.server.mcp_server._query_shape import is_issue_shaped
-from repowise.server.mcp_server._stack_trace import Frame, map_to_repo_paths, parse_trace
 
 PYTHON = """\
 Traceback (most recent call last):

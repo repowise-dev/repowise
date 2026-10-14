@@ -12,7 +12,7 @@ import re
 from collections.abc import Container, Sequence
 from functools import cache
 
-from repowise.server.mcp_server._stack_trace import parse_trace
+from repowise.core.stack_trace import parse_trace
 
 
 @cache

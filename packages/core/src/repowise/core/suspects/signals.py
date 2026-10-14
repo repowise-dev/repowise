@@ -1,0 +1,186 @@
+"""The local suspect signals, registered on ``SeamRegistry("suspect-signal")``.
+
+- ``text``: BM25 (SQLite FTS5, in memory) of the symptom text against each
+  change's title, body, file paths and touched symbol names.
+- ``graph``: fewest import-graph hops from a symptom file to a changed file.
+- ``co-change``: the strongest ROSE-style confidence (Zimmermann et al. 2004)
+  of a rule from a symptom file to a changed file: of the symptom file's
+  commits, the share that also touched it, minimum support 2.
+- ``recency``: newest first.
+- ``trace``: changed files and symbols that stack-trace frames name.
+
+A plugin adds a signal with ``suspect_signals.register(name, impl)``; every
+registered signal runs and fuses with equal weight.
+"""
+
+from __future__ import annotations
+
+import re
+import sqlite3
+from collections import deque
+from collections.abc import Mapping, Sequence
+from datetime import UTC
+
+from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT
+from repowise.core.fts_query import build_fts5_query, meaningful_terms
+
+from .rank import Candidate, Hit, PreparedSymptom, SuspectContext, suspect_signals
+
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_SPLIT = re.compile(r"[/\\._\-\s]+")
+#: A path-like token with an extension; URLs and absolute paths keep their tail.
+_PATH_TOKEN = re.compile(r"[\w@~.\-/\\]*[\w\-]\.[A-Za-z][\w]{0,7}\b")
+_MAX_EVIDENCE = 5
+
+
+def path_mentions(text: str) -> list[str]:
+    """Path-like tokens in free text, in order, deduped."""
+    return list(dict.fromkeys(m.group(0).lstrip("/\\") for m in _PATH_TOKEN.finditer(text)))
+
+
+def _words(text: str) -> str:
+    """Path and identifier parts as separate words, the originals kept."""
+    parts = _SPLIT.split(text)
+    return " ".join([text, *parts, *(_CAMEL.sub(" ", p) for p in parts if _CAMEL.search(p))])
+
+
+def _document(c: Candidate) -> str:
+    return "\n".join([c.title, c.body, *(_words(f) for f in c.files), *(_words(s) for s in c.symbols)])
+
+
+class TextSignal:
+    """BM25 over the candidates of one query; FTS5 is in the stdlib's SQLite."""
+
+    def rank(
+        self, symptom: PreparedSymptom, candidates: Sequence[Candidate], ctx: SuspectContext
+    ) -> Mapping[str, Hit]:
+        text = symptom.symptom.text
+        terms = meaningful_terms(text)
+        if not terms or not candidates:
+            return {}
+        db = sqlite3.connect(":memory:")
+        try:
+            db.execute("CREATE VIRTUAL TABLE doc USING fts5(cid UNINDEXED, body)")
+            db.executemany(
+                "INSERT INTO doc(cid, body) VALUES (?, ?)",
+                [(c.change_id, _document(c)) for c in candidates],
+            )
+            rows = db.execute(
+                "SELECT cid, bm25(doc), body FROM doc WHERE doc MATCH ?", (build_fts5_query(text),)
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        finally:
+            db.close()
+        wanted = list(dict.fromkeys(terms))
+        out: dict[str, Hit] = {}
+        for cid, score, body in rows:
+            words = set(meaningful_terms(body))
+            matched = [t for t in wanted if t in words][:_MAX_EVIDENCE]
+            out[cid] = Hit(-score, tuple(f"term {t}" for t in matched))
+        return out
+
+
+def _hops(start: Sequence[str], imports: Mapping[str, object]) -> dict[str, tuple[int, str]]:
+    """Fewest undirected import hops to each reachable file, and from which start."""
+    seen: dict[str, tuple[int, str]] = {s: (0, s) for s in start}
+    queue = deque(start)
+    while queue:
+        node = queue.popleft()
+        dist, origin = seen[node]
+        for nxt in imports.get(node, ()):  # type: ignore[union-attr]
+            if nxt not in seen:
+                seen[nxt] = (dist + 1, origin)
+                queue.append(nxt)
+    return seen
+
+
+class GraphSignal:
+    def rank(
+        self, symptom: PreparedSymptom, candidates: Sequence[Candidate], ctx: SuspectContext
+    ) -> Mapping[str, Hit]:
+        if not symptom.files or not ctx.imports:
+            return {}
+        reach = _hops(symptom.files, ctx.imports)
+        out: dict[str, Hit] = {}
+        for c in candidates:
+            best = min(((reach[f][0], f, reach[f][1]) for f in c.files if f in reach), default=None)
+            if best is not None:
+                hops, changed, origin = best
+                why = (
+                    f"changes {changed}, a symptom file"
+                    if hops == 0
+                    else f"{hops} import hops from {origin} to {changed}"
+                )
+                out[c.change_id] = Hit(-hops, (why,))
+        return out
+
+
+class CoChangeSignal:
+    def rank(
+        self, symptom: PreparedSymptom, candidates: Sequence[Candidate], ctx: SuspectContext
+    ) -> Mapping[str, Hit]:
+        rules: dict[str, tuple[float, str, int, int]] = {}
+        for s in symptom.files:
+            for p in ctx.co_change.get(s, ()):
+                if p.support < MIN_CO_CHANGE_SUPPORT or p.self_commits <= 0:
+                    continue
+                conf = min(p.support / p.self_commits, 1.0)
+                if conf > rules.get(p.file_path, (0.0,))[0]:
+                    rules[p.file_path] = (conf, s, p.support, p.self_commits)
+        out: dict[str, Hit] = {}
+        for c in candidates:
+            best = max((rules[f] + (f,) for f in c.files if f in rules), default=None)
+            if best is not None:
+                conf, s, support, total, f = best
+                out[c.change_id] = Hit(
+                    conf, (f"{f} changed in {support} of {total} commits to {s}",)
+                )
+        return out
+
+
+class RecencySignal:
+    def rank(
+        self, symptom: PreparedSymptom, candidates: Sequence[Candidate], ctx: SuspectContext
+    ) -> Mapping[str, Hit]:
+        out: dict[str, Hit] = {}
+        for c in candidates:
+            at = c.merged_at if c.merged_at.tzinfo else c.merged_at.replace(tzinfo=UTC)
+            hours = max((symptom.at - at).total_seconds() / 3600, 0.0)
+            out[c.change_id] = Hit(at.timestamp(), (f"merged {hours:.0f} h before the symptom",))
+        return out
+
+
+class TraceSignal:
+    def rank(
+        self, symptom: PreparedSymptom, candidates: Sequence[Candidate], ctx: SuspectContext
+    ) -> Mapping[str, Hit]:
+        if not symptom.frames:
+            return {}
+        trace_files = set(symptom.trace_files)
+        functions = {f.function.rsplit(".", 1)[-1] for f in symptom.frames if f.function}
+        out: dict[str, Hit] = {}
+        for c in candidates:
+            files = [f for f in c.files if f in trace_files]
+            symbols = sorted(functions.intersection(c.symbols))
+            if files or symbols:
+                evidence = [f"frame file {f}" for f in files] + [f"frame function {s}" for s in symbols]
+                out[c.change_id] = Hit(len(files) + len(symbols), tuple(evidence[:_MAX_EVIDENCE]))
+        return out
+
+
+suspect_signals.register("text", TextSignal())
+suspect_signals.register("graph", GraphSignal())
+suspect_signals.register("co-change", CoChangeSignal())
+suspect_signals.register("recency", RecencySignal())
+suspect_signals.register("trace", TraceSignal())
+
+
+__all__ = [
+    "CoChangeSignal",
+    "GraphSignal",
+    "RecencySignal",
+    "TextSignal",
+    "TraceSignal",
+    "path_mentions",
+]
