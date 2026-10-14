@@ -28,7 +28,7 @@ from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.graph.builder import GraphBuilder
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import ASTParser
-from repowise.core.ingestion.return_types import signature_parameter_range
+from repowise.core.ingestion.return_types import signature_parameter_range, signature_parameters
 from repowise.core.ingestion.symbol_identity import (
     base_symbol_id,
     erased_type,
@@ -646,6 +646,43 @@ class TestKotlinOverloads:
         ]
         assert untyped_symbol_id(ids[2]) == "app/Main.kt::main#1"
 
+    def test_a_nullable_or_generic_receiver_is_its_own_member(self) -> None:
+        """``Int?.g()`` beside ``Int.g()`` is legal: the JVM sees ``Integer`` and ``int``."""
+        text = "fun Int.g() { }\nfun Int?.g() { }\nfun <T> T.h() { }\nfun <T> T?.h() { }\n"
+        symbols = _parse("G.kt", "kotlin", text).symbols
+        assert [s.id for s in symbols] == [
+            "G.kt::g#0(Int)",
+            "G.kt::g#0(Int?)",
+            "G.kt::h#0(T)",
+            "G.kt::h#0(T?)",
+        ]
+        # The dispatch type stays bare, and a type parameter extends nothing in particular.
+        assert [s.extension_receiver for s in symbols] == ["Int", "Int", None, None]
+
+    def test_a_same_erasure_collision_keeps_the_first_declaration(self) -> None:
+        """``@JvmName`` lets two members erase alike; they stay one id, held by the first."""
+        text = 'fun f(xs: List<String>) { }\n@JvmName("fInts")\nfun f(xs: List<Int>) { }\n'
+        assert _ids(_parse("F.kt", "kotlin", text)) == ["F.kt::f", "F.kt::f"]
+        assert _graph({"F.kt": ("kotlin", text)}).nodes["F.kt::f"]["start_line"] == 1
+
+    def test_an_override_spelled_through_a_typealias_dispatches_from_its_interface(self) -> None:
+        text = (
+            "package app\n\ntypealias Name = String\n\n"
+            "interface Store {\n  fun put(x: Int)\n  fun put(x: String)\n}\n\n"
+            "class Mem : Store {\n"
+            "  override fun put(x: Int) { }\n  override fun put(x: Name) { }\n}\n"
+        )
+        graph = _graph({"app/Store.kt": ("kotlin", text)})
+        dispatched = {
+            (base, impl)
+            for base, impl, data in graph.edges(data=True)
+            if data.get("edge_type") == "dispatches_to"
+        }
+        assert (
+            "app/Store.kt::Store::put#1(String)",
+            "app/Store.kt::Mem::put#1(Name)",
+        ) in dispatched
+
     def test_a_property_beside_a_same_named_function_keeps_one_id(self) -> None:
         text = "class K {\n  val x: Int = 1\n  fun x() = 2\n}\n"
         assert _ids(_parse("K.kt", "kotlin", text)) == ["K.kt::K", "K.kt::K::x", "K.kt::K::x"]
@@ -664,6 +701,10 @@ class TestKotlinOverloads:
             ("@StringRes id: Int", "Int"),
             ("block: (Int, String) -> Unit", "Function2"),
             ("block: suspend Builder.() -> Unit = {}", "Function1"),
+            ("f: ((Int) -> Unit, String) -> X", "Function2"),
+            ("f: ((Int) -> Unit)?", "Function1"),
+            ("@Json(name = key(1, (2))) m: Map<String, (Int) -> Unit>", "Map"),
+            ('@param:Json("a") y: Int', "Int"),
         ],
     )
     def test_a_parameter_erases_to_its_written_type(self, parameter: str, erased: str) -> None:
@@ -711,10 +752,55 @@ class TestKotlinOverloads:
             ("app/R.kt::R::go", "app/R.kt::R::put#3"),
         }
 
+    def test_a_call_passing_only_a_trailing_lambda_is_a_one_argument_call(
+        self, tmp_path: Path
+    ) -> None:
+        text = (
+            "package app\nclass Q {\n"
+            "  fun each(block: () -> Unit) { }\n"
+            "  fun each(n: Int, block: () -> Unit) { }\n"
+            "  fun go() {\n    each { }\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/Q.kt": ("kotlin", text)})
+        assert edges == {("app/Q.kt::Q::go", "app/Q.kt::Q::each#1")}
+
+    def test_a_function_that_cannot_take_the_count_draws_no_edge(self, tmp_path: Path) -> None:
+        """``item { }`` is a library call, not the repo's ``item(selected, onClick)``.
+
+        An ``override`` is exempt: it inherits the defaults its interface writes.
+        """
+        text = (
+            "package app\n\n"
+            "fun item(selected: Boolean, onClick: () -> Unit) { }\n\n"
+            "interface Source {\n  fun topics(ids: List<String>? = null): List<String>\n}\n\n"
+            "class Remote : Source {\n"
+            "  override fun topics(ids: List<String>?): List<String> = emptyList()\n"
+            "  fun sync() {\n    topics()\n  }\n}\n\n"
+            "fun screen() {\n  item { }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/U.kt": ("kotlin", text)})
+        assert ("app/U.kt::screen", "app/U.kt::item") not in edges
+        assert ("app/U.kt::Remote::sync", "app/U.kt::Remote::topics") in edges
+
     def test_a_trailing_comma_closes_no_parameter(self) -> None:
         """Compose style, ``modifier: Modifier = Modifier,`` before ``)``."""
-        signature = "function Screen(\n    onClick: () -> Unit,\n    modifier: Modifier = Modifier,\n)"
+        signature = (
+            "function Screen(\n    onClick: () -> Unit,\n    modifier: Modifier = Modifier,\n)"
+        )
         assert signature_parameter_range(signature, "kotlin") == (1, 2)
+
+
+@pytest.mark.parametrize(
+    ("signature", "parameters"),
+    [
+        ("def f(a, b,)", ["a", "b"]),
+        ("fn f(a: i32, b: &str,)", ["a: i32", "b: &str"]),
+        ("function f(\n  a: Int,\n  b: Int,\n)", ["a: Int", "b: Int"]),
+    ],
+    ids=["python", "rust", "kotlin"],
+)
+def test_a_trailing_comma_is_not_a_parameter(signature: str, parameters: list[str]) -> None:
+    assert [p.strip() for p in signature_parameters(signature) or []] == parameters
 
 
 def test_fixture_ids_carry_a_discriminator_only_on_collision() -> None:

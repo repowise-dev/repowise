@@ -91,7 +91,8 @@ STORE_FORMAT_VERSION: int = 2
 #: A Kotlin function's signature carries its declared return type.
 #: Kotlin overloads and same-named extensions in one scope get their own ids
 #: the Java way, an extension's receiver leading its types
-#: (``toHexString#0(Byte)``), and a Kotlin trailing lambda counts as an argument.
+#: (``toHexString#0(Byte)``, ``g#0(Int?)``), and a Kotlin trailing lambda counts as an
+#: argument; a call passing only one (``each { }``) is a call site too.
 PARSER_SCHEMA_VERSION: int = 8
 
 #: state.json key holding the store format version that wrote the store.

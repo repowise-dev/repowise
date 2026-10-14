@@ -321,11 +321,19 @@ def _csharp_type_parameter_count(def_node: Node) -> int | None:
     return 0
 
 
-def _kotlin_function_receiver(def_node: Node, language: str, name: str, src: str) -> str | None:
-    """The type a Kotlin function declaration extends; None for anything else."""
-    if language != "kotlin" or def_node.type != "function_declaration":
-        return None
-    return kotlin_extension_receiver(node_text(def_node, src), name)
+def _kotlin_receiver_fields(def_node: Node, params: list[Node], language: str, name: str) -> dict:
+    """``Symbol`` fields for the receiver a Kotlin extension function declares; {} otherwise.
+
+    Read off the header alone, up to the parameter list: the body cannot hold
+    the receiver, and a long one is not worth scanning.
+    """
+    if language != "kotlin" or def_node.type != "function_declaration" or not params:
+        return {}
+    header = (def_node.text or b"")[: params[0].start_byte - def_node.start_byte]
+    receiver = kotlin_extension_receiver(header.decode("utf-8", errors="replace") + "(", name)
+    if receiver is None:
+        return {}
+    return {"written_receiver": receiver[0], "extension_receiver": receiver[1]}
 
 
 def _count_arguments(arg_node: Node) -> int:

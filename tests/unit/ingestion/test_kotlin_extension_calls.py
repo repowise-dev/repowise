@@ -125,10 +125,10 @@ class TestReceiverShape:
     @pytest.mark.parametrize(
         ("header", "name", "receiver"),
         [
-            ("private operator fun Random.get(range: IntRange) = 1", "get", "Random"),
-            ("fun <T : Any> Mono<T>.capture(x: Int)", "capture", "Mono"),
-            ("fun String?.orBlank(): String", "orBlank", "String"),
-            ("fun <T> T.also2(): T", "also2", None),
+            ("private operator fun Random.get(range: IntRange) = 1", "get", ("Random", "Random")),
+            ("fun <T : Any> Mono<T>.capture(x: Int)", "capture", ("Mono", "Mono")),
+            ("fun String?.orBlank(): String", "orBlank", ("String?", "String")),
+            ("fun <T> T.also2(): T", "also2", ("T", None)),
             ("@Composable fun Card(x: a.B) {}", "Card", None),
             ("fun foo()\nfun Bar.foo()", "foo", None),
         ],

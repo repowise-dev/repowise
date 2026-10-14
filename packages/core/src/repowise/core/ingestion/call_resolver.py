@@ -401,6 +401,18 @@ def _java_method_refusing(symbol: Symbol | None, argument_count: int | None) -> 
     return symbol.language == "java" and symbol.kind == "method" and not _takes(symbol, argument_count)
 
 
+def _kotlin_function_refusing(symbol: Symbol | None, argument_count: int | None) -> bool:
+    """Whether *symbol* is a Kotlin function whose parameters cannot take *argument_count*.
+
+    Never an ``override``: it inherits defaults its own list does not write.
+    """
+    if symbol is None or argument_count is None or symbol.language != "kotlin":
+        return False
+    if symbol.kind not in _FUNCTION_KINDS or "override" in symbol.modifiers:
+        return False
+    return not _takes(symbol, argument_count)
+
+
 def _takes(symbol: Symbol, argument_count: int) -> bool:
     """Whether *symbol*'s parameters admit *argument_count*; an unread signature does."""
     admitted = signature_parameter_range(symbol.signature or "", symbol.language)
@@ -1193,9 +1205,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         calls the one-parameter ``getField`` a superclass declares. With no
         ancestor overload that takes the count, the edge goes: its callee
         cannot be what the call means, and a constructor inherits none. Java
-        only, where arity is binding.
+        only, where arity is binding. Kotlin binds arity too: a function that
+        cannot take the count (``item { }`` against ``item(selected, onClick)``)
+        names a library one, so the edge goes.
         """
         callee = self._symbols_by_id.get(resolved.callee_id)
+        if _kotlin_function_refusing(callee, call.argument_count):
+            return None
         if not _java_method_refusing(callee, call.argument_count):
             return resolved
         assert callee is not None

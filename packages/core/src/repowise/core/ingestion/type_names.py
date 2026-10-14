@@ -247,10 +247,13 @@ _CSHARP_EXTENSION_RECEIVER = re.compile(
 )
 
 
-def kotlin_extension_receiver(header: str, name: str) -> str | None:
-    """The bare type Kotlin's ``fun Type.name(`` in *header* extends, or None.
+def kotlin_extension_receiver(header: str, name: str) -> tuple[str, str | None] | None:
+    """``(written, extended)`` for Kotlin's ``fun Type.name(`` in *header*, or None.
 
-    None too for a receiver that is the function's own type parameter
+    *written* is the receiver as a symbol id spells it, nullable mark and type
+    parameter kept (``Int?``, ``T``), which tells ``Int.f()`` from
+    ``Int?.f()``. *extended* is the bare type the extension dispatches on,
+    None for a receiver that is the function's own type parameter
     (``fun <T> T.name()``): any implicit receiver fits it.
     """
     # Read at the header's first `fun` only: a same-named function below it is
@@ -262,10 +265,14 @@ def kotlin_extension_receiver(header: str, name: str) -> str | None:
     ).match(header, first.start())
     if not match:
         return None
-    bare = bare_type_name(match.group("type").strip().rstrip("?"))
+    written = match.group("type").strip()
+    bare = bare_type_name(written.rstrip("?").strip())
+    if not bare:
+        return None
     params = (match.group("params") or "").split(",")
     declared = {p.split(":")[0].split()[-1] for p in params if p.strip()}
-    return None if not bare or bare in declared else bare
+    nullable = "?" if written.endswith("?") else ""
+    return bare + nullable, None if bare in declared else bare
 
 
 def csharp_extension_receiver(signature: str) -> str | None:
