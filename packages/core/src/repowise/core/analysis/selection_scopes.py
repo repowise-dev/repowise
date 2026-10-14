@@ -42,7 +42,7 @@ from pathlib import PurePosixPath
 
 import pathspec
 
-from ..support_paths import DOC_EXTENSIONS
+from ..support_paths import DOC_EXTENSIONS, TEMPLATE_EXTENSIONS
 from ..test_paths import is_test_related_path
 from .test_selection import (
     JS_SUFFIXES,
@@ -113,7 +113,7 @@ _ECOSYSTEM_SPECS = tuple(
 # it may be a pinned dependency list.
 _OWNED = frozenset(
     {".md", ".mdx", ".rst", ".adoc", ".markdown", ".html", ".htm"}
-    | {".j2", ".jinja", ".jinja2", ".tmpl", ".tpl", ".hbs", ".mustache", ".ejs", ".njk"}
+    | TEMPLATE_EXTENSIONS
     | {".css", ".scss", ".sass", ".less"}
     | {".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"}
 )

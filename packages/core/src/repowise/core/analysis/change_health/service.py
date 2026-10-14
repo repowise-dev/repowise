@@ -14,7 +14,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from ...support_paths import is_doc_or_config_path
+from ...support_paths import TEMPLATE_EXTENSIONS, is_doc_or_config_path
 from ...test_paths import is_test_related_path
 from ..finding_registry import excluded_types, gate_for, is_served, language_label
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
@@ -402,7 +402,10 @@ def _nothing_compared(changes: list[FileChange], skipped: dict[str, str]) -> str
             "health analysis does not cover them."
         )
     if all(r in NO_CODE_GAP for r in skipped.values()):
-        return "Only query or other data files changed; health analysis does not cover them."
+        return (
+            "Only query, template or other data files changed; "
+            "health analysis does not cover them."
+        )
     return "No changed file is health-analyzable, so nothing was compared."
 
 
@@ -415,7 +418,10 @@ def _skip_reason(change: FileChange) -> str:
         return NOT_CODE
     if language is None:
         path = PurePosixPath(change.head_path)
-        if path.suffix.lower() == _QUERY_SUFFIX and _QUERY_DIR in path.parts[:-1]:
+        suffix = path.suffix.lower()
+        if suffix in TEMPLATE_EXTENSIONS or (
+            suffix == _QUERY_SUFFIX and _QUERY_DIR in path.parts[:-1]
+        ):
             return NOT_ANALYZABLE_DATA
         return "unsupported_language"
     return "not_health_analyzable"

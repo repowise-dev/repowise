@@ -46,8 +46,8 @@ SEVERITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2, "critical": 3
 #: Documentation or configuration: skipped, but no code went unexamined.
 NOT_CODE = "not_code"
 
-#: Tree-sitter queries and similar data: no detector reads them, yet they can
-#: change behaviour, so they are named apart from docs and config.
+#: Tree-sitter queries, text templates and similar data: no detector reads
+#: them, yet they can change behaviour, so they are named apart from docs and config.
 NOT_ANALYZABLE_DATA = "not_analyzable_data"
 
 #: Skip reasons that leave no code unexamined.

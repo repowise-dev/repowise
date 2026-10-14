@@ -93,6 +93,11 @@ CONFIG_EXTENSIONS = frozenset(
     }
 )
 DOC_EXTENSIONS = frozenset({".md", ".mdx", ".rst", ".txt", ".adoc"})
+# Text templates (Jinja, Handlebars, Mustache, EJS, Nunjucks, Go and generic
+# ``.tmpl``/``.tpl``): rendered by code, never parsed as code here.
+TEMPLATE_EXTENSIONS = frozenset(
+    {".j2", ".jinja", ".jinja2", ".tmpl", ".tpl", ".hbs", ".mustache", ".ejs", ".njk"}
+)
 
 
 def classification_token(path: str) -> str:

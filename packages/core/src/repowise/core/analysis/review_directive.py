@@ -123,7 +123,7 @@ def _plural(word: str, count: int) -> str:
 def _no_code_headline(delta: ChangeHealthDelta) -> str:
     if NOT_ANALYZABLE_DATA in delta.skipped.values():
         return (
-            "No code changed: only query or other data files, which health analysis "
+            "No code changed: only query, template or other data files, which health analysis "
             "does not cover. They can still change behaviour, so test selection still applies."
         )
     return (

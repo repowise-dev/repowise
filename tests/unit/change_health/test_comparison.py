@@ -634,3 +634,27 @@ def test_a_scheme_file_outside_queries_is_still_a_gap(make_repo):
 
     assert delta.skipped == {"src/main.scm": "unsupported_language"}
     assert delta.code_skipped == {"src/main.scm": "unsupported_language"}
+
+
+@pytest.mark.parametrize("path", ["templates/page.j2", "views/card.hbs", "tpl/email.tmpl"])
+def test_a_template_change_is_data_not_a_gap(make_repo, path):
+    repo = make_repo()
+    repo.commit("seed", {path: "Hello {{ name }}\n"})
+    repo.commit("edit", {path: "Hi {{ name }}\n"})
+
+    delta = compare(repo)
+
+    assert delta.skipped == {path: "not_analyzable_data"}
+    assert delta.code_skipped == {}
+    assert "template" in delta.explanation
+
+
+def test_a_template_beside_code_does_not_make_the_run_partial(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "templates/page.j2": "{{ a }}\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", "templates/page.j2": "{{ b }}\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "available"
+    assert delta.code_skipped == {}
