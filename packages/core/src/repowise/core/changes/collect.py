@@ -23,14 +23,17 @@ from typing import Any
 
 import structlog
 
-# Module-level so a move of these names breaks at import, not on first use.
-from repowise.core.analysis.patch_coverage.suggest import CODEOWNERS_PATHS, _codeowners_rules
 from repowise.core.changes.evidence import (
     EVIDENCE_SCHEMA_VERSION,
     ChangeEvidence,
     EvidenceInputs,
     Unavailable,
     build_change_evidence,
+)
+from repowise.core.ownership.codeowners import (
+    CodeownersMatcher,
+    parse_codeowners,
+    read_codeowners,
 )
 
 logger = structlog.get_logger(__name__)
@@ -354,15 +357,13 @@ async def _components(
 async def _owners(
     repo_root: Path, paths: list[str], components: Any
 ) -> tuple[dict[str, list[str]], list[str]]:
-    """``{path: owners}`` from CODEOWNERS (last match wins), else the component owner."""
+    """``{path: owners}`` from CODEOWNERS (per section, last match wins), else the component owner."""
     sources: list[str] = []
-    rules: list[tuple[Any, list[str]]] = []
-    for rel in CODEOWNERS_PATHS:
-        file = repo_root / rel
-        if file.is_file():
-            rules = _codeowners(file.read_text(encoding="utf-8", errors="replace"))
-            sources.append(rel)
-            break
+    matcher: CodeownersMatcher | None = None
+    if found := read_codeowners(repo_root):
+        rel, text = found
+        matcher = CodeownersMatcher(parse_codeowners(text))
+        sources.append(rel)
     by_component: dict[str, str] = {}
     if not isinstance(components, Unavailable):
         for comp in components:
@@ -373,25 +374,12 @@ async def _owners(
             sources.append("component catalog")
     owners: dict[str, list[str]] = {}
     for path in paths:
-        named = next((o for spec, o in reversed(rules) if spec.match_file(path)), None)
+        named = matcher.owners(path) if matcher else ()
         if named:
-            owners[path] = named
+            owners[path] = list(named)
         elif path in by_component:
             owners[path] = [by_component[path]]
     return owners, sources
-
-
-def _codeowners(text: str) -> list[tuple[Any, list[str]]]:
-    import pathspec
-
-    out = []
-    for pattern, owners in _codeowners_rules(text):
-        try:
-            spec = pathspec.PathSpec.from_lines("gitwildmatch", [pattern])
-        except Exception:
-            continue
-        out.append((spec, owners))
-    return out
 
 
 async def _reviewers(
