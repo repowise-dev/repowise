@@ -17,6 +17,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion.dispatch_edges import resolve_override_dispatch
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import FileInfo
@@ -316,6 +318,46 @@ def test_a_bare_call_reaches_an_inherited_method_in_an_implicit_receiver_languag
     assert ("web/Child.kt::Child::run", "base/Base.kt::Base::helper") in _calls_by_origin(
         graph, "enclosing_inherited"
     )
+
+
+_SAME_PACKAGE_INHERITANCE = {
+    "java": {
+        "p/A.java": "package p;\n\npublic class A {\n    void helper() {}\n}\n",
+        "p/B.java": (
+            "package p;\n\npublic class B extends A {\n"
+            "    Other field;\n"
+            "    void f() {\n        helper();\n        this.field.m();\n    }\n}\n"
+        ),
+        "p/Other.java": "package p;\n\npublic class Other {\n    void m() {}\n}\n",
+    },
+    "kotlin": {
+        "p/A.kt": "package p\n\nopen class A {\n    fun helper() {}\n}\n",
+        "p/B.kt": "package p\n\nclass B : A() {\n    fun f() {\n        helper()\n    }\n}\n",
+    },
+}
+_DECOYS = {
+    "java": ("p/Decoy.java", "package p;\n\npublic class Decoy {\n    void helper() {}\n}\n"),
+    "kotlin": ("p/Decoy.kt", "package p\n\nclass Decoy {\n    fun helper() {}\n}\n"),
+}
+
+
+@pytest.mark.parametrize("language", ["java", "kotlin"])
+@pytest.mark.parametrize("decoy", [False, True])
+def test_a_same_package_bare_call_reaches_the_ancestor_it_inherits_from(
+    tmp_path: Path, language: str, decoy: bool
+) -> None:
+    """The same-package tier offers no sibling's member, so the ancestor walk
+    answers, ahead of the global-unique guess and with or without a decoy
+    declaring the same name. Java's ``this.field.m()`` keeps its receiver, so
+    it never reaches this tier as a bare ``m()``."""
+    sources = dict(_SAME_PACKAGE_INHERITANCE[language])
+    if decoy:
+        sources.update([_DECOYS[language]])
+    graph = _build(tmp_path, sources, language)
+    ext = "java" if language == "java" else "kt"
+    assert _calls_by_origin(graph, "enclosing_inherited") == {
+        (f"p/B.{ext}::B::f", f"p/A.{ext}::A::helper")
+    }
 
 
 def test_a_python_bare_call_is_not_read_as_an_implicit_receiver(tmp_path: Path) -> None:

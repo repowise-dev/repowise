@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.55.0"
+version = "0.56.0"
 description = "The codebase intelligence layer for your AI coding agent — dependency graph, git history, dead code, decisions, and code health, exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -46,7 +46,7 @@ dependencies = [
     "tree-sitter-kotlin>=1,<2",
     "tree-sitter-ruby>=0.23,<1",
     "tree-sitter-c-sharp>=0.23,<1",
-    "tree-sitter-swift>=0.0.1",
+    "tree-sitter-swift>=0.7.4,<0.8",
     "tree-sitter-scala>=0.23,<1",
     "tree-sitter-php>=0.23,<1",
     "tree-sitter-pascal>=0.11,<1",

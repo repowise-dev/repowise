@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.communities import has_community
 from repowise.core.analysis.doc_drift.constants import (
     REFERENCE_BASIS,
     UNAVAILABLE_NO_TABLE,
@@ -51,6 +52,7 @@ from repowise.core.persistence.crud import (
     load_coverage_for_repo,
     serialize_doc_drift_reference_row,
 )
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     GraphEdge,
     GraphNode,
@@ -638,7 +640,7 @@ async def _resolve_community(
     repo_id = repository.id
 
     node = await get_graph_node(session, repo_id, target)
-    if node is None or node.community_id is None:
+    if node is None or not has_community(node.community_id):
         result_data["community"] = None
         return
 
@@ -732,6 +734,7 @@ async def _resolve_health(
             HealthFinding.file_path == file_path,
             HealthFinding.status == "open",
             HealthFinding.biomarker_type.not_in(excluded_types()),
+            ungated("health", HealthFinding.file_path, HealthFinding.biomarker_type),
         )
         .order_by(HealthFinding.health_impact.desc())
         .limit(2)

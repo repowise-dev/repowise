@@ -114,6 +114,91 @@ def test_low_cohesion_skips_overloaded_formatter_class():
     assert LowCohesionDetector().detect(_ctx([fmt])) == []
 
 
+def _walk_one(path: str, language: str, source: str, name: str) -> ClassComplexity:
+    from repowise.core.ingestion.parser import _get_language
+
+    if _get_language(language) is None:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    fc = walk_file(path, language, source.encode())
+    return next(c for c in fc.classes if c.name == name)
+
+
+_STATELESS_DIALECT = """
+class Dialect(BaseDialect):
+    literal_kinds = frozenset({"string"})
+
+    def is_literal(self, node):
+        return node.type in self.literal_kinds
+
+    def sink_kind(self, name):
+        return "query" if name == "execute" else None
+
+    def loop_header(self, node):
+        return node.child_by_field_name("condition")
+
+    def param_names(self, fn):
+        return self.enclosing_params(fn)
+
+    def is_async_fn(self, fn):
+        return fn.type == "async_function"
+
+    def bindings_of(self, node):
+        return [c for c in node.children if c.is_named]
+"""
+
+
+def test_low_cohesion_skips_stateless_hook_overrides():
+    # Each hook touches no instance state: a static helper, not a class to extract.
+    cls = _walk_one("dialect.py", "python", _STATELESS_DIALECT, "Dialect")
+    assert cls.method_count == 6 and cls.lcom4 == 1
+    assert LowCohesionDetector().detect(_ctx([cls])) == []
+    # Every component stays listed, so move_method still sees the inherited call.
+    assert len(cls.components) == 6
+    assert any(g.calls == ("enclosing_params",) for g in cls.components)
+
+
+def test_low_cohesion_still_counts_field_clusters_beside_stateless_helpers():
+    source = """
+class Report:
+    def add_page(self, page):
+        self.pages.append(page)
+
+    def page_count(self):
+        return len(self.pages)
+
+    def add_tokens(self, n):
+        self.tokens += n
+
+    def cost(self):
+        return self.tokens * 0.01
+
+    def label(self, kind):
+        return kind.title()
+
+    def describe(self):
+        return "report"
+"""
+    cls = _walk_one("report.py", "python", source, "Report")
+    assert cls.lcom4 == 2  # the pages pair and the tokens pair, one field each
+    [finding] = LowCohesionDetector().detect(_ctx([cls]))
+    assert finding.details["lcom4"] == 2
+
+
+def test_low_cohesion_skips_stateless_typescript_strategy():
+    source = """
+class Strategy extends Base {
+  kinds = new Set(["string"]);
+  isLiteral(n) { return this.kinds.has(n.type); }
+  sinkKind(name) { return name === "execute" ? "query" : null; }
+  loopHeader(n) { return n.childForFieldName("condition"); }
+  isAsync(fn) { return fn.type === "async_function"; }
+  bindings(n) { return n.namedChildren; }
+}
+"""
+    cls = _walk_one("strategy.ts", "typescript", source, "Strategy")
+    assert cls.method_count == 5 and cls.lcom4 == 1
+
+
 # ---- god_class -----------------------------------------------------------
 
 

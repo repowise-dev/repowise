@@ -124,6 +124,7 @@ if TYPE_CHECKING:
         EpisodeListResponse,
         EpisodeSummary,
     )
+    from .evidence import CardBasis, CardRef
     from .external_systems import (
         ExternalSystemEntry,
         ExternalSystemsResponse,
@@ -209,7 +210,6 @@ if TYPE_CHECKING:
         ModuleHealthDetail,
         ModuleHealthOwner,
         ModuleHealthSummary,
-        OwnerAgentCollab,
         OwnerCoAuthor,
         OwnerFileEntry,
         OwnerListEntry,
@@ -288,6 +288,7 @@ if TYPE_CHECKING:
         SetApiKeyRequest,
         WebhookResponse,
     )
+    from .views import ChartView, SectionView, TableView, ViewPartList
     from .workspace import (
         WorkspaceArchitectureResponse,
         WorkspaceBlastRadiusResponse,
@@ -441,6 +442,7 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "DocDriftSummaryResponse",
     ),
     "episodes": ("EpisodeCountsResponse", "EpisodeDetail", "EpisodeListResponse", "EpisodeSummary"),
+    "evidence": ("CardBasis", "CardRef"),
     "external_systems": ("ExternalSystemEntry", "ExternalSystemsResponse"),
     "git": (
         "AgentTrendBucket",
@@ -516,7 +518,6 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "ModuleHealthDetail",
         "ModuleHealthOwner",
         "ModuleHealthSummary",
-        "OwnerAgentCollab",
         "OwnerCoAuthor",
         "OwnerFileEntry",
         "OwnerListEntry",
@@ -623,6 +624,7 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "WorkspaceUnmatchedConsumer",
         "WorkspaceUnresolvedLink",
     ),
+    "views": ("ChartView", "SectionView", "TableView", "ViewPartList"),
     "zoom": ("ZoomMapResponse", "ZoomMetricsResponse", "ZoomNodeResponse", "ZoomRelationResponse"),
 }
 
@@ -671,10 +673,13 @@ __all__ = [
     "C4SystemResponse",
     "CallerCalleeEntry",
     "CallersCalleesResponse",
+    "CardBasis",
+    "CardRef",
     "ChangeFeaturesResponse",
     "ChangelogEntryModel",
     "ChangelogResponse",
     "ChangelogSectionModel",
+    "ChartView",
     "ChatArtifactEnvelope",
     "ChatMessageResponse",
     "ChatRequest",
@@ -799,7 +804,6 @@ __all__ = [
     "NeighboringCommunity",
     "NodeSearchResult",
     "OkResponse",
-    "OwnerAgentCollab",
     "OwnerCoAuthor",
     "OwnerFileEntry",
     "OwnerListEntry",
@@ -861,6 +865,7 @@ __all__ = [
     "SavingsResponse",
     "SearchRequest",
     "SearchResultResponse",
+    "SectionView",
     "SecurityFindingResponse",
     "SecuritySummaryResponse",
     "SetActiveProviderRequest",
@@ -868,10 +873,12 @@ __all__ = [
     "SymbolImportanceComponents",
     "SymbolNodeSummary",
     "SymbolResponse",
+    "TableView",
     "TransitiveEntry",
     "UnclusteredFiles",
     "UpdateMcpToolsRequest",
     "VersionResponse",
+    "ViewPartList",
     "WebhookResponse",
     "WorkspaceArchitectureResponse",
     "WorkspaceBlastRadiusResponse",

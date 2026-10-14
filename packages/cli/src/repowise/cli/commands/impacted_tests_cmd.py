@@ -141,7 +141,7 @@ def impacted_tests_command(
         cannot_evaluate(fmt, exc.code, str(exc))
 
     explain = explain.replace("\\", "/").removeprefix("./") if explain else None
-    checkout = read_checkout(repo_path)
+    checkout = read_checkout(repo_path, change.head)
     plan = plan_scopes(change, config, checkout) if config is not None else None
     result = run_async(_collect(repo_path, change, checkout, config, explain, plan, prioritize))
     result["diff"] = change.label
@@ -200,6 +200,7 @@ async def _collect(
             plan.routes if plan else [],
             dict(checkout.pytest_texts),
             indexed_commit=repo_row.head_commit if repo_row else None,
+            read_source=checkout.read,
         )
         return await _decide(session, repo_id, out, *decide)
 

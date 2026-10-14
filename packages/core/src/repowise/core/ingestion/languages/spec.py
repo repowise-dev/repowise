@@ -138,6 +138,10 @@ class LanguageSpec:
     # -- Ecosystem -------------------------------------------------------
     entry_point_patterns: tuple[str, ...] = ()  # ("main.py", "app.py")
     manifest_files: tuple[str, ...] = ()  # ("pyproject.toml",)
+    # Package manifests whose name varies per package, as globs matched
+    # case-insensitively by the package-root scan only. Exact-name readers of
+    # ``manifest_files`` never see them.
+    manifest_globs: tuple[str, ...] = ()  # ("*.csproj",)
     # The subset of ``manifest_files`` that configures a build rather than
     # declaring a distributable unit. Every name in ``manifest_files`` and not
     # here is a *package root*: it marks its directory as a package boundary

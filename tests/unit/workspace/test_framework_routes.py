@@ -796,3 +796,119 @@ class TestQualifiedHandlerBinding:
         # discriminates rather than merely finding something.
         assert "app" in builder
         assert bound["http::GET::/ping"] == expected["ping"]
+
+
+# ---------------------------------------------------------------------------
+# Spring
+# ---------------------------------------------------------------------------
+
+SPRING_CONTROLLER = """\
+/** @GetMapping("/doc") is documentation. */
+@RestController
+@RequestMapping({"/api", "/v2/"})
+public class OwnerController {
+    @GetMapping
+    public String root() { return "{"; }
+    @PostMapping(value = "/b", produces = "text/plain")
+    public String b() { char c = '}'; return ""; }
+    @RequestMapping(path = {"/c", "/d"}, method = {RequestMethod.GET, RequestMethod.PUT})
+    public String c() { return ""; }
+    @RequestMapping("/any")
+    public String any() { return ""; }
+    @DeleteMapping(PATH)
+    public void del() {}
+}
+
+class Plain {
+    @GetMapping("/plain")
+    public void plain() {}
+}
+"""
+
+
+def test_spring_routes_read_every_argument_shape() -> None:
+    from repowise.core.ingestion.framework_routes import (
+        spring_class_paths,
+        spring_route_prefixes,
+        spring_routes,
+    )
+
+    class_paths = spring_class_paths(SPRING_CONTROLLER)
+    got = [
+        (r.verb, r.path, spring_route_prefixes(class_paths, r.offset))
+        for r in spring_routes(SPRING_CONTROLLER)
+    ]
+    prefixes = ("/api", "/v2")
+    assert got == [
+        ("GET", "", prefixes),
+        ("POST", "/b", prefixes),
+        ("GET", "/c", prefixes),
+        ("GET", "/d", prefixes),
+        ("PUT", "/c", prefixes),
+        ("PUT", "/d", prefixes),
+        ("ALL", "/any", prefixes),
+        ("DELETE", None, prefixes),
+        # A class after the mapped one does not inherit its prefix.
+        ("GET", "/plain", ("",)),
+    ]
+
+
+def test_spring_contracts_compose_each_prefix_and_skip_what_they_cannot_read(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "OwnerController.java").write_text(SPRING_CONTROLLER)
+    (tmp_path / "PetController.kt").write_text(
+        '@RestController\n@RequestMapping("/pets")\nclass PetController {\n'
+        '    @GetMapping(path = ["/{id}"])\n    fun one(): String = ""\n}\n'
+    )
+    # A root route, bare or spelled "/", is dropped as JAX-RS and Micronaut roots
+    # are: build_provider_contract refuses a path that normalizes to "/".
+    (tmp_path / "Welcome.java").write_text(
+        "@RestController\npublic class Welcome {\n"
+        "    @GetMapping\n    public String a() { return null; }\n"
+        '    @GetMapping("/")\n    public String b() { return null; }\n}\n'
+    )
+    ids = {
+        c.contract_id
+        for c in HttpExtractor().extract(tmp_path, "backend")
+        if c.role == "provider"
+    }
+    assert ids == {
+        "http::GET::/api",
+        "http::GET::/v2",
+        "http::POST::/api/b",
+        "http::POST::/v2/b",
+        "http::GET::/api/c",
+        "http::GET::/v2/c",
+        "http::GET::/api/d",
+        "http::GET::/v2/d",
+        "http::PUT::/api/c",
+        "http::PUT::/v2/c",
+        "http::PUT::/api/d",
+        "http::PUT::/v2/d",
+        "http::GET::/plain",
+        "http::GET::/pets/{param}",
+    }
+
+
+def test_spring_routes_survive_char_literals_and_raw_strings() -> None:
+    from repowise.core.ingestion.framework_routes import spring_routes
+
+    def paths(src: str) -> list[str | None]:
+        return [r.path for r in spring_routes(src)]
+
+    # A char literal holding a quote read as a string start masks the rest.
+    assert paths("""class A { char c='"'; @GetMapping("/real") void a(){} }""") == ["/real"]
+    assert paths(
+        """class A { @GetMapping("/real") void a(){ char c='"'; } """
+        """@GetMapping("/two") void b(){} }"""
+    ) == ["/real", "/two"]
+    assert paths(
+        r"""class A { char q='\''; char b='\\'; @GetMapping("/esc") void a(){} }"""
+    ) == ["/esc"]
+    # A mapping quoted in a Java text block or a Kotlin raw string is no route.
+    block = '"' * 3
+    java = 'class A { String s = BLOCK\n @GetMapping("/no") "x" BLOCK; @GetMapping("/yes") void a(){} }'
+    kotlin = 'class A { val s = BLOCK@GetMapping("/no")BLOCK\n @GetMapping("/yes") fun a() = 1 }'
+    assert paths(java.replace("BLOCK", block)) == ["/yes"]
+    assert paths(kotlin.replace("BLOCK", block)) == ["/yes"]

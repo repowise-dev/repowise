@@ -36,10 +36,20 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._test_selection import (
     SelectionUnavailableError,
     files_change,
     select_change_tests,
+)
+from repowise.server.mcp_server._workspace_routing import (
+    hint_misses,
+    needs_routing,
+    one_repo_refusal,
+    rekey_targets,
+    route_targets,
+    settle_missing,
+    single_repo,
 )
 
 from .assessment import (
@@ -271,7 +281,8 @@ async def _gather_evidence(
         repo_id = repository.id
         # A card walks from the target as given and reads links under its
         # normalized path, so both spellings are roots.
-        roots = {*targets, *(normalize_target_path(t, repository.local_path) for t in targets)}
+        repo_root = served_root(repository, ctx.path)
+        roots = {*targets, *(normalize_target_path(t, repo_root) for t in targets)}
         graph = await _load_dependency_graph(session, repo_id, roots)
 
         # Repo-wide, so computed once for every target's bus-factor calibration.
@@ -299,6 +310,7 @@ async def _gather_evidence(
                     collector,
                     include_graph,
                     as_of_ts=as_of_ts,
+                    repo_root=repo_root,
                 )
                 for t in targets
             ]
@@ -446,6 +458,29 @@ async def get_risk(
         return _unsupported_repo_all("get_risk")
     if not targets and not changed_files:
         return {"error": "targets or changed_files is required", "_meta": _build_meta()}
+    routes = (
+        route_targets([*(targets or []), *(changed_files or [])], paths_only=True)
+        if repo is None
+        else None
+    )
+    if routes is not None and changed_files:
+        routes = settle_missing(routes, set(changed_files))
+    if needs_routing(routes):
+        alias = single_repo(routes)
+        if alias is None:
+            return {**one_repo_refusal("get_risk", routes), "_meta": _build_meta()}
+        local = {r.target: r.local for r in routes}
+        routed = await get_risk(
+            [local[t] for t in targets] if targets else None,
+            repo=alias,
+            changed_files=[local[t] for t in changed_files] if changed_files else None,
+            include=include,
+        )
+        rekey_targets(routed, routes)
+        if any(r.routed for r in routes):
+            routed["repo"] = alias
+        hint_misses(routed, routes)
+        return routed
     ignored: list[dict] = []
     include_set = {
         block

@@ -84,9 +84,6 @@ async def analyze_test_impact(
     Reads the coverage map and graph reachability for *changed_files*, then
     hands both to :func:`assemble_test_impact`.
     """
-    from repowise.core.analysis.test_reachability import load_test_files, tests_reaching_by_tier
-    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
-
     changed = _changed_paths(changed_files, exclude_spec)
     fold = {
         "repository_id": repository_id,
@@ -97,23 +94,36 @@ async def analyze_test_impact(
     if not changed:
         return assemble_test_impact([], {}, {}, {}, **fold)
 
+    summary, measured, coverage_error = await _read_coverage(session, repository_id, changed)
+    indexed_commit, indexed_commit_error = await _read_indexed_commit(session, repository_id)
+    inferred, test_files, inference_error = await _read_inferred(session, repository_id, changed)
+
+    return assemble_test_impact(
+        changed,
+        measured,
+        inferred,
+        summary,
+        repository_test_files=test_files,
+        indexed_commit=indexed_commit,
+        indexed_commit_error=indexed_commit_error,
+        coverage_error=coverage_error,
+        inference_error=inference_error,
+        **fold,
+    )
+
+
+async def _read_coverage(
+    session: AsyncSession, repository_id: str, changed: list[str]
+) -> tuple[Mapping[str, Any], dict[str, list[Mapping[str, Any]]], str | None]:
+    """The coverage summary, each changed path's measured rows, and the last read error."""
+    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
+
     try:
         summary = await get_test_coverage_summary(session, repository_id)
         coverage_error: str | None = None
     except Exception as exc:  # analysis must degrade without losing graph candidates
         summary = {}
         coverage_error = type(exc).__name__
-
-    indexed_commit_error: str | None = None
-    try:
-        indexed_commit = (
-            await session.execute(
-                select(Repository.head_commit).where(Repository.id == repository_id)
-            )
-        ).scalar_one_or_none()
-    except Exception as exc:
-        indexed_commit = None
-        indexed_commit_error = type(exc).__name__
 
     measured: dict[str, list[Mapping[str, Any]]] = {}
     if summary.get("pair_count", 0) > 0:
@@ -124,6 +134,29 @@ async def analyze_test_impact(
                 )
             except Exception as exc:
                 coverage_error = type(exc).__name__
+    return summary, measured, coverage_error
+
+
+async def _read_indexed_commit(
+    session: AsyncSession, repository_id: str
+) -> tuple[str | None, str | None]:
+    """The repository's indexed head commit, or ``None`` and the read error."""
+    try:
+        indexed_commit = (
+            await session.execute(
+                select(Repository.head_commit).where(Repository.id == repository_id)
+            )
+        ).scalar_one_or_none()
+    except Exception as exc:
+        return None, type(exc).__name__
+    return indexed_commit, None
+
+
+async def _read_inferred(
+    session: AsyncSession, repository_id: str, changed: list[str]
+) -> tuple[dict[str, dict[str, Any]], set[str], str | None]:
+    """The tests the graph walk reaches per changed path, the test files, and the walk error."""
+    from repowise.core.analysis.test_reachability import load_test_files, tests_reaching_by_tier
 
     inference_error: str | None = None
     test_files: set[str] = set()
@@ -146,19 +179,7 @@ async def analyze_test_impact(
         for path, tests in (await narrow_scopes(session, repository_id, walked, test_files)).items():
             if tests != walked[path]:
                 inferred[path] = {**inferred[path], "tests": tests, "narrowed": True}
-
-    return assemble_test_impact(
-        changed,
-        measured,
-        inferred,
-        summary,
-        repository_test_files=test_files,
-        indexed_commit=indexed_commit,
-        indexed_commit_error=indexed_commit_error,
-        coverage_error=coverage_error,
-        inference_error=inference_error,
-        **fold,
-    )
+    return inferred, test_files, inference_error
 
 
 def _changed_paths(changed_files: Iterable[str], exclude_spec: Any) -> list[str]:

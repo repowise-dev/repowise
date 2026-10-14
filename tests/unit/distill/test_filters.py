@@ -266,13 +266,52 @@ def test_git_status_clean_tree() -> None:
     assert "clean" in distilled
 
 
-def test_git_log_subjects_only(load_fixture) -> None:
+def test_git_log_subject_and_author(load_fixture) -> None:
     raw, distilled = _distill(load_fixture, "git_log_full.txt", "git_log", "git log -40")
     lines = distilled.splitlines()
-    assert "40 commits" in lines[0]
-    # Most recent commit subject is present with its short sha.
-    assert any("2ef3f76c" in ln for ln in lines)
+    assert lines[0] == "40 commits (subject and author)"
+    # Most recent commit is present with its short sha and author, no email.
+    first = next(ln for ln in lines if "2ef3f76c" in ln)
+    assert "Raghav Chamadiya" in first
+    assert "@" not in distilled
     assert _pct(raw, distilled) >= 80.0
+
+
+@pytest.mark.parametrize(
+    ("command", "kept"),
+    [
+        ("git log", 20),
+        ("git log -n 30", 30),
+        ("git log -n30", 30),
+        ("git log --max-count=25", 25),
+        ("git log --max-count 25 --stat", 25),
+        ("git log -35", 35),
+        ("git log -n 5 -n 33", 33),
+    ],
+)
+def test_git_log_honours_an_explicit_count(load_fixture, command: str, kept: int) -> None:
+    _raw, distilled = _distill(load_fixture, "git_log_full.txt", "git_log", command)
+    assert len(distilled.splitlines()) == kept + 1
+
+
+def test_git_log_caps_an_explicit_count_at_the_ceiling() -> None:
+    from repowise.core.distill.filters import git_log
+
+    total = git_log.MAX_REQUESTED + 50
+    commit = "commit {:040x}\nAuthor: A <a@x>\nDate:   Thu Jun 5 10:12:01 2026 +0530\n\n    s\n"
+    raw = "\n".join(commit.format(i) for i in range(total))
+    distilled = filter_registry.get("git_log").distill(raw, command="git log -n 500")
+    lines = distilled.splitlines()
+    assert lines[0] == f"{total} commits (showing 100 most recent; subject and author)"
+    assert len(lines) == git_log.MAX_REQUESTED + 1
+
+
+def test_git_log_oneline_honours_an_explicit_count() -> None:
+    raw = "\n".join(f"{i:07x}a subject {i}" for i in range(60))
+    distilled = filter_registry.get("git_log").distill(raw, command="git log --oneline -n 50")
+    lines = distilled.splitlines()
+    assert lines[0] == "60 commits (showing 50 most recent; oneline)"
+    assert len(lines) == 51
 
 
 def test_git_diff_keeps_structure(load_fixture) -> None:
@@ -400,3 +439,8 @@ def test_all_core_filters_registered() -> None:
         "file_listing",
         "logs",
     }
+
+
+def test_git_log_zero_count_renders_only_the_header(load_fixture) -> None:
+    _raw, distilled = _distill(load_fixture, "git_log_full.txt", "git_log", "git log -n 0")
+    assert distilled == "40 commits (showing 0 most recent; subject and author)"

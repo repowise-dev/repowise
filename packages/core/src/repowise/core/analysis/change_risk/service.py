@@ -7,6 +7,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from ...owned_paths import OWNED_PATTERNS
+from ..git_cli import generated_worktree_paths
 from ..risk_semantics import change_risk_authority, change_risk_scales
 from .baseline import BaselineSample, baseline_samples_cached, densities_excluding, scores_excluding
 from .features import (
@@ -44,6 +46,10 @@ class ChangeRiskResult:
     riskignore_excludes: tuple[str, ...]
     request_excludes: tuple[str, ...]
     working_tree: bool = False  # scored the uncommitted change, not a commit
+    # The part of ``riskignore_excludes`` that is repowise's own output rather
+    # than the user's ``.riskignore``: not the change at all, so test selection
+    # drops it too, while the user's filters leave selection whole.
+    owned_excludes: tuple[str, ...] = ()
     # Bug-fix history of the ground this change stands on. ``density`` is the
     # churn-weighted mean fix pressure of the touched files, ``percentile`` ranks
     # it against the same measure over the repo's own recent commits, and
@@ -56,10 +62,22 @@ class ChangeRiskResult:
     # large repository). Distinguishes "no fixes here" from "we could not look",
     # which the surfaces would otherwise report identically.
     fix_history_available: bool = True
+    # The ref the fix history was read at (see ``history_ref``), so the
+    # line-scoped fix record can be read at the same point. ``None`` when the
+    # change came from file stats with no checkout behind it.
+    history_ref: str | None = None
 
 
 def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
-    """Load non-comment patterns from the repository-root ``.riskignore``."""
+    """Non-comment patterns of the repository-root ``.riskignore``, then repowise's own paths.
+
+    Repowise's output is not the user's change, so the paths it writes whole
+    (:data:`~repowise.core.owned_paths.OWNED_PATTERNS`) are left out of every
+    score, commits and ranges included, so a tracked, hand-edited Kiro steering
+    file or workspace config is not scored either. Only those present are
+    listed, so a repo that never ran repowise reports no exclusions it did not
+    ask for.
+    """
     proc = subprocess.run(
         ["git", "-C", repo_path, "rev-parse", "--show-toplevel"],
         capture_output=True,
@@ -70,13 +88,18 @@ def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
     )
     if proc.returncode != 0:
         return ()
-    ignore_file = Path(proc.stdout.strip()) / ".riskignore"
+    root = Path(proc.stdout.strip())
+    owned = tuple(p for p in OWNED_PATTERNS if (root / p).exists())
+    ignore_file = root / ".riskignore"
     if not ignore_file.is_file():
-        return ()
-    return tuple(
-        line
-        for line in ignore_file.read_text(encoding="utf-8").splitlines()
-        if line and not line.startswith("#")
+        return owned
+    return (
+        tuple(
+            line
+            for line in ignore_file.read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#")
+        )
+        + owned
     )
 
 
@@ -149,6 +172,7 @@ def score_live_change(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
     baseline: int = 200,
 ) -> ChangeRiskResult:
     """Score a commit or ``base..head`` range with optional live filters.
@@ -164,18 +188,29 @@ def score_live_change(
 
     extensions = normalize_extensions(extensions)
     from_riskignore = riskignore_patterns(repo_path)
-    effective_excludes = from_riskignore + exclude_patterns
+    # The baseline walks committed history, which the working-tree-only
+    # exclusions below say nothing about; keeping them out keeps its cache key.
+    baseline_excludes = from_riskignore + exclude_patterns
     target = revspec or "HEAD"
-    uncommitted = (
-        extract_worktree_features(
-            repo_path, extensions=extensions, exclude_patterns=effective_excludes
+    uncommitted = None
+    generated: tuple[str, ...] = ()
+    if revspec is None and working_tree_is_dirty(repo_path):
+        # A managed file (CLAUDE.md, .mcp.json) whose edit is only repowise's
+        # block or entry is repowise's output too, while the user's edits count.
+        generated = generated_worktree_paths(repo_path)
+        worktree_ignores = from_riskignore + generated
+        uncommitted = extract_worktree_features(
+            repo_path,
+            extensions=extensions,
+            exclude_patterns=worktree_ignores + exclude_patterns,
+            include_paths=include_paths,
         )
-        if revspec is None and working_tree_is_dirty(repo_path)
-        else None
-    )
     # A tree dirty only in paths the filters drop is not a change this command
     # can score, so fall through to HEAD rather than answer "empty change".
     working_tree = uncommitted is not None and uncommitted.nf > 0
+    if working_tree:
+        from_riskignore = worktree_ignores
+    effective_excludes = from_riskignore + exclude_patterns
     # Ref whose history the fix record is read from (see ``history_ref``).
     history = history_ref(repo_path, target, working_tree=working_tree)
     if working_tree:
@@ -189,6 +224,7 @@ def score_live_change(
             head,
             extensions=extensions,
             exclude_patterns=effective_excludes,
+            include_paths=include_paths,
             sep=sep,
         )
         # The baseline shares the fix history's anchor: the range's merge-base.
@@ -196,7 +232,11 @@ def score_live_change(
         excluded_ref = ""
     else:
         features = extract_commit_features(
-            repo_path, target, extensions=extensions, exclude_patterns=effective_excludes
+            repo_path,
+            target,
+            extensions=extensions,
+            exclude_patterns=effective_excludes,
+            include_paths=include_paths,
         )
         anchor, excluded_ref = _commit_anchor(repo_path, target)
 
@@ -212,10 +252,11 @@ def score_live_change(
             anchor,
             baseline,
             extensions,
-            exclude_patterns=effective_excludes,
+            exclude_patterns=baseline_excludes,
+            include_paths=include_paths,
         )
 
-    return assess_change(
+    result = assess_change(
         features,
         fix_pressure=pressure,
         baseline_scores=scores_excluding(samples, excluded_ref),
@@ -224,6 +265,9 @@ def score_live_change(
         riskignore_excludes=from_riskignore,
         request_excludes=exclude_patterns,
     )
+    owned = tuple(p for p in from_riskignore if p in OWNED_PATTERNS)
+    owned += generated if working_tree else ()
+    return replace(result, history_ref=history, owned_excludes=owned)
 
 
 def assess_change(

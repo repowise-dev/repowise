@@ -32,6 +32,7 @@ from repowise.core.pipeline.progress import (
     emit_warning,
 )
 from repowise.core.registry import HookProgressCallback
+from repowise.core.registry.plugins import load_plugins
 
 from .phase_timing import timed
 from .phases._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
@@ -282,6 +283,8 @@ async def run_pipeline(
 
     # Wrap the incoming progress callback so registered pipeline hooks fire
     # around each phase transition. Zero-op when no hooks are registered.
+    # Plugins load first so the hooks they register are among them.
+    load_plugins()
     progress = HookProgressCallback(progress)
 
     # Optional crash-resume checkpointing. When a JobStore is supplied, a

@@ -23,12 +23,14 @@ import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.secret_allowlist import secret_path_allowlist
+from repowise.core.code_origin import code_origin
 from repowise.core.support_paths import DOC_EXTENSIONS
 from repowise.core.test_paths import is_test_related_path
 
@@ -41,30 +43,61 @@ logger = logging.getLogger(__name__)
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
-SECURITY_SCANNER_VERSION = 2
+SECURITY_SCANNER_VERSION = 3
 
-# detect-secrets allows a marker on the finding's line or the line above.
-_ALLOWLIST_SAME_RE = re.compile(r"(?:#|//|/\*)\s*pragma:\s*allowlist\s+secret\b")
+# The inline markers other secret scanners honour, in a comment on the
+# finding's line: detect-secrets, gitleaks, TruffleHog, Bandit and gosec
+# ``nosec``, and Ruff's hard-coded-password codes. detect-secrets also has a
+# marker for the line below.
+_ALLOWLIST_SAME_RE = re.compile(
+    r"(?:#|//|/\*)[ \t]*(?:pragma:[ \t]*allowlist[ \t]+secret|gitleaks:allow|trufflehog:ignore"
+    r"|nosec|noqa:[ \t\w,]*\bS10[5-7])\b"
+)
 _ALLOWLIST_NEXT_RE = re.compile(
-    r"(?:#|//|/\*)\s*pragma:\s*allowlist\s+nextline\s+secret\b"
+    r"(?:#|//|/\*)[ \t]*pragma:[ \t]*allowlist[ \t]+nextline[ \t]+secret\b"
+)
+_ALLOWLIST_TOKENS = ("allowlist", "gitleaks:allow", "trufflehog:ignore", "nosec", "noqa:")
+
+
+def _allowlisted_lines(file_path: str, source: str) -> set[int]:
+    """Line numbers an allow marker in a comment (not a string) covers.
+
+    Prose has no comments to set apart, so a marker anywhere on its line counts.
+    """
+    if not any(token in source for token in _ALLOWLIST_TOKENS):
+        return set()
+    uncommented = (
+        None
+        if file_path.lower().endswith(_PROSE_EXTENSIONS)
+        else mask_comments_and_strings(source, strings=False, **mask_dialect(file_path))
+    )
+    allowed: set[int] = set()
+    for pattern, below in ((_ALLOWLIST_SAME_RE, 0), (_ALLOWLIST_NEXT_RE, 1)):
+        for m in pattern.finditer(source):
+            if uncommented is None or uncommented[m.start() : m.end()] != m.group():
+                allowed.add(source.count("\n", 0, m.start()) + 1 + below)
+    return allowed
+
+
+IGNORE_TOKEN = "repowise-security-ignore"
+_IGNORE_RE = re.compile(
+    rf"{IGNORE_TOKEN}(?![\w-])"
+    r"(?:[ \t]*:[ \t]*([\w:-]+(?:[ \t]*,[ \t]*[\w:-]+)*))?"
+    # A colon no kind list follows is a malformed scope, which silences nothing.
+    r"(?P<stray>[ \t]*:)?"
 )
 
 
-def _detect_secrets_allowlisted(
-    lines: list[str], uncommented: list[str], lineno: int
-) -> bool:
-    """Whether a pragma in a comment (not a string) allowlists this line."""
-
-    def marked(index: int, pattern: re.Pattern[str]) -> bool:
-        return any(
-            uncommented[index][m.start() : m.end()] != m.group()
-            for m in pattern.finditer(lines[index])
-        )
-
-    return 0 < lineno <= len(lines) and (
-        marked(lineno - 1, _ALLOWLIST_SAME_RE)
-        or (lineno > 1 and marked(lineno - 2, _ALLOWLIST_NEXT_RE))
-    )
+def marker_silences(line: str, kind: str) -> bool:
+    """Whether a marker on *line* silences *kind*: the bare token all kinds, ``: a, b`` those."""
+    if IGNORE_TOKEN not in line:
+        return False
+    match = _IGNORE_RE.search(line)
+    if match is None or match.group("stray"):
+        return False
+    if not match.group(1):
+        return True
+    return kind in {k.strip() for k in match.group(1).split(",")}
 
 
 _CREDENTIAL_EXACT_PLACEHOLDERS: frozenset[str] = frozenset({"password", "changeit"})
@@ -82,6 +115,7 @@ _CREDENTIAL_SUBSTRING_PLACEHOLDERS: tuple[str, ...] = (
     "...",
     "\u2026",  # a typographic ellipsis
     "fixture",
+    "redacted",
 )
 
 # Broader than ``is_test_related_path`` on purpose. That one asks whether a file
@@ -129,6 +163,28 @@ def _is_low_severity_path(file_path: str) -> bool:
     return any(p in _LOW_SEVERITY_PATH_TOKENS for p in parts) or is_test_related_path(posix_path)
 
 
+# Code that runs at build or release time, or only in docs: a sink there is not
+# a shipped one.
+_NON_SHIPPING_ORIGINS = frozenset({"tooling", "docs_example"})
+# A bundler's or generator's output, or a copied library: nobody here wrote its
+# calls, so only a secret it carries is news.
+_MACHINE_ORIGINS = frozenset({"generated", "vendored"})
+_DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
+
+
+def _holds_no_written_code(file_path: str, origin: str) -> bool:
+    """Whether only secret kinds apply: machine output, or a TS declaration file, which never runs."""
+    return origin in _MACHINE_ORIGINS or file_path.lower().endswith(_DECLARATION_SUFFIXES)
+
+
+def _is_low_for_path(kind: str, is_low_sev_file: bool, origin: str) -> bool:
+    """Test and fixture material never carries a shipped sink, whatever the kind.
+
+    Nor do scripts, tools or docs examples, though a secret there still leaks.
+    """
+    return is_low_sev_file or (origin in _NON_SHIPPING_ORIGINS and kind not in SECRET_KINDS)
+
+
 # ---------------------------------------------------------------------------
 # Pattern registry: (compiled_pattern, kind_label, severity)
 # ---------------------------------------------------------------------------
@@ -156,7 +212,9 @@ _CALL_KINDS = frozenset(kind for _, kind, _ in _CALL_PATTERNS)
 # The dangerous call in JavaScript comes from ``child_process``, so only a call
 # through a name bound to that module counts: a namespace (``cp.exec(``), a named
 # import (``exec(`` after ``import { exec } from "child_process"``) or the
-# ``require`` result itself. A file's own function named ``exec``, or a regex's
+# ``require`` result itself. Only ``exec`` and ``execSync`` run a shell;
+# ``execFile`` passes its arguments as argv, like a Python ``subprocess.run``
+# without ``shell=True``, which does not fire either. A file's own function named ``exec``, or a regex's
 # ``.exec`` next to an unrelated ``spawn`` import, is not a shell. ``eval`` needs
 # no such gate: it is a genuine global there.
 _CP_MODULE = r"""['"](?:node:)?child_process['"]"""
@@ -170,9 +228,9 @@ _CP_NAMED = re.compile(
     rf"|(?:const|let|var)\s*\{{([^}}]*)\}}\s*=\s*require\(\s*{_CP_MODULE}\s*\)"
 )
 _CP_REQUIRE_CALL = re.compile(
-    rf"require\(\s*{_CP_MODULE}\s*\)\s*\.\s*exec(?:File)?(?:Sync)?\s*\("
+    rf"require\(\s*{_CP_MODULE}\s*\)\s*\.\s*exec(?:Sync)?\s*\("
 )
-_EXEC_EXPORT = re.compile(r"exec(?:File)?(?:Sync)?")
+_EXEC_EXPORT = re.compile(r"exec(?:Sync)?")
 
 
 def _child_process_exec_calls(source: str, masked: str) -> list[int]:
@@ -193,7 +251,7 @@ def _child_process_exec_calls(source: str, masked: str) -> list[int]:
     offsets = [m.start() for m in _CP_REQUIRE_CALL.finditer(source) if not masked[m.start()].isspace()]
     names = [re.escape(n) for n in namespaces]
     if names:
-        receiver = rf"(?<![\w$.])(?:{'|'.join(names)})\s*\.\s*exec(?:File)?(?:Sync)?\s*\("
+        receiver = rf"(?<![\w$.])(?:{'|'.join(names)})\s*\.\s*exec(?:Sync)?\s*\("
         offsets += [m.start() for m in re.finditer(receiver, masked)]
     if functions:
         bare = rf"(?<![\w$.])(?:{'|'.join(map(re.escape, functions))})\s*\("
@@ -202,7 +260,9 @@ def _child_process_exec_calls(source: str, masked: str) -> list[int]:
 
 _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     *_CALL_PATTERNS,
-    (re.compile(r"pickle\.loads"), "pickle_loads", "high"),
+    # Not ``pickle.loads(pickle.dumps(x))``: a round trip of the program's own
+    # object, which is how a copy or a picklability test is written.
+    (re.compile(r"pickle\.loads(?!\s*\(\s*pickle\.dumps\s*\()"), "pickle_loads", "high"),
     (re.compile(r"subprocess\..*shell\s*=\s*True"), "subprocess_shell_true", "high"),
     (re.compile(r"os\.system"), "os_system", "high"),
     # Case-insensitive: a credential pinned in source is usually written as a
@@ -234,7 +294,9 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "github_token",
         "high",
     ),
-    (re.compile(r"(?i:(xox[baprs]-[0-9a-zA-Z-]{10,72}))"), "slack_token", "high"),
+    # Slack writes the prefix in lowercase, at a token's start: ``xOxP-`` inside
+    # a document id is not one.
+    (re.compile(r"(?<![A-Za-z0-9])(xox[baprs]-[0-9a-zA-Z-]{10,72})"), "slack_token", "high"),
     # Bounded by lookarounds, not ``\b``: a key can end in ``-``, and a base64 run
     # (a lockfile ``sha512-`` integrity hash) must not yield one from its middle.
     (
@@ -292,7 +354,27 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
     (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
-    (re.compile(r"\bmd5\b|\bsha1\b"), "weak_hash", "low"),
+    # A weak algorithm put to use, not the word: a call (``md5(``, ``hashlib.sha1(``,
+    # ``DigestUtils.md5Hex(``, ``MD5_Init(``), a type or module function
+    # (``MD5.Create()``, ``md5.Sum(``, ``Sha1::new()``, ``Digest::SHA1``), ``hashlib.md5``
+    # handed over as a digest, or the algorithm named to a hashing call
+    # (``createHash("md5")``, ``getInstance("SHA-1")``). A ``sha1`` variable
+    # holding a commit id, or the word in a comment, is neither.
+    (
+        re.compile(
+            r"(?<![\w$])(?i:md5|sha1)(?i:_?(?:hex|file|hash|digest|init|update|final))?\s*\("
+            r"|(?<![\w$])(?i:md5|sha1)\s*(?:\.|::)\s*"
+            r"(?:New|Sum|Create|new|hexdigest|digest|compute)\b"
+            r"|\b(?:MD5|SHA1)(?:CryptoServiceProvider|Managed)\b"
+            r"|\bDigest::(?:MD5|SHA1)\b"
+            r"|\bhashlib\s*\.\s*(?:md5|sha1)\b"
+            r"|\b(?:new|createHash|createHmac|getInstance|hash|hash_hmac|hash_file|digest|Create)"
+            r"\s*\(\s*['\"](?i:md5|sha-?1)['\"]"
+            r"|\bdigestmod\s*=\s*['\"](?i:md5|sha1)['\"]"
+        ),
+        "weak_hash",
+        "low",
+    ),
     # -- JS/TS patterns (#1935 Tier 1) -------------------------------------
     # Measured on the same 17-repo, 1109-file corpus as the exec_call/secret
     # fixes in #1947. Three of these five needed tightening before they were
@@ -311,8 +393,13 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # constant (a stylesheet string assigned to a module-level name), which
     # this test cannot distinguish from a genuinely dynamic value without
     # dataflow, so the pattern is a places-to-read signal rather than a
-    # confirmed sink.
-    (re.compile(r"__html\s*:\s*(?=[A-Za-z_$(])"), "unsafe_inner_html", "med"),
+    # confirmed sink. A type annotation (``__html: string``) is dropped by
+    # ``_is_html_type_annotation``, which needs the syntax around it.
+    (
+        re.compile(r"__html\s*:\s*(?=[A-Za-z_$(])"),
+        "unsafe_inner_html",
+        "med",
+    ),
     # Analogue of ``fstring_sql`` for a JS/TS template literal. The bare verb
     # `SELECT` or `UPDATE` is an ordinary English word and fires on prose
     # (`` `Order update failed: ${status}` ``) and even on class names
@@ -380,8 +467,10 @@ _SPANNING_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     ),
 ]
 
-# Symbol names that are informational security hotspots
-_SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE)
+# Symbol names that are informational security hotspots. Not ``session`` or
+# ``token``: a symbol named only that is a database session, a pytest fixture or
+# a lexer token far more often than auth code.
+_SYMBOL_KEYWORDS = re.compile(r"\b(auth|password|jwt|crypto)\b", re.IGNORECASE)
 
 # Kinds that name a dangerous call. They are matched against source with
 # comments and string literals blanked, so a docstring, a comment or a regex
@@ -396,6 +485,207 @@ _MASKED_KINDS = frozenset(
         "reject_unauthorized_false",
     }
 )
+
+# JavaScript sinks. Python has no JSX, template literals, ``new Function`` or
+# Node TLS options, and no bundler reads a ``.py`` file into a client, so a
+# Python file holding one of these is quoting it, most often as a test fixture.
+_JS_ONLY_KINDS = frozenset(
+    {
+        "unsafe_inner_html",
+        "template_literal_sql",
+        "new_function_call",
+        "reject_unauthorized_false",
+        "public_env_secret",
+    }
+)
+
+# ``verify=False`` turns TLS off only when an HTTP client receives it, so the
+# file must import an HTTP client library, and a call through a plain name must
+# go through that import or a value built from it (``s = requests.Session()``).
+# Any other function is free to name a keyword ``verify``. Ceiling: a project's
+# own wrapper that forwards ``verify``, imported from another module, is not seen.
+_HTTP_LIBS = frozenset(
+    {"requests", "httpx", "aiohttp", "urllib3", "boto3", "botocore", "aiobotocore", "aioboto3"}
+)
+_HTTP_CALLS = frozenset(
+    {
+        "get",
+        "post",
+        "put",
+        "patch",
+        "delete",
+        "head",
+        "options",
+        "request",
+        "send",
+        "stream",
+        "urlopen",
+        "Client",
+        "AsyncClient",
+        "Session",
+        "HTTPTransport",
+        "AsyncHTTPTransport",
+        "client",
+        "resource",
+    }
+)
+
+# ``fstring_sql`` asks for a query (``SELECT`` with its ``FROM``) that
+# interpolates a value where a bound parameter belongs: after a comparison or
+# ``LIKE``. A table, a column, a fragment or a placeholder list cannot be bound,
+# so building those into the text is the only way to write them, and a value
+# interpolated there has no parameter fix to offer. Ceiling: ``IN ({ids})`` of
+# joined values, and an identifier taken from a request, are not seen.
+_SQL_FROM = re.compile(r"\bFROM\b")
+_SQL_VALUE = re.compile(r"""(?:[=<>]|\b(?i:LIKE|ILIKE))\s*['"%]*\{(?!\{)""")
+# A string literal continuing the one before it (implicit concatenation).
+_STRING_CONTINUATION = re.compile(r"""\A\s*[rRbBfFuU]{0,2}['"]""")
+
+
+def _interpolates_sql_value(line: str, start: int, lines: list[str], lineno: int) -> bool:
+    """Whether the f-string query opening at *start* on *line* puts a value in its text.
+
+    Only the literal is read, and the one opening the next line when the query
+    runs on into it.
+    """
+    triple = line[start + 1 : start + 4]
+    if triple in ('"""', "'''"):
+        # A triple-quoted query runs to its closing delimiter, often lines on.
+        text = "\n".join(lines[lineno - 1 : lineno + 29])
+        end = text.find(triple, start + 4)
+        query = text[text.find("SELECT", start) : end if end != -1 else len(text)]
+        return bool(_SQL_FROM.search(query) and _SQL_VALUE.search(query))
+    body = start + 2  # past ``f`` and the opening quote
+    query = line[line.find("SELECT", start) : _string_end(line, body)]
+    following = lines[lineno] if lineno < len(lines) else ""
+    if (cont := _STRING_CONTINUATION.match(following)) is not None:
+        query += "\n" + following[cont.end() : _string_end(following, cont.end())]
+    return bool(_SQL_FROM.search(query) and _SQL_VALUE.search(query))
+
+
+def _dotted(node: ast.AST) -> str:
+    """``a.b.c`` for a name or attribute chain, else ``""``."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and (base := _dotted(node.value)):
+        return f"{base}.{node.attr}"
+    return ""
+
+
+def _root(node: ast.AST) -> ast.AST:
+    """The expression a chain of calls and attributes starts from."""
+    while isinstance(node, (ast.Call, ast.Attribute, ast.Await)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return node
+
+
+def _http_bindings(tree: ast.AST) -> set[str]:
+    """Names and ``self.x`` targets bound to an HTTP client library or a value built from it."""
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in _HTTP_LIBS:
+                    bound.add(alias.asname or alias.name.split(".")[0])
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and (node.module or "").split(".")[0] in _HTTP_LIBS
+        ):
+            bound.update(alias.asname or alias.name for alias in node.names)
+    if not bound:
+        return bound
+    # Twice, so a value built from a bound value (``c = s.client()``) is bound too.
+    for _ in range(2):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                pairs = [(t, node.value) for t in node.targets]
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                pairs = [(node.target, node.value)]
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                pairs = [(i.optional_vars, i.context_expr) for i in node.items if i.optional_vars]
+            else:
+                continue
+            for target, value in pairs:
+                if _dotted(_root(value)) in bound and (name := _dotted(target)):
+                    bound.add(name)
+    return bound
+
+
+def _tls_verify_off_lines(source: str) -> set[int] | None:
+    """Lines where ``verify=False`` reaches an HTTP client; None when *source* does not parse."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    bound = _http_bindings(tree)
+    if not bound:
+        return set()
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                name, receiver = func.attr, _root(func.value)
+                # A plain name must be bound; ``self.x`` and call results are
+                # taken on trust once the file uses an HTTP client library.
+                reaches = (
+                    _dotted(receiver) in bound
+                    or _dotted(func.value) in bound
+                    or not isinstance(receiver, ast.Name)
+                    or receiver.id in ("self", "cls")
+                )
+            elif isinstance(func, ast.Name):
+                name, reaches = func.id, func.id in bound
+            else:
+                continue
+            if name in _HTTP_CALLS and reaches:
+                found.update(
+                    kw.lineno
+                    for kw in node.keywords
+                    if kw.arg == "verify"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is False
+                )
+        elif (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value is False
+        ):
+            # ``session.verify = False``, or a ``verify = False`` setting handed
+            # to a client later.
+            found.update(
+                target.lineno
+                for target in node.targets
+                if (isinstance(target, ast.Attribute) and target.attr == "verify")
+                or (isinstance(target, ast.Name) and target.id == "verify")
+            )
+    return found
+
+
+# Python's own declaration that a digest is a checksum or a cache key, not a
+# security control (``hashlib.sha1(data, usedforsecurity=False)``).
+_NOT_FOR_SECURITY = re.compile(r"\busedforsecurity\s*=\s*False\b")
+
+
+def _call_text(masked: list[str], lineno: int, start: int, limit: int = 600) -> str:
+    """The code from *start* on line *lineno* through the first call's closing paren.
+
+    Read from *masked* (strings and comments blanked, offsets kept), so a ``)``
+    or the keyword inside a string neither ends the call nor counts as code.
+    Bounded by *limit* characters.
+    """
+    code = "\n".join(masked[lineno - 1 : lineno + 9])[start : start + limit]
+    depth = 0
+    for i, char in enumerate(code):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth <= 0:
+                return code[: i + 1]
+    return code
+
 
 # Prose is documentation, not executable code. Only secret kinds scan it,
 # because a key pasted into a README is still a leak.
@@ -671,13 +961,53 @@ _STRING_STOP = {
     marker: re.compile(re.escape(marker) + r"|\\") for marker in ("'", '"', "'''", '"""')
 }
 _NOT_NEWLINE = re.compile(r"[^\n]")
+_BLOCK_STOP = re.compile(r"/\*|\*/")
+_RAW_BACKTICK_STOP = re.compile("`")
+# Languages whose block comments nest, and Go, whose backtick string is raw: a
+# backslash there is a character, not an escape.
+_NESTED_COMMENT_SUFFIXES = (".kt", ".kts", ".scala", ".sc", ".swift", ".rs", ".dart")
+_RAW_BACKTICK_SUFFIXES = (".go",)
 
 
-def _mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
+def mask_dialect(file_path: str) -> dict[str, bool]:
+    """The :func:`mask_comments_and_strings` options *file_path*'s language needs."""
+    lowered = file_path.lower()
+    return {
+        "nested_comments": lowered.endswith(_NESTED_COMMENT_SUFFIXES),
+        "raw_backticks": lowered.endswith(_RAW_BACKTICK_SUFFIXES),
+    }
+
+
+def _block_comment_end(source: str, start: int, nested: bool) -> int:
+    """Offset just past the ``*/`` closing the block comment opened before *start*."""
+    if not nested:
+        stop = source.find("*/", start)
+        return len(source) if stop == -1 else stop + 2
+    stop, depth = start, 1
+    while depth and (m := _BLOCK_STOP.search(source, stop)):
+        depth += 1 if m.group() == "/*" else -1
+        stop = m.end()
+    return len(source) if depth else stop
+
+
+def _template_stop(raw_backticks: bool) -> re.Pattern[str]:
+    return _RAW_BACKTICK_STOP if raw_backticks else _TEMPLATE_STOP
+
+
+def mask_comments_and_strings(
+    source: str,
+    *,
+    strings: bool = True,
+    nested_comments: bool = False,
+    raw_backticks: bool = False,
+    hash_comments: bool = True,
+) -> str:
     """Blank common comments (and strings, unless *strings* is false), keeping offsets.
 
     Strings are still tracked when they are kept, so a ``#`` or ``//`` inside
-    one does not open a comment. Newlines are never blanked.
+    one does not open a comment. Newlines are never blanked. *nested_comments*
+    and *raw_backticks* come from :func:`mask_dialect`; *hash_comments* false
+    keeps a ``#`` line, which is code in C, Rust, C# or Swift (``#include``).
     """
     out: list[str] = []
     copied = 0
@@ -703,15 +1033,16 @@ def _mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
             state = "code"
             continue
         if state == "block_comment":
-            stop = source.find("*/", i)
-            stop = size if stop == -1 else stop + 2
+            stop = _block_comment_end(source, i, nested_comments)
             blank(i, stop)
             i = stop
             state = "code"
             continue
         if state in {"string", "template"}:
             pattern = (
-                _TEMPLATE_STOP if state == "template" else _STRING_STOP[quote * (3 if triple else 1)]
+                _STRING_STOP[quote * (3 if triple else 1)]
+                if state == "string"
+                else _template_stop(raw_backticks)
             )
             match = pattern.search(source, i)
             # A backslash escapes the character after it, whatever it is.
@@ -739,7 +1070,7 @@ def _mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
             i += 1
             if template_depth == 0:
                 state = "template"
-        elif char == "#" or source.startswith("//", i):
+        elif (hash_comments and char == "#") or source.startswith("//", i):
             width = 1 if char == "#" else 2
             blank(i, i + width)
             i += width
@@ -856,6 +1187,41 @@ def _is_missing_table_error(exc: Exception) -> bool:
     return "no such table" in message or "does not exist" in message
 
 
+_TS_TYPE_VALUE = re.compile(
+    r"(?:string|number|boolean|any|unknown|never|undefined|null|TrustedHTML)\b"
+    r"(?:\s*\|\s*[\w$.]+)*\s*"
+)
+# What opens an object type on the line: an annotation ``:``, a generic ``<``,
+# ``as``, ``interface X`` or ``type X =``. A ternary's ``:`` reads the same; the
+# rare ``c ? a : {__html: string}`` is the accepted miss.
+_TYPE_OPENER = re.compile(
+    r"(?:[:<]|\bas|\binterface\s+[\w$]+[^{=]*|\btype\s+[\w$]+[^=]*=)\s*$"
+)
+
+
+def _is_html_type_annotation(line: str, match: re.Match) -> bool:
+    """Whether ``__html: <type keyword>`` sits in a type, not an object value.
+
+    A type keyword counts only in a type position: a member closed by ``;``, or
+    an object type opened by ``_TYPE_OPENER``. ``{{__html: string}}`` and
+    ``= {__html: string}`` read a variable named ``string`` and stay findings.
+    """
+    keyword = _TS_TYPE_VALUE.match(line, match.end())
+    if keyword is None:
+        return False
+    if line.startswith(";", keyword.end()):
+        return True
+    depth = 0
+    for i in range(match.start() - 1, -1, -1):
+        if line[i] == "}":
+            depth += 1
+        elif line[i] == "{":
+            if depth == 0:
+                return bool(_TYPE_OPENER.search(line[:i]))
+            depth -= 1
+    return False
+
+
 def _match_starting_in(pattern: re.Pattern, line: str, kept: str) -> re.Match | None:
     """First match of *pattern* on *line* whose first character survived masking in *kept*."""
     for match in pattern.finditer(line):
@@ -870,6 +1236,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     findings: list[dict] = []
     lines = source_lines(source)
     is_prose = file_path.lower().endswith(_PROSE_EXTENSIONS)
+    origin = code_origin(file_path, source)
+    secrets_only = is_prose or _holds_no_written_code(file_path, origin)
 
     # Masking is the costly step and most files match no pattern at all, so
     # each form is built once, on first use. Prose has no comments or strings
@@ -878,7 +1246,13 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
 
     def mask(strings: bool = True) -> tuple[str, list[str]]:
         if strings not in masks:
-            text = source if is_prose else _mask_comments_and_strings(source, strings=strings)
+            text = (
+                source
+                if is_prose
+                else mask_comments_and_strings(
+                    source, strings=strings, **mask_dialect(file_path)
+                )
+            )
             masks[strings] = (text, lines if is_prose else source_lines(text))
         return masks[strings]
 
@@ -886,13 +1260,15 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         masked_lines = mask(strings)[1]
         return masked_lines[lineno - 1] if lineno <= len(masked_lines) else line
 
-    if not is_prose:
+    if not secrets_only:
         findings.extend(_call_findings(file_path, source, lambda: mask()[0]))
 
     # Line-by-line pattern scan. A line's edges and the newline around it read
     # alike to every lookaround in ``_ANY_PATTERN``, so a file the whole-source
     # search rejects has no matching line, and most files are such.
     is_low_sev_file = _is_low_severity_path(file_path)
+    is_python = file_path.lower().endswith((".py", ".pyi"))
+    tls_lines: list[set[int] | None] = []
     scan_lines = lines if _ANY_PATTERN.search(source) else []
     for lineno, line in enumerate(scan_lines, start=1):
         if not _ANY_PATTERN.search(line):
@@ -902,10 +1278,30 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         for pattern, kind, severity in _PATTERNS:
             if kind in _CALL_KINDS:
                 continue
-            if is_prose and kind not in SECRET_KINDS:
+            if secrets_only and kind not in SECRET_KINDS:
+                continue
+            if is_python and kind in _JS_ONLY_KINDS:
                 continue
             if kind in _MASKED_KINDS:
                 match = pattern.search(masked_line(lineno, line))
+                if match and kind == "tls_verify_false" and is_python:
+                    if not tls_lines:
+                        tls_lines.append(_tls_verify_off_lines(source))
+                    if tls_lines[0] is not None and lineno not in tls_lines[0]:
+                        match = None
+            elif kind == "fstring_sql":
+                # The ``f`` must open a literal in code, not sit inside another
+                # string, and the query must interpolate a value.
+                match = _match_starting_in(pattern, line, masked_line(lineno, line))
+                if match and not _interpolates_sql_value(line, match.start(), lines, lineno):
+                    match = None
+            elif kind == "weak_hash":
+                # Written in code, and not declared a non-security use.
+                match = _match_starting_in(pattern, line, masked_line(lineno, line))
+                if match and _NOT_FOR_SECURITY.search(
+                    _call_text(mask()[1], lineno, match.start())
+                ):
+                    match = None
             elif kind in _KEYWORD_KINDS:
                 # ``password = "..."`` in a comment or docstring is an example.
                 match = _match_starting_in(pattern, line, masked_line(lineno, line))
@@ -917,6 +1313,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
             else:
                 # Vendor key shapes are real wherever they sit, comments included.
                 match = pattern.search(line)
+                if match and kind == "unsafe_inner_html" and _is_html_type_annotation(line, match):
+                    match = None
             if match:
                 value_span = _value_span(kind, match, line) if match.groups() else (0, 0)
                 value = line[slice(*value_span)] if match.groups() else ""
@@ -947,7 +1345,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     # on the opening line, unless the per-line pass already did.
     pem_body_lines: set[int] = set()
     for pattern, kind, severity in _SPANNING_PATTERNS:
-        if is_prose and kind not in SECRET_KINDS:
+        if secrets_only and kind not in SECRET_KINDS:
             continue
         if kind in _MASKED_KINDS:
             # The masked pattern opens with this literal, which masking keeps
@@ -1006,13 +1404,13 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         if finding["line"] in pem_body_lines:
             finding["snippet"] = _redaction(lines[finding["line"] - 1].strip())
 
-    # Test and fixture material never carries a shipped sink, whatever the kind.
-    if is_low_sev_file:
-        for finding in findings:
+    for finding in findings:
+        if _is_low_for_path(finding["kind"], is_low_sev_file, origin):
             finding["severity"] = "low"
 
-    # Symbol-name scan (informational / low)
-    for sym in symbols:
+    # Symbol-name scan (informational / low). Machine output and declarations
+    # hold no written code, so their names are not ours to flag.
+    for sym in () if secrets_only else symbols:
         name = getattr(sym, "name", "") or getattr(sym, "qualified_name", "") or ""
         if name and _SYMBOL_KEYWORDS.search(name):
             findings.append(
@@ -1024,16 +1422,19 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 }
             )
 
-    uncommented = (
-        source_lines(_mask_comments_and_strings(source, strings=False))
-        if "pragma: allowlist" in source
-        else lines
-    )
-    return [
-        f for f in findings
-        if f["kind"] not in SECRET_KINDS
-        or not _detect_secrets_allowlisted(lines, uncommented, f["line"])
-    ]
+    allowed = _allowlisted_lines(file_path, source)
+    return [f for f in findings if f["kind"] not in SECRET_KINDS or f["line"] not in allowed]
+
+
+def _repo_root(file_info: Any) -> str | None:
+    """The directory *file_info*'s repo-relative path is taken from, or ``None``."""
+    rel = PurePosixPath(file_info.path)
+    absolute = Path(getattr(file_info, "abs_path", "") or "")
+    if not (rel.parts and absolute.is_absolute()):
+        return None
+    if absolute.parts[-len(rel.parts) :] != rel.parts:
+        return None
+    return str(absolute.parents[len(rel.parts) - 1])
 
 
 def scan_source_map(
@@ -1042,12 +1443,17 @@ def scan_source_map(
 ) -> tuple[dict[str, list[dict]], list[str]]:
     """Return ``(findings_by_file, scanned_paths)`` for ``replace_findings``.
 
-    A path missing from *source_map* still gets the symbol-name scan.
+    A path missing from *source_map* still gets the symbol-name scan. Secret
+    findings drop in a path the repository's own secret-scanner config
+    allowlists; the root it is read from is the one the parsed files sit under.
     """
     findings_by_file: dict[str, list[dict]] = {}
     scanned_paths: list[str] = []
+    allowlisted: Callable[[str], bool] | None = None
     for pf in parsed_files:
         path = pf.file_info.path
+        if allowlisted is None:
+            allowlisted = secret_path_allowlist(_repo_root(pf.file_info))
         raw = source_map.get(path, b"")
         if isinstance(raw, (bytes, bytearray)):
             source_text = raw.decode("utf-8", errors="replace")
@@ -1055,6 +1461,17 @@ def scan_source_map(
             source_text = raw or ""
         scanned_paths.append(path)
         findings = scan_source(path, source_text, pf.symbols)
+        if findings and allowlisted(path):
+            findings = [f for f in findings if f["kind"] not in SECRET_KINDS]
+        if findings and IGNORE_TOKEN in source_text:
+            # The gate keeps a silenced finding to report it as suppressed; the
+            # stored scan is what the dashboard and agents read, so it drops it.
+            lines = source_lines(source_text)
+            findings = [
+                f
+                for f in findings
+                if not (0 < f["line"] <= len(lines) and marker_silences(lines[f["line"] - 1], f["kind"]))
+            ]
         if findings:
             findings_by_file[path] = findings
     return findings_by_file, scanned_paths

@@ -62,6 +62,8 @@
     "./wiki/wiki-mdx-preprocess": "./src/wiki/wiki-mdx-preprocess.ts",
     "./wiki/wiki-links-types": "./src/wiki/wiki-links-types.ts",
     "./wiki/*": "./src/wiki/*.tsx",
+    "./cards": "./src/cards/index.ts",
+    "./cards/*": "./src/cards/*.tsx",
     "./chat": "./src/chat/index.ts",
     "./chat/*": "./src/chat/*.tsx",
     "./dashboard/attention-href": "./src/dashboard/attention-href.ts",

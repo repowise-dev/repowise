@@ -236,9 +236,26 @@ def test_list_prints_one_test_per_line(repo) -> None:
     assert result.stdout == "tests/test_a.py\n"
 
 
-def test_an_index_that_disagrees_about_its_commit_runs_everything(repo) -> None:
+def test_stamps_one_commit_apart_select_from_the_older(repo) -> None:
+    # The database row says main; state.json says feat, one commit later.
     (repo / ".repowise" / "state.json").write_text(
         json.dumps({"last_sync_commit": _git(repo, "rev-parse", "feat")}), encoding="utf-8"
+    )
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tests/test_a.py\n"
+
+
+def test_an_index_whose_stamps_diverge_runs_everything(repo) -> None:
+    _git(repo, "switch", "-q", "--orphan", "other")
+    _write(repo, {"src/b.py": "B = 2\n"})
+    _git(repo, "add", "src/b.py")
+    _git(repo, "commit", "-qm", "other")
+    other = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "switch", "-qf", "feat")
+    # The row says main, and other shares no history with it: the index is in doubt.
+    (repo / ".repowise" / "state.json").write_text(
+        json.dumps({"last_sync_commit": other}), encoding="utf-8"
     )
     result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == ":all\n"
@@ -409,9 +426,9 @@ def test_a_test_the_indexer_found_walking_the_tree_runs_with_every_subset(repo) 
     # src/a.py changed: tests/test_b.py stays out, the tree walker comes in.
     assert result.stdout == "tests/test_a.py tests/test_lint.py\n"
     assert (
-        "1 test file(s) that list source files or run the project in a child process run with "
-        "every selection (e.g. tests/test_lint.py: it lists and reads files under a source "
-        "directory)." in _err(result)
+        "1 test file(s) that reach code outside their imports run with every selection "
+        "(e.g. tests/test_lint.py: it lists and reads files under a source directory)."
+        in _err(result)
     )
 
 
@@ -420,8 +437,8 @@ def test_an_index_that_never_checked_its_tests_runs_everything(repo) -> None:
     result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == ":all\n"
     assert (
-        "The index has not checked 1 test file(s) for walking the source tree or running "
-        "the project (e.g. tests/test_b.py); run `repowise update`." in _err(result)
+        "The index has not checked 1 test file(s) for reaching code outside their imports "
+        "(e.g. tests/test_b.py); run `repowise update`." in _err(result)
     )
 
 
@@ -433,7 +450,7 @@ def test_explain_names_the_changed_file_and_the_route(repo) -> None:
         "Selected: src/a.py changed (import-graph).",
         "Route: tests/test_a.py -> src/a.py",
         # tests/test_a.py imports src/a.py: one hop, a direct edge.
-        "Order: 1 of 1 (its calls, a fixture or a direct import reach a changed file; "
+        "Order: 1 of 1 (its calls or a direct import reach a changed file; "
         "1 hop(s)).",
     ]
     missed = _run(repo, "main...feat", "--explain", "./tests/test_b.py")
@@ -449,7 +466,7 @@ def test_explain_joins_the_json_report(repo) -> None:
         "lines": [
             "Selected: src/a.py changed (import-graph).",
             "Route: tests/test_a.py -> src/a.py",
-            "Order: 1 of 1 (its calls, a fixture or a direct import reach a changed file; "
+            "Order: 1 of 1 (its calls or a direct import reach a changed file; "
             "1 hop(s)).",
         ],
         "route": ["tests/test_a.py", "src/a.py"],
@@ -461,7 +478,7 @@ def test_explain_joins_the_json_report(repo) -> None:
             "hops": 1,
             "co_change": 0,
             "failed_last_run": False,
-            "reason": "its calls, a fixture or a direct import reach a changed file; 1 hop(s)",
+            "reason": "its calls or a direct import reach a changed file; 1 hop(s)",
         },
     }
     assert data["selected"]["why"] == {"tests/test_a.py": "src/a.py changed (import-graph)"}
@@ -545,7 +562,7 @@ def test_selected_tests_run_in_order_and_a_last_failure_breaks_a_tie(repo) -> No
     assert result.stdout == "tests/test_z.py tests/test_a.py\n"
     explained = _run(repo, "main...feat", "--explain", "tests/test_z.py")
     assert explained.stdout.splitlines()[-1] == (
-        "Order: 1 of 2 (its calls, a fixture or a direct import reach a changed file; "
+        "Order: 1 of 2 (its calls or a direct import reach a changed file; "
         "1 hop(s); failed in the last run)."
     )
 

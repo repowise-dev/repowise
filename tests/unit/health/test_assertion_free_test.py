@@ -169,6 +169,30 @@ def test_silent_when_the_test_asserts() -> None:
     assert _flagged("def test_ok():\n    assert 1 == 1\n") == []
 
 
+def test_silent_on_an_ava_test_that_asserts_on_the_handle() -> None:
+    _require("typescript")
+    source = """
+import test from 'ava';
+test('base url', async t => {
+  t.is(1, 1);
+  t.deepEqual([1], [1]);
+  await t.throwsAsync(() => f());
+});
+"""
+    assert _flagged(source, "test/base-url.ts", "typescript") == []
+
+
+def test_fires_on_an_ava_test_that_only_logs() -> None:
+    _require("typescript")
+    source = """
+import test from 'ava';
+test('logs only', t => {
+  t.log('nothing checked');
+});
+"""
+    assert _flagged(source, "test/logs.ts", "typescript") == ["test callback"]
+
+
 def test_silent_on_a_production_file() -> None:
     _require("python")
     assert _flagged("def test_bare():\n    do_thing()\n", "src/pkg/module.py", "python") == []

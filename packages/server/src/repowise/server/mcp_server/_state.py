@@ -18,6 +18,10 @@ _vector_store: Any = None
 _decision_store: Any = None
 _fts: Any = None
 _repo_path: str | None = None
+# Id of the row the served checkout's own store holds for it, when that store
+# holds exactly one (set by _lifespan). Only that row's live reads follow
+# ``_repo_path`` when its stored local_path differs; see _meta.served_root.
+_served_repo_id: str | None = None
 # When set, the server skips workspace auto-detection even if the path is
 # inside a workspace root. This backs the CLI's `--no-workspace` escape hatch.
 _force_single_repo: bool = False
@@ -72,3 +76,8 @@ _vector_store_errors: dict[str, str] = {}
 # each newer release is surfaced once per process rather than on every call.
 _release_check: Any = None
 _release_announced: str | None = None
+
+# Whether ``get_answer``'s ``no-llm-provider`` degraded path has already named
+# what a key or local model would add in this process. Same once-per-process
+# shape as ``_release_announced``: a fact the caller only needs the first time.
+_keyless_note_announced: bool = False

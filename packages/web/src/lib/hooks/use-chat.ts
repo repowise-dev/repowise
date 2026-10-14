@@ -9,6 +9,7 @@ import type {
   ChatUIToolCall as ChatToolCall,
   ChatUIMessage as ChatMessage,
 } from "@repowise-dev/types/chat";
+import { SHOW_VIEW_TOOL } from "@repowise-dev/types/views";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { toChatUiMessages } from "@/lib/chat/to-chat-ui-messages";
 
@@ -244,6 +245,9 @@ export function useChat(repoId: string) {
                 };
 
               case "tool_start":
+                // Views have no renderer yet; without a row here the
+                // matching tool_result and view events are no-ops too.
+                if (ev.tool_name === SHOW_VIEW_TOOL) return m;
                 return {
                   ...m,
                   toolCalls: [

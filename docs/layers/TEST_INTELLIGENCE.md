@@ -70,6 +70,13 @@ known direction: a call edge says control *can* reach a file, not that a run
 did. So it is safe as a floor ("something reaches this, do not call it
 untested") and unsafe as a quantity.
 
+Each index also keeps, for every function, the few test functions nearest it in
+the call graph. Refactoring plans quote them as runnable selectors in place of
+whole test files, and they are inferred like the rest of the graph map. A
+function with no resolved caller, or in a language whose tests cannot be told
+apart by name (such as Java's `@Test` or Rust's `#[test]`), is left unknown
+rather than called untested.
+
 Each ingest replaces the previous per-file and per-test rows. Ingest at the
 commit you intend to query so line numbers match. The repo-wide totals of the
 newest 50 ingests are kept as history and drawn as a trend on the Tests tab
@@ -200,6 +207,7 @@ REST patch-coverage route the editor reads.
 | `no_coverable_changes` | The report names the file, but no changed line is executable | No |
 | `not_in_report` | The report does not name the file (e.g. a new file no test loaded) | No; listed, never 0% |
 | `no_line_data` | The report names the file but gives no executable-line set | No |
+| `stale_file` | Stored coverage only: the file changed since the commit the coverage was measured at | No; listed, no figures |
 
 Exit `0` passes or had nothing to judge, `1` is below a gate, `2` means the
 check could not run (no usable report, unknown revision, shallow clone without
@@ -275,7 +283,7 @@ over the change's diff, so a measured map at either end of it matches by line:
     "covered": [...],
     "no_coverage_data": [...]
   },
-  "summary": "23 test(s) to run for this change; showing first 10; the rest can be skipped."
+  "summary": "23 test(s) to run for this change (9 of 412 test files); showing first 10; the rest can be skipped."
 }
 ```
 

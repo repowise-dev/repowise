@@ -30,6 +30,7 @@ def _create_test_app():
     from repowise.server.routers import (
         blast_radius,
         c4,
+        changes,
         code_health,
         costs,
         dead_code,
@@ -89,6 +90,7 @@ def _create_test_app():
     app.include_router(meta.router)
     app.include_router(webhooks.router)
     app.include_router(git.router)
+    app.include_router(changes.router)
     app.include_router(files.router)
     app.include_router(dead_code.router)
     app.include_router(doc_drift.router)

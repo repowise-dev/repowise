@@ -12,18 +12,21 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
-from ...support_paths import is_doc_or_config_path
+from ...support_paths import TEMPLATE_EXTENSIONS, is_doc_or_config_path
 from ...test_paths import is_test_related_path
-from ..finding_registry import excluded_types
+from ..finding_registry import excluded_types, gate_for, is_served, language_label
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
-from .analyzer import RevisionHealthAnalyzer, language_for, language_of
+from .analyzer import RevisionAnalysis, RevisionHealthAnalyzer, language_for, language_of
 from .attribution import FindingAttributor, changed_symbols_for
 from .identity import change_finding_id, finding_key, severity_rank
 from .matcher import FindingMatcher, MatchedFinding
 from .models import (
+    NO_CODE_GAP,
+    NOT_ANALYZABLE_DATA,
     NOT_CODE,
     AnalysisFingerprint,
     ChangeFinding,
@@ -46,6 +49,12 @@ MAX_CHANGED_FILES = 300
 #: Documentation and configuration languages. Anything else with no health
 #: dialect (HTML, schemas, shell) may carry logic, so it stays a gap.
 _NOT_CODE_LANGUAGES = frozenset({"json", "yaml", "toml", "markdown"})
+
+#: Tree-sitter query files: patterns no health detector reads. ``.scm`` is also
+#: Scheme source, so only the tree-sitter layout (a ``queries`` directory)
+#: counts; any other ``.scm`` stays a gap.
+_QUERY_SUFFIX = ".scm"
+_QUERY_DIR = "queries"
 
 #: Comparisons kept in the process cache.
 _CACHE_CAPACITY = 32
@@ -147,7 +156,8 @@ class ChangeHealthDeltaService:
         """Identity of a comparison: the two sides plus how they were analysed."""
         if pair.working_tree:
             # Content identity: HEAD alone does not describe an edited tree.
-            paths = sorted(p for p in pair.head_paths)
+            # Only the compared files: an excluded untracked blob is not read.
+            paths = sorted(c.head_path for c in _filter(pair.changes, request) if c.head_path)
             blobs = self.source.read_working_tree(paths)
             digest = hashlib.sha256()
             for path in paths:
@@ -163,8 +173,10 @@ class ChangeHealthDeltaService:
             str(HEALTH_ANALYZER_VERSION),
             self.rules_fingerprint,
             str(PERFORMANCE_MODEL_VERSION),
-            ",".join(request.extensions),
-            ",".join(request.exclude_patterns),
+            # repr, not a join: a comma is legal inside a pattern.
+            repr(tuple(request.extensions)),
+            repr(tuple(request.exclude_patterns)),
+            repr(tuple(request.include_paths)),
         )
         return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
@@ -215,19 +227,10 @@ class ChangeHealthDeltaService:
         basis = "both_sides_analyzed"
 
         if not eligible:
-            if not changes:
-                explanation = "This change touches no files."
-            elif all(r == NOT_CODE for r in skipped.values()):
-                explanation = (
-                    "Only documentation or configuration files changed; "
-                    "health analysis does not cover them."
-                )
-            else:
-                explanation = "No changed file is health-analyzable, so nothing was compared."
             delta = ChangeHealthDelta(
                 # Nothing was compared either way, so neither case is a clean bill.
                 status="unavailable",
-                explanation=explanation,
+                explanation=_nothing_compared(changes, skipped),
                 base=base_id,
                 head=head_id,
                 comparison_basis=basis,
@@ -258,8 +261,11 @@ class ChangeHealthDeltaService:
         )
         base_sources = self.source.read(pair.base_sha, base_paths)
 
+        rename = pair.rename_map()
         head_run = self.analyzer.analyze(head_sources, subject_paths=set(head_paths))
-        base_run = self.analyzer.analyze(base_sources, subject_paths=set(base_paths))
+        base_run = self.analyzer.analyze(
+            base_sources, subject_paths=set(base_paths), dependents=_on_base(head_run, rename)
+        )
 
         skipped.update(head_run.skipped)
         # A file whose BASE side failed has no baseline, so every finding at its
@@ -280,30 +286,21 @@ class ChangeHealthDeltaService:
             1 for r in skipped.values() if r.removeprefix("base_") in {"parse_failed", "unreadable"}
         )
 
-        rename = pair.rename_map()
-        matcher = FindingMatcher(rename)
+        matcher = FindingMatcher(rename, _hunks(eligible))
         # Both sides are restricted to the same comparable set, so an excluded
         # file cannot contribute a one-sided "introduced" or "resolved".
         # Advisory markers deduct nothing, so adding one is not a regression
         # and removing one is not a fix. Dropped from BOTH sides before
         # matching, so every counter derived from the match agrees. Types the
-        # finding-type registry withholds go the same way, for the same reason.
+        # finding-type registry withholds go the same way, for the same reason,
+        # as do findings on a language the registry gates for health findings.
         withheld = excluded_types()
         base_findings = [
             f
             for f in base_run.findings
-            if rename.get(f.file_path, f.file_path) in subject
-            and not is_advisory(f.biomarker_type)
-            and not _is_test_perf(f)
-            and f.biomarker_type not in withheld
+            if rename.get(f.file_path, f.file_path) in subject and _comparable(f, withheld)
         ]
-        head_findings = [
-            f
-            for f in head_run.findings_for(subject)
-            if not is_advisory(f.biomarker_type)
-            and not _is_test_perf(f)
-            and f.biomarker_type not in withheld
-        ]
+        head_findings = [f for f in head_run.findings_for(subject) if _comparable(f, withheld)]
         match = matcher.match(base_findings, head_findings)
 
         by_file: dict[str, list[HealthFindingData]] = {}
@@ -339,7 +336,7 @@ class ChangeHealthDeltaService:
             resolved_total=len(match.resolved),
             unchanged_total=match.unchanged_total,
             skipped=skipped,
-            limits=_limits(),
+            limits=_limits(head_run.findings_for(subject)),
         )
         delta.timing_ms = (time.perf_counter() - started) * 1000
         return delta
@@ -395,6 +392,23 @@ def _filter(changes: list[FileChange], request: DeltaRequest) -> list[FileChange
     )
 
 
+def _nothing_compared(changes: list[FileChange], skipped: dict[str, str]) -> str:
+    """Why no changed file reached the analyzer, for the explanation."""
+    if not changes:
+        return "This change touches no files."
+    if all(r == NOT_CODE for r in skipped.values()):
+        return (
+            "Only documentation or configuration files changed; "
+            "health analysis does not cover them."
+        )
+    if all(r in NO_CODE_GAP for r in skipped.values()):
+        return (
+            "Only query, template or other data files changed; "
+            "health analysis does not cover them."
+        )
+    return "No changed file is health-analyzable, so nothing was compared."
+
+
 def _skip_reason(change: FileChange) -> str:
     """Why a changed path never reached the analyzer."""
     if change.head_path is None:
@@ -403,6 +417,12 @@ def _skip_reason(change: FileChange) -> str:
     if language in _NOT_CODE_LANGUAGES or is_doc_or_config_path(change.head_path):
         return NOT_CODE
     if language is None:
+        path = PurePosixPath(change.head_path)
+        suffix = path.suffix.lower()
+        if suffix in TEMPLATE_EXTENSIONS or (
+            suffix == _QUERY_SUFFIX and _QUERY_DIR in path.parts[:-1]
+        ):
+            return NOT_ANALYZABLE_DATA
         return "unsupported_language"
     return "not_health_analyzable"
 
@@ -416,7 +436,7 @@ def _status_for(
             f"{'file' if scope.changed == 1 else 'files'} could be analysed."
         )
     # Docs, config and data hold no code, so skipping them leaves nothing unexamined.
-    code_skipped = sum(1 for r in skipped.values() if r != NOT_CODE)
+    code_skipped = sum(1 for r in skipped.values() if r not in NO_CODE_GAP)
     if code_skipped or scope.failed:
         return (
             "partial",
@@ -431,11 +451,49 @@ def _status_for(
     return "available", f"Compared {scope.analyzed} changed files on both sides."
 
 
-def _limits() -> list[str]:
-    return [
+def _limits(head_findings: list[HealthFindingData]) -> list[str]:
+    limits = [
         "Both sides are analysed over the changed files only, so cross-file "
         "detectors (duplication, cross-function performance) see no wider context."
     ]
+    gated = sorted(
+        {
+            gate.language
+            for f in head_findings
+            if (gate := gate_for("health", f.file_path, f.biomarker_type)) is not None
+        }
+    )
+    if gated:
+        limits.append(
+            f"Health findings on {', '.join(language_label(g) for g in gated)} files "
+            "are not compared: they are held back pending verification there."
+        )
+    return limits
+
+
+def _on_base(head_run: RevisionAnalysis, rename: dict[str, str]) -> dict[str, int]:
+    """Head's dependents counts under base-side paths, to score base against.
+
+    See :meth:`RevisionHealthAnalyzer.analyze`: one centrality context for both
+    sides, so only the code can move a centrality-gated finding.
+    """
+    to_base = {head: base for base, head in rename.items()}
+    return {to_base.get(path, path): count for path, count in head_run.dependents.items()}
+
+
+def _hunks(changes: list[FileChange]) -> dict[str, list[tuple[int, int, int, int]]]:
+    """Each changed file's diff hunks, by head path, for the matcher's line map."""
+    return {c.head_path: c.diff.hunks for c in changes if c.head_path and c.diff}
+
+
+def _comparable(finding: HealthFindingData, withheld: frozenset[str]) -> bool:
+    """A finding both sides of a comparison count: not advisory, not a test's
+    performance finding, and one the registry serves."""
+    return (
+        not is_advisory(finding.biomarker_type)
+        and not _is_test_perf(finding)
+        and is_served("health", finding.biomarker_type, finding.file_path, withheld)
+    )
 
 
 def _is_test_perf(finding: HealthFindingData) -> bool:
@@ -487,6 +545,8 @@ _INHERENT = "Nothing to change: the repetition is inherent or already batched."
 _EXPECTED_TEXT: dict[str | None, str] = {
     "inherent_to_boundary": _INHERENT,
     "loop_already_chunked": _INHERENT,
+    "loop_not_batchable": "Nothing to batch: each call needs the one before, or the loop "
+    "stops at the first that answers.",
     "gated_off": "Nothing to change while a constant-False flag switches this function off.",
     "cold_path": "Runs once per deploy, boot or incident; not worth scheduling.",
     "bounded_loop": "Nothing to change: the loop runs a fixed number of times.",

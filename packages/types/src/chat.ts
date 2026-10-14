@@ -11,6 +11,19 @@ import type { GraphExport } from "./graph.js";
 import type { Hotspot } from "./git.js";
 import type { DeadCodeFinding } from "./dead-code.js";
 import type { DecisionRecord } from "./decisions.js";
+import type { EvidenceCard } from "./cards.js";
+import type { ViewPart } from "./views.js";
+
+/** Headless chat session wire types, generated from the server schema. */
+export type {
+  ChatSessionMessageRequest,
+  ChatSessionOpenRequest,
+  ChatSessionPolicyRequest,
+  ChatSessionResponse,
+  ChatToolTraceEntry,
+  ChatTurnResultResponse,
+  ChatTurnUsage,
+} from "./generated/http.js";
 
 // ---------------------------------------------------------------------------
 // Product context surrounding a chat composer
@@ -124,6 +137,10 @@ export interface ChatMessage {
     truncated?: boolean;
     /** Next steps derived from the artifacts this turn produced. */
     follow_ups?: ChatSuggestion[];
+    /** Evidence cards for this turn, unvalidated until parsed. */
+    cards?: unknown[];
+    /** View parts `show_view` built this turn, unvalidated until parsed. */
+    views?: unknown[];
   };
   created_at: string;
 }
@@ -157,6 +174,8 @@ export interface ChatUIMessage {
   truncated?: boolean;
   /** Next steps this turn earned. Absent on a turn that called no tool. */
   followUps?: ChatSuggestion[];
+  /** Validated evidence cards for this turn. */
+  cards?: EvidenceCard[];
 }
 
 // ---------------------------------------------------------------------------
@@ -403,11 +422,14 @@ export interface ChangeRiskArtifact extends ArtifactEnvelopeIdentity {
 export interface SearchResultsArtifactData {
   query: string;
   results: Array<{
-    title: string;
+    /** Omitted when it only restates `path`/`symbol_id` (a structural title). */
+    title?: string;
     page_type: string;
     page_id?: string;
     /** Openable repo-relative file; absent when the hit names no file. */
     path?: string;
+    /** `path::Symbol` on a symbol page. */
+    symbol_id?: string;
     /** Kept only where it differs from `path` or `path` is absent. */
     target_path?: string;
     snippet?: string;
@@ -684,10 +706,14 @@ export type ChatSSEEvent =
       artifact: ChatArtifact;
       citations?: ChatCitation[];
     }
-  /** Every turn ended in a tool call; `done` still follows. */
-  | { type: "truncated"; loops: number }
+  /** A table or chart the server built from a tool result of this turn,
+   *  sent right after the `show_view` call's `tool_result`. */
+  | { type: "view"; tool_id: string; view: ViewPart }
+  /** A limit stopped the turn before a final answer; `done` still follows.
+   *  `reason` is `loop_cap` (every call ended in a tool call) or `token_budget`. */
+  | { type: "truncated"; loops: number; reason?: "loop_cap" | "token_budget" }
   /** Next steps for the turn that just finished, sent just before `done`.
    *  A turn that failed or called no tool sends none. */
   | { type: "suggestions"; suggestions: ChatSuggestion[] }
-  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
+  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string; replayed?: boolean }
   | { type: "error"; message: string };

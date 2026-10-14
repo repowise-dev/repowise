@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
+    DeclaredTypes,
     Occurrence,
     Receiver,
     StatementDefUse,
@@ -102,7 +103,7 @@ class RustDefUseDialect(BaseDefUseDialect):
     language = "rust"
     member_access_kinds = frozenset({"field_expression"})
     receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS
-    type_holder_kinds = frozenset({"parameter", "let_declaration"})
+    declared_types = DeclaredTypes(frozenset({"parameter", "let_declaration"}))
     keyword_kinds = frozenset()  # struct-literal field names are not reads.
     # ``self`` is its own node type in tree-sitter-rust, not an ``identifier``;
     # without it here every ``self.field`` read would drop its receiver (Go and
@@ -222,8 +223,10 @@ class RustDefUseDialect(BaseDefUseDialect):
             self._targets(node.child_by_field_name("pattern"), defs, uses)
             # ``let`` binds a new name (shadowing included) from the end of
             # the statement, so its own initializer reads the outer one.
-            self._declare(defs, start, node)
-            self._process(node.child_by_field_name("value"), defs, uses)
+            value = node.child_by_field_name("value")
+            # ``let x;`` is assigned later: the borrow checker proves it.
+            self._declare(defs, start, node, valueless=value is None)
+            self._process(value, defs, uses)
             # ``let ... else { diverge }``: the arm runs only on mismatch, so
             # anything it writes is a may-def.
             alternative = node.child_by_field_name("alternative")

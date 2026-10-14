@@ -22,7 +22,7 @@
           "returns": [
             "config"
           ],
-          "suggested_name": "_read_config",
+          "suggested_name": "_extracted_helper",
           "needs_async": true,
           "async_host": true,
           "new_symbol": {
@@ -48,7 +48,7 @@
                 "type": "<type>"
               }
             ],
-            "signature_text": "async def _read_config(self, path: Path, strict) -> <type>:",
+            "signature_text": "async def _extracted_helper(self, path: Path, strict) -> <type>:",
             "notes": [
               "The return type is not named in the code."
             ]
@@ -58,7 +58,7 @@
               "start": 61,
               "end": 78
             },
-            "new_text": "config = await self._read_config(path, strict)"
+            "new_text": "config = await self._extracted_helper(path, strict)"
           }
         },
         "evidence": {
@@ -112,6 +112,184 @@
             "ref": "abc1234"
           }
         ]
+      }
+    },
+    {
+      "name": "extract_method_staged_anchored",
+      "detail": {
+        "id": "refac4_iiiiiiiiiiiiiiiiiiii",
+        "refactoring_type": "extract_method",
+        "file_path": "src/report.py",
+        "target_symbol": "build_report",
+        "line_start": 10,
+        "line_end": 60,
+        "plan": {
+          "span": {
+            "start": 14,
+            "end": 30
+          },
+          "params": [
+            "rows"
+          ],
+          "returns": [
+            "totals"
+          ],
+          "suggested_name": "_extracted_helper",
+          "needs_async": false,
+          "new_symbol": {
+            "kind": "function",
+            "async": false,
+            "receiver": null,
+            "uses_receiver": false,
+            "assigns": [],
+            "params": [
+              {
+                "name": "rows",
+                "type": null,
+                "mode": "in"
+              }
+            ],
+            "returns": [
+              {
+                "name": "totals",
+                "type": null
+              }
+            ],
+            "signature_text": "def _extracted_helper(rows):",
+            "return_text": "return totals"
+          },
+          "call_site": {
+            "replace_span": {
+              "start": 14,
+              "end": 30
+            },
+            "new_text": "totals = _extracted_helper(rows)"
+          },
+          "anchors": {
+            "first": "    for row in rows:",
+            "last": "        totals[row.key] += row.amount"
+          },
+          "stages": [
+            {
+              "span": {
+                "start": 14,
+                "end": 30
+              },
+              "params": [
+                "rows"
+              ],
+              "returns": [
+                "totals"
+              ],
+              "suggested_name": "_extracted_helper",
+              "needs_async": false,
+              "new_symbol": {
+                "kind": "function",
+                "async": false,
+                "receiver": null,
+                "uses_receiver": false,
+                "assigns": [],
+                "params": [
+                  {
+                    "name": "rows",
+                    "type": null,
+                    "mode": "in"
+                  }
+                ],
+                "returns": [
+                  {
+                    "name": "totals",
+                    "type": null
+                  }
+                ],
+                "signature_text": "def _extracted_helper(rows):",
+                "return_text": "return totals"
+              },
+              "call_site": {
+                "replace_span": {
+                  "start": 14,
+                  "end": 30
+                },
+                "new_text": "totals = _extracted_helper(rows)"
+              },
+              "anchors": {
+                "first": "    for row in rows:",
+                "last": "        totals[row.key] += row.amount"
+              },
+              "ccn": 6,
+              "nloc": 12,
+              "context_params": []
+            },
+            {
+              "span": {
+                "start": 32,
+                "end": 51
+              },
+              "params": [
+                "totals"
+              ],
+              "returns": [
+                "out"
+              ],
+              "suggested_name": "_extracted_helper_2",
+              "needs_async": false,
+              "new_symbol": {
+                "kind": "function",
+                "async": false,
+                "receiver": null,
+                "uses_receiver": false,
+                "assigns": [],
+                "params": [
+                  {
+                    "name": "totals",
+                    "type": null,
+                    "mode": "in"
+                  }
+                ],
+                "returns": [
+                  {
+                    "name": "out",
+                    "type": null
+                  }
+                ],
+                "signature_text": "def _extracted_helper_2(totals):",
+                "return_text": "return out"
+              },
+              "call_site": {
+                "replace_span": {
+                  "start": 32,
+                  "end": 51
+                },
+                "new_text": "out = _extracted_helper_2(totals)"
+              },
+              "anchors": {
+                "first": "    if not totals:\n        return None",
+                "last": "        out.append(f\"`{key}`: {value}\")"
+              },
+              "ccn": 6,
+              "nloc": 12,
+              "context_params": []
+            }
+          ],
+          "parameter_object": null,
+          "orchestrator": {
+            "ccn_before": 31,
+            "ccn_after": 19
+          }
+        },
+        "evidence": {
+          "slice_nloc": 24,
+          "ccn_removed": 12
+        },
+        "impact_delta": 0.9,
+        "effort_bucket": "M",
+        "blast_radius": {
+          "scope": "local"
+        },
+        "confidence": "medium",
+        "source_biomarker": "complex_method",
+        "governed_by": [],
+        "risks": []
       }
     },
     {
@@ -364,7 +542,7 @@
         "mechanical_steps": 1,
         "judgment_steps": 1,
         "recoverable_health": 2.5,
-        "ordering_note": "A step carrying `relocated_by` names a symbol an earlier step moves.",
+        "ordering_note": "A step marked 'Moved by an earlier step' names a symbol an earlier step relocates.",
         "steps": [
           {
             "plan_id": "refac4_aaaaaaaaaaaaaaaaaaaa",

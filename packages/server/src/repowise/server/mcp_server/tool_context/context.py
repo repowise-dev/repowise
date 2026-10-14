@@ -55,6 +55,7 @@ from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._components import component_cards, is_component_target
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -67,6 +68,11 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
+from repowise.server.mcp_server._workspace_routing import (
+    needs_routing,
+    route_targets,
+    run_grouped,
+)
 from repowise.server.mcp_server.tool_context.enrichment import attach_doc_references
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
@@ -138,7 +144,7 @@ async def get_context(
     Include-gated blocks are projections, not omissions.
 
     Args:
-        targets: file paths, module paths, or "path::Symbol" ids.
+        targets: paths, "path::Symbol" ids, or "component:<name>".
         include: opt-in blocks: full_doc | ownership | last_change | callers
             | callees | references | metrics | community | decisions | skeleton
             | skeleton+ | health | doc_drift (docs naming this file)
@@ -148,6 +154,12 @@ async def get_context(
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")
+    routes = route_targets(targets) if repo is None else None
+    if needs_routing(routes):
+        return await run_grouped(
+            routes,
+            lambda alias, local: get_context(local, include=include, compact=compact, repo=alias),
+        )
     ctx = await _resolve_repo_context(repo)
     collector = OmissionCollector("get_context", repo_root=ctx.path)
 
@@ -190,7 +202,12 @@ async def get_context(
         # batch. Any exception is converted below into a per-target error
         # entry that carries "target", so the comprehension keyed on target
         # below never KeyErrors.
-        raw_results = await asyncio.gather(
+        # Component targets resolve first, in turn on this session and from one
+        # component load, so they never share the session with the gather.
+        cards = await _component_cards(
+            session, repository, [t for t in targets if is_component_target(t)], ctx, exclude_spec
+        )
+        gathered = await asyncio.gather(
             *[
                 _resolve_one_target(
                     session,
@@ -204,9 +221,12 @@ async def get_context(
                     as_of_ts=as_of_ts,
                 )
                 for t in targets
+                if not is_component_target(t)
             ],
             return_exceptions=True,
         )
+        rest = iter(gathered)
+        raw_results = [cards[t] if is_component_target(t) else next(rest) for t in targets]
 
         # One batched read for every target that asked for it, on the session
         # they share, and a no-op for every call that did not. Deliberately
@@ -310,3 +330,22 @@ async def get_context(
     attach_ignored_arguments(response, ignored)
     collector.attach(response)
     return response
+
+
+async def _component_cards(
+    session: Any, repository: Any, targets: list[str], ctx: Any, exclude_spec: Any
+) -> dict[str, Any]:
+    """Cards for the batch's component targets; a failure becomes each one's error."""
+    if not targets:
+        return {}
+    try:
+        return await component_cards(
+            session,
+            repository,
+            targets,
+            repo_root=ctx.path,
+            alias=ctx.alias,
+            exclude_spec=exclude_spec,
+        )
+    except Exception as exc:
+        return {t: exc for t in targets}

@@ -19,24 +19,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.resolution_basis import guessed_share
 from repowise.core.persistence.models import GraphEdge, GraphNode
-
-# Resolution origins the vocabulary in `ingestion/models.py::ResolutionOrigin`
-# annotates at or below 0.75 confidence. Each binds a name to a symbol that
-# merely exists somewhere in the repo, so the edge is a guess, not a fact.
-# NULL is not in here: it means the row predates the vocabulary, which is
-# unknown rather than weak, so it counts in the denominator and not as a guess.
-GUESSED_ORIGINS: frozenset[str] = frozenset(
-    {
-        "global_unique",
-        "receiver_global",
-        "receiver_extension_global",
-        "receiver_typed_global",
-        "receiver_field_global",
-        "receiver_framework_global",
-        "return_type_global",
-    }
-)
 
 RESOLVED_NOTE = (
     "Call sites the resolver could not bind are not counted, so an empty list "
@@ -112,11 +96,10 @@ def _entry(language: str, origins: dict[str | None, int]) -> dict[str, Any]:
             "unresolved_call_sites": None,
             "note": NO_EDGES_NOTE,
         }
-    guessed = sum(n for origin, n in origins.items() if origin in GUESSED_ORIGINS)
     return {
         "language": language,
         "resolved_call_edges": total,
-        "guessed_share": round(guessed / total, 2),
+        "guessed_share": round(guessed_share(origins) or 0.0, 2),
         "unresolved_call_sites": None,
         "note": RESOLVED_NOTE,
     }
@@ -128,6 +111,19 @@ async def call_resolution_basis(
     """Basis for one language's empty call-graph list."""
     grouping = await _grouping(session, repo_id, cache_key)
     return _entry(language or "", grouping.get(language or "", {}))
+
+
+def same_file_basis(users: int) -> dict[str, Any]:
+    """Basis for an empty ``used_by`` whose only users share the symbol's file.
+
+    The resolver-coverage figures answer "could a user have been missed"; here
+    users were found, so the zero says only where they are. A use that is not
+    a call (a subclass, a reference) is served under ``relations``.
+    """
+    uses = "1 use" if users == 1 else f"{users} uses"
+    return {
+        "note": f'{uses}, all in this file; include=["callers"] lists them in callers or relations.'
+    }
 
 
 async def call_resolution_bases(

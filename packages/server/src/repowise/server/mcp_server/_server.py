@@ -350,6 +350,24 @@ async def _cancel_task(task: asyncio.Task) -> None:
         await task
 
 
+async def _served_repository_id(factory: Any) -> str | None:
+    """The one row a repo-local store holds, else ``None``.
+
+    Same rule as the CLI's moved-repo lookup: identity is inferred only from
+    the served checkout's own store, and only when it holds one repository.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Repository
+
+    try:
+        async with factory() as session:
+            rows = (await session.scalars(select(Repository.id).limit(2))).all()
+    except OperationalError:
+        return None
+    return rows[0] if len(rows) == 1 else None
+
+
 async def _abort_startup(*tasks: asyncio.Task) -> None:
     """Undo the startup a lifespan raised out of, before it reached its teardown.
 
@@ -684,6 +702,9 @@ async def _lifespan(server: FastMCP):
         engine, expire_on_commit=False, class_=AsyncSession
     )
 
+    if _state._repo_path and configured_db_url is None:
+        _state._served_repo_id = await _served_repository_id(_state._session_factory)
+
     _state._fts = FullTextSearch(engine)
     try:
         await _state._fts.ensure_index()
@@ -713,6 +734,7 @@ async def _lifespan(server: FastMCP):
     await _cancel_task(_bg_task)
     await _cancel_task(_warm_task)
     _state._lancedb_ready = None
+    _state._served_repo_id = None
 
     await engine.dispose()
     # _decision_store is an alias for _vector_store — close only once.
@@ -723,7 +745,61 @@ async def _lifespan(server: FastMCP):
 # Create the MCP server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP(
+class _RepowiseMCP(FastMCP):
+    """FastMCP plus the HTTP bearer gate and per-call principal scope.
+
+    Both are inert without an authenticated HTTP principal, so stdio and an
+    unconfigured HTTP server behave exactly like plain FastMCP.
+    """
+
+    def streamable_http_app(self):  # type: ignore[override]
+        from repowise.server.mcp_server._http_auth import gate
+
+        return gate(super().streamable_http_app(), self.settings.streamable_http_path)
+
+    def sse_app(self, mount_path: str | None = None):  # type: ignore[override]
+        from repowise.server.mcp_server._http_auth import gate
+
+        return gate(super().sse_app(mount_path), self.settings.sse_path)
+
+    def _request_principal(self) -> Any:
+        try:
+            request = self._mcp_server.request_context.request
+        except LookupError:
+            return None
+        state = getattr(request, "scope", {}).get("state") or {}
+        return state.get("principal")
+
+    async def list_tools(self):  # type: ignore[override]
+        tools = await super().list_tools()
+        principal = self._request_principal()
+        if principal is None:
+            return tools
+        from repowise.server.auth import get_authorizer
+
+        authorizer = get_authorizer()
+        return [t for t in tools if authorizer.can_use_tool(principal, t.name)]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
+        principal = self._request_principal()
+        if principal is not None:
+            from mcp.server.fastmcp.exceptions import ToolError
+
+            from repowise.server.mcp_server._http_auth import call_denial
+
+            denial = call_denial(principal, name, arguments)
+            if denial is not None:
+                raise ToolError(denial)
+        from repowise.server.auth import current_principal
+
+        reset = current_principal.set(principal)
+        try:
+            return await super().call_tool(name, arguments)
+        finally:
+            current_principal.reset(reset)
+
+
+mcp = _RepowiseMCP(
     "repowise",
     # Hosts that defer tool schemas show the model only tool names and this
     # string, so it says when to call; tests pin the key lines and a length cap.

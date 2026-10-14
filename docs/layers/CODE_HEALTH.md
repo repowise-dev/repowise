@@ -89,10 +89,16 @@ always reports it.
 work: a refactoring plan, one performance intervention, or the strongest code-shape
 finding in a file with no plan. It gives what to change and where, why, the first
 edit, the expected gain, the effort and the tests to run.
+Among items of the same value, a function that many commits have changed comes
+before an equally complex one that rarely changes, and its reason says how many
+commits changed it. A "Break up X" item's reason names the function's shape and what
+splitting it buys: smaller parts that are easier to read and change, and less
+duplicated code when part of it is a copy.
 
 Left out, and counted with a reason:
 
-- test files, tooling, generated and vendored code, docs and examples
+- test files, tooling (including Dart's `tool/` scripts), generated and vendored code,
+  docs and examples
 - files whose only findings come from git history
 - changes that would recover under half a point, and items with no concrete first
   edit
@@ -131,7 +137,11 @@ worth doing.
 | `next` | Worth doing, needs judgment |
 | `later` | Real but can wait; the reason is shown |
 
-A `now` or `next` item shows its first step and the command that checks it without opening it, on the card, and over MCP for the lead and for each item of an `only=["fix_first"]` page. When no test reaches the code, Verify says to add a characterization test first. An Extract Method step shows the helper's header and the call that replaces the lines, ready to copy.
+A refactoring item is `later` when the plan of any of its steps would still leave a function above the break-up bar: it needs more stages before it is worth starting. When a finding's first step borrows such a plan, the finding keeps its tier and the step says the plan alone leaves the function above the bar.
+
+A finding whose first step comes from a stored Extract Method plan that makes its function smaller leads with that plan: its title names the first lift, and its next call opens the plan. A finding with no such plan still reads "Break up".
+
+A `now` or `next` item shows its first step and the command that checks it without opening it, on the card, and over MCP for the lead and for each item of an `only=["fix_first"]` page. When no test reaches the code, Verify says to add a characterization test first. An Extract Method step shows the helper's header and the call that replaces the lines, ready to copy. It finds the lines by the text they start and end with, as the plan does, since line numbers move with the first edit; when that text also appears elsewhere in the file, the step says to keep the edit inside its function.
 
 Findings, performance causes, refactoring plans and Fix first items are counted the
 same way everywhere: open in the inventory, in scope, eligible, due (tier `now` or
@@ -207,6 +217,7 @@ below 9.0 from history alone.
 
 On a small team, `knowledge_loss` and `ownership_risk` are capped at low severity
 unless the file is a hotspot, and the `small-team` profile lowers them further.
+`ownership_risk` is also low on a file under 40 code lines.
 `large_assertion_block` and `duplicated_assertion_block` fire only in test files.
 House assertion helpers go in the [`assertions:` block](../reference/CONFIG.md#the-assertions-block).
 Per-language coverage: [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage).

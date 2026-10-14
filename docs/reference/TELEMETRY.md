@@ -74,7 +74,7 @@ response, **never the question, query, results, paths, or repo/symbol names**:
 | `properties.status` | `ok` / `error` | Tool error rate |
 | `properties.duration_ms` | `820` | Tool latency in the wild |
 | `properties.confidence` | `high` / `medium` / `low` | Answer confidence distribution |
-| `properties.retrieval_quality` | `strong` / `weak` | Retrieval quality distribution |
+| `properties.retrieval_quality` | `high` / `partial` / `weak` | Retrieval quality distribution; sent only when the call asked for `include=["diagnostics"]` |
 | `properties.results_bucket` | `1-3`, `4-10` | Result count for searches (a range) |
 | `properties.index_behind` | `true` / `false` | How often served content is stale |
 | `properties.embedder_degraded` | `true` / `false` | How often search runs on mock vectors |

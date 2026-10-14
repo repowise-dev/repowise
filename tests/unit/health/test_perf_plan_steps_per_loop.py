@@ -260,26 +260,22 @@ def test_python_records_the_string_and_the_list():
     ]
 
 
-def test_typescript_records_the_string_and_the_array():
+def test_typescript_records_the_array():
     source = (
         "export function f(rows: string[]) {\n"
         "  let out = '';\n"
-        "  const big = [1, 2, 3];\n"
+        "  const big = [];\n"
         "  for (const r of rows) {\n"
         "    out += 'a';\n"
-        "    this.buf += 'b';\n"
         "    if (big.includes(r)) { out += 'c'; }\n"
+        "    big.push(r);\n"
         "  }\n"
         "  return out;\n"
         "}\n"
     )
 
-    assert _subjects("a.ts", "typescript", source) == [
-        (_CONCAT, 5, "out"),
-        (_CONCAT, 6, "this.buf"),
-        (_PROBE, 7, "big"),
-        (_CONCAT, 7, "out"),
-    ]
+    # JS ``+=`` is linear (ropes), so only the probe is a hit.
+    assert _subjects("a.ts", "typescript", source) == [(_PROBE, 6, "big")]
 
 
 @pytest.mark.parametrize(

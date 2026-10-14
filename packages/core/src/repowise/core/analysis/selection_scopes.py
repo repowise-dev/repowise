@@ -15,7 +15,9 @@ names it as a :class:`Scope`:
   directory: importing one runs it, whatever the diff.
 - An asset runs the tests reaching the code that names it. A doc, template,
   stylesheet or image nothing names runs the tests of the package holding it;
-  a query or data file nothing names keeps its full run (a test may glob it).
+  prose that nothing names, no package holds and no code shares a top-level
+  directory with needs no tests, as a doc does; a query or data file nothing
+  names keeps its full run (a test may glob it).
   Other non-code files, dotfiles and root-level data configure tools, not
   code, and keep their full run too.
 
@@ -40,9 +42,11 @@ from pathlib import PurePosixPath
 
 import pathspec
 
+from ..support_paths import DOC_EXTENSIONS, TEMPLATE_EXTENSIONS
 from ..test_paths import is_test_related_path
 from .test_selection import (
     JS_SUFFIXES,
+    NO_TESTS_NEEDED,
     PACKAGE_INIT_REASON,
     PYTHON_SUFFIXES,
     SHARED_TEST_DATA_REASON,
@@ -109,10 +113,14 @@ _ECOSYSTEM_SPECS = tuple(
 # it may be a pinned dependency list.
 _OWNED = frozenset(
     {".md", ".mdx", ".rst", ".adoc", ".markdown", ".html", ".htm"}
-    | {".j2", ".jinja", ".jinja2", ".tmpl", ".tpl", ".hbs", ".mustache", ".ejs", ".njk"}
+    | TEMPLATE_EXTENSIONS
     | {".css", ".scss", ".sass", ".less"}
     | {".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"}
 )
+# Prose that needs no tests when nothing names it and no package holds it, as
+# under ``docs/``. Not ``.txt``: outside docs it is mostly data read by
+# convention or a glob (a Spring ``banner.txt``, a dependency baseline).
+_PROSE = (DOC_EXTENSIONS - {".txt", ".mdx"}) | {".markdown"}
 # Assets only a naming file stands for: a test may glob a query or data file.
 # Data only below the root: a root-level ``*.yaml`` or ``*.json`` configures a tool.
 _NAMED_ONLY = frozenset({".scm", ".graphql", ".gql", ".sql"})
@@ -143,6 +151,11 @@ class Scope:
     def routes(self) -> tuple[str, ...]:
         """The files whose reaching tests the selection needs from the graph."""
         return () if self.run_all else (*self.reach, *self.namers)
+
+    @property
+    def needs_no_tests(self) -> bool:
+        """Whether the file is skipped like documentation."""
+        return self.basis == NO_TESTS_NEEDED
 
 
 def needs_namers(path: str, config: TestSelectionConfig) -> bool:
@@ -214,6 +227,17 @@ class _Tree:
                 if _is_under(p, root) and (not suffixes or p.lower().endswith(suffixes))
             )
         return self._under[key]
+
+    def beside_code(self, path: str) -> bool:
+        """Whether code shares *path*'s top-level directory (at the root: sits directly in it).
+
+        Prose there may be loaded by a directory walk (``src/pkg/prompts/*.md``
+        read by ``src/pkg/loader.py``), so it is not skipped.
+        """
+        parts = PurePosixPath(path).parts
+        if len(parts) == 1:
+            return any("/" not in p for p in self.code)
+        return bool(self.code_under(parts[0], ()))
 
     def owner(self, path: str) -> str | None:
         """The deepest package root holding *path*, never the repository root."""
@@ -335,6 +359,9 @@ def _named_scope(path: str, tree: _Tree, namers: tuple[str, ...]) -> Scope | Non
     if too_many := _too_many(namers):
         return Scope(f"it is named by {_some(namers)}", "named-by", run_all=too_many)
     owner = tree.owner(path)
+    if not namers and owner is None and _suffix(path) in _PROSE and not tree.beside_code(path):
+        # Ceiling: a test globbing prose away from code is not seen, as under docs/.
+        return Scope("prose no code names and no package holds", NO_TESTS_NEEDED)
     if namers and (owner is None or any(_is_under(n, owner) for n in namers)):
         return Scope(f"it is named by {_some(namers)}", "named-by", namers=namers)
     if owner is None or not (namers or _suffix(path) in _OWNED):

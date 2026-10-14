@@ -22,7 +22,9 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Iterable, Sequence
 
+from ...ingestion.external_systems import manifest_ecosystem
 from ...ingestion.git_indexer._constants import is_fix_commit
+from ..test_selection import DEPENDENCIES_REASON, full_run_reason
 from .features import GIT_TIMEOUT_SECONDS, _git
 from .normalize import RiskNormalizer
 
@@ -62,6 +64,23 @@ class FixHistoryUnavailableError(RuntimeError):
 def clear_fix_pressure_cache() -> None:
     """Drop all memoized fix-pressure walks (test isolation / manual reset)."""
     _PRESSURE_CACHE.clear()
+
+
+def _history_sha(repo_path: str, upto_ref: str) -> str:
+    """*upto_ref*'s commit sha, or ``""`` when there is no history before it.
+
+    Two reasons a ref will not resolve, and they are not the same answer.
+    Inside a repository it means there is no history before this point (a root
+    commit's ``sha^`` on the common path) and empty is correct. Outside one,
+    nothing was looked at, and "no fixes" would be a claim we did not earn, so
+    that raises :class:`FixHistoryUnavailableError`.
+    """
+    sha = _git(
+        ["rev-parse", "--verify", "--quiet", f"{upto_ref}^{{commit}}"], repo_path, check=False
+    ).strip()
+    if not sha and not _git(["rev-parse", "--git-dir"], repo_path, check=False).strip():
+        raise FixHistoryUnavailableError(f"{repo_path} is not a git repository")
+    return sha
 
 
 def _walk(repo_path: str, upto_ref: str, depth: int) -> dict[str, list[float]]:
@@ -137,15 +156,8 @@ def fix_pressure(
     Files with no fix history are absent from the mapping rather than present
     with a zero. Raises :class:`FixHistoryUnavailableError` if the walk fails.
     """
-    sha = _git(["rev-parse", "--verify", "--quiet", upto_ref], repo_path, check=False).strip()
+    sha = _history_sha(repo_path, upto_ref)
     if not sha:
-        # Two reasons a ref will not resolve, and they are not the same answer.
-        # Inside a repository it means there is no history before this point — a
-        # root commit's ``sha^`` on the common path — and empty is correct.
-        # Outside one, nothing was looked at, and "no fixes" would be a claim we
-        # did not earn.
-        if not _git(["rev-parse", "--git-dir"], repo_path, check=False).strip():
-            raise FixHistoryUnavailableError(f"{repo_path} is not a git repository")
         return {}
     key = (repo_path, sha, depth)
     if key in _PRESSURE_CACHE:
@@ -162,6 +174,45 @@ def fix_pressure(
         _PRESSURE_CACHE.clear()
     _PRESSURE_CACHE[key] = pressure
     return pressure
+
+
+def fixes_reachable_from(repo_path: str, upto_ref: str, shas: Iterable[str]) -> set[str]:
+    """The subset of fix *shas* in *upto_ref*'s history, the ref included.
+
+    The line-scoped fix record comes from the index, which holds every fix up to
+    the indexed commit. Reviewing an older change, that includes the change
+    itself and what came after it; this keeps only what :func:`fix_pressure`
+    would also have walked. One ``git rev-list`` lists what the shas reach that
+    *upto_ref* does not, so the cost is the commits between the ref and the
+    newest fix: a review at the tip walks almost nothing.
+
+    A sha this checkout does not have (rewritten away, or an index built from
+    another clone) cannot be placed and is kept, as before this filter existed.
+    Raises :class:`FixHistoryUnavailableError` when git fails.
+    """
+    wanted = {sha for sha in shas if sha}
+    sha = _history_sha(repo_path, upto_ref) if wanted else ""
+    if not sha:
+        return set()
+    try:
+        # --stdin: a large fix set would overrun the Windows command line.
+        proc = subprocess.run(
+            ["git", "rev-list", "--ignore-missing", "--stdin"],
+            cwd=repo_path,
+            input="\n".join([*sorted(wanted), f"^{sha}"]) + "\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FixHistoryUnavailableError(
+            f"git rev-list timed out after {GIT_TIMEOUT_SECONDS}s"
+        ) from exc
+    if proc.returncode != 0:
+        raise FixHistoryUnavailableError((proc.stderr or "").strip() or "git rev-list failed")
+    return wanted - set(proc.stdout.split())
 
 
 def rename_target(path: str) -> str:
@@ -214,18 +265,37 @@ MAX_HOT_FILES = 5
 MIN_DENSITY_POPULATION = 8
 
 
+#: Manifest parsers whose files hold build logic as well as dependencies.
+_BUILD_ECOSYSTEMS = frozenset({"cmake", "bazel"})
+
+
+def is_dependency_file(path: str) -> bool:
+    """A dependency manifest or lockfile: a fix that bumps a dependency edits it.
+
+    Such a file did not break. Runner configs (``tox.ini``, ``tsconfig.json``)
+    and build files the cmake and bazel parsers read (``CMakeLists.txt``,
+    ``BUILD``) are not dependency files and keep their fix record.
+    """
+    ecosystem = manifest_ecosystem(path)
+    if ecosystem is not None:
+        return ecosystem not in _BUILD_ECOSYSTEMS
+    return full_run_reason(path) == DEPENDENCIES_REASON
+
+
 def hot_files(
     pressure: dict[str, float], changes: Iterable[tuple[str, int]], *, limit: int = MAX_HOT_FILES
 ) -> tuple[tuple[str, int, float], ...]:
     """The change's fix-bearing files as ``(path, churn, pressure)``, worst first.
 
     Shared by every surface so the CLI, the MCP payload and the HTTP API cannot
-    order or round the same list differently.
+    order or round the same list differently. Dependency manifests and
+    lockfiles are left out of the list (:func:`is_dependency_file`). Display
+    only; *pressure* and every density keep them.
     """
     rows = [
         (path, churn, pressure[rename_target(path)])
         for path, churn in changes
-        if pressure.get(rename_target(path))
+        if pressure.get(rename_target(path)) and not is_dependency_file(rename_target(path))
     ]
     rows.sort(key=lambda row: -row[2])
     return tuple((path, churn, round(p, 2)) for path, churn, p in rows[:limit])

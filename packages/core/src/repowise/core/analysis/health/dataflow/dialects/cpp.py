@@ -7,9 +7,9 @@ compound assignments (both an ``assignment_expression``, told apart by the
 ``operator`` token ``=`` vs ``+=``, as in Java and Go), update expressions
 (``x++`` / ``--x``, read-modify-write), the binder of a range-``for``
 (``for (auto& v : xs)``) and the C-style ``for`` initializer. A ``catch``
-clause's exception variable is deliberately NOT a def: the CFG never records a
-handler binder as a head in any language, so it stays an unmatched *use* — the
-conservative direction, matching the Java and Python dialects.
+clause's exception variable (``catch (const std::exception& e)``) is a def
+scoped to the handler block, recorded through ``handler_def_use`` as the
+handler's head; ``catch (...)`` and an unnamed ``catch (int)`` bind nothing.
 
 Field targets (``obj.f = …`` / ``this->f = …``) and subscript targets
 (``arr[i] = …``) bind no *local*, so their base identifiers are reads — the
@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING
 from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
+    DeclaredTypes,
+    HandlerHead,
     Occurrence,
     Receiver,
     StatementDefUse,
@@ -58,6 +60,8 @@ _ASSIGN_KINDS = frozenset({"assignment_expression"})
 _UPDATE_KINDS = frozenset({"update_expression"})  # ``x++`` / ``--x``
 _DECL_KINDS = frozenset({"declaration"})
 _INIT_DECLARATOR = "init_declarator"
+_CATCH = "catch_clause"
+_CATCH_PARAM = "parameter_declaration"  # ``catch (const std::exception& e)``
 _RANGE_FOR = "for_range_loop"
 
 _CALL = "call_expression"
@@ -77,6 +81,14 @@ _SCOPE_BOUNDARIES = frozenset({"lambda_expression"})
 _CALLEE_NAME_KINDS = frozenset({"identifier", "qualified_identifier", "template_function"})
 
 
+def _is_static(declaration: Node) -> bool:
+    """Whether a ``declaration`` carries the ``static`` storage class."""
+    return any(
+        child.type == "storage_class_specifier" and child.text == b"static"
+        for child in declaration.children
+    )
+
+
 def _declarator_name(fn_node: Node) -> Node | None:
     """The innermost node of a definition's ``declarator`` chain (its name),
     None for a lambda, which has no declarator."""
@@ -86,18 +98,45 @@ def _declarator_name(fn_node: Node) -> Node | None:
     return name
 
 
+class _CppDeclaredTypes(DeclaredTypes):
+    def _declarator_token(self, node: Node) -> str:
+        """``*`` for a pointer declarator, ``&`` / ``&&`` for a reference."""
+        if node.type == "init_declarator" or not node.children:
+            return ""
+        return node_text(node.children[0])
+
+    def _type_prefix(self, holder: Node, typ: Node) -> str:
+        """``const`` / ``volatile`` written before the type."""
+        quals = [
+            node_text(c)
+            for c in holder.named_children
+            if c.type == "type_qualifier" and c.end_byte <= typ.start_byte
+        ]
+        return "".join(q + " " for q in quals)
+
+
 class CppDefUseDialect(BaseDefUseDialect):
     language = "cpp"
     member_access_kinds = frozenset({_FIELD_EXPRESSION})
     receiver_write_kinds = _ASSIGN_KINDS | _UPDATE_KINDS
     keyword_kinds = frozenset()  # C++ has no keyword arguments.
-    type_holder_kinds = frozenset(
-        {"parameter_declaration", "optional_parameter_declaration", "declaration"}
+    declared_types = _CppDeclaredTypes(
+        frozenset({"parameter_declaration", "optional_parameter_declaration", "declaration"}),
+        frozenset({"init_declarator", "pointer_declarator", "reference_declarator"}),
     )
-    type_wrapper_kinds = frozenset({"init_declarator", "pointer_declarator", "reference_declarator"})
 
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """``catch (const E& e)`` names ``E``; ``catch (...)`` catches
+        everything. The bound name is not needed: C++ re-raises with ``throw;``."""
+        params = handler.child_by_field_name("parameters")
+        decl = next(
+            (c for c in params.named_children if c.type == "parameter_declaration"), None
+        ) if params is not None else None
+        kind = decl.child_by_field_name("type") if decl is not None else None
+        return ((node_text(kind),) if kind is not None else None), None
 
     def collect_reads(self, node: Node | None, out: list[Occurrence]) -> None:
         """Like the base collector, but a ``call_expression`` contributes only
@@ -152,20 +191,6 @@ class CppDefUseDialect(BaseDefUseDialect):
         quals = {node_text(c) for c in node.children if c.type == "type_qualifier"}
         return "const" if "const" in quals else None
 
-    def _declarator_token(self, node: Node) -> str:
-        """``*`` for a pointer declarator, ``&`` / ``&&`` for a reference."""
-        if node.type == "init_declarator" or not node.children:
-            return ""
-        return node_text(node.children[0])
-
-    def _type_prefix(self, holder: Node, typ: Node) -> str:
-        """``const`` / ``volatile`` written before the type."""
-        quals = [
-            node_text(c)
-            for c in holder.named_children
-            if c.type == "type_qualifier" and c.end_byte <= typ.start_byte
-        ]
-        return "".join(q + " " for q in quals)
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """``this`` for a member function defined in its class (a bare name
@@ -218,7 +243,23 @@ class CppDefUseDialect(BaseDefUseDialect):
                     return found
         return None
 
-    # -- head (loop clause / if condition / catch binder) ---------------------
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """``catch (const std::exception& e)`` binds ``e`` for the handler
+        block only. The binder is read off the parameter's ``declarator``, so
+        the type is never mistaken for it, and ``catch (...)`` or an unnamed
+        ``catch (int)`` (no declarator) binds nothing."""
+        defs: list[Occurrence] = []
+        params = handler.child_by_field_name("parameters")
+        children = params.named_children if params is not None else []
+        decl = next((c for c in children if c.type == _CATCH_PARAM), None)
+        declarator = decl.child_by_field_name("declarator") if decl is not None else None
+        binder = self._binder_identifier(declarator) if declarator is not None else None
+        if decl is not None and binder is not None:
+            defs.append(self._occ(binder))
+            self._declare(defs, 0, decl)
+        return StatementDefUse(defs=tuple(defs), uses=())
+
+    # -- head (loop clause / if condition) ----------------------------------
 
     def _head(
         self, node: Node, lmap: LanguageNodeMap, defs: list[Occurrence], uses: list[Occurrence]
@@ -236,11 +277,9 @@ class CppDefUseDialect(BaseDefUseDialect):
             self._process(node.child_by_field_name("update"), defs, uses)
         elif t in lmap.branch_kinds:
             self._process(node.child_by_field_name("condition"), defs, uses)
-        # NB: a C++ ``try`` has no head. The CFG records a try head only for the
-        # ``resources`` field (Java's try-with-resources), and a ``catch``
-        # clause's binder is never recorded as a head in any language — so an
-        # exception variable is an unmatched *use*, the conservative direction,
-        # exactly as in the Java and Python dialects.
+        # NB: a C++ ``try`` has no head, and a ``catch`` clause's binder does not
+        # come through here: the CFG records the handler as its own head and
+        # ``handler_def_use`` answers for it.
         else:
             self._process(node, defs, uses)
 
@@ -250,6 +289,12 @@ class CppDefUseDialect(BaseDefUseDialect):
         if node is None:
             return
         t = node.type
+        if t == _CATCH:  # a handler walked whole (inside a lambda or a ``switch`` arm)
+            sdu = self.handler_def_use(node)
+            defs.extend(sdu.defs)
+            uses.extend(sdu.uses)
+            self._process(node.child_by_field_name("body"), defs, uses)
+            return
         if t in _ASSIGN_KINDS:
             left = node.child_by_field_name("left")
             self._targets(left, defs, uses)
@@ -274,10 +319,11 @@ class CppDefUseDialect(BaseDefUseDialect):
                     self._process(child.child_by_field_name("value"), defs, uses)
                 elif child.type in self.identifier_kinds or child.type in _DECLARATOR_WRAPPERS:
                     # ``int x;`` / ``int* p;`` — a binding with no initialiser.
+                    # A ``static`` one is zero-initialised, which is a value.
                     binder = self._binder_identifier(child)
                     if binder is not None:
                         defs.append(self._occ(binder))
-                    self._declare(defs, start, child)
+                    self._declare(defs, start, child, valueless=not _is_static(node))
             return
         if t == _CALL:
             self.collect_reads(node, uses)

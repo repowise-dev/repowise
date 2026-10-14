@@ -31,8 +31,10 @@ walk that consumes these edges is bounded elsewhere.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import subprocess
 from functools import lru_cache
 from typing import Any
 
@@ -52,6 +54,7 @@ __all__ = [
     "RELATED_TAU",
     "SEMANTIC_SUPERSESSION_ENABLED",
     "SUPERSEDE_AUTOFLIP_CONFIDENCE",
+    "commits_in_range",
     "contradicts",
     "detect_supersessions_and_conflicts",
     "is_reversal",
@@ -59,6 +62,7 @@ __all__ = [
     "run_update_evolution",
     "scan_evolution_signals",
     "supersession_confidence",
+    "update_evidence_by_file",
 ]
 
 # ---------------------------------------------------------------------------
@@ -601,6 +605,72 @@ def pass1_evolution_candidates(
     return out
 
 
+def commits_in_range(repo_path: Any, base_ref: str, head: str | None) -> set[str]:
+    """8-char prefixes of the commits in ``base_ref..head``.
+
+    The prefix length matches the ``sha`` the git indexer stores in
+    ``significant_commits_json``. Empty when git fails, which leaves Pass 1
+    without commit evidence for this run rather than falling back to history.
+    """
+    try:
+        out = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "rev-list",
+                "--end-of-options",
+                f"{base_ref}..{head or 'HEAD'}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("decision_evolution.range_failed", error=str(exc))
+        return set()
+    if out.returncode != 0:
+        logger.warning("decision_evolution.range_failed", error=out.stderr.strip()[:200])
+        return set()
+    return {sha[:8] for sha in out.stdout.split()}
+
+
+def update_evidence_by_file(
+    file_diffs: list[Any],
+    git_meta_map: dict[str, dict],
+    range_shas: set[str],
+) -> dict[str, str]:
+    """Pass 1 evidence per changed file, limited to this update's commits.
+
+    A file's ``significant_commits_json`` is its whole history. Feeding all of
+    it made every update re-judge decisions against commits an earlier update
+    (or the initial index) had already seen, so only commits whose sha is in
+    *range_shas* count here. A commit outside the range was in the range of
+    the update that first brought it in, and its verdict was applied then.
+    """
+    evidence: dict[str, str] = {}
+    for fd in file_diffs:
+        if fd.status not in ("added", "modified"):
+            continue
+        parts: list[str] = []
+        if fd.trigger_commit_message:
+            parts.append(fd.trigger_commit_message)
+        if fd.diff_text:
+            parts.append(fd.diff_text)
+        meta = git_meta_map.get(fd.path)
+        if meta and range_shas:
+            for c in json.loads(meta.get("significant_commits_json", "[]") or "[]"):
+                if (c.get("sha") or "")[:8] not in range_shas:
+                    continue
+                msg = c.get("message") or ""
+                body = c.get("body") or ""
+                if msg or body:
+                    parts.append(f"{msg}\n{body}")
+        if parts:
+            evidence[fd.path] = "\n\n".join(parts)
+    return evidence
+
+
 _EVOLUTION_JUDGE_SYSTEM = (
     "You assess whether a code change evolves a previously recorded "
     "architectural decision. Return only valid JSON. "
@@ -629,6 +699,12 @@ Respond with a JSON object:
 - "reaffirmed": the change is consistent with and strengthens the decision.
 - "none": the change does not affect the decision.
 Quote only text that appears verbatim in the change evidence."""
+
+
+# The answer is ~150 tokens of JSON, but reasoning models count their thinking
+# against the same budget (OpenAI's max_completion_tokens). At 400, 17 of 121
+# real calls hit the cap and returned truncated JSON, which the parser drops.
+_JUDGE_MAX_TOKENS = 2000
 
 
 class _JudgeCandidate:
@@ -665,7 +741,7 @@ async def _judge_evolution(
     )
     try:
         response = await provider.generate(
-            _EVOLUTION_JUDGE_SYSTEM, prompt, max_tokens=400, temperature=0.1
+            _EVOLUTION_JUDGE_SYSTEM, prompt, max_tokens=_JUDGE_MAX_TOKENS, temperature=0.1
         )
     except Exception:
         return None
@@ -731,8 +807,12 @@ async def run_update_evolution(
     changed_files: set[str],
     evidence_by_file: dict[str, str],
     provider: Any | None = None,
+    max_concurrency: int = 1,
 ) -> dict[str, Any]:
     """Two-pass evolution for ``repowise update``, run *before* page regen.
+
+    ``max_concurrency`` bounds the Pass 2 judge calls in flight; the update
+    passes the generation config's ``max_concurrency``.
 
     Returns ``{"regen_files": set[str], "superseded": n, "amended": n,
     "reaffirmed": n}``. ``regen_files`` are the governed files of every decision
@@ -764,27 +844,50 @@ async def run_update_evolution(
     regen: set[str] = result["regen_files"]
     now = datetime.now(UTC)
 
-    for dec, evidence_text, _signals in candidates:
+    def _governed(dec: Any) -> list[str]:
         try:
-            governed = list(json.loads(dec.affected_files_json or "[]"))
+            return list(json.loads(dec.affected_files_json or "[]"))
         except (TypeError, ValueError):
-            governed = []
+            return []
 
-        if provider is None:
-            # No LLM available: a signal touched a governed file — re-render the
-            # governed pages so docs stay fresh, but don't change status.
-            regen.update(governed)
-            continue
+    if provider is None:
+        # No LLM available: a signal touched a governed file — re-render the
+        # governed pages so docs stay fresh, but don't change status.
+        for dec, _evidence, _signals in candidates:
+            regen.update(_governed(dec))
+        return result
 
-        verdict = await _judge_evolution(
-            provider,
-            title=dec.title,
-            decision=dec.decision,
-            rationale=dec.rationale,
-            evidence_text=evidence_text,
-        )
+    # The judge calls are independent, so they run concurrently under the same
+    # limit page generation uses. Only the calls overlap: verdicts are applied
+    # below one at a time, in candidate order, because the session is not safe
+    # for concurrent writes.
+    semaphore = asyncio.Semaphore(max(1, max_concurrency))
+
+    async def _judge_one(dec: Any, evidence_text: str) -> dict | None:
+        async with semaphore:
+            try:
+                return await _judge_evolution(
+                    provider,
+                    title=dec.title,
+                    decision=dec.decision,
+                    rationale=dec.rationale,
+                    evidence_text=evidence_text,
+                )
+            except Exception as exc:
+                # One bad candidate must not cost the others their verdicts.
+                logger.warning(
+                    "decision_evolution.judge_failed",
+                    decision_id=getattr(dec, "id", None),
+                    error=str(exc),
+                )
+                return None
+
+    verdicts = await asyncio.gather(*(_judge_one(dec, ev) for dec, ev, _s in candidates))
+
+    for (dec, _evidence, _signals), verdict in zip(candidates, verdicts, strict=True):
         if verdict is None:
             continue
+        governed = _governed(dec)
 
         kind = verdict["verdict"]
         if kind == "superseded":

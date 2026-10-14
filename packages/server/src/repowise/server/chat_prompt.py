@@ -185,16 +185,13 @@ def _assistant_history(content: dict[str, Any]) -> list[dict[str, Any]]:
     return messages
 
 
-def _db_messages_to_llm_format(db_messages: list) -> list[dict[str, Any]]:
-    """Convert DB chat messages to OpenAI-format message list."""
+def stored_messages_to_llm_format(messages: list) -> list[dict[str, Any]]:
+    """Convert stored chat messages (``id``, ``role``, ``content`` dict) to
+    an OpenAI-format message list."""
     llm_messages: list[dict[str, Any]] = []
 
-    for msg in db_messages:
-        content = (
-            json.loads(msg.content_json) if isinstance(msg.content_json, str) else msg.content_json
-        )
-        if isinstance(content, dict):
-            content = normalize_message_artifacts(content, message_id=str(msg.id))
+    for msg in messages:
+        content = normalize_message_artifacts(msg.content, message_id=str(msg.id))
 
         if msg.role == "user":
             llm_messages.append({"role": "user", "content": content.get("text", "")})

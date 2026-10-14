@@ -252,7 +252,7 @@ def _patch_pipeline(monkeypatch, answer_mod, *, symbol: dict):
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Store summary."
+            h["summary"] = "Store keeps todos."
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if i == 0:
@@ -940,6 +940,8 @@ def test_the_function_keyword_is_not_matched_as_an_identifier_prefix(line) -> No
         ("export function useThing(a) {", "useThing"),
         ("export function* gen() {", "gen"),
         ("export default async function run() {", "run"),
+        # A JS method named like a Ruby block closer is still a definition.
+        ("  end(chunk) {", "end"),
     ],
 )
 def test_real_function_declarations_still_match(line, expected) -> None:

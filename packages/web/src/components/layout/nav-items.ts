@@ -18,6 +18,7 @@ import {
   FolderTree,
   GitCommitHorizontal,
   GitMerge,
+  GitPullRequest,
   HeartPulse,
   LayoutDashboard,
   Layers,
@@ -87,6 +88,7 @@ export function repoNavGroups(repoId: string): NavGroup[] {
       labelKey: "groupPeopleAndHistory",
       items: [
         { label: "Commits", labelKey: "commits", href: `${base}/commits`, icon: GitCommitHorizontal },
+        { label: "Changes", labelKey: "changes", href: `${base}/changes`, icon: GitPullRequest },
         { label: "Contributors", labelKey: "contributors", href: `${base}/owners`, icon: Users },
         { label: "Decisions", labelKey: "decisions", href: `${base}/decisions`, icon: Lightbulb },
       ],

@@ -86,7 +86,7 @@ rest of [code health](CODE_HEALTH.md) and appear in its findings list.
 | Detector | Fires when | Severity |
 |---|---|---|
 | `knowledge_loss` | The file is still changing (a commit in 90 days, or a hotspot; never a file marked stable), its bus factor is 1, and the primary owner is no longer the recent owner or the recent owner makes under 20% of recent commits | High on a hotspot; medium when both conditions hold; otherwise low |
-| `ownership_risk` | The file has 5 or more commits and either 3 or more minor contributors (each under 5% of commits) or no author above 40% | Critical at 6+ minor contributors on a hotspot; high at 5+, or 3+ on a hotspot; medium at 3+; otherwise low |
+| `ownership_risk` | The file has 5 or more commits and either 3 or more minor contributors (each under 5% of commits) or no author above 40% | Critical at 6+ minor contributors on a hotspot; high at 5+, or 3+ on a hotspot; medium at 3+; otherwise low. Low on a file under 40 code lines |
 | `developer_congestion` | 5 or more contributors, the file is in the top quarter of churn for this repository, and nobody holds half the commits | High at 10+ contributors and 20+ commits in 90 days; medium at 7+ contributors or 12+ commits; otherwise low |
 
 A stable file whose author left never fires `knowledge_loss`: code nobody edits

@@ -15,7 +15,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Literal
 
-from .change_health.models import ChangeHealthDelta
+from .change_health.models import NOT_ANALYZABLE_DATA, ChangeHealthDelta
 from .health.scoring import ADVISORY_DIMENSION
 
 #: How much of a lane's evidence was actually computed.
@@ -120,14 +120,21 @@ def _plural(word: str, count: int) -> str:
     return word if count == 1 else f"{word}s"
 
 
+def _no_code_headline(delta: ChangeHealthDelta) -> str:
+    if NOT_ANALYZABLE_DATA in delta.skipped.values():
+        return (
+            "No code changed: only query, template or other data files, which health analysis "
+            "does not cover. They can still change behaviour, so test selection still applies."
+        )
+    return (
+        "No code changed: only documentation or configuration files; "
+        "health analysis does not cover them."
+    )
+
+
 def _verdict(delta: ChangeHealthDelta) -> tuple[ReviewStatus, str, EvidenceState]:
     if delta.status == "unavailable" and delta.skipped and not delta.code_skipped:
-        return (
-            "clear_in_analyzed_scope",
-            "No code changed: only documentation or configuration files; "
-            "health analysis does not cover them.",
-            "available",
-        )
+        return "clear_in_analyzed_scope", _no_code_headline(delta), "available"
     if delta.status in _NOT_COMPARED:
         return "unknown", f"Change health could not be compared: {delta.explanation}", "unavailable"
     if delta.status in _UNTRUSTWORTHY:

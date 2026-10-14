@@ -15,6 +15,7 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
 [The `security:` block](#the-security-block) ·
+[The `attribution:` block](#the-attribution-block) ·
 [The `refactoring:` block](#the-refactoring-block) ·
 [The `assertions:` block](#the-assertions-block)
 
@@ -566,6 +567,10 @@ Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 a confirmed (`active`) decision is never walked back to `proposed` by a
 re-extraction.
 
+### `.repowise/components.yaml`
+
+Components name the parts of a repository that health, hotspots, bus factor, test reach and dead code roll up to. The file is multi-document Backstage YAML (`Component`, `System` and `Group` on `backstage.io/v1alpha1`), with Repowise data in `repowise.dev/paths` (gitignore-style globs written with `/`, matched case-sensitively), `repowise.dev/criticality` (`low`, `medium`, `high`, `critical`), `repowise.dev/tags` and `repowise.dev/capability` annotations; a repo-root `catalog-info.yaml` is read the same way, so a developer portal and Repowise share one file. Without a file, components are derived from workspace services, then module pages, then top-level directories; a declared component claims the files its globs match (where two match a file, the first declared wins), and one named like a derived component replaces it and, with no paths of its own, keeps its directory. See [examples/components](../../examples/components/components.yaml) and `repowise components check`.
+
 ### The `security:` block
 
 Secret shapes of your own for `repowise security check`.
@@ -582,6 +587,19 @@ security:
 - A finding is keyed on file, kind and masked line, so two matches with the same visible prefix on one line share a baseline entry.
 - Exit 2 (`config_invalid`, every problem listed) on an unknown key, a missing name or regex, a duplicate or badly shaped name, a bad severity, or a regex that does not compile, can match zero characters, or nests repetition like `(a+)+` or `(a|aa)+` (best effort).
 - At most 50 patterns of 500 characters. Lines over 4096 characters are not matched and are counted (`long_lines_skipped` in JSON); a slow regex that passes the checks stays slow.
+
+### The `attribution:` block
+
+```yaml
+attribution:
+  enabled: true      # read public AI markers: bot authors, trailers, footers, git-ai notes, Agent Trace files
+  capture: off       # off, local or notes
+  agents: []         # agent target ids, e.g. claude-code, codex
+```
+
+The same block in `~/.repowise/config.yaml` applies to every repository, and the stricter value wins per key: `enabled: false` in either file, the lower capture level, and the agents both files list. With `enabled: false` nothing about AI is stored or shown in the API, CLI, MCP, web or wiki, and `DO_NOT_TRACK=1` keeps capture off. `repowise attribution status` shows the effective, repo and user values with the coverage of the indexed history.
+
+With `capture: local` the edit hooks of the listed agents (those with `Yes` under Attribution in [INTEGRATIONS.md](../agent/INTEGRATIONS.md)) record which lines the agent wrote, as hashes with the file, session and model, in `.repowise/attribution/`; prompts and code are never stored. `repowise update` matches them to new commits by content and labels a matched commit with the agent; an unmatched commit stays unknown. `capture: notes` also writes a git-ai v3 note on `refs/notes/ai` and sets `notes.rewriteRef` so the note follows a local amend or rebase; teammates see notes once you `git push origin refs/notes/ai` and add the fetch refspec `repowise doctor` names. Cursor records edits through an `afterFileEdit` hook, which `repowise agents add --target=cursor --scope=user` adds once your user config captures Cursor.
 
 ### The `refactoring:` block
 
@@ -984,7 +1002,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `EDENAI_EMBEDDING_TIMEOUT` | As above, `edenai` only |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |
-| `OLLAMA_EMBEDDING_TIMEOUT` | As above, `ollama` only; raise it for long pages on slow local models |
+| `OLLAMA_EMBEDDING_TIMEOUT` | As above, `ollama` only. With neither variable set, an Ollama request gets 30s plus 2ms per input character, so a full chunk of long pages on a CPU-only model is not cut off. Setting either variable pins the timeout to that value |
 
 ### Server and database
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import json
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,7 +19,7 @@ import structlog
 
 if TYPE_CHECKING:
     from .git_indexer import RenameTrail, _CommitRec
-    from .git_indexer.agent_provenance import AgentProvenance
+    from .git_indexer.agent_provenance import AgentProvenance, GitAiNote
 
 logger = structlog.get_logger(__name__)
 
@@ -50,28 +51,72 @@ def _count_non_merge_commits(repo: object) -> int | None:
         return None
 
 
-def load_git_ai_note_agents(repo: object, commit_limit: int | None) -> dict[str, str]:
-    """Map ``commit_sha → agent`` from git-ai authorship notes (``refs/notes/ai``).
+def load_git_ai_note_agents(repo: object, commit_limit: int | None) -> dict[str, GitAiNote]:
+    """Map ``commit_sha → GitAiNote`` from git-ai authorship notes (``refs/notes/ai``).
 
-    A repo without the ref costs one ``for-each-ref`` and gets ``{}``. The
-    notes walk covers *commit_limit* commits, or the whole history with
-    ``None``. Any failure returns ``{}``: a notes read must never break the git
-    index. See the git-ai standard v3.0.0 for the note format.
+    Only notes that name an agent or attest a human are kept. A repo without
+    the ref costs one ``for-each-ref`` and gets ``{}``, as does a repo with
+    ``attribution.enabled: false``. The notes walk covers *commit_limit*
+    commits, or the whole history with ``None``. Any failure returns ``{}``: a
+    notes read must never break the git index. See the git-ai standard v3.0.0
+    for the note format.
     """
-    from .git_indexer import _FIELD_SEP, _RECORD_SEP
-    from .git_indexer.agent_provenance import _agent_from_git_ai_note
+    from repowise.core.attribution import attribution_enabled
 
-    agents: dict[str, str] = {}
+    from .git_indexer import _FIELD_SEP, _RECORD_SEP
+    from .git_indexer.agent_provenance import parse_git_ai_note
+
+    if not attribution_enabled(getattr(repo, "working_tree_dir", None)):
+        return {}
+    notes: dict[str, GitAiNote] = {}
     for chunk in _git_ai_notes_log(repo, commit_limit).split(_RECORD_SEP):
         if not chunk.strip():
             continue
-        sha, sep, note = chunk.partition(_FIELD_SEP)
+        sha, sep, raw = chunk.partition(_FIELD_SEP)
         if not sep:
             continue
-        agent = _agent_from_git_ai_note(note)
-        if agent:
-            agents[sha.strip()] = agent
-    return agents
+        note = parse_git_ai_note(raw)
+        if note.agent or note.human:
+            notes[sha.strip()] = note
+    _merge_capture_bindings(repo, notes)
+    return notes
+
+
+def _merge_capture_bindings(repo: object, notes: dict[str, GitAiNote]) -> None:
+    """Add commits this machine's edit capture bound; a real note wins."""
+    root = getattr(repo, "working_tree_dir", None)
+    if not root:
+        return
+    from repowise.core.attribution import load_attribution_settings
+    from repowise.core.edit_capture.store import bound_commits
+
+    # Bindings are consent-gated at read time too: turning capture off stops them.
+    if load_attribution_settings(root).capture == "off":
+        return
+
+    from .git_indexer.agent_provenance import GitAiNote, _normalize_agent_token
+
+    for sha, row in bound_commits(root).items():
+        label = _normalize_agent_token(row["agent"].replace("_", " "), allow_slug=True)
+        if label and sha not in notes:
+            notes[sha] = GitAiNote(
+                agent=label, source="edit_capture", model=_binding_model(row, row["agent"])
+            )
+
+
+def _binding_model(row: dict, agent: str) -> str | None:
+    """The model behind most of *agent*'s lines in a binding row; None if unrecorded or tied."""
+    from .git_indexer.agent_provenance import _MODEL_ID_MAXLEN, _dominant
+
+    lines: Counter[str] = Counter()
+    for session in row.get("sessions") or []:
+        if not isinstance(session, dict) or session.get("agent") != agent:
+            continue
+        model, files = session.get("model"), session.get("files")
+        if isinstance(model, str) and model.strip() and isinstance(files, dict):
+            count = sum(len(n) for n in files.values() if isinstance(n, list))
+            lines[model.strip()[:_MODEL_ID_MAXLEN]] += count
+    return _dominant(+lines)
 
 
 def _git_ai_notes_log(repo: object, commit_limit: int | None) -> str:
@@ -112,7 +157,9 @@ def _record_ts(record: str) -> int:
         return 0
 
 
-def _window_records(repo: object, depth: int, cache_dir: Path | None) -> list[str]:
+def _window_records(
+    repo: object, depth: int, cache_dir: Path | None, *, cache_writable: bool = True
+) -> list[str]:
     """The raw log records of the newest ``depth`` non-merge commits.
 
     Git computes ``--numstat`` for every commit in the window, and on a
@@ -122,6 +169,8 @@ def _window_records(repo: object, depth: int, cache_dir: Path | None) -> list[st
     only for ``cached_head..HEAD``. The merged list is ordered the way the
     full walk orders it (committer time, newest first) and cut to ``depth``,
     so the parse below sees the same records a fresh walk would produce.
+    ``cache_writable=False`` reads the cache but leaves it as it was, for the
+    commands that only read the repo.
 
     A cached HEAD that is not an ancestor of the current one (a rebase, a
     reset) or a cache of another depth or version is discarded and the full
@@ -143,7 +192,8 @@ def _window_records(repo: object, depth: int, cache_dir: Path | None) -> list[st
         records = None
     if records is None:
         records = _log_records(repo, f"-{depth}")
-    _write_window_cache(cache_path, head, depth, records)
+    if cache_writable:
+        _write_window_cache(cache_path, head, depth, records)
     return records
 
 
@@ -324,32 +374,23 @@ class _CommitLabeler:
     ) -> None:
         from .git_indexer.agent_provenance import AgentProvenanceClassifier, AgentTraceIndex
 
-        self._note_agents = load_git_ai_note_agents(repo, note_depth)
-        self._trace_index = trace_index if trace_index is not None else AgentTraceIndex.load(repo)
         self._classifier = classifier if classifier is not None else AgentProvenanceClassifier()
+        enabled = getattr(self._classifier, "enabled", True)
+        self._notes = load_git_ai_note_agents(repo, note_depth) if enabled else {}
+        if not enabled:
+            trace_index = AgentTraceIndex()
+        self._trace_index = trace_index if trace_index is not None else AgentTraceIndex.load(repo)
         self._sink = sink
 
     def label(self, header: dict, changes: list[tuple[str, int, int]]) -> AgentProvenance:
-        # The agent-trace channel checks overlap with the commit's changed paths.
-        trace_hit = (
-            self._trace_index.resolve(  # type: ignore[attr-defined]
-                header["sha"], header["parents"], {t for t, _, _ in changes}
-            )
-            if self._trace_index
-            else None
-        )
-        prov: AgentProvenance = self._classifier.classify(  # type: ignore[attr-defined]
-            header["author_name"],
-            header["author_email"],
-            header["committer_name"],
-            header["committer_email"],
-            f"{header['subject']}\n{header['body']}",
-            note_agent=self._note_agents.get(header["sha"]),
-            trace_agent=trace_hit[0] if trace_hit else None,
-            trace_confidence=trace_hit[1] if trace_hit else "high",
+        from .git_indexer.agent_provenance import classify_commit
+
+        prov, trace_hit = classify_commit(
+            self._classifier, header, {t for t, _, _ in changes}, self._notes, self._trace_index
         )
         if self._sink is not None:
-            self._sink.append(_sink_row(header, changes, prov, trace_hit))
+            note = self._notes.get(header["sha"])
+            self._sink.append(_sink_row(header, changes, prov, trace_hit, note))
         return prov
 
 
@@ -358,6 +399,7 @@ def _sink_row(
     changes: list[tuple[str, int, int]],
     prov: AgentProvenance,
     trace_hit: tuple[str, str, str | None] | None,
+    note: GitAiNote | None = None,
 ) -> dict:
     return {
         "sha": header["sha"],
@@ -371,13 +413,23 @@ def _sink_row(
         "agent_autonomy_tier": prov.autonomy_tier,
         "agent_channel": prov.channel,
         "agent_confidence": prov.confidence,
-        # Model id only when the trace channel actually won: a note
-        # or service-identity match can outrank the trace above, and
-        # only the trace record carries a model.
-        "agent_model_id": (
-            trace_hit[2] if (trace_hit and prov.channel == "agent_trace") else None
-        ),
+        "attribution": prov.attribution,
+        # Model id only from the record whose channel won: a
+        # service-identity match carries none.
+        "agent_model_id": _winning_model(prov, trace_hit, note),
     }
+
+
+def _winning_model(
+    prov: AgentProvenance,
+    trace_hit: tuple[str, str, str | None] | None,
+    note: GitAiNote | None,
+) -> str | None:
+    if trace_hit and prov.channel == "agent_trace":
+        return trace_hit[2]
+    if note and prov.agent and prov.channel == note.source:
+        return note.model
+    return None
 
 
 class _FileBuckets:
@@ -419,6 +471,7 @@ class _FileBuckets:
                         deleted=deleted,
                         agent=prov.agent,
                         agent_tier=prov.autonomy_tier,
+                        attribution=prov.attribution,
                         pure_move=target in pure_moves,
                     )
                 )
@@ -434,6 +487,7 @@ def load_commit_index(
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
     cache_dir: Path | None = None,
+    cache_writable: bool = True,
     stats_sink: dict[str, int | bool] | None = None,
     renames: RenameTrail | None = None,
 ) -> dict[str, list[_CommitRec]]:
@@ -506,7 +560,12 @@ def load_commit_index(
             return {}
 
     try:
-        records = _window_records(repo, depth, cache_dir if since_ts is None else None)
+        records = _window_records(
+            repo,
+            depth,
+            cache_dir if since_ts is None else None,
+            cache_writable=cache_writable,
+        )
     except Exception as exc:
         logger.warning("repo_commit_index_failed", error=str(exc))
         return {}
@@ -731,6 +790,7 @@ def load_sampled_commit_index(
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
     cache_dir: Path | None = None,
+    cache_writable: bool = True,
 ) -> HistorySample:
     """Resolve the recent, deep, and fallback sampling lanes once.
 
@@ -753,6 +813,7 @@ def load_sampled_commit_index(
         provenance_classifier=provenance_classifier,
         trace_index=trace_index,
         cache_dir=cache_dir,
+        cache_writable=cache_writable,
         stats_sink=recent_stats,
         renames=renames,
     )

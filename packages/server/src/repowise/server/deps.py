@@ -4,22 +4,27 @@ Provides Depends() callables for:
 - Database sessions (async, auto-commit/rollback)
 - Vector store access
 - Full-text search access
-- Optional API key authentication
+- API key authentication, returning the caller's ``Principal``
 """
 
 from __future__ import annotations
 
-import hmac
 import ipaddress
 import logging
 import os
 from collections.abc import AsyncGenerator
 
 from fastapi import HTTPException, Request, Security
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyHeader, SecurityScopes
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.database import get_session
+from repowise.server.auth import (
+    PER_CALL_TOOL_SCOPE,
+    Principal,
+    get_authenticator,
+    get_authorizer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,44 +129,102 @@ def client_is_local(request: Request) -> bool:
 
 
 def auth_is_open(request: Request) -> bool:
-    """True when no key is required (no ``REPOWISE_API_KEY``, local caller)."""
-    return _API_KEY is None and client_is_local(request)
+    """True when no credential is required (none configured, local caller)."""
+    return not get_authenticator().configured() and client_is_local(request)
 
 
-def bearer_is_valid(auth: str | None) -> bool:
-    """True iff ``auth`` carries the configured API key as a bearer token.
+#: Routes a repo-scoped principal may call without naming a repo in the path,
+#: because the handler filters its output to, or checks, the principal's scope.
+_SCOPE_FILTERED_ROUTES = frozenset(
+    {
+        ("GET", "/api/repos"),
+        ("GET", "/api/repos/summary"),
+        ("POST", "/api/chat/sessions"),
+        ("GET", "/api/chat/sessions"),
+        ("POST", "/api/chat/sessions/{session_id}/messages"),
+    }
+)
 
-    Returns False (rather than raising) so callers that also accept another
-    credential — the SSE stream token — can fall through to it. Always False
-    when no key is configured; the open-access decision is ``auth_is_open``.
-    """
-    if _API_KEY is None:
-        return False
-    if not auth or not auth.startswith("Bearer "):
-        return False
-    return hmac.compare_digest(auth[7:], _API_KEY)
+
+async def _repo_identifiers(request: Request, repo_id: str) -> tuple[str, ...]:
+    """The id plus the stored name, so a scope may list either."""
+    from repowise.core.persistence import crud
+
+    try:
+        factory = resolve_session_factory(request.app.state, repo_id)
+        async with get_session(factory) as session:
+            repo = await crud.get_repository(session, repo_id)
+    except Exception:
+        repo = None
+    return (repo_id, repo.name) if repo is not None else (repo_id,)
+
+
+async def _enforce_repo_scope(request: Request, principal: Principal) -> None:
+    """403 unless the route's repo is in scope. A restricted principal is
+    refused on routes that name no repo, except the filtered listings."""
+    if principal.repo_scope is None:
+        return
+    authorizer = get_authorizer()
+    repo_id = request.path_params.get("repo_id") or request.query_params.get("repo_id")
+    if repo_id:
+        if authorizer.can_access_repo(principal, (repo_id,)):
+            return
+        if authorizer.can_access_repo(principal, await _repo_identifiers(request, repo_id)):
+            return
+    else:
+        route = request.scope.get("route")
+        if (request.method, getattr(route, "path", None)) in _SCOPE_FILTERED_ROUTES:
+            return
+    raise HTTPException(status_code=403, detail="Repository is outside this credential's scope")
+
+
+def request_principal(request: Request) -> Principal | None:
+    """The principal ``verify_api_key`` stored on this request, if any."""
+    return getattr(request.state, "principal", None)
+
+
+def scoped_repo_id(request: Request) -> str | None:
+    """The repo a repo-restricted principal was authorised for on this request;
+    None for unrestricted callers. Routes that load an object by its own id
+    check it belongs to this repo."""
+    principal = request_principal(request)
+    if principal is None or principal.repo_scope is None:
+        return None
+    return request.path_params.get("repo_id") or request.query_params.get("repo_id")
 
 
 async def verify_api_key(
+    security_scopes: SecurityScopes,
     request: Request,
     auth: str | None = Security(_header_scheme),
-) -> None:
-    """API key verification.
+) -> Principal:
+    """Authenticate the caller and return its :class:`Principal`.
 
-    When REPOWISE_API_KEY is not set, only local callers are served; a request
+    With no credential configured only local callers are served; a request
     from anywhere else is rejected (fail-closed for network-exposed
-    deployments, however the server was started). When set, requests must
-    include ``Authorization: Bearer <key>``.
+    deployments, however the server was started). Otherwise requests must
+    include ``Authorization: Bearer <key>`` carrying ``REPOWISE_API_KEY`` or a
+    scoped token. The principal is also stored on ``request.state.principal``.
+
+    ``auth`` is read again by the authenticator; declaring it here keeps the
+    bearer scheme in the OpenAPI document. ``Security(verify_api_key,
+    scopes=["tool:<name>"])`` additionally requires those tools in scope. A
+    tool-scoped principal is refused on any route that declares neither tool
+    scopes nor ``PER_CALL_TOOL_SCOPE``.
     """
-    if _API_KEY is None:
-        if not client_is_local(request):
+    principal = await get_authenticator().authenticate(request)
+    request.state.principal = principal
+    await _enforce_repo_scope(request, principal)
+    scopes = security_scopes.scopes
+    if principal.tool_scope is not None and not any(
+        s == PER_CALL_TOOL_SCOPE or s.startswith("tool:") for s in scopes
+    ):
+        raise HTTPException(status_code=403, detail="This credential is limited to tools")
+    authorizer = get_authorizer()
+    for scope in scopes:
+        tool = scope.removeprefix("tool:")
+        if tool != scope and not authorizer.can_use_tool(principal, tool):
             raise HTTPException(
-                status_code=403,
-                detail="Server is reachable from the network but REPOWISE_API_KEY "
-                "is not set. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+                status_code=403, detail=f"Tool '{tool}' is outside this credential's scope"
             )
-        return
-    if not auth or not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing API key")
-    if not hmac.compare_digest(auth[7:], _API_KEY):
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    return principal

@@ -298,8 +298,10 @@ def ensure_full_surface() -> Any:
             )
 
     from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.plugins import load_plugins
     from repowise.server.mcp_server._tool_selection import snapshot_full_surface
 
+    load_plugins()  # plugin tools register before the surface is attached
     mcp_tool_registry.apply(_mcp, middleware=registered_tool)
 
     # Snapshot the full registered surface so per-server tool selection
@@ -330,6 +332,7 @@ _STATE_NAMES = frozenset(
         "_decision_store",
         "_fts",
         "_repo_path",
+        "_served_repo_id",
         "_vector_store_ready",
         "_lancedb_ready",
         "_registry",
@@ -338,6 +341,7 @@ _STATE_NAMES = frozenset(
         "_embedder_status",
         "_release_check",
         "_release_announced",
+        "_keyless_note_announced",
     }
 )
 

@@ -104,7 +104,7 @@ export default async function CommitsPage({
         </OverviewSection>
       )}
 
-      {trend && trend.agent_commits > 0 && <AgentTrendStrip trend={trend} />}
+      {trend && trend.enabled && trend.agent_commits > 0 && <AgentTrendStrip trend={trend} />}
 
       <OverviewSection
         title={t("reviewQueueTitle")}
@@ -115,6 +115,7 @@ export default async function CommitsPage({
           repoId={id}
           initial={firstPage}
           total={total}
+          attributionEnabled={trend?.enabled !== false}
           counts={
             stats
               ? {

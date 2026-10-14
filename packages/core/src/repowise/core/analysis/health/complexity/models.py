@@ -27,6 +27,8 @@ class ConditionComplexity:
     line: int  # 1-indexed start line of the enclosing construct
     operator_count: int
     enclosing_construct: str  # "if" | "while" | "for" | "ternary" | "case"
+    # One operator kind and no negation (``a || b || c``): a list, not a knot.
+    flat_chain: bool = False
 
 
 @dataclass
@@ -196,8 +198,11 @@ class ClassComplexity:
     ``components`` carries those connected components as ``CohesionGroup``
     records (the method+field membership behind the ``lcom4`` integer).
     Empty when there is no cohesion signal (``lcom4`` was the ``1`` safety
-    valve); otherwise ``len(components) == lcom4``. The Extract Class
-    refactoring detector reads it directly — it *is* the split.
+    valve). Implicit-receiver languages keep only the components that count,
+    so ``len(components) == lcom4``; explicit-receiver languages keep every
+    component and ``lcom4`` counts those that touch a field (see
+    ``_compute_lcom4``). The Extract Class refactoring detector reads it
+    directly: it *is* the split.
     """
 
     name: str

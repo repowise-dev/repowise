@@ -64,13 +64,16 @@ def is_go_file_reachable(
     package is an entry ``package main``). See the module docstring for the
     ``func init`` rationale.
     """
-    if graph.in_degree(node) > 0:
+    # Called, not imported at module level: file_reachability imports this module.
+    from .file_reachability import has_dependency_importer
+
+    if has_dependency_importer(graph, node):
         return True
 
     for sibling in package_files.get(_pkg_dir(node), ()):
         if sibling == node:
             continue
-        if graph.in_degree(sibling) > 0:
+        if has_dependency_importer(graph, sibling):
             return True
         if is_reachability_root(graph.nodes.get(sibling, {})):
             return True

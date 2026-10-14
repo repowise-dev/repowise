@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from repowise.core.fs_walk import walk_repo
-from repowise.core.ingestion.traverser import load_gitignore_spec
+from repowise.core.ingestion.traverser import is_output_dir, load_gitignore_spec
 
 from .source_files import _SKIP_DIRS
 
@@ -85,7 +85,9 @@ def find_adr_files(repo_path: Path) -> list[Path]:
     ignore = load_gitignore_spec(repo_path)
     conventional: list[Path] = []
     loose: list[Path] = []
-    for dirpath, dirnames, filenames in walk_repo(repo_path, prune_dirs=_SKIP_DIRS):
+    for dirpath, dirnames, filenames in walk_repo(
+        repo_path, prune_dirs=_SKIP_DIRS, prune=is_output_dir
+    ):
         rel_dir = dirpath.relative_to(repo_path).as_posix()
         rel_dir = "" if rel_dir == "." else rel_dir
         # Prune ignored and packaging-metadata subtrees in place. Ignored

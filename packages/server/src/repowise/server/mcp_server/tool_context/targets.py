@@ -18,8 +18,10 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.communities import has_community
 from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.attribution import attribution_enabled, file_share
 from repowise.core.generation.page_selection import STALE_STATUSES
 from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
@@ -42,7 +44,7 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
-from repowise.server.mcp_server._basis import call_resolution_basis
+from repowise.server.mcp_server._basis import call_resolution_basis, same_file_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._edit_sites import reference_edit_set
 from repowise.server.mcp_server._helpers import (
@@ -55,11 +57,16 @@ from repowise.server.mcp_server._helpers import (
     read_repo_file_text,
 )
 from repowise.server.mcp_server._index_state import index_state_key
-from repowise.server.mcp_server._meta import uncommitted_targets
+from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity, symbol_identity
-from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows, symbol_id_variants
+from repowise.server.mcp_server._symbol_lookup import (
+    nearest_symbol_ids,
+    resolve_symbol_rows,
+    symbol_id_variants,
+)
 from repowise.server.mcp_server.tool_context.enrichment import (
     _DOC_DRIFT_PATH,
+    _MIN_CALL_CONFIDENCE,
     _resolve_call_graph,
     _resolve_community,
     _resolve_health,
@@ -102,6 +109,32 @@ _CALLABLE_KINDS = frozenset({"function", "method", "macro", "decorator"})
 def _kind_rank(kind: str | None) -> int:
     kind = (kind or "").lower()
     return 0 if kind in _TYPE_KINDS else 1 if kind in _CALLABLE_KINDS else 2
+
+
+async def _did_you_mean(
+    session: AsyncSession,
+    repo_id: str,
+    target: str,
+    file_path: str | None = None,
+    exclude_spec: Any = None,
+) -> dict[str, list[str]]:
+    """``{"did_you_mean": [...]}``: the nearest symbol ids to a missed name, or ``{}``.
+
+    The missed name follows the file head when ``file_path`` is given or the
+    head is a path (``src/a.py::sned``), else it is the whole target
+    (``Clinet.send``, ``httpx.Client::send``); a plain path has none. A path
+    has a separator, as in ``resolve_symbol_rows``' path-less rung.
+    """
+    head, sep, tail = target.partition("::")
+    path_head = any(c in head for c in "/\\")
+    if file_path or (sep and path_head):
+        query = tail
+    elif path_head:
+        return {}
+    else:
+        query = target
+    ids = await nearest_symbol_ids(session, repo_id, query, file_path, exclude_spec)
+    return {"did_you_mean": [symbol_identity(sid) for sid in ids]} if ids else {}
 
 
 async def _compact_symbol_rows(
@@ -517,6 +550,9 @@ async def _resolve_one_target(
                 )
                 sym_matches = list(res.scalars().all())
                 if not sym_matches:
+                    # "Client.send": a qualified name with no file.
+                    sym_matches = await resolve_symbol_rows(session, repo_id, target)
+                if not sym_matches:
                     res = await session.execute(
                         select(WikiSymbol)
                         .where(
@@ -634,25 +670,34 @@ async def _resolve_one_target(
             file_part = target.split("::", 1)[0]
             if file_part and file_part != target and not is_excluded(file_part, exclude_spec):
                 # file_part contains no "::", so this recursion is depth-1. The
-                # caller is hunting for a name, so the symbol list is uncapped.
+                # caller is hunting for a name: ``did_you_mean`` picks the
+                # closest from every symbol of the file, so the list keeps its cap.
                 card = await _resolve_one_target(
                     session,
                     repository,
                     file_part,
-                    None if include is None else include | {"symbols"},
+                    include,
                     compact,
                     exclude_spec=exclude_spec,
                     repo_root=repo_root,
                     collector=collector,
                     as_of_ts=as_of_ts,
                 )
-                if "error" not in card:
+                # Only a file card is the degrade; a symbol card for the head
+                # ("Command" of "Command::Nope") would claim the wrong symbol.
+                if "error" not in card and card.get("type") == "file":
                     card["target"] = target
                     card["resolved_to"] = file_part
+                    nearest = await _did_you_mean(session, repo_id, target, file_part)
+                    card.update(nearest)
                     card["note"] = (
                         f"No symbol matched {target.split('::', 1)[1]!r} in this file; "
-                        f"showing the card for {file_part!r} instead. Pick the symbol "
-                        "you meant from the symbol list."
+                        f"showing the card for {file_part!r} instead. "
+                        + (
+                            "Closest names are in did_you_mean."
+                            if nearest
+                            else "Pass include=['symbols'] for the full symbol list."
+                        )
                     )
                     return card
 
@@ -683,13 +728,11 @@ async def _resolve_one_target(
                 )
                 suggestions = [row[0] for row in res.all() if row[0] != target]
             suggestions = filter_path_list(suggestions, exclude_spec)
+            miss: dict[str, Any] = {"target": target, "error": f"Target not found: '{target}'"}
             if suggestions:
-                return {
-                    "target": target,
-                    "error": f"Target not found: '{target}'",
-                    "suggestions": suggestions,
-                }
-            return {"target": target, "error": f"Target not found: '{target}'"}
+                miss["suggestions"] = suggestions
+            miss.update(await _did_you_mean(session, repo_id, target, exclude_spec=exclude_spec))
+            return miss
 
     result_data["target"] = target
     result_data["type"] = target_type
@@ -844,7 +887,7 @@ async def _resolve_one_target(
                     )
                 )
                 gn = res.scalar_one_or_none()
-                if gn and gn.community_id is not None:
+                if gn and has_community(gn.community_id):
                     _cmeta: dict[str, Any] = {}
                     with contextlib.suppress(json.JSONDecodeError, TypeError):
                         _cmeta = json.loads(gn.community_meta_json or "{}")
@@ -953,7 +996,7 @@ async def _resolve_one_target(
             # survive matters: rank by source-file PageRank, path breaking ties.
             sym_node_id = getattr(sym, "symbol_id", None) or getattr(sym, "node_id", None)
             res = await session.execute(
-                select(GraphEdge.source_node_id, GraphNode.file_path)
+                select(GraphEdge.source_node_id, GraphNode.file_path, GraphEdge.confidence)
                 .outerjoin(
                     GraphNode,
                     (GraphNode.repository_id == GraphEdge.repository_id)
@@ -967,13 +1010,24 @@ async def _resolve_one_target(
             )
             # An id the graph no longer holds still names its file, so fall
             # back to the path half rather than dropping a real user.
-            user_files = {
-                file_path or source_node_id.split("::", 1)[0]
-                for source_node_id, file_path in res.all()
-            }
+            user_files: set[str] = set()
             # A same-file caller is a real use, but naming the file already
             # being read spends a capped row; ``callers`` has it at symbol grain.
+            # Counted first, by the confidence floor include=["callers"] serves
+            # (a recursive call is not a user), so an empty list can say so.
+            same_file_users: set[str] = set()
+            for source_node_id, file_path, confidence in res.all():
+                path = file_path or source_node_id.split("::", 1)[0]
+                user_files.add(path)
+                if (
+                    path == sym.file_path
+                    and source_node_id != sym_node_id
+                    and (confidence or 0) >= _MIN_CALL_CONFIDENCE
+                ):
+                    same_file_users.add(source_node_id)
             user_files.discard(sym.file_path)
+            # Before exclusion: an excluded user elsewhere is still a user.
+            other_file_users = bool(user_files)
             # Looked up by the folded path, not joined above: a source whose
             # symbol node is missing has no file to join through and would rank
             # 0.0. Chunked because this binds one parameter per using file.
@@ -1001,7 +1055,10 @@ async def _resolve_one_target(
             )
             # No users found says nothing on its own until the reader knows how
             # much of this language's call graph the resolver actually bound.
-            if not docs.get("used_by"):
+            # Same-file users make the zero a fact about other files instead.
+            if not docs.get("used_by") and same_file_users and not other_file_users:
+                docs["used_by_basis"] = same_file_basis(len(same_file_users))
+            elif not docs.get("used_by"):
                 docs["used_by_basis"] = await call_resolution_basis(
                     session,
                     repo_id,
@@ -1108,10 +1165,17 @@ async def _resolve_one_target(
                 if recent and recent != meta.primary_owner_name:
                     ownership["recent_owner"] = recent
                     ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
-                # Agent provenance — only surfaced when agent-attributed
-                # commits exist, so human-only files stay noise-free.
-                if getattr(meta, "agent_commit_count", 0):
-                    ownership["agent_authored_pct"] = getattr(meta, "agent_authored_pct", None)
+                # Agent provenance, only when agent-attributed commits exist
+                # and attribution is on. The share is of commits with a known
+                # source, with its coverage; unknown is never human.
+                if getattr(meta, "agent_commit_count", 0) and attribution_enabled(
+                    repository.local_path
+                ):
+                    ownership["agent_share"] = file_share(
+                        meta.agent_commit_count,
+                        getattr(meta, "attribution_known_count", 0),
+                        meta.commit_count_total,
+                    ).summary()
                     ownership["agent_commit_count"] = meta.agent_commit_count
                     with contextlib.suppress(TypeError, ValueError):
                         ownership["agent_tier_counts"] = json.loads(
@@ -1271,7 +1335,7 @@ async def _resolve_one_target(
             freshness["freshness_status"] = None
             freshness["is_stale"] = None
         if file_path_for_git and uncommitted_targets(
-            getattr(repository, "local_path", None), [file_path_for_git]
+            served_root(repository, repo_root), [file_path_for_git]
         ):
             freshness["working_tree"] = "modified"
         result_data["freshness"] = freshness
@@ -1324,7 +1388,7 @@ async def _resolve_one_target(
             want_callees=want_callees,
             exclude_spec=exclude_spec,
             collector=collector,
-            repo_root=repo_root or getattr(repository, "local_path", None),
+            repo_root=served_root(repository, repo_root),
         )
 
     # --- Reference edit set: every live site naming the symbol ---
@@ -1343,7 +1407,7 @@ async def _resolve_one_target(
                 key=lambda g: (g.node_id != symbol_node_id, g.node_id),
                 default=None,
             )
-        root = repo_root or getattr(repository, "local_path", None)
+        root = served_root(repository, repo_root)
         if ref_node is not None and root:
             result_data["references"] = await reference_edit_set(
                 session, repo_id, root, ref_node, collector

@@ -73,6 +73,7 @@ async def index_repo_full(
                 session,
                 name=result.repo_name,
                 local_path=str(repo_path),
+                stamp_head=True,
             )
             stale_page_ids = (
                 await persist_pipeline_result(

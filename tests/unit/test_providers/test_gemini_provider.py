@@ -267,3 +267,16 @@ async def test_provider_error_message_includes_exception_type():
         mock_client.return_value.models.generate_content.side_effect = CustomError("bad request")
         with pytest.raises(ProviderError, match="CustomError"):
             await provider.generate("sys", "user")
+
+
+async def test_stream_chat_ends_with_the_usage_of_its_calls():
+    provider = GeminiProvider(api_key="fake-key")
+    response = _make_mock_response()
+    response.candidates[0].content.parts = [MagicMock(text="hi", function_call=None)]
+    provider._client = MagicMock()
+    provider._client.models.generate_content.return_value = response
+
+    events = [e async for e in provider.stream_chat([], [], "sys")]
+
+    assert [e.type for e in events] == ["text_delta", "stop", "usage"]
+    assert (events[-1].input_tokens, events[-1].output_tokens) == (100, 50)

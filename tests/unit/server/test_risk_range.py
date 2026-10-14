@@ -82,7 +82,7 @@ async def test_risk_range_happy_path(client: AsyncClient, git_repo: Path, tmp_pa
     assert data["review_priority"] is None
     assert data["classification"] is None
     assert data["fallback_band"] in {"low", "moderate", "high"}
-    assert data["risk_authority"]["primary_fields"] == ["risk_percentile", "classification"]
+    assert data["risk_authority"]["primary_fields"] == ["risk_percentile"]
     assert data["risk_authority"]["score_role"] == "supporting_diff_shape_signal"
     assert "risk_scales" not in data
 
@@ -151,6 +151,8 @@ def test_baseline_samples_filters_excluded_paths(git_repo: Path) -> None:
     samples = baseline_samples(str(git_repo), "HEAD", 2, (), exclude_patterns=("tests/",))
 
     assert len(samples) == 1
+    # Inclusion is the same filter from the other side.
+    assert len(baseline_samples(str(git_repo), "HEAD", 2, (), include_paths=("tests/",))) == 1
 
 
 def test_densities_excluding_omits_target_ref(git_repo: Path) -> None:

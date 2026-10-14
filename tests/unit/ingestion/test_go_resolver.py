@@ -12,6 +12,10 @@ from repowise.core.ingestion.resolvers.go import (
     resolve_go_import,
     resolve_go_import_all,
 )
+from repowise.core.ingestion.resolvers.go_workspace import (
+    build_go_package_index,
+    exported_go_files,
+)
 
 
 def _ctx(repo: Path, paths: list[str], go_modules: tuple = ()) -> ResolverContext:
@@ -110,3 +114,25 @@ class TestResolveGoImportAll:
         ctx = _ctx(tmp_path, ["main.go"], go_modules=(("", "github.com/me/app"),))
         result = resolve_go_import_all("github.com/spf13/cobra", "main.go", ctx)
         assert result == ("external:github.com/spf13/cobra",)
+
+
+class TestLegacyModulePathFallback:
+    def test_fallback_resolves_imports_but_exports_nothing(self, tmp_path: Path) -> None:
+        # Legacy ``go_module_path`` only: no go_modules tuple and no go.mod on disk.
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "util.go").write_text(
+            "package pkg\n\nfunc Util() {}\n", encoding="utf-8"
+        )
+        ctx = ResolverContext(
+            path_set={"pkg/util.go"},
+            stem_map={"util": ["pkg/util.go"]},
+            graph=nx.DiGraph(),
+            repo_path=tmp_path,
+            go_module_path="github.com/me/root",
+        )
+        index = build_go_package_index(ctx)
+        # The fallback still maps import paths...
+        assert index.import_path_to_dir == {"github.com/me/root/pkg": "pkg"}
+        # ...but it is not a real module, so nothing counts as exported.
+        assert index.modules == ()
+        assert exported_go_files(index) == []

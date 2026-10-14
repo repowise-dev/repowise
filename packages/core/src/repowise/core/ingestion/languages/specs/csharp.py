@@ -51,6 +51,7 @@ SPEC = LanguageSpec(
         "nuget.config",
         "NuGet.Config",
     ),
+    manifest_globs=("*.csproj",),
     # None of these declare a package — the .csproj does. They are MSBuild /
     # NuGet settings that sit at a solution root and are re-declared under
     # tests/, templates/ and misc/, so treating them as package roots would

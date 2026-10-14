@@ -100,8 +100,8 @@ threshold, and all three bands are occupied.
 | Public value | Producer | Unit / range | Authority |
 | --- | --- | --- | --- |
 | `get_change_risk.score` / REST `score` / stored `change_risk_score` | Logistic model over diff size, spread, entropy, author experience | normalized points 0-10, single-commit scale | Supporting; not a probability |
-| `risk_percentile` | Mid-rank of the score among filtered recent commits | percentile 0-100 | Authoritative with `classification` |
-| `review_priority` / `classification` | Percentile terciles at 33.33 and 66.67 | category | Authoritative |
+| `risk_percentile` | Mid-rank of the score among filtered recent commits | percentile 0-100 | The diff-size rank; not a bug predictor |
+| `review_priority` / `classification` | Percentile terciles at 33.33 and 66.67 | category | Label for the same rank |
 | `fallback_band` | Score thresholds at 4 and 7, only without a baseline | category | Absolute fallback |
 | `fix_history.density` | Churn-weighted, recency-decayed prior fixes | decayed fixes, unbounded | Uncalibrated, separate evidence |
 | `get_risk` `hotspot_score` | Repo-relative churn percentile | ratio 0-1 | Uncalibrated component |

@@ -1,4 +1,4 @@
-"""Module constants, regexes, and the GitPython noise patch for git indexing.
+"""Module constants and regexes for git indexing.
 
 Kept in one place so the per-tier modules share a single source of truth for
 the commit-depth defaults, decay half-lives, and skip heuristics.
@@ -6,7 +6,6 @@ the commit-depth defaults, decay half-lives, and skip heuristics.
 
 from __future__ import annotations
 
-import contextlib
 import re
 from typing import Any
 
@@ -17,23 +16,6 @@ from ...co_change import (
     MIN_CO_CHANGE_SUPPORT,
 )
 from ..languages.registry import REGISTRY as _LANG_REGISTRY
-
-# Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
-# When git cat-file streams are GC'd after the subprocess pipe is closed,
-# their __del__ tries to drain remaining bytes and hits a closed file.
-# This is harmless but floods stderr with tracebacks.
-try:
-    from git.cmd import _CatFileContentStream
-
-    _orig_del = _CatFileContentStream.__del__
-
-    def _quiet_del(self: Any) -> None:
-        with contextlib.suppress(ValueError, OSError):
-            _orig_del(self)
-
-    _CatFileContentStream.__del__ = _quiet_del  # type: ignore[assignment]
-except Exception:
-    pass  # git not installed — nothing to patch
 
 # Commit message prefixes that are ALWAYS skipped (no signal value).
 _HARD_SKIP_PREFIXES = ("Merge ",)
@@ -146,7 +128,8 @@ _MAX_FILES_PER_COMMIT_FOR_COCHANGE: int = 200
 # excludes very wide commits from the History Complexity Metric because a
 # sweeping edit spreads its "change probability" so thinly that it adds noise
 # rather than signal. 30 follows the commonly cited Hassan filter; commits
-# above it are dropped from the entropy accumulation entirely.
+# above it are dropped from the entropy accumulation entirely, and from the
+# focused co-change count hidden coupling reads as evidence.
 _MAX_FILES_PER_COMMIT_FOR_ENTROPY: int = 30
 
 # Commit message classification regexes. "fix" is not here: a
@@ -336,7 +319,10 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: v1: change numbers and author identity read through ``repowise.core.forges``
 #: (GitLab ``!N`` merge requests, Azure and Bitbucket PRs, GitLab noreply and
 #: forge bot accounts).
-GIT_HISTORY_VERSION: int = 1
+#: v2: co-change records carry focused_frequency, the shared commits no wider
+#: than the change-entropy sweep cap.
+#: v3: commits carry their category, and changes are rebuilt from history.
+GIT_HISTORY_VERSION: int = 3
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 
 

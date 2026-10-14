@@ -21,8 +21,11 @@ from .scoring import SCORE_MAX
 
 __all__ = [
     "deduction_by_path",
+    "scope_reason",
     "sort_metrics_worst_first",
     "worst_first_key",
+    "worst_in_scope",
+    "worst_kpis",
     "worst_metric",
 ]
 
@@ -88,3 +91,51 @@ def worst_metric(rows: Iterable[Any], deductions: Mapping[str, float]) -> Any | 
     return min(
         production or tests, key=lambda row: worst_first_key(row, deductions), default=None
     )
+
+
+def scope_reason(row: Any) -> str | None:
+    """Why Fix first leaves *row*'s file out (``test``, ``tooling``, ``generated``...),
+    ``None`` when it is in scope: Fix first's rule on the row's flag and stored origin."""
+    # Deferred: the queue pulls in what this module keeps out (see the module docstring).
+    from .queue.eligibility import path_verdict
+
+    return path_verdict(
+        str(field(row, "file_path", "") or ""),
+        field(row, "is_test", False),
+        origin=field(row, "code_origin", None),
+    ).reason
+
+
+def worst_in_scope(
+    rows: Iterable[Any], deductions: Mapping[str, float]
+) -> tuple[Any | None, Any | None]:
+    """``(worst file, worst test)`` every surface names, under the same key.
+
+    The worst file is the head of the dashboard's ``worst_files``: in Fix
+    first's scope, so a script, schema or generated file scoring lowest is not
+    named. The worst test is the head of ``test_worst_files``. Either is
+    ``None`` when its list is empty.
+    """
+    in_scope: list[Any] = []
+    tests: list[Any] = []
+    for row in scored_rows(rows):
+        reason = scope_reason(row)
+        if reason is None:
+            in_scope.append(row)
+        elif reason == "test":
+            tests.append(row)
+
+    def key(row: Any) -> tuple[float, float, str]:
+        return worst_first_key(row, deductions)
+
+    return min(in_scope, key=key, default=None), min(tests, key=key, default=None)
+
+
+def worst_kpis(rows: Iterable[Any], deductions: Mapping[str, float]) -> dict[str, Any]:
+    """The four wire KPIs naming :func:`worst_in_scope`'s pair, ``None`` when absent."""
+    out: dict[str, Any] = {}
+    pair = worst_in_scope(rows, deductions)
+    for prefix, row in zip(("worst_performer", "worst_test"), pair, strict=True):
+        out[f"{prefix}_path"] = field(row, "file_path") if row is not None else None
+        out[f"{prefix}_score"] = round(float(field(row, "score")), 2) if row is not None else None
+    return out

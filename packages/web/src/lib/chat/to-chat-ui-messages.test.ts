@@ -3,6 +3,28 @@ import type { ChatMessageResponse } from "@/lib/api/types";
 import { toChatUiMessages } from "./to-chat-ui-messages";
 
 describe("toChatUiMessages", () => {
+  it("hides a stored show_view call and tolerates stored views", () => {
+    const stored: ChatMessageResponse[] = [
+      {
+        id: "m1",
+        conversation_id: "c1",
+        role: "assistant",
+        content: {
+          tool_calls: [
+            { id: "t1", name: "get_risk", result: { score: 1 } },
+            { id: "t2", name: "show_view", result: { view_id: "v1" } },
+          ],
+          views: [{ id: "v1", kind: "table" }],
+        },
+        created_at: "2026-10-14T00:00:00Z",
+      },
+    ];
+
+    expect(toChatUiMessages(stored)[0]?.toolCalls.map((call) => call.name)).toEqual([
+      "get_risk",
+    ]);
+  });
+
   it.each([
     ["an errored read", { error: "no git metadata available" }, "error"],
     ["a good read", { score: 8.4 }, "done"],
@@ -212,5 +234,43 @@ describe("toChatUiMessages grounding and truncation", () => {
     ];
 
     expect(toChatUiMessages(stored)[0]).not.toHaveProperty("followUps");
+  });
+
+  it("keeps the stored cards that validate and drops the rest", () => {
+    const card = {
+      schema_version: 1,
+      kind: "answer",
+      title: "Where sessions live",
+      question: "Where are sessions stored?",
+      facts: [],
+      evidence: [
+        {
+          statement: "Store owns session state",
+          basis: { kind: "inferred", source: "import graph" },
+        },
+      ],
+      links: [],
+      generated_at: "2026-10-14T00:00:00Z",
+    };
+    const stored: ChatMessageResponse[] = [
+      {
+        id: "m1",
+        conversation_id: "c1",
+        role: "assistant",
+        content: { text: "x", cards: [card, { kind: "answer", author: "someone" }] },
+        created_at: "2026-10-14T00:00:00Z",
+      },
+      {
+        id: "m2",
+        conversation_id: "c1",
+        role: "assistant",
+        content: { text: "y", cards: [{ kind: "unknown" }] },
+        created_at: "2026-10-14T00:00:00Z",
+      },
+    ];
+
+    const [withCards, withoutCards] = toChatUiMessages(stored);
+    expect(withCards?.cards).toEqual([card]);
+    expect(withoutCards).not.toHaveProperty("cards");
   });
 });

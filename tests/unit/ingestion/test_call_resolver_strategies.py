@@ -173,6 +173,41 @@ class TestUnpinnedStrategies:
             )
         ]
 
+    def test_jvm_bare_call_does_not_reach_a_sibling_classes_member(
+        self, tmp_path: Path
+    ) -> None:
+        """``copy(..)`` in a lambda is its receiver's, not a sibling data class's."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/p/Query.kt": ("kotlin", "package p\n\ndata class Query(val a: Int)\n"),
+                "src/p/Other.kt": ("kotlin", "package p\n\ndata class Other(val b: Int)\n"),
+                "src/p/Repo.kt": (
+                    "kotlin",
+                    "package p\n\nfun sync(v: Versions) {\n    v.update { copy(a = 1) }\n}\n",
+                ),
+            },
+        )
+        assert not [e for e in _edges(parsed, tmp_path) if e[1].endswith("::copy")]
+
+    def test_jvm_bare_call_reaches_a_top_level_function_a_later_member_shares(
+        self, tmp_path: Path
+    ) -> None:
+        """A sibling's member indexed after its top-level ``load`` does not hide it."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/p/Util.kt": (
+                    "kotlin",
+                    "package p\n\nfun load() {}\n\nclass Cache {\n    fun load() {}\n}\n",
+                ),
+                "src/p/Main.kt": ("kotlin", "package p\n\nfun main() {\n    load()\n}\n"),
+            },
+        )
+        assert ("src/p/Main.kt::main", "src/p/Util.kt::load", 0.90, "same_package") in _edges(
+            parsed, tmp_path
+        )
+
     def test_a_target_name_declared_nowhere_resolves_to_nothing(self, tmp_path: Path) -> None:
         """The population the cascade spends most of its budget on."""
         parsed = _parse_all(
@@ -419,6 +454,158 @@ class TestFieldTypedReceiver:
             },
         )
         assert not [e for e in _edges(parsed, tmp_path) if e[3].startswith("receiver_field_")]
+
+    def test_a_kotlin_constructor_property_types_its_receiver(self, tmp_path: Path) -> None:
+        """Hilt's `@Inject constructor(private val api: Api)`, read bare and through `this`."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "app/Repo.kt": (
+                    "kotlin",
+                    "package app\n\nclass Repo @Inject constructor(\n"
+                    "    private val api: Api,\n    val dao: Dao\n) {\n"
+                    "    fun load() {\n        api.fetch()\n        this.dao.read()\n    }\n}\n",
+                ),
+                "app/Api.kt": (
+                    "kotlin",
+                    "package app\n\nclass Api {\n    fun fetch() {}\n}\n"
+                    "class Dao {\n    fun read() {}\n}\n",
+                ),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        for callee in ("app/Api.kt::Api::fetch", "app/Api.kt::Dao::read"):
+            assert ("app/Repo.kt::Repo::load", callee, 0.90, "receiver_field_same_package") in edges
+
+    def test_a_swift_stored_property_types_its_receiver(self, tmp_path: Path) -> None:
+        """An init-assigned `let`, read bare and through `self`."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Repo.swift": (
+                    "swift",
+                    "final class Repo {\n    private let api: Api\n    var dao: Dao\n\n"
+                    "    init(api: Api, dao: Dao) {\n        self.api = api\n"
+                    "        self.dao = dao\n    }\n\n"
+                    "    func load() {\n        api.fetch()\n        self.dao.read()\n    }\n}\n",
+                ),
+                "Api.swift": (
+                    "swift",
+                    "final class Api {\n    func fetch() {}\n}\n"
+                    "final class Dao {\n    func read() {}\n}\n",
+                ),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        for callee in ("Api.swift::Api::fetch", "Api.swift::Dao::read"):
+            assert ("Repo.swift::Repo::load", callee, 0.75, "receiver_field_global") in edges
+
+    @pytest.mark.parametrize(
+        ("rel", "lang", "source", "method"),
+        [
+            (
+                "Repo.kt",
+                "kotlin",
+                "class Repo(private val api: Api) {\n"
+                "    fun a() { api.nothing() }\n"
+                "    fun b(items: List<X>) { items.forEach { api -> api.nothing() } }\n"
+                "    fun c() { val api = make()\n        api.nothing() }\n}\n"
+                "class Api { fun nothing() {} }\n",
+                "nothing",
+            ),
+            (
+                "Repo.swift",
+                "swift",
+                "final class Repo {\n    private let api: Api\n"
+                "    func a() { api.nothing() }\n"
+                "    func b(items: [X]) { items.forEach { api in api.nothing() } }\n"
+                "    func c() { let api = make()\n        api.nothing() }\n}\n"
+                "final class Api { func nothing() {} }\n",
+                "nothing",
+            ),
+            (
+                "Repo.java",
+                "java",
+                "class Repo {\n    private final Api api = new Api();\n"
+                "    void a() { api.nothing(); }\n"
+                "    void b(List<X> items) { items.forEach(api -> api.nothing()); }\n"
+                "    void c() { var api = make(); api.nothing(); }\n}\n"
+                "class Api { void nothing() {} }\n",
+                "nothing",
+            ),
+            (
+                "Repo.cs",
+                "csharp",
+                "class Repo {\n    private readonly Api api;\n"
+                "    void A() { api.Nothing(); }\n"
+                "    void B(List<X> items) { items.ForEach(api => api.Nothing()); }\n"
+                "    void C() { var api = Make(); api.Nothing(); }\n}\n"
+                "class Api { public void Nothing() {} }\n",
+                "Nothing",
+            ),
+            (
+                "lib/repo.dart",
+                "dart",
+                "class Repo {\n  final Api api;\n  Repo(this.api);\n"
+                "  void a() { api.nothing(); }\n"
+                "  void b(List<X> items) { items.map((api) => api.nothing()); }\n"
+                "  void c() { final api = make();\n    api.nothing(); }\n}\n"
+                "class Api { void nothing() {} }\n",
+                "nothing",
+            ),
+        ],
+    )
+    def test_an_untyped_local_or_lambda_parameter_shadows_the_field(
+        self, tmp_path: Path, rel: str, lang: str, source: str, method: str
+    ) -> None:
+        """`{ api -> api.m() }` names the lambda's parameter, not the field.
+
+        Only the field origin is asserted: Java's same-file name tier still
+        binds `api.nothing()` by name alone, which is not this scope's doing.
+        """
+        edges = _edges(_parse_all(tmp_path, {rel: (lang, source)}), tmp_path)
+        callers = {
+            e[0].rsplit("::", 1)[-1]
+            for e in edges
+            if e[1] == f"{rel}::Api::{method}" and e[3].startswith("receiver_field_")
+        }
+        assert callers == {"a" if lang != "csharp" else "A"}
+
+    def test_a_swift_optional_binding_of_the_field_keeps_it(self, tmp_path: Path) -> None:
+        """`guard let client else` unwraps the field itself, not a new local."""
+        source = (
+            "final class Repo {\n    var client: Api?\n"
+            "    func a() { guard let client else { return }\n        client.nothing() }\n"
+            "    func b() { if let client = self.client { client.nothing() } }\n}\n"
+            "final class Api { func nothing() {} }\n"
+        )
+        edges = _edges(_parse_all(tmp_path, {"Repo.swift": ("swift", source)}), tmp_path)
+        callers = {e[0] for e in edges if e[3].startswith("receiver_field_")}
+        assert callers == {"Repo.swift::Repo::a", "Repo.swift::Repo::b"}
+
+    def test_a_dart_field_and_local_type_their_receivers(self, tmp_path: Path) -> None:
+        """A field set by an initialising formal, and a `final x = Foo()` local."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "lib/repo.dart": (
+                    "dart",
+                    "import 'api.dart';\n\nclass Repo {\n  final Api api;\n  Repo(this.api);\n\n"
+                    "  void load() {\n    api.fetch();\n    final store = Store();\n"
+                    "    store.get();\n    api.missing();\n  }\n}\n",
+                ),
+                "lib/api.dart": (
+                    "dart",
+                    "class Api {\n  void fetch() {}\n}\nclass Store {\n  void get() {}\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"lib/repo.dart": {"api.dart": "lib/api.dart"}})
+        edges = _edges(parsed, tmp_path, {"lib/repo.dart": {"lib/api.dart"}, "lib/api.dart": set()})
+        caller = "lib/repo.dart::Repo::load"
+        assert (caller, "lib/api.dart::Api::fetch", 0.88, "receiver_field_import") in edges
+        assert (caller, "lib/api.dart::Store::get", 0.88, "receiver_typed_import") in edges
+        assert not [e for e in edges if e[1].endswith("::missing")]
 
     def test_a_nested_class_field_types_its_receiver(self, tmp_path: Path) -> None:
         """A nested class's id carries its outer class; its methods' ids do not."""
@@ -771,6 +958,156 @@ class TestPythonTypedReceiver:
         assert not [e for e in edges if str(e[3]).startswith("receiver_typed_")]
 
 
+class TestRepoWideReceiverTier:
+    """The global tier answers only for the one type of a name.
+
+    Two projects each declaring a ``MainWindow`` are told apart by nothing
+    that tier sees, so a call naming neither one's namespace gets no edge
+    rather than whichever file sorts first.
+    """
+
+    _CALLER = "peek/Peek.UITests/PeekTests.cs"
+    _RESIZER = (
+        "csharp",
+        "namespace ImageResizer.Views\n{\n    public partial class MainWindow\n    {\n"
+        "        public void Show() { }\n    }\n}\n",
+    )
+    _PEEK = (
+        "csharp",
+        "namespace Peek.UI\n{\n    public partial class MainWindow\n    {\n"
+        "        public void Show() { }\n    }\n}\n",
+    )
+
+    @staticmethod
+    def _test(usings: str = "") -> tuple[str, str]:
+        return (
+            "csharp",
+            f"{usings}namespace Peek.UITests\n{{\n    public class PeekTests\n    {{\n"
+            "        public void Opens()\n        {\n"
+            "            var w = new MainWindow();\n            w.Show();\n        }\n    }\n}\n",
+        )
+
+    def _resolved(
+        self,
+        tmp_path: Path,
+        files: dict[str, tuple[str, str]],
+        method: str = "Show",
+        imports: dict[str, dict[str, str]] | None = None,
+        **resolver_kwargs: object,
+    ) -> list[tuple[str, str]]:
+        """``(callee, origin)`` for every edge onto a method named *method*."""
+        parsed = _parse_all(tmp_path, files)
+        targets: dict[str, set[str]] = {p: set() for p in parsed}
+        for path, links in (imports or {}).items():
+            _link_imports(parsed, {path: links})
+            targets[path] = set(links.values())
+        resolver = CallResolver(parsed, targets, repo_path=str(tmp_path), **resolver_kwargs)
+        return sorted(
+            (rc.callee_id, rc.origin)
+            for path, pf in parsed.items()
+            for rc in resolver.resolve_file(path, pf.calls)
+            if rc.callee_id.endswith(f"::{method}")
+        )
+
+    def test_two_same_named_types_declaring_the_method_give_no_edge(
+        self, tmp_path: Path
+    ) -> None:
+        files = {
+            "resizer/MainWindow.xaml.cs": self._RESIZER,
+            "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK,
+            self._CALLER: self._test(),
+        }
+        assert self._resolved(tmp_path, files) == []
+
+    def test_a_same_named_type_that_only_inherits_the_method_gives_no_edge(
+        self, tmp_path: Path
+    ) -> None:
+        """One declaration is not one candidate: the other ``MainWindow`` may be meant."""
+        inherits = (
+            "csharp",
+            "namespace Peek.UI\n{\n    public partial class MainWindow : Window\n    {\n"
+            "        public void Close() { }\n    }\n}\n",
+        )
+        files = {
+            "resizer/MainWindow.xaml.cs": self._RESIZER,
+            "peek/Peek.UI/MainWindow.xaml.cs": inherits,
+            self._CALLER: self._test(),
+        }
+        assert self._resolved(tmp_path, files) == []
+
+    def test_the_one_type_of_the_name_keeps_its_edge(self, tmp_path: Path) -> None:
+        files = {"resizer/MainWindow.xaml.cs": self._RESIZER, self._CALLER: self._test()}
+        assert self._resolved(tmp_path, files) == [
+            ("resizer/MainWindow.xaml.cs::MainWindow::Show", "receiver_typed_global")
+        ]
+
+    def test_the_fragments_of_one_partial_type_count_once(self, tmp_path: Path) -> None:
+        crop = (
+            "csharp",
+            "namespace ImageResizer.Views\n{\n    public partial class MainWindow\n    {\n"
+            "        public void Crop() { }\n    }\n}\n",
+        )
+        files = {
+            "resizer/MainWindow.xaml.cs": self._RESIZER,
+            "resizer/MainWindow.Crop.cs": crop,
+            self._CALLER: self._test(),
+        }
+        fragments = ("resizer/MainWindow.Crop.cs", "resizer/MainWindow.xaml.cs")
+        assert self._resolved(
+            tmp_path, files, partial_fragments={(f, "MainWindow"): fragments for f in fragments}
+        ) == [("resizer/MainWindow.xaml.cs::MainWindow::Show", "receiver_typed_global")]
+
+    def test_a_using_that_names_the_namespace_keeps_the_edge(self, tmp_path: Path) -> None:
+        files = {
+            "resizer/MainWindow.xaml.cs": self._RESIZER,
+            "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK,
+            self._CALLER: self._test("using ImageResizer.Views;\n"),
+        }
+        imports = {self._CALLER: {"ImageResizer.Views": "resizer/MainWindow.xaml.cs"}}
+        assert self._resolved(tmp_path, files, imports=imports) == [
+            ("resizer/MainWindow.xaml.cs::MainWindow::Show", "receiver_typed_import")
+        ]
+
+    def test_csharp_arity_tells_a_generic_from_its_plain_twin(self, tmp_path: Path) -> None:
+        """``Policy`` and ``Policy<T>`` are two types; the receiver's arity picks one."""
+        files = {
+            "src/Policy.cs": (
+                "csharp",
+                "namespace P\n{\n    public partial class Policy\n    {\n"
+                "        public static void Handle() { }\n"
+                "        public void Show() { }\n    }\n}\n",
+            ),
+            "src/PolicyT.cs": (
+                "csharp",
+                "namespace P\n{\n    public partial class Policy<TResult>\n    {\n"
+                "        public void Show() { }\n    }\n}\n",
+            ),
+            "src/Use.cs": (
+                "csharp",
+                "namespace P\n{\n    public class Use\n    {\n"
+                "        public void Run(Policy<int> g, Policy p)\n        {\n"
+                "            Policy.Handle();\n            g.Show();\n"
+                "            p.Show();\n        }\n    }\n}\n",
+            ),
+        }
+        assert self._resolved(tmp_path, files) == [
+            ("src/Policy.cs::Policy::Show", "receiver_typed_global"),
+            ("src/PolicyT.cs::Policy::Show", "receiver_typed_global"),
+        ]
+        assert self._resolved(tmp_path, files, "Handle") == [
+            ("src/Policy.cs::Policy::Handle", "receiver_global")
+        ]
+
+    def test_python_classes_sharing_a_name_give_no_edge(self, tmp_path: Path) -> None:
+        graph = "class DependencyGraph:\n    def add_arc(self, obj):\n        return obj\n"
+        files = {
+            "run.py": ("python", "def run():\n    graph = DependencyGraph()\n    graph.add_arc(1)\n"),
+            "a/graph.py": ("python", graph),
+            "b/graph.py": ("python", graph),
+        }
+        assert self._resolved(tmp_path, files, "add_arc") == []
+
+
 class TestImportedTypeThroughAReExport:
     """An import binds the package, not the module that declares the type.
 
@@ -1018,6 +1355,422 @@ class TestForeignReceiverTypes:
         assert populated == {"rust"}
 
 
+class TestInheritedTypedReceiver:
+    """A typed receiver whose type lacks the method reaches the one ancestor declaring it."""
+
+    _PKG = "src/org/acme/"
+    _BASE = (
+        "package org.acme;\npublic class Base {\n"
+        "    public Object get(int i) { return null; }\n}\n"
+    )
+    _CHILD = "package org.acme;\npublic class Child extends Base {}\n"
+    _GET = "src/org/acme/Base.java::Base::get"
+
+    @staticmethod
+    def _caller(head: str = "package org.acme;\n", cls: str = "Caller", method: str = "") -> str:
+        return (
+            f"{head}public class {cls} {{\n"
+            f"    public {method}Object run(Child c) {{\n        return c.get(0);\n    }}\n}}\n"
+        )
+
+    def _targets(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+        parents: dict[str, set[str]] | None = None,
+        language: str = "java",
+    ) -> list[str]:
+        """Callees of ``Caller``'s calls; *parents* stands in for the heritage phase.
+
+        A Java file with no ``package`` line is put in ``org.acme``.
+        """
+        if language == "java":
+            files = {"Base.java": self._BASE, "Child.java": self._CHILD, **files}
+            files = {
+                k: v if v.startswith("package") else "package org.acme;\n" + v
+                for k, v in files.items()
+            }
+        parsed = _parse_all(tmp_path, {k: (language, v) for k, v in files.items()})
+        _link_imports(parsed, {k: {"org.acme.Child": "Child.java"} for k in parsed})
+        resolver = CallResolver(
+            parsed,
+            {k: set() for k in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents=parents or {"Child.java::Child": {"Base.java::Base"}},
+        )
+        caller = next(k for k in files if "Caller" in k)
+        return [rc.callee_id for rc in resolver.resolve_file(caller, parsed[caller].calls)]
+
+    def test_an_inherited_method_resolves_to_the_ancestor(self, tmp_path: Path) -> None:
+        files = {"Base.java": self._BASE, "Child.java": self._CHILD, "Caller.java": self._caller()}
+        parsed = _parse_all(tmp_path, {self._PKG + k: ("java", v) for k, v in files.items()})
+        resolver = CallResolver(
+            parsed,
+            {k: set() for k in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents={self._PKG + "Child.java::Child": {self._PKG + "Base.java::Base"}},
+        )
+        caller = self._PKG + "Caller.java"
+        assert [
+            (rc.caller_id, rc.callee_id, rc.confidence, rc.origin)
+            for rc in resolver.resolve_file(caller, parsed[caller].calls)
+        ] == [(caller + "::Caller::run", self._GET, 0.75, "receiver_typed_global")]
+
+    def test_the_nearest_superclass_declaration_wins(self, tmp_path: Path) -> None:
+        mid = "public class Mid extends Base {\n    public Object get(int i) { return 1; }\n}\n"
+        iface = "public interface Getter {\n    Object get(int i);\n}\n"
+        child = "public class Child extends Mid implements Getter {}\n"
+        parents = {
+            "Child.java::Child": {"Mid.java::Mid", "Getter.java::Getter"},
+            "Mid.java::Mid": {"Base.java::Base"},
+        }
+        files = {"Mid.java": mid, "Getter.java": iface, "Child.java": child}
+        files["Caller.java"] = self._caller("")
+        assert self._targets(tmp_path, files, parents) == ["Mid.java::Mid::get"]
+
+    def test_two_declaring_interfaces_give_no_edge(self, tmp_path: Path) -> None:
+        files = {
+            "A.java": "public interface A {\n    Object get(int i);\n}\n",
+            "B.java": "public interface B {\n    Object get(int i);\n}\n",
+            "Child.java": "public interface Child extends A, B {}\n",
+            "Caller.java": self._caller(""),
+        }
+        parents = {"Child.java::Child": {"A.java::A", "B.java::B"}}
+        assert self._targets(tmp_path, files, parents) == []
+
+    @pytest.mark.parametrize(
+        "head",
+        [
+            pytest.param("package q;\nimport com.vendor.*;\n", id="vendor-wildcard"),
+            pytest.param("package q;\n", id="other-package-no-import"),
+        ],
+    )
+    def test_a_type_the_caller_cannot_see_gives_no_edge(self, tmp_path: Path, head: str) -> None:
+        base = "package p;\n" + self._BASE.partition("\n")[2]
+        child = "package p;\n" + self._CHILD.partition("\n")[2]
+        files = {"Base.java": base, "Child.java": child, "Caller.java": self._caller(head)}
+        assert self._targets(tmp_path, files) == []
+
+    def test_a_single_type_import_makes_it_visible(self, tmp_path: Path) -> None:
+        files = {"Caller.java": self._caller("package q;\nimport org.acme.Child;\n")}
+        assert self._targets(tmp_path, files) == ["Base.java::Base::get"]
+
+    @pytest.mark.parametrize(
+        ("cls", "method"),
+        [("Caller<Child>", ""), ("Caller", "<Child extends Comparable<Child>> ")],
+        ids=["class-parameter", "method-parameter"],
+    )
+    def test_a_type_parameter_shadows_the_repo_type(
+        self, tmp_path: Path, cls: str, method: str
+    ) -> None:
+        files = {"Caller.java": self._caller("", cls, method)}
+        assert self._targets(tmp_path, files) == []
+
+    def test_kotlin_does_not_walk_ancestors(self, tmp_path: Path) -> None:
+        files = {
+            "Base.kt": "open class Base {\n    fun get(i: Int): Any? = null\n}\n",
+            "Child.kt": "class Child : Base()\n",
+            "Caller.kt": "fun run(c: Child): Any? {\n    return c.get(0)\n}\n",
+        }
+        parents = {"Child.kt::Child": {"Base.kt::Base"}}
+        assert self._targets(tmp_path, files, parents, language="kotlin") == []
+
+
+class TestJavaReceiverRecall:
+    """Java receivers the typed tiers missed: an inherited field, ``super``, a cast."""
+
+    def _targets(
+        self, tmp_path: Path, body: str, head: str = "", members: str = "", mid: str | None = None
+    ) -> list[tuple[str, str]]:
+        """Callees of ``Sub``'s calls; a *mid* body puts ``b.Mid`` between ``Sub`` and ``Base``."""
+        parent = "Base" if mid is None else "Mid"
+        files = {
+            "a/Base.java": "package a;\npublic class Base {\n    protected Reader reader;\n"
+            "    protected Doc doc;\n    public void m() {}\n}\n",
+            "a/Reader.java": "package a;\npublic class Reader {\n    public void consume() {}\n}\n",
+            "a/Node.java": "package a;\npublic class Node {\n    public void append() {}\n}\n",
+            "a/Doc.java": "package a;\npublic class Doc extends Node {}\n",
+            "b/Reader.java": "package b;\npublic class Reader {\n    public void consume() {}\n}\n",
+            "b/Mid.java": f"package b;\nimport a.Base;\npublic class Mid extends Base {{\n{mid}\n}}\n",
+            "b/Sub.java": f"package b;\nimport a.Base;\n{head}public class Sub extends {parent} {{\n"
+            f"{members}\n    public void m() {{}}\n    void go(Object o) {{\n        {body}\n    }}\n}}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        _link_imports(parsed, {"b/Sub.java": {"a.Base": "a/Base.java", "a.Node": "a/Node.java"}})
+        parents = {"b/Mid.java::Mid": {"a/Base.java::Base"}, "a/Doc.java::Doc": {"a/Node.java::Node"}}
+        parents["b/Sub.java::Sub"] = {"a/Base.java::Base" if mid is None else "b/Mid.java::Mid"}
+        resolver = CallResolver(
+            parsed, {k: set() for k in parsed}, repo_path=str(tmp_path), heritage_parents=parents
+        )
+        calls = parsed["b/Sub.java"].calls
+        return [(rc.callee_id, rc.origin) for rc in resolver.resolve_file("b/Sub.java", calls)]
+
+    def test_an_inherited_field_is_typed_in_the_declaring_file(self, tmp_path: Path) -> None:
+        """``Reader`` is ``a.Reader`` where ``Base`` declares it, not the caller's ``b.Reader``."""
+        assert self._targets(tmp_path, "reader.consume();") == [
+            ("a/Reader.java::Reader::consume", "receiver_field_same_package")
+        ]
+
+    def test_an_inherited_field_reaches_its_types_ancestor(self, tmp_path: Path) -> None:
+        assert self._targets(tmp_path, "doc.append();") == [
+            ("a/Node.java::Node::append", "receiver_field_global")
+        ]
+
+    def test_a_local_shadows_an_inherited_field(self, tmp_path: Path) -> None:
+        assert self._targets(tmp_path, "Object reader = null; reader.consume();") == []
+
+    def test_an_untyped_lambda_parameter_shadows_an_inherited_field(self, tmp_path: Path) -> None:
+        assert self._targets(tmp_path, "run(reader -> reader.consume());") == []
+
+    @pytest.mark.parametrize(
+        ("body", "members"),
+        [
+            ("b.Reader reader = null; reader.consume();", ""),
+            ("var reader = 1; reader.consume();", ""),
+            ("", "    void f(b.Reader reader) { reader.consume(); }"),
+            ("reader.consume();", "    b.Reader reader;"),
+            ("reader.consume();", "    java.util.List<String> reader;"),
+            ("reader.consume();", "    int[] reader;"),
+        ],
+        ids=["qualified-local", "var-local", "qualified-parameter", "qualified-field",
+             "qualified-generic-field", "primitive-array-field"],
+    )
+    def test_a_name_declared_with_an_unread_type_shadows_an_inherited_field(
+        self, tmp_path: Path, body: str, members: str
+    ) -> None:
+        assert self._targets(tmp_path, body, members=members) == []
+
+    def test_the_nearest_superclass_field_hides_the_rest(self, tmp_path: Path) -> None:
+        """``Mid``'s ``reader`` is the package-``b`` one, wherever ``Base`` declares another."""
+        mid = "    protected Reader reader;"
+        assert self._targets(tmp_path, "reader.consume();", mid=mid) == [
+            ("b/Reader.java::Reader::consume", "receiver_field_same_package")
+        ]
+
+    def test_a_nearer_field_with_an_unread_type_stops_the_walk(self, tmp_path: Path) -> None:
+        mid = "    protected b.Reader reader;"
+        assert self._targets(tmp_path, "reader.consume();", mid=mid) == []
+
+    def test_super_skips_the_callers_own_override(self, tmp_path: Path) -> None:
+        assert self._targets(tmp_path, "super.m();") == [("a/Base.java::Base::m", "self_inherited")]
+
+    @pytest.mark.parametrize("cast", ["Node", "Node<String>"])
+    def test_a_cast_names_its_receiver_type(self, tmp_path: Path, cast: str) -> None:
+        body = f"(({cast}) o).append();"
+        assert self._targets(tmp_path, body, "import a.Node;\n") == [
+            ("a/Node.java::Node::append", "module_alias")
+        ]
+
+    def test_a_scoped_cast_type_is_not_captured(self, tmp_path: Path) -> None:
+        source = "class Use {\n    void go(Object o) {\n        ((a.Node) o).append();\n    }\n}\n"
+        parsed = _parse_all(tmp_path, {"Use.java": ("java", source)})
+        assert [c.receiver_name for c in parsed["Use.java"].calls] == [None]
+
+    def test_an_intersection_cast_names_no_receiver(self, tmp_path: Path) -> None:
+        """``(Node & Runnable) o`` names two types; taking either one would guess."""
+        source = (
+            "class Use {\n    void go(Object o) {\n        ((Node & Runnable) o).append();\n"
+            "        ((Node) o).append();\n    }\n}\n"
+        )
+        parsed = _parse_all(tmp_path, {"Use.java": ("java", source)})
+        assert sorted(
+            (c.line, c.receiver_name or "") for c in parsed["Use.java"].calls
+        ) == [(3, ""), (4, "Node")]
+
+    def test_a_qualified_super_reaches_the_named_superinterface(self, tmp_path: Path) -> None:
+        """``I.super.m()`` is ``I``'s default ``m``, not the superclass's."""
+        files = {
+            "a/Base.java": "package a;\npublic class Base {\n    public void m() {}\n}\n",
+            "a/I.java": "package a;\npublic interface I {\n    default void m() {}\n}\n",
+            "a/Sub.java": "package a;\npublic class Sub extends Base implements I {\n"
+            "    public void m() {\n        I.super.m();\n    }\n}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        parents = {"a/Sub.java::Sub": {"a/Base.java::Base", "a/I.java::I"}}
+        resolver = CallResolver(
+            parsed, {k: set() for k in parsed}, repo_path=str(tmp_path), heritage_parents=parents
+        )
+        calls = parsed["a/Sub.java"].calls
+        assert [(rc.callee_id, rc.origin) for rc in resolver.resolve_file("a/Sub.java", calls)] == [
+            ("a/I.java::I::m", "self_inherited")
+        ]
+
+    def test_a_qualified_super_reaches_the_qualifiers_superclass(self, tmp_path: Path) -> None:
+        members = "    class In {\n        void q() { Sub.super.m(); }\n    }"
+        assert self._targets(tmp_path, "", members=members) == [
+            ("a/Base.java::Base::m", "self_inherited")
+        ]
+
+
+class TestJavaMemberTypes:
+    """A member type shadows a same-named import or package type, as Java scopes it.
+
+    ``p.Token`` nests ``Tag`` and ``Comment``; ``p.Tag`` and ``n.Comment`` are
+    top-level types of the same simple names.
+    """
+
+    _TOKEN = (
+        "package p;\nabstract class Token {\n"
+        "    static abstract class Tag extends Token {\n"
+        "        Tag reset() { return this; }\n        String name() { return null; }\n    }\n"
+        "    static final class StartTag extends Tag {}\n"
+        "    static final class Comment extends Token {\n"
+        "        String getData() { return null; }\n    }\n}\n"
+    )
+
+    def _targets(self, tmp_path: Path, source: str) -> list[tuple[str, str]]:
+        files = {
+            "p/Token.java": self._TOKEN,
+            "p/Tag.java": "package p;\npublic class Tag {\n    public String name() { return null; }\n}\n",
+            "n/Comment.java": "package n;\npublic class Comment {\n"
+            "    public String getData() { return null; }\n}\n",
+            "p/Use.java": source,
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        _link_imports(parsed, {"p/Use.java": {"n.Comment": "n/Comment.java"}})
+        token, tag = "p/Token.java::Token", "p/Token.java::Token::Tag"
+        parents = {tag: {token}, f"{token}::StartTag": {tag}, f"{token}::Comment": {token}}
+        if "extends Token" in source:
+            parents["p/Use.java::Use"] = {token}
+        resolver = CallResolver(
+            parsed, {k: set() for k in parsed}, repo_path=str(tmp_path), heritage_parents=parents
+        )
+        calls = parsed["p/Use.java"].calls
+        return sorted((rc.callee_id, rc.origin) for rc in resolver.resolve_file("p/Use.java", calls))
+
+    def test_a_qualified_type_names_the_member_type(self, tmp_path: Path) -> None:
+        """``Token.Tag`` is not the package's top-level ``Tag``, nor ``Token.Comment`` the import."""
+        source = (
+            "package p;\nimport n.Comment;\nclass Use {\n    Token.Tag pending;\n"
+            "    void go(Token.Comment c) {\n        pending.name();\n        c.getData();\n    }\n}\n"
+        )
+        assert self._targets(tmp_path, source) == [
+            ("p/Token.java::Comment::getData", "receiver_typed_same_package"),
+            ("p/Token.java::Tag::name", "receiver_field_same_package"),
+        ]
+
+    def test_an_inherited_member_type_shadows_an_import(self, tmp_path: Path) -> None:
+        source = (
+            "package p;\nimport n.Comment;\nclass Use extends Token {\n"
+            "    void go(Comment c) {\n        c.getData();\n    }\n}\n"
+        )
+        assert self._targets(tmp_path, source) == [
+            ("p/Token.java::Comment::getData", "receiver_typed_same_package")
+        ]
+
+    def test_a_return_type_is_read_where_its_method_declares_it(self, tmp_path: Path) -> None:
+        """``reset()`` returns ``Tag`` inside ``Token``, so its ``name()`` is the member's."""
+        source = (
+            "package p;\nclass Use {\n    void go(Token.StartTag t) {\n"
+            "        t.reset().name();\n    }\n}\n"
+        )
+        assert self._targets(tmp_path, source) == [
+            ("p/Token.java::Tag::name", "return_type_same_package"),
+            ("p/Token.java::Tag::reset", "receiver_typed_same_package"),
+        ]
+
+    def test_a_top_level_type_answers_where_no_member_shadows_it(self, tmp_path: Path) -> None:
+        source = (
+            "package p;\nimport n.Comment;\nclass Use {\n"
+            "    void go(Tag t, Comment c) {\n        t.name();\n        c.getData();\n    }\n}\n"
+        )
+        assert self._targets(tmp_path, source) == [
+            ("n/Comment.java::Comment::getData", "receiver_typed_import"),
+            ("p/Tag.java::Tag::name", "receiver_typed_same_package"),
+        ]
+
+    def test_a_type_parameter_shadows_a_member_type(self, tmp_path: Path) -> None:
+        source = (
+            "package p;\nimport n.Comment;\nclass Use extends Token {\n"
+            "    <Comment> void go(Comment c) {\n        c.getData();\n    }\n}\n"
+        )
+        assert ("p/Token.java::Comment::getData", "receiver_typed_same_package") not in (
+            self._targets(tmp_path, source)
+        )
+
+    @pytest.mark.parametrize(
+        ("outer", "inner", "returns"),
+        [
+            ("class Outer", "public static class Inner", "q.Outer.Inner"),
+            ("public class Outer", "private static class Inner", "q.Outer.Inner"),
+            ("public class Outer", "static class Inner", "Outer.Inner"),
+        ],
+        ids=["package-private-top-level", "private-member", "package-private-member"],
+    )
+    def test_a_qualified_type_the_caller_cannot_access_is_not_resolved(
+        self, tmp_path: Path, outer: str, inner: str, returns: str
+    ) -> None:
+        """Java's access rules apply to a qualified spelling as they do to a plain name."""
+        files = {
+            "q/Outer.java": f"package q;\n{outer} {{\n"
+            f"    {inner} {{\n        public void z() {{}}\n    }}\n}}\n",
+            "x/Factory.java": "package x;\nimport q.Outer;\npublic class Factory {\n"
+            f"    public static {returns} make() {{ return null; }}\n}}\n",
+            "a/Use.java": "package a;\nimport x.Factory;\nclass Use {\n"
+            "    void go() {\n        Factory.make().z();\n    }\n}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        _link_imports(parsed, {"a/Use.java": {"x.Factory": "x/Factory.java"}})
+        _link_imports(parsed, {"x/Factory.java": {"q.Outer": "q/Outer.java"}})
+        resolver = CallResolver(parsed, {k: set() for k in parsed}, repo_path=str(tmp_path))
+        calls = parsed["a/Use.java"].calls
+        assert "q/Outer.java::Inner::z" not in {
+            rc.callee_id for rc in resolver.resolve_file("a/Use.java", calls)
+        }
+
+    def test_a_package_qualified_return_type_names_its_package_type(self, tmp_path: Path) -> None:
+        """``p.Outer.Inner make()`` is ``p.Outer``'s ``Inner``, not the ``q.Inner`` imported."""
+        files = {
+            "p/Outer.java": "package p;\npublic class Outer {\n"
+            "    public static class Inner {\n        public void z() {}\n    }\n}\n",
+            "q/Inner.java": "package q;\npublic class Inner {\n    public void z() {}\n}\n",
+            "x/Factory.java": "package x;\nimport q.Inner;\npublic class Factory {\n"
+            "    public static p.Outer.Inner make() { return null; }\n}\n",
+            "a/Use.java": "package a;\nimport q.Inner;\nimport x.Factory;\nclass Use {\n"
+            "    void go() {\n        Factory.make().z();\n    }\n}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        imports = {"q.Inner": "q/Inner.java", "x.Factory": "x/Factory.java"}
+        _link_imports(parsed, {"a/Use.java": imports, "x/Factory.java": imports})
+        resolver = CallResolver(parsed, {k: set() for k in parsed}, repo_path=str(tmp_path))
+        calls = parsed["a/Use.java"].calls
+        assert "p/Outer.java::Inner::z" in {
+            rc.callee_id for rc in resolver.resolve_file("a/Use.java", calls)
+        }
+
+    @pytest.mark.parametrize(
+        ("modifier", "inherited"),
+        [("private ", False), ("", False), ("protected ", True)],
+        ids=["private", "package-private-elsewhere", "protected"],
+    )
+    def test_only_an_accessible_superclass_member_type_shadows_an_import(
+        self, tmp_path: Path, modifier: str, inherited: bool
+    ) -> None:
+        """``b.Base``'s nested ``Inner`` is inherited by ``a.Sub`` only if ``a`` may access it."""
+        files = {
+            "b/Base.java": "package b;\npublic class Base {\n"
+            f"    {modifier}static class Inner {{\n        void z() {{}}\n    }}\n}}\n",
+            "c/Inner.java": "package c;\npublic class Inner {\n"
+            "    public void y() {}\n    public void z() {}\n}\n",
+            "a/Sub.java": "package a;\nimport b.Base;\nimport c.Inner;\npublic class Sub extends Base {\n"
+            "    void m(Inner i) {\n        i.z();\n        i.y();\n    }\n}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        _link_imports(parsed, {"a/Sub.java": {"b.Base": "b/Base.java", "c.Inner": "c/Inner.java"}})
+        resolver = CallResolver(
+            parsed,
+            {k: set() for k in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents={"a/Sub.java::Sub": {"b/Base.java::Base"}},
+        )
+        calls = parsed["a/Sub.java"].calls
+        callees = sorted(rc.callee_id for rc in resolver.resolve_file("a/Sub.java", calls))
+        if inherited:
+            assert callees == ["b/Base.java::Inner::z"]
+        else:
+            assert callees == ["c/Inner.java::Inner::y", "c/Inner.java::Inner::z"]
+
+
 class TestOwnerAwareModuleTier:
     """The module and import-name tiers pick an owner, not just a file.
 
@@ -1129,6 +1882,117 @@ class TestOwnerAwareModuleTier:
             0.88,
             "module_alias",
         ) in _edges(parsed, tmp_path)
+
+
+# Each module declares a top-level ``build`` first and a same-named method
+# after it, so a flat last-wins lookup answers with the method.
+_MODULE_ONLY_ALIAS_CASES = {
+    "dart": (
+        "lib/log.dart",
+        "void build(String m) {}\n\nclass JsonLogger {\n  void build(String m) {}\n}\n",
+        "lib/caller.dart",
+        "import 'log.dart' as log;\n\nvoid run() {\n  log.build('hi');\n}\n",
+    ),
+    "python": (
+        "models.py",
+        "def build():\n    return 1\n\n\nclass Widget:\n    def build(self):\n        return 2\n",
+        "caller.py",
+        "import models as m\n\ndef run():\n    return m.build()\n",
+    ),
+    "typescript": (
+        "util.ts",
+        "export function build(): number { return 1; }\n\n"
+        "export class Widget {\n  build(): number { return 2; }\n}\n",
+        "caller.ts",
+        "import * as util from './util';\n\n"
+        "export function run(): number {\n  return util.build();\n}\n",
+    ),
+    "javascript": (
+        "util.js",
+        "export function build() { return 1; }\n\nexport class Widget {\n  build() { return 2; }\n}\n",
+        "caller.js",
+        "import * as util from './util';\n\nexport function run() {\n  return util.build();\n}\n",
+    ),
+    "go": (
+        "util/util.go",
+        "package util\n\nfunc Build() int { return 1 }\n\n"
+        "type W struct{}\n\nfunc (w W) Build() int { return 2 }\n",
+        "main.go",
+        'package main\n\nimport "example.com/m/util"\n\nfunc run() int {\n\treturn util.Build()\n}\n',
+    ),
+    "rust": (
+        "helpers/src/lib.rs",
+        "pub fn build() -> u8 { 1 }\n\npub struct Widget;\n\n"
+        "impl Widget {\n    pub fn build(&self) -> u8 { 2 }\n}\n",
+        "src/main.rs",
+        "extern crate helpers as h;\n\npub fn run() -> u8 {\n    h::build()\n}\n",
+    ),
+    "swift": (
+        "Util.swift",
+        "func build() -> Int { return 1 }\n\nclass Widget {\n    func build() -> Int { return 2 }\n}\n",
+        "Caller.swift",
+        "import Util\n\nfunc run() -> Int {\n    return Util.build()\n}\n",
+    ),
+}
+
+
+class TestModuleAliasReachesTopLevelOnly:
+    """A call through an alias that names a module reaches its top-level names.
+
+    ``import 'log.dart' as log; log.message()`` calls log.dart's ``message``,
+    never ``_JsonLogger.message`` declared later in the same file.
+    """
+
+    @pytest.mark.parametrize("lang", sorted(_MODULE_ONLY_ALIAS_CASES))
+    def test_the_top_level_function_wins_over_a_later_method(
+        self, tmp_path: Path, lang: str
+    ) -> None:
+        module, module_src, caller, caller_src = _MODULE_ONLY_ALIAS_CASES[lang]
+        parsed = _parse_all(tmp_path, {module: (lang, module_src), caller: (lang, caller_src)})
+        links = {imp.module_path: module for imp in parsed[caller].imports}
+        _link_imports(parsed, {caller: links})
+        import_targets = {caller: {module}, module: set()}
+        caller_id = f"{caller}::run"
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, import_targets)
+            if src == caller_id
+        }
+        assert callees == {f"{module}::{'Build' if lang == 'go' else 'build'}"}
+
+    def test_a_csharp_type_alias_still_reaches_the_type_s_members(
+        self, tmp_path: Path
+    ) -> None:
+        """``using A = N.T;`` may alias a type, so C# keeps the member lookup."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Shapes.cs": (
+                    "csharp",
+                    "namespace N {\n"
+                    "    public class Shape {\n"
+                    "        public static int Make() { return 1; }\n"
+                    "    }\n"
+                    "}\n",
+                ),
+                "Caller.cs": (
+                    "csharp",
+                    "using S = N.Shape;\n"
+                    "\n"
+                    "public class Caller {\n"
+                    "    public int Run() { return S.Make(); }\n"
+                    "}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"Caller.cs": {"S": "Shapes.cs"}})
+        import_targets = {"Caller.cs": {"Shapes.cs"}, "Shapes.cs": set()}
+        assert (
+            "Caller.cs::Caller::Run",
+            "Shapes.cs::Shape::Make",
+            0.88,
+            "module_alias",
+        ) in _edges(parsed, tmp_path, import_targets)
 
 
 class TestExternalReceiverType:
@@ -1266,34 +2130,30 @@ class TestExternalReceiverType:
             "receiver_typed_same_package",
         ) in self._caller_edges(tmp_path, caller, **{"Outer.java": outer})
 
-    def test_a_generic_parameter_is_not_refused(self, tmp_path: Path) -> None:
-        """``T`` is unknown, not external: the name tiers still answer."""
+    # Unknown rather than external, so not refused; a Java member call still
+    # has no bare-name reading to fall back to.
+    def test_a_generic_parameter_gets_no_bare_name_edge(self, tmp_path: Path) -> None:
         caller = self._caller(
             "",
             "Object o) {\n        return run2(o);\n    }\n"
             "    public <T> Object run2(T x) {\n        return x.get(0);",
         )
-        assert [e[1] for e in self._caller_edges(tmp_path, caller) if e[1].endswith("::get")] == [
-            "src/org/acme/TagSet.java::TagSet::get"
-        ]
+        assert not [e for e in self._caller_edges(tmp_path, caller) if e[1].endswith("::get")]
 
-    def test_a_wildcard_imported_unknown_type_is_not_refused(self, tmp_path: Path) -> None:
+    def test_a_wildcard_imported_unknown_type_gets_no_bare_name_edge(
+        self, tmp_path: Path
+    ) -> None:
         caller = self._caller("import com.vendor.*;\n", "Widget w) {\n        return w.get(0);")
-        assert [e[1] for e in self._caller_edges(tmp_path, caller)] == [
-            "src/org/acme/TagSet.java::TagSet::get"
-        ]
+        assert self._caller_edges(tmp_path, caller) == []
 
-    def test_an_unresolved_import_of_a_repo_type_is_not_refused(self, tmp_path: Path) -> None:
-        """No import-resolution phase runs here, so the import reads as external.
-
-        The repo declaring the name is what keeps it from being refused.
-        """
+    def test_an_unresolved_import_of_a_repo_type_gets_no_bare_name_edge(
+        self, tmp_path: Path
+    ) -> None:
+        """No import-resolution phase runs here, so the import reads as external."""
         caller = self._caller(
             "import org.acme.TagSet;\n", "TagSet t) {\n        return t.get(0);"
         )
-        assert [e[1] for e in self._caller_edges(tmp_path, caller)] == [
-            "src/org/acme/TagSet.java::TagSet::get"
-        ]
+        assert self._caller_edges(tmp_path, caller) == []
 
     def test_only_java_records_builtin_declarations(self) -> None:
         from repowise.core.ingestion.languages.receiver_types import (

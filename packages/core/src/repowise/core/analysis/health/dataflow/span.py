@@ -1,10 +1,8 @@
-"""Where an Extract Method span sits in its function's tree: its statements, the
-comments that head them, and the ``with`` block it may be the body of.
+"""Where an Extract Method span sits in its function's tree: its statements,
+the comments that head them, and whether a statement is an exiting guard.
 
-Read by the helper-naming step only, after a span has been chosen, so the cost
-is one walk of one function per emitted plan. The tree is the one the slicer
-already holds (``FunctionAnalysis.fn_node``); nothing is re-parsed. Whether the
-span acts outside itself is :mod:`effects`.
+The tree is the one the slicer already holds (``FunctionAnalysis.fn_node``);
+nothing is re-parsed.
 """
 
 from __future__ import annotations
@@ -36,27 +34,6 @@ def span_statements(
             if stmts[last].end_point[0] + 1 == end:
                 return stmts[first : last + 1]
     return []
-
-
-def enclosing_with(stmts: list[Node], lmap: LanguageNodeMap) -> Node | None:
-    """The ``with`` statement whose whole body *stmts* is, else ``None``: a span
-    lifted out of ``with timed(...):`` is the block that header labels."""
-    holder = body_holder(stmts)
-    return holder if holder is not None and holder.type in lmap.with_kinds else None
-
-
-def body_holder(stmts: list[Node]) -> Node | None:
-    """The statement whose whole body *stmts* is (a ``with``, an ``if`` arm, a
-    loop), else ``None``."""
-    if not stmts:
-        return None
-    block = stmts[0].parent
-    holder = block.parent if block is not None else None
-    if holder is None:
-        return None
-    code = [c for c in block.named_children if not is_comment(c)]
-    inside = [s for s in stmts if not is_comment(s)]
-    return holder if code and inside and code[0] == inside[0] and code[-1] == inside[-1] else None
 
 
 def section_heads(stmts: list[Node]) -> list[tuple[Node, list[str]]]:

@@ -10,12 +10,13 @@ import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...co_change import CoChangePartner, parse_partners
 from ..models import (
+    Change,
     FixEvent,
     GitCommit,
     GitCommitFile,
@@ -23,6 +24,7 @@ from ..models import (
     GitCommitHealthFinding,
     GitFunctionBlame,
     GitMetadata,
+    Repository,
     _new_uuid,
     _now_utc,
 )
@@ -738,13 +740,73 @@ async def get_author_commit_counts(session: AsyncSession, repository_id: str) ->
     return [tuple(row) for row in result.all()]
 
 
+async def clear_attribution(session: AsyncSession, repository_id: str) -> None:
+    """Delete every AI attribution value derived into the index for a repository.
+
+    Commit labels, the per-file rollups and change provenance go; git
+    history, trailers and notes in the repository are untouched. ``repowise attribution purge`` and the
+    ``attribution.enabled: false`` sweep below both use this.
+    """
+    await session.execute(
+        update(GitCommit)
+        .where(GitCommit.repository_id == repository_id)
+        .values(
+            agent_name=None,
+            agent_autonomy_tier=None,
+            agent_channel=None,
+            agent_confidence=None,
+            agent_model_id=None,
+            attribution=None,
+        )
+    )
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.repository_id == repository_id)
+        .values(
+            agent_commit_count=0,
+            attribution_known_count=0,
+            agent_authored_pct=None,
+            agent_tier_counts_json="{}",
+            agent_line_count=0,
+            agent_line_model_json="{}",
+        )
+    )
+    await session.execute(
+        update(Change)
+        .where(Change.repository_id == repository_id)
+        .values(provenance=None, provenance_agent=None, provenance_known=None)
+    )
+
+
+async def clear_attribution_if_disabled(session: AsyncSession, repository_id: str) -> bool:
+    """Run :func:`clear_attribution` when ``attribution.enabled`` is false.
+
+    Called after every git write, so switching attribution off and running
+    ``repowise update`` leaves nothing about AI in the index, including rows
+    an earlier index wrote. Returns whether it cleared.
+    """
+    from ...attribution import attribution_enabled
+
+    repo = await session.get(Repository, repository_id)
+    if attribution_enabled(repo.local_path if repo is not None else None):
+        return False
+    await clear_attribution(session, repository_id)
+    return True
+
+
 def _commit_authorship_clause(authorship: str | None):
-    """Optional authorship predicate: ``agent`` keeps agent-attributed commits,
-    ``human`` keeps the rest. ``None`` / ``"all"`` means no filtering."""
+    """Optional authorship predicate over the three-state label: ``agent``,
+    ``human`` (human-attested only; a commit without a marker is never human)
+    or ``unknown``. ``None`` / ``"all"`` means no filtering."""
     if authorship == "agent":
         return GitCommit.agent_name.is_not(None)
     if authorship == "human":
-        return GitCommit.agent_name.is_(None)
+        return GitCommit.attribution == "human_attested"
+    if authorship == "unknown":
+        return and_(
+            GitCommit.agent_name.is_(None),
+            or_(GitCommit.attribution.is_(None), GitCommit.attribution == "unknown"),
+        )
     return None
 
 
@@ -841,7 +903,7 @@ async def get_git_commits(
 
     ``sort="risk"`` ranks by ``change_risk_score`` descending (the review-
     priority order); ``sort="date"`` ranks by ``committed_at`` descending.
-    ``authorship`` narrows to ``agent`` / ``human``; ``kind`` narrows to the
+    ``authorship`` narrows to ``agent`` / ``human`` / ``unknown``; ``kind`` narrows to the
     ``high`` review-priority band or to ``fixes``. Both filter the repository
     rather than the page, so a filter still answers when the page it would
     have filtered is uniform.

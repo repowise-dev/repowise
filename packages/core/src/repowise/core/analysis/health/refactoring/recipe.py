@@ -14,10 +14,12 @@ older row yields a shorter recipe rather than an error.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from typing import Any, Literal, get_args
 
 from .annotations import RiskKind
+from .batches import stage_batches
 from .render import NAME_PLACEHOLDER, TYPE_PLACEHOLDER
 
 RecipeAction = Literal[
@@ -129,7 +131,7 @@ def _extract_method(d: Mapping[str, Any], plan: Mapping[str, Any]) -> list[Step]
     stages = [_dict(stage) for stage in _list(plan.get("stages"))]
     if stages:
         return _staged_steps(d, plan, stages)
-    return [_extract_step(d, plan)]
+    return [_extract_step(d, plan, note=_rename_note(plan, 1))]
 
 
 def _staged_steps(
@@ -156,13 +158,38 @@ def _staged_steps(
         }
         steps.append(_step("add_helper", d.get("file_path"), None, text, new_symbol=symbol))
     for n, stage in enumerate(stages, 1):
-        step = _extract_step(d, stage)
+        note = _rename_note(stage, len(stages)) if n == 1 else None
+        step = _extract_step(d, stage, note=note)
         step["text"] = f"Stage {n} of {len(stages)}: {step['text']}"
         steps.append(step)
     return steps
 
 
-def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
+#: Said once per Extract Method plan whose helper names are placeholders.
+RENAME_NOTE = (
+    "The helper's name is a placeholder: rename it for what it returns or does, "
+    "in its header and its call."
+)
+_RENAME_EACH = RENAME_NOTE.replace("The helper's name", "Each stage's helper name").replace(
+    "rename it", "rename each one"
+)
+#: The placeholder ``helper_naming.placeholder_names`` writes, in any casing.
+_PLACEHOLDER = re.compile(r"_?extracted_?[hH]elper_?\d*")
+
+
+def _rename_note(plan: Mapping[str, Any], helpers: int) -> str | None:
+    """The rename note for a plan of *helpers* helpers, None when the stored
+    name is a real one (a plan written before names were placeholders)."""
+    name = plan.get("suggested_name")
+    if name and not _PLACEHOLDER.fullmatch(str(name)):
+        return None
+    return RENAME_NOTE if helpers == 1 else _RENAME_EACH
+
+
+def _extract_step(
+    d: Mapping[str, Any], plan: Mapping[str, Any], *, note: str | None = None
+) -> Step:
+    """One extract step, ending with *note* when given (:func:`_rename_note`)."""
     span = _dict(plan.get("span"))
     where = _span(span.get("start"), span.get("end"))
     host = _short(d.get("target_symbol"))
@@ -172,20 +199,25 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
         return _step("extract", d.get("file_path"), None, text)
     symbol = _dict(plan.get("new_symbol"))
     is_async = bool(symbol.get("async", plan.get("needs_async")))
-    named = (
-        " (a starting name; rename it if it collides)"
-        if plan.get("suggested_name")
-        else " (name it for what the lines do)"
+    anchors = plan_anchors(plan.get("anchors"))
+    lines = (
+        f"the span of `{host}` that starts and ends with the lines shown "
+        f"(lines {where['start']}-{where['end']} when planned)"
+        if anchors
+        else f"lines {where['start']}-{where['end']} of `{host}`"
     )
     text = (
-        f"Move lines {where['start']}-{where['end']} of `{host}` into a new helper "
-        f"`{name}`{named} in the same scope, and replace them with one call to it."
+        f"Move {lines} into a new helper `{name}` in the same scope, and replace "
+        f"{'it' if anchors else 'them'} with one call to it."
     )
+    if note:
+        text += " " + note
     return _step(
         "extract",
         d.get("file_path"),
         where,
         text,
+        **({"anchors": anchors} if anchors else {}),
         new_symbol={
             "name": name,
             "kind": symbol.get("kind"),
@@ -198,6 +230,18 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
         },
         **({"call_site": plan["call_site"]} if _dict(plan.get("call_site")) else {}),
     )
+
+
+def plan_anchors(value: Any) -> dict[str, str] | None:
+    """A span's text anchors (``refactoring.anchors``), None on an older row.
+    ``unique_in`` is ``"function"`` when the text also occurs elsewhere in the
+    file, so a text match must stay inside the host."""
+    anchors = _dict(value)
+    first, last = anchors.get("first"), anchors.get("last")
+    if not (isinstance(first, str) and isinstance(last, str)):
+        return None
+    unique_in = "function" if anchors.get("unique_in") == "function" else "file"
+    return {"first": first, "last": last, "unique_in": unique_in}
 
 
 def _extract_notes(
@@ -560,6 +604,20 @@ def _postconditions(d: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+#: How an Extract Method edit is made, read after "Do not" like ``does_not``.
+#: The UI's fallback renderers repeat these words (a parity test holds them).
+SCRIPT_RULE: dict[str, str | None] = {
+    "constraint": "generate a script that rewrites the file",
+    "reason": "make each edit directly in the file, one at a time, re-reading the span after each",
+}
+#: Said under a step whose anchors are unique only inside its function.
+ELSEWHERE_NOTE = "Text repeats in the file: edit only inside this function."
+LINE_RULE: dict[str, str | None] = {
+    "constraint": "find a span by its line numbers",
+    "reason": "they are where it was when planned and move with every edit; match its first "
+    "and last lines",
+}
+
 #: Per type, what the edit must not do and, when it is not obvious, why.
 _DOES_NOT: dict[str, tuple[str, str | None]] = {
     "extract_helper": ("merge sites that differ", "a difference between them becomes a parameter"),
@@ -582,15 +640,7 @@ def _does_not(d: Mapping[str, Any], steps: list[Step]) -> list[dict[str, str | N
     spans = [s["span"] for s in steps if s.get("action") == "extract" and s.get("span")]
     span = {"start": spans[0]["start"], "end": spans[-1]["end"]} if spans else None
     if kind == "extract_method" and span:
-        lines = f"{span['start']}-{span['end']}"
-        added = (
-            "the calls that replace them (and the object the stages share, if any)"
-            if len(spans) > 1
-            else "the call that replaces them"
-        )
-        out.append(
-            {"constraint": f"touch anything outside lines {lines} and {added}", "reason": None}
-        )
+        out.extend(_extract_does_not(steps, span, len(spans) > 1))
     elif kind == "extract_helper" and (name := _reused(d)):
         out.append({"constraint": f"change `{name}` to fit a site", "reason": "its callers rely on it"})
     elif kind in _DOES_NOT:
@@ -604,10 +654,35 @@ def _does_not(d: Mapping[str, Any], steps: list[Step]) -> list[dict[str, str | N
     return out
 
 
+def _extract_does_not(
+    steps: list[Step], span: dict[str, int], staged: bool
+) -> list[dict[str, str | None]]:
+    """Extract Method's limits, and how its edits are made: by hand, each found
+    by its text when the steps carry anchors (a stage applied by line number
+    moves every later one)."""
+    lines = f"{span['start']}-{span['end']}"
+    added = (
+        "the calls that replace them (and the object the stages share, if any)"
+        if staged
+        else "the call that replaces them"
+    )
+    anchored = any(s.get("anchors") for s in steps)
+    where = f"the lines the steps move (lines {lines} when planned)" if anchored else f"lines {lines}"
+    out: list[dict[str, str | None]] = [
+        {"constraint": f"touch anything outside {where} and {added}", "reason": None},
+        dict(SCRIPT_RULE),
+    ]
+    if anchored:
+        out.append(dict(LINE_RULE))
+    return out
+
+
 def build_recipe(detail: Mapping[str, Any]) -> dict[str, Any]:
     """*detail* as ``{id, kind, advisory, summary, target, preconditions, steps,
-    postconditions, does_not}``. Pure: reads only the dict it is given."""
+    postconditions, does_not}``, plus ``batches`` on a staged plan over five
+    stages (:mod:`.batches`). Pure: reads only the dict it is given."""
     steps = recipe_steps(detail)
+    batches = stage_batches(detail, steps)
     return {
         "id": detail.get("id"),
         "kind": detail.get("refactoring_type"),
@@ -625,16 +700,22 @@ def build_recipe(detail: Mapping[str, Any]) -> dict[str, Any]:
         "steps": steps,
         "postconditions": _postconditions(detail),
         "does_not": _does_not(detail, steps),
+        **({"batches": batches} if batches else {}),
     }
 
 
 __all__ = [
+    "ELSEWHERE_NOTE",
+    "LINE_RULE",
     "PRECONDITION_KINDS",
     "RECIPE_ACTIONS",
+    "RENAME_NOTE",
+    "SCRIPT_RULE",
     "TYPE_LABEL",
     "RecipeAction",
     "build_recipe",
     "label",
+    "plan_anchors",
     "recipe_steps",
     "verify_check",
 ]

@@ -19,10 +19,11 @@ empirical predictors are no longer suppressed by uniform severity values.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from .grading import analysed_share
 from .models import HealthFileMetricData, HealthFindingData, Severity
 from .rows import field, scored_rows, split_tests, split_unscored
 
@@ -925,8 +926,8 @@ def hotspot_health(
     and not a failure — a repo with no recent churn has nothing to be a hotspot.
     It is kept distinct from a low score on purpose: averaging an empty set
     yields 10.0, and reporting that would tell a user their hotspots are perfect
-    when they have none. :func:`compute_kpis` still floors it to 10.0 for the
-    persisted KPI, and says why there.
+    when they have none. :func:`compute_kpis` and the persisted snapshot carry
+    the ``None`` through unchanged.
     """
     rows = [m for m in scored_rows(metrics) if field(m, "file_path") in hotspot_paths]
     if not rows:
@@ -945,6 +946,7 @@ def _empty_kpis(unanalysed: int) -> dict[str, object]:
         "hotspot_health": None,
         "average_health": None,
         "unanalysed_file_count": unanalysed,
+        "analysed_share": analysed_share(0, unanalysed),
         "worst_performer_path": None,
         "worst_performer_score": None,
         "worst_test_path": None,
@@ -970,13 +972,19 @@ def _empty_kpis(unanalysed: int) -> dict[str, object]:
 def compute_kpis(
     metrics: list[HealthFileMetricData],
     hotspot_paths: set[str],
+    *,
+    unanalysed: int = 0,
+    deductions: Mapping[str, float] | None = None,
 ) -> dict[str, object]:
     """Repo-level KPIs derived from per-file metrics.
 
-    - ``hotspot_health``: NLOC-weighted average over files in *hotspot_paths*.
+    - ``hotspot_health``: NLOC-weighted average over files in *hotspot_paths*,
+      ``None`` when the repo has no scored hotspot file.
     - ``average_health``: NLOC-weighted average over all files.
-    - ``worst_performer``: lowest-scoring production file + score, and
-      ``worst_test_performer`` the same over test files, reported separately.
+    - ``worst_performer``: the worst file in Fix first's scope + score, and
+      ``worst_test_performer`` the worst test, as ``ranking.worst_in_scope``
+      names them; *deductions* (``ranking.deduction_by_path``) breaks score
+      ties the way every ranked list does.
     - ``maintainability_average`` / ``maintainability_hotspot``: the same two
       NLOC-weighted averages over the per-file ``maintainability_score``, so the
       maintainability pillar surfaces a repo headline alongside the defect one.
@@ -993,17 +1001,23 @@ def compute_kpis(
     - ``unanalysed_file_count``: files stored with no score because health has
       no dialect for their language. Every KPI above leaves them out; when no
       file is scored at all, the two headline averages are ``None``.
+    - ``analysed_share``: scored files over all code files (``grading.analysed_share``),
+      which decides whether the headline carries a band. *unanalysed* counts
+      unscored files a caller already took out of *metrics*, so a narrowed
+      recompute keeps the share of the population it narrowed.
     """
-    metrics, unanalysed = split_unscored(metrics)
+    metrics, left_out = split_unscored(metrics)
+    unanalysed += left_out
     if not metrics:
         return _empty_kpis(unanalysed)
 
     hotspots = [m for m in metrics if field(m, "file_path") in hotspot_paths]
 
-    production, tests = split_tests(metrics)
-    # Production first; a test file names the worst only in a tests-only repo.
-    worst = min(production or metrics, key=_row_score)
-    worst_test = min(tests, key=_row_score) if tests else None
+    # Imported here: ``ranking`` reads this module's score ceiling.
+    from .ranking import worst_kpis
+
+    # ``production_average`` keeps its own rule: every non-test file.
+    production, _ = split_tests(metrics)
     maint_avg = nloc_weighted_attr(metrics, "maintainability_score")
     maint_hotspot = nloc_weighted_attr(hotspots, "maintainability_score")
     perf_avg = nloc_weighted_attr(metrics, "performance_score")
@@ -1013,19 +1027,10 @@ def compute_kpis(
         for half in ("structure", "history")
         for scope, rows in (("average", metrics), ("hotspot", hotspots))
     }
-    # Floored to 10.0 when the repo has no hotspot files, because this dict is
-    # what ``save_health_snapshot`` persists into a non-nullable column and what
-    # the trend alerts diff against. The floor lives here, at the one point that
-    # needs it, rather than inside the arithmetic — surfaces that can say "no
-    # hotspots" out loud read ``hotspot_health()`` and get ``None``.
-    hotspot_kpi = hotspot_health(metrics, hotspot_paths)
     return {
-        "hotspot_health": hotspot_kpi if hotspot_kpi is not None else 10.0,
+        "hotspot_health": hotspot_health(metrics, hotspot_paths),
         "average_health": round(nloc_weighted_score(metrics), 2),
-        "worst_performer_path": field(worst, "file_path"),
-        "worst_performer_score": round(_row_score(worst), 2),
-        "worst_test_path": field(worst_test, "file_path") if worst_test is not None else None,
-        "worst_test_score": round(_row_score(worst_test), 2) if worst_test is not None else None,
+        **worst_kpis(metrics, deductions or {}),
         "file_count": len(metrics),
         "maintainability_average": round(maint_avg, 2) if maint_avg is not None else None,
         "maintainability_hotspot": round(maint_hotspot, 2) if maint_hotspot is not None else None,
@@ -1037,4 +1042,5 @@ def compute_kpis(
         ),
         "production_file_count": len(production),
         "unanalysed_file_count": unanalysed,
+        "analysed_share": analysed_share(len(metrics), unanalysed),
     }

@@ -45,6 +45,8 @@ class RefactoringOpportunitiesResponse(BaseModel):
     hidden: RefactoringHiddenCounts | None = None
     #: The plans' count vocabulary over the open inventory (``queue.counts``).
     counts: QueueCounts | None = None
+    #: Open opportunities a language gate held back, by language.
+    gated: dict[str, dict[str, Any]] | None = None
 
 
 class RefactoringRollupResponse(BaseModel):
@@ -218,6 +220,8 @@ class RefactoringSummary(BaseModel):
 class RefactoringTargetsResponse(BaseModel):
     summary: RefactoringSummary
     plans: list[RefactoringPlanResponse]
+    #: Open plans a language gate held back, by language.
+    gated: dict[str, dict[str, Any]] = {}
 
 
 class RefactoringSettings(BaseModel):

@@ -276,3 +276,27 @@ def test_an_unattached_split_with_an_unnamed_group_says_it_needs_design(capsys):
     text = capsys.readouterr().out
     assert "1 need design: a group has no name yet." in text
     assert "- **big.py -> 2 files** (pkg/big.py) needs design" in text
+
+
+def _size_finding(target: str, ccn: int, line: int) -> HealthFindingData:
+    return HealthFindingData(
+        biomarker_type="complex_method",
+        severity=Severity.HIGH,
+        file_path=f"pkg/{target}.py",
+        function_name=target,
+        line_start=line,
+        line_end=line + 200,
+        details={"ccn": ccn, "nloc": 150},
+        health_impact=1.0,
+    )
+
+
+def test_raw_plans_carry_the_above_the_bar_mark_and_rank_by_it(capsys):
+    from tests.unit.health.test_worth_after_plan import _plan
+
+    big, small = _plan("big", 10, 10, impact=3.0), _plan("small", 10, 10, impact=1.0)
+    findings = [_size_finding("big", 90, 10), _size_finding("small", 30, 10)]
+    _render_refactoring_targets([], findings, [big, small], fmt="json")
+    plans = json.loads(capsys.readouterr().out)["refactoring_plans"]
+    assert [plan["target_symbol"] for plan in plans] == ["small", "big"]
+    assert plans[1]["leaves_above_bar"].startswith("leaves big at CCN 80")

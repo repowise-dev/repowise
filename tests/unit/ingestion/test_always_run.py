@@ -9,6 +9,7 @@ import pytest
 from repowise.core.ingestion.always_run import (
     OwnCode,
     always_run_reason,
+    is_judged_test,
     own_code,
     stamp_always_run,
 )
@@ -244,6 +245,63 @@ def test_other_languages_are_not_judged() -> None:
     assert _reason("pkg/a_test.go", 'exec.Command("tool")') is None
 
 
+_SPRING = "it loads the whole Spring application context (@SpringBootTest)"
+
+
+@pytest.mark.parametrize(
+    ("path", "text"),
+    [
+        (
+            "src/test/java/org/x/PetClinicIntegrationTests.java",
+            "import org.springframework.boot.test.context.SpringBootTest;\n"
+            "@SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)\n"
+            "class PetClinicIntegrationTests {\n"
+            '  @Test void findAll() { template.getForEntity("/owners/1", String.class); }\n}\n',
+        ),
+        (
+            "src/test/java/org/x/AppTests.java",
+            "@org.springframework.boot.test.context.SpringBootTest\nclass AppTests {}\n",
+        ),
+        (
+            "src/test/kotlin/org/x/ApiTest.kt",
+            "@SpringBootTest\n@AutoConfigureMockMvc\nclass ApiTest(@Autowired val mvc: MockMvc) {}\n",
+        ),
+    ],
+)
+def test_a_spring_boot_test_runs_with_every_subset(path, text) -> None:
+    assert _reason(path, text) == _SPRING
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Plain JUnit.
+        "import org.junit.jupiter.api.Test;\nclass OwnerTests { @Test void x() {} }\n",
+        # A slice is reached through the class it names.
+        "@WebMvcTest(OwnerController.class)\nclass OwnerControllerTests {}\n",
+        "@DataJpaTest\nclass ClinicServiceTests {}\n",
+        # Commented out, in a string, or a longer annotation name.
+        "// @SpringBootTest\n/* @SpringBootTest */\nclass A {}\n",
+        "/**\n * Unlike {@code @SpringBootTest}, loads one slice.\n */\nclass A {}\n",
+        'class A { String s = "@SpringBootTest"; String t = """\n@SpringBootTest\n"""; }\n',
+        "@SpringBootTestSupport\nclass A {}\n",
+    ],
+)
+def test_other_jvm_tests_have_no_reason(text) -> None:
+    assert _reason("src/test/java/org/x/SomeTests.java", text) is None
+
+
+def test_a_kotlin_nested_comment_hides_the_annotation() -> None:
+    text = "/* outer /* inner */\n@SpringBootTest\n*/\nclass ApiTest {}\n"
+    assert _reason("src/test/kotlin/org/x/ApiTest.kt", text) is None
+
+
+def test_jvm_tests_are_judged() -> None:
+    assert is_judged_test("src/test/java/org/x/OwnerTests.java")
+    assert is_judged_test("src/test/kotlin/org/x/ApiTest.kt")
+    assert not is_judged_test("src/main/java/org/x/Owner.java")
+
+
 def test_an_unclosed_string_full_of_backslashes_is_fast() -> None:
     text = "import subprocess\nsubprocess.run(['x', '" + "\\\\" * 5000 + "\n"
     start = time.perf_counter()
@@ -275,6 +333,8 @@ def test_stamp_sets_the_reason_on_test_nodes_only() -> None:
     )
     sources = {"tests/test_lint.py": lint, "tests/test_a.py": "def test_a():\n    pass\n"}
     sources["src/walker.py"] = lint
+    sources["tests/AppTests.java"] = "@SpringBootTest\nclass AppTests {}\n"
+    sources["tests/OwnerTests.java"] = "class OwnerTests { @Test void x() {} }\n"
     graph = nx.DiGraph()
     parsed = {}
     for path, text in sources.items():
@@ -293,8 +353,10 @@ def test_stamp_sets_the_reason_on_test_nodes_only() -> None:
         )
         parsed[path] = ParsedFile(file_info=info, symbols=[], imports=[], exports=[])
     stamped = stamp_always_run(graph, parsed, {p: t.encode() for p, t in sources.items()})
-    assert stamped == 1
+    assert stamped == 2
     assert graph.nodes["tests/test_lint.py"]["always_run_reason"] == _WALK
+    assert graph.nodes["tests/AppTests.java"]["always_run_reason"] == _SPRING
     # Scanned and ordinary is "", apart from never scanned (None).
     assert graph.nodes["tests/test_a.py"]["always_run_reason"] == ""
+    assert graph.nodes["tests/OwnerTests.java"]["always_run_reason"] == ""
     assert "always_run_reason" not in graph.nodes["src/walker.py"]

@@ -404,11 +404,8 @@ def _failure_entry() -> dict:
 
 #: The repo-local coverage re-ingest entry (shell tools). ``--coverage-only``
 #: runs that one surface, so it never revives the shell notices the narrowed
-#: :data:`_AUGMENT_MATCHER` dropped.
-_COVERAGE_HOOK_COMMAND = (
-    "if command -v repowise-augment >/dev/null 2>&1; "
-    "then exec repowise-augment --coverage-only; fi"
-)
+#: :data:`_AUGMENT_MATCHER` dropped. Its command is defined in core, which
+#: tells it from a user's hook in a working-tree score.
 _COVERAGE_HOOK_EVENTS = ("PostToolUse", "PostToolUseFailure")
 
 
@@ -418,12 +415,15 @@ def claude_code_local_settings_path(repo_path: Path) -> Path:
 
 
 def _coverage_entry() -> dict:
+    # Imported here: the hook's self-heal loads this module and must stay light.
+    from repowise.core.owned_paths import COVERAGE_HOOK_COMMAND
+
     return {
         "matcher": SHELL_TOOL_MATCHER,
         "hooks": [
             {
                 "type": "command",
-                "command": _COVERAGE_HOOK_COMMAND,
+                "command": COVERAGE_HOOK_COMMAND,
                 "timeout": 10,
             }
         ],

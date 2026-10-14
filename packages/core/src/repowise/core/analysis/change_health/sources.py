@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff
-from ..git_cli import split_revspec
+from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff, untracked_diffs
+from ..git_cli import path_filter, split_revspec, untracked_paths
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -176,13 +176,23 @@ class GitRevisionSource:
 
     def _resolve_working_tree(self) -> RevisionPair:
         head = self._sha("HEAD")
+        # Untracked files are part of the uncommitted change, as change risk
+        # and the changed lines count them.
+        if self.hunks:
+            untracked = untracked_diffs(self.repo_path)
+        else:
+            untracked = dict.fromkeys(untracked_paths(self.repo_path))
         return RevisionPair(
             "HEAD",
             "WORKTREE",
             head,
             "",
             True,
-            self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", "HEAD"]),
+            self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", "HEAD"])
+            + [
+                FileChange(head_path=path, base_path=None, status="added", diff=diff)
+                for path, diff in untracked.items()
+            ],
         )
 
     def _resolve_commit(self, ref: str) -> RevisionPair:
@@ -347,34 +357,9 @@ def filter_changes(
     the change manifest counted have to be the same change; two copies of this
     rule drift the moment either grows a case.
     """
-    import pathspec
-
-    spec = (
-        pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
-        if exclude_patterns
-        else None
-    )
-    keep = (
-        pathspec.PathSpec.from_lines("gitwildmatch", include_paths)
-        if include_paths
-        else None
-    )
-    exts = {e if e.startswith(".") else f".{e}" for e in extensions}
-    return [change for change in changes if _counts(change, spec, exts, keep)]
-
-
-def _counts(
-    change: FileChange, spec: object | None, exts: set[str], keep: object | None = None
-) -> bool:
-    """Whether *change* survives the caller's filters. One path, one decision."""
-    path = change.head_path or change.base_path or ""
-    if not path:
-        return False
-    if keep is not None and not keep.match_file(change.head_path):  # type: ignore[attr-defined]
-        return False
-    if spec is not None and spec.match_file(path):  # type: ignore[attr-defined]
-        return False
-    return not exts or any(path.endswith(ext) for ext in exts)
+    counts = path_filter(extensions, exclude_patterns, include_paths)
+    # A deletion has no head path, so it is matched on the path it had.
+    return [c for c in changes if (path := c.head_path or c.base_path) and counts(path)]
 
 
 def _iter_name_status(raw: str) -> Iterator[tuple[str, str, str]]:

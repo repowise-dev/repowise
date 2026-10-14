@@ -41,6 +41,7 @@ from repowise.server.routers import (
     actions,
     blast_radius,
     c4,
+    changes,
     chat,
     claude_md,
     code_health,
@@ -365,6 +366,7 @@ _ROUTERS = (
     c4,
     webhooks,
     git,
+    changes,
     dead_code,
     doc_drift,
     code_health,
@@ -396,6 +398,9 @@ _ROUTERS = (
 
 def create_app() -> FastAPI:
     """Build and return the configured FastAPI application."""
+    from repowise.core.registry.plugins import load_plugins
+
+    load_plugins()
     app = FastAPI(
         title="repowise API",
         description="REST API for repowise — codebase documentation engine",

@@ -65,6 +65,7 @@ class CoChangeWalk:
 def _partner_records(
     kept: dict[str, list[tuple[float, str]]],
     pair_support: dict[tuple[str, str], int],
+    pair_focused: dict[tuple[str, str], int],
     pair_last_date: dict[tuple[str, str], int],
     file_commits: dict[str, int],
 ) -> dict[str, list[dict]]:
@@ -73,6 +74,8 @@ def _partner_records(
     ``self_commits`` / ``partner_commits`` are each file's commit total over
     this same walk, so a reader can state a directional confidence without
     borrowing a denominator computed over a different window.
+    ``focused_frequency`` is ``frequency`` without the sweep commits change
+    entropy also drops, for a reader that treats a pair as evidence.
     """
     out: dict[str, list[dict]] = {}
     for owner, heap in kept.items():
@@ -85,6 +88,7 @@ def _partner_records(
                     "file_path": other,
                     "co_change_count": round(score, 4),
                     "frequency": pair_support[pair],
+                    "focused_frequency": pair_focused.get(pair, 0),
                     "self_commits": file_commits[owner],
                     "partner_commits": file_commits[other],
                     "last_co_change": (
@@ -154,6 +158,7 @@ def compute_co_changes_and_entropy(
     partner_count: defaultdict[str, int] = defaultdict(int)
     partner_mass: defaultdict[str, float] = defaultdict(float)
     pair_support: defaultdict[tuple[str, str], int] = defaultdict(int)
+    pair_focused: defaultdict[tuple[str, str], int] = defaultdict(int)
     pair_last_date: dict[tuple[str, str], int] = {}  # pair → latest Unix ts
     file_commits: defaultdict[str, int] = defaultdict(int)
     entropy_scores: defaultdict[str, float] = defaultdict(float)
@@ -225,12 +230,15 @@ def compute_co_changes_and_entropy(
         # Split the commit's weight across the files it touched, so a pair from
         # a two-file commit outweighs one from a fifty-file commit.
         pair_weight = pair_decay / (n - 1)
+        focused = n <= _MAX_FILES_PER_COMMIT_FOR_ENTROPY
         sorted_files = sorted(current)
         for i in range(len(sorted_files)):
             for j in range(i + 1, len(sorted_files)):
                 pair = (sorted_files[i], sorted_files[j])
                 pair_scores[pair] += pair_weight
                 pair_support[pair] += 1
+                if focused:
+                    pair_focused[pair] += 1
                 if pair not in pair_last_date or current_ts > pair_last_date[pair]:
                     pair_last_date[pair] = current_ts
 
@@ -284,7 +292,7 @@ def compute_co_changes_and_entropy(
         _offer(a, b, score)
         _offer(b, a, score)
 
-    result = _partner_records(kept, pair_support, pair_last_date, file_commits)
+    result = _partner_records(kept, pair_support, pair_focused, pair_last_date, file_commits)
 
     entropy = {fp: round(score, 6) for fp, score in entropy_scores.items() if score > 0.0}
 

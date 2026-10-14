@@ -59,6 +59,11 @@ def member_name(node: Node) -> Node | None:
         prop = node.child_by_field_name(field_name)
         if prop is not None:
             return prop
+    # Swift wraps the member in a ``navigation_suffix`` (``.name``), with the
+    # name as that node's own ``suffix``.
+    suffix = node.child_by_field_name("suffix")
+    if suffix is not None and (inner := suffix.child_by_field_name("suffix")) is not None:
+        return inner
     named = [c for c in node.children if c.is_named]
     return next((c for c in reversed(named) if c.type.endswith(_IDENTIFIER_SUFFIX)), None)
 
@@ -143,6 +148,13 @@ def _find_name(node: Node) -> str:
                 names = [c for c in grandchild.children if c.type == "identifier" and c.text]
                 if names:
                     return names[-1].text.decode("utf-8", errors="replace")
+    # Swift: a computed property and a ``willSet`` / ``didSet`` block are named
+    # for the property that holds them, a subscript's body ``subscript``, and
+    # ``deinit`` has no name node at all.
+    if node.type in _SWIFT_PROPERTY_UNITS:
+        return _swift_property_name(node)
+    if node.type == "deinit_declaration":
+        return "deinit"
     # C / C++: the function name is not a direct child but nested inside a
     # ``declarator`` chain (``function_definition → function_declarator →
     # field_identifier``). Languages with a ``name`` field never reach here.
@@ -160,6 +172,20 @@ def _find_name(node: Node) -> str:
         ):
             return child.text.decode("utf-8", errors="replace")
     return "<anonymous>"
+
+
+_SWIFT_PROPERTY_UNITS = frozenset({"computed_property", "willset_didset_block"})
+
+
+def _swift_property_name(unit: Node) -> str:
+    holder = unit.parent
+    if holder is None:
+        return "<anonymous>"
+    if holder.type == "subscript_declaration":
+        return "subscript"
+    name = holder.child_by_field_name("name")
+    text = "".join((name.text or b"").decode("utf-8", errors="replace").split()) if name else ""
+    return text or "<anonymous>"
 
 
 def _node_text(node: Node) -> str:
@@ -394,7 +420,12 @@ def _count_parameters(fn_node: Node) -> int:
     """
     params = _parameter_list(fn_node)
     if params is None:
-        return 0
+        # Swift has no list node: each ``parameter`` is a child of the function,
+        # and a subscript's are on the ``subscript_declaration`` around its body.
+        holder = fn_node
+        if fn_node.type == "computed_property" and fn_node.parent is not None:
+            holder = fn_node.parent
+        return sum(1 for child in holder.children if child.type == "parameter")
     count = 0
     receiver = _receiver_parameter(params)
     for child in params.children:
@@ -437,14 +468,14 @@ def _identifier_chain(node: Node, *, lower: bool = True) -> list[str]:
     document order.
 
     Order is load-bearing: the last entry is the name being called, the rest
-    the receiver path. Argument lists and ``type_arguments`` (TypeScript,
-    Java) are never descended into; C#'s ``type_argument_list`` still is.
+    the receiver path. Value and type argument lists (including C#'s
+    ``type_argument_list``) are never descended into.
     """
     names: list[str] = []
     stack: list[Node] = [node]
     while stack:
         cur = stack.pop()
-        if cur.type in ("argument_list", "arguments", "type_arguments"):
+        if cur.type in ("argument_list", "arguments", "type_arguments", "type_argument_list"):
             continue
         if cur.type.endswith(_IDENTIFIER_SUFFIX) and cur.text is not None:
             text = cur.text.decode("utf-8", "replace")

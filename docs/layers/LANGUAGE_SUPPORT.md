@@ -57,7 +57,7 @@ resolution and health markers are all static.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
-| **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, F# and Objective-C get the complexity-derived ones; the rest get none yet |
+| **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, F# and Objective-C get the complexity-derived ones; the rest get none yet |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo and `.luaurc` aware), no health markers. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers, no import edges yet |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
@@ -300,15 +300,16 @@ This table is why a language is Full and not Good.
 | Rust · C++ · C# | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Scala · Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Kotlin | ✅ | ✅ | ✅ | no | no | no | ✅ |
-| Dart | ✅ | n/a | ✅ | no | no | no | ✅ |
+| Dart | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Object Pascal | ✅ | n/a | ✅ | n/a | n/a | no | ✅ |
 | Razor | ✅ | n/a | n/a | n/a | n/a | no | ✅ |
 | PHP | ✅ | ✅ | ✅ | no | no | no | no |
 | C | ✅ | no | no | no | no | ✅ | no |
-| F# · Objective-C | ✅ | no | no | no | no | no | no |
+| F# · Objective-C | ✅ | ✅ | no | no | no | no | no |
 | Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |
 
 ✅ supported, "no" not available yet, n/a the language cannot carry that metric.
+Dart, F#, and Objective-C report class size, method count, and CCN (supporting detectors like God Class), but do not compute cohesion metrics (LCOM4).
 An unmapped language produces no findings, never guessed ones. The two
 test-quality markers (mock saturation, assertion-free test) are advisory and
 never deduct from a score. Why Go and Java are held back from them, and why

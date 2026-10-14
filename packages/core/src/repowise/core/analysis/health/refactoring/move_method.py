@@ -63,6 +63,7 @@ from typing import Any
 
 from repowise.core.analysis.dead_code.contract_methods import is_contract_method
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
+from repowise.core.analysis.graph_view import heritage_ancestors
 
 from ....test_paths import is_test_related_path
 from ..effort import effort_bucket
@@ -139,18 +140,6 @@ def _file_is_test(graph: Any, path: str) -> bool:
     return is_test_related_path(path)
 
 
-def _ancestors(graph: Any, class_id: str) -> set[str]:
-    """Every class *class_id* inherits from, transitively."""
-    seen: set[str] = set()
-    stack = [class_id]
-    while stack:
-        for _u, base, data in graph.out_edges(stack.pop(), data=True):
-            if data.get("edge_type") in ("extends", "implements") and base not in seen:
-                seen.add(base)
-                stack.append(base)
-    return seen
-
-
 def _partial_fragments(graph: Any, file_path: str, class_name: str) -> set[str]:
     """The class ids of *class_name*'s ``partial`` fragments in other files.
 
@@ -197,7 +186,7 @@ def _overrides(graph: Any, data: dict, own_class_id: str, language: str) -> bool
         return True
     declared = {
         (_node(graph, member) or {}).get("name")
-        for base in _ancestors(graph, own_class_id)
+        for base in heritage_ancestors(graph, own_class_id)
         for member in _class_members(graph, base, {})
     }
     return name in declared
@@ -251,7 +240,7 @@ def _never_a_target(graph: Any, class_id: str) -> bool:
     if _is_static_holder(graph, class_id):
         return True
     names = [_class_name(graph, class_id)]
-    names += [b.rsplit("::", 1)[-1] for b in _ancestors(graph, class_id)]
+    names += [b.rsplit("::", 1)[-1] for b in heritage_ancestors(graph, class_id)]
     return any(n.endswith(_NON_TARGET_SUFFIXES) for n in names)
 
 
@@ -421,7 +410,7 @@ class MoveMethodDetector(RefactoringDetector):
 
         # Nearest foreign class by Jaccard distance (tie-break on class id).
         # A constructor call lands the class id in its own member set.
-        own_and_inherited = _ancestors(graph, own_class_id) | own_ids
+        own_and_inherited = heritage_ancestors(graph, own_class_id) | own_ids
         foreign = [
             (c, m)
             for c, m in accessed_by_class.items()

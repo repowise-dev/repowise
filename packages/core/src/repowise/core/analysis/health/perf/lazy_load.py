@@ -28,6 +28,7 @@ from .orm_models import (
     build_model_index,
 )
 from .reduction_idioms import field_text, ident, walk
+from .repository_loops import collect_repository_loops
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -97,7 +98,10 @@ def collect_lazy_loads(
     parsed_files: Iterable[Any],
     read_source: SourceReader | None = None,
 ) -> None:
-    """Append hits to each walked file's ``perf_hits``; one file failing skips only it."""
+    """Append hits to each walked file's ``perf_hits``; one file failing skips only it.
+    The Java repository/mapper pass rides this ORM entry point."""
+    # Both passes read both inputs, so a one-shot iterable is materialized once.
+    walked, parsed_files = list(walked), list(parsed_files)
     reader = read_source or _disk_read
     index = build_model_index(parsed_files, reader)
     for pf, fcx in walked:
@@ -105,6 +109,7 @@ def collect_lazy_loads(
             fcx.perf_hits.extend(_file_hits(pf, reader, index))
         except Exception as exc:
             log.debug("lazy_load_failed", path=pf.file_info.abs_path, error=str(exc))
+    collect_repository_loops(walked, parsed_files, reader)
 
 
 def _disk_read(abs_path: str) -> bytes | None:

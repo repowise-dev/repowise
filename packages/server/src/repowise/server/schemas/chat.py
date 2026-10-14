@@ -167,3 +167,94 @@ class ChatSuggestionsResponse(BaseModel):
 class ConversationDetailResponse(BaseModel):
     conversation: ConversationResponse
     messages: list[ChatMessageResponse] = []
+
+
+# ---------------------------------------------------------------------------
+# Headless chat sessions
+# ---------------------------------------------------------------------------
+
+
+class ChatSessionPolicyRequest(BaseModel):
+    """Limits a caller asks for. Each may only narrow the server's default
+    session policy; a wider value is refused."""
+
+    tool_allowlist: list[str] | None = None
+    max_tool_loops: int | None = Field(default=None, ge=1)
+    max_turns: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    max_turn_tokens: int | None = Field(default=None, ge=1)
+    max_session_tokens: int | None = Field(default=None, ge=1)
+    audience: Literal["engineer", "business"] | None = None
+
+
+class ChatSessionOpenRequest(BaseModel):
+    """Open a session, or resume the one ``(namespace, external_ref)`` names."""
+
+    repo_id: str
+    scope: Literal["repo", "workspace"] = "repo"
+    namespace: str = Field(default="default", min_length=1, max_length=128)
+    external_ref: str | None = Field(default=None, min_length=1, max_length=512)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    policy: ChatSessionPolicyRequest | None = None
+
+
+class ChatSessionResponse(BaseModel):
+    id: str
+    repository_id: str
+    title: str
+    scope: Literal["repo", "workspace"]
+    namespace: str | None = None
+    external_ref: str | None = None
+    #: True when this call created the conversation.
+    created: bool = False
+    policy: dict[str, Any] = {}
+    turns: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class ChatSessionMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=32_000)
+    #: A retried send with the same key returns the stored reply.
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    context: ChatPageContext | None = None
+    #: True streams the turn as SSE events; false returns one ``ChatTurnResultResponse``.
+    stream: bool = False
+    provider: str | None = None
+    model: str | None = None
+
+
+class ChatToolTraceEntry(BaseModel):
+    name: str
+    summary: str
+    ok: bool
+    basis: str
+    origin: str | None = None
+
+
+class ChatTurnUsage(BaseModel):
+    """Null token counts mean the provider reported none."""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    model_calls: int = 0
+
+
+class ChatTurnResultResponse(BaseModel):
+    conversation_id: str
+    message_id: str | None = None
+    user_message_id: str | None = None
+    answer: str
+    stop_reason: Literal[
+        "answered", "loop_cap", "token_budget", "turn_budget", "refused", "cancelled", "error"
+    ]
+    provider: str
+    model: str
+    citations: list[dict[str, Any]] = []
+    cards: list[dict[str, Any]] = []
+    views: list[dict[str, Any]] = []
+    tool_trace: list[ChatToolTraceEntry] = []
+    follow_ups: list[ChatSuggestion] = []
+    usage: ChatTurnUsage = ChatTurnUsage()
+    error: str | None = None
+    replayed: bool = False

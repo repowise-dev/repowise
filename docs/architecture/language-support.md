@@ -506,11 +506,12 @@ Pattern families today:
 | Go | Go | parameters, `name := Type{}`, `var name Type` |
 | Kotlin | Kotlin | `name: Type`, `= Type(...)` |
 | Swift | Swift | `name: Type`, `= Type(...)` |
+| Dart | Dart | `Type name`, `Type? name`, `final name = Type(...)` |
 | Python | Python | annotations, `name = Type(...)`, target lists |
 
 Two further sets gate the harder half:
 
-- **`IMPLICIT_FIELD_LANGUAGES`** = `{csharp, java, kotlin, swift}`. Only these
+- **`IMPLICIT_FIELD_LANGUAGES`** = `{csharp, dart, java, kotlin, swift}`. Only these
   look up an unbound receiver among the *enclosing class's fields*. Go is
   deliberately excluded even though its locals and parameters are typed: its
   package-level `var` is a wider scope than a field, and the shape is a rounding
@@ -967,9 +968,13 @@ cognitive complexity and per-function markers. Optional additions widen it:
 metrics (LCOM4, god-class); `assert_kinds` / `assert_call_kinds` add
 assertion-block smells. See `complexity/README.md`.
 
-C, F# and Objective-C have maps of their own (C separate from C++ despite the
-shared grammar), so they get complexity markers, but none of the three has a perf
-or dataflow dialect yet.
+C, Swift, F# and Objective-C have maps of their own (C separate from C++ despite
+the shared grammar), so they get complexity markers, but none of the four has a
+perf or dataflow dialect yet. Swift's map counts `guard` as a decision, a `for` /
+`catch` `where` filter as one more, and a computed property (also a subscript's
+body, and a `willSet` / `didSet` block) as a function unit named for the property;
+a struct, an enum, an extension and an actor are classes, since the grammar gives
+them all `class_declaration`.
 
 ### 2. Performance: `analysis/health/perf/dialects/` (`PERF_DIALECTS`)
 
@@ -1038,8 +1043,9 @@ language with no row produces no signal.
   and `validate` match production functions, not assertions). Oracles that are
   not plain assertion statements are counted at the broad tier too:
   `with pytest.raises(...)`, Java's split `object` + `name` call shape, chai
-  property chains (`expect(x).to.be.null`), expression-bodied test lambdas and
-  private `_assert_*` helpers.
+  property chains (`expect(x).to.be.null`), AVA's `t.is` / `t.deepEqual` /
+  `t.throwsAsync` methods on the test handle, expression-bodied test lambdas
+  and private `_assert_*` helpers.
 - **Mock saturation** (`analysis/health/mocks/lexicon.py`, `MOCK_DIALECTS`) has
   rows for Python and JS/TS only. Go has no mock vocabulary. Java is held out
   because Mockito states its checks as `verify(...)`, which counts toward

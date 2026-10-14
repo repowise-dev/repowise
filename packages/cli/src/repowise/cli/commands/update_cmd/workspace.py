@@ -86,6 +86,7 @@ def _workspace_update(
         reconcile_repo_head_commit,
         update_workspace,
     )
+    from repowise.core.workspace.update import sync_workspace_state_from_disk
 
     from .mode import _resolve_index_only_mode
 
@@ -103,6 +104,11 @@ def _workspace_update(
     console.print(f"[bold]repowise update[/bold] \u2014 workspace: {ws_root.name}")
     console.print()
 
+    # Staleness reads the workspace config, and an "up to date" repo has its DB
+    # row stamped from live HEAD below. Read each repo's state.json first, as
+    # update_workspace does, so a config ahead of state.json cannot stamp the
+    # row past the commit state.json names.
+    sync_workspace_state_from_disk(ws_root, ws_config)
     stale_count = 0
     up_to_date_count = 0
     up_to_date_repos: list[tuple[Path, str]] = []

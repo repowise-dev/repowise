@@ -59,7 +59,6 @@ UNRELATED_TABLES = frozenset(
         "external_systems",
         "generation_jobs",
         "git_commit_health_deltas",
-        "git_function_blame",
         "graph_node_membership",
         "health_snapshots",
         "kg_node_meta",

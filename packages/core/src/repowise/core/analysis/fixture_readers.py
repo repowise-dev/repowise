@@ -81,7 +81,7 @@ def _root_readers(
     names = {n for r in roots for n in _dir_names(r)}
     held = holding(names) if holding else None
     texts = {
-        p: _code_text(p, read(p) or "").lower()
+        p: code_text(p, read(p) or "").lower()
         for p in sorted({*test_code, *other_code})
         if held is None or p in held
     }
@@ -113,17 +113,20 @@ def _names_either(text: str, *names: str) -> bool:
     )
 
 
-def _code_text(path: str, text: str) -> str:
+def code_text(path: str, text: str) -> str:
     """*text* without comments, and for Python without docstrings: what can name a path.
 
     Python that does not tokenize is kept whole.
     """
-    from ..ingestion.languages.js_config_values import strip_comments
     from ..ingestion.languages.python_strings import _is_statement
+    from .security_scan import mask_comments_and_strings, mask_dialect
 
     if not path.endswith(".py"):
-        # Ceiling: not string-aware, so a "/*" inside a string can hide code up to a "*/".
-        return strip_comments(text.encode("utf-8")).decode("utf-8", errors="replace")
+        # ``#`` is kept: a kept mention selects more, a ``#include`` lost selects less.
+        # Ceiling: a regex literal or a Rust lifetime holding a quote can desync the scan.
+        return mask_comments_and_strings(
+            text, strings=False, hash_comments=False, **mask_dialect(path)
+        )
     try:
         tokens = [
             t

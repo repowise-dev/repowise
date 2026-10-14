@@ -123,6 +123,59 @@ describe("thing", () => {
     assert _counts(source, "tests/thing.test.ts", "typescript")["it callback"][0] == 2
 
 
+# ---------------------------------------------------------------------------
+# JavaScript / TypeScript — AVA's assertions on the test handle
+# ---------------------------------------------------------------------------
+
+AVA_TEST = """
+import test from 'ava';
+test('base url', async t => {
+  t.is(1, 1);
+  t.deepEqual([1], [1]);
+  await t.throwsAsync(() => f());
+});
+"""
+
+
+@pytest.mark.parametrize(
+    ("path", "language"),
+    [
+        ("test/base-url.ts", "typescript"),
+        ("test/base-url.js", "javascript"),
+        ("test/base-url.tsx", "tsx"),
+    ],
+)
+def test_ava_test_handle_methods_are_assertions(path: str, language: str) -> None:
+    """``t.is`` / ``t.deepEqual`` / ``t.throwsAsync`` are how AVA asserts."""
+    _require(language)
+    assert _counts(AVA_TEST, path, language)["test callback"][0] == 3
+
+
+def test_ava_setup_methods_are_not_assertions() -> None:
+    """``t.log`` / ``t.plan`` share the handle and check nothing."""
+    _require("typescript")
+    source = """
+import test from 'ava';
+test('setup only', t => {
+  t.log('diagnostic');
+  t.plan(1);
+});
+"""
+    assert _counts(source, "test/setup.ts", "typescript")["test callback"][0] == 0
+
+
+def test_ava_unknown_test_handle_method_is_not_an_assertion() -> None:
+    """The ``t`` row is an exact method list, not the whole receiver."""
+    _require("typescript")
+    source = """
+import test from 'ava';
+test('unknown', t => {
+  t.foo(1);
+});
+"""
+    assert _counts(source, "test/unknown.ts", "typescript")["test callback"][0] == 0
+
+
 def test_typescript_should_prefixed_callee_is_not_an_assertion() -> None:
     """``shouldRetry(cfg)`` is the code under test.
 

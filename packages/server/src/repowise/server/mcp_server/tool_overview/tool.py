@@ -16,6 +16,7 @@ from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._components import component_list
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -65,8 +66,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     Returns the overview summary, key modules, entry points, architecture
     layers and package dependencies, code health, repo-wide git health, and
     ``next_actions`` (top work for the week and quarter).
-    Skip this on subsequent calls — once you have the map, jump straight to
-    ``get_context`` / ``get_answer``.
+    Skip it on later calls; go straight to ``get_context`` / ``get_answer``.
 
     Compact by default: ``content_md`` carries only the overview essay's summary
     section, and the outline, onboarding, ownership and graph blocks ship only
@@ -83,7 +83,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     - ``repo="<alias>"`` targets one specific repo.
 
     Args:
-        repo: Repository alias, path, or ID. Use ``"all"`` for workspace overview.
+        repo: Repository alias, path, or ID, or ``"all"``.
         include: Opt-in extras, any combination of:
             ``"content"`` — the full overview essay instead of its summary.
             ``"outline"`` — the stored wiki page tree, two rungs deep.
@@ -91,6 +91,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
             ``"decisions"`` — ``key_decisions``; ``get_why`` is richer.
             ``"graph"`` — ``community_summary``, code-community clusters.
             ``"ownership"`` — ``knowledge_map``: top 3 owners by files owned.
+            ``"components"`` — component list with file counts.
     """
     if repo == "all":
         return await _workspace_overview()
@@ -102,9 +103,19 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     collector = OmissionCollector("get_overview", repo_root=ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
+        want = set(include or [])
         result = await _repo_overview(
-            session, ctx.session_factory, repository, exclude_spec, set(include or []), collector
+            session, ctx.session_factory, repository, exclude_spec, want, collector
         )
+        if "components" in want:
+            result["components"] = await component_list(
+                session,
+                repository,
+                repo_root=ctx.path,
+                alias=ctx.alias,
+                exclude_spec=exclude_spec,
+                collector=collector,
+            )
 
         # Made once per session, so this is where the full scope that every
         # other response's compact projection points at is worth its bytes.

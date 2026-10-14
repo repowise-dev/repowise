@@ -63,15 +63,6 @@ export interface OwnerProfileResponse {
   /** Uncapped count behind the co_authors slice (for "+N more"). */
   co_authors_total?: number;
   commit_categories: Record<string, number>;
-  /** Agent activity on owned files; null when nothing attributed. */
-  agent_collab?: OwnerAgentCollab | null;
-}
-
-export interface OwnerAgentCollab {
-  files_with_agent_commits: number;
-  agent_commit_count: number;
-  agent_share_pct: number | null;
-  tier_counts: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------

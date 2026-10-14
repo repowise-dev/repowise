@@ -159,6 +159,21 @@ def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
     assert derive_tier(_HooksOnly()) is Tier.GOOD
 
 
+def test_a_capture_adapter_does_not_move_the_tier() -> None:
+    """Capture is opt-in and off by default, so it is no depth an agent always has."""
+
+    class _Captured:
+        id = "captured"
+        display_name = "Captured"
+        docs_url = None
+        hook_adapter = "cursor"
+        session_adapter = None
+        capture_adapter = "cursor"
+        methods = get_target("cursor").methods
+
+    assert derive_tier(_Captured()) is derive_tier(get_target("cursor")) is Tier.GOOD
+
+
 @pytest.mark.parametrize(
     ("provides", "tier"),
     [
@@ -3745,3 +3760,79 @@ def test_removing_vscode_and_copilot_together_leaves_no_file(tmp_path: Path) -> 
         get_target("copilot").uninstall(Scope.PROJECT, repo_path=repo)
 
     assert not _copilot_instructions(repo).exists()
+
+
+# ---------------------------------------------------------------------------
+# doctor(repo_path): repo-local wiring is checked when doctor runs in a repo
+# ---------------------------------------------------------------------------
+
+
+def test_vscode_doctor_checks_the_repo_it_is_given(tmp_path: Path) -> None:
+    target = get_target("vscode")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    report = target.doctor(repo_path=repo)
+    assert report.status is DoctorStatus.NOT_INSTALLED
+    assert "run this from a repo" not in report.issues[0]
+
+    target.install(Scope.PROJECT, repo_path=repo)
+    assert target.doctor(repo_path=repo).status is DoctorStatus.OK
+
+
+def test_kiro_doctor_counts_the_repo_wiring(tmp_path: Path) -> None:
+    kiro = _kiro()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    report = kiro.TARGET.doctor(repo_path=repo)
+    assert report.status is DoctorStatus.NOT_INSTALLED
+    assert "run this from a repo" not in report.issues[0]
+
+    kiro.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert kiro.TARGET.doctor(repo_path=repo).status is DoctorStatus.OK
+    assert kiro.TARGET.doctor().status is DoctorStatus.NOT_INSTALLED
+
+
+def test_opencode_doctor_counts_the_repo_wiring(tmp_path: Path, monkeypatch) -> None:
+    opencode = _opencode()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    report = opencode.TARGET.doctor(repo_path=repo)
+    assert report.status is DoctorStatus.NOT_INSTALLED
+    assert "run this from a repo" not in report.issues[0]
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert opencode.TARGET.doctor(repo_path=repo).status is DoctorStatus.OK
+    assert opencode.TARGET.doctor().status is DoctorStatus.NOT_INSTALLED
+
+
+def test_hermes_doctor_in_a_repo_does_not_ask_to_be_run_from_one(
+    hermes_home: Path, tmp_path: Path
+) -> None:
+    target = get_target("hermes")
+    report = target.doctor(repo_path=tmp_path)
+    assert report.status is DoctorStatus.NOT_INSTALLED
+    assert report.issues == ("Hermes is not wired at user scope.",)
+
+
+def test_hermes_doctor_in_a_repo_notes_a_missing_instructions_block(
+    hermes_home: Path, tmp_path: Path
+) -> None:
+    target = get_target("hermes")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target.install(Scope.USER)
+
+    # User scope alone stays the bare-call answer.
+    assert target.doctor().issues == ()
+
+    report = target.doctor(repo_path=repo)
+    assert report.status is DoctorStatus.OK
+    assert "has no repowise block" in report.issues[0]
+    assert "repowise agents add --target=hermes --scope=project" in report.issues[0]
+
+    target.install(Scope.PROJECT, repo_path=repo)
+    assert target.doctor(repo_path=repo).issues == ()

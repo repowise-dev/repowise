@@ -82,26 +82,7 @@ export function SecurityTab({ repoId }: { repoId: string }) {
     showFile(data);
   };
 
-  const labels = useMemo<SecurityPostureLabels>(
-    () => ({
-      figure: t("posture.figure"),
-      figureHint: t("posture.figureHint"),
-      unit: (total, capped) =>
-        capped ? t("posture.unitCapped", { total }) : t("posture.unit", { count: total }),
-      sentence: (c) =>
-        c.source === 0
-          ? t("posture.sentenceNoSource", { count: c.elsewhere })
-          : [
-              t("posture.sentenceSource", { count: c.source, high: c.sourceHigh }),
-              c.elsewhere ? t("posture.sentenceElsewhere", { count: c.elsewhere }) : "",
-            ]
-              .filter(Boolean)
-              .join(" "),
-      scanned: (when) => t("posture.scanned", { when }),
-      scanTimeUnknown: t("posture.scanTimeUnknown"),
-    }),
-    [t],
-  );
+  const labels = usePostureLabels();
 
   const scannedAt = summary?.scanned_at ?? null;
   const scannedAgo = scannedAt ? formatRelativeTime(scannedAt) : null;
@@ -123,35 +104,17 @@ export function SecurityTab({ repoId }: { repoId: string }) {
   } else if (list.length === 0) {
     // Green only when the scan is known to have run; an unknown scan time
     // with nothing listed is "not scanned yet", not good news.
-    body = scannedAgo ? (
-      <EmptyState
-        tone="positive"
-        title={t("posture.clearTitle")}
-        description={t("posture.clearBody", { when: scannedAgo })}
-      />
-    ) : (
-      <EmptyState title={t("posture.notScannedTitle")} description={t("posture.notScannedBody")} />
-    );
+    body = <SecurityEmpty scannedAgo={scannedAgo} />;
   } else {
     body = (
-      <>
-        <SecurityPosture findings={list} scannedAgo={scannedAgo} capped={capped} labels={labels} />
-        <OverviewSection title={t("allFindings")} description={t("description")}>
-          <SecurityFindingsTable
-            findings={list}
-            onSelect={handleSelect}
-            onGeneratePrompt={setPromptFinding}
-          />
-          {capped && (
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              {t("posture.capped", { count: LIMIT })}
-            </p>
-          )}
-        </OverviewSection>
-        <OverviewSection title={t("posture.byDirectory")} description={t("posture.byDirectoryBody")}>
-          <SeverityDirectoryMatrix findings={list} />
-        </OverviewSection>
-      </>
+      <SecurityFindingsBody
+        list={list}
+        scannedAgo={scannedAgo}
+        capped={capped}
+        labels={labels}
+        onSelect={handleSelect}
+        onGeneratePrompt={setPromptFinding}
+      />
     );
   }
 
@@ -184,5 +147,80 @@ export function SecurityTab({ repoId }: { repoId: string }) {
 
       {dialog}
     </div>
+  );
+}
+
+function usePostureLabels(): SecurityPostureLabels {
+  const t = useTranslations("risk");
+  return useMemo<SecurityPostureLabels>(
+    () => ({
+      figure: t("posture.figure"),
+      figureHint: t("posture.figureHint"),
+      unit: (total, capped) =>
+        capped ? t("posture.unitCapped", { total }) : t("posture.unit", { count: total }),
+      sentence: (c) =>
+        c.source === 0
+          ? t("posture.sentenceNoSource", { count: c.elsewhere })
+          : [
+              t("posture.sentenceSource", { count: c.source, high: c.sourceHigh }),
+              c.elsewhere ? t("posture.sentenceElsewhere", { count: c.elsewhere }) : "",
+            ]
+              .filter(Boolean)
+              .join(" "),
+      scanned: (when) => t("posture.scanned", { when }),
+      scanTimeUnknown: t("posture.scanTimeUnknown"),
+    }),
+    [t],
+  );
+}
+
+function SecurityEmpty({ scannedAgo }: { scannedAgo: string | null }) {
+  const t = useTranslations("risk");
+  return scannedAgo ? (
+    <EmptyState
+      tone="positive"
+      title={t("posture.clearTitle")}
+      description={t("posture.clearBody", { when: scannedAgo })}
+    />
+  ) : (
+    <EmptyState title={t("posture.notScannedTitle")} description={t("posture.notScannedBody")} />
+  );
+}
+
+function SecurityFindingsBody({
+  list,
+  scannedAgo,
+  capped,
+  labels,
+  onSelect,
+  onGeneratePrompt,
+}: {
+  list: SecurityFinding[];
+  scannedAgo: string | null;
+  capped: boolean;
+  labels: SecurityPostureLabels;
+  onSelect: (f: SecurityFinding) => void;
+  onGeneratePrompt: (f: SecurityFinding) => void;
+}) {
+  const t = useTranslations("risk");
+  return (
+    <>
+      <SecurityPosture findings={list} scannedAgo={scannedAgo} capped={capped} labels={labels} />
+      <OverviewSection title={t("allFindings")} description={t("description")}>
+        <SecurityFindingsTable
+          findings={list}
+          onSelect={onSelect}
+          onGeneratePrompt={onGeneratePrompt}
+        />
+        {capped && (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            {t("posture.capped", { count: LIMIT })}
+          </p>
+        )}
+      </OverviewSection>
+      <OverviewSection title={t("posture.byDirectory")} description={t("posture.byDirectoryBody")}>
+        <SeverityDirectoryMatrix findings={list} />
+      </OverviewSection>
+    </>
   );
 }

@@ -18,11 +18,37 @@ from ..ingestion.languages import REGISTRY
 from ..ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from .dead_code.file_reachability import BARREL_FILENAMES
 
-__all__ = ["BARREL_DEPENDENCY", "HasEdge", "ImportEdgeView", "can_carry_dependency"]
+__all__ = [
+    "BARREL_DEPENDENCY",
+    "INHERITANCE_DEPENDENCY",
+    "HasEdge",
+    "ImportEdgeView",
+    "can_carry_dependency",
+    "heritage_ancestors",
+]
 
 #: ``dependency_kind`` for a pair joined through a re-export barrel rather than
 #: by a direct edge: ``a -> index.ts -> b``.
 BARREL_DEPENDENCY = "barrel"
+
+#: ``dependency_kind`` for a pair where a type in one file inherits, directly
+#: or transitively, from a type in the other. Java and C# classes in one
+#: package extend each other with no import, so no file edge records it.
+INHERITANCE_DEPENDENCY = "inherits"
+
+_HERITAGE_EDGE_TYPES = ("extends", "implements")
+
+
+def heritage_ancestors(graph: Any, class_id: str) -> set[str]:
+    """Every type symbol *class_id* inherits from, transitively."""
+    seen: set[str] = set()
+    stack = [class_id]
+    while stack:
+        for _u, base, data in graph.out_edges(stack.pop(), data=True):
+            if data.get("edge_type") in _HERITAGE_EDGE_TYPES and base not in seen:
+                seen.add(base)
+                stack.append(base)
+    return seen
 
 
 def _language_of(path: str) -> str:
@@ -70,11 +96,12 @@ class ImportEdgeView:
     a caller pass ``None`` instead of branching.
     """
 
-    __slots__ = ("_barrels", "_graph")
+    __slots__ = ("_barrels", "_graph", "_heritage")
 
     def __init__(self, graph: Any) -> None:
         self._graph = graph
         self._barrels: dict[str, tuple[str, ...]] = {}
+        self._heritage: dict[str, frozenset[str]] = {}
 
     def has_edge(self, src: str, dst: str, key: str = "imports") -> bool:
         g = self._graph
@@ -104,8 +131,38 @@ class ImportEdgeView:
         :data:`BARREL_DEPENDENCY`. Only a chain through the barrel counts: two
         files a barrel merely re-exports side by side, or two consumers of one
         barrel, share a neighbour and nothing more.
+
+        A subclass and any of its ancestors answer
+        :data:`INHERITANCE_DEPENDENCY`; two subclasses of one base do not.
         """
-        return self._typed(a, b) or self._typed(b, a) or self._via_barrel(a, b)
+        return (
+            self._typed(a, b)
+            or self._typed(b, a)
+            or self._via_barrel(a, b)
+            or self._via_heritage(a, b)
+        )
+
+    def _via_heritage(self, a: str, b: str) -> str | None:
+        if b in self._heritage_files(a) or a in self._heritage_files(b):
+            return INHERITANCE_DEPENDENCY
+        return None
+
+    def _heritage_files(self, path: str) -> frozenset[str]:
+        """Files declaring a type some type in *path* inherits from, cached."""
+        cached = self._heritage.get(path)
+        if cached is None:
+            cached = self._heritage[path] = frozenset(self._inherited_owners(path))
+        return cached
+
+    def _inherited_owners(self, path: str) -> set[str]:
+        g = self._graph
+        if g is None or path not in g:
+            return set()
+        types = [s for _u, s, d in g.out_edges(path, data=True) if d.get("edge_type") == "defines"]
+        bases = set().union(*(heritage_ancestors(g, t) for t in types))
+        # An external base has no node attributes, or no node: skip just it.
+        owners = {(g.nodes.get(b) or {}).get("file_path") for b in bases}
+        return {o for o in owners if o and o != path}
 
     def _via_barrel(self, a: str, b: str) -> str | None:
         for src, dst in ((a, b), (b, a)):

@@ -20,6 +20,7 @@ from repowise.cli.ui import (
     build_contextual_next_steps,
     build_status_notes,
     format_elapsed,
+    keyless_upgrade_note,
     print_analysis_summary,
     print_files_written,
 )
@@ -279,6 +280,13 @@ def show_completion(
             console.print(
                 "  [dim]Every page is derived from structure and says so in its footer. "
                 f"{_search_note}[/dim]"
+            )
+            # A keyless index is finished, not partial — this just names the
+            # two upgrades available from here and the command for each, so
+            # the headless path (no editor setup, no `generate` row in
+            # build_contextual_next_steps) still learns about them (#3105).
+            console.print(
+                f"  [dim]{keyless_upgrade_note(_scope['search']['semantic'] == 'available')}[/dim]"
             )
             _print_embed_failure(_embed_failed)
         else:

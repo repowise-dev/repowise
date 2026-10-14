@@ -17,7 +17,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
@@ -278,6 +278,66 @@ def read_state_commit(repo_path: Path) -> str | None:
     return str(sha) if sha else None
 
 
+class IndexedCommit(NamedTuple):
+    """The commit an index describes, or why it cannot be named."""
+
+    sha: str | None
+    problem: str | None = None
+
+
+def resolve_indexed_commit(repo_path: Path | None, row_commit: str | None) -> IndexedCommit:
+    """The commit the index describes, from ``state.json`` and the repository row.
+
+    Every update writes both from one captured head, so they normally agree.
+    When one is an ancestor of the other (an update interrupted between the
+    two writes, or a row an older build left behind), the index describes the
+    older: the files between them then count as changed since the index was
+    built, which over-selects rather than misses. Two commits neither of which
+    contains the other (a rebase, a restored backup), or a sha git cannot
+    read, leave the commit unknown.
+    """
+    state = read_state_commit(repo_path) if repo_path is not None else None
+    if not state or not row_commit or state == row_commit:
+        return IndexedCommit(state or row_commit)
+    older = _older_commit(str(repo_path), state, row_commit)
+    if older is not None:
+        return IndexedCommit(older)
+    return IndexedCommit(
+        None,
+        f"The index records two commits ({state[:7]} in state.json, {row_commit[:7]} "
+        "in its database) and neither contains the other, so what it describes is "
+        "unknown; run `repowise update`.",
+    )
+
+
+# (repo_path, a, b) -> the older commit, or None when neither contains the
+# other. Only definite answers: a timeout or an unknown sha is asked again.
+_ancestry_cache: dict[tuple[str, str, str], str | None] = {}
+_ANCESTRY_CACHE_MAX = 32
+
+
+def _older_commit(repo_path: str, a: str, b: str) -> str | None:
+    """The one of *a*, *b* that is an ancestor of the other, else ``None``.
+
+    Cached because the freshness envelope asks on every response while the two
+    stamps disagree. Ancestry between two known shas never changes, and the
+    next update makes the stamps equal, which ends the asking.
+    """
+    from ..git_refs import is_ancestor
+
+    key = (repo_path, a, b)
+    if key in _ancestry_cache:
+        return _ancestry_cache[key]
+    a_first = is_ancestor(repo_path, a, b)
+    b_first = None if a_first else is_ancestor(repo_path, b, a)
+    older = a if a_first else b if b_first else None
+    if older is not None or (a_first is False and b_first is False):
+        if len(_ancestry_cache) >= _ANCESTRY_CACHE_MAX:
+            _ancestry_cache.clear()
+        _ancestry_cache[key] = older
+    return older
+
+
 def sync_workspace_state_from_disk(
     workspace_root: Path,
     ws_config: WorkspaceConfig,
@@ -343,6 +403,34 @@ def check_repo_staleness(
 
     behind = count_commits_between(repo_path, last_commit, current_head)
     return True, current_head, behind
+
+
+def restamp_changed_sync_commit(repo_path: Path, previous: str | None, current: str | None) -> None:
+    """Move the repository row to a ``last_sync_commit`` a state write just changed.
+
+    The CLI and server state writers call this (the workspace updater awaits
+    :func:`reconcile_repo_head_commit` itself), so a path that advances the
+    sync commit leaves the row on the same commit, whatever HEAD its persist
+    step read (a pull during a long run moves it). An unchanged commit is left
+    alone: the "up to date" paths stamp it themselves. The state file is
+    already written, so a failure here is logged, not raised.
+    """
+    if not current or current == previous:
+        return
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        # Ceiling: callers must be off-loop; skipped here, the resolver still
+        # reads the ancestor pair this leaves correctly.
+        _log.warning("Skipped the repository row restamp for %s: called on an event loop", repo_path)
+        return
+    try:
+        asyncio.run(reconcile_repo_head_commit(repo_path, current))
+    except Exception:
+        _log.warning("Could not restamp the repository row for %s", repo_path, exc_info=True)
 
 
 async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
@@ -593,6 +681,7 @@ async def _incremental_repo_update(
         file_diffs=file_diffs,
         knowledge_graph_result=kg,
         parsed_files=parsed_files,
+        source_map=source_map,
         git_decay_map=git_decay_map,
         full_git_summary=full_git_summaries[0] if full_git_summaries else None,
         failed_steps=failed_steps,

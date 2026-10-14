@@ -21,6 +21,13 @@ def _history(*values: float) -> list[SimpleNamespace]:
     return [SimpleNamespace(hotspot_health=v, average_health=v) for v in values]
 
 
+def test_a_snapshot_with_no_hotspot_figure_is_no_trend() -> None:
+    assert hotspot_trend(_history(7.0, 7.0)) == "stable"
+    history = _history(7.0, 7.0)
+    history[0].hotspot_health = None
+    assert hotspot_trend(history) is None
+
+
 def test_fewer_than_two_snapshots_is_no_trend() -> None:
     assert hotspot_trend([]) is None
     assert hotspot_trend(_history(7.0)) is None

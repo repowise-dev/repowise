@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.queue.eligibility import (
     ELIGIBLE,
     Tally,
@@ -137,6 +139,28 @@ def test_a_stored_origin_overrules_a_test_shaped_name() -> None:
     assert path_verdict("tests/x.py", False, origin="production").reason == "test"
     assert path_verdict("src/__mocks__/api.ts", False, origin="production").reason == "test"
     assert path_verdict("src/app.py", False, origin="test").reason == "test"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/main/java/com/example/demo/OrderService.java",
+        "app/src/main/java/com/example/myapp/MainActivity.kt",
+        "pkg/demo/handler.go",
+        "src/main/java/org/springframework/samples/petclinic/owner/PetController.java",
+    ],
+)
+def test_a_production_origin_outranks_an_example_segment_below_the_root(path) -> None:
+    assert path_verdict(path, False, origin="production").reason is None
+    # With no stored origin the shared classifier reads the path the same way.
+    assert path_verdict(path, None).reason is None
+
+
+def test_real_examples_and_docs_stay_out() -> None:
+    assert path_verdict("examples/foo/main.go", False, origin="docs_example").reason == (
+        "docs_example"
+    )
+    assert path_verdict("docs/x.py", None).reason == "docs_example"
 
 
 def test_unit_verdict_ladder_order() -> None:

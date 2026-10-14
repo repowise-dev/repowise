@@ -228,6 +228,7 @@ async def _recent(
                 select(*_HEALTH_FINDING_COLUMNS).where(
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.status == "open",
+                    HealthFinding.severity.in_(("critical", "high")),
                     HealthFinding.file_path.in_({r.file_path for r in rows}),
                 )
             )

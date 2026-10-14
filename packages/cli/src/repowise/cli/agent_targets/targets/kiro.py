@@ -206,6 +206,7 @@ class KiroTarget:
     docs_url = DOCS_URL
     hook_adapter = IDENTITY.hook_adapter
     session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -283,12 +284,12 @@ class KiroTarget:
         repo = repo_path or Path.cwd()
         return [str(mcp_config_path(scope, repo)), str(steering_path(scope, repo))]
 
-    def doctor(self) -> DoctorReport:
-        """User-scope health; the workspace half needs a repo to check."""
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
+        """User-scope health, plus the workspace half when *repo_path* is given."""
         from ..formats.json_merge import load_json_object_or_value_error
 
         path = mcp_config_path(Scope.USER)
-        if _reads_repowise(path):
+        if detect(repo_path):
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
         if path.exists():
             try:
@@ -305,7 +306,9 @@ class KiroTarget:
             target_id=ID,
             status=DoctorStatus.NOT_INSTALLED,
             issues=(
-                "Kiro is not wired at user scope; workspace wiring is repo-local, "
+                "Kiro is not wired at user scope or in this repo."
+                if repo_path is not None
+                else "Kiro is not wired at user scope; workspace wiring is repo-local, "
                 "so run this from a repo to check that half.",
             ),
             fix_command="repowise agents add --target=kiro",

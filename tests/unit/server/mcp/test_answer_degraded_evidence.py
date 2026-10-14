@@ -222,9 +222,9 @@ async def test_degraded_with_no_anchor_match_still_describes_a_ranking(tmp_path)
 # derived from it is pinned in the confidence block further down.
 
 
-def _scored(*scores: float) -> list[dict]:
+def _scored(*scores: float, summary: str = "how the module works") -> list[dict]:
     return [
-        {"target_path": f"pkg/m{i}.py", "title": f"m{i}", "summary": "s", "score": s}
+        {"target_path": f"pkg/m{i}.py", "title": f"m{i}", "summary": summary, "score": s}
         for i, s in enumerate(scores)
     ]
 
@@ -251,6 +251,13 @@ async def test_degraded_rates_a_dominant_retrieval_high():
 async def test_degraded_rates_a_dominant_but_weak_retrieval_partial():
     """Dominant relative to its siblings, but under the floor: partial, not high."""
     assert await _quality(_scored(1.0, 0.1)) == "partial"
+
+
+async def test_degraded_rates_a_dominant_hit_that_misses_the_question_weak():
+    """Dominance compares hits with each other; a winner that never mentions what
+    was asked is an off-topic page beating worse ones, so it rates weak."""
+    assert await _quality(_scored(6.0, 1.0, summary="parses yaml files")) == "weak"
+    assert await _confidence(_scored(6.0, 1.0, summary="parses yaml files")) == "low"
 
 
 async def test_degraded_does_not_lift_a_genuinely_weak_retrieval():
@@ -572,13 +579,13 @@ async def test_degraded_cites_the_retrieval_top_file_before_a_rationale_hub(
     ]
 
 
-def _rationale_rows(monkeypatch, *paths: str) -> None:
+def _rationale_rows(monkeypatch, *paths: str, matched: tuple[str, ...] = ("flask", "app")) -> None:
     """Stub the rationale miner to return one row per path, in the given order."""
     import repowise.server.mcp_server.tool_answer.degraded as degraded_mod
 
     async def _rows(ctx, hits, fallback_targets, question):
         return [
-            {"path": p, "lines": [100 + i, 101 + i], "comment": "c", "matched_terms": []}
+            {"path": p, "lines": [100 + i, 101 + i], "comment": "c", "matched_terms": list(matched)}
             for i, p in enumerate(paths)
         ]
 
@@ -819,7 +826,7 @@ def test_the_hint_is_the_same_whatever_the_payload_graded():
 def _ranked(*paths: str, ranks: tuple[int | None, ...] | None = None) -> list[dict]:
     """Strong, dominant hits in this order, each stamped with its hybrid rank."""
     hits = [
-        {"target_path": p, "title": p, "summary": "s", "score": 6.0 if i == 0 else 2.0}
+        {"target_path": p, "title": p, "summary": "the Flask app", "score": 6.0 if i == 0 else 2.0}
         for i, p in enumerate(paths)
     ]
     for h, rank in zip(hits, ranks if ranks is not None else range(len(hits)), strict=True):
@@ -849,6 +856,16 @@ async def test_the_top_file_rationale_leads_over_a_higher_scoring_hub(tmp_path, 
     ]
     assert "Source rationale in src/agents/poll-backoff.ts" in _answer(payload)
     assert payload["confidence"] == "medium"
+
+
+async def test_a_rationale_matching_one_question_word_does_not_lead(tmp_path, monkeypatch):
+    """A marker plus one shared word clears the miner's gate but answers nothing."""
+    _rationale_rows(monkeypatch, "src/agents/poll-backoff.ts", matched=("flask",))
+    payload = await _keyless(tmp_path, _ranked("src/agents/poll-backoff.ts", "src/config/types.ts"))
+
+    answer = _answer(payload)
+    assert "Source rationale" not in answer
+    assert "Local retrieval points first to src/agents/poll-backoff.ts" in answer
 
 
 async def test_without_a_top_file_rationale_the_answer_names_the_ranking(tmp_path, monkeypatch):
@@ -975,11 +992,11 @@ async def test_an_unranked_duplicate_does_not_hide_its_files_rank(tmp_path, monk
     """An injected symbol page of a ranked file can precede that file's own hit."""
     _rationale_rows(monkeypatch, "src/hub.ts", "src/other.ts", "src/poll.ts")
     hits = [
-        {"target_path": "src/poll.ts::backoff", "title": "t", "summary": "s", "score": 6.0},
-        {"target_path": "src/hub.ts", "title": "t", "summary": "s", "score": 2.0},
-        {"target_path": "src/other.ts::Run", "title": "t", "summary": "s", "score": 1.5},
-        {"target_path": "src/other.ts", "title": "t", "summary": "s", "score": 1.0},
-        {"target_path": "src/poll.ts", "title": "t", "summary": "s", "score": 1.0},
+        {"target_path": "src/poll.ts::backoff", "title": "t", "summary": "the Flask app", "score": 6.0},
+        {"target_path": "src/hub.ts", "title": "t", "summary": "the Flask app", "score": 2.0},
+        {"target_path": "src/other.ts::Run", "title": "t", "summary": "the Flask app", "score": 1.5},
+        {"target_path": "src/other.ts", "title": "t", "summary": "the Flask app", "score": 1.0},
+        {"target_path": "src/poll.ts", "title": "t", "summary": "the Flask app", "score": 1.0},
     ]
     for h, rank in zip(hits, (None, 5, None, 1, 0), strict=True):
         if rank is not None:

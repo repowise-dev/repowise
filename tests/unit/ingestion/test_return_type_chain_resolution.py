@@ -99,7 +99,7 @@ def test_return_type_chain_retargets_to_declared_type(
     assert after[0].origin.startswith("return_type_")
 
 
-def test_java_unknown_member_preserves_legacy_fallback(tmp_path: Path) -> None:
+def test_java_unknown_member_gets_no_bare_name_edge(tmp_path: Path) -> None:
     source = (
         "class Product {} class Wrong { void run() {} } "
         "class Use { Product make() { return new Product(); } void go() { make().run(); } }"
@@ -118,11 +118,11 @@ def test_java_unknown_member_preserves_legacy_fallback(tmp_path: Path) -> None:
         "Example.java", [call]
     )
 
-    assert len(before) == 1
-    assert after == before
+    assert before == []
+    assert after == []
 
 
-def test_java_ambiguous_overload_return_preserves_legacy_fallback(tmp_path: Path) -> None:
+def test_java_ambiguous_overload_return_gets_no_edge(tmp_path: Path) -> None:
     source = (
         "class First { void run() {} }\nclass Second { void run() {} }\n"
         "class Factory {\n First make(int value) { return new First(); }\n"
@@ -143,7 +143,7 @@ def test_java_ambiguous_overload_return_preserves_legacy_fallback(tmp_path: Path
         "Example.java", [call]
     )
 
-    assert after == before
+    assert before == after == []
 
 
 def test_cpp_future_get_can_refuse_a_bare_name_fallback(tmp_path: Path) -> None:
@@ -215,7 +215,10 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
-    assert frozenset({"cpp", "csharp", "go"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+    assert (
+        frozenset({"cpp", "csharp", "dart", "go", "java", "python"})
+        == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+    )
 
 
 def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
@@ -277,7 +280,11 @@ def test_java_external_chain_head_is_exempt_when_the_file_rebinds_the_name(
     is the claim stated as a test rather than as prose. Java imports resolve to
     repository files, so the file's import list is what separates the two.
     """
-    own = "package a;\npublic class Duration { public long toNanos() { return 0; } }\n"
+    own = (
+        "package a;\npublic class Duration {\n"
+        " public static Duration ofSeconds(int s) { return null; }\n"
+        " public long toNanos() { return 0; } }\n"
+    )
     use = (
         "package b;\nimport a.Duration;\n"
         "class Use { long go() { return Duration.ofSeconds(3).toNanos(); } }\n"
@@ -293,7 +300,10 @@ def test_java_external_chain_head_is_exempt_when_the_file_rebinds_the_name(
     call = _java_chain_call(parsed, "b/Use.java", "toNanos")
 
     resolved = CallResolver(
-        parsed, {"b/Use.java": {"a/Duration.java"}}, repo_path=str(tmp_path)
+        parsed,
+        {"b/Use.java": {"a/Duration.java"}},
+        repo_path=str(tmp_path),
+        return_type_chain_languages=frozenset({"java"}),
     ).resolve_file("b/Use.java", [call])
     assert len(resolved) == 1
     assert resolved[0].callee_id.endswith("::Duration::toNanos")
@@ -314,9 +324,9 @@ def test_a_table_admits_only_its_own_lane(tmp_path: Path) -> None:
     parsed = _parse(tmp_path, "Example.java", "java", source)
     call = _java_chain_call(parsed, "Example.java", "run")
 
-    resolved = CallResolver(parsed, {}, repo_path=str(tmp_path)).resolve_file(
-        "Example.java", [call]
-    )
+    resolved = CallResolver(
+        parsed, {}, repo_path=str(tmp_path), return_type_chain_languages=frozenset()
+    ).resolve_file("Example.java", [call])
     assert not any(edge.origin.startswith("return_type_") for edge in resolved)
 
 
@@ -347,9 +357,9 @@ def test_java_external_chain_head_is_exempt_when_the_repo_declares_the_name(
     parsed.update(_parse(tmp_path, "a/Use.java", "java", use))
     call = _java_chain_call(parsed, "a/Use.java", "toNanos")
 
-    resolved = CallResolver(parsed, {}, repo_path=str(tmp_path)).resolve_file(
-        "a/Use.java", [call]
-    )
+    resolved = CallResolver(
+        parsed, {}, repo_path=str(tmp_path), return_type_chain_languages=frozenset({"java"})
+    ).resolve_file("a/Use.java", [call])
     assert len(resolved) == 1
     assert resolved[0].callee_id.endswith("::Duration::toNanos")
 
@@ -720,3 +730,255 @@ def test_csharp_chain_link_whose_declarations_disagree_has_no_type(tmp_path: Pat
     )
 
     assert ("WithMessage", 1) in edges
+
+
+_DART_REPO = (
+    "class Item {\n  void save() {}\n}\n"
+    "class Repo {\n"
+    "  Repo();\n"
+    "  // Repo.ghost(1) is only a comment.\n"
+    "  Repo.fromJson(Object json);\n"
+    "  factory Repo.load(String path) => Repo();\n"
+    "  factory Repo.copy() {\n    return Repo.other();\n  }\n"
+    "  static Repo parse(String text) => Repo();\n"
+    "  Item item(int i) => Item();\n"
+    "  Item? maybe() => null;\n"
+    "  Future<Item> later() async => Item();\n"
+    "  void close() {}\n"
+    "}\n"
+)
+
+# The methods a wrongly typed chain could land on.
+_DART_OUTER = frozenset({"repo.dart::Item::save", "repo.dart::Repo::close"})
+
+
+def _dart_edges(tmp_path: Path, body: str) -> set[tuple[int, str, str]]:
+    """``(line, callee, origin)`` for the calls of ``App.run`` holding *body*."""
+    app = (
+        "import 'repo.dart';\n"
+        "class App {\n  final Repo repo;\n  App(this.repo);\n"
+        f"  void run(Repo r) {{\n{body}\n  }}\n"
+        "  Repo helper() => Repo();\n}\n"
+    )
+    parsed = _parse(tmp_path, "repo.dart", "dart", _DART_REPO)
+    parsed |= _parse(tmp_path, "app.dart", "dart", app)
+    for imp in parsed["app.dart"].imports:
+        imp.resolved_file = "repo.dart"
+    resolver = CallResolver(parsed, {"app.dart": {"repo.dart"}, "repo.dart": set()})
+    return {
+        (rc.line - 5, rc.callee_id, rc.origin)
+        for rc in resolver.resolve_file("app.dart", parsed["app.dart"].calls)
+        if rc.caller_id == "app.dart::App::run"
+    }
+
+
+def test_dart_signature_carries_the_declared_return_type(tmp_path: Path) -> None:
+    parsed = _parse(tmp_path, "repo.dart", "dart", _DART_REPO)
+    signatures = {s.name: s.signature for s in parsed["repo.dart"].symbols}
+
+    assert signatures["item"] == "item(int i) -> Item"
+    assert signatures["maybe"] == "maybe() -> Item?"
+    assert signatures["close"] == "close() -> void"
+
+
+def test_dart_named_and_factory_constructors_bind_their_class(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "Repo.fromJson(1);\nRepo.load('x');\nRepo.parse('y');")
+
+    assert edges == {
+        (1, "repo.dart::Repo", "import_merged"),
+        (2, "repo.dart::Repo", "import_merged"),
+        (3, "repo.dart::Repo::parse", "receiver_import"),
+    }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Repo.nope();",  # declared nowhere
+        "Repo.ghost(1);",  # named only in a comment
+        "Repo.other();",  # called in the class body, never declared
+    ],
+)
+def test_dart_constructor_the_class_does_not_declare_binds_nothing(
+    tmp_path: Path, body: str
+) -> None:
+    assert _dart_edges(tmp_path, body) == set()
+
+
+def test_dart_untyped_member_call_binds_no_bare_name(tmp_path: Path) -> None:
+    """A Dart member call has no bare-name reading: an untyped receiver draws no edge."""
+    assert _dart_edges(tmp_path, "var a = unknown();\na.save();") == set()
+
+
+@pytest.mark.parametrize(
+    ("body", "callee"),
+    [
+        ("r.item(1).save();", "repo.dart::Item::save"),  # a parameter
+        ("repo.item(1).save();", "repo.dart::Item::save"),  # a field
+        ("r.maybe()?.save();", "repo.dart::Item::save"),  # a nullable return
+        ("this.helper().close();", "repo.dart::Repo::close"),  # on this
+        ("Repo().close();", "repo.dart::Repo::close"),  # on a constructor
+        ("Repo.fromJson(2).close();", "repo.dart::Repo::close"),  # on a named one
+    ],
+)
+def test_dart_chain_binds_the_method_of_the_inner_return_type(
+    tmp_path: Path, body: str, callee: str
+) -> None:
+    assert (1, callee, "return_type_import") in _dart_edges(tmp_path, body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "r.later().save();",  # a Future is not the class it wraps
+        "r.item(1).close();",  # the returned class lacks the method
+        "unknown().save();",  # nothing types the inner call
+        "r..item(1)..close();",  # a cascade is not a chain
+        "r?.item(1).save();",  # a null-aware first link is not captured
+    ],
+)
+def test_dart_chain_without_a_typed_method_binds_no_bare_name(tmp_path: Path, body: str) -> None:
+    assert {e for e in _dart_edges(tmp_path, body) if e[1] in _DART_OUTER} == set()
+
+
+def test_dart_third_link_of_a_chain_is_dropped_not_misbound(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "r.item(1).save().close();")
+
+    assert {e[1] for e in edges if e[1] in _DART_OUTER} == {"repo.dart::Item::save"}
+
+
+def test_dart_constructor_initializers_are_not_calls(tmp_path: Path) -> None:
+    source = (
+        "class A {\n  A.named(int x);\n}\n"
+        "class B extends A {\n  B.x() : super.named(1);\n  B.y() : this.x();\n}\n"
+    )
+    parsed = _parse(tmp_path, "b.dart", "dart", source)
+
+    assert parsed["b.dart"].calls == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "var a = r.item(1);\na.save();",
+        "final a = await r.later();\na.save();",  # an awaited Future yields its type
+        "final a = Repo.load('x');\na.close();",  # a factory constructor
+    ],
+)
+def test_dart_local_takes_the_type_its_call_returns(tmp_path: Path, body: str) -> None:
+    assert {e[1] for e in _dart_edges(tmp_path, body) if e[0] == 2} & _DART_OUTER
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "final a = r.later();\na.save();",  # an unawaited Future is not an Item
+        "var a = r.item(1);\na.close();",  # the returned class lacks the method
+        "final a = r.item(1)\n    .other();\na.save();",  # the call is not the whole value
+    ],
+)
+def test_dart_local_without_a_typed_call_binds_nothing(tmp_path: Path, body: str) -> None:
+    assert not {e for e in _dart_edges(tmp_path, body) if e[1] in _DART_OUTER}
+
+
+def test_kotlin_signature_carries_the_declared_return_type(tmp_path: Path) -> None:
+    source = "class Repo\nfun make(x: Int): Repo? = null\nfun none() = Repo()\n"
+    parsed = _parse(tmp_path, "a.kt", "kotlin", source)
+    signatures = {s.name: s.signature for s in parsed["a.kt"].symbols}
+
+    assert signatures["make"] == "function make(x: Int) -> Repo?"
+    assert signatures["none"] == "function none()"
+
+
+_KOTLIN_LOCALS = (
+    "class Repo {\n    fun load() {}\n}\n"
+    "class Other {\n    fun load() {}\n}\n"
+    "fun makeRepo(): Repo = Repo()\n"
+    "fun mk(a: Int): Repo = Repo()\nfun mk(a: String): Other = Other()\n"
+    "fun <T> gen(): T = TODO()\n"
+    "object Factory {\n    fun other(): Other = Other()\n}\n"
+    "class Use {\n    fun go() {\n{body}\n    }\n}\n"
+)
+_SWIFT_LOCALS = (
+    "class Repo {\n    func load() {}\n}\n"
+    "class Other {\n    func load() {}\n}\n"
+    "func makeRepo() throws -> Repo { return Repo() }\n"
+    "func mk(a: Int) -> Repo { return Repo() }\nfunc mk(a: String) -> Other { return Other() }\n"
+    "func fetch() async -> Repo { return Repo() }\n"
+    "enum Factory {\n    static func other() async -> Other { return Other() }\n}\n"
+    "class Use {\n    func go() async throws {\n{body}\n    }\n}\n"
+)
+
+
+_LOCALS = {"kotlin": ("a.kt", _KOTLIN_LOCALS), "swift": ("a.swift", _SWIFT_LOCALS)}
+
+
+def _last_line_callees(tmp_path: Path, language: str, body: str) -> set[str]:
+    """Callees on the last line of *body*, held in ``Use.go``."""
+    path, source = _LOCALS[language]
+    text = source.replace("{body}", body)
+    parsed = _parse(tmp_path, path, language, text)
+    line = len(text.split("\n")) - 3
+    resolver = CallResolver(parsed, {path: set()})
+    return {
+        rc.callee_id
+        for rc in resolver.resolve_file(path, parsed[path].calls)
+        if rc.line == line
+    }
+
+
+@pytest.mark.parametrize(
+    ("language", "body", "callee"),
+    [
+        ("kotlin", "val r = makeRepo()\nr.load()", "a.kt::Repo::load"),
+        ("kotlin", "val r = Factory.other()\nr.load()", "a.kt::Other::load"),
+        ("swift", "let r = try makeRepo()\nr.load()", "a.swift::Repo::load"),
+        ("swift", "let r = await Factory.other()\nr.load()", "a.swift::Other::load"),
+        ("swift", "let r = try? makeRepo()\nr?.load()", "a.swift::Repo::load"),
+        ("swift", "async let r = fetch()\nawait r.load()", "a.swift::Repo::load"),
+    ],
+)
+def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
+    tmp_path: Path, language: str, body: str, callee: str
+) -> None:
+    assert _last_line_callees(tmp_path, language, body) == {callee}
+
+
+@pytest.mark.parametrize(
+    ("language", "body"),
+    [
+        ("kotlin", "val r = makeRepo()\n    .let { Other() }"),
+        ("kotlin", "val r = makeRepo()\n    ?.let { Other() }"),
+        ("swift", "var r = try makeRepo()\n    .other()"),
+        ("kotlin", "val r = makeRepo()\n    ?: Other()"),
+        ("kotlin", "val r = makeRepo()\n    as Other"),
+        ("swift", "let r = try makeRepo()\n    as! Other"),
+        ("kotlin", "val r = mk(1)"),  # overloads of one arity that return different types
+        ("swift", "let r = mk(a: 1)"),
+        ("kotlin", "val r = gen()"),  # a type parameter is no class
+    ],
+)
+def test_kotlin_and_swift_local_without_a_typed_call_binds_nothing(
+    tmp_path: Path, language: str, body: str
+) -> None:
+    callees = _last_line_callees(tmp_path, language, body + "\nr.load()")
+
+    assert not {callee for callee in callees if callee.endswith("::load")}
+
+
+@pytest.mark.parametrize("imported", ["", "import java.net.Socket\n"])
+def test_kotlin_return_type_an_external_import_names_is_not_the_repo_class(
+    tmp_path: Path, imported: str
+) -> None:
+    """``Socket`` in a file importing ``java.net.Socket`` is not the repo's ``Socket``."""
+    source = (
+        f"package okio\n\n{imported}\ninterface Socket {{\n    fun source()\n}}\n"
+        "fun socket(): Socket = TODO()\n\n"
+        "class Use {\n    fun go() {\n        val s = socket()\n        s.source()\n    }\n}\n"
+    )
+    parsed = _parse(tmp_path, "Use.kt", "kotlin", source)
+    resolver = CallResolver(parsed, {"Use.kt": set()})
+    callees = {rc.callee_id for rc in resolver.resolve_file("Use.kt", parsed["Use.kt"].calls)}
+
+    assert ("Use.kt::Socket::source" in callees) == (not imported)
+

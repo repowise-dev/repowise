@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from repowise.server.mcp_server._verify import end_anchor_holds, name_at_line
+from repowise.server.mcp_server.tool_answer.confidence import body_leaves_out, hit_stems
 from repowise.server.mcp_server.tool_answer.config import (
     _ENRICH_TOP_N_HITS,
     _INLINE_BODY_MAX_LINES,
@@ -49,7 +50,11 @@ def _gather_body_candidates(
         if not path:
             continue
         for s in h.get("_anchor_symbols") or []:
-            if _selection_names(s.get("name"), answer_text, anchor_names):
+            # A def anchored by a literal it holds is selected by that literal too.
+            if any(
+                _selection_names(n, answer_text, anchor_names)
+                for n in (s.get("name"), s.get("_named_by"))
+            ):
                 candidates.append((0, _kind_rank(s), s.get("start_line") or 0, path, s))
         # Tier 1 catches symbols only the prose names; the degraded mode has none.
         if anchor_names is not None:
@@ -99,12 +104,18 @@ def _is_named_definition(s: dict, answer_text: str) -> bool:
 
 
 def _build_symbol_bodies(
-    body_candidates: list[tuple[int, int, int, str, dict]], repo_root: Path | None
+    body_candidates: list[tuple[int, int, int, str, dict]],
+    repo_root: Path | None,
+    *,
+    question: str = "",
+    hits: list[dict] | None = None,
 ) -> tuple[list[dict], bool]:
     """Inline the ranked definitions as live source, with the truncation contract.
 
     Returns ``(symbol_bodies, served_named_body)``; the latter is True once a
-    tier-0 body (the exact symbol the question named) is inlined.
+    tier-0 body (the exact symbol the question named) is inlined that also
+    carries the rest of *question* (:func:`body_leaves_out`). A body named only
+    as the place the question asks about is still served, not as the answer.
 
     Prose-independent, so the degraded path calls it too: bodies are re-read
     live at the indexed bounds, and a body past the line cap gets a
@@ -115,6 +126,7 @@ def _build_symbol_bodies(
     seen: set[tuple[str, str]] = set()
     served_named_body = False
     texts: dict[str, str | None] = {}
+    served_stems = hit_stems(hits or []) if question else []
     for tier, _kind, start, path, s in body_candidates:
         if len(symbol_bodies) >= _INLINE_BODY_MAX_SYMBOLS:
             break
@@ -158,7 +170,7 @@ def _build_symbol_bodies(
         )
         symbol_bodies.append(entry)
         seen.add((path, name))
-        if tier == 0:
+        if tier == 0 and not body_leaves_out(question, {**s, "source": body}, served_stems):
             served_named_body = True
     return symbol_bodies, served_named_body
 

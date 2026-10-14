@@ -651,9 +651,6 @@ function StepCode({
   const [open, setOpen] = React.useState(false);
   const stored = plan ? extractHelperDetail(plan) : null;
   const range = stepExcerptRange(step, plan);
-  const extraction = range?.extraction ?? null;
-  const slice = extraction?.span ?? null;
-  const stages = range?.stages ?? [];
   const canRead = Boolean(readSource && range);
   // One read per file however many stage excerpts ask for it.
   const readOnce = React.useMemo(() => {
@@ -677,61 +674,112 @@ function StepCode({
       </button>
       {open ? (
         <div className="mt-2 space-y-3">
-          {stages.length > 0 ? (
-            <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
-              Lines{" "}
-              <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
-                {formatSpans(stages.map((st) => st.span))}
-              </span>{" "}
-              become {stages.length} helpers the function calls in order.
-            </p>
-          ) : null}
-          {extraction && slice ? (
-            <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
-              Lines {slice.start} to {slice.end} become{" "}
-              <code className="break-all font-mono text-[var(--color-text-primary)]">
-                {extractMethodSignature(extraction)}
-              </code>
-            </p>
-          ) : null}
-          {stored?.snippet ? (
-            <CodeBlock code={stored.snippet} startLine={stored.snippetStartLine} />
-          ) : canRead && stages.length > 0 ? (
-            // Each stage on its own: one range from the first stage to the last
-            // would show the lines between them and could cut a later stage.
-            stages.map((st, i) => (
-              <div key={st.span.start} className="space-y-1">
-                <p className="font-mono text-[11px] text-[var(--color-text-tertiary)]">
-                  {`${st.name ?? `Stage ${i + 1}`} · lines ${formatSpans([st.span])}`}
-                </p>
-                <SourceExcerpt
-                  path={step.file_path}
-                  start={st.span.start}
-                  end={st.span.end}
-                  readSource={readOnce!}
-                />
-              </div>
-            ))
-          ) : canRead ? (
-            <SourceExcerpt
-              path={step.file_path}
-              start={range!.start}
-              end={range!.end}
-              readSource={readOnce!}
-            />
-          ) : null}
-          {plan && onGenerateCode ? (
-            <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />
-          ) : plan && modelSetting ? (
-            <RefactoringModelToggle {...modelSetting} />
-          ) : plan ? (
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              A diff preview is drafted by a model on request. Code generation is off here.
-            </p>
-          ) : null}
+          <StepSpans range={range} />
+          <StepExcerpt
+            step={step}
+            stored={stored}
+            range={canRead ? range : null}
+            readSource={readOnce}
+          />
+          <StepDiff plan={plan} onGenerateCode={onGenerateCode} modelSetting={modelSetting} />
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** Which lines the step lifts out, and into what. */
+function StepSpans({ range }: { range: ReturnType<typeof stepExcerptRange> }) {
+  const extraction = range?.extraction ?? null;
+  const slice = extraction?.span ?? null;
+  const stages = range?.stages ?? [];
+  return (
+    <>
+      {stages.length > 0 ? (
+        <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
+          Lines{" "}
+          <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
+            {formatSpans(stages.map((st) => st.span))}
+          </span>{" "}
+          become {stages.length} helpers the function calls in order.
+        </p>
+      ) : null}
+      {extraction && slice ? (
+        <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
+          Lines {slice.start} to {slice.end} become{" "}
+          <code className="break-all font-mono text-[var(--color-text-primary)]">
+            {extractMethodSignature(extraction)}
+          </code>
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The excerpt itself: the stored snippet when the plan carries one, else each
+ * stage read on its own, else the step's one range. `range` is null when the
+ * file cannot be read.
+ */
+function StepExcerpt({
+  step,
+  stored,
+  range,
+  readSource,
+}: {
+  step: OpportunityStep;
+  stored: ReturnType<typeof extractHelperDetail> | null;
+  range: ReturnType<typeof stepExcerptRange>;
+  readSource: ((path: string) => Promise<string>) | undefined;
+}) {
+  if (stored?.snippet) {
+    return <CodeBlock code={stored.snippet} startLine={stored.snippetStartLine} />;
+  }
+  if (!range) return null;
+  if (range.stages.length > 0) {
+    // Each stage on its own: one range from the first stage to the last
+    // would show the lines between them and could cut a later stage.
+    return range.stages.map((st, i) => (
+      <div key={st.span.start} className="space-y-1">
+        <p className="font-mono text-[11px] text-[var(--color-text-tertiary)]">
+          {`${st.name ?? `Stage ${i + 1}`} · lines ${formatSpans([st.span])}`}
+        </p>
+        <SourceExcerpt
+          path={step.file_path}
+          start={st.span.start}
+          end={st.span.end}
+          readSource={readSource!}
+        />
+      </div>
+    ));
+  }
+  return (
+    <SourceExcerpt
+      path={step.file_path}
+      start={range.start}
+      end={range.end}
+      readSource={readSource!}
+    />
+  );
+}
+
+/** The diff preview, the model setting that turns it on, or why it is off. */
+function StepDiff({
+  plan,
+  onGenerateCode,
+  modelSetting,
+}: {
+  plan?: RefactoringPlan | undefined;
+  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
+}) {
+  if (!plan) return null;
+  if (onGenerateCode) return <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />;
+  if (modelSetting) return <RefactoringModelToggle {...modelSetting} />;
+  return (
+    <p className="text-xs text-[var(--color-text-tertiary)]">
+      A diff preview is drafted by a model on request. Code generation is off here.
+    </p>
   );
 }
 

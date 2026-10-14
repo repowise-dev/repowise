@@ -14,9 +14,10 @@ never imported in the first place:
   also exports its input type), belongs to the same set.
 
 Each caps the finding to the review tier, except a program: a file whose
-first line is a shebang or that runs under a ``__main__`` guard is an entry
-point, so :func:`drop_program_entries` removes it. The cap also stops
-"no commits in 90 days" lifting such a file to the high tier, since an
+first line is a shebang, that runs under a ``__main__`` guard or that writes
+the ``python <its path>`` command running it is an entry point, so
+:func:`drop_program_entries` removes it. The cap also stops "no commits in
+90 days" lifting such a file to the high tier, since an
 untouched loaded file is not an unused one. Shape is not proof of use, so the
 file stays listed as a candidate for a person to check.
 """
@@ -28,6 +29,7 @@ import re
 from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import PurePosixPath
+from typing import Any
 
 from ...ingestion.extractors.visibility import _TS_BLOCK_COMMENT, _TS_CJS_EXPORTS_RE
 from ...ingestion.languages.registry import REGISTRY
@@ -91,7 +93,7 @@ def _parse_python(path: str, blob: bytes) -> ast.Module | None:
 
 
 def _program_reason(path: str, blob: bytes) -> str | None:
-    """Why *blob* says it is a program: a shebang or a Python main guard."""
+    """Why *blob* says it is a program: a shebang, a Python main guard or usage line."""
     # ``#![`` opens a Rust inner attribute (``#![doc = ...]``), not a shebang.
     if blob.startswith(b"#!") and not blob.startswith(b"#!["):
         return "Starts with a shebang, so it is run directly rather than imported"
@@ -100,17 +102,57 @@ def _program_reason(path: str, blob: bytes) -> str | None:
         isinstance(stmt, ast.If) and _is_main_guard(stmt.test) for stmt in tree.body
     ):
         return 'Has an `if __name__ == "__main__"` block, so it is run as a script'
+    if _runs_itself(path, blob):
+        return "Its own text gives the command that runs it, so it is run as a script"
     return None
 
 
+def _runs_itself(path: str, blob: bytes) -> bool:
+    """Whether a Python file writes a ``python <its own path>`` usage line.
+
+    Only the file's own path counts, written whole or as a tail of it
+    (``run.py``, ``a/run.py``): a usage line for another script, even one of
+    the same name in another directory, says nothing about this one.
+    """
+    if not path.endswith(".py"):
+        return False
+    name = re.escape(path.rpartition("/")[2].encode())
+    command = rb"\bpython[\d.]*[ \t]+(?:-\S+[ \t]+)*((?:[\w.\\/-]*[\\/])?" + name + rb")(?![\w.])"
+    return any(_names_path(m.group(1), path) for m in re.finditer(command, blob))
+
+
+def _names_path(written: bytes, path: str) -> bool:
+    """Whether *written*, a path as a command line spells it, is *path* or a tail of it."""
+    tail = written.decode("ascii", "ignore").replace("\\", "/").removeprefix("./")
+    return f"/{path}".endswith(f"/{tail}")
+
+
 def is_program(path: str, blob: bytes) -> bool:
-    """Whether *blob* says it is a program: a shebang, or a Python main guard.
+    """Whether *blob* says it is a program: a shebang, a main guard or a usage line.
 
     Either is the author stating the file is started by a command. Statements
     at module level are weaker (an imported module can run code on load), so
     they only cap a finding, through :func:`_script_reason`.
     """
     return _program_reason(path, blob) is not None
+
+
+def defines_main_function(graph: Any, file_node: str) -> bool:
+    """Whether *file_node* defines a top-level function named ``main``.
+
+    A program's start in Kotlin, Dart, Go, Rust and C. On its own it is weak
+    (a Python helper may be named ``main``), so callers pair it with a root
+    stamp or a language rule.
+    """
+    return any(
+        sym.get("node_type") == "symbol"
+        and sym.get("kind") == "function"
+        and sym.get("name") == "main"
+        and not sym.get("parent_name")
+        and graph.get_edge_data(file_node, succ, {}).get("edge_type") == "defines"
+        for succ in graph.successors(file_node)
+        for sym in (graph.nodes.get(succ, {}),)
+    )
 
 
 def drop_program_entries(

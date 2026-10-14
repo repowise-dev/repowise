@@ -50,7 +50,6 @@
   "fix_history": {
     "available": true,
     "density": 1.329,
-    "percentile": 75.0,
     "files": [
       {
         "path": "src/requests/_internal_utils.py",
@@ -79,8 +78,6 @@
     }
   },
   "risk_percentile": 34.0,
-  "review_priority": "moderate",
-  "classification": "Typical",
   "exclude_patterns": [],
   "is_fix": false,
   "impacted_tests": {
@@ -129,7 +126,7 @@
     "truncated": false,
     "summary": "1 of 6 open branches (6 exist) edit files this change also edits."
   },
-  "diff_shape": "Diff shape: bigger than 34% of this repo's recent commits. Size and spread, not danger. Mechanics: get_change_risk(include=['diagnostics']).",
+  "diff_shape": "Size and spread: 34th percentile of recent commits (diff size, not a bug predictor). The rank is a diff-size statistic: it barely beats churn alone and cannot rank danger. Mechanics: get_change_risk(include=['diagnostics']).",
   "_meta": {
     "contract_version": 2,
     "timing_ms": 1333.0,

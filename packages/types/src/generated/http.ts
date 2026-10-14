@@ -105,21 +105,36 @@ export interface AgentPromptResponse {
   text: string;
 }
 
-/** One month of agent-vs-human commit volume. */
+/** One month of commits by attribution label. */
 export interface AgentTrendBucket {
+  total_commits?: number;
+  agent_commits?: number;
+  human_attested_commits?: number;
+  unknown_commits?: number;
+  coverage_pct?: number | null;
+  agent_pct_of_covered?: number | null;
+  suppressed_reason?: string | null;
   month: string;
-  total_commits: number;
-  agent_commits: number;
-  agent_pct: number;
   tier_counts?: Record<string, unknown>;
 }
 
-/** Monthly agent-share trend across the indexed commit window. */
+/**
+ * Monthly attribution trend across the indexed commit window.
+ *
+ * ``enabled`` is false, with every figure empty, when AI attribution is off
+ * for the repository.
+ */
 export interface AgentTrendResponse {
-  buckets: AgentTrendBucket[];
-  total_commits: number;
-  agent_commits: number;
-  agent_pct: number;
+  total_commits?: number;
+  agent_commits?: number;
+  human_attested_commits?: number;
+  unknown_commits?: number;
+  coverage_pct?: number | null;
+  agent_pct_of_covered?: number | null;
+  suppressed_reason?: string | null;
+  enabled?: boolean;
+  coverage_floor_pct: number;
+  buckets?: AgentTrendBucket[];
   agent_names?: Record<string, unknown>[];
 }
 
@@ -352,6 +367,11 @@ export interface CallersCalleesResponse {
   relations?: SymbolRelationGroup[];
 }
 
+export interface ChangeAuthor {
+  name: string;
+  email: string;
+}
+
 /** The Kamei change-shape features the risk model scores. */
 export interface ChangeFeaturesResponse {
   la: number;
@@ -361,6 +381,85 @@ export interface ChangeFeaturesResponse {
   ns: number;
   entropy: number;
   exp: number | null;
+}
+
+export interface ChangeFile {
+  path: string;
+  added: number;
+  deleted: number;
+}
+
+/** Forge facts from a metadata source; ``None`` means unknown. */
+export interface ChangeForgeMetadata {
+  source?: string | null;
+  reviewers?: string[] | null;
+  approvals?: number | null;
+  labels?: string[] | null;
+  linked_issues?: string[] | null;
+}
+
+/** ``pr`` | ``change_id`` | ``merge`` | ``commit``, first that applies. */
+export interface ChangeIdentity {
+  kind: string;
+  value: string;
+}
+
+export interface ChangeListResponse {
+  items: ChangeSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  attribution: boolean;
+}
+
+/** Three-state AI provenance over the change's commits, with its coverage. */
+export interface ChangeProvenance {
+  label: string;
+  agent_commits: number;
+  human_attested_commits: number;
+  unknown_commits: number;
+  coverage?: number | null;
+}
+
+export interface ChangeRecord {
+  schema_version: number;
+  id: string;
+  identity: ChangeIdentity;
+  shape: string;
+  forge: string;
+  forge_ref?: string | null;
+  title: string;
+  merged_at?: string | null;
+  head_sha: string;
+  author: ChangeAuthor;
+  commit_count: number;
+  files_changed: number;
+  lines_added: number;
+  lines_deleted: number;
+  category: string;
+  provenance?: ChangeProvenance | null;
+  commits: string[];
+  files: ChangeFile[];
+  metadata: ChangeForgeMetadata;
+}
+
+export interface ChangeSummary {
+  schema_version: number;
+  id: string;
+  identity: ChangeIdentity;
+  shape: string;
+  forge: string;
+  forge_ref?: string | null;
+  title: string;
+  merged_at?: string | null;
+  head_sha: string;
+  author: ChangeAuthor;
+  commit_count: number;
+  files_changed: number;
+  lines_added: number;
+  lines_deleted: number;
+  category: string;
+  provenance?: ChangeProvenance | null;
 }
 
 export interface ChangelogEntryModel {
@@ -422,6 +521,53 @@ export interface ChatRequest {
   context?: ChatPageContext | null;
 }
 
+export interface ChatSessionMessageRequest {
+  message: string;
+  idempotency_key?: string | null;
+  context?: ChatPageContext | null;
+  stream?: boolean;
+  provider?: string | null;
+  model?: string | null;
+}
+
+/** Open a session, or resume the one ``(namespace, external_ref)`` names. */
+export interface ChatSessionOpenRequest {
+  repo_id: string;
+  scope?: "repo" | "workspace";
+  namespace?: string;
+  external_ref?: string | null;
+  title?: string | null;
+  policy?: ChatSessionPolicyRequest | null;
+}
+
+/**
+ * Limits a caller asks for. Each may only narrow the server's default
+ * session policy; a wider value is refused.
+ */
+export interface ChatSessionPolicyRequest {
+  tool_allowlist?: string[] | null;
+  max_tool_loops?: number | null;
+  max_turns?: number | null;
+  max_output_tokens?: number | null;
+  max_turn_tokens?: number | null;
+  max_session_tokens?: number | null;
+  audience?: "engineer" | "business" | null;
+}
+
+export interface ChatSessionResponse {
+  id: string;
+  repository_id: string;
+  title: string;
+  scope: "repo" | "workspace";
+  namespace?: string | null;
+  external_ref?: string | null;
+  created?: boolean;
+  policy?: Record<string, unknown>;
+  turns?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
 /**
  * One composer chip. ``source`` lets a client rank a measured question
  * above the static tier it already ships.
@@ -438,6 +584,39 @@ export interface ChatSuggestion {
  */
 export interface ChatSuggestionsResponse {
   suggestions?: ChatSuggestion[];
+}
+
+export interface ChatToolTraceEntry {
+  name: string;
+  summary: string;
+  ok: boolean;
+  basis: string;
+  origin?: string | null;
+}
+
+export interface ChatTurnResultResponse {
+  conversation_id: string;
+  message_id?: string | null;
+  user_message_id?: string | null;
+  answer: string;
+  stop_reason: "answered" | "loop_cap" | "token_budget" | "turn_budget" | "refused" | "cancelled" | "error";
+  provider: string;
+  model: string;
+  citations?: Record<string, unknown>[];
+  cards?: Record<string, unknown>[];
+  views?: Record<string, unknown>[];
+  tool_trace?: ChatToolTraceEntry[];
+  follow_ups?: ChatSuggestion[];
+  usage?: ChatTurnUsage;
+  error?: string | null;
+  replayed?: boolean;
+}
+
+/** Null token counts mean the provider reported none. */
+export interface ChatTurnUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  model_calls?: number;
 }
 
 /**
@@ -519,6 +698,7 @@ export interface CommitDetailResponse {
   agent_name?: string | null;
   agent_autonomy_tier?: number | null;
   agent_confidence?: string | null;
+  attribution?: string | null;
   drivers?: RiskDriverResponse[];
   agent_channel?: string | null;
   files?: CommitFileResponse[];
@@ -629,6 +809,7 @@ export interface CommitResponse {
   agent_name?: string | null;
   agent_autonomy_tier?: number | null;
   agent_confidence?: string | null;
+  attribution?: string | null;
 }
 
 /**
@@ -643,7 +824,9 @@ export interface CommitStatsResponse {
   total_commits: number;
   high_priority_count: number;
   fix_commit_count: number;
-  agent_commit_count: number;
+  agent_commit_count?: number | null;
+  agent_pct_of_covered?: number | null;
+  attribution_coverage_pct?: number | null;
   avg_entropy: number;
   risk_histogram?: RiskHistogramBucket[];
   moderate_cut?: number | null;
@@ -914,6 +1097,7 @@ export interface DeadCodeSummaryResponse {
   total_lines: number;
   by_kind: Record<string, unknown>;
   analyzed_at?: string | null;
+  gated?: Record<string, unknown>;
 }
 
 /** A link from a decision to a governed file or module. */
@@ -1779,9 +1963,11 @@ export interface GitMetadataResponse {
   commit_count_capped?: boolean;
   original_path?: string | null;
   test_gap?: boolean | null;
-  agent_commit_count?: number;
+  agent_commit_count?: number | null;
   agent_authored_pct?: number | null;
-  agent_tier_counts?: Record<string, unknown>;
+  agent_tier_counts?: Record<string, unknown> | null;
+  attribution_coverage?: number | null;
+  agent_share_suppressed?: string | null;
 }
 
 export interface GitSummaryResponse {
@@ -2300,20 +2486,6 @@ export interface OkResponse {
   ok?: boolean;
 }
 
-/**
- * How much coding-agent activity lands on the files this person owns.
- *
- * Aggregated from the per-file agent-provenance rollup (GitMetadata) over
- * the owner's primary-owned files — agent identity per commit lives on the
- * commits surface, the per-file rollup only carries counts and tiers.
- */
-export interface OwnerAgentCollab {
-  files_with_agent_commits: number;
-  agent_commit_count: number;
-  agent_share_pct: number | null;
-  tier_counts?: Record<string, unknown>;
-}
-
 export interface OwnerCoAuthor {
   name: string;
   email: string | null;
@@ -2374,7 +2546,6 @@ export interface OwnerProfileResponse {
   co_authors: OwnerCoAuthor[];
   co_authors_total?: number;
   commit_categories: Record<string, unknown>;
-  agent_collab?: OwnerAgentCollab | null;
 }
 
 export interface OwnershipEntry {
@@ -2492,7 +2663,7 @@ export interface PatchCoverageBranches {
 
 export interface PatchCoverageFile {
   file_path: string;
-  status: "measured" | "not_in_report" | "no_line_data" | "no_coverable_changes";
+  status: "measured" | "not_in_report" | "no_line_data" | "no_coverable_changes" | "stale_file";
   changed_line_count: number;
   coverable_line_count: number;
   covered_line_count: number;
@@ -2510,6 +2681,7 @@ export interface PatchCoverageFileCounts {
   not_in_report: number;
   no_line_data: number;
   no_coverable_changes: number;
+  stale_file: number;
   out_of_scope: number;
 }
 
@@ -2726,6 +2898,7 @@ export interface QueueCounts {
   due?: number;
   shown?: number;
   excluded?: Record<string, number>;
+  gated?: number;
 }
 
 /** What the ``fix_first`` scope leaves out of a page's filtered set. */
@@ -2747,6 +2920,7 @@ export interface RefactoringOpportunitiesResponse {
   scope?: "fix_first" | "all";
   hidden?: RefactoringHiddenCounts | null;
   counts?: QueueCounts | null;
+  gated?: Record<string, Record<string, unknown>> | null;
 }
 
 /**
@@ -2902,6 +3076,7 @@ export interface RefactoringSummary {
 export interface RefactoringTargetsResponse {
   summary: RefactoringSummary;
   plans: RefactoringPlanResponse[];
+  gated?: Record<string, Record<string, unknown>>;
 }
 
 export interface RefactoringTypeCount {

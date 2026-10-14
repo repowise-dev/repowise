@@ -10,8 +10,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from repowise.core.providers.llm.base import ChatStreamEvent, ChatToolCall, ProviderError
+from repowise.server.chat_prompt import _build_system_prompt
+from repowise.server.chat_session import WEB_POLICY
 from repowise.server.chat_tools import get_tool_catalog
-from repowise.server.routers.chat import _MAX_AGENTIC_LOOPS, _build_system_prompt
 from repowise.server.schemas.chat import ChatPageContext
 from tests.unit.server.test_chat_stream_terminal_event import (
     _REPO_ID,
@@ -21,7 +22,8 @@ from tests.unit.server.test_chat_stream_terminal_event import (
 )
 
 _PROVIDER = "repowise.server.routers.chat.get_chat_provider_instance"
-_EXECUTE = "repowise.server.routers.chat.execute_tool"
+_EXECUTE = "repowise.server.chat_tools.execute_tool"
+_MAX_AGENTIC_LOOPS = WEB_POLICY.max_tool_loops
 
 _FILE_PAGE = {"kind": "file", "label": "Files", "target": "src/a.py", "target_kind": "path"}
 _CONTEXT_RESULT = {"targets": {"src/a.py": {"docs": {"title": "A", "content_md": "alpha"}}}}
@@ -155,7 +157,11 @@ async def test_file_page_grounds_before_the_first_model_turn():
     assert [message["role"] for message in sent[-3:]] == ["user", "assistant", "tool"]
     assert sent[-2]["tool_calls"][0]["id"] == grounding["tool_id"]
     assert sent[-1]["tool_call_id"] == grounding["tool_id"]
-    assert json.loads(sent[-1]["content"]) == _CONTEXT_RESULT
+    # The model sees the result stamped with the id show_view takes; the artifact does not.
+    assert json.loads(sent[-1]["content"]) == {
+        **_CONTEXT_RESULT,
+        "artifact_id": grounding["artifact"]["id"],
+    }
     assert "file page" in provider.calls[0]["system_prompt"]
 
     stored = await _stored_messages(app, events[-1]["conversation_id"])
@@ -351,8 +357,15 @@ async def test_a_page_with_findings_gets_chips_that_name_them():
     texts = [entry["text"] for entry in body["suggestions"]]
     assert "Explain the 28 bug fixes in a.py" in texts
     assert all(entry["source"] == "page" for entry in body["suggestions"])
+    from repowise.server.auth import LOCAL_PRINCIPAL
+
     execute.assert_awaited_once_with(
-        "get_risk", {"targets": ["src/a.py"]}, repo_path="/tmp/repo", repo=None
+        "get_risk",
+        {"targets": ["src/a.py"]},
+        repo_path="/tmp/repo",
+        repo=None,
+        principal=LOCAL_PRINCIPAL,
+        repo_id="repo-1",
     )
 
 

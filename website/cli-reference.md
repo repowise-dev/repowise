@@ -539,8 +539,9 @@ repowise health --trend
 
 ## `risk`
 
-Rank a *change* (commit or `base..head` range) for review. The repo-relative
-percentile/classification is authoritative; the supporting 0-10 score measures
+Rank a *change* (commit or `base..head` range) by size and spread among the
+repo's recent commits, then report the bug-fix record of the files it touches.
+The percentile ranks diff size, not danger; the supporting 0-10 score measures
 diff size and spread and is not a probability. No LLM.
 
 ```bash

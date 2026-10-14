@@ -53,7 +53,7 @@ POST /api/repos/{repo_id}/chat/messages
 +---------------------------------------+
 ```
 
-The agentic loop is in the chat router for most providers (OpenAI, Anthropic,
+The agentic loop is in the chat session engine (`chat_session.py`) for most providers (OpenAI, Anthropic,
 Ollama, LiteLLM). For Gemini, the loop runs inside `stream_chat()` using native
 Content objects to preserve thought signatures. The router passes a
 `tool_executor` callback that Gemini calls internally.
@@ -174,7 +174,7 @@ TOOL_REGISTRY: dict[str, ToolDef]  # name -> ToolDef(name, description, paramete
 |----------|---------|
 | `get_tool_schemas_for_llm()` | Returns OpenAI-format tool definitions for the LLM |
 | `execute_tool(name, args)` | Runs a tool and ensures JSON-serializable output |
-| `get_artifact_type(name)` | Maps tool name to frontend artifact type |
+| `ToolBackend.catalog_for(...)` | Tool contracts, each carrying its frontend artifact type |
 | `init_tool_state(...)` | Bridges FastAPI app state to MCP module globals |
 
 **Tool to artifact type mapping (7 tools):**

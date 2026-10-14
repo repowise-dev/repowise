@@ -61,6 +61,7 @@ _NODE_FIELDS = (
     "is_entry_point",
     "is_reachability_root",
     "always_run_reason",
+    "public_api",
     "pagerank",
     "betweenness",
     "betweenness_commit",
@@ -241,10 +242,14 @@ async def reconcile_edges_for_files(
     symbols the change deleted whose node rows the incremental path never prunes
     — then inserts the fresh set. Edges *into* a changed file from an unchanged
     one are owned by that other file and left untouched, the same file-scoping
-    the symbol reconciler uses; a full reindex reconciles those.
+    the symbol reconciler uses; a full reindex reconciles those. The exception
+    is an edge whose fact sits at its target (``TARGET_OWNED_HINTS``), which
+    the target's file owns too.
 
     Returns the number of deleted rows.
     """
+    from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
     scoped = [p for p in dict.fromkeys(source_file_paths) if p]
     if not scoped:
         return 0
@@ -289,7 +294,13 @@ async def reconcile_edges_for_files(
         res = await session.execute(
             delete(GraphEdge).where(
                 GraphEdge.repository_id == repository_id,
-                GraphEdge.source_node_id.in_(batch),
+                or_(
+                    GraphEdge.source_node_id.in_(batch),
+                    and_(
+                        GraphEdge.hint_source.in_(TARGET_OWNED_HINTS),
+                        GraphEdge.target_node_id.in_(batch),
+                    ),
+                ),
             )
         )
         deleted += res.rowcount or 0
@@ -490,6 +501,7 @@ async def get_all_graph_nodes(
             "is_entry_point": row.is_entry_point,
             "is_reachability_root": row.is_reachability_root,
             "always_run_reason": row.always_run_reason,
+            "public_api": row.public_api,
             "kind": row.kind,
             "name": row.name,
             "qualified_name": row.qualified_name,
@@ -833,6 +845,8 @@ async def get_cross_community_edges(
             GraphEdge.__table__.c.repository_id == repository_id,
             source_node.c.community_id == community_id,
             target_node.c.community_id != community_id,
+            # External code is stored with no community (-1); it is not a target.
+            target_node.c.community_id >= 0,
             # Only count file-level edges for meaningful community crossing
             source_node.c.node_type == "file",
             target_node.c.node_type == "file",

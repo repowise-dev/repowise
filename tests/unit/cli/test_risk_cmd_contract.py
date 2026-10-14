@@ -204,6 +204,32 @@ def test_the_projection_survives_a_payload_with_no_targets_key() -> None:
     assert project_risk({})["targets"] == {}
 
 
+def test_a_history_tier_card_prints_its_history_not_hotspot_zeros() -> None:
+    from unittest.mock import patch
+
+    from rich.console import Console
+
+    from repowise.cli.commands import risk_cmd
+
+    card = {
+        "signal_tier": "history",
+        "commit_count_total": 11,
+        "last_commit_at": "2026-03-01T00:00:00",
+        "trend": "stable",
+        "primary_owner": "Carol",
+        "owner_pct": 0.5,
+    }
+    projected = project_risk({"targets": {"queries/java.scm": card}})["targets"]["queries/java.scm"]
+    assert projected["signal_tier"] == "history" and projected["commit_count_total"] == 11
+    rec = Console(record=True, width=300)
+    with patch.object(risk_cmd, "console", rec):
+        risk_cmd._render_card("queries/java.scm", projected)
+    out = rec.export_text()
+    assert "history only · 11 commits (stable) · last 2026-03-01" in out
+    assert "Carol" in out
+    assert "hotspot" not in out and "direct dependents" not in out
+
+
 # ---------------------------------------------------------------------------
 # Errors a caller scripts against
 # ---------------------------------------------------------------------------

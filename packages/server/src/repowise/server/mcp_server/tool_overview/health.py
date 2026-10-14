@@ -6,11 +6,9 @@ from typing import Any
 
 from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
 from repowise.core.analysis.health.grading import (
-    band_for,
-)
-from repowise.core.analysis.health.grading import (
     distribution as health_distribution,
 )
+from repowise.core.analysis.health.grading import headline_band
 from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.persistence.crud import (
     get_health_metrics as _get_health_metrics,
@@ -37,14 +35,27 @@ async def _build_code_health(session: Any, repository: Any) -> dict[str, Any]:
             }
         # Hotspot health from its one owner, over the rows already loaded.
         hotspot_paths = await get_hotspot_file_paths(session, repository.id)
+        unanalysed = health_summary["unanalysed_file_count"]
         return {
             "average_health": health_summary["average_health"],
-            "band": band_for(float(health_summary["average_health"])),
+            # ``None`` when too few code files were analysed to grade the repo.
+            "band": headline_band(
+                health_summary["average_health"], health_summary["analysed_share"]
+            ),
             "hotspot_health": hotspot_health(metrics_rows, hotspot_paths),
             "worst_performer_path": health_summary["worst_performer_path"],
             "worst_performer_score": health_summary["worst_performer_score"],
             "open_findings": health_summary["open_findings"],
             "file_count": health_summary["file_count"],
+            # Only said when there are some, as the health dashboard does.
+            **(
+                {
+                    "unanalysed_file_count": unanalysed,
+                    "analysed_share": health_summary["analysed_share"],
+                }
+                if unanalysed
+                else {}
+            ),
             "distribution": health_distribution(metrics_rows),
         }
     except Exception:

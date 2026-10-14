@@ -46,6 +46,24 @@ _NL_QUESTION_TOKENS = frozenset(
 )
 
 
+# Code punctuation a real path almost never carries: a call, a decorator
+# argument, a keyword argument or an annotation. ``mode="path"`` still reaches
+# such a path when someone really means one.
+_CODE_PUNCT_CHARS = '("{='
+# npm-scoped paths (``@angular/core/src/x.ts``) lead with ``@`` but are paths.
+_SCOPED_PACKAGE = re.compile(r"^@[\w.-]+/[\w.-]+")
+# Next.js route groups (``app/(auth)/page.tsx``) carry parentheses legitimately.
+_ROUTE_GROUP = re.compile(r"[/\\]\([\w.-]+\)(?=[/\\])")
+
+
+def _has_code_punctuation(stripped: str) -> bool:
+    """A whitespace-free string shaped like code (``f(x)``, ``@dec``, ``k="v"``)."""
+    probe = _ROUTE_GROUP.sub("/", stripped)
+    if any(ch in probe for ch in _CODE_PUNCT_CHARS):
+        return True
+    return stripped.startswith("@") and not _SCOPED_PACKAGE.match(stripped)
+
+
 def _is_path(query: str) -> bool:
     """Heuristic: does this string look like a file or module path?
 
@@ -75,6 +93,10 @@ def _is_path(query: str) -> bool:
 
     # A path can't contain whitespace.
     if any(ch.isspace() for ch in stripped):
+        return False
+
+    # A call, decorator or keyword argument is code, even with a "/" inside.
+    if _has_code_punctuation(stripped):
         return False
 
     if "/" in stripped or "\\" in stripped:

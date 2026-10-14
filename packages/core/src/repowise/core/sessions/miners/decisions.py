@@ -74,6 +74,7 @@ from repowise.core.analysis.decisions.scope import (
     session_scope_basis,
 )
 from repowise.core.distill.corrections import command_anchor
+from repowise.core.fsutils import relative_files
 from repowise.core.precedent.transcript_episodes import (
     TranscriptEpisodeRecorder,
     record_transcript_episodes,
@@ -85,7 +86,6 @@ from repowise.core.sessions.events import (
     FILE_INPUT_KEYS,
     event_file_touches,
     is_prose_user_text,
-    relative_files,
 )
 from repowise.core.sessions.staging import DISCOVERY_KIND, SessionStagingStore
 

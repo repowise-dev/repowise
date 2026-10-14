@@ -10,6 +10,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
+from repowise.server.mcp_server._verify import NOT_A_DEFINITION
 from repowise.server.mcp_server.tool_answer.source import (
     _read_repo_text,
     _read_signature_from_source,
@@ -77,16 +78,7 @@ _BRACE_MEMBER = len(_WITHHELD_DEF_PATTERNS) - 1
 # Words that make a brace-member match control flow or a statement rather than
 # a definition. Checked against the matched name and the line's first word,
 # since the optional type group can swallow the keyword (``raise X(...{``).
-_NOT_A_DEFINITION = frozenset(
-    {
-        "if", "for", "while", "switch", "catch", "else", "do", "try", "return",
-        "with", "using", "lock", "foreach", "case", "synchronized", "await",
-        "yield", "new", "typeof", "in", "of", "when", "unless", "match",
-        "raise", "throw", "assert", "del", "delete", "print", "elif", "except",
-        "finally", "import", "from", "global", "nonlocal", "pass", "break",
-        "continue", "go", "defer", "select", "range", "constructor",
-    }
-)
+_NOT_A_DEFINITION = NOT_A_DEFINITION
 
 _FIRST_WORD_RE = re.compile(r"[A-Za-z_$][\w$]*")
 

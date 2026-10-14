@@ -111,6 +111,23 @@ class TestJvmFileReachable:
         # Helper.java has no direct importer but its sibling User.java does.
         assert is_jvm_file_reachable("app/svc/Helper.java", graph, pkgs) is True
 
+    def test_co_change_is_not_an_importer(self) -> None:
+        # Committed together is history: neither the file nor its sibling is imported.
+        graph = _build_graph(
+            {
+                "app/svc/User.java": _java_file(),
+                "app/svc/Helper.java": _java_file(),
+                "app/web/Controller.java": _java_file(),
+            },
+            edges=[
+                ("app/web/Controller.java", "app/svc/User.java", {"edge_type": "co_changes"}),
+                ("app/web/Controller.java", "app/svc/Helper.java", {"edge_type": "co_changes"}),
+            ],
+        )
+        pkgs = build_jvm_package_files(graph)
+        assert is_jvm_file_reachable("app/svc/User.java", graph, pkgs) is False
+        assert is_jvm_file_reachable("app/svc/Helper.java", graph, pkgs) is False
+
     def test_stereotype_annotated_class_is_reachable(self) -> None:
         graph = _build_graph(
             {
@@ -152,6 +169,7 @@ class TestJvmFileReachable:
                     symbols=[{
                         "name": "main",
                         "kind": "method",
+                        "signature": "main(String[] args) -> void",
                         "visibility": "public",
                         "language": "java",
                     }],

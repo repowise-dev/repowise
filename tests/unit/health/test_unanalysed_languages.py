@@ -14,7 +14,7 @@ from repowise.core.analysis.health.complexity import FileComplexity, walk_file
 from repowise.core.analysis.health.complexity.languages import has_health_dialect
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
-from repowise.core.analysis.health.grading import distribution
+from repowise.core.analysis.health.grading import band_for, distribution, headline_band
 from repowise.core.analysis.health.models import HealthFileMetricData
 from repowise.core.analysis.health.ranking import worst_metric
 from repowise.core.analysis.health.scoring import (
@@ -27,12 +27,14 @@ from repowise.core.analysis.health.trends import snapshot_fields
 from repowise.core.pipeline.incremental import _numbers_moved
 
 
-@pytest.mark.parametrize("language", ["python", "typescript", "csharp", "razor", "sql", "php"])
+@pytest.mark.parametrize(
+    "language", ["python", "typescript", "csharp", "razor", "sql", "php", "swift"]
+)
 def test_languages_health_walks_have_a_dialect(language: str) -> None:
     assert has_health_dialect(language)
 
 
-@pytest.mark.parametrize("language", ["swift", "elixir", "markdown", "", None])
+@pytest.mark.parametrize("language", ["lua", "elixir", "markdown", "", None])
 def test_languages_nothing_walks_have_none(language: str | None) -> None:
     assert not has_health_dialect(language)
 
@@ -107,6 +109,22 @@ def test_kpis_leave_unscored_files_out() -> None:
     assert kpis["file_count"] == 2
     assert kpis["unanalysed_file_count"] == 1
     assert kpis["worst_performer_path"] == "a.py"
+
+
+def test_a_mostly_unanalysed_repo_carries_its_share_and_no_band() -> None:
+    rows = [_metric(f"s{i}.swift", 10.0) for i in range(4)]
+    rows += [_metric(f"u{i}.swift", None) for i in range(431)]
+    kpis = compute_kpis(rows, set())
+    assert kpis["average_health"] == 10.0
+    assert kpis["analysed_share"] < 0.5
+    assert headline_band(kpis["average_health"], kpis["analysed_share"]) is None
+
+
+def test_a_fully_analysed_repo_keeps_its_band() -> None:
+    kpis = compute_kpis([_metric("a.py", 9.0), _metric("b.py", 8.0)], set())
+    assert kpis["analysed_share"] == 1.0
+    avg = kpis["average_health"]
+    assert headline_band(avg, kpis["analysed_share"]) == band_for(avg)
 
 
 def test_a_repository_of_only_unscored_files_has_no_average() -> None:

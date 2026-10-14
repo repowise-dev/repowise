@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BasePerfDialect
+from .iterables import IterableSources, text_of, upper_bound
 from .python import HTTP_VERBS
 
 if TYPE_CHECKING:
@@ -81,6 +81,8 @@ GO_IOUTIL_METHODS: frozenset[str] = frozenset({"ReadFile", "WriteFile", "ReadAll
 GO_REGEX_COMPILE: frozenset[str] = frozenset(
     {"MustCompile", "Compile", "MustCompilePOSIX", "CompilePOSIX"}
 )
+# GORM reads that fill the slice passed as ``&x``; ``Create(&x)`` writes it.
+GO_READ_INTO: frozenset[bytes] = frozenset({b"Find", b"Scan", b"Pluck", b"FindInBatches"})
 _GO_STRING_KINDS: frozenset[str] = frozenset({"interpreted_string_literal", "raw_string_literal"})
 _GO_LOOP_KINDS: frozenset[str] = frozenset({"for_statement"})
 
@@ -113,7 +115,54 @@ def _single_identifier(node: Node | None) -> bytes | None:
     return targets[0].text
 
 
-class GoPerfDialect(BasePerfDialect):
+_GO_FN_KINDS: frozenset[str] = frozenset({"function_declaration", "method_declaration", "func_literal"})
+
+
+def _go_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``x := v`` / ``x = v`` / ``var x = v`` (one call
+    answering several names counts for each), or a read filling ``&x`` (GORM
+    ``db.Find(&users)``)."""
+    if node.type in ("short_var_declaration", "assignment_statement"):
+        left = node.child_by_field_name("left")
+        targets = list(left.named_children) if left is not None else []
+        return _paired(targets, node.child_by_field_name("right"))
+    if node.type == "var_spec":
+        return _paired(list(node.children_by_field_name("name")), node.child_by_field_name("value"))
+    if node.type == "call_expression" and _callee_name(node) in GO_READ_INTO:
+        args = node.child_by_field_name("arguments")
+        filled = [_address_of(arg) for arg in (args.named_children if args is not None else ())]
+        return [(name, node) for name in filled if name]
+    return []
+
+
+def _callee_name(call: Node) -> bytes | None:
+    fn = call.child_by_field_name("function")
+    field = fn.child_by_field_name("field") if fn is not None else None
+    return field.text if field is not None else None
+
+
+def _address_of(arg: Node) -> bytes | None:
+    """``x`` of ``&x``."""
+    if arg.type != "unary_expression" or not (arg.text or b"").startswith(b"&"):
+        return None
+    operand = arg.child_by_field_name("operand")
+    return operand.text if operand is not None and operand.type == "identifier" else None
+
+
+def _paired(targets: list[Node], right: Node | None) -> list[tuple[bytes, Node]]:
+    if right is None:
+        return []
+    values = right.named_children if right.type == "expression_list" else [right]
+    if len(values) != len(targets) and len(values) != 1:
+        return []
+    return [
+        (target.text, values[index] if len(values) == len(targets) else values[0])
+        for index, target in enumerate(targets)
+        if target.type == "identifier" and target.text
+    ]
+
+
+class GoPerfDialect(IterableSources):
     language = "go"
     markers = frozenset(
         {
@@ -278,6 +327,85 @@ class GoPerfDialect(BasePerfDialect):
         if right is None or right.type != "call_expression":
             return False
         return self.callee_method_name(right) in GO_CHUNK_CALLS
+
+    # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
+
+    function_kinds = _GO_FN_KINDS
+    change_kinds = frozenset({"assignment_statement", "inc_statement", "dec_statement"})
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "expression_switch_statement", "type_switch_statement",
+            "select_statement", "expression_case", "type_case", "default_case",
+            "communication_case", "for_statement",
+        }
+    )
+
+    literal_kinds = frozenset({"composite_literal"})
+    int_kinds = frozenset({"int_literal"})
+    wrapper_kinds = frozenset({"parenthesized_expression"})
+    # ``maps.Keys(m)`` / ``slices.Sorted(maps.Keys(m))`` walk their argument.
+    arg_walkers = frozenset({"Keys", "Values", "Sorted", "SortedFunc", "Collect", "Clone"})
+    size_names = frozenset({"len"})
+    # ``for rows.Next()`` (database/sql), ``for scanner.Scan()`` (bufio).
+    cursor_advances = frozenset({"Next", "Scan"})
+    listings = frozenset({"ReadDir", "Glob"})
+    streams = frozenset({"NewScanner", "NewReader"})
+    query_caps = frozenset({"Limit"})
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type != "for_statement":
+            return "each", None
+        body = loop.child_by_field_name("body")
+        for child in loop.named_children:
+            if child.type == "range_clause":
+                return "each", child.child_by_field_name("right")
+            if child.type == "for_clause":
+                return "counted", upper_bound(child.child_by_field_name("condition"))
+            if child.type == "call_expression" and child != body:
+                return "cursor", child
+        return "each", None
+
+    def is_literal(self, node: Node) -> bool:
+        """``[]string{"a", "b"}``; an empty ``[]T{}`` is filled later."""
+        body = node.child_by_field_name("body") if node.type == "composite_literal" else None
+        return body is not None and any(c.type != "comment" for c in body.named_children)
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if node.type != "call_expression":
+            return None
+        fn = node.child_by_field_name("function")
+        args = node.child_by_field_name("arguments")
+        arg_nodes = [c for c in args.named_children if c.type != "comment"] if args else []
+        if fn is not None and fn.type == "selector_expression":
+            field = fn.child_by_field_name("field")
+            return text_of(field), fn.child_by_field_name("operand"), arg_nodes
+        return text_of(fn), None, arg_nodes
+
+    def fixed_slice(self, node: Node) -> Node | None:
+        """``xs[:5]`` / ``xs[0:5]``."""
+        if node.type != "slice_expression":
+            return None
+        start, end = node.child_by_field_name("start"), node.child_by_field_name("end")
+        if end is None or end.type != "int_literal":
+            return None
+        if start is not None and start.text != b"0":
+            return None
+        return node.child_by_field_name("operand")
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _go_bindings(node)
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        scope = self._scope(loop)
+        params = scope.child_by_field_name("parameters") if scope is not None else None
+        if params is None:
+            return set()
+        return {
+            name.text
+            for decl in params.named_children
+            for name in decl.children_by_field_name("name")
+            if name.text
+        }
 
     @staticmethod
     def _has_static_pattern_arg(node: Node) -> bool:

@@ -7,8 +7,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
-    effective_safe_to_delete,
     path_risk_factors,
 )
 from repowise.core.analysis.finding_registry import verification_label
@@ -101,6 +101,8 @@ class DeadCodeSummaryResponse(BaseModel):
     by_kind: dict
     # When dead-code analysis last ran; None = never ran or unknown (not all-clear).
     analyzed_at: datetime | None = None
+    #: Open findings a language gate held back, ``{language: {count, reason}}``.
+    gated: dict = {}
 
 
 class SecurityFindingResponse(BaseModel):

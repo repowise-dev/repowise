@@ -50,7 +50,6 @@
   "fix_history": {
     "available": true,
     "density": 1.329,
-    "percentile": 74.8,
     "files": [
       {
         "path": "src/requests/_internal_utils.py",
@@ -79,8 +78,6 @@
     }
   },
   "risk_percentile": 17.5,
-  "review_priority": "low",
-  "classification": "Below typical",
   "exclude_patterns": [],
   "is_fix": false,
   "impacted_tests": {
@@ -107,7 +104,7 @@
     },
     "summary": "2 test(s) to run for this change; the rest can be skipped."
   },
-  "diff_shape": "Diff shape: bigger than 18% of this repo's recent commits. Size and spread, not danger. Mechanics: get_change_risk(include=['diagnostics']).",
+  "diff_shape": "Size and spread: 18th percentile of recent commits (diff size, not a bug predictor). The rank is a diff-size statistic: it barely beats churn alone and cannot rank danger. Mechanics: get_change_risk(include=['diagnostics']).",
   "_meta": {
     "contract_version": 2,
     "timing_ms": 1016.0,

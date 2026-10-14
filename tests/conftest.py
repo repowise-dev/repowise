@@ -111,6 +111,13 @@ def _isolate_db_url_env():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_tokens_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory):
+    """Keep a developer's ``~/.repowise/tokens.yaml`` from turning server auth on."""
+    missing = tmp_path_factory.getbasetemp() / "no-tokens.yaml"
+    monkeypatch.setenv("REPOWISE_TOKENS_FILE", str(missing))
+
+
+@pytest.fixture(autouse=True)
 def _fresh_per_index_caches():
     """Drop the MCP server's per-index caches before every test.
 
@@ -118,7 +125,7 @@ def _fresh_per_index_caches():
     so every test's index looks the same to the cache key. Looked up in
     ``sys.modules`` so a test that never loads the server pays nothing.
     """
-    for name in ("_basis", "_scope", "_graph_files", "tool_overview.graph"):
+    for name in ("_basis", "_scope", "_graph_files", "tool_overview.graph", "_components"):
         module = sys.modules.get(f"repowise.server.mcp_server.{name}")
         if module is not None:
             module.reset_cache()

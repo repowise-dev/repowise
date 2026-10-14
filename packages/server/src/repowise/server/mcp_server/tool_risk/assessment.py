@@ -13,8 +13,8 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.pr_blast import untested_files
+from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS
 from repowise.core.co_change import confidence_ratio, parse_partners
-from repowise.core.git_refs import find_path_removal
 from repowise.core.persistence.models import (
     GitMetadata,
     Repository,
@@ -24,7 +24,8 @@ from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
     is_excluded,
 )
-from repowise.server.repo_paths import normalize_target_path
+from repowise.server.mcp_server._meta import served_root
+from repowise.server.repo_paths import missing_path_hint, normalize_target_path
 
 #: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
 #: the PR bot uses for prior defects, so the two surfaces agree on "a lot".
@@ -243,7 +244,11 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
 
 
 async def _get_security_signals(session: AsyncSession, repo_id: str, target: str) -> list[dict]:
-    """Fetch stored security findings for *target* from security_findings table."""
+    """Fetch stored security findings for *target* from security_findings table.
+
+    Symbol-name rows stay stored for the dashboard; next to real findings they
+    only read as alarms, so an agent never sees them.
+    """
     try:
         rows = await session.execute(
             text(
@@ -254,7 +259,11 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             ),
             {"repo_id": repo_id, "fp": target},
         )
-        return [{"kind": r[0], "severity": r[1], "snippet": r[2]} for r in rows.all()]
+        return [
+            {"kind": r[0], "severity": r[1], "snippet": r[2]}
+            for r in rows.all()
+            if r[0] not in SYMBOL_NAME_KINDS
+        ]
     except Exception:
         return []
 
@@ -407,9 +416,9 @@ async def _unresolved_reason(
     name", and it resolves a directory to ``not_indexed`` — both would
     prescribe a fix that cannot help here.
 
-    ``no_such_path`` also carries ``moved_to``/``removed_by_commit`` when git
-    can explain the miss as a rename or a same-named-directory split (#2633),
-    found off the thread so the blocking git call does not stall the loop.
+    ``no_such_path`` also carries what :func:`missing_path_hint` finds (a
+    rename, or another branch holding the path), off the thread so the
+    blocking git calls do not stall the loop.
     """
     if target.startswith("module:"):
         return {"unresolved_reason": "unsupported_target_kind"}
@@ -421,16 +430,48 @@ async def _unresolved_reason(
             return {"unresolved_reason": "not_indexed"}
     except (OSError, ValueError):
         pass
-    removal = None
-    if repo_root:
-        with contextlib.suppress(OSError, ValueError):
-            removal = await asyncio.to_thread(find_path_removal, repo_root, lookup_path)
-    if removal is None:
-        return {"unresolved_reason": "no_such_path"}
+    hint = await asyncio.to_thread(missing_path_hint, repo_root, lookup_path)
+    return {"unresolved_reason": "no_such_path", **hint}
+
+
+def _history_tier_card(target: str, meta: Any, security_signals: list[dict]) -> dict:
+    """The card for a file indexed at the history tier (``meta.history_only``).
+
+    A non-code file keeps commit counts, windows and authorship, but no churn
+    percentile, hotspot flag, co-change partners or fix rollup, so the scored
+    card would print zeros nothing measured. This one carries only what was.
+    """
+    commits = meta.commit_count_total or 0
+    last = meta.last_commit_at.isoformat() if meta.last_commit_at else None
+    owner = meta.primary_owner_name or "unknown"
+    pct = meta.primary_owner_commit_pct or 0.0
     return {
-        "unresolved_reason": "no_such_path",
-        "removed_by_commit": removal.commit,
-        "moved_to": removal.moved_to,
+        "target": target,
+        "signal_tier": "history",
+        "signal_tier_reason": (
+            "not a parsed code file: only commit history is indexed, so hotspot, "
+            "co-change and risk classification do not apply"
+        ),
+        "commit_count_total": commits,
+        "commit_count_90d": meta.commit_count_90d or 0,
+        "last_commit_at": last,
+        "trend": _compute_trend(meta),
+        "primary_owner": owner,
+        "owner_pct": pct,
+        "contributor_count": meta.contributor_count or 0,
+        "security_signals": security_signals,
+        # Workspace enrichment adds its rows here; co-change covers code files only.
+        "relationship_analysis": {
+            "co_change": {
+                "status": "unavailable",
+                "scope": "git_history",
+                "reason": "history-tier file",
+            }
+        },
+        "risk_summary": (
+            f"{target}: history only, {commits} commits, last {last[:10] if last else 'unknown'}, "
+            f"{_owner_clause(owner, pct, None)}"
+        ),
     }
 
 
@@ -447,6 +488,7 @@ async def _assess_one_target(
     collector: OmissionCollector | None = None,
     include_graph: bool = False,
     as_of_ts: datetime | None = None,
+    repo_root: str | None = None,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -457,7 +499,8 @@ async def _assess_one_target(
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
 
-    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
+    repo_root = served_root(repository, repo_root)
+    lookup_path = normalize_target_path(target, repo_root=repo_root)
     dependency_population = _dependency_population(
         lookup_path, reverse_deps, node_meta, exclude_spec
     )
@@ -580,11 +623,15 @@ async def _assess_one_target(
         return {
             "target": target,
             "resolved": False,
-            **await _unresolved_reason(target, lookup_path, repository.local_path),
+            **await _unresolved_reason(target, lookup_path, repo_root),
             "risk_summary": (
                 f"{target} — not resolved to an indexed file; no risk signal was computed"
             ),
         }
+
+    if getattr(meta, "history_only", False) is True:
+        security = await _get_security_signals(session, repo_id, lookup_path)
+        return _history_tier_card(target, meta, security)
 
     if meta is None:
         result_data["hotspot_score"] = 0.0

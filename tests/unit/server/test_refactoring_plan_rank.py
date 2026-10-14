@@ -11,7 +11,7 @@ import json
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select, update
+from sqlalchemy import inspect, select, update
 
 from repowise.core.analysis.health.refactoring import llm, recommendations
 from repowise.core.persistence import crud
@@ -249,6 +249,48 @@ async def test_finalize_ranks_only_live_plans(client: AsyncClient, app) -> None:
     assert ranked["resolved"] == [None]
     live = ranked["open"] + ranked["acknowledged"]
     assert sorted(live) == list(range(len(live)))
+
+
+async def test_finalize_refreshes_the_ranks_of_plans_the_session_holds(
+    client: AsyncClient, app
+) -> None:
+    repo_id = await _seed_ranked(client, app)
+    async with app.state.session_factory() as session:
+        # Held across finalize, so the identity map keeps every instance.
+        held = (
+            (
+                await session.execute(
+                    select(RefactoringSuggestion)
+                    .where(RefactoringSuggestion.repository_id == repo_id)
+                    .order_by(RefactoringSuggestion.rank_position)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        before = {row.id: row.rank_position for row in held}
+        # Resolving the first plan moves every other plan up one place.
+        resolved_id = next(row.id for row in held if row.rank_position == 0)
+        await crud.update_refactoring_suggestion_status(session, repo_id, resolved_id, "resolved")
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        table = RefactoringSuggestion.__table__
+        stored = {
+            plan_id: (position, facts)
+            for plan_id, position, facts in (
+                await session.execute(
+                    select(table.c.id, table.c.rank_position, table.c.rank_json).where(
+                        table.c.repository_id == repo_id
+                    )
+                )
+            ).all()
+        }
+        # Read from what the instances hold, never reloaded.
+        assert all({"rank_position", "rank_json"} <= inspect(row).dict.keys() for row in held)
+        assert {row.id: (row.rank_position, row.rank_json) for row in held} == stored
+        assert stored[resolved_id] == (None, None)
+        moved = [row for row in held if row.id != resolved_id and before[row.id] is not None]
+        assert moved
+        assert all(row.rank_position == before[row.id] - 1 for row in moved)
 
 
 async def _ids(session, repo_id: str) -> list[str]:

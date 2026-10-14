@@ -64,7 +64,9 @@ def _render_refactoring_targets(
             serialize_recommendations,
         )
 
-        ranked_plans = serialize_recommendations(build_recommendations(suggestions))[:limit]
+        ranked_plans = serialize_recommendations(
+            build_recommendations(suggestions, findings=findings)
+        )[:limit]
     else:
         ranked_plans = [_list_row(_suggestion_to_dict(s)) for s in suggestions][:limit]
 

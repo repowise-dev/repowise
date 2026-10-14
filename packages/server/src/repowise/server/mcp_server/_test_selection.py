@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +33,21 @@ UNAVAILABLE_REASON = (
     "The test selection is unavailable, so run every test (or `repowise impacted-tests`)."
 )
 
-#: Repository path -> the cancel flag of a selection still running there. One
-#: at a time per repository: a selection past its budget keeps its threads
-#: until they notice the flag, and a second one would only add to them.
-_IN_FLIGHT: dict[str, threading.Event] = {}
+
+@dataclass
+class _Flight:
+    """A selection still running in a repository, and how many calls await it."""
+
+    change: Any
+    task: asyncio.Future
+    cancel: threading.Event
+    waiters: int = 0
+
+
+#: Repository path -> the selection still running there. One at a time per
+#: repository: a selection past its budget keeps its threads until they notice
+#: the cancel flag, and a second one would only add to them.
+_IN_FLIGHT: dict[str, _Flight] = {}
 
 
 class SelectionUnavailableError(Exception):
@@ -53,7 +65,9 @@ async def select_change_tests(
     :class:`SelectionUnavailableError`.
 
     The checkout read (``git ls-files`` plus pytest's conftests and configs)
-    and every git call run off the event loop.
+    and every git call run off the event loop. A call for the change already
+    running shares that selection; a call for another change waits for it to
+    end, within the same budget, then runs its own.
     """
     from repowise.core.analysis.test_selection import TestSelectionConfig
     from repowise.core.repo_config import RepoConfigError, load_repo_config
@@ -63,36 +77,67 @@ async def select_change_tests(
     except (RepoConfigError, ValueError) as exc:
         raise SelectionUnavailableError("config_invalid", f"tests config is invalid: {exc}") from exc
     key = str(Path(repo_path).resolve())
-    if key in _IN_FLIGHT:
-        raise SelectionUnavailableError(
-            "busy",
-            "A test selection for this repository is still running; run "
-            "`repowise impacted-tests` for this change.",
-        )
-    cancel = _IN_FLIGHT[key] = threading.Event()
-    task = asyncio.ensure_future(_select(repo_path, session_factory, change, config, cancel))
-    # Released when the selection ends, not when the caller stops waiting.
-    task.add_done_callback(lambda done: _release(key, done))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SELECTION_TIMEOUT_SECONDS
+    flight = await _flight_for(
+        key,
+        change,
+        deadline,
+        lambda cancel: _select(repo_path, session_factory, change, config, cancel),
+    )
+    # asyncio.wait never cancels the task: one caller leaving keeps it for the rest.
+    flight.waiters += 1
     try:
-        done, _ = await asyncio.wait({task}, timeout=SELECTION_TIMEOUT_SECONDS)
-    except asyncio.CancelledError:
-        cancel.set()
-        raise
+        done, _ = await asyncio.wait({flight.task}, timeout=max(deadline - loop.time(), 0))
+    finally:
+        flight.waiters -= 1
+        if not flight.waiters and not flight.task.done():
+            flight.cancel.set()
     if not done:
-        cancel.set()
         raise SelectionUnavailableError(
             "timeout",
             f"Selecting tests took over {SELECTION_TIMEOUT_SECONDS:.0f} s; run "
             "`repowise impacted-tests` for this change.",
         )
-    return task.result()
+    return flight.task.result()
 
 
-def _release(key: str, task: asyncio.Future) -> None:
-    _IN_FLIGHT.pop(key, None)
+async def _flight_for(key: str, change: Any, deadline: float, start: Any) -> _Flight:
+    """The selection running for *change*, or one *start* begins once any other ends."""
+    loop = asyncio.get_running_loop()
+    flight = _running(key)
+    # Another change, or one every caller has left, is waited out, not joined.
+    while flight is not None and (flight.change != change or flight.cancel.is_set()):
+        done, _ = await asyncio.wait({flight.task}, timeout=deadline - loop.time())
+        if not done:
+            which = "another change" if flight.change != change else "this change, still stopping,"
+            raise SelectionUnavailableError(
+                "busy",
+                f"A test selection for {which} in this repository ran past "
+                f"this call's {SELECTION_TIMEOUT_SECONDS:.0f} s budget; run "
+                "`repowise impacted-tests` for this change.",
+            )
+        flight = _running(key)
+    if flight is None:
+        cancel = threading.Event()
+        task = asyncio.ensure_future(start(cancel))
+        flight = _IN_FLIGHT[key] = _Flight(change, task, cancel)
+        # Released when the selection ends, not when the callers stop waiting.
+        task.add_done_callback(lambda _done, ended=flight: _release(key, ended))
+    return flight
+
+
+def _running(key: str) -> _Flight | None:
+    flight = _IN_FLIGHT.get(key)
+    return None if flight is None or flight.task.done() else flight
+
+
+def _release(key: str, flight: _Flight) -> None:
+    if _IN_FLIGHT.get(key) is flight:
+        del _IN_FLIGHT[key]
     # An abandoned selection ends in SelectionCancelledError; nobody reads it.
-    if not task.cancelled():
-        task.exception()
+    if not flight.task.cancelled():
+        flight.task.exception()
 
 
 async def _select(
@@ -103,7 +148,7 @@ async def _select(
     from repowise.core.persistence.database import get_session
     from repowise.server.mcp_server._helpers import _get_repo
 
-    checkout = await asyncio.to_thread(read_checkout, repo_path)
+    checkout = await asyncio.to_thread(read_checkout, repo_path, change.head)
     async with get_session(session_factory) as session:
         repository = await _get_repo(session)
         result, selection = await select_for_change(
@@ -226,5 +271,11 @@ def _summary(selection: Selection, total: int, always: int, limit: int) -> str:
         return f"Run every test: {lead}{named}"
     if not total:
         return "No test needs to run for this change."
+    # The share of the suite, so a selection holding most of it never reads as targeted.
+    known = set(selection.known_tests)
+    held = len(known & set(selection.test_files))
+    share = f" ({held} of {len(known)} test files)" if known else ""
     rule = f", {always} of them because they run with every subset" if always else ""
-    return f"{total} test(s) to run for this change{rule}{shown}; the rest can be skipped."
+    if known and held == len(known):
+        return f"{total} test(s) to run for this change, every test file there is{rule}{shown}."
+    return f"{total} test(s) to run for this change{share}{rule}{shown}; the rest can be skipped."

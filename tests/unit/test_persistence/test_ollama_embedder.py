@@ -93,7 +93,7 @@ async def test_embed_posts_batch_to_native_endpoint() -> None:
                 "input": ["first", "second"],
                 "dimensions": 1024,
             },
-            "timeout": 30.0,
+            "timeout": pytest.approx(30.0 + len("firstsecond") * 0.002),
         }
     ]
     assert len(vectors) == 2
@@ -159,6 +159,56 @@ async def test_env_timeout_is_applied_to_the_request(monkeypatch: pytest.MonkeyP
     assert _FakeAsyncClient.calls[0]["timeout"] == 300.0
 
 
+async def test_default_timeout_grows_with_the_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OLLAMA_EMBEDDING_TIMEOUT", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_TIMEOUT", raising=False)
+    _FakeAsyncClient.response_data = {"embeddings": [[1.0, 0.0]] * 16}
+    embedder = OllamaEmbedder(model="embeddinggemma", dimensions=2)
+
+    # A full chunk of long pages measured 171.6s on a CPU-only Ollama.
+    await embedder.embed(["x" * 16_000] * 16)
+
+    assert _FakeAsyncClient.calls[0]["timeout"] > 171.6
+    assert _FakeAsyncClient.calls[0]["timeout"] == pytest.approx(30.0 + 16 * 16_000 * 0.002)
+
+
+async def test_short_batch_keeps_about_the_default_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OLLAMA_EMBEDDING_TIMEOUT", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_TIMEOUT", raising=False)
+    embedder = OllamaEmbedder(model="embeddinggemma", dimensions=2)
+
+    await embedder.embed(["one"])
+
+    assert _FakeAsyncClient.calls[0]["timeout"] == pytest.approx(30.006)
+
+
+async def test_configured_timeout_is_not_scaled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OLLAMA_EMBEDDING_TIMEOUT", raising=False)
+    monkeypatch.setenv("REPOWISE_EMBEDDING_TIMEOUT", "45")
+    _FakeAsyncClient.response_data = {"embeddings": [[1.0, 0.0]] * 4}
+
+    await OllamaEmbedder(model="embeddinggemma", dimensions=2).embed(["x" * 16_000] * 4)
+    await OllamaEmbedder(model="embeddinggemma", dimensions=2, timeout=5.0).embed(
+        ["x" * 16_000] * 4
+    )
+
+    assert [call["timeout"] for call in _FakeAsyncClient.calls] == [45.0, 5.0]
+
+
+async def test_invalid_env_timeout_still_scales(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "soon")
+    monkeypatch.delenv("REPOWISE_EMBEDDING_TIMEOUT", raising=False)
+    embedder = OllamaEmbedder(model="embeddinggemma", dimensions=2)
+
+    await embedder.embed(["x" * 1_000])
+
+    assert _FakeAsyncClient.calls[0]["timeout"] == pytest.approx(32.0)
+
+
 # ---------------------------------------------------------------------------
 # Width verification — the check added in fix/embedder-width-verification
 # ---------------------------------------------------------------------------
@@ -176,8 +226,8 @@ async def test_embed_raises_when_server_returns_wrong_width_inferred() -> None:
         await embedder.embed(["hello"])
 
     msg = str(exc_info.value)
-    assert "3" in msg                       # actual width named
-    assert "OLLAMA_EMBEDDING_DIMS" in msg   # points at the env var fix
+    assert "3" in msg  # actual width named
+    assert "OLLAMA_EMBEDDING_DIMS" in msg  # points at the env var fix
 
 
 async def test_embed_raises_when_server_returns_wrong_width_explicit() -> None:
@@ -199,4 +249,3 @@ async def test_embed_width_check_not_triggered_on_empty() -> None:
     # embed([]) short-circuits and returns [] without calling the server.
     embedder = OllamaEmbedder(model="embeddinggemma")
     assert await embedder.embed([]) == []
-

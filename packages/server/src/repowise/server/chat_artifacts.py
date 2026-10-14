@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 ARTIFACT_ENVELOPE_VERSION = 1
+
+#: Key a chat turn stamps on the model's copy of a tool result so the model can
+#: name it in ``show_view``. Stored data never carries the stamp.
+ARTIFACT_ID_FIELD = "artifact_id"
+
+_ARTIFACT_ID = re.compile(r"[0-9a-f]{32}")
 
 _LEGACY_ARTIFACT_TYPE_BY_TOOL = {
     "get_overview": "overview",
@@ -89,7 +96,15 @@ def create_artifact_envelope(
     pinned: bool = False,
     evidence_basis: str = "unknown",
 ) -> dict[str, Any]:
-    """Create the one durable payload stored for a completed tool call."""
+    """Create the one durable payload stored for a completed tool call.
+
+    The id is the server's (``artifact_id``) or a fresh one, never a key of
+    ``data``: tool output is stored exactly as the tool returned it.
+    """
+    if artifact_id is not None and not (
+        isinstance(artifact_id, str) and _ARTIFACT_ID.fullmatch(artifact_id)
+    ):
+        raise ValueError(f"artifact_id must be 32 lowercase hex characters, got {artifact_id!r}")
     return {
         "id": artifact_id or uuid4().hex,
         "version": ARTIFACT_ENVELOPE_VERSION,

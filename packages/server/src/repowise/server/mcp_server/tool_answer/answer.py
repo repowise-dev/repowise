@@ -138,6 +138,7 @@ from repowise.server.mcp_server.tool_answer.confidence import (
     _is_value_question,
     _retrieval_quality,
     dominance_reason,
+    uncovered_terms,
 )
 from repowise.server.mcp_server.tool_answer.config import (  # noqa: F401
     _GATED_EXCERPT_CHARS,
@@ -299,6 +300,7 @@ async def _run_retrieval_pipeline(
                     hits,
                     repo_root=_anchor_root,
                     session_factory=ctx.session_factory,
+                    question=question,
                 )
     # Concept anchoring: a why/value question pinning a number to a behaviour
     # anchors the file whose source comment justifies that number.
@@ -388,9 +390,9 @@ async def get_answer(
     whose named mechanism is absent from the retrieved source is downgraded
     to medium (the rationale may be conflated). Low confidence returns
     best_guesses with one-line justifications instead of an empty answer.
-    retrieval_quality separately rates the retrieval that fed synthesis; when
-    it reads "weak" beside confidence=high, the note says what the confidence
-    rests on instead of the ranking, and that is the claim to trust.
+    confidence is the one trust signal: it also asks whether the top hit
+    covers what was asked. retrieval_quality, the rating of the retrieval
+    alone, is served only under ``include=["diagnostics"]``.
     When the answer names a function/method/class, ``symbol_bodies`` carries
     its full live body — read that instead of a follow-up get_symbol.
     ``episodes``, when present, is a dated fact recorded about this checkout
@@ -405,7 +407,8 @@ async def get_answer(
         question: developer question.
         scope: optional path-prefix filter (e.g. "src/pkg/").
         repo: usually omitted.
-        include: optional ``["evidence"]`` expanded projection.
+        include: optional ``["evidence"]`` expanded projection;
+            ``["diagnostics"]`` adds ``retrieval_quality``.
     """
     if repo == "all":
         return _unsupported_repo_all("get_answer")
@@ -534,7 +537,8 @@ async def get_answer(
         ctx,
         repository,
         t0,
-        _retrieval_quality(hits, agreement_dominant),
+        _retrieval_quality(hits, agreement_dominant, question),
+        hits,
     )
     if union_payload is not None:
         return _with_candidates(
@@ -606,7 +610,7 @@ async def get_answer(
     # Value-shaped question + a question-matched constant in the top hits →
     # the verbatim assignment line (read live by the hydrator) IS the answer.
     if _is_value_question(question) and question_ids:
-        extraction = _extract_value_answer(hits, question_ids)
+        extraction = _extract_value_answer(hits, question_ids, question)
         if extraction is not None:
             return _with_candidates(
                 build_value_payload(
@@ -701,13 +705,16 @@ async def get_answer(
 
     quotes = build_quotes(hits, answer_text)
 
-    # ``served_named_body``: the question-named symbol's live body is inlined, so
-    # the response is content-grounded even when synthesis hedges.
+    # ``served_named_body``: the question-named symbol's live body is inlined and
+    # carries what was asked, so the response is content-grounded even when
+    # synthesis hedges.
     repo_root = _repo_root(ctx)
     symbol_bodies, served_named_body = _build_symbol_bodies(
-        _gather_body_candidates(hits, answer_text), repo_root
+        _gather_body_candidates(hits, answer_text), repo_root, question=question, hits=hits
     )
 
+    # One coverage measurement for the grade and the retrieval rating.
+    uncovered = uncovered_terms(question, hits)
     grade = _grade_answer(
         question=question,
         question_ids=question_ids,
@@ -717,9 +724,10 @@ async def get_answer(
         symbol_bodies=symbol_bodies,
         served_named_body=served_named_body,
         dominance=dominance,
+        uncovered=uncovered,
     )
     confidence = grade.confidence
-    retrieval_quality = _retrieval_quality(hits, agreement_dominant)
+    retrieval_quality = _retrieval_quality(hits, agreement_dominant, question, uncovered)
 
     payload = await build_synthesized_payload(
         question=question,
@@ -830,7 +838,8 @@ async def get_answer(
         question: Developer question.
         scope: Optional repository-relative path prefix.
         repo: Usually omitted; a workspace alias when needed.
-        include: Optional ``["evidence"]`` expanded projection.
+        include: Optional ``["evidence"]`` expanded projection;
+            ``["diagnostics"]`` adds ``retrieval_quality``.
     """
     return await _projected_get_answer(
         question=question,

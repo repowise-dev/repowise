@@ -141,13 +141,26 @@ Authorization: Bearer <your-key-value>
 ```
 
 The comparison is constant-time and the prefix must be exactly `Bearer ` with a
-single space (`deps.py`, `verify_api_key` / `bearer_is_valid`; verified: a bare
+single space (`auth.py`, `LocalAuthenticator`; verified: a bare
 key and a double space are both rejected).
 
 The key is read once, at import (`deps.py` line 26). Changing the environment of
 a running server has no effect; restart it. The webhook secrets are the
 exception and are read per request (`routers/webhooks.py`), deliberately, so a
 setting change is picked up without a restart.
+
+Scoped tokens are an optional second credential: list them in
+`~/.repowise/tokens.yaml` (or the file named by `REPOWISE_TOKENS_FILE`) as
+`{id, sha256, repos?, tools?, expires_at?}` entries, where `sha256` is the hex
+digest of the token, `repos`/`tools` narrow what it reaches by repository id or
+name and MCP tool name, and `expires_at` is an ISO 8601 time. A token with
+`tools` is refused on every REST route except chat, which runs only the tools
+in its scope. Every check returns a `Principal`, and the same check guards the
+MCP streamable HTTP and SSE transports, which answer a missing bearer with
+`401` and `WWW-Authenticate: Bearer resource_metadata="..."` pointing at an RFC
+9728 document under `/.well-known/oauth-protected-resource` (set
+`REPOWISE_PUBLIC_URL` when serving behind a proxy). With no key and no tokens
+file, every surface behaves exactly as described below.
 
 ### 2.2 What happens when the header is absent
 
@@ -491,6 +504,7 @@ one per router area; this table maps an area to the tag to open there.
 | Refactoring plans, opportunities, settings, code generation | `refactoring` | `routers/refactoring.py` |
 | Dead-code findings | `dead-code` | `routers/dead_code.py` |
 | Change risk, hotspots, ownership, commits, co-changes | `git` | `routers/git.py` |
+| Merged changes (Change Records) reconstructed from git | `changes` | `routers/changes.py` |
 | Structural coupling report | `coupling` | `routers/coupling.py` |
 | Blast radius for a change | `blast-radius` | `routers/blast_radius.py` |
 | Architectural decisions, lanes, lineage, policy settings | `decisions` | `routers/decisions.py` |

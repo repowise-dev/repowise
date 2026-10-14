@@ -212,6 +212,9 @@ async def test_summary_freshness_when_one_side_is_unknown(
         json.dumps({"last_sync_commit": "d" * 40}), encoding="utf-8"
     )
     behind = await crud.upsert_repository(session, name="behind", local_path=str(behind_dir))
+    # Only state.json records the indexed commit (stamps that disagree are the
+    # resolver's to reconcile, see tests/unit/workspace/test_indexed_commit.py).
+    behind.head_commit = None
     await session.commit()
 
     resp = await client.get("/api/repos/summary")

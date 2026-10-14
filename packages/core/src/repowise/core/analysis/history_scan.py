@@ -40,6 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.analysis.secret_allowlist import secret_path_allowlist
 from repowise.core.analysis.security_scan import (
     SECRET_KINDS,
     SecurityScanner,
@@ -202,12 +203,13 @@ class HistorySecurityScanner:
 
     def _blob_introductions(
         self, repo_path: Path, since: str | None, to: str | None
-    ) -> tuple[dict[str, str], dict[str, str]]:
-        """Return ``({blob_sha: first_commit}, {commit_sha: author_iso})``.
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, list[str]]]:
+        """Return ``({blob_sha: first_commit}, {commit_sha: author_iso}, {blob_sha: paths})``.
 
         One ``git log --reverse --raw`` pass attributes each blob to the oldest
         commit that introduced it, avoiding an O(commits x files) ``ls-tree``
-        loop.
+        loop. ``paths`` lists every path a commit wrote the blob to, oldest
+        first: ``rev-list --objects`` names one path per blob.
         """
         if since and to:
             rev_range = f"{since}..{to}"
@@ -228,6 +230,7 @@ class HistorySecurityScanner:
         )
         blob_introduced_at: dict[str, str] = {}
         commit_dates: dict[str, str] = {}
+        blob_paths: dict[str, list[str]] = {}
         current_commit: str | None = None
 
         for line in raw.splitlines():
@@ -246,6 +249,8 @@ class HistorySecurityScanner:
                 if blob_sha.strip("0") == "":
                     continue  # deletion: no post-image blob
                 blob_introduced_at.setdefault(blob_sha, current_commit)
+                # The path is the last tab field (a rename lists old and new).
+                blob_paths.setdefault(blob_sha, []).append(line.rsplit("	", 1)[-1])
                 continue
             if "\x1f" not in line:
                 continue
@@ -256,7 +261,7 @@ class HistorySecurityScanner:
             current_commit = sha
             commit_dates[sha] = iso.strip()
 
-        return blob_introduced_at, commit_dates
+        return blob_introduced_at, commit_dates, blob_paths
 
     def _read_blobs_batch(self, repo_path: Path, blob_shas: list[str]) -> dict[str, str]:
         """Return ``{blob_sha: content}`` via a single ``git cat-file --batch``."""
@@ -338,7 +343,16 @@ class HistorySecurityScanner:
 
         blobs = self._unique_blobs(repo_path, since, to)
         summary.blobs_scanned = len(blobs)
-        blob_introduced_at, commit_dates = self._blob_introductions(repo_path, since, to)
+        blob_introduced_at, commit_dates, blob_paths = self._blob_introductions(
+            repo_path, since, to
+        )
+        allowlisted = secret_path_allowlist(repo_path)
+        # A blob is allowlisted only when every path it was written to is;
+        # otherwise it is reported at the first path outside the allowlist.
+        for blob_sha, path in blobs.items():
+            if path and allowlisted(path):
+                outside = (p for p in blob_paths.get(blob_sha, ()) if not allowlisted(p))
+                blobs[blob_sha] = next(outside, path)
 
         # Test material findings are downgraded to low severity by scan_file
         # so real keys in test files are still recorded without polluting high-severity reports.
@@ -363,7 +377,13 @@ class HistorySecurityScanner:
 
             # Elided values ("sk-...") never get here: the scan's credential
             # check rejects them on the captured value, not the snippet.
-            kept = [f for f in findings if self._passes_gate(f["kind"], secrets_only=secrets_only)]
+            dropped = SECRET_KINDS if allowlisted(path or "") else frozenset()
+            kept = [
+                f
+                for f in findings
+                if self._passes_gate(f["kind"], secrets_only=secrets_only)
+                and f["kind"] not in dropped
+            ]
             if not kept:
                 continue
 

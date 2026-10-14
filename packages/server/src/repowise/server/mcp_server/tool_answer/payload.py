@@ -26,6 +26,8 @@ from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server.tool_answer.confidence import (
     _Grade,
     _is_enclosing_continuation,
+    body_leaves_out,
+    hit_stems,
 )
 from repowise.server.mcp_server.tool_answer.config import (
     _GATED_RETURN_HITS,
@@ -132,19 +134,34 @@ def _build_best_guesses(hits: list[dict]) -> list[dict]:
     Lets the agent pick ONE file to verify on an ambiguous retrieval. ``file``
     goes through ``hit_file_path`` and unresolvable hits are skipped, since a
     spotlight or module page's ``target_path`` is not an openable file.
+
+    One row per file: a symbol page resolves to the same file as its file
+    page, so a later hit for a file already listed is skipped and the slot
+    goes to the next distinct file. This is the same per-file dedupe as
+    ``serialize_candidate_file_facts``, with this list's own cap. The loop
+    deliberately walks past the first ``_GATED_RETURN_HITS`` hits, so a
+    skipped repeat is replaced rather than leaving the list short.
     """
-    return [
-        {
-            "file": hit_file_path(h),
-            "why_relevant": _candidate_justification(h),
-            "score": round(h.get("score", 0.0), 3),
-            # Absent rather than null: most rows carry no penalty.
-            **({"domain_penalty": h["_domain_penalty"]} if h.get("_domain_penalty") else {}),
-            **({"excerpt": h["excerpt"]} if h.get("excerpt") else {}),
-        }
-        for h in hits[:_GATED_RETURN_HITS]
-        if hit_file_path(h)
-    ]
+    guesses: list[dict] = []
+    seen: set[str] = set()
+    for h in hits:
+        path = hit_file_path(h)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        guesses.append(
+            {
+                "file": path,
+                "why_relevant": _candidate_justification(h),
+                "score": round(h.get("score", 0.0), 3),
+                # Absent rather than null: most rows carry no penalty.
+                **({"domain_penalty": h["_domain_penalty"]} if h.get("_domain_penalty") else {}),
+                **({"excerpt": h["excerpt"]} if h.get("excerpt") else {}),
+            }
+        )
+        if len(guesses) >= _GATED_RETURN_HITS:
+            break
+    return guesses
 
 
 def _with_candidates(payload: dict, resolved_pool: list[dict]) -> dict:
@@ -200,6 +217,7 @@ def _union_answer_payload(
     repository,
     t0: float,
     retrieval_quality: str,
+    hits: list[dict] | None = None,
 ) -> dict | None:
     """The answer-by-union reply, or None to let synthesis handle the question.
 
@@ -209,7 +227,8 @@ def _union_answer_payload(
 
     Returns None when the union is not the answer: a prose question merely
     mentioning a generic many-def method, a mechanism question whose answer
-    often lives elsewhere, or unreadable bodies.
+    often lives elsewhere, a question no body carries the rest of
+    (:func:`body_leaves_out`), or unreadable bodies.
     """
     union_groups = homonyms.get("union") or {}
     if union_groups and union_defers_to_synthesis(question, question_ids, union_groups):
@@ -220,7 +239,8 @@ def _union_answer_payload(
         return None
     repo_root = _repo_root(ctx)
     union_bodies, more_defs = build_homonym_union_bodies(repo_root, union_groups)
-    if not union_bodies:
+    served = hit_stems(hits or [])
+    if not union_bodies or all(body_leaves_out(question, b, served) for b in union_bodies):
         return None
     names = sorted(union_groups)
     total = sum(len(v) for v in union_groups.values())
@@ -346,15 +366,21 @@ def build_value_payload(
 
     The verbatim assignment line (read live by the hydrator) IS the answer.
     Not cached: extraction is cheap and must reflect the current source.
+    Only a constant the question names exactly is ``high``: one whose name the
+    question only spells out may not be the one meant. The coverage gate does
+    not apply: an exact name is the match, and the words around it ("default",
+    "value") are the question's frame, so it would only demote right answers.
     """
     top_score_fp = hits[0].get("score", 0.0) if hits else 0.0
     answer_text = extraction["answer"]
     if extraction.get("value_source"):
         answer_text += "\n\n" + extraction["value_source"]
+    exact = bool(extraction.get("exact_name"))
+    confidence = "high" if exact else "medium"
     return {
         "answer": answer_text,
         "citations": [extraction["file"]],
-        "confidence": "high",
+        "confidence": confidence,
         "retrieval_quality": (
             "high" if top_score_fp >= _HIGH_CONFIDENCE_SCORE_FLOOR else "partial"
         ),
@@ -363,13 +389,18 @@ def build_value_payload(
         "retrieval": [],
         "note": (
             "Extracted verbatim from the live source line — no LLM "
-            "synthesis involved. Cite directly; no verification "
-            "Read needed. candidate_files holds the files retrieval ranked, "
+            "synthesis involved. "
+            + (
+                "Cite directly; no verification Read needed. "
+                if exact
+                else "The question does not name it exactly; confirm it is the one meant. "
+            )
+            + "candidate_files holds the files retrieval ranked, "
             "for the wider question the value sits inside."
         ),
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
-            hint=_answer_hint("high"),
+            hint=_answer_hint(confidence),
             repository=repository,
             targets=[extraction["file"], *fallback_targets],
         ),
@@ -513,11 +544,7 @@ async def _hedged_payload(
                 "the full live body of the symbol(s) you named — cite that "
                 "directly, no verification Read needed."
             )
-        else:
-            payload["note"] = (
-                "Synthesis hedged, but symbol_bodies carries the live body "
-                "of the symbol(s) you named — read that to answer."
-            )
+        # Otherwise the bodies lack what was asked: the note's fallback_targets stand.
     # A hedge often means the rationale is a code comment, not wiki prose. A
     # comment already visible in symbol_bodies must not surface twice.
     code_rationale = await _gather_code_rationale(ctx, hits, fallback_targets, question)
@@ -692,6 +719,12 @@ async def _graded_payload(
         )
         payload["next_action_hint"] = (
             f"call get_symbol id='{cut['continuation']}' for the rest of {cut['name']}"
+        )
+    elif grade.uncovered:
+        payload["note"] = (
+            f"Coverage gate: the top source does not mention {', '.join(grade.uncovered[:4])}, "
+            "so it may answer a different question. Held at medium; confirm against "
+            "the next evidence row or candidate_files."
         )
     elif confidence == "high":
         # "No hedging" is not cited as evidence: the prompt forbids hedging, so

@@ -185,7 +185,7 @@ def test_normalize_handles_mcp_function_call_and_output(adapter: CodexAdapter) -
                 "output": (
                     'Wall time: 0.1 seconds\n'
                     'Output:\n'
-                    '{"result":{"results":[{"file":"app.py"}]}}'
+                    '{"result":{"results":[{"path":"app.py"}]}}'
                 ),
             },
         }
@@ -317,7 +317,7 @@ def test_a_content_match_binds_the_path_not_the_matched_line(adapter: CodexAdapt
 
     assert event is not None
     results = json.loads(event.tool_results[0].content)["result"]["results"]
-    assert results == [{"path": "src/app.py", "file": "src/app.py"}]
+    assert results == [{"path": "src/app.py"}]
 
 
 def test_a_root_level_content_match_still_binds_its_path(adapter: CodexAdapter) -> None:
@@ -331,7 +331,7 @@ def test_a_root_level_content_match_still_binds_its_path(adapter: CodexAdapter) 
 
     assert event is not None
     results = json.loads(event.tool_results[0].content)["result"]["results"]
-    assert results == [{"path": "app.py", "file": "app.py"}]
+    assert results == [{"path": "app.py"}]
     assert call_event is not None
     assert call_event.tool_uses[0].input["path"] == "app.py"
 
@@ -343,7 +343,7 @@ def test_a_bare_root_level_filename_is_kept(adapter: CodexAdapter) -> None:
 
     assert event is not None
     results = json.loads(event.tool_results[0].content)["result"]["results"]
-    assert results == [{"path": "setup.py", "file": "setup.py"}]
+    assert results == [{"path": "setup.py"}]
 
 
 def test_a_bare_prose_line_is_still_dropped(adapter: CodexAdapter) -> None:

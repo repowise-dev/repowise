@@ -129,6 +129,56 @@ def test_the_report_leads_with_fix_first() -> None:
     assert out.startswith("\nFix first (3 of 3 eligible")
     # The growing, reachable database loop leads; the refactor follows.
     assert " 1. Batch the database calls loops make through load_all " in out
-    assert " 2. Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows " in out
+    assert " 2. Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 " in out
     assert "src/core.py:20" in out
     assert "verify: pytest tests/test_core_0.py" in out
+
+
+def _mostly_unanalysed_output(*args: str) -> str:
+    """``repowise health`` over 4 scored files beside 431 it cannot analyse."""
+    from repowise.core.analysis.health.models import HealthFileMetricData
+    from repowise.core.analysis.health.scoring import compute_kpis
+
+    def row(path: str, score: float | None) -> HealthFileMetricData:
+        return HealthFileMetricData(
+            file_path=path,
+            score=score,
+            max_ccn=None if score is None else 1,
+            max_nesting=None if score is None else 1,
+            nloc=10,
+            has_test_file=False,
+            defect_score=score,
+        )
+
+    metrics = [row(f"s{i}.swift", 10.0) for i in range(4)]
+    metrics += [row(f"u{i}.swift", None) for i in range(431)]
+    report = SimpleNamespace(metrics=metrics, findings=[], kpis=compute_kpis(metrics, set()))
+    console = Console(file=io.StringIO(), width=400, force_terminal=False)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path(".repowise").mkdir()
+        with (
+            patch.object(health_module, "resolve_command_target") as resolve,
+            patch.object(health_module, "_load_stored_report", return_value=(report, set(), {})),
+            patch.object(health_module, "_load_fix_first", return_value=None),
+            patch.object(health_module, "_render_defect_accuracy_line"),
+            patch.object(health_module, "_render_performance_section"),
+            patch.object(health_module, "console", console),
+        ):
+            resolve.return_value = SimpleNamespace(
+                is_workspace=False,
+                repo_path=Path("."),
+                notice=lambda *a, **k: None,
+            )
+            result = runner.invoke(cli, ["health", *args])
+    assert result.exit_code == 0, result.output
+    return console.file.getvalue()
+
+
+def test_a_mostly_unanalysed_repo_gets_no_band_in_any_scope() -> None:
+    """A narrowed recompute keeps the unanalysed files in the share."""
+    for args in ((), ("--scope", "production")):
+        out = _mostly_unanalysed_output(*args)
+        assert "Code health: 10.0/10 ·" in out, args
+        assert "Excellent" not in out, args
+        assert "analysed 4 of 435 code files" in out, args

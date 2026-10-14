@@ -406,3 +406,77 @@ async def test_an_unmeasured_loop_is_stored_unproven_and_never_leads(async_sessi
     assert summary["lead"] is None
     assert summary["default_queue"]["total"] == 0
     assert summary["default_queue"]["excluded"]["unmeasured_cost"] == 1
+
+
+async def _findings(session, repo_id: str) -> list[HealthFinding]:
+    result = await session.execute(select(HealthFinding).where(HealthFinding.repository_id == repo_id))
+    return list(result.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_every_observation_carries_its_cause_queue_judgement(async_session) -> None:
+    """A finding the queue leaves out says why on its own row, not NULL."""
+    repo = await insert_repo(async_session)
+    await _write(async_session, repo.id, [_finding("src/a.py", 10, loop_magnitude="unknown")])
+    (finding,) = await _findings(async_session, repo.id)
+    assert (finding.queue_eligible, finding.queue_reason) == (False, "unmeasured_cost")
+
+    other = await insert_repo(async_session, name="queued", local_path="/tmp/queued")
+    await _write(async_session, other.id, _corpus())
+    (cause,) = await _rows(async_session, other.id)
+    assert cause.queue_eligible is True
+    for finding in await _findings(async_session, other.id):
+        assert (finding.queue_eligible, finding.queue_reason, finding.queue_tier) == (
+            True,
+            None,
+            cause.queue_tier,
+        )
+
+
+async def _write_with_origin(session, repo_id: str, path: str, origin: str | None) -> None:
+    from repowise.core.analysis.health.models import HealthFileMetricData
+
+    if origin is not None:
+        metric = HealthFileMetricData(
+            file_path=path, score=8.0, max_ccn=3, max_nesting=1, nloc=40, has_test_file=False,
+            code_origin=origin,
+        )
+        await crud.save_health_metrics(session, repo_id, [metric])
+    await _write(session, repo_id, [_finding(path, 10)])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "origin", "context"),
+    [
+        # ``example`` is a JVM package segment here, not an examples tree.
+        ("app/src/main/kotlin/com/example/app/Sync.kt", "production", "production"),
+        ("app/src/main/kotlin/com/example/app/Sync.kt", None, "unknown"),
+        ("examples/basic/run.py", "docs_example", "unknown"),
+        # A root-level file carries no evidence either way, whatever its origin.
+        ("sync.py", "production", "unknown"),
+    ],
+)
+async def test_a_stored_production_origin_settles_an_unknown_context(
+    async_session, path: str, origin: str | None, context: str
+) -> None:
+    repo = await insert_repo(async_session)
+    await _write_with_origin(async_session, repo.id, path, origin)
+    (cause,) = await _rows(async_session, repo.id)
+    assert cause.execution_context == context
+    if context == "unknown":
+        assert cause.queue_reason == "unknown"
+    else:
+        assert cause.queue_eligible is True
+
+
+@pytest.mark.asyncio
+async def test_settling_the_context_keeps_the_cause_id(async_session) -> None:
+    path = "app/src/main/kotlin/com/example/app/Sync.kt"
+    settled = await insert_repo(async_session, name="settled", local_path="/tmp/settled")
+    await _write_with_origin(async_session, settled.id, path, "production")
+    plain = await insert_repo(async_session, name="plain", local_path="/tmp/plain")
+    await _write_with_origin(async_session, plain.id, path, None)
+    (a,) = await _rows(async_session, settled.id)
+    (b,) = await _rows(async_session, plain.id)
+    assert a.opportunity_id == b.opportunity_id

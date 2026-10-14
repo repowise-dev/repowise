@@ -189,6 +189,60 @@ async def test_get_health_dashboard_surfaces_leverage(setup_mcp, health_data):
     assert gap["files_for_half_gap"] == 1
 
 
+def test_gap_analysis_needs_no_file_when_the_average_is_at_target():
+    """Above target on average, one file below it: nothing to reach, so no file
+    is needed, while the gross gap still names the below-target file."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_health.summary import _gap_analysis
+
+    gap = _gap_analysis(
+        [SimpleNamespace(score=7.0, nloc=10), SimpleNamespace(score=9.0, nloc=100)]
+    )
+    assert gap["weighted_gap_points"] == 0
+    assert gap["files_to_reach_target"] == 0
+    assert gap["files_for_half_gap"] == 0
+    assert gap["files_below_target"] == 1
+    assert gap["weighted_gross_gap_points"] == 10
+
+
+@pytest.mark.asyncio
+async def test_targeted_card_accounts_for_a_withheld_deduction(setup_mcp, health_data, session):
+    """A hidden finding type never lists, but the score counted it, so the card
+    reports its deduction and ``_meta.withheld`` names it."""
+    from repowise.server.mcp_server import get_health
+
+    session.add(
+        HealthFinding(
+            id="dry-models",
+            repository_id=health_data,
+            file_path="src/db/models.py",
+            biomarker_type="dry_violation",
+            severity="high",
+            details_json="{}",
+            health_impact=0.6,
+            reason="36% duplicated with src/db/other.py",
+            dimension="maintainability",
+            status="open",
+        )
+    )
+    await session.commit()
+
+    result = await get_health(targets=["src/db/models.py"])
+    card = result["metrics"][0]
+    assert card["total_deduction"] == 0.6
+    assert card["withheld_deduction"] == 0.6
+    assert card["primary_biomarker"] is None
+    assert all(f["biomarker_type"] != "dry_violation" for f in result["findings"])
+    assert result["_meta"]["withheld"]["dry_violation"]["count"] == 1
+    assert result["_meta"]["withheld"]["dry_violation"]["status"] == "hidden"
+
+    # A file with no withheld deduction carries neither field.
+    other = await get_health(targets=["src/auth/service.py"])
+    assert "withheld_deduction" not in other["metrics"][0]
+    assert "withheld" not in other["_meta"]
+
+
 @pytest.mark.asyncio
 async def test_get_health_refactoring_capped_and_leverage_ranked(setup_mcp, health_data):
     """refactoring_plans is bounded by limit and reports the honest total.
@@ -497,6 +551,7 @@ async def test_get_health_dashboard_leads_with_fix_first(setup_mcp, health_data)
     assert full["item"]["id"] == lead["id"] and full["item"]["action"]["steps"]
     missing = await get_health(fix_id="fix1_00000000000000000000")
     assert missing["found"] is False and missing["item"] is None
+    assert "fix1_" in missing["next_action"] and "act_" in missing["next_action"]
 
 
 @pytest.mark.asyncio
@@ -1654,7 +1709,7 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     assert len(block["items"]) == min(eligible, FIX_FIRST_PAGE_CAP)
     assert block["items_total"] == eligible
     counts = block["counts"]
-    assert set(counts) == {"inventory", "in_scope", "eligible", "due", "shown", "excluded"}
+    assert set(counts) == {"inventory", "in_scope", "eligible", "due", "shown", "excluded", "gated"}
     assert counts["inventory"] >= counts["in_scope"] >= counts["eligible"] >= counts["due"]
     assert counts["shown"] == len(block["items"])
     assert all(n > 0 for n in counts["excluded"].values())
@@ -1792,6 +1847,7 @@ def test_fix_first_counts_split_scope_from_worth():
         "due": 0,
         "shown": 1,
         "excluded": {"test": 4, "tooling": 1, "below_min_worth": 3},
+        "gated": 0,
     }
 
 
@@ -1840,6 +1896,26 @@ async def test_no_such_path_redirects_to_a_renamed_file(setup_mcp, health_data, 
     assert unresolved["reason"] == "no_such_path"
     assert unresolved["moved_to"] == ["new_name.py"]
     assert unresolved["removed_by_commit"]
+
+
+@pytest.mark.asyncio
+async def test_no_such_path_names_the_branch_that_has_it(setup_mcp, health_data, tmp_path):
+    """A file only a worktree's branch has is absent from the served checkout, not a typo."""
+    from repowise.server.mcp_server import get_health
+
+    ident = ("-c", "user.email=t@t", "-c", "user.name=t")
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, *ident, "commit", "--allow-empty", "-m", "seed")
+    _git(tmp_path, "worktree", "add", "-b", "feature", str(tmp_path / "wt"), "main")
+    (tmp_path / "wt" / "only_there.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path / "wt", "add", "only_there.py")
+    _git(tmp_path / "wt", *ident, "commit", "-m", "add on the branch")
+
+    unresolved = (await get_health(targets=["only_there.py"]))["unresolved"][0]
+
+    assert unresolved["reason"] == "no_such_path"
+    assert unresolved["on_branch"] == "feature"
+    assert "branch feature has it" in unresolved["note"]
 
 
 @pytest.mark.asyncio
@@ -2706,3 +2782,37 @@ async def test_dashboard_unanalysed_file_count_name(setup_mcp, health_data, sess
     only = await get_health(only=["unanalysed_file_count"])
     assert only["unanalysed_file_count"] == 1
     assert "unknown_only_keys" not in only
+
+
+@pytest.mark.asyncio
+async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, health_data, session):
+    """A few scored files beside many unanalysed ones: no band, both counts said."""
+    import uuid
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server.tool_overview.health import _build_code_health
+
+    repo = SimpleNamespace(id=health_data)
+    full = await _build_code_health(session, repo)
+    assert full["band"] is not None
+    assert "unanalysed_file_count" not in full
+    assert "analysed_share" not in full
+
+    for i in range(3):
+        session.add(
+            HealthFileMetric(
+                id=uuid.uuid4().hex,
+                repository_id=health_data,
+                file_path=f"Sources/View{i}.swift",
+                score=None,
+                nloc=10,
+            )
+        )
+    await session.flush()
+
+    partial = await _build_code_health(session, repo)
+    assert partial["file_count"] == 2
+    assert partial["unanalysed_file_count"] == 3
+    assert partial["analysed_share"] == 0.4
+    assert partial["band"] is None

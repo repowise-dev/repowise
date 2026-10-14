@@ -7,7 +7,10 @@ nearest case where it must not.
 
 from __future__ import annotations
 
-from repowise.core.analysis.health.fix_first import build_fix_first
+import re
+
+from repowise.core.analysis.health.fix_first import build_fix_first, text
+from repowise.core.analysis.health.worth import SIZE_MARKERS
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS
 
 _COMPLEX = FINDINGS[1]  # run in src/core.py: CCN 14, 50 lines, nests 4 deep
@@ -359,7 +362,7 @@ def test_a_duplicate_inside_lifts_a_complexity_unit_one_step() -> None:
     value = "value within later"
     assert int(_ranked(lifted, value)) == int(_ranked(plain, value)) + 1
     assert _ranked(lifted, "duplicate inside") == "yes"
-    assert "duplicated" in lifted.why and "duplicated" not in plain.why
+    assert text.CLONED in lifted.why and text.CLONED not in plain.why
 
 
 def test_a_duplicate_elsewhere_in_the_file_does_not_lift() -> None:
@@ -422,9 +425,22 @@ def test_why_says_why_it_matters_not_the_titles_size() -> None:
     assert item.title == "Break up run (CCN 249, 1,280 lines)"
     assert "249" not in item.why and "1,280" not in item.why and "CCN" not in item.why
     assert item.why == (
-        "run has many independent paths through it; 9 files import it, "
-        "changed 12 times in 90 days."
+        "run has many paths; easier to read and change once split; "
+        "its file is imported by 9 files, changed 12 times in 90 days."
     )
+
+
+def test_break_up_why_says_what_the_split_buys_not_defects() -> None:
+    """A split is a readability and change-cost claim: every phrase a Break up
+    why can carry says what improves and names no defect."""
+    defect = re.compile(r"bug|defect|fail|error|risk", re.IGNORECASE)
+    phrases = [text.PROBLEM[m] for m in sorted(SIZE_MARKERS)] + [text.PROBLEM["god_class"]]
+    for phrase in [*phrases, text.CLONED]:
+        assert not defect.search(phrase), phrase
+    assert all(phrase.endswith(text.SPLIT_GAIN) for phrase in phrases)
+    item = _queue([_finding(ccn=249, nloc=1280, max_nesting=7)]).lead
+    assert item.title.startswith("Break up run")
+    assert not defect.search(f"{item.title} {item.why}")
 
 
 def test_why_names_coverage_when_a_report_measured_it() -> None:

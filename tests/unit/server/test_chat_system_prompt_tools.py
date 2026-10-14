@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
+from repowise.server.chat_prompt import _build_system_prompt, _with_navigation_context
+from repowise.server.chat_session import _stored_tool_call
 from repowise.server.chat_tools import get_tool_catalog
-from repowise.server.routers.chat import (
-    _build_system_prompt,
-    _stored_tool_call,
-    _with_navigation_context,
-)
 from repowise.server.schemas.chat import ChatPageContext
 
 

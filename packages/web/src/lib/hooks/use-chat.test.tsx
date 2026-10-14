@@ -393,4 +393,30 @@ describe("useChat grounding and truncation events", () => {
     expect(result.current.messages.at(-1)?.isStreaming).toBe(false);
     expect(result.current.error).toBeNull();
   });
+
+  it("shows no step for a show_view call and ignores its view event", async () => {
+    const push = streamed([
+      { type: "tool_start", tool_id: "t2", tool_name: "show_view", input: {} },
+      {
+        type: "tool_result",
+        tool_id: "t2",
+        tool_name: "show_view",
+        summary: "show_view",
+        artifact: { ...artifact, id: "art-2", tool_name: "show_view", data: { view_id: "v1" } },
+      },
+      { type: "view", tool_id: "t2", view: { id: "v1", kind: "table" } },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("chart it");
+      await push();
+      await sending;
+    });
+
+    expect(result.current.messages.at(-1)?.toolCalls).toEqual([]);
+    expect(result.current.messages.at(-1)?.isStreaming).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
 });

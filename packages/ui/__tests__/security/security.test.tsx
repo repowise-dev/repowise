@@ -3,6 +3,8 @@ import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { SecurityFinding } from "@repowise-dev/types";
 import { SecurityFindingsTable } from "../../src/security/findings-table.js";
 import { SeverityDirectoryMatrix } from "../../src/security/severity-directory-matrix.js";
+import { FindingsByDirectory } from "@repowise-dev/ui/security/findings-by-directory";
+import { FindingsByDirectory as FromBarrel } from "@repowise-dev/ui/security";
 import {
   SecurityPosture,
   countSecurityFindings,
@@ -141,5 +143,14 @@ describe("SeverityDirectoryMatrix", () => {
   it("renders nothing for no findings", () => {
     const { container } = render(<SeverityDirectoryMatrix findings={[]} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("FindingsByDirectory (deprecated)", () => {
+  it("still resolves at its old subpath and renders the directory table", () => {
+    expect(FindingsByDirectory).toBe(SeverityDirectoryMatrix);
+    expect(FromBarrel).toBe(SeverityDirectoryMatrix);
+    render(<FindingsByDirectory findings={FINDINGS} depth={2} />);
+    expect(screen.getByRole("rowheader", { name: "src/app" })).toBeInTheDocument();
   });
 });

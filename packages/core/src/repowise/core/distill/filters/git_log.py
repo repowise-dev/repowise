@@ -1,4 +1,4 @@
-"""Compact rendering of ``git log`` output — subjects only, capped count.
+"""Compact rendering of ``git log`` output: subject and author, capped count.
 
 Full-format logs (commit/Author/Date/body) collapse to one line per commit;
 already-oneline logs are simply capped. Commit bodies rarely matter for
@@ -16,12 +16,19 @@ from repowise.core.distill.registry import filter_registry
 _COMMAND_RE = re.compile(r"^git(?:\.exe)? log\b")
 _COMMIT_RE = re.compile(r"^commit (?P<sha>[0-9a-f]{7,40})")
 _ONELINE_RE = re.compile(r"^[0-9a-f]{7,12} \S")
+_AUTHOR_RE = re.compile(r"^Author:\s+(?P<name>.*?)\s*(?:<[^>]*>)?\s*$")
 _DATE_RE = re.compile(r"^Date:\s+(?P<date>.+)$")
+# ``-n 60``, ``-n60``, ``--max-count=60``, ``--max-count 60`` or ``-60``.
+_COUNT_RE = re.compile(r"(?:^|\s)(?:-n\s*|--max-count[=\s]|-)(?P<n>\d+)(?=\s|$)")
 
 #: Most-recent subjects kept in the compact rendering.
 MAX_COMMITS = 20
 #: Cap for logs that are already oneline-formatted.
 MAX_ONELINE = 40
+#: Ceiling on an explicit ``-n``. 100 commit lines are about 10 KB, a third of
+#: the 30,000 characters a host delivers per tool result, so an explicit count
+#: is honoured without the compact view crowding out the rest of the result.
+MAX_REQUESTED = 100
 
 
 @filter_registry.register
@@ -44,31 +51,45 @@ class GitLogFilter(OutputFilter):
         lines = output.splitlines()
         commits = _parse_full_format(lines)
         if commits:
-            return _render(commits)
+            return _render(commits, _limit(command, MAX_COMMITS))
         oneline = [ln for ln in lines if _ONELINE_RE.match(ln)]
         if len(oneline) >= self.min_lines:
-            kept = oneline[:MAX_ONELINE]
-            header = f"{len(oneline)} commits (showing {len(kept)} most recent)"
-            return "\n".join([header, *kept])
+            kept = oneline[: _limit(command, MAX_ONELINE)]
+            return "\n".join([_header(len(oneline), len(kept), "oneline"), *kept])
         raise ValueError("not a recognizable git log format")
 
 
-def _parse_full_format(lines: list[str]) -> list[tuple[str, str, str]]:
-    """Extract (sha, date, subject) triples from full-format git log."""
-    commits: list[tuple[str, str, str]] = []
-    sha = date = ""
+def _limit(command: str, default: int) -> int:
+    """Commits to keep: an explicit ``-n`` up to the ceiling, else *default*."""
+    counts = _COUNT_RE.findall(command)
+    # git honours the last count given.
+    return min(int(counts[-1]), MAX_REQUESTED) if counts else default
+
+
+def _header(total: int, kept: int, shape: str) -> str:
+    if kept < total:
+        return f"{total} commits (showing {kept} most recent; {shape})"
+    return f"{total} commits ({shape})"
+
+
+def _parse_full_format(lines: list[str]) -> list[tuple[str, str, str, str]]:
+    """Extract (sha, date, author, subject) from full-format git log."""
+    commits: list[tuple[str, str, str, str]] = []
+    sha = date = author = ""
     subject: str | None = None
     for line in lines:
         if m := _COMMIT_RE.match(line):
             if sha:
-                commits.append((sha, date, subject or ""))
-            sha, date, subject = m.group("sha"), "", None
+                commits.append((sha, date, author, subject or ""))
+            sha, date, author, subject = m.group("sha"), "", "", None
+        elif m := _AUTHOR_RE.match(line):
+            author = m.group("name")
         elif m := _DATE_RE.match(line):
             date = _short_date(m.group("date"))
         elif sha and subject is None and line.startswith("    ") and line.strip():
             subject = line.strip()
     if sha:
-        commits.append((sha, date, subject or ""))
+        commits.append((sha, date, author, subject or ""))
     return commits
 
 
@@ -80,8 +101,12 @@ def _short_date(date: str) -> str:
     return date
 
 
-def _render(commits: list[tuple[str, str, str]]) -> str:
-    kept = commits[:MAX_COMMITS]
-    header = f"{len(commits)} commits (showing {len(kept)} most recent; subjects only)"
-    body = [f"{sha[:8]}  {date:<12} {subject}".rstrip() for sha, date, subject in kept]
-    return "\n".join([header, *body])
+def _render(commits: list[tuple[str, str, str, str]], limit: int) -> str:
+    kept = commits[:limit]
+    # Authors as one column; the name only, the email adds tokens and no answer.
+    width = max((len(author) for _, _, author, _ in kept), default=0)
+    body = [
+        f"{sha[:8]}  {date:<12} {author:<{width}}  {subject}".rstrip()
+        for sha, date, author, subject in kept
+    ]
+    return "\n".join([_header(len(commits), len(kept), "subject and author"), *body])

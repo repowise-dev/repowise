@@ -16,6 +16,9 @@ Expanded in Phase 4 of the JVM parity plan. The handler now covers:
 - **Spring Data repositories** — any interface extending
   ``CrudRepository`` / ``JpaRepository`` / ``MongoRepository`` /
   friends becomes an entry point (the impl is generated at runtime).
+- **Route handlers**: every ``@GetMapping`` / ``@RequestMapping`` method is
+  bound from its file's module symbol, the shape Express routes take, read
+  through the recogniser the HTTP contract dialect shares.
 - **Autoconfig consumer edges** — emit edges from each
   ``META-INF/spring/...AutoConfiguration.imports`` file (and
   ``spring.factories``) to the listed FQNs so the resource file
@@ -29,6 +32,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import spring_routes
 from ..resolvers import ResolverContext
 from ..type_names import strip_type_arguments
 from .base import (
@@ -39,6 +43,7 @@ from .base import (
     add_symbol_edge,
     build_type_to_symbol,
     read_text,
+    source_text,
 )
 
 if TYPE_CHECKING:
@@ -179,6 +184,33 @@ def _scan_lombok_ctor_params(text: str) -> list[tuple[str, int]]:
         if is_aac or (is_rac and is_final):
             params.append((type_head, m.start()))
     return params
+
+
+def _add_route_handler_edges(
+    graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext
+) -> int:
+    """Bind each mapped method from its file's module symbol.
+
+    The route is declared on the handler itself, so no call site names it;
+    the edge is what says the framework dispatches to it. Not gated on a
+    stereotype: an OpenAPI-generated ``*Api`` interface carries the mappings
+    its ``@RestController`` implementation serves.
+    """
+    count = 0
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language not in ("java", "kotlin"):
+            continue
+        text = source_text(path, parsed, ctx.source_map or {})
+        methods = [s for s in parsed.symbols if s.kind in ("method", "function")]
+        for route in spring_routes(text):
+            line = text.count("\n", 0, route.offset) + 1
+            # A JVM method's span starts at its annotations, so the innermost
+            # method holding the annotation's line is the one it sits on.
+            holders = [s for s in methods if s.start_line <= line <= s.end_line]
+            if holders:
+                handler = max(holders, key=lambda s: s.start_line)
+                count += add_symbol_edge(graph, f"{path}::__module__", handler.id)
+    return count
 
 
 def _bind_injected_symbol(
@@ -376,7 +408,9 @@ class _SpringHandler:
         ctx: ResolverContext,
         path_set: set[str],
     ) -> int:
-        return _add_spring_edges(graph, parsed_files, path_set, ctx)
+        return _add_spring_edges(graph, parsed_files, path_set, ctx) + _add_route_handler_edges(
+            graph, parsed_files, ctx
+        )
 
 
 class _JvmAutoconfigHandler:

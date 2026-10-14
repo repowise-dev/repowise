@@ -12,9 +12,10 @@ from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.rows import scored_rows
 from repowise.core.analysis.health.scope import parse_scope
+from repowise.core.persistence.crud.analysis.health import health_exclude_spec
 from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
 from repowise.core.persistence.models import HealthFileMetric
-from repowise.server.mcp_server._helpers import _get_exclude_spec, filter_rows_by_attr
+from repowise.server.mcp_server._helpers import filter_rows_by_attr
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.targets import _expand_module_targets
 
@@ -73,7 +74,10 @@ async def load_population(
     all_metrics_q = select(*HealthFileMetric.__table__.columns).where(
         HealthFileMetric.repository_id == repository.id
     )
-    exclude_spec = _get_exclude_spec(repo_path)
+    # The rule the CLI, get_overview and status count files by. The MCP-wide
+    # spec adds the gitignore stack, which hid a tracked file its pattern
+    # matched and left get_health one file short of every other surface.
+    exclude_spec = await health_exclude_spec(session, repository.id, repo_path)
     indexed_rows = plain_rows(await session.execute(all_metrics_q))
     all_metrics = filter_rows_by_attr(indexed_rows, "file_path", exclude_spec)
     # Lets an unresolved target report "excluded" rather than "no_such_path".

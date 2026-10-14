@@ -110,7 +110,9 @@ async def run_scoped_generation(
 
     try:
         async with _get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            repo = await upsert_repository(
+                session, name=repo_path.name, local_path=str(repo_path), stamp_head=True
+            )
             repo_id = repo.id
 
         # Honor the persisted submodule/nested-repo semantics of the original

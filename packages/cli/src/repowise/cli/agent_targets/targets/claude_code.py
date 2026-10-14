@@ -364,6 +364,7 @@ class ClaudeCodeTarget:
     docs_url = DOCS_URL
     hook_adapter = IDENTITY.hook_adapter
     session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -541,7 +542,7 @@ class ClaudeCodeTarget:
             paths.append(str(desktop))
         return paths
 
-    def doctor(self) -> DoctorReport:
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the Claude Code wiring, with one command to fix it.
 
         Reports a stale rewrite-hook matcher explicitly. An entry whose matcher

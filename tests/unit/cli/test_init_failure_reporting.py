@@ -547,3 +547,81 @@ def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypat
     )
 
     assert getattr(result, "failed_page_ids", None) == ["file_page:target_failure.ts"]
+
+
+class TestInitClosingKeylessNote:
+    """A keyless index closes by naming its upgrade commands (#3105).
+
+    The note must not depend on editor setup: the headless path has no
+    ``generate`` row in the next-steps panel, so this line is the only place
+    it hears about the upgrades.
+    """
+
+    def _output(self, monkeypatch, *, setup, pages, state=None) -> str:
+        import io
+
+        from rich.console import Console
+
+        buf = io.StringIO()
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.reporting.console",
+            Console(file=buf, width=200, force_terminal=False),
+        )
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.reporting.build_completion_panel",
+            lambda title, metrics, next_steps=None: "PANEL",
+        )
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.reporting.load_state",
+            lambda _p: state if state is not None else {"docs_mode": "deterministic"},
+        )
+        monkeypatch.setattr("repowise.cli.commands.init_cmd.reporting.load_config", lambda _p: {})
+        show_completion(
+            repo_path="/fake",
+            result=_completion_result(pages),
+            start=0.0,
+            effective_index_only=True,
+            run_mode="standard",
+            provider=SimpleNamespace(provider_name="template", model_name="template"),
+            setup=setup,
+        )
+        return buf.getvalue()
+
+    @pytest.mark.parametrize(
+        "setup",
+        [
+            None,
+            SimpleNamespace(editor_setup_disabled=True),
+            SimpleNamespace(
+                editor_setup_disabled=False,
+                claude_code_connected=True,
+                interactive=True,
+                first_index=True,
+                autosync_hook_installed=True,
+                rewrite_hook_installed=True,
+            ),
+        ],
+        ids=["no-setup", "editor-setup-disabled", "editor-setup-done"],
+    )
+    def test_note_prints_with_and_without_editor_setup(self, monkeypatch, setup):
+        out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")])
+        assert "repowise generate writes the subsystem pages" in out
+        assert "--provider ollama" in out
+        assert "repowise reindex adds semantic search" in out
+        assert "--embedder ..." not in out
+
+    def test_note_drops_the_search_half_when_semantic_search_is_available(self, monkeypatch):
+        state = {
+            "docs_mode": "deterministic",
+            "index_scope": {
+                "content_provenance": "template",
+                "search": {"full_text": "available", "semantic": "available"},
+            },
+        }
+        out = self._output(monkeypatch, setup=None, pages=[_page("file_page:a")], state=state)
+        assert "repowise generate writes the subsystem pages" in out
+        assert "reindex" not in out
+
+    def test_no_note_when_fast_mode_rendered_no_pages(self, monkeypatch):
+        out = self._output(monkeypatch, setup=None, pages=[])
+        assert "repowise generate" not in out

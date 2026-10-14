@@ -293,6 +293,12 @@ class AgentTarget(Protocol):
     #: out of the Full tier.
     hook_adapter: str | None
     session_adapter: str | None
+    #: Named entry in ``core.edit_capture.edits``: turns this agent's edit hook
+    #: payload into an edit event for opt-in AI attribution. ``None`` means its
+    #: edits are attributed only through the markers it leaves in git (git-ai
+    #: notes, Agent Trace files, trailers). Not a tier input: capture is off
+    #: unless the user turns it on, so it adds no depth the agent always gets.
+    capture_adapter: str | None
 
     #: Routes this target can be wired through, in preference order.
     methods: tuple[InstallMethod, ...]
@@ -379,8 +385,11 @@ class AgentTarget(Protocol):
         """
         ...
 
-    def doctor(self) -> DoctorReport:
-        """This target's health, with one command that would fix it."""
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
+        """This target's health, with one command that would fix it.
+
+        *repo_path* lets a target with repo-local wiring check that half too.
+        """
         ...
 
 

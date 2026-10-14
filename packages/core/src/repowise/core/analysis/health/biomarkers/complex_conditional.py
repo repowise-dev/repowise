@@ -7,6 +7,10 @@ already harder to read at a glance than a single equality; six-operator
 conditions are routinely cited in defect-mining studies as the noisy
 end of a branch's lifetime.
 
+A flat chain of one operator with no negation (``a || b || c || d``)
+reads as a list of alternatives, not a knot, so it stays LOW however
+long it runs; ``details.flat_chain`` says so.
+
 Category: ``structural_complexity``.
 
 Consumes ``FunctionComplexity.complex_conditions`` — collected by the
@@ -47,13 +51,18 @@ class ComplexConditionalDetector:
                 out.append(
                     BiomarkerResult(
                         biomarker_type=self.name,
-                        severity=_severity_for(cond.operator_count),
+                        severity=(
+                            Severity.LOW
+                            if cond.flat_chain
+                            else _severity_for(cond.operator_count)
+                        ),
                         function_name=fc.name,
                         line_start=cond.line,
                         line_end=cond.line,
                         details={
                             "operator_count": cond.operator_count,
                             "enclosing_construct": cond.enclosing_construct,
+                            "flat_chain": cond.flat_chain,
                             "dispatch_share": fc.dispatch_share,
                         },
                         reason=(

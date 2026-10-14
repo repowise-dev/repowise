@@ -34,8 +34,9 @@ Row shapes (field names are the SQL columns):
 ``plans``
     Plan rows named by a refactoring step: ``public_id``, ``evidence`` /
     ``evidence_json`` and ``plan`` / ``plan_json`` (an extract-method ``span``,
-    ``params``, ``returns``, ``suggested_name``; a move's destination; a
-    split's named groups; a helper's ``occurrences``). A plan row that also
+    ``params``, ``returns``, ``suggested_name``, ``anchors``; a move's destination; a
+    split's named groups; a helper's ``occurrences``) and ``rank`` / ``rank_json``
+    (``leaves_above_bar``). A plan row that also
     carries ``refactoring_type`` ``extract_method``, ``file_path`` and
     ``target_symbol`` can give a finding with no plan of its own its first
     concrete step. Every Extract Helper plan's occurrences say where verified
@@ -45,6 +46,13 @@ Row shapes (field names are the SQL columns):
     ``start_line``, ``end_line``, ``confidence``, ``safe_to_delete``,
     ``status``. A unit an open row of :data:`DEAD_CONFIDENCE` or more (or one
     safe to delete) covers is ``unreachable``: the fix is to delete it.
+``function_changes``
+    ``git_function_blame`` ``mod_count`` by ``symbol_id`` (``path::name``):
+    the commits that changed each function. ``None`` when the repository keeps
+    no function history; a function missing from it changed in none.
+``blame_skipped``
+    Paths the blame pass skipped for size: their functions have no history,
+    so the file's churn orders them.
 """
 
 from __future__ import annotations
@@ -81,6 +89,7 @@ from repowise.core.analysis.health.queue.order import LEVEL_RANK, order
 from repowise.core.analysis.health.queue.value import (
     MIN_CHURN_COMMITS,
     function_reach,
+    history_weight,
     perf_confidence,
     perf_ready,
     perf_value,
@@ -91,21 +100,25 @@ from repowise.core.analysis.health.queue.value import (
     tier,
     worth,
 )
-from repowise.core.analysis.health.refactoring.render import NAME_PLACEHOLDER
+from repowise.core.analysis.health.refactoring.recipe import ELSEWHERE_NOTE, plan_anchors
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.worth import (
     SIZE_MARKERS,
     WORTH_MAGNITUDE,
+    LowPriority,
+    by_function,
     execution_role,
     low_priority,
     magnitude,
     measure,
     measured_nloc,
+    worst_after,
     worth_size,
 )
 from repowise.core.analysis.next_call import ActionCommand
+from repowise.core.ci.markdown import code as md_code
 
 from . import text
 from .model import (
@@ -147,6 +160,8 @@ MAX_CONTEXT = 3
 DEFAULT_LIMIT = 10
 #: Class-level findings: a fix names member groups, which only a plan holds.
 CLASS_MARKERS = frozenset({"low_cohesion", "god_class"})
+#: Refactorings that change one function, whose own history orders them.
+_FUNCTION_LEADS = frozenset({"extract_method", "move_method"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +189,25 @@ class _Unit:
 def _tail(symbol: str | None) -> str | None:
     """A symbol's own name: ``a.py::Cls.run`` and ``Cls::run`` read ``run``."""
     return re.split(r"::|\.", symbol)[-1] if symbol else None
+
+
+def _about(function: str | None, symbol: str | None) -> bool:
+    """Whether a history row on ``function`` speaks to an item on ``symbol``:
+    a file-level row or item, the same function, or a member of the item's
+    class. ``Engine.run`` never keeps ``Other.run``; a bare name on either
+    side matches by name, since it names no class to tell them apart."""
+    if not function or not symbol:
+        return True
+    own = text.short_symbol(symbol) or ""
+    if function == own or function.startswith(f"{own}."):
+        return True
+    return ("." not in function or "." not in own) and _tail(function) == _tail(own)
+
+
+def symbol_key(path: str, symbol: str | None) -> str | None:
+    """A function's ``git_function_blame`` key, ``path::name``; ``None`` for no symbol."""
+    name = text.short_symbol(symbol)
+    return f"{path}::{name}" if name else None
 
 
 def _open(row: Any) -> bool:
@@ -206,7 +240,7 @@ def _quantile_cut(values: list[int]) -> float:
     return hot_cut(sorted(values)[hot_cut_offset(len(values))])
 
 
-def _risk(files_touched: int, dependents: int | None) -> FixRisk:
+def _risk(files_touched: int, dependents: int | None, *, function: bool = False) -> FixRisk:
     deps = dependents or 0
     if files_touched >= 5 or deps >= 20:
         level = "high"
@@ -216,7 +250,7 @@ def _risk(files_touched: int, dependents: int | None) -> FixRisk:
         level = "low"
     parts = [f"touches {text.plural(files_touched, 'file')}"]
     if dependents:
-        parts.append(text.imports_it(dependents))
+        parts.append(text.imports_it(dependents, function=function))
     return FixRisk(level, dependents, files_touched, "; ".join(parts).capitalize() + ".")
 
 
@@ -272,8 +306,12 @@ class _Files:
         clones: Mapping[str, list[tuple[int, int]]] | None = None,
         extractions: Mapping[tuple[str, str], list[Any]] | None = None,
         dead: Mapping[str, list[DeadSpan]] | None = None,
+        function_changes: Mapping[str, int] | None = None,
+        blame_skipped: Iterable[str] = (),
     ) -> None:
         self.by_path = {field(m, "file_path"): m for m in metrics}
+        self.function_changes = function_changes
+        self.blame_skipped = frozenset(blame_skipped)
         self.functions = functions
         self.clones = clones or {}
         self.extractions = extractions or {}
@@ -324,6 +362,17 @@ class _Files:
 
     def churning(self, path: str) -> bool:
         return self.commits(path) >= max(self.churn_cut, MIN_CHURN_COMMITS)
+
+    def changes(self, path: str, symbol: str | None, *, function: bool) -> int | None:
+        """Commits that changed the function ``symbol`` in ``path``, 0 with no
+        stored row; ``None`` when the repository keeps no function history,
+        the blame pass skipped the file for size, or the unit is led by no
+        function (a class, a file, a duplicated span), so its file's churn
+        stands in."""
+        key = symbol_key(path, symbol) if function else None
+        if self.function_changes is None or key is None or path in self.blame_skipped:
+            return None
+        return int(self.function_changes.get(key) or 0)
 
     def evidence(self, path: str, symbol: str | None) -> bool | None:
         """Whether history shows work on ``symbol`` pays: its file changes
@@ -394,25 +443,13 @@ class _Files:
                 summary = text.first_sentence(suggestion_for(marker))
                 return FixStep(1, summary, path, line, False)
             return None
-        tail = (function or "").rsplit(".", 1)[-1]
-        plans = self.extractions.get((path, tail)) or ()
-        best = max(plans, key=_extraction_worth, default=None)
+        tail = _tail(function) or ""
+        best = self.extraction(finding)
         if best is not None:
             start, end = _span(best)
             body = _plan_body(best)
-            into = text.signature(
-                body.get("suggested_name"),
-                list(body.get("params") or []),
-                list(body.get("returns") or []),
-                is_async=bool(body.get("needs_async", False)),
-            )
-            return FixStep(
-                1,
-                _stage_one(f"Extract lines {start}-{end} of {tail} into {into}", tail, body),
-                path,
-                start,
-                **_helper_code(body),
-            )
+            step = _above_bar_note(_extract_text(tail, body, start, end), best)
+            return FixStep(1, step, path, start, **_helper_code(body))
         shape = self.shape(path, function)
         start, end = shape.get("deep_start"), shape.get("deep_end")
         if start and end:
@@ -426,6 +463,15 @@ class _Files:
                 start,
             )
         return None
+
+    def extraction(self, finding: Any) -> Any | None:
+        """The best stored Extract Method plan inside a function-size
+        finding's function, which :meth:`first_step` lifts first."""
+        if field(finding, "biomarker_type") not in SIZE_MARKERS:
+            return None
+        tail = _tail(field(finding, "function_name")) or ""
+        plans = self.extractions.get((field(finding, "file_path"), tail)) or ()
+        return max(plans, key=_extraction_worth, default=None)
 
     def unreachable(self, path: str, symbol: str | None, line: int | None) -> bool:
         """Whether a sure dead-code finding covers ``symbol`` (at ``line``) in
@@ -442,17 +488,27 @@ class _Files:
         fallback: str,
         dependents: int | None = None,
         cloned: bool = False,
+        changes: int | None = None,
+        function: bool = False,
     ) -> str:
-        """One sentence: the problem, then why it matters here (who imports
-        the file, how often it changes, how much of it tests run)."""
+        """One sentence: the problem, then why it matters here (how often the
+        function changed, who imports the file, how often it changes, how much
+        of it tests run)."""
         deps = dependents if dependents is not None else self.dependents(path)
         head = measured or fallback.rstrip(". ")
         if cloned:
             head += f", {text.CLONED}"
-        return f"{head}{text.exposure(deps, self.commits(path), self.coverage(path))}."
+        if changes is not None and changes >= MIN_CHURN_COMMITS:
+            head += f"; {text.own_changes(changes)}"
+        exposure = text.exposure(
+            deps, self.commits(path), self.coverage(path), function=function
+        )
+        return f"{head}{exposure}."
 
-    def context(self, path: str) -> tuple[FixContext, ...]:
-        """History is context: shown beside the item, never lifting its band."""
+    def context(self, path: str, symbol: str | None = None) -> tuple[FixContext, ...]:
+        """History is context: shown beside the item, never lifting its band.
+        An item on ``symbol`` shows its file's rows and its own, never another
+        function's."""
         out: list[FixContext] = []
         commits = self.commits(path)
         if commits:
@@ -462,17 +518,22 @@ class _Files:
             out.append(FixContext("file kind", "test"))
         ranked = sorted(self.history.get(path, ()), key=lambda f: -_num(field(f, "health_impact")))
         for f in ranked:
+            if not _about(field(f, "function_name"), symbol):
+                continue
             marker = field(f, "biomarker_type") or ""
             sentence = text.history_fact(marker, detail_map(f), field(f, "function_name"))
             if sentence:
                 out.append(FixContext(text.HISTORY_LABEL.get(marker, "history"), sentence))
         return tuple(out[:MAX_CONTEXT])
 
-    def common_facts(self, path: str, dependents: int | None = None) -> list[FixFact]:
+    def common_facts(
+        self, path: str, dependents: int | None = None, *, function: bool = False
+    ) -> list[FixFact]:
         out = []
         deps = dependents if dependents is not None else self.dependents(path)
         if deps:
-            out.append(FixFact("files that import it", str(deps)))
+            label = "files that import its file" if function else "files that import it"
+            out.append(FixFact(label, str(deps)))
         commits = self.commits(path)
         if commits:
             out.append(FixFact("changes in 90 days", str(commits)))
@@ -531,6 +592,8 @@ class _ShapeRank:
     shape: dict[str, int]
     central: bool
     churning: bool
+    #: Commits that changed the lead function (``_Files.changes``).
+    changes: int | None
     cloned: bool
     low: str | None
     gain: float
@@ -552,13 +615,18 @@ class _ShapeRank:
     def tier(self) -> str:
         return tier(self.cold_value, "medium", False, self.low)[0]
 
+    @property
+    def history(self) -> float:
+        return history_weight(self.changes, self.churning)
+
     def facts(self) -> list[FixRankFact]:
         size = size_value(self.shape, self.central) if self.low is None else worth_size(self.shape)
         return [
             FixRankFact("health gain", f"{self.gain:.2f}"),
             FixRankFact("complexity removed", str(self.ccn_removed)),
             FixRankFact("problem size", str(size)),
-            *_reach_facts(self.dependents, self.central, self.churning, self.credited),
+            *_reach_facts(self.dependents, self.central, self.credited),
+            _history_fact(self.changes, self.churning),
             FixRankFact("duplicate inside", "yes" if self.cloned else "no"),
         ]
 
@@ -568,26 +636,30 @@ def _finish_shaped(rank: _ShapeRank, **unit: Any) -> _Unit:
     return _finish(
         value=rank.value,
         cold_value=rank.cold_value,
-        worth=worth(removed(rank.ccn_removed, rank.gain), rank.credited, rank.churning),
+        worth=worth(removed(rank.ccn_removed, rank.gain), rank.credited, rank.history),
         low=rank.low,
         rank_inputs=rank.facts,
         **unit,
     )
 
 
-def _reach_facts(
-    deps: int | None, central: bool, churning: bool, credited: int | None
-) -> list[FixRankFact]:
-    """What reach and history add: importers lift the band when central,
-    churn only orders inside it. A function credited with only its share of
-    its file's importers says so."""
+def _reach_facts(deps: int | None, central: bool, credited: int | None) -> list[FixRankFact]:
+    """What reach adds: importers lift the band when central. A function
+    credited with only its share of its file's importers says so."""
     share = f", {credited} counted for its share of the file" if credited != deps else ""
     return [
         FixRankFact(
             "files that import it", f"{deps or 0}{' (top fifth)' if central else ''}{share}"
         ),
-        FixRankFact("changes often", "yes" if churning else "no"),
     ]
+
+
+def _history_fact(changes: int | None, churning: bool) -> FixRankFact:
+    """What history adds, which only orders inside the band: the function's
+    own changes, or, with no function history, whether its file changes often."""
+    if changes is None:
+        return FixRankFact("changes often", "yes" if churning else "no")
+    return FixRankFact("function changed in", text.plural(changes, "commit"))
 
 
 def _size_facts(shape: Mapping[str, int]) -> list[FixFact]:
@@ -617,6 +689,27 @@ def _plan_body(plan: Any) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+def _above_bar(details: Mapping[str, Any]) -> LowPriority | None:
+    """An opportunity one of whose plans, applied as written, still leaves a
+    function above the break-up bar: half a fix, so it can wait."""
+    return "above_bar_after" if details.get("leaves_above_bar") else None
+
+
+def _above_bar_reason(plan: Any) -> str | None:
+    """Why the plan, applied as written, leaves a function above the break-up
+    bar: its rank facts' ``leaves_above_bar``, in the plan's own words."""
+    rank = json_field(plan, "rank", None) or json_field(plan, "rank_json", {})
+    reason = rank.get("leaves_above_bar") if isinstance(rank, dict) else None
+    return reason if isinstance(reason, str) and reason else None
+
+
+def _above_bar_note(step: str, plan: Any) -> str:
+    """A finding's borrowed *step*, saying so when the plan leaves the
+    function above the break-up bar (:func:`_above_bar_reason`)."""
+    reason = _above_bar_reason(plan)
+    return f"{step.removesuffix('.')}. This plan alone {reason}." if reason else step
+
+
 def _evidence(plan: Any) -> dict[str, Any]:
     if plan is None:
         return {}
@@ -637,58 +730,87 @@ def _refactor_step(
     kind = step.get("refactoring_type") or ""
     path = step.get("file_path") or ""
     sym = text.short_symbol(step.get("target_symbol")) or text.basename(path)
-    start, end = _span(plan)
     body = _plan_body(plan)
-    code: dict[str, str | None] = {}
-    if kind == "extract_method":
-        code = _helper_code(body)
-        into = text.signature(
-            body.get("suggested_name"),
-            list(body.get("params") or []),
-            list(body.get("returns") or []),
-            is_async=bool(body.get("needs_async", False)),
-        )
-        where = f"lines {start}-{end} of {sym}" if start and end else f"part of {sym}"
-        line_text = _stage_one(f"Extract {where} into {into}", sym, body)
-    elif kind == "extract_helper":
-        line_text = f"Replace the duplicate in {sym} with a call to one shared helper"
-    elif kind == "extract_class":
-        groups = [g for g in body.get("groups") or [] if g.get("methods")]
-        members = sorted(groups, key=lambda g: len(g["methods"]))[0]["methods"] if groups else []
-        line_text = (
-            f"Move {', '.join(members[:4])}"
-            + (f" and {len(members) - 4} more" if len(members) > 4 else "")
-            + f" out of {sym} into a new class"
-            if members
-            else f"Move a cohesive group of {sym}'s methods into a new class"
-        )
-    elif kind == "split_file":
-        names = [g.get("name") for g in body.get("groups") or [] if g.get("name")]
-        line_text = (
-            f"Split {text.basename(path)} into {', '.join(names[:4])}"
-            + (f" and {len(names) - 4} more" if len(names) > 4 else "")
-            if names
-            else f"Split {text.basename(path)} along its independent groups"
-        )
-    elif kind == "break_cycle":
-        edge = _cut_edge(plan)
-        line_text = (
-            f"Cut the import of {text.basename(edge['to'])} in "
-            f"{text.basename(edge['from'])} (line {edge['line']})"
-            if edge
-            else _uncut_cycle_text(path, plan)
-        )
-    elif kind == "move_method":
-        dest = body.get("to_class") or text.basename(body.get("to_file") or "")
-        line_text = (
-            f"Move {sym} to {dest}" if dest else f"Move {sym} to the class it uses most"
-        )
-    else:
-        line_text = f"Apply the {text.humanize(kind)} step to {sym}"
-    mechanical = (step.get("applicability") or {}).get("classification") == "mechanical"
-    return FixStep(
-        order, line_text, path, start or step.get("line_start"), mechanical, **code, command=command
+    phrase = _STEP_TEXT.get(kind)
+    line_text = (
+        phrase(sym, path, plan, body) if phrase else f"Apply the {text.humanize(kind)} step to {sym}"
     )
+    code = _helper_code(body) if kind == "extract_method" else {}
+    mechanical = (step.get("applicability") or {}).get("classification") == "mechanical"
+    line = _span(plan)[0] or step.get("line_start")
+    return FixStep(order, line_text, path, line, mechanical, **code, command=command)
+
+
+def _first_four(names: list[str]) -> str:
+    """Up to four names, then how many more."""
+    more = f" and {len(names) - 4} more" if len(names) > 4 else ""
+    return f"{', '.join(names[:4])}{more}"
+
+
+def _extract_class_text(sym: str, path: str, plan: Any, body: Mapping[str, Any]) -> str:
+    """The smallest named group of methods leaves for a new class."""
+    groups = [g for g in body.get("groups") or [] if g.get("methods")]
+    if not groups:
+        return f"Move a cohesive group of {sym}'s methods into a new class"
+    members = sorted(groups, key=lambda g: len(g["methods"]))[0]["methods"]
+    return f"Move {_first_four(members)} out of {sym} into a new class"
+
+
+def _split_file_text(sym: str, path: str, plan: Any, body: Mapping[str, Any]) -> str:
+    names = [g.get("name") for g in body.get("groups") or [] if g.get("name")]
+    if not names:
+        return f"Split {text.basename(path)} along its independent groups"
+    return f"Split {text.basename(path)} into {_first_four(names)}"
+
+
+def _break_cycle_text(sym: str, path: str, plan: Any, body: Mapping[str, Any]) -> str:
+    edge = _cut_edge(plan)
+    if edge is None:
+        return _uncut_cycle_text(path, plan)
+    return (
+        f"Cut the import of {text.basename(edge['to'])} in "
+        f"{text.basename(edge['from'])} (line {edge['line']})"
+    )
+
+
+def _move_method_text(sym: str, path: str, plan: Any, body: Mapping[str, Any]) -> str:
+    dest = body.get("to_class") or text.basename(body.get("to_file") or "")
+    return f"Move {sym} to {dest}" if dest else f"Move {sym} to the class it uses most"
+
+
+def _extract_text(sym: str, body: Mapping[str, Any], start: Any, end: Any) -> str:
+    """An Extract Method step: its span by the text it starts and ends with
+    when the plan anchored it (line numbers move with every edit), else by
+    its lines; a staged plan's step is its first stage."""
+    into = text.signature(
+        body.get("suggested_name"),
+        list(body.get("params") or []),
+        list(body.get("returns") or []),
+        is_async=bool(body.get("needs_async", False)),
+    )
+    anchors = plan_anchors(body.get("anchors"))
+    # Worded like the plan's own step (``recipe._extract_step``).
+    if anchors is not None:
+        where = f"{sym} from {md_code(anchors['first'])} to {md_code(anchors['last'])}"
+    else:
+        where = f"lines {start}-{end} of {sym}" if start and end else f"part of {sym}"
+    line_text = _stage_one(f"Extract {where} into {into}", body)
+    if anchors is not None and anchors["unique_in"] == "function":
+        line_text = f"{line_text}. {ELSEWHERE_NOTE}"
+    return line_text
+
+
+#: A refactoring step's sentence, by plan type, from (symbol, path, plan, plan body).
+_STEP_TEXT: dict[str, Callable[[str, str, Any, Mapping[str, Any]], str]] = {
+    "extract_method": lambda sym, path, plan, body: _extract_text(sym, body, *_span(plan)),
+    "extract_helper": lambda sym, *_: (
+        f"Replace the duplicate in {sym} with a call to one shared helper"
+    ),
+    "extract_class": _extract_class_text,
+    "split_file": _split_file_text,
+    "break_cycle": _break_cycle_text,
+    "move_method": _move_method_text,
+}
 
 
 def _stage_count(body: Mapping[str, Any]) -> int:
@@ -711,9 +833,9 @@ def _has_span(stage: Any) -> bool:
     return type(start) is int and type(end) is int and bool(start and end)
 
 
-def _stage_one(line_text: str, sym: str, body: Mapping[str, Any]) -> str:
-    """A staged plan's step is its first stage (the plan's top-level span),
-    so it says so and names what the whole plan does."""
+def _stage_one(line_text: str, body: Mapping[str, Any]) -> str:
+    """A staged plan's step is its first stage (the plan's top-level span):
+    it says so, and the function's CCN once every stage is done."""
     count = _stage_count(body)
     if not count:
         return line_text
@@ -723,8 +845,12 @@ def _stage_one(line_text: str, sym: str, body: Mapping[str, Any]) -> str:
         if isinstance(residual, dict)
         else (None, None)
     )
-    ccn = f", CCN {before} -> {after}" if before is not None and after is not None else ""
-    return f"Stage 1 of {count}: {line_text} (the plan splits {sym} into {count} helpers{ccn})"
+    ccn = (
+        f" (CCN {before} -> {after} after all {count})"
+        if before is not None and after is not None
+        else ""
+    )
+    return f"Stage 1 of {count}: {line_text}{ccn}"
 
 
 def _uncut_cycle_text(path: str, plan: Any) -> str:
@@ -782,11 +908,12 @@ def _extraction_worth(plan: Any) -> tuple[int, int]:
 
 
 def _extractions(plans: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
-    """Extract Method plans with a span, by (file, function name)."""
+    """Open Extract Method plans with a span, by (file, function name). A plan
+    a step names is read whatever its status, so a dismissed one is skipped."""
     out: dict[tuple[str, str], list[Any]] = defaultdict(list)
     for plan in plans:
         symbol = field(plan, "target_symbol")
-        if field(plan, "refactoring_type") != "extract_method" or not symbol:
+        if field(plan, "refactoring_type") != "extract_method" or not symbol or not _open(plan):
             continue
         start, end = _span(plan)
         if start and end:
@@ -860,8 +987,11 @@ class _RefactorPlan:
             shape,
             central,
             files.churning(path),
+            changes=files.changes(
+                path, lead.get("target_symbol"), function=lead_type in _FUNCTION_LEADS
+            ),
             cloned=function_size and files.cloned(path, shape),
-            low=low_priority(marker, shape, function_size=function_size),
+            low=low_priority(marker, shape, function_size=function_size) or _above_bar(details),
             gain=gain,
             ccn_removed=sum(_extraction_worth(plans.get(s.get("plan_id")))[0] for s in steps),
             dependents=deps,
@@ -917,11 +1047,13 @@ def _refactor_fields(plan: _RefactorPlan) -> dict[str, Any]:
     )
     fix_steps = _refactor_fix_steps(plan, profiles, verify.command)
     n_steps, mechanical_n = text.plural(len(plan.steps), "step"), plan.mechanical_n
+    # The symbol the lead step edits; ``None`` for a file-level plan.
+    symbol = plan.sym if lead.get("target_symbol") else None
     return {
         "title": text.clip(_refactor_title(plan, lead_plan)),
         "target": FixTarget(
             path,
-            plan.sym if lead.get("target_symbol") else None,
+            symbol,
             fix_steps[0].line,
             lead.get("line_end"),
         ),
@@ -931,17 +1063,23 @@ def _refactor_fields(plan: _RefactorPlan) -> dict[str, Any]:
             fallback=text.problem(plan.marker, plan.sym),
             dependents=rank.dependents,
             cloned=rank.cloned,
+            changes=rank.changes,
+            function=symbol is not None,
         ),
-        "facts": _refactor_facts(plan),
+        "facts": _refactor_facts(plan, function=symbol is not None),
         "action": _action(f"{n_steps}, {mechanical_n} mechanical", fix_steps, plan.mechanical),
         "gain": _health_gain(rank.gain, ceiling=False),
         "effort": FixEffortEstimate(plan.effort, "sized by the stored plan"),
-        "risk": _risk(int(field(plan.row, "affected_files_total") or 1), rank.dependents),
+        "risk": _risk(
+            int(field(plan.row, "affected_files_total") or 1),
+            rank.dependents,
+            function=symbol is not None,
+        ),
         "confidence": FixConfidence(
             plan.confidence, f"{mechanical_n} of {n_steps} proven mechanical by the plan"
         ),
         "verify": verify,
-        "context": files.context(path),
+        "context": files.context(path, symbol),
         "source": FixSource(
             field(plan.row, "opportunity_id"),
             tuple(s.get("plan_id") for s in plan.steps if s.get("plan_id")),
@@ -974,19 +1112,24 @@ def _refactor_title(plan: _RefactorPlan, lead_plan: Any) -> str:
     reads its title off the lead step's kind."""
     stages = _stage_count(_plan_body(lead_plan)) if plan.lead_type == "extract_method" else 0
     if stages:
-        return _with_more_steps(plan, f"Split {plan.sym} into {stages} helpers")
+        return _with_more_steps(plan, _staged_title(plan.sym, stages))
     return _span_title(plan, lead_plan)
+
+
+def _staged_title(sym: str, stages: int) -> str:
+    return f"Split {sym} into {stages} helpers"
 
 
 def _span_title(plan: _RefactorPlan, lead_plan: Any) -> str:
     start, end = _span(lead_plan)
-    name = _plan_body(lead_plan).get("suggested_name") or NAME_PLACEHOLDER
+    # Titles never quote the helper name: it is a placeholder the step asks to rename.
     spanned = plan.lead_type == "extract_method" and bool(start and end)
     if spanned and magnitude(plan.rank.shape) >= SIZE_BREAK_UP:
-        return _break_up_title(plan, f"{start}-{end}", name)
-    title = text.REFACTOR_TITLE.get(
+        return _break_up_title(plan.sym, plan.rank.shape, f"{start}-{end}")
+    template = text.REFACTOR_TITLE.get(
         "extract_method_span" if spanned else plan.lead_type, "Refactor {file}"
-    ).format(sym=plan.sym, file=text.basename(plan.path), start=start, end=end, name=name)
+    )
+    title = template.format(sym=plan.sym, file=text.basename(plan.path), start=start, end=end)
     return _with_more_steps(plan, title)
 
 
@@ -996,25 +1139,24 @@ def _with_more_steps(plan: _RefactorPlan, title: str) -> str:
     return title
 
 
-def _break_up_title(plan: _RefactorPlan, span: str, name: str) -> str:
-    # The helper's signature is in the step; the title keeps its name, or
-    # drops it when the problem and the span fill the line.
-    title = (
-        f"Start breaking up {plan.sym} ({text.size_brief(plan.rank.shape)}): "
-        f"first lift lines {span}"
-    )
-    into = f" into {name}"
-    return title + into if len(title + into) <= text.TITLE_MAX else title
+def _break_up_title(sym: str, shape: Mapping[str, int], span: str, suffix: str = "") -> str:
+    title = f"Start breaking up {sym} ({text.size_brief(shape)}): first lift lines {span}"
+    # A caveat outranks the span and the size, which the step and why name anyway.
+    head = f"Start breaking up {sym}"
+    for candidate in (title, f"{head} ({text.size_brief(shape)})", head):
+        if len(candidate + suffix) <= text.TITLE_MAX:
+            return candidate + suffix
+    return head + suffix
 
 
-def _refactor_facts(plan: _RefactorPlan) -> tuple[FixFact, ...]:
+def _refactor_facts(plan: _RefactorPlan, *, function: bool) -> tuple[FixFact, ...]:
     rank, held_back = plan.rank, plan.held_back
     facts = [
         FixFact("health recoverable", f"+{rank.gain:.1f}", "inferred"),
         *_size_facts(rank.shape),
         FixFact("steps", f"{len(plan.steps)} ({plan.mechanical_n} mechanical)"),
         *([FixFact("steps held back", text.held_back(held_back))] if held_back else []),
-        *plan.files.common_facts(plan.path, rank.dependents),
+        *plan.files.common_facts(plan.path, rank.dependents, function=function),
     ]
     nloc = plan.files.nloc(plan.path)
     if nloc:
@@ -1190,7 +1332,7 @@ def _perf_fields(cause: _PerfCause) -> dict[str, Any]:
             or f"{text.humanize(field(lead, 'actionability_state'))} plan",
         ),
         "verify": verify,
-        "context": cause.files.context(path),
+        "context": cause.files.context(path, symbol),
         "source": FixSource(field(lead, "opportunity_id")),
         "next_call": _opportunity_call(
             "The full opportunity: ordered steps, validation and other causes here",
@@ -1312,6 +1454,9 @@ def _finding_rank(finding: Any, files: _Files) -> _ShapeRank:
         shape,
         central,
         files.churning(path),
+        changes=files.changes(
+            path, field(finding, "function_name"), function=marker not in CLASS_MARKERS
+        ),
         cloned=sized and files.cloned(path, shape),
         low=low_priority(marker, shape, error_kind=detail_map(finding).get("kind")),
         gain=_num(field(finding, "health_impact")),
@@ -1328,45 +1473,41 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate |
     function = field(lead, "function_name")
     public_id = field(lead, "public_id")
     rank = _finding_rank(lead, files)
+    led = files.extraction(lead)
+    after = _plan_after(led, rank.shape, function) if led is not None else None
+    if after is None or not _lowers_worst(after, rank.shape):
+        led = None
 
     def fields() -> dict[str, Any]:
         where = function or text.basename(path)
         line = field(lead, "line_start")
         return {
-            "title": text.clip(_finding_title(marker, function, where, rank.shape)),
+            "title": text.clip(_finding_title(marker, function, where, rank.shape, led)),
             "target": FixTarget(path, function, line, field(lead, "line_end")),
             "why": files.why(
                 path,
                 measured=text.measured(where, rank.shape),
                 fallback=text.problem(marker, where),
                 cloned=rank.cloned,
+                changes=rank.changes,
+                function=function is not None,
             ),
             "facts": tuple(
                 [
                     FixFact("finding", text.marker_label(marker)),
                     *_size_facts(rank.shape),
                     FixFact("severity", _severity(field(lead, "severity"), rank.low)),
-                    *files.common_facts(path),
+                    *files.common_facts(path, function=function is not None),
                 ][:MAX_FACTS]
             ),
             "action": _action(text.first_sentence(suggestion_for(marker)), (first,), False),
             "gain": _health_gain(rank.gain, ceiling=True),
-            "effort": FixEffortEstimate("M", "not sized; no stored plan covers this finding"),
-            "risk": _risk(1, files.dependents(path)),
-            "confidence": FixConfidence(
-                "medium", "Measured from the code; no stored plan has checked a fix."
-            ),
+            "risk": _risk(1, files.dependents(path), function=function is not None),
             "verify": _verify(
                 validate(path, function, line, field(lead, "line_end")) if validate else None
             ),
-            "context": files.context(path),
-            "source": FixSource(None, (), (public_id,) if public_id else ()),
-            "next_call": ActionCommand.call(
-                "Every open finding in the file, with its line and reason",
-                "get_health",
-                {"targets": [path], "include": ["biomarkers"]},
-                cli=f"repowise health --file {path}",
-            ),
+            "context": files.context(path, function),
+            **_finding_plan_fields(led, path, public_id),
         }
 
     return _finish_shaped(
@@ -1381,10 +1522,91 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate |
     )
 
 
-def _finding_title(marker: str, function: str | None, where: str, shape: Mapping[str, int]) -> str:
+def _finding_title(
+    marker: str,
+    function: str | None,
+    where: str,
+    shape: Mapping[str, int],
+    led: Any = None,
+) -> str:
+    """A function past the break-up bar reads "Break up", or, when a stored
+    plan leads it, the title that plan's own item would have."""
     if magnitude(shape) >= SIZE_BREAK_UP and function and marker in SIZE_MARKERS:
+        if led is not None:
+            return _led_title(where, shape, led)
         return f"Break up {where} ({text.size_brief(shape)})"
     return text.FINDING_TITLE.get(marker, "Address the finding in {where}").format(where=where)
+
+
+def _plan_after(plan: Any, shape: Mapping[str, int], function: str | None) -> dict[str, Any] | None:
+    """The largest function an Extract Method plan leaves (``worth.worst_after``)."""
+    return worst_after(_evidence(plan), _plan_body(plan), _tail(function) or "", shape)
+
+
+def _lowers_worst(after: Mapping[str, Any], shape: Mapping[str, int]) -> bool:
+    """Whether the largest function a plan leaves is smaller than the one it
+    lifts from."""
+    if shape.get("ccn"):
+        return after["ccn"] < shape["ccn"]
+    return after["nloc"] < measured_nloc(shape)
+
+
+#: A led title's caveat when the plan, applied as written, still leaves a
+#: function at the break-up bar, as its step says (:func:`_above_bar_reason`).
+_MORE_STAGES = " (more stages needed)"
+
+
+def _led_title(where: str, shape: Mapping[str, int], plan: Any) -> str:
+    body = _plan_body(plan)
+    suffix = _MORE_STAGES if _above_bar_reason(plan) else ""
+    stages = _stage_count(body)
+    if stages:
+        return _staged_title(where, stages) + suffix
+    start, end = _span(plan)
+    return _break_up_title(where, shape, f"{start}-{end}", suffix)
+
+
+def _finding_plan_fields(led: Any, path: str, finding_id: str | None) -> dict[str, Any]:
+    """What a finding item says about its plan: none, or the stored Extract
+    Method plan its first step lifts (``led``), which the next call opens."""
+    findings = (finding_id,) if finding_id else ()
+    if led is None:
+        return {
+            "effort": FixEffortEstimate("M", "not sized; no stored plan covers this finding"),
+            "confidence": FixConfidence(
+                "medium", "Measured from the code; no stored plan has checked a fix."
+            ),
+            "source": FixSource(None, (), findings),
+            "next_call": _file_findings_call(path),
+        }
+    plan_id = field(led, "public_id")
+    next_call = _file_findings_call(path)
+    if plan_id:
+        next_call = ActionCommand.call(
+            "The stored plan for the first step: its span, helper and checks",
+            "get_health",
+            {"plan_id": plan_id},
+            cli=f"repowise health --plan {plan_id}",
+        )
+    return {
+        # The plan sizes and checks its first lift only, so the item's own
+        # effort and confidence stay the finding's.
+        "effort": FixEffortEstimate("M", "not sized for the whole fix"),
+        "confidence": FixConfidence(
+            "medium", "Measured from the code; no plan checks the whole fix."
+        ),
+        "source": FixSource(None, (plan_id,) if plan_id else (), findings),
+        "next_call": next_call,
+    }
+
+
+def _file_findings_call(path: str) -> ActionCommand:
+    return ActionCommand.call(
+        "Every open finding in the file, with its line and reason",
+        "get_health",
+        {"targets": [path], "include": ["biomarkers"]},
+        cli=f"repowise health --file {path}",
+    )
 
 
 def _severity(severity: str | None, low: str | None) -> str:
@@ -1405,15 +1627,6 @@ def _clone_spans(plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:
         for occ in _plan_body(plan).get("occurrences") or ():
             if isinstance(occ, dict) and occ.get("line_start") and occ.get("line_end"):
                 out[occ.get("file") or ""].append((occ["line_start"], occ["line_end"]))
-    return dict(out)
-
-
-def _by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
-    out: dict[tuple[str, str], list[Any]] = defaultdict(list)
-    for f in findings:
-        name = field(f, "function_name")
-        if name:
-            out[(field(f, "file_path"), name)].append(f)
     return dict(out)
 
 
@@ -1449,17 +1662,21 @@ def _prepare(
     plans: list[Any],
     dead_code: Rows,
     hot_cuts: tuple[float, float] | None,
+    function_changes: Mapping[str, int] | None = None,
+    blame_skipped: Iterable[str] = (),
 ) -> tuple[dict[str, tuple[list[Any], list[Any]]], _Files]:
     """Findings split into (code shape, history) by file, and the file facts."""
     split = {path: split_by_origin(rows) for path, rows in _shown_findings(findings).items()}
     files = _Files(
         metrics,
         {p: hist for p, (_shape, hist) in split.items() if hist},
-        _by_function(f for shape, _hist in split.values() for f in shape),
+        by_function(f for shape, _hist in split.values() for f in shape),
         hot_cuts,
         _clone_spans(plans),
         _extractions(plans),
         dead_spans(dead_code),
+        function_changes,
+        blame_skipped,
     )
     return split, files
 
@@ -1569,6 +1786,8 @@ def build_fix_first(
     symbol_lines: Mapping[str, int] | None = None,
     validate: Validate | None = None,
     judged: dict[str, Judgement] | None = None,
+    function_changes: Mapping[str, int] | None = None,
+    blame_skipped: Iterable[str] = (),
 ) -> FixFirstQueue:
     """One ranked queue of what to fix, from stored rows (shapes in the module docstring).
 
@@ -1586,10 +1805,15 @@ def build_fix_first(
     without it such an item's Verify stays unknown. ``dead_code`` rows make
     the units they cover ``unreachable``. ``judged`` is filled with every open
     refactoring opportunity's judgement, by id, for the index to store.
+    ``function_changes`` orders units inside a band by how often their
+    function changed (module docstring); without it, and in a
+    ``blame_skipped`` file, the file's churn does.
     """
     metrics = list(metrics)
     plans = list(plans)
-    split, files = _prepare(metrics, findings, plans, dead_code, hot_cuts)
+    split, files = _prepare(
+        metrics, findings, plans, dead_code, hot_cuts, function_changes, blame_skipped
+    )
     gate = _Gate(files, keep_tests=scope == "all")
     units, planned_files = _refactor_units(refactoring, plans, gate, judged)
     units += _perf_units(performance, gate, symbol_lines)
@@ -1740,4 +1964,5 @@ __all__ = [
     "hot_cut",
     "hot_cut_offset",
     "judge_findings",
+    "symbol_key",
 ]

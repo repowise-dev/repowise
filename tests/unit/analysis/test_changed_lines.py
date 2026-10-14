@@ -179,14 +179,11 @@ def test_working_tree_from_a_base_is_everything_a_push_brings(git_repo) -> None:
     assert label == "main...working tree"
     # An untracked file is new code the push brings: every line changed.
     assert changed == {"mod.py": {2, 4}, "new.py": {1, 2}}
-    # Without a base it stays the uncommitted edit alone.
-    assert changed_lines(str(git_repo), working_tree=True) == ({"mod.py": {4}}, "working tree")
-    # A base that does not resolve falls back to the uncommitted edit, still
-    # with the new files a push would bring.
-    assert changed_lines(str(git_repo), working_tree=True, base="nope") == (
-        {"mod.py": {4}, "new.py": {1, 2}},
-        "working tree",
-    )
+    # Without a base, or with one that does not resolve, it is the uncommitted
+    # edit, new files included, as change risk counts it.
+    uncommitted = ({"mod.py": {4}, "new.py": {1, 2}}, "working tree")
+    assert changed_lines(str(git_repo), working_tree=True) == uncommitted
+    assert changed_lines(str(git_repo), working_tree=True, base="nope") == uncommitted
 
 
 def test_map_old_line_follows_insertions_deletions_and_rewrites() -> None:
@@ -314,6 +311,23 @@ def test_change_set_keeps_what_changed_lines_drops(git_repo) -> None:
     assert (change.base, change.head) == (_sha(git_repo, "HEAD~1"), _sha(git_repo, "HEAD"))
 
 
+def test_change_set_drops_excluded_paths_in_every_listing(git_repo) -> None:
+    from repowise.core.analysis.changed_lines import change_set
+
+    (git_repo / "gen.md").write_text("g\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "gen")
+    (git_repo / "mod.py").write_text("a = 1\n", encoding="utf-8")
+    (git_repo / "gen.md").unlink()
+    (git_repo / "out").mkdir()
+    (git_repo / "out" / "x.md").write_text("x\n", encoding="utf-8")
+    (git_repo / "new.py").write_text("n = 1\n", encoding="utf-8")
+
+    change = change_set(str(git_repo), working_tree=True, exclude_patterns=("/gen.md", "out/"))
+    assert set(change.files) == {"mod.py", "new.py"}
+    assert change.deleted == set()
+
+
 def test_change_set_ends_for_a_commit_a_fork_and_the_index(git_repo) -> None:
     from repowise.core.analysis.changed_lines import change_set
 
@@ -354,3 +368,40 @@ def test_index_gap_names_what_an_older_index_cannot_see(git_repo) -> None:
     assert index_gap(str(git_repo), _sha(git_repo, "HEAD~1"), change) == []
     assert index_gap(str(git_repo), None, change) is None
     assert index_gap(str(git_repo), "0" * 40, change) is None
+
+
+def test_index_gap_is_empty_when_the_index_is_ahead_of_the_change(git_repo) -> None:
+    from repowise.core.analysis.changed_lines import change_set, index_gap
+    from repowise.core.analysis.test_selection import TestSelectionConfig, plan_gap
+
+    (git_repo / "mod.py").write_text("a = 9\nb = 2\nc = 3\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "reviewed change")
+    change = change_set(str(git_repo), "HEAD~1..HEAD")
+    (git_repo / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (git_repo / "later.py").write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "after the review")
+
+    # Indexed later: what the base lacks is not something the index lacks.
+    gap = index_gap(str(git_repo), _sha(git_repo, "HEAD"), change)
+    assert gap == []
+    assert plan_gap(gap, TestSelectionConfig()).reasons == ()
+
+
+def test_index_gap_on_a_sibling_branch_counts_only_the_base_side(git_repo) -> None:
+    from repowise.core.analysis.changed_lines import change_set, index_gap
+
+    fork = _sha(git_repo, "HEAD")
+    (git_repo / "indexed_only.py").write_text("i = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "indexed side")
+    indexed = _sha(git_repo, "HEAD")
+    _git(git_repo, "checkout", "-qb", "review", fork)
+    (git_repo / "base_only.py").write_text("b = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "base side")
+    (git_repo / "mod.py").write_text("a = 9\nb = 2\nc = 3\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "change")
+
+    change = change_set(str(git_repo), "HEAD~1..HEAD")
+    assert index_gap(str(git_repo), indexed, change) == ["base_only.py"]

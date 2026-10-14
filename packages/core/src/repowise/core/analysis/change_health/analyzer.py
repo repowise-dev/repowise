@@ -61,6 +61,8 @@ class RevisionAnalysis:
     findings: list[HealthFindingData] = field(default_factory=list)
     analyzed: set[str] = field(default_factory=set)
     skipped: dict[str, str] = field(default_factory=dict)
+    #: Dependents count per file, as this side's centrality gates read it.
+    dependents: dict[str, int] = field(default_factory=dict)
 
     def findings_for(self, paths: set[str]) -> list[HealthFindingData]:
         return [f for f in self.findings if f.file_path in paths]
@@ -73,12 +75,24 @@ class RevisionHealthAnalyzer:
         self.repo_root = repo_root
         self.config = config
 
-    def analyze(self, sources: dict[str, bytes], *, subject_paths: set[str]) -> RevisionAnalysis:
+    def analyze(
+        self,
+        sources: dict[str, bytes],
+        *,
+        subject_paths: set[str],
+        dependents: dict[str, int] | None = None,
+    ) -> RevisionAnalysis:
         """Analyze *sources*, reporting findings for the whole supplied set.
 
         *subject_paths* names the files the caller actually cares about; the
         remainder are closure context that shapes resolution without being
         charged to the change.
+
+        *dependents* is the other side's :attr:`RevisionAnalysis.dependents`.
+        Both sides see only the changed files, so a file's dependents count
+        here is a slice of its real one, and an import added between two
+        changed files can carry it across a centrality gate. Scoring both
+        sides against one count keeps that from reading as a code change.
         """
         result = RevisionAnalysis()
         parsed, usable = self._parse(sources, result)
@@ -89,10 +103,12 @@ class RevisionHealthAnalyzer:
             parsed_files=parsed,
             repo_root=self.repo_root,
             source_reader=MappingSourceReader(usable),
+            file_dependents=dependents,
         )
         report = analyzer.analyze(config=self.config, changed_files=set(usable))
         result.findings = list(report.findings)
         result.analyzed = set(usable)
+        result.dependents = analyzer.file_dependents()
         return result
 
     # -- internals ----------------------------------------------------------

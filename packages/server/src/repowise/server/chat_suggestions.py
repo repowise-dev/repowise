@@ -238,23 +238,22 @@ def _from_get_change_risk(target: str, result: Mapping[str, Any]) -> list[dict[s
     # ``drivers`` is diagnostics-gated and absent from the prefetch, so the
     # measured values named here are the ones the default response always
     # carries.
+    # The tercile label ships only with include=["scales"]; the percentile
+    # always does, so either one means the change was ranked.
     classification = result.get("classification") or result.get("review_priority")
-    if isinstance(classification, str) and classification:
-        percentile = result.get("risk_percentile")
-        # Stored to one decimal; every other surface shows it whole.
-        measured = (
-            f" at p{round(percentile)}" if isinstance(percentile, (int, float)) else ""
-        )
-        out.append(
-            _suggestion(
-                f"What makes {ref} {classification.lower()}{measured}?",
-                "page",
-                "get_change_risk",
-            )
-        )
+    percentile = result.get("risk_percentile")
+    # Stored to one decimal; every other surface shows it whole.
+    measured = f" at p{round(percentile)}" if isinstance(percentile, (int, float)) else ""
+    labelled = isinstance(classification, str) and bool(classification)
+    if labelled:
+        question = f"What makes {ref} {classification.lower()}{measured}?"
+    else:
+        question = f"What drives the diff size of {ref}{measured}?" if measured else ""
+    if question:
+        out.append(_suggestion(question, "page", "get_change_risk"))
     if result.get("is_fix") is True:
         out.append(_suggestion(f"What did {ref} fix?", "page", "get_change_risk"))
-    if isinstance(classification, str) and classification:
+    if question:
         out.append(
             _suggestion(
                 f"Which files in {ref} deserve the closest review?", "page", "get_risk"

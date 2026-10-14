@@ -187,10 +187,11 @@ export function ScopeLine({
   narrowed: number;
   analyzedCommit?: string | null | undefined;
 }) {
+  const noun = filteredTotal === 1 ? "opportunity" : "opportunities";
   const scope =
     context === "all"
-      ? "opportunities"
-      : `${contextLabel(context as PerformanceExecutionContext).toLowerCase()} opportunities`;
+      ? noun
+      : `${contextLabel(context as PerformanceExecutionContext).toLowerCase()} ${noun}`;
   return (
     <p role="status" className="text-xs text-[var(--color-text-tertiary)]">
       <span className="tabular-nums">{filteredTotal.toLocaleString()}</span> {scope}

@@ -46,10 +46,18 @@ SEVERITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2, "critical": 3
 #: Documentation or configuration: skipped, but no code went unexamined.
 NOT_CODE = "not_code"
 
+#: Tree-sitter queries, text templates and similar data: no detector reads
+#: them, yet they can change behaviour, so they are named apart from docs and config.
+NOT_ANALYZABLE_DATA = "not_analyzable_data"
+
+#: Skip reasons that leave no code unexamined.
+NO_CODE_GAP = frozenset({NOT_CODE, NOT_ANALYZABLE_DATA})
+
 #: Why a changed file produced no comparison. Kept per file so a partial run
 #: can never render as a clean one.
 SkipReason = Literal[
     "not_code",
+    "not_analyzable_data",
     "unsupported_language",
     "generated",
     "binary",
@@ -171,7 +179,7 @@ class ChangeHealthDelta:
     resolved_total: int = 0
     unchanged_total: int = 0
     uncertain_total: int = 0
-    #: ``{path: reason}``. Any reason but ``not_code`` means the run was partial.
+    #: ``{path: reason}``. Any reason outside ``NO_CODE_GAP`` means the run was partial.
     skipped: dict[str, str] = field(default_factory=dict)
     timing_ms: float = 0.0
     cache_hit: bool = False
@@ -188,7 +196,7 @@ class ChangeHealthDelta:
     @property
     def code_skipped(self) -> dict[str, str]:
         """Skipped files that may hold code, so their absence leaves a gap."""
-        return {p: r for p, r in self.skipped.items() if r != NOT_CODE}
+        return {p: r for p, r in self.skipped.items() if r not in NO_CODE_GAP}
 
     @property
     def is_clean(self) -> bool:

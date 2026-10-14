@@ -206,6 +206,118 @@ async def test_shifted_call_line_is_dropped(
 
 
 @pytest.mark.asyncio
+async def test_a_moved_definition_loses_its_line_and_call_line(session, populated_db, tmp_path):
+    rid = populated_db
+    py = {"language": "python"}
+    # Two lines were added above `tick` since indexing, and the stale call line
+    # now lands on its docstring, which still names the callee.
+    _write(tmp_path, "app/diag.py", ["import os", "", "def tick():",
+                                     '    """Calls prune_rows once a minute."""', "    prune_rows(1)"])
+    session.add_all(
+        [
+            _sym(rid, "lib/poll.py::prune_rows", lines=(10, 40), **py),
+            _sym(rid, "app/diag.py::tick", lines=(1, 3), **py),
+            _edge(rid, "app/diag.py::tick", "lib/poll.py::prune_rows", call_lines=[4]),
+        ]
+    )
+    await session.flush()
+
+    (row,) = await _callers(session, rid, "lib/poll.py::prune_rows", tmp_path)
+    assert row["name"] == "tick"
+    assert not {"line", "call_line", "text"} & row.keys()
+    ev = await callers.caller_evidence(
+        session, rid, "Who calls prune_rows?", {"prune_rows"}, [], repo_root=tmp_path
+    )
+    (answer_row,) = ev.rows
+    assert not {"line", "call_line", "text"} & answer_row.keys()
+
+
+@pytest.mark.asyncio
+async def test_a_line_that_only_mentions_the_callee_is_not_its_call(
+    session, populated_db, tmp_path
+):
+    rid = populated_db
+    py = {"language": "python"}
+    _write(tmp_path, "app/diag.py", ["def tick():", '    """Calls prune once a minute."""',
+                                     "    prune(1)"])
+    session.add_all(
+        [
+            _sym(rid, "lib/poll.py::prune", lines=(10, 40), **py),
+            _sym(rid, "app/diag.py::tick", lines=(1, 3), **py),
+            _edge(rid, "app/diag.py::tick", "lib/poll.py::prune", call_lines=[2]),
+        ]
+    )
+    await session.flush()
+
+    (row,) = await _callers(session, rid, "lib/poll.py::prune", tmp_path)
+    assert row["line"] == 1
+    assert "call_line" not in row and "text" not in row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "language, ext, lines, text",
+    [
+        # An annotated JVM method starts on its annotation; a method reference calls.
+        ("java", "java", ["  @Override", "  public void tick() {",
+                          "    assertThrows(E.class, parser::prune);", "  }"],
+         "assertThrows(E.class, parser::prune);"),
+        ("typescript", "ts", ["export function tick() {", "  const r = prune<Hooks>(a);", "}"],
+         "const r = prune<Hooks>(a);"),
+        ("shell", "sh", ["tick() {", '  if prune "$dir"; then', "    echo ok", "  fi", "}"],
+         'if prune "$dir"; then'),
+        ("swift", "swift", ["func tick() {", "  prune?(item)", "}"], "prune?(item)"),
+    ],
+)
+async def test_each_language_call_form_is_served(
+    session, populated_db, tmp_path, language, ext, lines, text
+):
+    rid = populated_db
+    _write(tmp_path, f"app/diag.{ext}", lines)
+    session.add_all(
+        [
+            _sym(rid, f"lib/poll.{ext}::prune", lines=(10, 40), language=language),
+            _sym(rid, f"app/diag.{ext}::tick", lines=(1, len(lines)), language=language),
+            _edge(rid, f"app/diag.{ext}::tick", f"lib/poll.{ext}::prune",
+                  call_lines=[next(n for n, t in enumerate(lines, 1) if "prune" in t)]),
+        ]
+    )
+    await session.flush()
+
+    (row,) = await _callers(session, rid, f"lib/poll.{ext}::prune", tmp_path)
+    assert row["line"] == 1
+    assert row["text"] == text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "line, served",
+    [
+        ("  prune_rows dir", True),
+        ("  prune_rows(dir)", True),
+        # Known conservative gap: a bracketless call on a receiver is not read as a call.
+        ("  store.prune_rows dir", False),
+    ],
+)
+async def test_ruby_command_calls(session, populated_db, tmp_path, line, served):
+    rid = populated_db
+    rb = {"language": "ruby"}
+    _write(tmp_path, "app/diag.rb", ["def tick", line, "end"])
+    session.add_all(
+        [
+            _sym(rid, "lib/poll.rb::prune_rows", lines=(10, 40), **rb),
+            _sym(rid, "app/diag.rb::tick", lines=(1, 3), **rb),
+            _edge(rid, "app/diag.rb::tick", "lib/poll.rb::prune_rows", call_lines=[2]),
+        ]
+    )
+    await session.flush()
+
+    (row,) = await _callers(session, rid, "lib/poll.rb::prune_rows", tmp_path)
+    assert row["line"] == 1
+    assert ("text" in row) is served
+
+
+@pytest.mark.asyncio
 async def test_call_through_an_import_alias_is_served(session, populated_db, tmp_path):
     rid = populated_db
     _write(tmp_path, "src/poll.runtime.ts", [

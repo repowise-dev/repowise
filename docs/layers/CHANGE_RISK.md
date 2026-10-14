@@ -11,8 +11,8 @@ learned offline. A typical run is one `git log` walk and a sample of recent
 commits. Branch overlap and the independent-changes report use the index when
 there is one.
 
-Lead with `risk_percentile` and `classification`. They are the
-population-relative signal for review. `fix_history` is separate evidence about
+Lead with `risk_percentile`: the change's rank among recent commits by diff
+size and spread, not a bug predictor. `fix_history` is separate evidence about
 where the change lands. The 0-10 score is a supporting measure of diff size and
 spread, not a probability (see [Accuracy and limits](#accuracy-and-limits)).
 
@@ -54,9 +54,9 @@ Read the result in this order:
 
 | Field | What it is | Act on it |
 |---|---|---|
-| `review_priority` / `classification` | Tercile of the percentile: `low` / `moderate` / `high`, labelled Below typical / Typical / Elevated | Yes: the review signal |
-| `risk_percentile` | Where this change's diff shape ranks among the repo's recent commits (0-100) | Yes |
-| `fix_history` | Prior bug fixes on the touched files, ranked against recent commits | Yes: where to look |
+| `risk_percentile` | Where this change's diff size and spread ranks among the repo's recent commits (0-100) | Yes: size, not danger |
+| `fix_history` | Prior bug fixes on the touched files | Yes: where to look |
+| `review_priority` / `classification` | Tercile of the percentile: `low` / `moderate` / `high`. MCP returns them only with `include=["scales"]` | Same fact as the percentile |
 | `score` | 0-10 diff size and spread, on a single-commit scale | Supporting only |
 | `fallback_band` | `low` / `moderate` / `high` from the score | Only present when there was nothing to rank against |
 | `independent_changes` | Groups of changed files that nothing links | Consider splitting |
@@ -67,7 +67,7 @@ Read the result in this order:
 before?
 
 ```
-These files have broken before · 82nd percentile of this repo's recent commits
+Bug-fix record for HEAD: touches files with prior bug fixes
 File                                 Lines   Prior fixes
 core/pipeline/persist.py                40          21.6
 cli/commands/update_cmd/command.py       6          19.3
@@ -82,7 +82,12 @@ cli/commands/update_cmd/command.py       6          19.3
   times outranks a thousand lines in files never fixed.
 - **`percentile`** ranks that density against the same measure over the repo's
   recent commits. It is `null` when the change touches no fix history, or when
-  fewer than eight sampled commits are available.
+  fewer than eight sampled commits are available. It ships in `--format json`
+  and MCP `include=["diagnostics"]` only, so one percentile leads each surface.
+- **Manifests and lockfiles** (`package.json`, `package-lock.json`,
+  `pyproject.toml`, `go.sum` and the like) are left out of the listed files: a
+  dependency bump edits them, which does not make them files that broke.
+  `density` and its `percentile` still count them.
 
 History is read from before the change: a commit is never ranked against fixes
 it caused. For a range, the record is read at the fork point. Up to 20,000
@@ -241,7 +246,8 @@ branch scan times out.
 
 ## In CI
 
-`--fail-above-percentile P` turns the command into a gate on `risk_percentile`.
+`--fail-above-percentile P` turns the command into a size gate on
+`risk_percentile`. It flags changes larger than most, not likelier to break.
 The absolute 0-10 value never decides.
 
 ```bash

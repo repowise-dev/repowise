@@ -43,6 +43,19 @@ from repowise.server.mcp_server.tool_search import (
         ("anything", "PATH", "path"),
         ("how it works", "bogus", "concept"),
         ("", None, "concept"),
+        # Code punctuation is not a path, even with a "/" inside.
+        ('copy_with(path="/echo_headers")', None, "hybrid"),
+        ('@GetMapping("/owners/{ownerId}")', None, "hybrid"),
+        ("@pytest.mark.anyio", None, "concept"),
+        ("def send(", None, "concept"),
+        ("Add (optional) support", None, "concept"),
+        # Paths, and the explicit mode, are untouched.
+        ("httpx/_client.py", None, "path"),
+        ("src/a/b.ts", None, "path"),
+        ("@angular/core/src/x.ts", None, "path"),
+        ("app/(auth)/page.tsx", None, "path"),
+        ('copy_with(path="/x")', "path", "path"),
+        ("copy_with", None, "symbol"),
     ],
 )
 def test_resolve_mode(query: str, mode: str | None, expected: str) -> None:

@@ -1,9 +1,10 @@
 """Confidence and retrieval_quality grading for get_answer.
 
-Two ratings that answer different questions. ``confidence`` says how much to
-trust the synthesised text; ``retrieval_quality`` says how good the retrieval
-that fed it was. The agent reads the first to decide whether to re-read the
-source, the second to decide whether to search again.
+``confidence`` is the one trust signal an agent reads: how much to trust the
+answer, from how the retrieval went and whether its top hit covers what was
+asked. ``retrieval_quality`` rates the retrieval alone; it feeds the degraded
+grade and is served only under ``include=["diagnostics"]``, so two ratings of
+one answer never disagree in front of the agent.
 
 :func:`_grade_answer` runs the gate cascade — one starting grade from retrieval
 dominance, then a run of gates that can only demote it — and the predicates each
@@ -22,9 +23,11 @@ from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
 from repowise.server.mcp_server._meta import _normalize_target_path
+from repowise.server.mcp_server._retrieval_rank import window_term_weight
 from repowise.server.mcp_server.tool_answer.config import (
     _AGREEMENT_RANK_GAP,
     _AGREEMENT_TOP_RANK_MAX,
+    _ANSWER_COVERAGE_FLOOR,
     _CLAIM_SUPPORT_GATE_ENV,
     _DOMINANCE_ABS_GAP,
     _DOMINANCE_ABS_SCORE_FLOOR,
@@ -39,6 +42,12 @@ from repowise.server.mcp_server.tool_answer.config import (
     _SYMBOL_AGREEMENT_TOP_RANK_MAX,
     _flag_on,
     _opt_in,
+)
+from repowise.server.mcp_server.tool_answer.hydration import (
+    _stem,
+    _stem_hit,
+    _text_stems,
+    _text_words,
 )
 from repowise.server.mcp_server.tool_answer.symbols import is_symbol_lookup_question
 
@@ -482,15 +491,101 @@ def is_dominant(hits: list[dict], *, agreement_dominant: bool = False) -> bool:
     return dominance_reason(hits, agreement_dominant=agreement_dominant) is not None
 
 
-def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
+# Kept apart from `_query_terms.STOPWORDS` on purpose: these are dropped for
+# coverage only, retrieval still searches them.
+# Words that frame what is asked ("how does X work", "where is X implemented")
+# rather than name it. Code rarely says them, so a hit that answers the question
+# would otherwise read as missing its rarest word.
+_QUESTION_FRAME_STEMS = frozenset(
+    _stem(w)
+    for w in (
+        "work", "works", "working", "implement", "implemented", "implements",
+        "implementation", "handle", "handled", "handles", "handling", "happen",
+        "happens", "use", "used", "uses", "using", "way", "done", "code", "logic",
+    )
+)
+
+
+def uncovered_terms(question: str, hits: list[dict]) -> list[str]:
+    """The question's words the top hit leaves out, when they outweigh the rest.
+
+    Dominance compares hits with each other, so a page about something else
+    still dominates a worse page about something else. This asks whether the
+    hit mentions what was asked, in the text the answer was built from. Each
+    word weighs by how few retrieved hits carry it: one every hit shares (the
+    project's own name) counts little, the one naming the topic counts most.
+    Returns ``[]`` when the hit covers at least :data:`_ANSWER_COVERAGE_FLOOR`
+    of that weight.
+    """
+    if not hits:
+        return []
+    served = hit_stems(hits)
+    return _left_out(_question_words(question), served[0], served)
+
+
+def hit_stems(hits: list[dict]) -> list[set[str]]:
+    """Each hit's served text as stems, the population coverage weighs words over."""
+    return [_text_stems(_retrieval_corpus([h], include_paths=True)) for h in hits]
+
+
+def body_leaves_out(question: str, body: dict, served: list[set[str]]) -> list[str]:
+    """The question's words a body served for the name it carries leaves out.
+
+    A question can name a function as the place it asks about ("the FTS
+    timeout in get_answer"): the body is the named code, not the answer. The
+    words besides the body's own name and owner that some retrieved hit
+    carries (*served*, from :func:`hit_stems`) must be in its source, weighed
+    as in :func:`uncovered_terms`. A word no hit carries ("definitions",
+    "parameters") is framing, not a fact found elsewhere, so it never counts.
+    ``[]`` when nothing else is asked.
+    """
+    named = _text_stems(f"{body.get('name') or ''} {body.get('parent_name') or ''}")
+    words = {
+        t: w
+        for t, w in _question_words(question).items()
+        if t not in named and any(_stem_hit(t, s) for s in served)
+    }
+    return _left_out(words, _text_stems(body.get("source") or ""), served)
+
+
+def _question_words(question: str) -> dict[str, str]:
+    return {t: w for t, w in _text_words(question).items() if t not in _QUESTION_FRAME_STEMS}
+
+
+def _left_out(words: dict[str, str], covering: set[str], served: list[set[str]]) -> list[str]:
+    """*words* missing from *covering*, when their rarity weight across *served*
+    exceeds what :data:`_ANSWER_COVERAGE_FLOOR` lets go."""
+    if not words:
+        return []
+    weight = {
+        t: window_term_weight(sum(_stem_hit(t, s) for s in served), len(served)) for t in words
+    }
+    missing = [t for t in words if not _stem_hit(t, covering)]
+    left_out = sum(weight[t] for t in missing)
+    if left_out <= (1.0 - _ANSWER_COVERAGE_FLOOR) * sum(weight.values()):
+        return []
+    return [words[t] for t in missing]
+
+
+def _retrieval_quality(
+    hits: list[dict],
+    agreement_dominant: bool,
+    question: str = "",
+    uncovered: list[str] | None = None,
+) -> str:
     """Rate the retrieval, independently of the text it fed.
 
     Shared with the degraded path so "high" means the same to keyless and keyed
-    callers, and :func:`_degraded_confidence` grades from it. "weak" means
-    exactly "not dominant" per :func:`is_dominant`.
+    callers, and :func:`_degraded_confidence` grades from it. "weak" means not
+    dominant per :func:`is_dominant`, or a top hit that leaves out most of what
+    *question* asks (:func:`uncovered_terms`; pass *uncovered* when already computed).
     """
     top_score = _confidence_score(hits[0]) if hits else 0.0
     dominant_grade = is_dominant(hits, agreement_dominant=agreement_dominant)
+    if uncovered is None:
+        uncovered = uncovered_terms(question, hits) if dominant_grade else []
+    if dominant_grade and uncovered:
+        return "weak"
     if dominant_grade and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
         return "high"
     return "partial" if dominant_grade else "weak"
@@ -606,6 +701,8 @@ class _Grade(NamedTuple):
     #: "symbol_body" may tell the agent not to re-read.
     high_reason: str | None
     ungrounded_values: list[str]
+    #: Question words the top hit leaves out, when they outweigh what it covers.
+    uncovered: list[str]
     frame_unsupported: list[str]
     exclusivity_over_truncated: bool
     withheld_implicated: list[str]
@@ -623,6 +720,7 @@ def _grade_answer(
     symbol_bodies: list[dict],
     served_named_body: bool,
     dominance: str | None,
+    uncovered: list[str] | None = None,
 ) -> _Grade:
     """Grade the synthesised answer through the gate cascade, in order.
 
@@ -632,6 +730,7 @@ def _grade_answer(
 
     ``dominance`` is :func:`dominance_reason`'s verdict, computed once by the
     caller and used for the starting grade, the ceiling, and the note's reason.
+    ``uncovered`` is :func:`uncovered_terms`, when the caller already has it.
     """
     dominant = dominance is not None
     _ratio = _top_two_score_ratio(hits)
@@ -752,6 +851,15 @@ def _grade_answer(
     if lookup_body_truncated:
         confidence = "medium"
 
+    # Coverage gate, last so a more specific gate writes the note: dominance
+    # says the top hit beat the others, not that it is about the question. A
+    # served body does not exempt it: a question can name a symbol in passing.
+    gap: list[str] = []
+    if confidence == "high":
+        gap = uncovered_terms(question, hits) if uncovered is None else uncovered
+        if gap:
+            confidence = "medium"
+
     # Non-dominant ceiling: with no single dominant page the answer must not
     # read "high" (cite without verifying) unless it EARNED high. Keyed on
     # `earn_high`, not `earned_body`, so the grounding opt-in really restores
@@ -772,6 +880,7 @@ def _grade_answer(
         ratio=_ratio,
         top_score=_top_score,
         ungrounded_values=ungrounded_values,
+        uncovered=gap,
         frame_unsupported=frame_unsupported,
         exclusivity_over_truncated=exclusivity_over_truncated,
         withheld_implicated=withheld_implicated,

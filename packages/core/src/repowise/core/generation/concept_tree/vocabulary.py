@@ -31,6 +31,7 @@ from typing import Any
 
 from repowise.core import fs_walk
 from repowise.core.exclusion import build_exclude_spec, is_excluded
+from repowise.core.ingestion.traverser import is_output_dir
 
 from .grouping import ConceptGroup
 
@@ -901,7 +902,9 @@ def _scan_tree(repo_root: Path) -> tuple[list[tuple[str, str]], frozenset[str]]:
     truncated = False
     spec = _exclude_spec(repo_root)
 
-    for dirpath, dirnames, filenames in fs_walk.walk_repo(repo_root, prune_dirs=_EXTRA_PRUNED_DIRS):
+    for dirpath, dirnames, filenames in fs_walk.walk_repo(
+        repo_root, prune_dirs=_EXTRA_PRUNED_DIRS, prune=is_output_dir
+    ):
         # Hidden directories are tool and agent territory — CI definitions,
         # editor state, hook configuration — never the subsystem prose that
         # answers "was this term built". The walker already prunes the named

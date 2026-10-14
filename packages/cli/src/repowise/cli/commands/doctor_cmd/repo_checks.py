@@ -241,6 +241,41 @@ def _autosync_hook_check(repo_path: _DoctorPath) -> DoctorCheck:
     return _check("Post-commit hook", True, state)
 
 
+def _attribution_notes_check(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """At ``attribution.capture: notes``, whether notes travel with the repo.
+
+    None at every other level. Notes reach teammates only through a fetch
+    refspec and an explicit push, and survive a rebase only via
+    ``notes.rewriteRef``; without them coverage is silently low elsewhere.
+    """
+    name = "Attribution notes"
+    try:
+        from repowise.core.attribution import load_attribution_settings
+
+        if load_attribution_settings(repo_path).capture != "notes":
+            return None
+        from repowise.core.edit_capture.notes import FETCH_REFSPEC, NOTES_REF, refspec_status
+
+        status = refspec_status(_DoctorPath(repo_path))
+    except OSError as exc:
+        return _check(name, True, f"could not read git config ({exc})")
+    if not status["remote"]:
+        return _check(name, True, "no origin remote, so notes stay on this machine")
+    push = (
+        "push refspec set"
+        if status["push"]
+        else f"share them with 'git push origin {NOTES_REF}'"
+    )
+    problems = []
+    if not status["fetch"]:
+        problems.append(f"run 'git config --add remote.origin.fetch \"{FETCH_REFSPEC}\"'")
+    if not status["rewrite_ref"]:
+        problems.append(f"run 'git config --add notes.rewriteRef {NOTES_REF}'")
+    if problems:
+        return _check(name, False, "; ".join([*problems, push]))
+    return _check(name, True, f"fetch refspec and notes.rewriteRef set; {push}")
+
+
 def _run_repo_checks(
     repo_path: _DoctorPath, repair: bool, *, fmt: str = "table"
 ) -> tuple[bool, list[DoctorCheck]]:
@@ -272,6 +307,9 @@ def _run_repo_checks(
     # 2b. Post-commit auto-sync hook. init installs it by default; not having
     # it is a choice (--no-hook), so its absence is informational, not a fail.
     checks.append(_autosync_hook_check(repo_path))
+    notes_check = _attribution_notes_check(repo_path)
+    if notes_check is not None:
+        checks.append(notes_check)
 
     # 3. Database connectable?
     db_path = repowise_dir / "wiki.db"
@@ -730,7 +768,7 @@ def _run_repo_checks(
     checks.extend(_distill_checks(repo_path))
 
     # 12. Claude Code MCP registration: wedged-path detection
-    registration_check, registration_wedged = _claude_registration_check()
+    registration_check, registration_wedged = _claude_registration_check(repo_path)
     checks.append(registration_check)
 
     # 12b. Does that registration actually start? Reported separately, because
@@ -739,7 +777,7 @@ def _run_repo_checks(
     checks.append(_mcp_responds_check())
 
     # 13. Per-agent health, reported by each agent's own descriptor
-    agent_checks, agents_need_refresh = _agent_target_checks()
+    agent_checks, agents_need_refresh = _agent_target_checks(repo_path)
     checks.extend(agent_checks)
 
     all_ok = all(c.ok for c in checks)
@@ -993,7 +1031,9 @@ def _run_repo_checks(
     return all_ok, checks
 
 
-def _agent_target_checks() -> tuple[list[DoctorCheck], bool]:
+def _agent_target_checks(
+    repo_path: _DoctorPath | None = None,
+) -> tuple[list[DoctorCheck], bool]:
     """One row per agent, reported by that agent's own descriptor.
 
     Nothing here knows what any particular agent's health means: each
@@ -1032,7 +1072,7 @@ def _agent_target_checks() -> tuple[list[DoctorCheck], bool]:
     for target in targets:
         name = f"Agent: {target.id}"
         try:
-            report = target.doctor()
+            report = target.doctor(repo_path=repo_path)
         except Exception as exc:
             checks.append(_check(name, True, f"Could not check: {exc}"))
             continue
@@ -1120,7 +1160,9 @@ def _mcp_responds_check() -> DoctorCheck:
         return _check(CHECK_NAME, True, f"Could not check: {exc}")
 
 
-def _claude_registration_check() -> tuple[DoctorCheck, bool]:
+def _claude_registration_check(
+    repo_path: _DoctorPath | None = None,
+) -> tuple[DoctorCheck, bool]:
     """Detect a wedged Claude Code MCP registration (stale paths).
 
     The global ``~/.claude/settings.json`` entry can end up pointing at a
@@ -1129,6 +1171,11 @@ def _claude_registration_check() -> tuple[DoctorCheck, bool]:
     server silently fails to start in every Claude Code session. Returns
     ``(check, wedged)``; ``wedged`` drives the ``--repair`` re-registration.
     Absence of a registration is informational, never a failure.
+
+    With *repo_path*, an entry serving a different repo gets an advisory note
+    unless another Claude Code scope registers this repo. Advisory because the
+    entry is not broken, and never repaired: repointing the one global entry
+    would break the repo it serves.
 
     This is a *static* check. Whether the server actually starts is
     ``_mcp_responds_check``.
@@ -1154,9 +1201,82 @@ def _claude_registration_check() -> tuple[DoctorCheck, bool]:
             problems.append(f"registered path missing: {target}")
         if problems:
             return _check(name, False, "; ".join(problems) + " (rerun with --repair)"), True
+        if target is not None and repo_path is not None and not _registers_repo(target, repo_path):
+            detail = (
+                f"serves {target}; this repo is not registered (run `repowise agents add "
+                "--target=claude-code --scope=project` for a project entry)"
+            )
+            return _check(name, True, detail), False
         return _check(name, True, target or "registered"), False
     except Exception as exc:
         return _check(name, True, f"Could not check: {exc}"), False
+
+
+def _registers_repo(target: str, repo_path: _DoctorPath) -> bool:
+    """Whether Claude Code serves *repo_path* from the global entry or another scope.
+
+    The global *target* counts when it is what init registers for this repo
+    (the workspace root inside a workspace). Otherwise a repowise entry naming
+    this repo in ``.mcp.json`` (project scope) or ``~/.claude.json`` (user or
+    local scope) counts; one copied from another repo does not.
+    """
+    from repowise.cli.agent_targets.targets.claude_code import project_mcp_config_path
+    from repowise.cli.editor_integrations.claude_config import (
+        _resolve_mcp_target,
+        _stored_repowise_entry,
+    )
+    from repowise.cli.helpers import _same_path
+
+    served = (repo_path, _resolve_mcp_target(repo_path))
+
+    def serves(path: str) -> bool:
+        # Claude Code starts a project server in the repo, so a relative path
+        # is relative to it.
+        return any(_same_path(repo_path / path, s) for s in served)
+
+    def names_repo(entry: object) -> bool:
+        path = _registration_target(entry) if isinstance(entry, dict) else None
+        return path is not None and serves(path)
+
+    if serves(target):
+        return True
+    other_scopes = [
+        _stored_repowise_entry(project_mcp_config_path(repo_path)),
+        *_claude_json_entries(repo_path),
+    ]
+    return any(names_repo(e) for e in other_scopes)
+
+
+def _claude_json_entries(repo_path: _DoctorPath) -> list[object]:
+    """Repowise entries in ``~/.claude.json``: user scope, then this repo's local scope.
+
+    Read here only, best effort: an unreadable file yields nothing, so the
+    worst case is the advisory note above.
+    """
+    import json
+
+    from repowise.cli.helpers import _same_path
+
+    try:
+        data = json.loads((_DoctorPath.home() / ".claude.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    scopes = [data]
+    projects = data.get("projects")
+    if isinstance(projects, dict):
+        scopes += [
+            v
+            for k, v in projects.items()
+            if isinstance(v, dict) and _same_path(_DoctorPath(k), repo_path)
+        ]
+    entries: list[object] = []
+    for scope in scopes:
+        servers = scope.get("mcpServers")
+        if isinstance(servers, dict) and "repowise" in servers:
+            entries.append(servers["repowise"])
+    return entries
 
 
 def _registration_target(entry: dict) -> str | None:

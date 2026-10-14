@@ -96,7 +96,9 @@ def emitting_build() -> str:
 
         # The directory rather than ``__file__``: two modules in one install
         # must not read as two installs.
-        install = hashlib.sha1(os.path.dirname(__file__).encode("utf-8", "replace")).hexdigest()
+        install = hashlib.sha1(
+            os.path.dirname(__file__).encode("utf-8", "replace"), usedforsecurity=False
+        ).hexdigest()
         _BUILD = f"{__version__}+{install[:8]}"
     return _BUILD
 

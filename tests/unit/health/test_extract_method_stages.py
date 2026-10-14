@@ -133,12 +133,15 @@ def test_persistence_shape_yields_a_staged_plan():
     )
 
 
-def test_stage_names_come_from_timed_labels_and_banners():
-    stages = _plans(_persist(sections=8, extend=()))["persist"].plan["stages"]
-    # A stage covering one section takes its label; one spanning two is named
-    # for the host and its subject.
-    for stage in stages:
-        assert stage["suggested_name"].startswith("_persist_")
+def test_stage_names_are_numbered_placeholders():
+    plan = _plans(_persist(sections=8, extend=()))["persist"].plan
+    names = [stage["suggested_name"] for stage in plan["stages"]]
+    # Labels and banners name nothing: the agent applying the plan names each.
+    assert names == ["_extracted_helper"] + [f"_extracted_helper_{n}" for n in range(2, len(names) + 1)]
+    for stage in plan["stages"]:
+        name = stage["suggested_name"]
+        assert stage["new_symbol"]["signature_text"].startswith(f"async def {name}(")
+        assert f"await {name}(" in stage["call_site"]["new_text"]
 
 
 def test_shared_values_travel_on_a_parameter_object():
@@ -670,20 +673,6 @@ def test_a_loop_body_is_cut_and_the_loop_stays_in_the_function():
     residual = plan.plan["orchestrator"]
     # The loop's own decision point stays with the function.
     assert residual["ccn_after"] >= 2
-    # A stage running across two banners is named after both.
-    assert "_handle_gamma_and_delta" in [s["suggested_name"] for s in plan.plan["stages"]]
-
-
-def test_a_name_joining_sections_keeps_shared_words_once():
-    from repowise.core.analysis.health.refactoring.helper_naming import _joined
-
-    assert _joined([["persist", "kg"], ["persist", "git"]]) == ["persist", "kg", "and", "git"]
-    assert _joined([["persist", "kg"], ["persist", "git"], ["persist", "decisions"]]) == [
-        "persist", "kg", "git", "and", "decisions"
-    ]
-    # A section adding no words of its own, or a name past six words, gives none.
-    assert _joined([["load", "config"], ["load"]]) == []
-    assert _joined([["load", "the", "pages"], ["sweep", "old", "rows"]]) == []
 
 
 def test_a_value_the_next_iteration_reads_comes_back_out_of_its_stage():

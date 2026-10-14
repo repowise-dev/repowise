@@ -229,6 +229,7 @@ async def test_history_secrets_only_scan_skips_non_secret_patterns(session: Asyn
     scanner._blob_introductions = lambda *a, **k: (  # type: ignore[assignment]
         {"blob1": "abc123"},
         {"abc123": "2026-01-01T00:00:00+00:00"},
+        {},
     )
     scanner._read_blobs_batch = lambda *a, **k: {"blob1": content}  # type: ignore[assignment]
     scanner._is_source = staticmethod(lambda p: True)  # type: ignore[assignment]
@@ -260,6 +261,7 @@ async def test_history_unique_blob_scanned_once(session: AsyncSession) -> None:
             "c1": "2026-01-01T00:00:00+00:00",
             "c2": "2026-02-01T00:00:00+00:00",
         },
+        {},
     )
 
     def _read(*a, **k):
@@ -281,7 +283,7 @@ async def test_history_progress_fires_for_clean_repo(session: AsyncSession) -> N
     scanner = HistorySecurityScanner(session, "repo-1")
     scanner._list_commits = lambda *a, **k: [("abc123", "2026-01-01T00:00:00+00:00")]  # type: ignore[assignment]
     scanner._unique_blobs = lambda *a, **k: {"blob1": "README.md"}  # type: ignore[assignment]
-    scanner._blob_introductions = lambda *a, **k: ({}, {})  # type: ignore[assignment]
+    scanner._blob_introductions = lambda *a, **k: ({}, {}, {})  # type: ignore[assignment]
     scanner._read_blobs_batch = lambda *a, **k: {"blob1": "# docs\n"}  # type: ignore[assignment]
     scanner._is_source = staticmethod(lambda p: True)  # type: ignore[assignment]
 
@@ -382,6 +384,30 @@ async def test_history_scan_on_real_repo_records_commit_provenance(
         assert m["commit_at"] is not None, "introducing commit has no date"
 
 
+async def test_history_drops_secrets_in_a_gitleaks_allowlisted_path(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    (secret_repo / ".gitleaks.toml").write_text("[allowlist]\npaths = ['''^leak\\.py$''']\n")
+    await HistorySecurityScanner(session, "repo-1").scan_history(secret_repo, secrets_only=True)
+    assert not (await session.execute(text("SELECT 1 FROM security_findings"))).all()
+
+
+async def test_history_reports_a_blob_at_its_path_outside_the_allowlist(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    # One blob at two paths; git lists the allowlisted one first.
+    (secret_repo / ".gitleaks.toml").write_text("[allowlist]\npaths = ['''^(a_fixtures/|leak)''']\n")
+    secret = (secret_repo / "leak.py").read_text()
+    for folder in ("a_fixtures", "src"):
+        (secret_repo / folder).mkdir()
+        (secret_repo / folder / "creds.py").write_text(secret)
+    _git(secret_repo, "add", ".")
+    _git(secret_repo, "commit", "-m", "copy the key")
+    await HistorySecurityScanner(session, "repo-1").scan_history(secret_repo, secrets_only=True)
+    rows = (await session.execute(text("SELECT file_path FROM security_findings"))).all()
+    assert {r._mapping["file_path"] for r in rows} == {"src/creds.py"}
+
+
 async def test_history_default_skips_test_fixtures_and_placeholders(
     session: AsyncSession, secret_repo: Path
 ) -> None:
@@ -479,7 +505,7 @@ async def test_blob_introductions_resolves_real_blobs(secret_repo: Path) -> None
     """Every source blob rev-list reports must resolve to an introducing commit."""
     scanner = HistorySecurityScanner.__new__(HistorySecurityScanner)
     blobs = scanner._unique_blobs(secret_repo, None, None)
-    intro, dates = scanner._blob_introductions(secret_repo, None, None)
+    intro, dates, _ = scanner._blob_introductions(secret_repo, None, None)
 
     source = [sha for sha, path in blobs.items() if HistorySecurityScanner._is_source(path)]
     assert source, "no source blobs found in the fixture repo"

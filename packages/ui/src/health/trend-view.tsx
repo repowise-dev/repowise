@@ -64,6 +64,126 @@ function alertTreatment(kind: string): { color: string; label: string; watch: bo
   return { color: "var(--color-warning)", label: "Predicted decline.", watch: false };
 }
 
+type TrendSummary = HealthTrendResponse["summary"];
+
+// "0.00 vs. 7.5" is the shape a delta takes when nothing happened, and it
+// reads as a measurement rather than as "no news". Say it plainly instead.
+function deltaSub(delta: number | null, previous: number | null) {
+  if (delta == null) return "no prior snapshot";
+  if (Math.abs(delta) < 0.05) return "unchanged since last index";
+  return `${formatDelta(delta)} vs. ${previous?.toFixed(1) ?? "—"}`;
+}
+
+function codeHealthStat(summary: TrendSummary, otherReading: boolean): RibbonStat {
+  return {
+    label: "Code health",
+    value: otherReading ? "—" : formatScore(summary.current_average_health),
+    ...(otherReading
+      ? { sub: "recorded on the full score" }
+      : {
+          valueColor: scoreTextColor(summary.current_average_health),
+          sub: deltaSub(summary.average_delta, summary.previous_average_health),
+          ...(Math.abs(summary.average_delta ?? 0) >= 0.05
+            ? { subColor: deltaColor(summary.average_delta) }
+            : {}),
+        }),
+  };
+}
+
+function hotspotStat(summary: TrendSummary, otherReading: boolean): RibbonStat {
+  // Absent under a narrowed scope: only the average was recorded for both
+  // populations, so a repo-wide hotspot figure would describe files this view
+  // has dropped. Say so rather than printing one.
+  const hotspot = summary.current_hotspot_health;
+  return {
+    label: "Hotspot health",
+    value: otherReading || hotspot == null ? "—" : formatScore(hotspot),
+    ...(otherReading
+      ? { sub: "recorded on the full score" }
+      : {
+          ...(hotspot == null ? {} : { valueColor: scoreTextColor(hotspot) }),
+          sub:
+            hotspot == null
+              ? "not measured for this scope"
+              : deltaSub(summary.hotspot_delta, summary.previous_hotspot_health),
+          ...(hotspot != null && Math.abs(summary.hotspot_delta ?? 0) >= 0.05
+            ? { subColor: deltaColor(summary.hotspot_delta) }
+            : {}),
+        }),
+  };
+}
+
+function TrendAlerts({ alerts }: { alerts: HealthTrendResponse["alerts"] }) {
+  if (alerts.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      {alerts.map((a, i) => {
+        const { color, label, watch } = alertTreatment(a.kind);
+        const Icon = watch ? Info : AlertTriangle;
+        return (
+          <p key={i} className="flex items-start gap-2 text-sm">
+            <Icon className="mt-0.5 h-4 w-4 shrink-0" style={{ color }} aria-hidden />
+            <span>
+              <strong className="font-semibold" style={{ color }}>
+                {label}
+              </strong>{" "}
+              <span className="text-[var(--color-text-secondary)]">{a.message}</span>
+            </span>
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function slopeCaption(data: HealthTrendResponse) {
+  const drawn = Math.min(SLOPE_MAX, data.file_deltas.length);
+  // Without a server-sent total there is no way to know whether
+  // the list arrived complete, so claim only what is drawn.
+  // Saying "all N" off the response length would be a flat lie
+  // against a backend that caps at N and does not report it.
+  if (data.file_deltas_total == null) {
+    return `Showing the ${drawn} largest ${drawn === 1 ? "change" : "changes"}.`;
+  }
+  const total = data.file_deltas_total;
+  return drawn < total
+    ? `Showing the ${drawn} largest of ${total} files that changed.`
+    : `All ${total} ${total === 1 ? "file that changed" : "files that changed"}.`;
+}
+
+function FileDeltasSection({
+  data,
+  singleSnapshot,
+}: {
+  data: HealthTrendResponse;
+  singleSnapshot: boolean;
+}) {
+  return (
+    <section className="flex flex-col gap-2">
+      <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        Largest score changes since last index
+      </h3>
+      {data.file_deltas.length === 0 ? (
+        <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
+          {singleSnapshot
+            ? "Per-file movement compares the last two snapshots, so it appears with the second one."
+            : "No file changed score between the last two snapshots."}
+        </p>
+      ) : (
+        <>
+          {/* Two caps sit between the response and the picture — the server
+              slices its list, and the chart draws the largest few of what
+              arrives. Naming the drawn count against the true total is the
+              difference between "these are the changes" and "these are the
+              biggest of N". */}
+          <p className="text-xs text-[var(--color-text-tertiary)]">{slopeCaption(data)}</p>
+          <TrendSlopeChart points={data.file_deltas} max={SLOPE_MAX} />
+        </>
+      )}
+    </section>
+  );
+}
+
 
 export function TrendView({
   data,
@@ -108,20 +228,6 @@ export function TrendView({
   }
 
   const singleSnapshot = data.snapshot_count <= 1;
-  const { summary } = data;
-
-  // "0.00 vs. 7.5" is the shape a delta takes when nothing happened, and it
-  // reads as a measurement rather than as "no news". Say it plainly instead.
-  const deltaSub = (delta: number | null, previous: number | null) => {
-    if (delta == null) return "no prior snapshot";
-    if (Math.abs(delta) < 0.05) return "unchanged since last index";
-    return `${formatDelta(delta)} vs. ${previous?.toFixed(1) ?? "—"}`;
-  };
-
-  // Absent under a narrowed scope: only the average was recorded for both
-  // populations, so a repo-wide hotspot figure would describe files this view
-  // has dropped. Say so rather than printing one.
-  const hotspot = summary.current_hotspot_health;
 
   // Snapshots recorded the full score, so there is no code-shape series to
   // read. These two carry the same labels as the lede's figures, and showing
@@ -130,35 +236,8 @@ export function TrendView({
   const otherReading = counts === "code_shape";
 
   const stats: RibbonStat[] = [
-    {
-      label: "Code health",
-      value: otherReading ? "—" : formatScore(summary.current_average_health),
-      ...(otherReading
-        ? { sub: "recorded on the full score" }
-        : {
-            valueColor: scoreTextColor(summary.current_average_health),
-            sub: deltaSub(summary.average_delta, summary.previous_average_health),
-            ...(Math.abs(summary.average_delta ?? 0) >= 0.05
-              ? { subColor: deltaColor(summary.average_delta) }
-              : {}),
-          }),
-    },
-    {
-      label: "Hotspot health",
-      value: otherReading || hotspot == null ? "—" : formatScore(hotspot),
-      ...(otherReading
-        ? { sub: "recorded on the full score" }
-        : {
-            ...(hotspot == null ? {} : { valueColor: scoreTextColor(hotspot) }),
-            sub:
-              hotspot == null
-                ? "not measured for this scope"
-                : deltaSub(summary.hotspot_delta, summary.previous_hotspot_health),
-            ...(hotspot != null && Math.abs(summary.hotspot_delta ?? 0) >= 0.05
-              ? { subColor: deltaColor(summary.hotspot_delta) }
-              : {}),
-          }),
-    },
+    codeHealthStat(data.summary, otherReading),
+    hotspotStat(data.summary, otherReading),
     {
       label: "Snapshots",
       value: String(data.snapshot_count),
@@ -170,25 +249,7 @@ export function TrendView({
     <div className="flex flex-col gap-6">
       <StatRibbon stats={stats} />
 
-      {data.alerts.length > 0 && (
-        <div className="flex flex-col gap-2">
-          {data.alerts.map((a, i) => {
-            const { color, label, watch } = alertTreatment(a.kind);
-            const Icon = watch ? Info : AlertTriangle;
-            return (
-              <p key={i} className="flex items-start gap-2 text-sm">
-                <Icon className="mt-0.5 h-4 w-4 shrink-0" style={{ color }} aria-hidden />
-                <span>
-                  <strong className="font-semibold" style={{ color }}>
-                    {label}
-                  </strong>{" "}
-                  <span className="text-[var(--color-text-secondary)]">{a.message}</span>
-                </span>
-              </p>
-            );
-          })}
-        </div>
-      )}
+      <TrendAlerts alerts={data.alerts} />
 
       {singleSnapshot ? (
         <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
@@ -199,43 +260,7 @@ export function TrendView({
         <TrendChart history={[...data.history].reverse()} />
       )}
 
-      <section className="flex flex-col gap-2">
-        <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          Largest score changes since last index
-        </h3>
-        {data.file_deltas.length === 0 ? (
-          <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
-            {singleSnapshot
-              ? "Per-file movement compares the last two snapshots, so it appears with the second one."
-              : "No file changed score between the last two snapshots."}
-          </p>
-        ) : (
-          <>
-            {/* Two caps sit between the response and the picture — the server
-                slices its list, and the chart draws the largest few of what
-                arrives. Naming the drawn count against the true total is the
-                difference between "these are the changes" and "these are the
-                biggest of N". */}
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              {(() => {
-                const drawn = Math.min(SLOPE_MAX, data.file_deltas.length);
-                // Without a server-sent total there is no way to know whether
-                // the list arrived complete, so claim only what is drawn.
-                // Saying "all N" off the response length would be a flat lie
-                // against a backend that caps at N and does not report it.
-                if (data.file_deltas_total == null) {
-                  return `Showing the ${drawn} largest ${drawn === 1 ? "change" : "changes"}.`;
-                }
-                const total = data.file_deltas_total;
-                return drawn < total
-                  ? `Showing the ${drawn} largest of ${total} files that changed.`
-                  : `All ${total} ${total === 1 ? "file that changed" : "files that changed"}.`;
-              })()}
-            </p>
-            <TrendSlopeChart points={data.file_deltas} max={SLOPE_MAX} />
-          </>
-        )}
-      </section>
+      <FileDeltasSection data={data} singleSnapshot={singleSnapshot} />
     </div>
   );
 }

@@ -13,7 +13,7 @@ import { cn } from "../lib/cn";
 import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
 
 export type CommitSort = "risk" | "date";
-export type CommitAuthorship = "all" | "human" | "agent";
+export type CommitAuthorship = "all" | "human" | "agent" | "unknown";
 export type CommitKind = "all" | "high" | "fixes";
 
 export interface CommitTableProps {
@@ -231,8 +231,9 @@ export function CommitTable({
             {(
               [
                 { key: "all", label: "Everyone" },
-                { key: "human", label: "Humans" },
                 { key: "agent", label: "Agents" },
+                { key: "human", label: "Human-attested" },
+                { key: "unknown", label: "Unknown" },
               ] as { key: CommitAuthorship; label: string }[]
             ).map((a) => (
               <button

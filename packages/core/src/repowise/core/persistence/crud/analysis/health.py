@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -22,6 +22,7 @@ from ....analysis.health.finding_identity import (
     legacy_finding_public_id,
 )
 from ....analysis.health.governance import GOVERNANCE_BIOMARKERS
+from ....analysis.health.grading import analysed_share
 
 # The comparator is pure and lives with the health read models; only the SQL
 # that feeds it belongs here. Re-imported rather than moved out of reach: the
@@ -29,9 +30,9 @@ from ....analysis.health.governance import GOVERNANCE_BIOMARKERS
 from ....analysis.health.ranking import (
     deduction_by_path,
     sort_metrics_worst_first,
-    worst_metric,
+    worst_kpis,
 )
-from ....analysis.health.rows import detail_map, split_tests, split_unscored
+from ....analysis.health.rows import detail_map, split_unscored
 from ....analysis.health.scope import scores_language
 from ....analysis.health.scoring import ADVISORY_DIMENSION, SCORE_FIELDS, nloc_weighted_attr
 from ....analysis.health.worth import LowPriority, finding_priorities
@@ -47,7 +48,9 @@ from ...models import (
     _now_utc,
 )
 from .._shared import _BATCH_SIZE
+from ..graph import get_test_file_paths
 from .plain_rows import plain_rows
+from .shown import shown
 
 
 def _health_finding_row_kwargs(finding: Any, repository_id: str) -> dict:
@@ -415,7 +418,26 @@ async def backfill_module_attribution(
     return changed
 
 
-async def _health_exclude_spec(session: AsyncSession, repository_id: str) -> Any:
+def open_finding_count(findings: Iterable[Any]) -> int:
+    """The open findings total every health headline prints.
+
+    Advisory findings carry a zero health impact, so counting them would grow
+    the headline without anything having got worse.
+    """
+    return sum(1 for f in findings if getattr(f, "dimension", None) != ADVISORY_DIMENSION)
+
+
+async def health_exclude_spec(
+    session: AsyncSession, repository_id: str, repo_path: Path | str | None = None
+) -> Any:
+    """The exclude patterns every health surface narrows its files by.
+
+    The repository's settings and ``exclude_patterns`` only. Not the gitignore
+    stack: ingestion keeps a file git tracks even when an ignore rule matches
+    it, so a stored row under such a rule is a real file of the repository.
+    ``repo_path`` is where to read the config when the caller serves a
+    checkout other than the stored ``local_path``.
+    """
     repo = await session.get(Repository, repository_id)
     if repo is None:
         return None
@@ -441,7 +463,7 @@ async def _health_exclude_spec(session: AsyncSession, repository_id: str) -> Any
     try:
         from repowise.core.repo_config import load_repo_config
 
-        cfg = load_repo_config(Path(repo.local_path))
+        cfg = load_repo_config(Path(repo_path or repo.local_path))
         if isinstance(cfg, dict):
             _add(cfg.get("exclude_patterns"))
     except Exception:
@@ -474,15 +496,20 @@ async def get_health_findings(
     exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
     include_withheld: bool = False,
+    include_unverified: bool = False,
     limit: int | None = None,
 ) -> list[HealthFinding]:
-    """Findings for one repository: worth doing first ahead of lower-priority
-    ones (``worth.finding_priorities``), each part ordered by health impact.
+    """Findings for one repository: production ahead of test files, worth doing
+    first ahead of lower-priority ones (``worth.finding_priorities``), each part
+    ordered by health impact.
 
     Finding types the registry withholds (``finding_registry``) are left out,
     so every surface built on this read shows only what has earned a place; a
     provisional type named in ``biomarker_type`` is an explicit request and is
-    returned. ``include_withheld`` is for analysis that must see every row.
+    returned. Files of a language the registry gates for health findings are
+    left out too, unless ``include_unverified`` (which also opts into every
+    provisional type). ``include_withheld`` is for analysis that must see every
+    row.
 
     ``exclude_dimensions`` is how a general queue keeps a dimension out of a
     ranking it does not share units with. It is ignored when ``dimension``
@@ -517,7 +544,15 @@ async def get_health_findings(
     if types:
         q = q.where(HealthFinding.biomarker_type.in_(types))
     if not include_withheld:
-        q = q.where(HealthFinding.biomarker_type.not_in(excluded_types(requested=types)))
+        q = q.where(
+            shown(
+                "health",
+                HealthFinding.biomarker_type,
+                HealthFinding.file_path,
+                requested=types,
+                include_unverified=include_unverified,
+            )
+        )
     if file_path is not None:
         q = q.where(HealthFinding.file_path == file_path)
     if file_paths is not None:
@@ -544,7 +579,7 @@ async def get_health_findings(
     result = await session.execute(q)
     kept = _filter_excluded_paths(
         list(result.scalars().all()),
-        await _health_exclude_spec(session, repository_id),
+        await health_exclude_spec(session, repository_id),
     )
     # A filter that drops some of a function's findings would misread its
     # shape, so the tier then reads every open finding on the kept files.
@@ -554,8 +589,14 @@ async def get_health_findings(
         if narrowed
         else dict(zip((f.id for f in kept), finding_priorities(kept), strict=True))
     )
+    # Test files go below production, then lower-priority below worth doing.
     # Stable: each tier keeps the impact order. The cap applies after the tier.
-    ordered = sorted(kept, key=lambda f: reasons[f.id] is not None)
+    tests = await get_test_file_paths(
+        session,
+        repository_id,
+        None if file_path is None and file_paths is None else {f.file_path for f in kept},
+    )
+    ordered = sorted(kept, key=lambda f: (f.file_path in tests, reasons[f.id] is not None))
     return ordered if limit is None else ordered[:limit]
 
 
@@ -638,7 +679,7 @@ async def get_health_metrics(
     result = await session.execute(q)
     rows = _filter_excluded_paths(
         list(result.scalars().all()),
-        await _health_exclude_spec(session, repository_id),
+        await health_exclude_spec(session, repository_id),
     )
     if len(rows) < 2:
         # Nothing to order. Skips the aggregate for the single-file lookups
@@ -655,8 +696,12 @@ async def get_health_metrics(
     )
 
 
-async def get_average_health(session: AsyncSession, repository_id: str) -> float | None:
-    """The repo's NLOC-weighted average health score, or ``None`` if unmeasured.
+async def get_headline_health(
+    session: AsyncSession, repository_id: str
+) -> tuple[float | None, float | None]:
+    """``(average health, analysed share)``: the badge's figure and its band gate.
+
+    The average is ``None`` if unmeasured; the share is ``analysed_share``.
 
     Numerically identical to ``get_health_summary()["average_health"]`` — same
     weighting, same ``max(nloc, 1)`` floor, same 2dp rounding — for callers that
@@ -684,11 +729,12 @@ async def get_average_health(session: AsyncSession, repository_id: str) -> float
                 )
             ).all()
         ),
-        await _health_exclude_spec(session, repository_id),
+        await health_exclude_spec(session, repository_id),
     )
     # Files with no score (no health dialect for their language) are skipped,
     # so a repository of nothing else reads unmeasured, never 10.0.
-    return _rounded(nloc_weighted_attr(rows, "score"))
+    scored, unanalysed = split_unscored(rows)
+    return _rounded(nloc_weighted_attr(scored, "score")), analysed_share(len(scored), unanalysed)
 
 
 async def get_file_language_map(session: AsyncSession, repository_id: str) -> dict[str, str]:
@@ -731,12 +777,12 @@ async def _open_finding_totals_rows(session: AsyncSession, repository_id: str) -
         .where(
             HealthFinding.repository_id == repository_id,
             HealthFinding.status == "open",
-            HealthFinding.biomarker_type.not_in(excluded_types()),
+            shown("health", HealthFinding.biomarker_type, HealthFinding.file_path),
         )
         .order_by(HealthFinding.health_impact.desc(), HealthFinding.id)
     )
     return _filter_excluded_paths(
-        plain_rows(rows), await _health_exclude_spec(session, repository_id)
+        plain_rows(rows), await health_exclude_spec(session, repository_id)
     )
 
 
@@ -770,6 +816,7 @@ async def get_health_summary(
         return {
             "file_count": 0,
             "unanalysed_file_count": unanalysed,
+            "analysed_share": analysed_share(0, unanalysed),
             "average_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,
@@ -815,15 +862,10 @@ async def get_health_summary(
         findings = await _open_finding_totals_rows(session, repository_id)
 
     # Ranked with the same key as ``get_health_metrics``, off the findings this
-    # function already holds. Previously a plain ``min`` on the score, which
-    # agreed with the worst-files list only because every caller happened to
-    # pass an already-ranked list — a floor tie made the headline and the list
-    # under it disagree the moment one did not.
-    deductions = deduction_by_path(findings)
-    worst = worst_metric(metrics, deductions)
-    # The worst production file heads the page; the worst test file is named
-    # apart, under the same ranking, so a weak test is not lost behind it.
-    worst_test = worst_metric(split_tests(metrics)[1], deductions)
+    # function already holds, and in Fix first's scope: the file ``get_health``
+    # lists first, so a script or schema scoring lowest is not named. The worst
+    # test is named apart, so a weak test is not lost behind it.
+    worst = worst_kpis(metrics, deduction_by_path(findings))
 
     by_dim: dict[str, int] = {}
     for finding in findings:
@@ -847,14 +889,10 @@ async def get_health_summary(
     return {
         "file_count": len(metrics),
         "unanalysed_file_count": unanalysed,
+        "analysed_share": analysed_share(len(metrics), unanalysed),
         "average_health": _rounded(avg),
-        "worst_performer_path": worst.file_path,
-        "worst_performer_score": round(worst.score, 2),
-        "worst_test_path": worst_test.file_path if worst_test is not None else None,
-        "worst_test_score": round(worst_test.score, 2) if worst_test is not None else None,
-        # Advisory findings carry a zero health impact, so counting them
-        # here would grow the headline without anything having got worse.
-        "open_findings": len(findings) - by_dim.get(ADVISORY_DIMENSION, 0),
+        **worst,
+        "open_findings": open_finding_count(findings),
         "maintainability_average": _rounded(maintainability_average),
         "performance_average": _rounded(performance_average),
         # The headline's two halves, in deduction points. Both come off columns
@@ -928,7 +966,7 @@ async def save_health_snapshot(
     session: AsyncSession,
     repository_id: str,
     *,
-    hotspot_health: float,
+    hotspot_health: float | None,
     average_health: float,
     worst_performer_path: str | None,
     worst_performer_score: float | None,
@@ -962,7 +1000,7 @@ async def save_health_snapshot(
         id=_new_uuid(),
         repository_id=repository_id,
         taken_at=taken_at or _now_utc(),
-        hotspot_health=float(hotspot_health),
+        hotspot_health=float(hotspot_health) if hotspot_health is not None else None,
         average_health=float(average_health),
         worst_performer_path=worst_performer_path,
         worst_performer_score=(
@@ -1033,7 +1071,7 @@ class HealthSnapshotScalars(NamedTuple):
 
     taken_at: datetime | None
     average_health: float
-    hotspot_health: float
+    hotspot_health: float | None
 
 
 class HealthSnapshotHeadline(NamedTuple):
@@ -1090,11 +1128,11 @@ async def get_health_snapshot_headline(
     hotspot_health, taken_at, _ = rows[-1]
     window = rows[-recent:] if recent > 0 else []
     return HealthSnapshotHeadline(
-        float(hotspot_health),
+        hotspot_health,
         taken_at,
         len(rows),
         tuple(
-            HealthSnapshotScalars(r_taken_at, float(r_avg), float(r_hotspot))
+            HealthSnapshotScalars(r_taken_at, float(r_avg), r_hotspot)
             for r_hotspot, r_taken_at, r_avg in window
         ),
     )

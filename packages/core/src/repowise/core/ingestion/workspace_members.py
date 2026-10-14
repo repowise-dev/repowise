@@ -53,7 +53,7 @@ def _globbed(repo_root: Path, includes: list, excludes: list) -> set[str]:
     return out
 
 
-def _toml(path: Path) -> dict:
+def read_toml(path: Path) -> dict:
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
@@ -67,7 +67,7 @@ def _toml_workspace(repo_root: Path, manifest: str, *table: str) -> set[str] | N
     None without a ``members`` list: Cargo then makes the root's path
     dependencies members implicitly, which this does not read.
     """
-    data: object = _toml(repo_root / manifest)
+    data: object = read_toml(repo_root / manifest)
     for key in table:
         data = data.get(key) if isinstance(data, dict) else None
     if not isinstance(data, dict):
@@ -126,7 +126,7 @@ def _manifest_field(manifest: Path, key: str) -> str | None:
             return None
         value = data.get(key) if isinstance(data, dict) else None
     elif manifest.name in ("pyproject.toml", "Cargo.toml"):
-        data = _toml(manifest)
+        data = read_toml(manifest)
         section = data.get("project") or data.get("package")
         if not isinstance(section, dict) or not section.get(key):
             tool = data.get("tool")

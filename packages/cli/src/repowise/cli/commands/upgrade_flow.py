@@ -143,6 +143,7 @@ async def _backfill_git(
     )
     from repowise.core.persistence import get_session
     from repowise.core.persistence.crud import (
+        clear_attribution_if_disabled,
         recompute_git_percentiles,
         upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
@@ -172,6 +173,7 @@ async def _backfill_git(
         # (Foundation 1 only wrote them on the full orchestrator index).
         if summary.commit_rows:
             await upsert_git_commits_bulk(session, repo_id, summary.commit_rows)
+        await clear_attribution_if_disabled(session, repo_id)
 
     console.print(
         f"Git tier upgraded to FULL: [cyan]{summary.files_indexed}[/cyan] files "
@@ -268,7 +270,9 @@ async def _run_upgrade(
     # wiring: pipeline_jobs.repository_id is an FK to repositories.id, so the
     # row must exist before the backfill creates its checkpoint job.
     async with get_session(sf) as session:
-        repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        repo = await upsert_repository(
+            session, name=repo_path.name, local_path=str(repo_path), stamp_head=True
+        )
         repo_id = repo.id
 
     # 2. Backfill the git tier ESSENTIAL -> FULL (resumable via JobStore).

@@ -258,7 +258,7 @@ own:
 | Locals and parameters, including Go's method receiver | `var repo = new UserRepo()`, `func (s *Server) handle()` | 4 |
 | Fields of the enclosing class | `this.cache.evict(...)` | 4 |
 | Framework-retyped symbols | `@shared_task def add` makes `add` a `Task`, so `add.s()` is `Task::s` | 4 |
-| C# extension methods, via the type their `this` parameter names | `items.Paged(10)` | 3 |
+| C# extension methods and Kotlin extension functions, via the type they extend or one of its ancestors | `items.Paged(10)`, `helper.logScreenView(name)` | 3 |
 | Dotted receivers typed hop by hop through declared fields | `this.a.b.m()` | 2 |
 | The declared return type of an inner call | `repo.find(id).save()` | 4 |
 

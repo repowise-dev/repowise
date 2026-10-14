@@ -585,3 +585,22 @@ async def test_api_status_error():
         provider._client = mock_client.return_value
         with pytest.raises(ProviderError):
             await provider.generate("sys", "user")
+
+
+async def test_stream_chat_asks_the_hosted_api_for_a_usage_chunk(monkeypatch):
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    captured: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured.append(kwargs)
+        return _EmptyChatStream()
+
+    for base_url in (None, "http://127.0.0.1:8000/v1"):
+        provider = OpenAIProvider(api_key="sk-test", model="gpt-5.6", base_url=base_url)
+        provider._client = MagicMock()
+        provider._client.chat.completions.create = fake_create
+        [e async for e in provider.stream_chat(messages=[], tools=[], system_prompt="s")]
+
+    assert captured[0]["stream_options"] == {"include_usage": True}
+    # A compatible server may reject the field, so it is not asked.
+    assert "stream_options" not in captured[1]

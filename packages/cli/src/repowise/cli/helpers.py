@@ -306,11 +306,17 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
     store skips it. A store still behind after it raises :class:`StaleIndexError`,
     since every answer read from it would be missing what it lacks.
     """
+    from sqlalchemy import select
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import get_repository_by_path
-    from repowise.core.persistence.database import has_db_store, schema_behind
+    from repowise.core.persistence.database import (
+        get_configured_db_url,
+        has_db_store,
+        schema_behind,
+    )
+    from repowise.core.persistence.models import Repository
 
     # The configured store, which may live outside the repo (REPOWISE_DB_URL).
     if not has_db_store(root):
@@ -331,6 +337,13 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
             factory = create_session_factory(engine)
             session = await stack.enter_async_context(get_session(factory))
             repo = await get_repository_by_path(session, str(root))
+            if repo is None and get_configured_db_url() is None:
+                # A moved repo carries its local store but retains the old
+                # local_path. Never infer identity in a configured/shared store
+                # or when the local store contains more than one repository.
+                repos = (await session.scalars(select(Repository).limit(2))).all()
+                if len(repos) == 1:
+                    repo = repos[0]
             if repo is not None:
                 opened = (session, repo.id)
         except (SQLAlchemyError, OSError, LookupError):
@@ -477,8 +490,14 @@ def save_state(repo_path: Path, state: dict[str, Any], *, full_index: bool = Fal
     incremental persist leaves it False and the version clamps below any
     ``REINDEX_RECOMMENDED`` gate, keeping a reindex recommendation alive until
     an actual re-index clears it.
+
+    A write that changes ``last_sync_commit`` moves the repository row's
+    ``head_commit`` to the same commit, so the two stamps never disagree.
     """
+    from repowise.core.workspace.update import read_state_commit, restamp_changed_sync_commit
+
     ensure_repowise_dir(repo_path)
+    previous = read_state_commit(Path(repo_path))
     try:
         from repowise.cli import __version__ as _pkg_version
         from repowise.core.upgrade import stamp as _stamp_store_version
@@ -492,6 +511,7 @@ def save_state(repo_path: Path, state: dict[str, Any], *, full_index: bool = Fal
     # every later update would fail to parse it and demand a full re-init.
     state_path = get_repowise_dir(repo_path) / STATE_FILENAME
     atomic_write_text(state_path, json.dumps(state, indent=2))
+    restamp_changed_sync_commit(Path(repo_path), previous, state.get("last_sync_commit"))
 
 
 # ---------------------------------------------------------------------------

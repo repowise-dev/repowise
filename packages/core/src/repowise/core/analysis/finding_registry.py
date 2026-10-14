@@ -16,13 +16,23 @@ persisted and scored, and the raw CLI analysis still reports them.
 
 A type moves back to ``validated`` only when its measured precision clears the
 family floor; the measurement fields record the evidence either way.
+
+:data:`LANGUAGE_GATES` is the same switch for one layer on one language: a
+layer an audit measured below the bar on a language is kept off every default
+surface for files of that language, while other languages keep it. The opt-in
+is the same as for provisional types (:data:`UNVERIFIED_LABEL`). A gated row is
+still computed, stored and addressable by id, so the cell stays measurable and
+ungating it is deleting its row here after a re-audit clears it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import PurePosixPath
+from typing import Any, Literal
+
+from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
 
 FindingStatus = Literal["validated", "provisional", "hidden"]
 
@@ -56,8 +66,8 @@ REGISTRY: dict[str, FindingTypeStatus] = {
         corpus=f"{_LABELLED}, 1,511 in all",
         measured_on="2026-09-29",
         reason=(
-            "Private-symbol findings were almost all false: TS/JS/Python emit no "
-            "'reads' edges, so same-file uses are invisible to the graph."
+            "Measured on TS/Python code: private-symbol findings were almost all "
+            "false, because same-file uses leave no 'reads' edge there."
         ),
     ),
     "duplicated_assertion_block": FindingTypeStatus(
@@ -78,6 +88,174 @@ REGISTRY: dict[str, FindingTypeStatus] = {
         reason="Flags duplicated import blocks and data literals as design duplication.",
     ),
 }
+
+
+#: The serving layers a gate can apply to. ``health`` is every health finding
+#: (performance findings included); ``refactoring`` is plans and the
+#: opportunities composed from them; ``performance`` is performance
+#: opportunities; ``dead_code`` is every dead-code finding, safe-to-delete or not.
+GateLayer = Literal["health", "refactoring", "performance", "dead_code"]
+
+
+@dataclass(frozen=True)
+class LanguageGate:
+    layer: GateLayer
+    #: An ``EXTENSION_TO_LANGUAGE`` tag; a file's extension decides its language.
+    language: str
+    #: Measured precision on the sample that failed the bar, ``None`` when the
+    #: evidence was a share of wrong rows rather than a judged sample. Kept for
+    #: the record: served text never quotes it.
+    precision: float | None
+    #: What the measurement ran on, in words (no repository names).
+    corpus: str
+    #: ISO date of the measurement.
+    measured_on: str
+    #: Why the layer failed there, for maintainers; served text says only
+    #: that the layer is held back pending verification.
+    cause: str
+    #: The kinds gated, or ``None`` for every kind of the layer.
+    kinds: frozenset[str] | None = None
+
+
+_AUDIT_DATE = "2026-10-02"
+_JAVA = "hand-judged sample of a 34k-file Java search engine"
+_DOTNET = "hand-judged samples of a 59k-file C#/C/C++ runtime and an 8k-file C#/C++ suite"
+_NO_PLAN = "No judged plan was acceptable as written."
+_NOT_A_COST = "Most judged opportunities were not real costs."
+
+# Every layer measured below 90% on every audited language, so whole layers
+# are gated (``kinds=None``). Precision is the lowest share of true positives
+# in a judged sample (debatable counted as a miss). Columns: layer, language,
+# precision, corpus, cause.
+_GATE_ROWS: tuple[tuple[GateLayer, str, float, str, str], ...] = (
+    ("health", "java", 0.09, _JAVA, "Field reads without `this.` and Java idioms read as defects."),
+    ("health", "csharp", 0.06, _DOTNET, "Implicit member access and stubs read as defects."),
+    ("health", "c", 0.09, _DOTNET, "Vendored and generated C read as defects."),
+    ("health", "cpp", 0.09, _DOTNET, "Implicit member access and vendored code read as defects."),
+    ("refactoring", "java", 0.0, _JAVA, _NO_PLAN),
+    ("refactoring", "csharp", 0.09, _DOTNET, _NO_PLAN),
+    ("refactoring", "c", 0.0, _DOTNET, _NO_PLAN),
+    ("refactoring", "cpp", 0.09, _DOTNET, _NO_PLAN),
+    ("performance", "java", 0.32, _JAVA, "In-memory lookups are read as database calls."),
+    ("performance", "csharp", 0.06, _DOTNET, _NOT_A_COST),
+    ("performance", "c", 0.06, _DOTNET, _NOT_A_COST),
+    ("performance", "cpp", 0.0, _DOTNET, _NOT_A_COST),
+    ("dead_code", "java", 0.20, _JAVA, "Reflection and plugin entry points are unseen."),
+    ("dead_code", "csharp", 0.07, _DOTNET, "A `using` reaches one file of its namespace."),
+    ("dead_code", "c", 0.04, _DOTNET, "P/Invoke, call-table and typedef uses are unseen."),
+    ("dead_code", "cpp", 0.04, _DOTNET, "Uses through DLL tables, COM and callbacks are unseen."),
+)
+
+LANGUAGE_GATES: tuple[LanguageGate, ...] = (
+    *(
+        LanguageGate(layer, language, precision, corpus, _AUDIT_DATE, cause)
+        for layer, language, precision, corpus, cause in _GATE_ROWS
+    ),
+    # Dead code only: health on these languages is not gated.
+    LanguageGate(
+        "dead_code",
+        "kotlin",
+        2 / 47,
+        "hand-judged findings on a Kotlin/Android sample app",
+        "2026-10-13",
+        "45 of 47 judged findings were wrong.",
+    ),
+    LanguageGate(
+        "dead_code",
+        "swift",
+        None,
+        "unreachable-file findings on a SwiftUI app",
+        "2026-10-13",
+        "132 of 431 files reported unreachable at confidence 1.0 were reachable.",
+    ),
+)
+
+
+def gates_on(layer: GateLayer) -> tuple[LanguageGate, ...]:
+    """The gates on *layer*, read from :data:`LANGUAGE_GATES` at call time."""
+    return tuple(gate for gate in LANGUAGE_GATES if gate.layer == layer)
+
+
+def language_of(path: str) -> str | None:
+    """The language tag a stored path's extension maps to, or ``None``."""
+    return EXTENSION_TO_LANGUAGE.get(PurePosixPath(path or "").suffix.lower())
+
+
+def gate_for(layer: GateLayer, path: str, kind: str | None = None) -> LanguageGate | None:
+    """The gate keeping a *layer* row on *path* (of *kind*) off default surfaces."""
+    language = language_of(path)
+    if language is None:
+        return None
+    for gate in gates_on(layer):
+        if gate.language == language and (gate.kinds is None or kind in gate.kinds):
+            return gate
+    return None
+
+
+def is_served(
+    layer: GateLayer, finding_type: Any, path: str, excluded: frozenset[str]
+) -> bool:
+    """A row of *finding_type* on *path* reaches a default surface: its type is
+    not in *excluded* (an :func:`excluded_types` result) and no gate holds back
+    *layer* on its language."""
+    return finding_type not in excluded and gate_for(layer, path, finding_type) is None
+
+
+def gated_extensions(language: str) -> tuple[str, ...]:
+    """Every extension mapped to *language*, lower-case with the dot."""
+    return tuple(sorted(ext for ext, tag in EXTENSION_TO_LANGUAGE.items() if tag == language))
+
+
+def language_label(language: str) -> str:
+    """The display name of a language tag (``csharp`` reads ``C#``)."""
+    from repowise.core.ingestion.languages import REGISTRY
+
+    spec = REGISTRY.get(language)
+    return spec.display_name if spec is not None else language
+
+
+def held_back_note(languages: Iterable[str]) -> str:
+    """The served sentence for rows held back on *languages*."""
+    names = [language_label(language) for language in languages]
+    return f"Held back on {', '.join(names)} files pending verification."
+
+
+def gated_summary(layer: GateLayer, counts: Mapping[str, int]) -> dict[str, dict]:
+    """``{language: {count, reason}}`` for each gated language with rows on
+    *layer*, so a surface says what it held back. The reason says only that
+    the layer is held back pending verification there."""
+    out: dict[str, dict] = {}
+    for gate in gates_on(layer):
+        count = counts.get(gate.language, 0)
+        if count:
+            out[gate.language] = {"count": count, "reason": held_back_note([gate.language])}
+    return out
+
+
+def split_gated(
+    layer: GateLayer,
+    rows: Iterable[Any],
+    *,
+    kind: str,
+    get: Callable[[Any, str], Any] = getattr,
+    include_unverified: bool = False,
+) -> tuple[list[Any], dict[str, dict]]:
+    """``(rows no gate holds back, gated_summary)`` for rows already in memory.
+
+    *kind* names the row field holding the finding type; *get* reads a field.
+    ``include_unverified`` keeps every row and reports nothing held back.
+    """
+    if include_unverified:
+        return list(rows), {}
+    shown: list[Any] = []
+    counts: dict[str, int] = {}
+    for row in rows:
+        gate = gate_for(layer, get(row, "file_path") or "", get(row, kind))
+        if gate is None:
+            shown.append(row)
+        else:
+            counts[gate.language] = counts.get(gate.language, 0) + 1
+    return shown, gated_summary(layer, counts)
 
 
 def status_of(finding_type: str) -> FindingTypeStatus:
@@ -124,12 +302,22 @@ def withheld_summary(counts: Mapping[str, int], excluded: Iterable[str]) -> dict
 
 
 __all__ = [
+    "LANGUAGE_GATES",
     "REGISTRY",
     "UNVERIFIED_LABEL",
     "FindingStatus",
     "FindingTypeStatus",
+    "GateLayer",
+    "LanguageGate",
     "excluded_types",
+    "gate_for",
+    "gated_extensions",
+    "gated_summary",
+    "gates_on",
+    "is_served",
     "is_shown",
+    "language_of",
+    "split_gated",
     "status_of",
     "verification_label",
     "withheld_summary",

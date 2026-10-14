@@ -121,18 +121,25 @@ def _render_distribution_line(dist: dict) -> None:
     console.print("[dim]Distribution (by code volume):[/dim] " + " · ".join(parts) + "\n")
 
 
-def _render_badge(average_health: object) -> None:
+def _render_badge(average_health: object, share: float | None = None) -> None:
     """Print ready-to-paste health-badge Markdown for a README.
 
     Emits a static shields badge for the current score (immediately usable) and
     documents the live endpoint form for a running Repowise server / hosted repo.
     """
-    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for, format_score
+    from repowise.core.analysis.health.grading import (
+        BADGE_UNKNOWN_COLOR,
+        BAND_BADGE_COLOR,
+        format_score,
+        headline_band,
+    )
 
     if not isinstance(average_health, (int, float)):
         console.print("[yellow]No health score yet — run `repowise init` first.[/yellow]")
         return
-    color = BAND_BADGE_COLOR[band_for(float(average_health))]
+    band = headline_band(float(average_health), share)
+    # Neutral, not green, when too little of the repo was analysed for a band.
+    color = BAND_BADGE_COLOR[band] if band is not None else BADGE_UNKNOWN_COLOR
     msg = f"{format_score(float(average_health))}/10"
     static = f"https://img.shields.io/badge/health-{msg.replace('/', '%2F')}-{color}"
     console.print("[bold]Static badge (current score):[/bold]")

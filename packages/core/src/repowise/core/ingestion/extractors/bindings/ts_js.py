@@ -416,6 +416,17 @@ def cjs_statement_is_reexport(stmt_node: Node, src: str) -> bool:
     return "module.exports" in head or stripped.startswith("exports.")
 
 
+def _collect_import_clause_specifiers(clause: Node, specifiers: list[Node]) -> bool:
+    """Append the clause's named import specifiers; True if it also binds a default or namespace."""
+    has_non_specifier_import = False
+    for sub in clause.children:
+        if sub.type in ("identifier", "namespace_import"):
+            has_non_specifier_import = True
+        elif sub.type == "named_imports":
+            specifiers.extend(spec for spec in sub.children if spec.type == "import_specifier")
+    return has_non_specifier_import
+
+
 def is_type_only_ts_js_import(stmt_node: Node, src: str) -> bool:
     """True if a TypeScript import or re-export is purely type-level.
 
@@ -436,25 +447,20 @@ def is_type_only_ts_js_import(stmt_node: Node, src: str) -> bool:
 
     for child in stmt_node.children:
         if child.type == "import_clause":
-            for sub in child.children:
-                if sub.type in ("identifier", "namespace_import"):
-                    has_non_specifier_import = True
-                elif sub.type == "named_imports":
-                    for spec in sub.children:
-                        if spec.type == "import_specifier":
-                            specifiers.append(spec)
+            if _collect_import_clause_specifiers(child, specifiers):
+                has_non_specifier_import = True
         elif child.type == "export_clause":
-            for spec in child.children:
-                if spec.type == "export_specifier":
-                    specifiers.append(spec)
+            specifiers.extend(spec for spec in child.children if spec.type == "export_specifier")
         elif child.type == "namespace_export":
             has_non_specifier_import = True
 
     if has_non_specifier_import or not specifiers:
         return False
 
-    return all(
-        any(c.type == "type" or node_text(c, src) == "type" for c in spec.children)
-        for spec in specifiers
-    )
+    return all(_is_type_specifier(spec, src) for spec in specifiers)
+
+
+def _is_type_specifier(spec: Node, src: str) -> bool:
+    """True for a ``type X`` import or export specifier."""
+    return any(c.type == "type" or node_text(c, src) == "type" for c in spec.children)
 

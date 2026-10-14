@@ -31,7 +31,11 @@ _EH_BLOCK_KINDS = frozenset({"block", "statement_block", "compound_statement"})
 _EH_TRIVIAL_STMT = frozenset({"comment", "pass_statement", "line_comment", "block_comment"})
 # Rust: each of these is a latent panic-on-error.
 _RUST_UNWRAP_METHODS = frozenset({"unwrap", "expect", "unwrap_unchecked"})
-_RUST_PANIC_MACROS = frozenset({"panic", "unreachable", "todo", "unimplemented"})
+#: Shared with the dataflow pass's error exits (``dataflow.raises``).
+RUST_PANIC_MACROS = frozenset({"panic", "unreachable", "todo", "unimplemented"})
+#: Python handler types that catch every ordinary exception; only the second
+#: also catches the interpreter's exit signals.
+PY_CATCH_ALL = ("Exception", "BaseException")
 
 
 def _eh_text(node: Node) -> str:
@@ -103,7 +107,7 @@ def _eh_except_catch_all_name(clause: Node) -> tuple[bool, str | None]:
     if first.type == "as_pattern":
         named = [c for c in first.children if c.is_named]
         target = named[0] if named else first
-    if target.type == "identifier" and _eh_text(target) in ("Exception", "BaseException"):
+    if target.type == "identifier" and _eh_text(target) in PY_CATCH_ALL:
         return True, _eh_text(target)
     return False, None
 
@@ -121,7 +125,7 @@ def _eh_catches_base(clause: Node) -> bool:
     provably cannot, so it is *broad* rather than truly catch-all.
     """
     is_catch_all, name = _eh_except_catch_all_name(clause)
-    return is_catch_all and name != "Exception"
+    return is_catch_all and name != PY_CATCH_ALL[0]
 
 
 def _eh_rust_attr_is_test(attr_text: str) -> bool:
@@ -176,7 +180,7 @@ def _eh_rust_hit(node: Node) -> bool:
         return rust_unwrap.method_call_parts(node)[0] in _RUST_UNWRAP_METHODS
     if node.type == "macro_invocation":
         mac = node.child_by_field_name("macro")
-        return mac is not None and _eh_text(mac) in _RUST_PANIC_MACROS
+        return mac is not None and _eh_text(mac) in RUST_PANIC_MACROS
     return False
 
 
@@ -291,6 +295,48 @@ def _eh_node_kinds(language: str, lmap: LanguageNodeMap) -> frozenset[str]:
     return frozenset(kinds)
 
 
+def _eh_swallow_allowed(noqa_codes: set[str] | None) -> bool:
+    """Whether the clause's noqa codes leave a swallowed catch reportable."""
+    return noqa_codes is None or (len(noqa_codes) > 0 and "S110" not in noqa_codes)
+
+
+def _eh_broad_except_hit(node: Node, noqa_codes: set[str] | None) -> ErrorHandlingHit | None:
+    """The bare/broad except hit for a Python clause that does not re-raise,
+    unless its noqa codes suppress that kind."""
+    # ``except:`` / ``except BaseException:`` also swallow
+    # KeyboardInterrupt & SystemExit; ``except Exception:`` cannot.
+    is_base = _eh_catches_base(node)
+    kind = "bare_except" if is_base else "broad_except"
+    suppress = noqa_codes is not None and (
+        len(noqa_codes) == 0
+        or (kind == "broad_except" and "BLE001" in noqa_codes)
+        or (kind == "bare_except" and bool(noqa_codes & {"BLE001", "E722"}))
+    )
+    return None if suppress else ErrorHandlingHit(kind, node.start_point[0] + 1)
+
+
+def _eh_catch_visit(node: Node, language: str, hits: list[ErrorHandlingHit]) -> None:
+    """Append the swallowed-catch and bare/broad-except hits of one catch clause."""
+    noqa_codes = _eh_noqa_codes(node) if language == "python" else None
+    block = _eh_find_body_block(node)
+    swallowed_unsuppressed = _eh_swallow_allowed(noqa_codes)
+    if (
+        block is not None
+        and _eh_body_is_swallowed(block, language)
+        and swallowed_unsuppressed
+        and not (language == "java" and _eh_java_try_ends_in_fail(node, language))
+    ):
+        hits.append(ErrorHandlingHit("swallowed_catch", node.start_point[0] + 1))
+    if (
+        language == "python"
+        and _eh_is_bare_except(node)
+        and not _eh_body_ends_in_raise(block, language)
+    ):
+        hit = _eh_broad_except_hit(node, noqa_codes)
+        if hit is not None:
+            hits.append(hit)
+
+
 def _eh_visit(
     node: Node, language: str, lmap: LanguageNodeMap, hits: list[ErrorHandlingHit]
 ) -> None:
@@ -305,34 +351,7 @@ def _eh_visit(
     """
     catch_kinds = lmap.catch_kinds
     if catch_kinds and node.type in catch_kinds:
-        noqa_codes = _eh_noqa_codes(node) if language == "python" else None
-        block = _eh_find_body_block(node)
-        swallowed_unsuppressed = noqa_codes is None or (
-            len(noqa_codes) > 0 and "S110" not in noqa_codes
-        )
-        if (
-            block is not None
-            and _eh_body_is_swallowed(block, language)
-            and swallowed_unsuppressed
-            and not (language == "java" and _eh_java_try_ends_in_fail(node, language))
-        ):
-            hits.append(ErrorHandlingHit("swallowed_catch", node.start_point[0] + 1))
-        if (
-            language == "python"
-            and _eh_is_bare_except(node)
-            and not _eh_body_ends_in_raise(block, language)
-        ):
-            # ``except:`` / ``except BaseException:`` also swallow
-            # KeyboardInterrupt & SystemExit; ``except Exception:`` cannot.
-            is_base = _eh_catches_base(node)
-            kind = "bare_except" if is_base else "broad_except"
-            suppress = noqa_codes is not None and (
-                len(noqa_codes) == 0
-                or (kind == "broad_except" and "BLE001" in noqa_codes)
-                or (kind == "bare_except" and bool(noqa_codes & {"BLE001", "E722"}))
-            )
-            if not suppress:
-                hits.append(ErrorHandlingHit(kind, node.start_point[0] + 1))
+        _eh_catch_visit(node, language, hits)
     elif language == "rust" and _eh_rust_hit(node):
         # A panic-family macro aborts unconditionally; unwrap/expect converts
         # a Result/Option into a panic. Different claims → different kinds.

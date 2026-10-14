@@ -14,10 +14,12 @@
 ) @symbol.def
 
 (class_declaration
+  (modifiers)? @symbol.modifiers
   (identifier) @symbol.name
 ) @symbol.def
 
 (object_declaration
+  (modifiers)? @symbol.modifiers
   (identifier) @symbol.name
 ) @symbol.def
 
@@ -63,10 +65,15 @@
 
 ; Member call: obj.method(args) — and self-dispatch: this.method(args).
 ; See typescript.scm for why ``this`` rides an alternation in the receiver slot
-; instead of a second pattern.
+; instead of a second pattern. ``this.field.method()`` captures the field, as
+; java.scm does, so a constructor property types it.
 (call_expression
   (navigation_expression
-    [(identifier) (this_expression)] @call.receiver
+    [
+      (identifier) @call.receiver
+      (this_expression) @call.receiver
+      (navigation_expression (this_expression) (identifier) @call.receiver)
+    ]
     (identifier) @call.target
   )
   (value_arguments) @call.arguments

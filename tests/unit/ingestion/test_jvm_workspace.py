@@ -8,6 +8,7 @@ import networkx as nx
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.jvm_workspace import (
+    _scan_jvm_text,
     build_jvm_workspace_index,
 )
 
@@ -157,6 +158,36 @@ class TestJvmWorkspaceIndex:
         assert "com.example.MyAutoConfig" in fqns
         assert "com.example.OtherConfig" in fqns
 
+    def test_jpms_exports(self, tmp_path: Path) -> None:
+        mi_caffeine = tmp_path / "caffeine" / "src" / "main" / "java" / "module-info.java"
+        mi_caffeine.parent.mkdir(parents=True)
+        mi_caffeine.write_text(
+            "module caffeine {\n"
+            "    // exports com.example.commented;\n"
+            "    /* exports com.example.blockcomment; */\n"
+            '    String s = "exports com.example.string";\n'
+            "    exports com.github.benmanes.caffeine.cache;\n"
+            "    exports com.github.benmanes.caffeine.cache.stats;\n"
+            "}\n"
+        )
+        mi_javalin = tmp_path / "javalin" / "module-info.java"
+        mi_javalin.parent.mkdir(parents=True)
+        mi_javalin.write_text(
+            "module io.javalin {\n"
+            "    exports io.javalin;\n"
+            "}\n"
+        )
+        ctx = _ctx(tmp_path, [])
+        index = build_jvm_workspace_index(ctx)
+        assert index.jpms_exports["caffeine"] == frozenset({
+            "com.github.benmanes.caffeine.cache",
+            "com.github.benmanes.caffeine.cache.stats",
+        })
+        assert "com.example.commented" not in index.jpms_exports["caffeine"]
+        assert "com.example.blockcomment" not in index.jpms_exports["caffeine"]
+        assert "com.example.string" not in index.jpms_exports["caffeine"]
+        assert index.jpms_exports["javalin"] == frozenset({"io.javalin"})
+
 
 class TestMemberFqnResolution:
     def test_kotlin_companion_member_import_resolves_to_declaring_type(
@@ -204,3 +235,115 @@ class TestMemberFqnResolution:
         # a package.
         targets = resolve_kotlin_import_all("okio.ByteString.Companion.*", u, ctx)
         assert targets == (b,)
+
+
+_STRING_UTILS_KT = """package com.acme.util
+
+fun String.shout(): String = uppercase() + "!"
+
+fun twice(s: String): String = s + s
+"""
+
+
+class TestKotlinTopLevelCallables:
+    def test_scan_records_plain_and_extension_functions(self) -> None:
+        package, names = _scan_jvm_text("StringUtils.kt", _STRING_UTILS_KT)
+        assert package == "com.acme.util"
+        assert "shout" in names
+        assert "twice" in names
+
+    def test_scan_records_generic_extension_function(self) -> None:
+        text = (
+            "package com.orbitalhq.connectors.metrics\n\n"
+            "fun <T : Any> Mono<T>.captureMetrics(tags: List<Tag>, "
+            "meterRegistry: MeterRegistry): Mono<T> = this\n"
+        )
+        _, names = _scan_jvm_text("MetricsUtils.kt", text)
+        assert "captureMetrics" in names
+        assert "Mono" not in names
+
+    def test_scan_records_nested_generic_receiver_and_properties(self) -> None:
+        text = (
+            "package p\n\n"
+            "fun Map<String, List<Int>>.flat(): List<Int> = emptyList()\n"
+            "val String.lastChar: Char get() = last()\n"
+            "const val LIMIT = 10\n"
+            "var counter: Int = 0\n"
+            "inline fun <reified T> parse(s: String): T = TODO()\n"
+            "internal fun helper() {}\n"
+            "@JvmName(\"other\") fun renamed() {}\n"
+        )
+        _, names = _scan_jvm_text("Misc.kt", text)
+        assert {"flat", "lastChar", "LIMIT", "counter", "parse", "helper", "renamed"} <= set(
+            names
+        )
+
+    def test_scan_skips_private_and_nested_declarations(self) -> None:
+        text = (
+            "package p\n\n"
+            "private fun hidden() {}\n"
+            "private val secret = 1\n"
+            "class Box {\n"
+            "    fun member() {}\n"
+            "    val field = 1\n"
+            "}\n"
+            "fun outer() {\n"
+            "    fun local() {}\n"
+            "}\n"
+        )
+        _, names = _scan_jvm_text("Box.kt", text)
+        assert "outer" in names
+        assert "Box" in names
+        for absent in ("hidden", "secret", "member", "field", "local"):
+            assert absent not in names
+
+    def test_fun_interface_is_not_read_as_a_function(self) -> None:
+        text = "package p\n\nfun interface Handler : Base {\n    fun handle()\n}\n"
+        _, names = _scan_jvm_text("Handler.kt", text)
+        assert "Base" not in names
+        assert "interface" not in names
+        assert "handle" not in names
+
+    def test_function_beside_same_named_type_is_not_duplicated(self) -> None:
+        text = "package p\n\nclass Foo\n\nfun Foo(x: Int): Foo = Foo()\n"
+        _, names = _scan_jvm_text("Foo.kt", text)
+        assert names.count("Foo") == 1
+
+    def test_java_files_are_unchanged(self) -> None:
+        text = "package p;\n\npublic class A {\n}\nfun notJava() {}\n"
+        _, names = _scan_jvm_text("A.java", text)
+        assert names == ("A",)
+
+    def test_files_for_fqn_resolves_top_level_function(self, tmp_path: Path) -> None:
+        rel = "core/src/main/kotlin/com/acme/util/StringUtils.kt"
+        full = tmp_path / rel
+        full.parent.mkdir(parents=True)
+        full.write_text(_STRING_UTILS_KT)
+
+        index = build_jvm_workspace_index(_ctx(tmp_path, [rel]))
+
+        assert index.files_for_fqn("com.acme.util.shout") == (rel,)
+        assert index.files_for_fqn("com.acme.util.twice") == (rel,)
+        assert "shout" in index.packages["com.acme.util"].exported_top_level
+
+    def test_overloads_across_files_fan_out(self, tmp_path: Path) -> None:
+        a = "src/com/acme/util/A.kt"
+        b = "src/com/acme/util/B.kt"
+        for rel, body in ((a, "fun render(x: Int) {}\n"), (b, "fun render(x: String) {}\n")):
+            full = tmp_path / rel
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(f"package com.acme.util\n\n{body}")
+
+        index = build_jvm_workspace_index(_ctx(tmp_path, [a, b]))
+
+        assert sorted(index.files_for_fqn("com.acme.util.render")) == [a, b]
+
+    def test_private_function_is_not_importable(self, tmp_path: Path) -> None:
+        rel = "src/com/acme/util/Hidden.kt"
+        full = tmp_path / rel
+        full.parent.mkdir(parents=True)
+        full.write_text("package com.acme.util\n\nprivate fun hidden() {}\n")
+
+        index = build_jvm_workspace_index(_ctx(tmp_path, [rel]))
+
+        assert index.files_for_fqn("com.acme.util.hidden") == ()

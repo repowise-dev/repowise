@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from .type_names import bare_type_name, type_argument_count
+from .type_names import bare_type_name, written_type_key
 
 _NULLISH_UNION = re.compile(r"\s*\|\s*(?:null|undefined)\b")
 _CPP_PREFIX = re.compile(r"^(?:(?:const|volatile|typename|class|struct)\s+)+")
@@ -12,21 +12,34 @@ _CPP_SUFFIX = re.compile(r"\s*(?:\*|&|&&)\s*$")
 
 
 def declared_return_type(signature: str) -> str | None:
-    """Return the declared portion of a stored symbol signature, if present."""
+    """Return the declared portion of a stored symbol signature, if present.
 
-    _, separator, raw = signature.partition(" -> ")
-    value = raw.strip() if separator else ""
+    The arrow is the one after the first parameter list, so a function-typed
+    parameter (``f(cb: () -> Foo) -> Bar``) does not end the list early.
+    """
+
+    opened = signature.find("(")
+    arrow = signature.find(" -> ")
+    if 0 <= opened < arrow:
+        depth = 0
+        for index in range(opened, len(signature)):
+            depth += {"(": 1, ")": -1}.get(signature[index], 0)
+            if depth == 0:
+                arrow = signature.find(" -> ", index)
+                break
+    value = signature[arrow + 4 :].strip() if arrow >= 0 else ""
     return value or None
 
 
 _PAIRS = {"(": ")", "[": "]", "{": "}", "<": ">"}
 
 
-def _top_level_parameters(signature: str) -> list[str] | None:
+def signature_parameters(signature: str) -> list[str] | None:
     """The top-level parameter texts of a stored callable signature.
 
     ``[]`` for an empty list, None when the signature has no closed list. A
-    C/C++ ``(void)`` list is empty, and ``operator()(int)`` lists ``int``.
+    C/C++ ``(void)`` list is empty, ``operator()(int)`` lists ``int``, and a
+    trailing comma (Kotlin, Swift, Dart, TypeScript) closes no parameter.
     """
     operator = signature.find("operator()")
     start = signature.find("(", 0 if operator < 0 else operator + len("operator()"))
@@ -38,7 +51,8 @@ def _top_level_parameters(signature: str) -> list[str] | None:
     closers: list[str] = []
     for char in signature[start + 1 :]:
         if char == ")" and not closers:
-            pieces.append("".join(current))
+            if not pieces or "".join(current).strip():
+                pieces.append("".join(current))
             return pieces if content and [p.strip() for p in pieces] != ["void"] else []
         if char in _PAIRS:
             closers.append(_PAIRS[char])
@@ -56,18 +70,19 @@ def _top_level_parameters(signature: str) -> list[str] | None:
 
 def signature_parameter_count(signature: str) -> int | None:
     """Count top-level parameters in a stored callable signature."""
-    parameters = _top_level_parameters(signature)
+    parameters = signature_parameters(signature)
     return None if parameters is None else len(parameters)
 
 
 def signature_parameter_range(signature: str, language: str) -> tuple[int, int | None] | None:
     """``(fewest, most)`` arguments a call may pass; ``most`` is None when open.
 
-    Java ``T...``, C# ``params``, C ``...`` and a C++ parameter pack leave the
-    top open, a C# or C++ default lowers the floor, and a C# extension method
-    is also called on its receiver, one argument short of its declared list.
+    Java ``T...``, C# ``params``, C ``...``, Kotlin ``vararg`` and a C++
+    parameter pack leave the top open, a C#, C++ or Kotlin default lowers the
+    floor, and a C# extension method is also called on its receiver, one
+    argument short of its declared list.
     """
-    parameters = _top_level_parameters(signature)
+    parameters = signature_parameters(signature)
     if parameters is None:
         return None
     texts = [text.strip() for text in parameters]
@@ -76,7 +91,9 @@ def signature_parameter_range(signature: str, language: str) -> tuple[int, int |
         return 0, 0
     if language in ("java", "cpp") and "..." in texts[-1]:
         fewest, most = fewest - 1, None
-    if language in ("csharp", "cpp"):
+    if language == "kotlin" and any("vararg" in text.split() for text in texts):
+        fewest, most = fewest - 1, None
+    if language in ("csharp", "cpp", "kotlin"):
         fewest -= sum(1 for text in texts if "=" in text)
     if language == "csharp":
         if texts[-1].startswith("params "):
@@ -137,6 +154,4 @@ def normalize_return_type(raw: str, language: str) -> str | None:
     name = bare_type_name(value).strip()
     if not name.isidentifier():
         return None
-    if language == "csharp" and (arity := type_argument_count(value)):
-        return f"{name}`{arity}"
-    return name
+    return written_type_key(name, value, language)

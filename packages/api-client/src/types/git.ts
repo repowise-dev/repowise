@@ -41,11 +41,14 @@ export interface GitMetadataResponse {
   commit_count_capped?: boolean;
   original_path?: string | null;
   test_gap?: boolean | null;
-  // Agent-provenance rollup (deterministic local-git channels). The pct is
-  // null/absent for indexes built before the provenance-aware walk.
-  agent_commit_count?: number;
+  // Agent-provenance rollup. The pct (0-1) is the agent share of commits with a
+  // known source, null below the coverage floor; every field is null when
+  // attribution is off for the repository.
+  agent_commit_count?: number | null;
   agent_authored_pct?: number | null;
-  agent_tier_counts?: Record<string, number>;
+  agent_tier_counts?: Record<string, number> | null;
+  attribution_coverage?: number | null;
+  agent_share_suppressed?: string | null;
 }
 
 export interface HotspotResponse {
@@ -119,7 +122,7 @@ export interface CommitResponse {
   change_risk_level: ReviewPriority | null;
   /** Repo-relative percentile rank, 0–100. */
   risk_percentile: number;
-  /** Authoritative repo-relative review-priority tercile. */
+  /** Repo-relative tercile of the diff-size percentile; size, not danger. */
   review_priority: ReviewPriority;
   /** Label of the dominant risk driver; null when never risk-scored. */
   top_driver?: string | null;
@@ -127,11 +130,13 @@ export interface CommitResponse {
   author_experience?: number | null;
   /** Commits by this author across the indexed history (identities folded). */
   author_commit_count?: number | null;
-  /** Coding-agent attribution; null for human-authored commits. */
+  /** Coding-agent attribution; null for human-attested and unknown commits. */
   agent_name?: string | null;
   /** 1 = near-autonomous bot, 2 = human-driven agent, 3 = assisted. */
   agent_autonomy_tier?: number | null;
   agent_confidence?: string | null;
+  /** agent / human_attested / unknown; null when attribution is off. */
+  attribution?: "agent" | "human_attested" | "unknown" | null;
 }
 
 export interface RiskDriverResponse {
@@ -195,19 +200,27 @@ export interface CommitDetailResponse extends CommitResponse {
   health?: CommitHealthResponse | null;
 }
 
-export interface AgentTrendBucket {
-  month: string;
+/** Commits by attribution label; the agent share is of covered commits and
+ * null below the coverage floor. Percentages are 0-100. */
+export interface AttributionShareFields {
   total_commits: number;
   agent_commits: number;
-  agent_pct: number;
+  human_attested_commits: number;
+  unknown_commits: number;
+  coverage_pct: number | null;
+  agent_pct_of_covered: number | null;
+  suppressed_reason: string | null;
+}
+
+export interface AgentTrendBucket extends AttributionShareFields {
+  month: string;
   tier_counts: Record<string, number>;
 }
 
-export interface AgentTrend {
+export interface AgentTrend extends AttributionShareFields {
+  enabled: boolean;
+  coverage_floor_pct: number;
   buckets: AgentTrendBucket[];
-  total_commits: number;
-  agent_commits: number;
-  agent_pct: number;
   agent_names: { name: string; count: number }[];
 }
 
@@ -252,7 +265,10 @@ export interface CommitStats {
   total_commits: number;
   high_priority_count: number;
   fix_commit_count: number;
-  agent_commit_count: number;
+  /** Null, like the two figures below, when attribution is off. */
+  agent_commit_count: number | null;
+  agent_pct_of_covered?: number | null;
+  attribution_coverage_pct?: number | null;
   avg_entropy: number;
   /** Binned on the raw score, not the percentile — percentile ranks are
    * uniform by construction, so only the raw axis has a shape to draw. */

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
 
@@ -107,3 +109,74 @@ module.exports = { run };
     vis = _symbols(src, path="src/mod.js")
     assert vis["run"] == "public"
     assert vis["internal"] == "public"
+
+
+def test_commonjs_named_export_assignment_keeps_everything_public() -> None:
+    src = """
+const run = () => {};
+const internal = () => {};
+exports.run = run;
+"""
+    vis = _symbols(src, path="src/mod.js")
+    assert vis["internal"] == "public"
+
+
+def test_reading_an_exports_variable_is_not_commonjs() -> None:
+    # A VS Code extension's activated ``exports`` object read as a value.
+    src = """
+interface GitExtension { readonly enabled: boolean; }
+export async function getApi(ext: { exports: GitExtension }) {
+  const exports = ext.exports;
+  if (!exports.enabled) return null;
+  return exports["enabled"];
+}
+"""
+    vis = _symbols(src)
+    assert vis["GitExtension"] == "private"
+    assert vis["getApi"] == "public"
+
+
+_CJS_WRITES = [
+    "module.exports = { run };",
+    "module.exports.run = run;",
+    'module.exports["run"] = run;',
+    'module["exports"] = { run };',
+    "module['exports'] = { run };",
+    "exports.run = run;",
+    'exports["run"] = run;',
+    "Object.assign(exports, { run });",
+    "Object.assign(module.exports, { run });",
+    'Object.defineProperty(exports, "run", { value: run });',
+    'Object.defineProperty(module.exports, "run", { value: run });',
+]
+
+
+@pytest.mark.parametrize("write", _CJS_WRITES)
+def test_each_commonjs_write_form_keeps_everything_public(write: str) -> None:
+    src = f"const run = () => {{}};\nconst internal = () => {{}};\n{write}\n"
+    assert _symbols(src, path="src/mod.js")["internal"] == "public"
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        "const prev = module.exports;",
+        "if (module.exports === prev) {}",
+        "use(module.exports);",
+        "const enabled = ext.exports.enabled;",
+    ],
+)
+def test_reading_module_exports_is_not_commonjs(read: str) -> None:
+    src = f"const internal = () => {{}};\nexport const run = () => {{}};\n{read}\n"
+    vis = _symbols(src, path="src/mod.ts")
+    assert vis["internal"] == "private"
+    assert vis["run"] == "public"
+
+
+def test_export_shape_still_reads_a_commonjs_default() -> None:
+    from repowise.core.analysis.dead_code.entry_shape import export_shape
+
+    blob = b"const run = () => {};\nmodule.exports = run;\n"
+    assert export_shape("src/mod.js", frozenset({"run"}), blob) == frozenset({"default"})
+    read_only = b"export const run = 1;\nconst prev = module.exports;\n"
+    assert export_shape("src/mod.ts", frozenset({"run"}), read_only) == frozenset({"run"})

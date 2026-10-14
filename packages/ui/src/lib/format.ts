@@ -31,6 +31,14 @@ export function formatNumber(n: number): string {
   return NUMBER_FORMAT.format(n);
 }
 
+/** English ordinal of an integer: 1 → "1st", 2 → "2nd", 3 → "3rd", 11 → "11th", 93 → "93rd". */
+export function ordinal(n: number): string {
+  const tens = Math.abs(n) % 100;
+  const suffix =
+    tens >= 11 && tens <= 13 ? "th" : (["th", "st", "nd", "rd"][Math.abs(n) % 10] ?? "th");
+  return `${n}${suffix}`;
+}
+
 /** Format large counts compactly: 1234567 → "1.2M", 98432 → "98.4K", 999 → "999" */
 export function formatCompact(n: number): string {
   if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(1))}M`;

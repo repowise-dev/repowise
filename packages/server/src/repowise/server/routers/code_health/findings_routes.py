@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,12 +11,13 @@ from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.scope import parse_scope
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
 from repowise.core.persistence import crud
-from repowise.server.deps import get_db_session
+from repowise.server.deps import get_db_session, scoped_repo_id
 from repowise.server.schemas import (
     HealthFindingResponse,
     HealthFindingWithSymbolResponse,
 )
 
+from .._unverified import UnverifiedQuery
 from ._router import router
 from .counts import CountsQuery
 from .loaders import _attach_symbol_ids
@@ -51,6 +52,7 @@ async def list_health_findings(
     limit: int = Query(100, ge=1, le=1000),
     scope: str = ScopeQuery,
     counts: str = CountsQuery,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """Findings worth doing first, then lower-priority ones labelled with why
@@ -93,6 +95,7 @@ async def list_health_findings(
         exclude_dimensions=(
             tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if ranks_everything else None
         ),
+        include_unverified=include_unverified,
     )
     # A finding carries a path, not ``is_test``, so narrowing it needs the
     # metric rows that do. Read them only when the answer depends on them:
@@ -124,12 +127,19 @@ async def update_finding_status(
     repo_id: str,
     finding_id: str,
     payload: FindingStatusUpdate,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if payload.status not in ALLOWED_STATUSES:
         raise HTTPException(
             status_code=400, detail=f"status must be one of {sorted(ALLOWED_STATUSES)}"
         )
+    if scoped_repo_id(request) is not None:
+        from repowise.core.persistence.models import HealthFinding
+
+        existing = await session.get(HealthFinding, finding_id)
+        if existing is None or existing.repository_id != repo_id:
+            raise HTTPException(status_code=404, detail="Finding not found")
     f = await crud.update_health_finding_status(session, finding_id, payload.status)
     if f is None:
         raise HTTPException(status_code=404, detail="Finding not found")

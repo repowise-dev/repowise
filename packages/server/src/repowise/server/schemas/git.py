@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from repowise.core.attribution import file_share
 from repowise.core.co_change import parse_partners
 from repowise.server.schemas.risk_semantics import RiskAuthority
 
@@ -58,17 +59,18 @@ class GitMetadataResponse(BaseModel):
     # Rename lineage: the file's path before its most recent move, if any.
     original_path: str | None = None
     test_gap: bool | None = None
-    # Agent-provenance rollup: share of the file's indexed commits that are
-    # agent-attributed (deterministic local-git channels), with the autonomy-
-    # tier breakdown ({"1": n, "2": n, "3": n}). agent_authored_pct is None
-    # for rows persisted before the provenance-aware index ran.
-    agent_commit_count: int = 0
+    # Agent-provenance rollup (see file_attribution_fields). All None when AI
+    # attribution is switched off for the repository.
+    agent_commit_count: int | None = None
     agent_authored_pct: float | None = None
-    agent_tier_counts: dict = {}
+    agent_tier_counts: dict | None = None
+    attribution_coverage: float | None = None
+    agent_share_suppressed: str | None = None
 
     @classmethod
-    def from_orm(cls, obj: object) -> GitMetadataResponse:
+    def from_orm(cls, obj: object, *, attribution_on: bool) -> GitMetadataResponse:
         return cls(
+            **file_attribution_fields(obj, attribution_on),
             file_path=obj.file_path,  # type: ignore[attr-defined]
             commit_count_total=obj.commit_count_total,  # type: ignore[attr-defined]
             commit_count_90d=obj.commit_count_90d,  # type: ignore[attr-defined]
@@ -111,10 +113,32 @@ class GitMetadataResponse(BaseModel):
             temporal_hotspot_score=obj.temporal_hotspot_score,  # type: ignore[attr-defined]
             commit_count_capped=bool(obj.commit_count_capped),  # type: ignore[attr-defined]
             original_path=obj.original_path,  # type: ignore[attr-defined]
-            agent_commit_count=getattr(obj, "agent_commit_count", 0) or 0,
-            agent_authored_pct=getattr(obj, "agent_authored_pct", None),
-            agent_tier_counts=json.loads(getattr(obj, "agent_tier_counts_json", None) or "{}"),
         )
+
+
+def file_attribution_fields(obj: object, attribution_on: bool) -> dict:
+    """A file's agent rollup, honest about what is unknown.
+
+    ``agent_authored_pct`` is the agent share (0-1) of the file's commits with a
+    known source, withheld (None) below the coverage floor with the reason in
+    ``agent_share_suppressed``; ``attribution_coverage`` is known / all commits.
+    Unknown is never counted as human. Empty when attribution is off.
+    """
+    if not attribution_on:
+        return {}
+    agent = getattr(obj, "agent_commit_count", 0) or 0
+    share = file_share(
+        agent,
+        getattr(obj, "attribution_known_count", 0),
+        getattr(obj, "commit_count_total", 0),
+    )
+    return {
+        "agent_commit_count": agent,
+        "agent_authored_pct": share.agent_share,
+        "agent_tier_counts": json.loads(getattr(obj, "agent_tier_counts_json", None) or "{}"),
+        "attribution_coverage": share.coverage,
+        "agent_share_suppressed": share.suppressed_reason,
+    }
 
 
 class HotspotResponse(BaseModel):
@@ -198,7 +222,7 @@ class CommitResponse(BaseModel):
     # Repo-relative normalization (the portable signal).
     #: Repo-relative percentile rank, 0-100.
     risk_percentile: float
-    #: Authoritative repo-relative review-priority tercile.
+    #: Repo-relative tercile of the diff-size percentile; size, not danger.
     review_priority: str
     # The dominant risk driver, surfaced on rows so reviewers don't have to
     # open every detail sheet. Recomputed deterministically from the stored
@@ -215,10 +239,12 @@ class CommitResponse(BaseModel):
     # from. Identities are folded, so noreply variants of one person count once.
     author_commit_count: int | None = None
     # Agent provenance (deterministic local-git attribution channels).
-    # agent_name is None for human-authored commits.
+    # attribution is agent / human_attested / unknown; agent_name is None for
+    # both of the latter. All None when attribution is off for the repository.
     agent_name: str | None = None
     agent_autonomy_tier: int | None = None
     agent_confidence: str | None = None
+    attribution: str | None = None
 
 
 class RiskDriverResponse(BaseModel):
@@ -283,23 +309,42 @@ class CommitDetailResponse(CommitResponse):
     health: CommitHealthResponse | None = None
 
 
-class AgentTrendBucket(BaseModel):
-    """One month of agent-vs-human commit volume."""
+class AttributionShareFields(BaseModel):
+    """Commit counts by attribution label and the honest agent share.
+
+    ``agent_pct_of_covered`` (0-100) is the agent share of commits with a known
+    source (agent or human-attested): at least that share of covered commits
+    came from an agent. It is None, with ``suppressed_reason``, when
+    ``coverage_pct`` (known / all, 0-100) is below the coverage floor. Unknown
+    commits are their own band, never counted as human.
+    """
+
+    total_commits: int = 0
+    agent_commits: int = 0
+    human_attested_commits: int = 0
+    unknown_commits: int = 0
+    coverage_pct: float | None = None
+    agent_pct_of_covered: float | None = None
+    suppressed_reason: str | None = None
+
+
+class AgentTrendBucket(AttributionShareFields):
+    """One month of commits by attribution label."""
 
     month: str  # "YYYY-MM"
-    total_commits: int
-    agent_commits: int
-    agent_pct: float  # 0-100
     tier_counts: dict = {}
 
 
-class AgentTrendResponse(BaseModel):
-    """Monthly agent-share trend across the indexed commit window."""
+class AgentTrendResponse(AttributionShareFields):
+    """Monthly attribution trend across the indexed commit window.
 
-    buckets: list[AgentTrendBucket]
-    total_commits: int
-    agent_commits: int
-    agent_pct: float  # 0-100 across the whole window
+    ``enabled`` is false, with every figure empty, when AI attribution is off
+    for the repository.
+    """
+
+    enabled: bool = True
+    coverage_floor_pct: float
+    buckets: list[AgentTrendBucket] = []
     agent_names: list[dict] = []  # [{name, count}] descending
 
 
@@ -395,7 +440,7 @@ class RiskRangeResponse(BaseModel):
     base: str
     head: str
     #: Separate historical evidence about where the change lands; it is not
-    #: folded into the authoritative percentile/classification.
+    #: folded into the diff-size percentile.
     fix_history: FixHistoryResponse
     risk_authority: RiskAuthority
     score: float
@@ -435,7 +480,12 @@ class CommitStatsResponse(BaseModel):
     total_commits: int
     high_priority_count: int  # commits in the repo-relative top risk tercile
     fix_commit_count: int  # subjects classified as bug-fixes
-    agent_commit_count: int  # agent-attributed commits
+    # Agent-attributed commits, and their share of commits with a known source
+    # (0-100, None below the coverage floor) beside that coverage. All None when
+    # attribution is off for the repository.
+    agent_commit_count: int | None = None
+    agent_pct_of_covered: float | None = None
+    attribution_coverage_pct: float | None = None
     avg_entropy: float  # mean change-diffusion across all commits
 
     # The distribution behind the tercile banding. Binned on the *raw* score

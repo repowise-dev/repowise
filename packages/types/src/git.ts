@@ -121,8 +121,8 @@ export interface Hotspot {
   original_path?: string | null;
 }
 
-/** Repo-relative review priority derived from the score's percentile within
- * its own repo (terciles) — portable, unlike the absolute calibration band. */
+/** Repo-relative tercile of the diff-size percentile within its own repo;
+ * size, not danger. */
 export type ReviewPriority = "low" | "moderate" | "high";
 
 export interface Commit {
@@ -146,7 +146,7 @@ export interface Commit {
   change_risk_level: ReviewPriority | null;
   /** Where this commit's score sits within its repo's distribution, 0–100. */
   risk_percentile: number;
-  /** Repo-relative review priority (the portable ranking signal). */
+  /** Repo-relative tercile of the diff-size percentile; size, not danger. */
   review_priority: ReviewPriority;
   /** Label of the dominant risk driver, so rows explain themselves without
    * opening the detail sheet. Null when the commit was never risk-scored. */
@@ -156,13 +156,17 @@ export interface Commit {
   author_experience?: number | null;
   /** Commits by this author across the indexed history (identities folded). */
   author_commit_count?: number | null;
-  /** Coding-agent attribution (deterministic local-git channels).
-   * Null/undefined for human-authored commits. */
+  /** Coding-agent attribution (deterministic local-git channels). Null for
+   * human-attested and unknown commits alike; read `attribution`. */
   agent_name?: string | null;
   /** 1 = near-autonomous bot, 2 = human-driven agent, 3 = assisted/co-authored. */
   agent_autonomy_tier?: number | null;
   agent_confidence?: string | null;
+  /** agent / human_attested / unknown; null when attribution is off. */
+  attribution?: CommitAttribution | null;
 }
+
+export type CommitAttribution = "agent" | "human_attested" | "unknown";
 
 /** One feature's signed contribution to a commit's change-risk logit. */
 export interface RiskDriver {
@@ -231,21 +235,32 @@ export interface CommitDetail extends Commit {
   health?: CommitHealth | null;
 }
 
-/** One month of agent-vs-human commit volume. */
-export interface AgentTrendBucket {
-  month: string; // "YYYY-MM"
+/** Commits by attribution label, with the honest agent share. Unknown is
+ * never counted as human: `agent_pct_of_covered` is the agent share of commits
+ * with a known source (agent or human-attested), null below the coverage
+ * floor with `suppressed_reason` set. Percentages are 0-100. */
+export interface AttributionShareFields {
   total_commits: number;
   agent_commits: number;
-  agent_pct: number; // 0-100
+  human_attested_commits: number;
+  unknown_commits: number;
+  coverage_pct: number | null;
+  agent_pct_of_covered: number | null;
+  suppressed_reason: string | null;
+}
+
+/** One month of commits by attribution label. */
+export interface AgentTrendBucket extends AttributionShareFields {
+  month: string; // "YYYY-MM"
   tier_counts: Record<string, number>;
 }
 
-/** Monthly agent-share trend across the indexed commit window. */
-export interface AgentTrend {
+/** Monthly attribution trend across the indexed commit window. `enabled` is
+ * false, with every figure empty, when attribution is off for the repo. */
+export interface AgentTrend extends AttributionShareFields {
+  enabled: boolean;
+  coverage_floor_pct: number;
   buckets: AgentTrendBucket[];
-  total_commits: number;
-  agent_commits: number;
-  agent_pct: number; // 0-100
   agent_names: { name: string; count: number }[];
 }
 
@@ -293,7 +308,13 @@ export interface CommitStats {
   total_commits: number;
   high_priority_count: number;
   fix_commit_count: number;
-  agent_commit_count: number;
+  /** Null, like the two figures below, when attribution is off. */
+  agent_commit_count: number | null;
+  /** Agent share of commits with a known source, 0-100; null below the
+   * coverage floor. */
+  agent_pct_of_covered?: number | null;
+  /** Commits with a known source / all commits, 0-100. */
+  attribution_coverage_pct?: number | null;
   avg_entropy: number;
   /** Binned on the raw score, not the percentile — percentile ranks are
    * uniform by construction, so only the raw axis has a shape to draw. */

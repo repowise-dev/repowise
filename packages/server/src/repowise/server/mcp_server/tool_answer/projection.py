@@ -9,6 +9,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
+from repowise.server.mcp_server._code_rationale import can_lead_answer
 from repowise.server.mcp_server.tool_answer.config import (
     _CANDIDATE_FILES_HIGH,
     _CANDIDATE_FILES_MAX,
@@ -27,6 +28,11 @@ _COLLECTIONS = (
     "candidates",
     "fallback_targets",
 )
+
+# ``evidence`` restores the expanded projection; ``diagnostics`` adds
+# ``retrieval_quality``, which feeds ``confidence`` and is otherwise not served
+# so the agent reads one trust signal.
+_INCLUDES = frozenset({"evidence", "diagnostics"})
 
 
 def _path(row: Any) -> str | None:
@@ -243,9 +249,14 @@ def _same_file(a: str | None, b: str | None) -> bool:
 def _lead_rationale(payload: dict[str, Any]) -> dict[str, Any] | None:
     """The rationale row ``answer`` may lead with: one from the top-ranked file.
 
-    A row from any other file would name a file retrieval did not put first.
+    A row from any other file would name a file retrieval did not put first,
+    and one matching a single question word is not an answer (`can_lead_answer`).
     """
-    rows = [row for row in payload.get("code_rationale") or [] if isinstance(row, dict)]
+    rows = [
+        row
+        for row in payload.get("code_rationale") or []
+        if isinstance(row, dict) and can_lead_answer(row)
+    ]
     if not rows:
         return None
     guess = _first_guess(payload)
@@ -260,10 +271,18 @@ def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     reason = payload.get("degraded")
     if not reason:
         return
-    if payload.get("symbol_bodies"):
+    if payload.get("symbol_bodies") and payload.get("grounding"):
         payload["answer"] = (
             f"Synthesis is unavailable ({reason}), but symbol_bodies contains live source "
             "for the named code. Use that evidence directly."
+        )
+    elif payload.get("symbol_bodies"):
+        # No ``grounding``: the question names this code as the place it asks about.
+        payload["answer"] = (
+            f"Synthesis is unavailable ({reason}). symbol_bodies holds the code the "
+            "question names, but not what it asks; "
+            f"{'best_guesses' if payload.get('best_guesses') else 'retrieval'} "
+            "ranks the files to read."
         )
     elif (row := _lead_rationale(payload)) is not None:
         conclusion = _text(row, "rationale", "comment", "quote", "source", "text")
@@ -734,7 +753,9 @@ def _project(
         payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked,
         bodies_cut=bodies_cut,
     )
-    unknown = sorted(set(include or []) - {"evidence"})
+    if "diagnostics" not in set(include or []):
+        payload.pop("retrieval_quality", None)
+    unknown = sorted(set(include or []) - _INCLUDES)
     if unknown:
         payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
     return payload, slimmed, ranked

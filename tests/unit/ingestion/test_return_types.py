@@ -18,6 +18,22 @@ def test_declared_return_type_reads_stored_signature() -> None:
 @pytest.mark.parametrize(
     ("signature", "expected"),
     [
+        ("function f(cb: () -> Foo) -> Bar", "Bar"),  # Kotlin / Swift function-typed parameter
+        ("function f(cb: () -> Foo)", None),
+        ("fn f(cb: impl Fn() -> Foo) -> Bar", "Bar"),
+        ("func (r *T) Name(a int) -> int", "int"),  # a go receiver list comes first
+        ("function make -> Repo", "Repo"),  # a Swift signature with no list
+    ],
+)
+def test_declared_return_type_follows_the_parameter_list(
+    signature: str, expected: str | None
+) -> None:
+    assert declared_return_type(signature) == expected
+
+
+@pytest.mark.parametrize(
+    ("signature", "expected"),
+    [
         ("run() -> void", 0),
         ("make(Map<String, Integer> values, int count) -> Product", 2),
         ("broken", None),
@@ -31,7 +47,8 @@ def test_signature_parameter_count(signature: str, expected: int | None) -> None
     ("raw", "language", "expected"),
     [
         ("Result", "java", "Result"),
-        ("java.util.Optional<Result>", "java", "Optional"),
+        # Java keeps its qualifiers: the resolver reads them where they were written.
+        ("java.util.Optional<Result>", "java", "java.util.Optional"),
         ("const seastar::future<Result>&", "cpp", "future"),
         ("global::System.Threading.Tasks.Task<Result>?", "csharp", "Task`1"),
         ("IRuleBuilderOptions<T, TProperty>", "csharp", "IRuleBuilderOptions`2"),

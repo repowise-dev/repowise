@@ -155,6 +155,28 @@ def _run_zombie_only(git_meta: dict) -> list:
     ]
 
 
+def test_co_change_is_not_a_cross_package_importer():
+    """A file only ever committed alongside pkgA does not keep pkgA alive."""
+
+    def zombies(g) -> set[str]:
+        report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+            {
+                "detect_unreachable_files": False,
+                "detect_unused_exports": False,
+                "detect_unused_internals": False,
+                "min_confidence": 0.0,
+            }
+        )
+        return {f.file_path for f in report.findings if f.kind == DeadCodeKind.ZOMBIE_PACKAGE}
+
+    g = _zombie_graph()
+    g.add_edge("pkgB/sentinel.py", "pkgA/alpha.py", edge_type="co_changes")
+    assert "pkgA" in zombies(g)
+
+    g.add_edge("pkgB/sentinel.py", "pkgA/beta.py", edge_type="imports")
+    assert "pkgA" not in zombies(g)
+
+
 def test_zombie_package_primary_owner_from_git_meta():
     """primary_owner on a zombie finding is taken from git_meta_map.
 

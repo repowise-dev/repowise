@@ -14,6 +14,7 @@ from typing import Any, Literal, get_args
 from sqlalchemy import func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import GateLayer
 from repowise.core.analysis.health.perf.opportunities import PERFORMANCE_MODEL_VERSION
 from repowise.core.analysis.health.queue.counts import NOT_JUDGED, QueueCounts, queue_counts
 
@@ -25,12 +26,21 @@ from .fix_first import (
     stored_item_counts,
     unjudged,
 )
+from .shown import gated_counts, ungated
 
 Unit = Literal["findings", "causes", "plans", "items"]
 #: One noun per unit, in the order surfaces list them.
 UNITS: tuple[Unit, ...] = get_args(Unit)
 #: The units whose rows carry a stored judgement.
 JudgedUnit = Literal["findings", "causes", "plans"]
+
+
+#: The gate layer and gated-kind column of each judged unit's rows.
+_GATE_LAYERS: dict[str, tuple[GateLayer, str]] = {
+    "findings": ("health", "biomarker_type"),
+    "causes": ("performance", "biomarker_type"),
+    "plans": ("refactoring", "lead_refactoring_type"),
+}
 
 
 def _population(unit: str, repo_id: str) -> tuple[Any, Any]:
@@ -59,13 +69,16 @@ async def unit_counts(
     *,
     shown: int = 0,
     file_paths: Sequence[str] | None = None,
+    include_unverified: bool = False,
 ) -> QueueCounts:
     """``unit``'s counts over its open inventory, in ``file_paths`` when named.
 
     List filters (type, effort, context) never narrow these: the counts say
     where a list sits in the whole queue, and ``shown`` is what it carries.
-    Fix first items are counted over the whole repository only: their
-    exclusions carry no file, so ``file_paths`` is refused for them.
+    Rows a language gate holds back count once, in ``gated``, unless
+    ``include_unverified`` serves them. Fix first items are counted over the
+    whole repository only: their exclusions carry no file, so ``file_paths``
+    is refused for them, and no gate applies to them.
     """
     if unit == "items":
         if file_paths is not None:
@@ -79,10 +92,22 @@ async def unit_counts(
         return (await load_fix_first(session, repo_id, limit=None)).counts(shown)
     model, population = _population(unit, repo_id)
     scoped = model.file_path.in_(list(file_paths)) if file_paths is not None else true()
+    layer, kind = _GATE_LAYERS[unit]
+    kind_col = getattr(model, kind)
+    served = ungated(layer, model.file_path, kind_col, include_unverified=include_unverified)
     rows = await session.execute(
         select(model.queue_eligible, model.queue_reason, model.queue_tier, func.count())
-        .where(population, scoped)
+        .where(population, scoped, served)
         .group_by(model.queue_eligible, model.queue_reason, model.queue_tier)
+    )
+    gated = await gated_counts(
+        session,
+        layer,
+        model,
+        population,
+        scoped,
+        kind_col=kind_col,
+        include_unverified=include_unverified,
     )
     return queue_counts(
         (
@@ -90,16 +115,27 @@ async def unit_counts(
             for eligible, reason, tier, n in rows.all()
         ),
         shown,
+        gated=sum(cell["count"] for cell in gated.values()),
     )
 
 
 async def all_unit_counts(
-    session: AsyncSession, repo_id: str, *, shown: dict[str, int] | None = None
+    session: AsyncSession,
+    repo_id: str,
+    *,
+    shown: dict[str, int] | None = None,
+    include_unverified: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Every unit's counts, by noun, for a surface that reports them together."""
     out: dict[str, dict[str, Any]] = {}
     for unit in UNITS:
-        counts = await unit_counts(session, repo_id, unit, shown=(shown or {}).get(unit, 0))
+        counts = await unit_counts(
+            session,
+            repo_id,
+            unit,
+            shown=(shown or {}).get(unit, 0),
+            include_unverified=include_unverified,
+        )
         out[unit] = counts.as_dict()
     return out
 

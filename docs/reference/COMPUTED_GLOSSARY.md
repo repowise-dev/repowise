@@ -138,7 +138,7 @@ workspace overlays, MCP responses, and CLI output.
 | Stable file flag | File with more than 10 total commits and no recent 90-day commits. | `_index_file()` | `is_stable: true` |
 | Co-change partner | File historically changed in the same commits, with temporal decay. | `compute_co_changes_and_entropy()` | `{file_path: "src/schema.py", co_change_count: 3.72, last_co_change: "2026-04-14"}` |
 | Agent provenance (commit) | Which coding agent (if any) authored a commit, from local-git channels only (identity fields, message footers, co-author trailers); tier 1 = near-autonomous bot account, 2 = human-driven agent, 3 = assisted. | `agent_provenance.AgentProvenanceClassifier.classify()` | `{agent_name: "claude", agent_autonomy_tier: 2, agent_channel: "message_footer", agent_confidence: "high"}` |
-| Agent-authored share (file) | Fraction of a file's indexed commits that are agent-attributed, with per-tier counts. | `_index_file()` | `{agent_authored_pct: 0.42, agent_commit_count: 21, agent_tier_counts: {"2": 18, "3": 3}}` |
+| Agent-authored share (file) | Agent share of a file's commits with a known source (agent or human-attested), shown beside the coverage (known / all commits) and withheld below 30% coverage. Unknown commits are never counted as human. | `_add_agent_rollup()`, `attribution.file_share()` | `{agent_authored_pct: 0.6, attribution_coverage: 0.5, agent_commit_count: 3, agent_tier_counts: {"2": 3}}` |
 | Git index summary | Repo-level indexing result. | `GitIndexSummary` | `{files_indexed: 420, hotspots: 38, stable_files: 71, duration_seconds: 12.4}` |
 
 ## Generated Wiki Pages

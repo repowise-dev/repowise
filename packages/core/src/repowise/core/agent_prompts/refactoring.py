@@ -10,7 +10,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from repowise.core.analysis.health.refactoring.recipe import build_recipe, label, verify_check
+from repowise.core.analysis.health.refactoring.recipe import (
+    ELSEWHERE_NOTE,
+    LINE_RULE,
+    SCRIPT_RULE,
+    build_recipe,
+    label,
+    verify_check,
+)
+from repowise.core.ci.markdown import longest_backtick_run
 
 from .preamble import preamble
 from .sections import bullet_list, closing_sections, join_sections, repo_suffix
@@ -38,16 +46,34 @@ def _loc(file: Any, span: Mapping[str, int] | None) -> str:
 def _symbol_lines(step: Mapping[str, Any]) -> list[str]:
     """What an Extract Method step adds: the texts to copy and the slots."""
     symbol = step.get("new_symbol") or {}
-    call = step.get("call_site") or {}
-    span = call.get("replace_span") or step.get("span") or {}
+    out = _helper_text_lines(symbol)
+    replace = _replace_line(step)
+    if replace:
+        out.append(replace)
+    out.extend(_helper_io_lines(symbol))
+    return out
+
+
+def _helper_text_lines(symbol: Mapping[str, Any]) -> list[str]:
     out = []
     if symbol.get("signature_text"):
         out.append(f"New helper: `{symbol['signature_text']}`")
     if symbol.get("return_text"):
         out.append(f"End the helper with: `{symbol['return_text']}`")
-    if call.get("new_text"):
-        lines = f"{span.get('start')}-{span.get('end')}"
-        out.append(f"Replace lines {lines} with: `{call['new_text']}`")
+    return out
+
+
+def _replace_line(step: Mapping[str, Any]) -> str | None:
+    call = step.get("call_site") or {}
+    if not call.get("new_text"):
+        return None
+    span = call.get("replace_span") or step.get("span") or {}
+    lines = "the span" if step.get("anchors") else f"lines {span.get('start')}-{span.get('end')}"
+    return f"Replace {lines} with: `{call['new_text']}`"
+
+
+def _helper_io_lines(symbol: Mapping[str, Any]) -> list[str]:
+    out = []
     if symbol:
         out.append(f"Parameters (in): {', '.join(symbol.get('params') or []) or '(none)'}")
         out.append(f"Returns (out): {', '.join(symbol.get('returns') or []) or '(nothing)'}")
@@ -66,10 +92,27 @@ def _step_lines(step: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def _anchor_lines(step: Mapping[str, Any], pad: str) -> list[str]:
+    """The span's first and last lines, each fenced at column 0 so its
+    indentation reads exactly as the file has it."""
+    anchors = step.get("anchors")
+    if not anchors:
+        return []
+    out = []
+    for edge, text in (("starts", anchors["first"]), ("ends", anchors["last"])):
+        fence = "`" * max(3, longest_backtick_run(text) + 1)
+        out += [f"{pad}   - The span {edge} with:", fence, text, fence]
+    if anchors.get("unique_in") == "function":
+        out.append(f"{pad}   - {ELSEWHERE_NOTE}")
+    return out
+
+
 def _step_entry(step: Mapping[str, Any], marker: str, pad: str) -> str:
     where = f" ({_loc(step['file'], step.get('span'))})" if step.get("file") else ""
     head = f"{pad}{marker} {step['text']}{where}"
-    return "\n".join([head, *(f"{pad}   - {line}" for line in _step_lines(step))])
+    return "\n".join(
+        [head, *_anchor_lines(step, pad), *(f"{pad}   - {line}" for line in _step_lines(step))]
+    )
 
 
 def _verify_lines(check: Mapping[str, Any], *, runnable: bool = True) -> list[str]:
@@ -114,13 +157,14 @@ def _before_section(recipe: Mapping[str, Any]) -> str:
     return join_sections(["## Before you edit", "", bullet_list(pre), ""])
 
 
+def _rule(item: Mapping[str, Any]) -> str:
+    reason = item.get("reason")
+    tail = f" {reason[0].upper()}{reason[1:]}." if reason else ""
+    return f"**Do not {item['constraint']}.**{tail}"
+
+
 def _does_not(recipe: Mapping[str, Any]) -> list[str]:
-    out = []
-    for item in recipe["does_not"]:
-        reason = item.get("reason")
-        tail = f" {reason[0].upper()}{reason[1:]}." if reason else ""
-        out.append(f"**Do not {item['constraint']}.**{tail}")
-    return out
+    return [_rule(item) for item in recipe["does_not"]]
 
 
 #: The heading an advisory plan's steps sit under, unnumbered.
@@ -131,10 +175,44 @@ def _advisory_heading(recipe: Mapping[str, Any]) -> str:
     return _ADVISORY_HEADING.get(recipe["kind"] or "", "Advisory: one way to do it")
 
 
-def _steps_section(recipe: Mapping[str, Any]) -> list[str]:
+def _batch_check(batch: Mapping[str, Any]) -> list[str]:
+    """What closes a batch: run its tests, and stop the plan if they fail."""
+    out = [batch["text"]]
+    if batch.get("tests"):
+        out.append("Tests: " + ", ".join(f"`{t}`" for t in batch["tests"]))
+    out.extend(f"Run: `{c}`" for c in batch.get("commands") or [])
+    return out
+
+
+def _batched_entries(
+    recipe: Mapping[str, Any], numbered: bool, pad: str, *, runnable: bool = True
+) -> str:
+    """The steps grouped by batch (``refactoring.batches``), each closed by its
+    check when the reader can run tests. Under an opportunity step (*pad*) the
+    batch lines are bullets with no blank line, so they stay inside the step."""
+    steps = {s["n"]: s for s in recipe["steps"]}
+    batches = recipe["batches"]
+    lead = f"{pad}- " if pad else ""
+    blocks: list[str] = []
+    for batch in batches:
+        first, last = batch["stages"]["first"], batch["stages"]["last"]
+        entries = [_step_entry(steps[n], f"{n}." if numbered else "-", pad) for n in batch["steps"]]
+        blocks += [
+            f"{lead}**Batch {batch['n']} of {len(batches)}: stages {first}-{last}**",
+            "\n".join(entries),
+        ]
+        if runnable:
+            blocks.append("\n".join(f"{lead}{line}" for line in _batch_check(batch)))
+    return ("\n" if pad else "\n\n").join(blocks)
+
+
+def _steps_section(recipe: Mapping[str, Any], *, runnable: bool = True) -> list[str]:
     if recipe["advisory"]:
         body = "\n".join(_step_entry(s, "-", "") for s in recipe["steps"])
         return [f"## {_advisory_heading(recipe)}", "", body, ""]
+    if recipe.get("batches"):
+        body = _batched_entries(recipe, True, "", runnable=runnable)
+        return ["## Steps, in order, in batches", "", body, ""]
     body = "\n".join(_step_entry(s, f"{s['n']}.", "") for s in recipe["steps"])
     return ["## Steps, in order", "", body, ""]
 
@@ -195,7 +273,7 @@ def _plan_sections(
         bullet_list(facts),
         "",
         _before_section(recipe),
-        *_steps_section(recipe),
+        *_steps_section(recipe, runnable=runnable),
         _verify_section(recipe, runnable=runnable),
     ]
 
@@ -303,7 +381,10 @@ def _opportunity_step(step: Mapping[str, Any], n: int, plan: Mapping[str, Any] |
         recipe = build_recipe(plan)
         if recipe["advisory"]:
             lines.append(f"   - {_advisory_heading(recipe)}:")
-        lines.extend(_step_entry(s, "-", "   ") for s in recipe["steps"])
+        if recipe.get("batches"):
+            lines.append(_batched_entries(recipe, False, "   "))
+        else:
+            lines.extend(_step_entry(s, "-", "   ") for s in recipe["steps"])
     return "\n".join(lines)
 
 
@@ -381,12 +462,28 @@ def _opportunity_handoff(o: Mapping[str, Any], flavor: str) -> str:
     )
 
 
-_OPPORTUNITY_CONSTRAINTS = (
+_OPPORTUNITY_ORDER = (
     "**Apply the steps in the order given.** It is dependency-safe; reordering it is not.",
     "**Read a judgment step's code before applying it.** Its obligation is unproven.",
+)
+_OPPORTUNITY_CONSTRAINTS = (
     "**Keep behaviour.** Run the tests (and type-checker / linter) before and after.",
     *_CONSTRAINTS,
 )
+
+
+def _edit_rules(steps: list[Any], plans: Mapping[Any, Any]) -> list[str]:
+    """Extract Method's apply rules, only for an opportunity holding such a
+    step: no script always, find-by-text only when a step's plan is anchored."""
+    extracts = [
+        plans.get(s.get("plan_id")) or {}
+        for s in steps
+        if s.get("refactoring_type") == "extract_method"
+    ]
+    if not extracts:
+        return []
+    anchored = any((p.get("plan") or {}).get("anchors") for p in extracts)
+    return [_rule(SCRIPT_RULE), *([_rule(LINE_RULE)] if anchored else [])]
 
 
 def render_opportunity(
@@ -421,7 +518,10 @@ def render_opportunity(
             "",
             _opportunity_evidence(detail),
             _opportunity_verify(detail),
-            *closing_sections(_OPPORTUNITY_CONSTRAINTS, expected),
+            *closing_sections(
+                [*_OPPORTUNITY_ORDER, *_edit_rules(steps, plans), *_OPPORTUNITY_CONSTRAINTS],
+                expected,
+            ),
             _opportunity_handoff(detail, flavor),
         ]
     )

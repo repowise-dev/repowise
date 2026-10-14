@@ -34,7 +34,7 @@ log = structlog.get_logger(__name__)
 _INCLUDE_RE = re.compile(r'include\s*\(\s*((?:"[^"]+"\s*,?\s*)+)\)')
 _INCLUDE_ITEM_RE = re.compile(r'"([^"]+)"')
 _INCLUDE_LINE_RE = re.compile(r'include\s+([\'"])([^\'"]+)\1')
-_INCLUDE_BUILD_RE = re.compile(r'includeBuild\s*\(\s*"([^"]+)"\s*\)')
+_INCLUDE_BUILD_RE = re.compile(r"""includeBuild\s*\(?\s*(["'])([^"']+)\1""")
 _PROJECT_DIR_RE = re.compile(
     r'project\s*\(\s*"([^"]+)"\s*\)\s*\.\s*projectDir\s*=\s*file\s*\(\s*"([^"]+)"\s*\)'
 )
@@ -47,14 +47,28 @@ _SOURCESET_NAME_RE = re.compile(
     r'(?:val\s+|getByName\s*\(\s*"|named\s*\(\s*"|create\s*\(\s*"|register\s*\(\s*")?'
     r'(\w+)(?:"\s*\))?\s*\{',
 )
-_PLUGIN_ID_RE = re.compile(r'id\s*\(\s*"([^"]+)"\s*\)')
+_PLUGIN_ID_RE = re.compile(r'id\s*\(\s*["\']([^"\']+)["\']\s*\)')
 _PLUGIN_ID_GROOVY_RE = re.compile(r"id\s+['\"]([^'\"]+)['\"]")
 _APPLY_PLUGIN_RE = re.compile(r"apply\s+plugin:\s*['\"]([^'\"]+)['\"]")
+_APPLY_PLUGIN_KTS_RE = re.compile(r'apply\s*\(\s*plugin\s*=\s*["\']([^"\']+)["\']\s*\)')
+_ALIAS_PLUGIN_RE = re.compile(r"alias\s*\(\s*([^)]+)\s*\)")
+_PLUGINS_BLOCK_RE = re.compile(r"plugins\s*\{([^}]+)\}", re.DOTALL)
+_KTS_BACKTICK_PLUGIN_RE = re.compile(r"`([^`]+)`")
+_KTS_BARE_CORE_PLUGIN_RE = re.compile(
+    r"^\s*(application|java-library|maven-publish|java)\s*$", re.MULTILINE
+)
+_GRADLE_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_GRADLE_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)", re.MULTILINE)
 _ROOT_PROJECT_NAME_RE = re.compile(r'rootProject\s*\.\s*name\s*=\s*"([^"]+)"')
 # A quoted fully-qualified class name: lowercase package segments, then a
 # capitalised type (``'org.elasticsearch.system.indices.SystemIndicesQA'``).
 _QUOTED_FQN_RE = re.compile(r"""['"]((?:[a-z_]\w*\.)+[A-Z]\w*)['"]""")
+# A default-package class (``build-logic`` convention plugins) has no dots, so
+# only a class-naming key vouches for the bare name.
+_KEYED_BARE_CLASS_RE = re.compile(
+    r"""\b(?:implementationClass|mainClass)\s*(?:=|\.set\s*\()\s*['"]([A-Z]\w*)['"]"""
+)
 
 _DEFAULT_MAIN_SRC_ROOTS = ("src/main/java", "src/main/kotlin")
 _DEFAULT_TEST_SRC_ROOTS = ("src/test/java", "src/test/kotlin")
@@ -122,7 +136,7 @@ class JvmGradleIndex:
 # Settings parsing
 # ---------------------------------------------------------------------------
 
-def _parse_settings(settings_file: Path) -> tuple[list[str], dict[str, str]]:
+def parse_settings(settings_file: Path) -> tuple[list[str], dict[str, str]]:
     """Return (module_names, project_dir_overrides) from settings.gradle(.kts)."""
     if not settings_file.is_file():
         return [], {}
@@ -155,6 +169,11 @@ def _parse_settings(settings_file: Path) -> tuple[list[str], dict[str, str]]:
     return result, overrides
 
 
+def included_builds(settings_text: str) -> list[str]:
+    """The directories a settings script composes in with ``includeBuild``, as written."""
+    return [match.group(2) for match in _INCLUDE_BUILD_RE.finditer(settings_text)]
+
+
 def _module_dir(repo_path: Path, module_name: str, overrides: dict[str, str]) -> Path:
     if module_name in overrides:
         return repo_path / overrides[module_name]
@@ -164,6 +183,33 @@ def _module_dir(repo_path: Path, module_name: str, overrides: dict[str, str]) ->
 # ---------------------------------------------------------------------------
 # Source-set discovery
 # ---------------------------------------------------------------------------
+
+# ``<module>/src/<set>/kotlin/``: the source-set directory a JVM file sits in.
+_SOURCE_SET_DIR_RE = re.compile(r"(?:^|/)src/[^/]+/(?=(?:java|kotlin)/)")
+
+
+def source_set_dir(path: str) -> str | None:
+    """The source-set directory *path* sits in (``okio/src/jvmMain/``), or None."""
+    match = _SOURCE_SET_DIR_RE.search(path)
+    return path[: match.end()] if match else None
+
+
+def declaration_rank(importer: str, candidate: str, is_expect: bool) -> int:
+    """How directly *importer* sees *candidate*, one of a name's declarations; lowest wins.
+
+    Kotlin Multiplatform declares a name once per source set: ``expect`` in
+    common code and ``actual`` in each platform's. A file binds its own source
+    set's declaration (0), else the ``expect`` its set depends on (1); any
+    other declaration (2) is a guess, since source-set dependencies are not
+    read: an intermediate set's ``actual`` may be visible, another platform's
+    is not. Ties keep their order. Outside multiplatform only a declaration in
+    the file's own source set (``src/main`` over ``src/test``) moves ahead.
+    """
+    own = source_set_dir(importer)
+    if own is not None and source_set_dir(candidate) == own:
+        return 0
+    return 1 if is_expect else 2
+
 
 def _is_test_source_set(name: str) -> bool:
     lower = name.lower()
@@ -245,10 +291,40 @@ def _detect_plugins(module_dir: Path) -> frozenset[str]:
             text = build.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
-        for pat in (_PLUGIN_ID_RE, _PLUGIN_ID_GROOVY_RE, _APPLY_PLUGIN_RE):
-            for m in pat.finditer(text):
+        clean_text = _GRADLE_BLOCK_COMMENT_RE.sub(
+            lambda m: "\n" * m.group(0).count("\n"), text
+        )
+        clean_text = _GRADLE_LINE_COMMENT_RE.sub("", clean_text)
+        for pat in (_PLUGIN_ID_RE, _PLUGIN_ID_GROOVY_RE, _APPLY_PLUGIN_RE, _APPLY_PLUGIN_KTS_RE):
+            for m in pat.finditer(clean_text):
+                plugins.append(m.group(1))
+        for m in _ALIAS_PLUGIN_RE.finditer(clean_text):
+            raw_alias = m.group(1).strip()
+            if "plugins." in raw_alias:
+                plugin_sub = raw_alias.split("plugins.", 1)[1].strip()
+                plugins.append(plugin_sub)
+                plugins.append(plugin_sub.replace(".", "-"))
+        for blk in _PLUGINS_BLOCK_RE.finditer(clean_text):
+            block_content = blk.group(1)
+            for m in _KTS_BACKTICK_PLUGIN_RE.finditer(block_content):
+                plugins.append(m.group(1))
+            for m in _KTS_BARE_CORE_PLUGIN_RE.finditer(block_content):
                 plugins.append(m.group(1))
     return frozenset(plugins)
+
+
+def is_publishing_gradle_project(project: JvmGradleProject) -> bool:
+    """Whether a Gradle module publishes an artifact to consumers.
+
+    Published modules apply ``java-library``, ``maven-publish``, or a convention
+    plugin matching ``java-library.*``, and do not apply ``application``.
+    """
+    if "application" in project.plugins:
+        return False
+    return any(
+        p in ("java-library", "maven-publish") or p.startswith("java-library.")
+        for p in project.plugins
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +391,7 @@ def build_jvm_gradle_index(
     modules: list[str] = []
     project_dir_overrides: dict[str, str] = {}
     for sp in settings_paths:
-        mods, ovr = _parse_settings(sp)
+        mods, ovr = parse_settings(sp)
         modules.extend(mods)
         project_dir_overrides.update(ovr)
 
@@ -402,13 +478,14 @@ def build_jvm_gradle_index(
 
 
 def build_script_class_names(ctx: ResolverContext) -> set[str]:
-    """Fully-qualified class names quoted in any Gradle build script.
+    """Class names quoted in any Gradle build script, fully qualified or bare.
 
     A build names a class it loads by reflection: a plugin's
     ``esplugin { classname '...' }``, ``gradlePlugin`` ``implementationClass``,
     an application ``mainClass``. Every build script in the tree is read,
     since a settings file that adds projects by walking directories names
     none of them. A name only counts once it resolves to a class in the repo.
+    A name without a package is the default package's class.
     """
     names: set[str] = set()
     if ctx.repo_path is None:
@@ -420,9 +497,11 @@ def build_script_class_names(ctx: ResolverContext) -> set[str]:
         prune_nested_git=ctx.prune_nested_git,
     ):
         try:
-            names.update(_QUOTED_FQN_RE.findall(script.read_text(encoding="utf-8", errors="ignore")))
+            text = script.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        names.update(_QUOTED_FQN_RE.findall(text))
+        names.update(_KEYED_BARE_CLASS_RE.findall(text))
     return names
 
 

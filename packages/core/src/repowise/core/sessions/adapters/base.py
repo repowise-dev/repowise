@@ -19,9 +19,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-from repowise.core.sessions.events import Event
+from repowise.core.sessions.events import Event, ToolResult, ToolUse
+
+if TYPE_CHECKING:
+    from repowise.core.edit_capture.edits import FileEdit
 
 #: Cheap gate on the raw line, applied before paying for JSON parsing.
 #: Transcript lines routinely run to hundreds of kilobytes; a substring
@@ -155,6 +158,20 @@ class HarnessAdapter(ABC):
                     yield event
         finally:
             self.end_file()
+
+    def file_edits(self, use: ToolUse, result: ToolResult | None = None) -> list[FileEdit]:
+        """Lines a recorded tool call added, per file; empty for a non-edit call.
+
+        The same extractor the live capture hook runs (keyed by this adapter's
+        ``name`` in :data:`repowise.core.edit_capture.edits.EXTRACTORS`), so a
+        transcript and a hook payload of one call can never disagree.
+        """
+        from repowise.core.edit_capture.edits import EXTRACTORS
+
+        extractor = EXTRACTORS.get(self.name)
+        if extractor is None or use.name not in self.edit_tool_names:
+            return []
+        return extractor(use.name, use.input, result.payload if result is not None else None)
 
     def iter_events(self, path: Path, *, prefilter: RawPrefilter | None = None) -> Iterator[Event]:
         """Events from one transcript file, in order.

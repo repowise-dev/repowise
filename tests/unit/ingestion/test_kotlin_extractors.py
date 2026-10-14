@@ -106,3 +106,29 @@ class TestKotlinWildcardImports:
         result = parser.parse_file(_file(), src)
         modules = [imp.module_path for imp in result.imports]
         assert modules == ["com.example.Foo"]
+
+    def test_wildcard_import_binds_only_the_wildcard(self, parser: ASTParser) -> None:
+        src = b"package x\nimport io.ktor.server.routing.*\nclass App\n"
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert imp.imported_names == ["*"]
+        assert [(b.local_name, b.exported_name) for b in imp.bindings] == [("*", None)]
+
+
+class TestKotlinAliasImports:
+    def test_alias_binds_alias_to_original_name(self, parser: ASTParser) -> None:
+        src = b"package x\nimport com.example.Foo as Bar\nclass App\n"
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert imp.module_path == "com.example.Foo"
+        assert imp.imported_names == ["Foo"]
+        assert [(b.local_name, b.exported_name) for b in imp.bindings] == [("Bar", "Foo")]
+        assert imp.local_names == ["Bar"]
+
+    def test_plain_import_binds_its_own_name(self, parser: ASTParser) -> None:
+        src = b"package x\nimport com.example.Foo\nclass App\n"
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert [(b.local_name, b.exported_name) for b in imp.bindings] == [("Foo", "Foo")]
+
+    def test_dangling_as_takes_no_alias_from_the_next_line(self, parser: ASTParser) -> None:
+        src = b"package x\nimport com.example.Foo as\nclass App\n"
+        imp = parser.parse_file(_file(), src).imports[0]
+        assert [(b.local_name, b.exported_name) for b in imp.bindings] == [("Foo", "Foo")]

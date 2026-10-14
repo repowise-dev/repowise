@@ -94,3 +94,21 @@ def test_service_boundary_skips_nested_git_repo(tmp_path: Path) -> None:
     names = {b.service_name for b in boundaries}
 
     assert "sibling-service" not in names
+
+
+def test_service_boundary_under_a_source_package_named_build(tmp_path: Path) -> None:
+    # A service rooted in a source package named ``build`` is a boundary; one
+    # under a ``dist`` bundle is not (#3237).
+    for rel, text in (
+        ("services/build/pyproject.toml", "[project]\nname='b'\n"),
+        ("services/build/main.py", "print('svc')\n"),
+        ("services/dist/package.json", '{"name": "d"}\n'),
+        ("services/dist/index.js", "module.exports = {}\n"),
+    ):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+
+    paths = {b.service_path for b in detect_service_boundaries(tmp_path)}
+
+    assert "services/build" in paths
+    assert "services/dist" not in paths

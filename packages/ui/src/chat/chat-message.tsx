@@ -8,6 +8,7 @@ import { MessageActions } from "./message-actions";
 import { CHAT_STAGES, chatStage } from "./chat-stage";
 import { Markdown } from "../shared/markdown";
 import { SourceCitations, type SourceReference } from "./source-citations";
+import { EvidenceCardList, cardRefHref } from "../cards/evidence-card";
 import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 
 interface ChatMessageProps {
@@ -102,6 +103,14 @@ function ChatMessageImpl({
 
         {message.text && (
           <Markdown content={message.text} density={dock ? "narrow" : "reading"} streaming={message.isStreaming} fill />
+        )}
+
+        {/* Only stored messages carry cards for now; the stream sends none. */}
+        {!message.isStreaming && message.cards && (
+          <EvidenceCardList
+            cards={message.cards}
+            buildRefHref={(ref) => cardRefHref(ref, linkPrefix ?? `/repos/${repoId}`)}
+          />
         )}
 
         {!message.isStreaming && message.toolCalls.length > 0 && (

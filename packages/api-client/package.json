@@ -15,6 +15,8 @@
     "./blast-radius": "./src/blast-radius.ts",
     "./c4": "./src/c4.ts",
     "./cache": "./src/cache.ts",
+    "./cards": "./src/cards.ts",
+    "./changes": "./src/changes.ts",
     "./chat": "./src/chat.ts",
     "./code-health": "./src/code-health.ts",
     "./costs": "./src/costs.ts",
@@ -48,6 +50,7 @@
     "./security": "./src/security.ts",
     "./stats": "./src/stats.ts",
     "./symbols": "./src/symbols.ts",
+    "./views": "./src/views.ts",
     "./workspace": "./src/workspace.ts"
   },
   "publishConfig": {

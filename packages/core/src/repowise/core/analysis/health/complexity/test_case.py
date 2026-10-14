@@ -133,6 +133,34 @@ def _matches_runner_prefix(name: str, prefixes: tuple[str, ...]) -> bool:
     return False
 
 
+def _named_case(name: str, dialect: TestCaseDialect) -> bool:
+    """The name rules alone: a prefix, either case rule, and not excluded."""
+    if name in dialect.excluded_names:
+        return False
+    if dialect.name_prefixes and name.lower().startswith(dialect.name_prefixes):
+        return True
+    return _matches_runner_prefix(name, dialect.runner_prefixes)
+
+
+def test_case_by_name(name: str, language: str | None) -> bool | None:
+    """:func:`is_test_case` for a graph symbol, which has a name and no node.
+
+    ``None`` when the language's rule cannot be read off a name: it has no
+    row, or its cases are marked by annotations or are anonymous callbacks.
+    """
+    dialect = TEST_CASE_DIALECTS.get(language or "")
+    if dialect is None or dialect.annotations or dialect.callback_callees:
+        return None
+    return _named_case(name, dialect)
+
+
+def runs_module_callbacks(language: str | None) -> bool:
+    """Whether the language's cases are callbacks (``it(...)``), which the graph
+    files under the module, so the test file is the case to run."""
+    dialect = TEST_CASE_DIALECTS.get(language or "")
+    return dialect is not None and bool(dialect.callback_callees)
+
+
 def is_test_case(fn_node: Node, name: str, language: str) -> bool:
     """True when *fn_node* is a test case the language's runner would collect."""
     dialect = TEST_CASE_DIALECTS.get(language)
@@ -146,8 +174,6 @@ def is_test_case(fn_node: Node, name: str, language: str) -> bool:
         # The first dotted segment is the framework function in every form of
         # it (``it``, ``it.each``, ``it.skip``).
         return callee.split(".", 1)[0] in dialect.callback_callees
-    if dialect.name_prefixes and lowered.startswith(dialect.name_prefixes):
-        return True
-    if _matches_runner_prefix(name, dialect.runner_prefixes):
+    if _named_case(name, dialect):
         return True
     return bool(dialect.annotations) and bool(dialect.annotations & _annotation_names(fn_node))

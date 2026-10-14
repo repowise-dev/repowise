@@ -262,12 +262,22 @@ class TestReceiverlessTwin:
             f"data.set(str) must reach TokenData only; edges: {edges}"
         )
 
-    def test_an_untyped_receiver_falls_back_to_the_bare_name(self, tmp_path: Path) -> None:
+    def test_an_untyped_receiver_gets_no_bare_name_edge(self, tmp_path: Path) -> None:
         parsed = _parse_all(tmp_path, {"src/A.java": ("java", JAVA_UNTYPED_RECEIVER)})
         edges = _edges(parsed, tmp_path)
-        assert ("src/A.java::A::count", "src/A.java::Box::size", 0.95, "same_file") in edges, (
-            f"o.size() must keep its bare-name edge; edges: {edges}"
-        )
+        assert _targets_of(edges, "::A::count") == [], f"o.size() is not Box::size; edges: {edges}"
+
+    def test_a_chain_of_unknown_return_type_gets_no_bare_name_edge(self, tmp_path: Path) -> None:
+        source = JAVA_UNTYPED_RECEIVER.replace("return o.size();", "return make(o).size();")
+        parsed = _parse_all(tmp_path, {"src/A.java": ("java", source)})
+        assert _targets_of(_edges(parsed, tmp_path), "::A::count") == []
+
+    def test_a_ruby_untyped_receiver_keeps_the_bare_name(self, tmp_path: Path) -> None:
+        source = RUBY_POOL.replace("close(conn)", "conn.close(1)")
+        parsed = _parse_all(tmp_path, {"lib/pool.rb": ("ruby", source)})
+        edges = _edges(parsed, tmp_path)
+        assert parsed["lib/pool.rb"].calls[0].bare_name_fallback
+        assert _targets_of(edges, "::drain") == ["lib/pool.rb::Pool::close"], edges
 
     def test_a_bare_call_on_its_twins_line_still_resolves(self, tmp_path: Path) -> None:
         """``helper(b.helper(1))``: the outer call is a genuine implicit receiver."""

@@ -104,9 +104,9 @@ def test_payload_includes_friendly_repo_relative_classification() -> None:
     assert payload["classification"] == "Typical"
     assert payload["baseline_sample_size"] == 200
     assert payload["risk_authority"] == {
-        "authoritative_for": "live_change_review",
-        "primary_fields": ["risk_percentile", "classification"],
-        "primary_basis": "benchmarked_population_relative",
+        "authoritative_for": "diff_size_rank",
+        "primary_fields": ["risk_percentile"],
+        "primary_basis": "population_relative_diff_size",
         "fallback_field": "fallback_band",
         "fallback_basis": "absolute_model_score_band",
         "score_role": "supporting_diff_shape_signal",
@@ -501,6 +501,110 @@ def test_dirt_the_filters_drop_falls_back_to_head(git_repo: Path) -> None:
     assert result.working_tree is False
     assert result.features.ref == "HEAD"
     assert result.features.nf == 1  # the committed src/a.py, not an empty change
+
+
+def _block_format() -> str:
+    from repowise.core.generation.editor_files.base import BaseEditorFileGenerator as Gen
+
+    start = Gen.MARKER_START_FMT.format(tag="REPOWISE")
+    return start + "\n{body}\n" + Gen.MARKER_END_FMT.format(tag="REPOWISE") + "\n"
+
+
+_BLOCK = _block_format()
+
+
+def test_repowise_output_alone_falls_back_to_head(git_repo: Path) -> None:
+    """The index, a written .mcp.json and a refreshed managed block are not the user's change."""
+    _commit(
+        git_repo, {".claude/CLAUDE.md": "# Mine\n\n" + _BLOCK.format(body="v1")}, "docs", "Dev"
+    )
+    (git_repo / ".claude" / "CLAUDE.md").write_text(
+        "# Mine\n\n" + _BLOCK.format(body="v2\nmore"), encoding="utf-8"
+    )
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "config.yaml").write_text("provider: x\n", encoding="utf-8")
+    (git_repo / ".mcp.json").write_text(
+        '{"mcpServers": {"repowise": {"command": "repowise"}}}', encoding="utf-8"
+    )
+    (git_repo / "AGENTS.md").write_text(_BLOCK.format(body="hi"), encoding="utf-8")
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.working_tree is False
+    assert result.features.ref == "HEAD"
+    assert ".repowise/" in change_risk_payload(result)["exclude_patterns"]
+
+
+def test_a_users_edit_to_a_managed_file_still_counts(git_repo: Path) -> None:
+    block = _BLOCK.format(body="v1")
+    _commit(git_repo, {".claude/CLAUDE.md": "# Mine\n\n" + block}, "docs", "Dev")
+    (git_repo / ".claude" / "CLAUDE.md").write_text("# Mine, edited\n\n" + block, encoding="utf-8")
+    (git_repo / ".mcp.json").write_text(
+        '{"mcpServers": {"repowise": {}, "mine": {"command": "x"}}}', encoding="utf-8"
+    )
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.working_tree is True
+    assert {path for path, _ in result.features.file_churn} == {".claude/CLAUDE.md", ".mcp.json"}
+
+
+def _working_tree_file_sets(repo: Path, result) -> tuple[set[str], set[str]]:
+    """The files the score and the changed lines read; the health delta must count as many."""
+    from repowise.core.analysis.change_health.service import (
+        ChangeHealthDeltaService,
+        DeltaRequest,
+    )
+    from repowise.core.analysis.changed_lines import changed_lines
+
+    scored = {path for path, _ in result.features.file_churn}
+    changed, _ = changed_lines(str(repo), working_tree=True)
+    delta = ChangeHealthDeltaService(repo_path=str(repo)).compare(
+        DeltaRequest(str(repo), None, (), result.riskignore_excludes)
+    )
+    assert delta.scope.changed == result.features.nf
+    return scored, set(changed)
+
+
+def test_untracked_files_are_one_file_set_for_score_lines_and_delta(git_repo: Path) -> None:
+    """An untracked-only tree is a real change everywhere, never "high" beside "no files"."""
+    (git_repo / "src").mkdir()
+    (git_repo / "src" / "new.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (git_repo / "notes.md").write_text("n\n", encoding="utf-8")
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.working_tree is True
+    assert _working_tree_file_sets(git_repo, result) == ({"src/new.py", "notes.md"},) * 2
+    assert result.features.la == 3
+
+
+def test_a_tracked_edit_and_an_untracked_file_both_count(git_repo: Path) -> None:
+    _commit(git_repo, {"src/a.py": "x = 1\n"}, "feat: a", author="Dev")
+    (git_repo / "src" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    (git_repo / "src" / "new.py").write_text("n = 1\n", encoding="utf-8")
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "wiki.db").write_bytes(b"\x00" * 64)
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.features.nf == 2
+    assert _working_tree_file_sets(git_repo, result) == ({"src/a.py", "src/new.py"},) * 2
+
+
+def test_owned_excludes_name_repowise_output_not_the_users_filters(git_repo: Path) -> None:
+    """Test selection drops only repowise's output; .riskignore and request excludes stay."""
+    _commit(git_repo, {"src/a.py": "x = 1\n", ".riskignore": "vendor/\n"}, "feat: a", "Dev")
+    (git_repo / "src" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    (git_repo / "AGENTS.md").write_text(_BLOCK.format(body="hi"), encoding="utf-8")
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "config.yaml").write_text("provider: x\n", encoding="utf-8")
+
+    result = score_live_change(str(git_repo), baseline=0, exclude_patterns=("docs/",))
+
+    assert result.working_tree is True
+    assert result.owned_excludes == (".repowise/", "/AGENTS.md")
+    assert {"vendor/", "docs/"} <= set(result.riskignore_excludes + result.request_excludes)
 
 
 def test_explicit_head_scores_the_commit_even_when_dirty(git_repo: Path) -> None:

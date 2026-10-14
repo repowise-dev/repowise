@@ -21,6 +21,7 @@ from pathlib import Path
 
 from repowise.core.fs_walk import walk_repo
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.ingestion.traverser import is_output_dir
 from repowise.core.workspace.manifests import SERVICE_MARKERS
 
 # ---------------------------------------------------------------------------
@@ -34,9 +35,6 @@ _BLOCKED_DIRS = frozenset(
         "__pycache__",
         ".venv",
         "venv",
-        "dist",
-        "build",
-        "target",
         "vendor",
         ".next",
         ".nuxt",
@@ -110,10 +108,12 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
     repo_root = repo_path.resolve()
     boundaries: list[ServiceBoundary] = []
 
-    for dirpath, dirnames, filenames in walk_repo(repo_root):
-        # ``walk_repo`` already prunes junk dirs and nested git repos; layer on
-        # the derived-output names (dist/build/target/...) it intentionally
-        # leaves ambiguous, plus dotfile dirs, that are never service roots.
+    for dirpath, dirnames, filenames in walk_repo(repo_root, prune=is_output_dir):
+        # ``walk_repo`` already prunes junk dirs and nested git repos, and
+        # ``is_output_dir`` prunes build and report output (``dist``, ``build``,
+        # ``target``, ...) while keeping a source package with one of those
+        # names. Layer on the other derived names it leaves ambiguous, plus
+        # dotfile dirs, that are never service roots.
         dirnames[:] = [d for d in dirnames if d not in _BLOCKED_DIRS and not d.startswith(".")]
 
         current = Path(dirpath)

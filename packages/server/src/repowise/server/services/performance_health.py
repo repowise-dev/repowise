@@ -36,6 +36,7 @@ from repowise.core.analysis.health.perf.serving import (
 )
 from repowise.core.analysis.health.refactoring.serving import evidence_block
 from repowise.core.persistence.crud import (
+    gated_performance_counts,
     get_performance_opportunity,
     get_performance_plan_rows,
     get_performance_summary,
@@ -60,15 +61,29 @@ class PerformancePage:
     ignored_arguments: dict[str, str] = field(default_factory=dict)
     #: The causes' count vocabulary (``queue.counts``) in the query's files.
     counts: dict[str, Any] = field(default_factory=dict)
+    #: Open opportunities a language gate held back, ``{language: {count, ...}}``.
+    gated: dict[str, dict] = field(default_factory=dict)
 
 
 class PerformanceHealthService:
-    """Query, page, detail, facets, plan linkage, and recovery, in one place."""
+    """Query, page, detail, facets, plan linkage, and recovery, in one place.
 
-    def __init__(self, session: AsyncSession, repository_id: str, repository: str) -> None:
+    Lists, counts, facets and the headline leave out what a language gate holds
+    back unless ``include_unverified``; a lookup by id never does.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        repository_id: str,
+        repository: str,
+        *,
+        include_unverified: bool = False,
+    ) -> None:
         self._session = session
         self._repository_id = repository_id
         self._repository = repository
+        self._include_unverified = include_unverified
 
     # -- collection --------------------------------------------------------
 
@@ -103,6 +118,7 @@ class PerformanceHealthService:
             sort=query.sort,
             limit=query.limit,
             offset=query.offset,
+            include_unverified=self._include_unverified,
         )
         links = await self._plan_links(rows)
         evidence = await self._evidence_for(rows, evidence_per_item)
@@ -134,8 +150,10 @@ class PerformanceHealthService:
                     "causes",
                     shown=len(items),
                     file_paths=query.file_paths,
+                    include_unverified=self._include_unverified,
                 )
             ).as_dict(),
+            gated=await self.gated(),
         )
 
     async def _evidence_for(
@@ -171,7 +189,10 @@ class PerformanceHealthService:
     async def _facets(self, query: PerformanceQuery) -> dict[str, list[dict[str, Any]]]:
         """Counts per filter value, each cross-filtered by the *other* filters."""
         grouped = await performance_facet_counts(
-            self._session, self._repository_id, file_paths=query.file_paths
+            self._session,
+            self._repository_id,
+            file_paths=query.file_paths,
+            include_unverified=self._include_unverified,
         )
         return fold_facets(grouped, query)
 
@@ -194,10 +215,23 @@ class PerformanceHealthService:
         if base["status"] == "unavailable":
             return base
         base["repository_total"] = base["total"]
-        if contexts is None:
+        gated = await self.gated()
+        if contexts is None and not gated:
             return base
-        grouped = await performance_facet_counts(self._session, self._repository_id)
-        return rescope_summary(base, grouped, contexts)
+        # The stored rollup counts gated rows too, so with any held back the
+        # headline is recounted from the same gated facet aggregate.
+        grouped = await performance_facet_counts(
+            self._session, self._repository_id, include_unverified=self._include_unverified
+        )
+        if contexts is None:
+            contexts = frozenset(group[0] for group in grouped)
+        return {**rescope_summary(base, grouped, contexts), "gated": gated}
+
+    async def gated(self) -> dict[str, dict]:
+        """Open opportunities a language gate holds back; empty when opted in."""
+        return await gated_performance_counts(
+            self._session, self._repository_id, include_unverified=self._include_unverified
+        )
 
     # -- detail ------------------------------------------------------------
 

@@ -505,13 +505,16 @@ async def any_tests_reaching(
 async def tests_reaching_through_helpers(
     session: AsyncSession, repo_id: str, targets: list[str], test_files: set[str]
 ) -> dict[str, ReachedBy]:
-    """Tests that import a file only tests import, which imports the target.
+    """Tests that import a file only tests import, or a barrel, which imports the target.
 
     A second import hop, kept off hubs: a blanket second hop was measured and
     rejected (see Depth), but a module nothing outside the test suite imports
     is test support whatever its name (``attempt.spawn-workspace.test-support.ts``
     loading ``attempt.ts`` for 30-odd tests), so walking through it claims
-    nothing a hub would.
+    nothing a hub would. A barrel (``index.ts``, ``__init__.py``) passes on
+    what it imports even when source imports it too, as
+    :func:`files_with_paired_tests` already reads it: a package's tests
+    import its entry, not each module behind it.
     """
     edge_types = sorted(FILE_DEPENDENCY_EDGE_TYPES)
     middles: dict[str, set[str]] = {}
@@ -525,9 +528,10 @@ async def tests_reaching_through_helpers(
         importers.setdefault(middle, set()).add(dependent)
     reached: dict[str, set[str]] = {}
     for middle, who in importers.items():
-        if who <= test_files:
+        tests = who & test_files
+        if tests and (tests == who or PurePosixPath(middle).name in BARREL_FILENAMES):
             for target in middles[middle]:
-                reached.setdefault(target, set()).update(who)
+                reached.setdefault(target, set()).update(tests)
     out: dict[str, ReachedBy] = {}
     for target, tests in reached.items():
         ordered = tuple(rank_tests(target, tests))
@@ -768,24 +772,7 @@ async def _call_reaching(
     seeds share the walk. The file tiers keep the historical batch semantics.
     """
     # node -> seed -> call hops from the node to the seed.
-    origins: dict[str, dict[str, int]] = {}
-    # A caller that knows which symbol in the file it cares about enters there,
-    # so a test reaching an unrelated symbol in the same file does not count.
-    # An empty entry names no symbol, so that file is unseeded and keeps the
-    # ``defines`` lookup; treating it as seeded would silence the file entirely.
-    seeded = {
-        seed: symbol_seeds[seed]
-        for seed in seeds
-        if symbol_seeds and symbol_seeds.get(seed)
-    }
-    for seed, symbol_ids in seeded.items():
-        for symbol in symbol_ids:
-            origins.setdefault(symbol, {})[seed] = 0
-    unseeded = [seed for seed in seeds if seed not in seeded]
-    if unseeded:
-        declared = await _edges_from(session, repo_id, unseeded, ["defines"])
-        for seed, symbol in declared:
-            origins.setdefault(symbol, {})[seed] = 0
+    origins = await _call_origins(session, repo_id, seeds, symbol_seeds)
     if not origins:
         return {}
 
@@ -809,31 +796,15 @@ async def _call_reaching(
                 continue
             owner = file_of_symbol(caller)
             if owner in test_files:
-                for seed, distance in carried.items():
-                    hops = distance + 1
-                    by_test = found.setdefault(seed, {})
-                    best = by_test.get(owner)
-                    if best is None or hops < best[0]:
-                        by_test[owner] = (hops, {caller})
-                    elif hops == best[0]:
-                        best[1].add(caller)
+                _record_test_hit(found, owner, caller, carried)
                 # A test is a leaf. Walking through one would let "test A calls
                 # shared helper B" drag B's unrelated targets in.
                 continue
             if owner in avoid:
                 # A hub carries on only the seeds it declares itself.
                 carried = {s: d for s, d in carried.items() if s.split("::", 1)[0] == owner}
-                if not carried:
-                    continue
-            known = origins.setdefault(caller, {})
-            closer = {
-                seed: distance + 1
-                for seed, distance in carried.items()
-                if seed not in known or distance + 1 < known[seed]
-            }
-            if not closer:
+            if not _carry_closer(origins, caller, carried):
                 continue
-            known.update(closer)
             if caller not in queued:
                 queued.add(caller)
                 frontier.append(caller)
@@ -841,6 +812,67 @@ async def _call_reaching(
         seed: {test: ReachDistance(depth, len(callers)) for test, (depth, callers) in tests.items()}
         for seed, tests in found.items()
     }
+
+
+async def _call_origins(
+    session: AsyncSession,
+    repo_id: str,
+    seeds: list[str],
+    symbol_seeds: Mapping[str, Collection[str]] | None,
+) -> dict[str, dict[str, int]]:
+    """The symbols each seed enters the call walk at, each at distance 0 from its seed."""
+    origins: dict[str, dict[str, int]] = {}
+    # A caller that knows which symbol in the file it cares about enters there,
+    # so a test reaching an unrelated symbol in the same file does not count.
+    # An empty entry names no symbol, so that file is unseeded and keeps the
+    # ``defines`` lookup; treating it as seeded would silence the file entirely.
+    seeded = {
+        seed: symbol_seeds[seed]
+        for seed in seeds
+        if symbol_seeds and symbol_seeds.get(seed)
+    }
+    for seed, symbol_ids in seeded.items():
+        for symbol in symbol_ids:
+            origins.setdefault(symbol, {})[seed] = 0
+    unseeded = [seed for seed in seeds if seed not in seeded]
+    if unseeded:
+        declared = await _edges_from(session, repo_id, unseeded, ["defines"])
+        for seed, symbol in declared:
+            origins.setdefault(symbol, {})[seed] = 0
+    return origins
+
+
+def _record_test_hit(
+    found: dict[str, dict[str, tuple[int, set[str]]]],
+    test: str,
+    caller: str,
+    carried: Mapping[str, int],
+) -> None:
+    """Keep the fewest hops *test* took to each carried seed, and its callers at that depth."""
+    for seed, distance in carried.items():
+        hops = distance + 1
+        by_test = found.setdefault(seed, {})
+        best = by_test.get(test)
+        if best is None or hops < best[0]:
+            by_test[test] = (hops, {caller})
+        elif hops == best[0]:
+            best[1].add(caller)
+
+
+def _carry_closer(
+    origins: dict[str, dict[str, int]], caller: str, carried: Mapping[str, int]
+) -> bool:
+    """Record the seeds *caller* reaches closer than before; True when any did."""
+    if not carried:
+        return False
+    known = origins.setdefault(caller, {})
+    closer = {
+        seed: distance + 1
+        for seed, distance in carried.items()
+        if seed not in known or distance + 1 < known[seed]
+    }
+    known.update(closer)
+    return bool(closer)
 
 
 async def reach_into_symbols(
@@ -894,15 +926,26 @@ async def imported_names_by_test(
         elif PurePosixPath(source).name in BARREL_FILENAMES:
             barrels.setdefault(source, {})[target] = names
     if barrels:
-        for source, barrel, names in await _imported_names(session, repo_id, sorted(barrels)):
-            if source not in test_files:
-                continue
-            for target, exported in barrels[barrel].items():
-                # ``export *`` passes every name on; otherwise only the ones it re-exports.
-                passed = names if not exported or "*" in exported else names & exported
-                if passed or not names:
-                    _add_names(out, target, source, passed)
+        await _add_barrel_imports(session, repo_id, barrels, test_files, out)
     return out
+
+
+async def _add_barrel_imports(
+    session: AsyncSession,
+    repo_id: str,
+    barrels: dict[str, dict[str, frozenset[str]]],
+    test_files: set[str],
+    out: dict[str, dict[str, frozenset[str]]],
+) -> None:
+    """Credit each test importing a barrel with the names the barrel passes on from each file."""
+    for source, barrel, names in await _imported_names(session, repo_id, sorted(barrels)):
+        if source not in test_files:
+            continue
+        for target, exported in barrels[barrel].items():
+            # ``export *`` passes every name on; otherwise only the ones it re-exports.
+            passed = names if not exported or "*" in exported else names & exported
+            if passed or not names:
+                _add_names(out, target, source, passed)
 
 
 def _add_names(

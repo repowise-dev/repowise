@@ -29,7 +29,7 @@ from collections import defaultdict
 import structlog
 
 from .heritage_resolver import heritage_ancestors
-from .symbol_identity import id_segment_name, symbol_id_discriminator
+from .symbol_identity import id_segment_name, symbol_id_arity
 
 log = structlog.get_logger(__name__)
 
@@ -104,9 +104,13 @@ def _is_constructor(name: str, type_id: str) -> bool:
 
 
 def _same_overload(base: str, impl: str) -> bool:
-    """False only when both are overload members of different arities."""
-    base_arity = symbol_id_discriminator(base)
-    impl_arity = symbol_id_discriminator(impl)
+    """False only when both are overload members of different arities.
+
+    Parameter types are not compared: a generic base's ``T`` erases apart from
+    the ``String`` its implementation writes.
+    """
+    base_arity = symbol_id_arity(base)
+    impl_arity = symbol_id_arity(impl)
     return base_arity is None or impl_arity is None or base_arity == impl_arity
 
 

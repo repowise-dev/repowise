@@ -421,6 +421,7 @@ async def health_coverage_patch(
         label=label,
         head_commit=head_sha or None,
         config=configured_coverage(repo.local_path),
+        repo_path=repo.local_path,
     )
     if patch is None:
         return None

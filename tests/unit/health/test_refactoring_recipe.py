@@ -12,6 +12,7 @@ import pathlib
 from repowise.core.analysis.health.refactoring.recipe import (
     PRECONDITION_KINDS,
     RECIPE_ACTIONS,
+    RENAME_NOTE,
     build_recipe,
 )
 
@@ -32,8 +33,8 @@ def test_extract_method_carries_the_texts_to_copy() -> None:
     (step,) = recipe["steps"]
     assert step["action"] == "extract"
     assert step["span"] == {"start": 61, "end": 78}
-    assert step["new_symbol"]["signature_text"].startswith("async def _read_config(self")
-    assert step["call_site"]["new_text"] == "config = await self._read_config(path, strict)"
+    assert step["new_symbol"]["signature_text"].startswith("async def _extracted_helper(self")
+    assert step["call_site"]["new_text"] == "config = await self._extracted_helper(path, strict)"
     # A placeholder in the texts is named, so the agent fills it.
     assert any("<type>" in note for note in step["new_symbol"]["notes"])
     assert recipe["does_not"][1]["constraint"].startswith("touch anything outside lines 61-78")
@@ -136,3 +137,20 @@ def test_every_plan_type_yields_steps_in_the_shared_vocabulary() -> None:
         "replace_with_call",
         "replace_with_call",
     ]
+
+
+def test_an_extract_method_plan_says_once_that_its_names_are_placeholders() -> None:
+    (step,) = build_recipe(_PLANS["extract_method_typed"])["steps"]
+    assert step["text"].endswith(RENAME_NOTE)
+    staged = build_recipe(_PLANS["extract_method_staged_anchored"])["steps"]
+    texts = " ".join(s["text"] for s in staged)
+    assert texts.count("placeholder") == 1
+    assert "Each stage's helper name is a placeholder" in texts
+
+
+
+def test_a_plan_stored_with_a_real_name_is_not_called_a_placeholder() -> None:
+    detail = json.loads(json.dumps(_PLANS["extract_method_typed"]))
+    detail["plan"]["suggested_name"] = "_read_config"
+    (step,) = build_recipe(detail)["steps"]
+    assert "placeholder: rename" not in step["text"]
