@@ -9,8 +9,8 @@ conversation, so a retried send returns the stored reply.
 Local SQLite stores never run Alembic; ``init_db`` adds the columns and indexes
 there from the model.
 
-Revision ID: 0110
-Revises: 0109
+Revision ID: 0111
+Revises: 0110
 Create Date: 2026-10-14
 """
 
@@ -22,8 +22,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
-revision: str = "0110"
-down_revision: str | None = "0109"
+revision: str = "0111"
+down_revision: str | None = "0110"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
