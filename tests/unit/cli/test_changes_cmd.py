@@ -110,7 +110,7 @@ def _fake_evidence(monkeypatch):
 
     calls: list[str] = []
 
-    async def _evidence(session, repo_id, root, row, *, refresh=False):
+    async def _evidence(session, repo_id, root, row, *, refresh=False, key=None):
         calls.append(row.change_id)
         return ChangeEvidence(
             change_id=row.change_id,
@@ -230,3 +230,31 @@ def test_outcomes_read_in_their_words_and_never_as_a_cause():
     rate_only = {**item, "details": item["details"][2:]}
     assert outcome_lines(rate_only)[0].startswith("no later commit in this history reverts")
     assert not any("caused" in line for line in outcome_lines(item) + outcome_lines(rate_only))
+
+
+def test_csv_cells_that_open_as_formulas_are_quoted():
+    import csv
+    import io
+
+    from repowise.cli.commands.changes_cmd import _csv_rows
+
+    record = {
+        "id": "pr-1",
+        "merged_at": None,
+        "title": '=HYPERLINK("http://x")',
+        "evidence": {
+            "items": [
+                {
+                    "kind": "outcomes",
+                    "label": "@label",
+                    "status": "ok",
+                    "basis": "declared",
+                    "value": -1,
+                    "source": "+git",
+                }
+            ]
+        },
+    }
+    (row,) = csv.reader(io.StringIO(_csv_rows(record)))
+    assert row[2] == "'=HYPERLINK(\"http://x\")" and row[4] == "'@label"
+    assert row[7] == "'-1" and row[8] == "'+git" and row[0] == "pr-1"

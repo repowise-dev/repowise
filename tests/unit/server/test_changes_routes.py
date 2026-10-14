@@ -306,28 +306,35 @@ def test_evidence_summary_never_reads_missing_or_unknown_status_as_clean() -> No
     assert empty is not None and (empty["ok"], empty["attention"], empty["unknown"]) == (0, 0, 0)
 
 
+def _fake_outcomes(monkeypatch, route, refreshed: list[str], gate=None) -> None:
+    from repowise.core.changes.evidence import EvidenceItem
+
+    async def _stale(_root, evidence, key=None):
+        return evidence.item("outcomes") is None
+
+    async def _key(_root):
+        return ("h", 30)
+
+    async def _item(session, repo_id, root, row, key):
+        refreshed.append(row.change_id)
+        if gate is not None:
+            await gate.wait()
+        value = {"as_of": key[0], "days": key[1]}
+        return EvidenceItem("outcomes", "Outcomes since merge", "ok", "declared", value)
+
+    monkeypatch.setattr(route, "outcomes_stale", _stale)
+    monkeypatch.setattr(route, "outcomes_key", _key)
+    monkeypatch.setattr(route, "outcomes_item", _item)
+
+
 @pytest.mark.asyncio
 async def test_kept_evidence_has_only_its_outcomes_read_again_when_head_moved(
     client: AsyncClient, app, monkeypatch
 ) -> None:
-    from dataclasses import replace
-
-    from repowise.core.changes.evidence import EvidenceItem
-
     seen: list[str] = []
-    route = _fake_build(monkeypatch, seen)
     refreshed: list[str] = []
-
-    async def _stale(_root, evidence):
-        return evidence.item("outcomes") is None
-
-    async def _outcomes(session, repo_id, root, row, evidence):
-        refreshed.append(row.change_id)
-        item = EvidenceItem("outcomes", "Outcomes since merge", "ok", "declared", {"as_of": "h"})
-        return replace(evidence, items=[*evidence.items, item])
-
-    monkeypatch.setattr(route, "outcomes_stale", _stale)
-    monkeypatch.setattr(route, "with_current_outcomes", _outcomes)
+    route = _fake_build(monkeypatch, seen)
+    _fake_outcomes(monkeypatch, route, refreshed)
     repo = await create_test_repo(client)
     await _seed(app, repo["id"])
     base = f"/api/repos/{repo['id']}/changes/pr-1"
@@ -336,6 +343,40 @@ async def test_kept_evidence_has_only_its_outcomes_read_again_when_head_moved(
     record = (await client.get(base, params={"evidence": "true"})).json()
     kinds = [i["kind"] for i in record["evidence"]["items"]]
     assert kinds == ["health_delta", "outcomes"] and seen == ["pr-1"] and refreshed == ["pr-1"]
-    # Kept with its outcomes: the next read rebuilds nothing.
-    await client.get(base, params={"evidence": "true"})
+    # Merged into what was stored: the next read rebuilds nothing.
+    again = (await client.get(base, params={"evidence": "true"})).json()
+    assert again["evidence"] == record["evidence"]
     assert seen == ["pr-1"] and refreshed == ["pr-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_is_not_swallowed_by_an_outcomes_read_in_flight(
+    client: AsyncClient, app, monkeypatch
+) -> None:
+    import asyncio
+
+    seen: list[str] = []
+    refreshed: list[str] = []
+    gate = asyncio.Event()
+    route = _fake_build(monkeypatch, seen)
+    _fake_outcomes(monkeypatch, route, refreshed, gate)
+    monkeypatch.setattr(route, "EVIDENCE_WAIT_SECONDS", 0.05)
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    base = f"/api/repos/{repo['id']}/changes/pr-1"
+
+    gate.set()
+    await client.get(base, params={"evidence": "true"})  # full build, kept without outcomes
+    gate.clear()
+    waiting = (await client.get(base, params={"evidence": "true"})).json()
+    assert waiting["evidence_building"] is True and refreshed == ["pr-1"]
+    # The outcomes read is still running; a refresh runs its own full build.
+    await client.get(base, params={"evidence": "true", "refresh": "true"})
+    assert seen == ["pr-1", "pr-1"]
+    gate.set()
+    for _ in range(100):
+        if not route._BUILDS:
+            break
+        await asyncio.sleep(0.01)
+    done = (await client.get(base, params={"evidence": "true"})).json()
+    assert [i["kind"] for i in done["evidence"]["items"]] == ["health_delta", "outcomes"]

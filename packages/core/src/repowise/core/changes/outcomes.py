@@ -32,10 +32,10 @@ registered provider runs, the local git ones first; a forge-backed provider
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -141,14 +141,26 @@ class OutcomeLink:
 
 class ChangeOutcomeProvider(Protocol):
     def links(self, repo_path: Path, head: str, change: OutcomeTarget) -> Sequence[OutcomeLink]:
-        """Links to *change* from history up to *head*; none found is ``[]``."""
+        """Links to *change* from history up to *head*; none found is ``[]``.
+
+        Raise :class:`OutcomeUnknownError` when the source cannot be read, so the
+        item reads unknown instead of none.
+        """
         ...
 
 
+class OutcomeUnknownError(Exception):
+    """What could not be read, said as a reason; the item reads unknown, never none."""
+
+
 def _git_out(repo_path: Path | str, *args: str) -> str:
+    """Git's stdout; a failure or timeout raises :class:`OutcomeUnknownError`."""
     from repowise.core.analysis.decisions.reverts import _git_out as read
 
-    return read(repo_path, *args) or ""
+    out = read(repo_path, *args)
+    if out is None:
+        raise OutcomeUnknownError(f"git could not answer `git {args[0]}` for this repository")
+    return out
 
 
 def _fragment(text: str, start: int, end: int) -> str:
@@ -159,40 +171,84 @@ def _fragment(text: str, start: int, end: int) -> str:
     return line if len(line) <= _FRAGMENT_WIDTH else line[: _FRAGMENT_WIDTH - 1] + "…"
 
 
+# One build per key at a time, shared by every thread that asks; a failed
+# build raises to each caller and is not kept. The last few HEADs stay.
+_INDEX_KEEP = 4
+_index_lock = threading.Lock()
+_index: dict[tuple[str, ...], Any] = {}
+_index_locks: dict[tuple[str, ...], threading.Lock] = {}
+
+
+def _once(key: tuple[str, ...], build: Any) -> Any:
+    with _index_lock:
+        lock = _index_locks.setdefault(key, threading.Lock())
+    with lock:
+        with _index_lock:
+            if key in _index:
+                return _index[key]
+        value = build()
+        with _index_lock:
+            _index[key] = value
+            while len(_index) > _INDEX_KEEP:
+                old = next(iter(_index))
+                _index.pop(old)
+                _index_locks.pop(old, None)
+        return value
+
+
+def _forge(name: str) -> Any:
+    from repowise.core.forges import ForgeKind
+
+    try:
+        return ForgeKind(name)
+    except ValueError:
+        return ForgeKind.GENERIC
+
+
 # -- reverts -------------------------------------------------------------------
 
 
-@lru_cache(maxsize=4)
 def _revert_index(
-    repo_path: str, head: str
+    repo_path: str, head: str, forge: str
 ) -> tuple[dict[str, list[Any]], frozenset[str], dict[str, str]]:
     """``(links by target, targets reverted at HEAD, revert subjects)``, once per HEAD."""
-    from repowise.core.analysis.decisions.reverts import find_revert_links, reverted_at_head
 
-    links = find_revert_links(repo_path, head)
-    by_target: dict[str, list[Any]] = {}
-    for link in links:
-        by_target.setdefault(link.target, []).append(link)
-    subjects: dict[str, str] = {}
-    if links:
-        raw = _git_out(
-            repo_path,
-            "log",
-            "--no-walk=unsorted",
-            f"--format=%H{_FIELD}%s",
-            *dict.fromkeys(link.revert for link in links),
+    def build() -> tuple[dict[str, list[Any]], frozenset[str], dict[str, str]]:
+        from repowise.core.analysis.decisions.reverts import (
+            HistoryUnreadableError,
+            find_revert_links,
+            reverted_at_head,
         )
-        for line in raw.splitlines():
-            sha, _, subject = line.partition(_FIELD)
-            subjects[sha.strip()] = subject
-    return by_target, frozenset(reverted_at_head(links)), subjects
+
+        try:
+            links = find_revert_links(repo_path, head, forge=_forge(forge), strict=True)
+        except HistoryUnreadableError as exc:
+            raise OutcomeUnknownError(str(exc)) from exc
+        by_target: dict[str, list[Any]] = {}
+        for link in links:
+            by_target.setdefault(link.target, []).append(link)
+        subjects: dict[str, str] = {}
+        if links:
+            raw = _git_out(
+                repo_path,
+                "log",
+                "--no-walk=unsorted",
+                f"--format=%H{_FIELD}%s",
+                *dict.fromkeys(link.revert for link in links),
+            )
+            for line in raw.splitlines():
+                sha, _, subject = line.partition(_FIELD)
+                subjects[sha.strip()] = subject
+        return by_target, frozenset(reverted_at_head(links)), subjects
+
+    return _once(("revert", repo_path, head, forge), build)
 
 
 class GitRevertOutcomes:
     """Reverts that name the change, by the decision-supersession rules."""
 
     def links(self, repo_path: Path, head: str, change: OutcomeTarget) -> list[OutcomeLink]:
-        by_target, in_force, subjects = _revert_index(str(repo_path), head)
+        by_target, in_force, subjects = _revert_index(str(repo_path), head, change.forge)
         out = []
         for target in sorted(change.revert_targets):
             for link in by_target.get(target, ()):
@@ -226,40 +282,62 @@ class _References:
     #: ``"#12"`` / ``"!12"`` / a sha token -> ``[(commit, rule, fragment)]``.
     by_token: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
 
+    def holder(self, number: str) -> str | None:
+        """The one commit that *is* change *number*, leaving out reverts and re-lands.
 
-@lru_cache(maxsize=4)
-def _reference_index(repo_path: str, head: str) -> _References | None:
-    from repowise.core.analysis.decisions.reverts import _History
-    from repowise.core.forges import detect_forge
+        ``Revert "x (#5)" (#6)`` and ``Reland x (#5)`` carry the number without
+        being that change; two other holders make it ambiguous.
+        """
+        from repowise.core.analysis.decisions.reverts import (
+            _CONVENTIONAL_RE,
+            _RELAND_WORD_RE,
+            _SUBJECT_RE,
+        )
 
-    raw = _git_out(
-        repo_path,
-        "log",
-        "--topo-order",
-        head,
-        f"--format=%H{_FIELD}%P{_FIELD}%s{_FIELD}%b{_RECORD}",
-    )
-    if not raw:
-        return None
-    hist = _History(forge=detect_forge(repo_path))
-    refs = _References(hist)
-    for record in raw.split(_RECORD):
-        fields = record.strip("\n").split(_FIELD, 3)
-        if len(fields) != 4 or not fields[0]:
-            continue
-        sha, parents, subject, body = fields
-        hist._add(sha, parents, subject, body)
-        message = f"{subject}\n\n{body}"  # git always parts them with a blank line
-        named: set[str] = set()
-        for rule, pattern in _RULES:
-            for m in pattern.finditer(message):
-                token = m.group(1).lower()
-                if token not in named:
-                    named.add(token)
-                    frag = _fragment(message, m.start(), m.end())
-                    refs.by_token.setdefault(token, []).append((sha, rule, frag))
-    refs.shas = sorted(hist.position)
-    return refs
+        held = [
+            sha
+            for sha in self.hist.by_pr.get(number, ())
+            if not (
+                _SUBJECT_RE.match(subject := self.hist.subject_of.get(sha, ""))
+                or _CONVENTIONAL_RE.match(subject)
+                or _RELAND_WORD_RE.search(subject)
+            )
+        ]
+        return held[0] if len(held) == 1 else None
+
+
+def _reference_index(repo_path: str, head: str, forge: str) -> _References:
+    def build() -> _References:
+        from repowise.core.analysis.decisions.reverts import _History
+
+        raw = _git_out(
+            repo_path,
+            "log",
+            "--topo-order",
+            head,
+            f"--format=%H{_FIELD}%P{_FIELD}%s{_FIELD}%b{_RECORD}",
+        )
+        hist = _History(forge=_forge(forge))
+        refs = _References(hist)
+        for record in raw.split(_RECORD):
+            fields = record.strip("\n").split(_FIELD, 3)
+            if len(fields) != 4 or not fields[0]:
+                continue
+            sha, parents, subject, body = fields
+            hist._add(sha, parents, subject, body)
+            message = f"{subject}\n\n{body}"  # git always parts them with a blank line
+            named: set[str] = set()
+            for rule, pattern in _RULES:
+                for m in pattern.finditer(message):
+                    token = m.group(1).lower()
+                    if token not in named:
+                        named.add(token)
+                        frag = _fragment(message, m.start(), m.end())
+                        refs.by_token.setdefault(token, []).append((sha, rule, frag))
+        refs.shas = sorted(hist.position)
+        return refs
+
+    return _once(("reference", repo_path, head, forge), build)
 
 
 class GitReferenceOutcomes:
@@ -268,21 +346,24 @@ class GitReferenceOutcomes:
     def links(self, repo_path: Path, head: str, change: OutcomeTarget) -> list[OutcomeLink]:
         from repowise.core.analysis.decisions.reverts import _resolve
 
-        refs = _reference_index(str(repo_path), head)
-        if refs is None or change.head_sha not in refs.hist.position:
-            return []
+        refs = _reference_index(str(repo_path), head, change.forge)
+        if change.head_sha not in refs.hist.position:
+            raise OutcomeUnknownError("the change is not in HEAD's history")
+        own = change.own
         hits: list[tuple[str, str, str, str]] = []  # (commit, target, rule, fragment)
         number = change.identity_value if change.identity_kind == "pr" else None
-        # A number held by two commits is ambiguous: neither is named.
-        if number is not None and len(refs.hist.by_pr.get(number, ())) == 1:
+        # The number names this change only when this change's own commit (or
+        # its merge) is the one commit holding it.
+        if number is not None and refs.holder(number) in own:
             tokens = []
             if change.forge in _SHARED_NUMBERING:
                 tokens.append(f"#{number}")
             if change.forge == "gitlab":
                 tokens.append(f"!{number}")
+            # Ceiling: Azure Repos also writes ``!N`` for a pull request; it is
+            # not read until it is measured there.
             for token in tokens:
                 hits += [(c, change.head_sha, r, f) for c, r, f in refs.by_token.get(token, ())]
-        own = change.own
         for token, rows in refs.by_token.items():
             if token[0] in "#!" or not any(s.startswith(token) for s in own):
                 continue
@@ -303,7 +384,10 @@ change_outcome_providers.register("git-reference", GitReferenceOutcomes())
 
 
 def outcome_links(repo_path: Path | str, head: str, change: OutcomeTarget) -> list[OutcomeLink]:
-    """Links from every registered provider, in registration order."""
+    """Links from every registered provider, in registration order.
+
+    A provider that cannot read raises :class:`OutcomeUnknownError`, and so does this.
+    """
     out: list[OutcomeLink] = []
     seen: set[tuple[str, str]] = set()
     load_plugins()
@@ -319,7 +403,7 @@ def outcome_links(repo_path: Path | str, head: str, change: OutcomeTarget) -> li
 
 
 def fix_days(repo_path: Path | str) -> int:
-    """``changes.outcome_fix_days`` from the repo config, else the default."""
+    """``changes.outcome_fix_days`` from the repo config (1 to 365), else the default."""
     from repowise.core.repo_config import load_repo_config
 
     try:
@@ -330,60 +414,71 @@ def fix_days(repo_path: Path | str) -> int:
     return days if 1 <= days <= _MAX_FIX_DAYS else DEFAULT_FIX_DAYS
 
 
+#: Paths per ``git log -- <paths>`` call, well under Windows' command-line limit.
+_PATH_BATCH = 100
+
+
 def file_fix_rate(
     repo_path: Path | str, head: str, change: OutcomeTarget, days: int
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """How many of the change's files a later fix commit touched within *days*.
 
     A fix is a commit the fix category holds (``is_fix_commit``, the rule every
     fix count uses) that descends from the change. Paths are matched as the
-    change left them; a later rename is not followed. ``None`` when the change
-    has no merge time or no files to count, or the history cannot be read.
+    change left them; a later rename is not followed. Raises
+    :class:`OutcomeUnknownError` when there is nothing to count or git cannot answer.
 
-    Ceiling: one date-bounded ``git log --name-only`` per change, about half
-    a second on a mid-size repository; an export of thousands pays it each.
+    Ceiling: one date-bounded ``git log`` per 100 of the change's files; an
+    export of thousands of changes pays it per change.
     """
     from repowise.core.ingestion.git_indexer._constants import is_fix_commit
 
-    refs = _reference_index(str(repo_path), head)
-    if change.merged_at is None or not change.files or refs is None:
-        return None
+    if change.merged_at is None:
+        raise OutcomeUnknownError("the change has no merge time to count a window from")
+    if not change.files:
+        raise OutcomeUnknownError("the change lists no files")
+    refs = _reference_index(str(repo_path), head, change.forge)
     if change.head_sha not in refs.hist.position:
-        return None
+        raise OutcomeUnknownError("the change is not in HEAD's history")
     start = int(change.merged_at.timestamp())
     end = int((change.merged_at + timedelta(days=days)).timestamp())
-    # Bounded by date, then kept to the change's descendants. Not
-    # ``--ancestry-path`` with ``--since``: the date cut stops the walk before
-    # it reaches the change, and nothing qualifies.
-    raw = _git_out(
-        repo_path,
-        "log",
-        "--no-merges",
-        f"--since=@{start}",
-        f"--until=@{end}",
-        "--name-only",
-        f"--format={_RECORD}%H{_FIELD}%ct{_FIELD}%s",
-        head,
-    )
-    files = set(change.files)
+    files = sorted(set(change.files))
     fixed: dict[str, list[str]] = {}
     commits: set[str] = set()
-    for record in raw.split(_RECORD):
-        header, _, names = record.strip("\n").partition("\n")
-        parts = header.split(_FIELD)
-        if len(parts) != 3 or not parts[1].isdigit():
-            continue
-        sha, ts, subject = parts
-        if not start < int(ts) <= end or not is_fix_commit(subject):
-            continue
-        touched = files.intersection(names.splitlines())
-        if not touched or sha == change.head_sha:
-            continue
-        if not refs.hist.is_ancestor(change.head_sha, sha):
-            continue
-        commits.add(sha)
-        for path in touched:
-            fixed.setdefault(path, []).append(sha)
+    for i in range(0, len(files), _PATH_BATCH):
+        # Bounded by date, then kept to the change's descendants. Not
+        # ``--ancestry-path`` with ``--since``: the date cut stops the walk
+        # before it reaches the change, and nothing qualifies.
+        raw = _git_out(
+            repo_path,
+            "--literal-pathspecs",
+            "log",
+            "--no-merges",
+            f"--since=@{start}",
+            f"--until=@{end}",
+            "--name-only",
+            f"--format={_RECORD}%H{_FIELD}%ct{_FIELD}%s",
+            head,
+            "--",
+            *files[i : i + _PATH_BATCH],
+        )
+        wanted = set(files[i : i + _PATH_BATCH])
+        for record in raw.split(_RECORD):
+            header, _, names = record.strip("\n").partition("\n")
+            parts = header.split(_FIELD)
+            if len(parts) != 3 or not parts[1].isdigit():
+                continue
+            sha, ts, subject = parts
+            if not start < int(ts) <= end or not is_fix_commit(subject):
+                continue
+            touched = wanted.intersection(names.splitlines())
+            if not touched or sha == change.head_sha:
+                continue
+            if not refs.hist.is_ancestor(change.head_sha, sha):
+                continue
+            commits.add(sha)
+            for path in touched:
+                fixed.setdefault(path, []).append(sha)
     head_ts = _git_out(repo_path, "log", "-1", "--format=%ct", head).strip()
     return {
         "files": len(files),
@@ -434,6 +529,7 @@ __all__ = [
     "GitRevertOutcomes",
     "OutcomeLink",
     "OutcomeTarget",
+    "OutcomeUnknownError",
     "change_outcome_providers",
     "file_fix_rate",
     "fix_days",

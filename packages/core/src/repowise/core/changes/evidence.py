@@ -27,7 +27,9 @@ Detail rows a policy reads have fixed keys (the local change policy in
 * ``outcomes``: one row per later link, ``{kind, sha, change_id, target_sha,
   rule, evidence, basis}`` (``kind`` is ``revert`` or ``fix_reference``; a
   revert adds ``in_force``), then one ``{kind: "file_fix_rate", basis:
-  "measured", files, files_fixed, days, window_complete, fixed}`` row. Unlike
+  "measured", files, files_fixed, days, window_complete, fixed}`` row, or
+  ``{kind: "file_fix_rate", basis: "unresolved", reason}`` when it could not
+  be counted. An unknown item's one row carries ``as_of`` and ``days``. Unlike
   the rest, this item follows HEAD: it is rebuilt when new commits arrive.
 """
 
@@ -167,8 +169,9 @@ class EvidenceInputs:
     #: The provenance summary (``label``, counts, ``coverage``) plus
     #: ``commits``: ``[{sha, label, tier}]``.
     provenance: Mapping[str, Any] | Unavailable | None = None
-    #: ``{as_of, days, links: [link row], file_fix_rate: row | None}`` for a
-    #: merged change (:mod:`.outcomes`).
+    #: ``{as_of, days, links: [link row], file_fix_rate: row | None,
+    #: file_fix_rate_unknown: reason | None}`` for a merged change
+    #: (:mod:`.outcomes`), or ``{as_of, days, unknown: reason}``.
     outcomes: Mapping[str, Any] | Unavailable | None = None
 
 
@@ -478,8 +481,15 @@ def _outcomes(inputs: EvidenceInputs) -> EvidenceItem:
     if reason := _missing(inputs.outcomes):
         return _unknown(kind, label, reason, source)
     block: Mapping[str, Any] = inputs.outcomes  # type: ignore[assignment]
+    stamp = {"as_of": block.get("as_of"), "days": block.get("days")}
+    if block.get("unknown"):
+        # Stamped, so a kept unknown is read again only once HEAD moves.
+        return EvidenceItem(
+            kind, label, "unknown", "unresolved", None, [{"reason": block["unknown"], **stamp}], source
+        )
     links = [dict(r) for r in block.get("links") or ()]
     rate = block.get("file_fix_rate")
+    rate_unknown = block.get("file_fix_rate_unknown")
     reverts = [r for r in links if r["kind"] == "revert"]
     references = [r for r in links if r["kind"] == "fix_reference"]
     in_force = any(r.get("in_force") for r in reverts)
@@ -493,7 +503,11 @@ def _outcomes(inputs: EvidenceInputs) -> EvidenceItem:
         "window_complete": rate["window_complete"] if rate else None,
         "as_of": block.get("as_of"),
     }
-    details = links + ([{"kind": "file_fix_rate", "basis": "measured", **rate}] if rate else [])
+    details = links
+    if rate:
+        details = [*links, {"kind": "file_fix_rate", "basis": "measured", **rate}]
+    elif rate_unknown:
+        details = [*links, {"kind": "file_fix_rate", "basis": "unresolved", "reason": rate_unknown}]
     # A rate never asks for a look on its own: it says where fixes landed, not why.
     return EvidenceItem(
         kind,

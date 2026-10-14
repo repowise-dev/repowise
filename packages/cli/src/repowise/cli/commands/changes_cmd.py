@@ -94,7 +94,7 @@ async def _export(
 ) -> int | None:
     """Emit each change in the window with its checklist, a page at a time; the count."""
     from repowise.core.attribution import attribution_enabled
-    from repowise.core.changes.collect import change_evidence
+    from repowise.core.changes.collect import change_evidence, outcomes_key
     from repowise.core.changes.record import change_record
     from repowise.core.persistence.crud import ChangeFilter, list_changes
 
@@ -103,6 +103,8 @@ async def _export(
             return None
         session, repo_id = opened
         on = attribution_enabled(root)
+        # One HEAD and window for the whole export, read once.
+        key = await outcomes_key(root)
         done = 0
         while True:
             rows, total = await list_changes(
@@ -118,7 +120,7 @@ async def _export(
                     click.echo(f"evidence {done}/{total}: {row.change_id}", err=True)
                 record = change_record(row, attribution=on)
                 record["evidence"] = (
-                    await change_evidence(session, repo_id, root, row, refresh=refresh)
+                    await change_evidence(session, repo_id, root, row, refresh=refresh, key=key)
                 ).to_dict()
                 # Kept as it goes, so an interrupted export resumes where it stopped.
                 await session.commit()
@@ -212,6 +214,17 @@ _CSV_COLUMNS = (
 )
 
 
+_FORMULA_LEAD = ("=", "+", "-", "@")
+
+
+def _cell(value: str) -> str:
+    """*value* safe to open in a spreadsheet: a leading formula sign is quoted.
+
+    Titles and evidence quote commit messages, which anyone can write.
+    """
+    return f"'{value}" if value.startswith(_FORMULA_LEAD) else value
+
+
 def _csv_rows(record: dict) -> str:
     """One CSV row per evidence item of *record*; ``value`` is its JSON."""
     import csv
@@ -222,7 +235,8 @@ def _csv_rows(record: dict) -> str:
     writer = csv.writer(buf, lineterminator="\n")
     for item in record["evidence"]["items"]:
         writer.writerow(
-            [
+            _cell(cell)
+            for cell in [
                 record["id"],
                 record["merged_at"] or "",
                 record["title"],

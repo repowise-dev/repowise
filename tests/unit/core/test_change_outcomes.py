@@ -294,3 +294,213 @@ async def test_kept_outcomes_follow_head(root):
     outcomes = current.item("outcomes")
     assert outcomes.value["as_of"] == revert and outcomes.value["reverted"] is True
     assert await with_current_outcomes(_Session(), "r", root, row, current) is current
+
+
+# -- number resolution -------------------------------------------------------
+
+
+def test_a_number_two_commits_hold_names_neither(root):
+    change = _commit(root, {"src/a.py": "a = 1\n"}, "feat: a (#1)", T0 + DAY)
+    _commit(root, {"src/b.py": "b = 1\n"}, "feat: b, cherry-picked (#1)", T0 + 2 * DAY)
+    _commit(root, {"src/a.py": "a = 2\n"}, "fix: a (regression from #1)", T0 + 3 * DAY)
+    assert outcome_links(root, _head(root), _target(root, change)) == []
+
+
+def test_a_number_held_by_another_commit_does_not_name_this_change(root):
+    _commit(root, {"src/b.py": "b = 1\n"}, "feat: b (#1)", T0 + DAY)
+    mine = _commit(root, {"src/a.py": "a = 1\n"}, "feat: a", T0 + 2 * DAY)
+    _commit(root, {"src/a.py": "a = 2\n"}, "fix: a (regression from #1)", T0 + 3 * DAY)
+    assert outcome_links(root, _head(root), _target(root, mine)) == []
+
+
+def test_reverts_and_relands_do_not_make_a_number_ambiguous(root):
+    change = _commit(root, {"src/a.py": "a = 1\n"}, "feat: a (#1)", T0 + DAY)
+    _commit(
+        root,
+        {"src/a.py": "a = 0\n"},
+        f'Revert "feat: a (#1)" (#2)\n\nThis reverts commit {change}.',
+        T0 + 2 * DAY,
+    )
+    _commit(root, {"src/a.py": "a = 1\n"}, "Reland feat: a (#1)", T0 + 3 * DAY)
+    fix = _commit(root, {"src/a.py": "a = 3\n"}, "fix: a (regression from #1)", T0 + 4 * DAY)
+    links = outcome_links(root, _head(root), _target(root, change))
+    assert [link.sha for link in links if link.kind == FIX_REFERENCE] == [fix]
+    assert [link.kind for link in links].count(REVERT) == 1
+
+
+def test_gitlab_reads_bang_numbers_and_not_hashes(root):
+    change = _commit(root, {"src/a.py": "a = 1\n"}, "feat: a (!1)", T0 + DAY)
+    _commit(root, {"src/a.py": "a = 2\n"}, "fix: a (regression from #1)", T0 + 2 * DAY)
+    fix = _commit(root, {"src/a.py": "a = 3\n"}, "fix: a (regression from !1)", T0 + 3 * DAY)
+    target = replace(_target(root, change), forge="gitlab", forge_ref="!1")
+    assert [link.sha for link in outcome_links(root, _head(root), target)] == [fix]
+
+
+def test_a_short_sha_two_commits_share_names_neither():
+    from repowise.core.analysis.decisions.reverts import _History
+    from repowise.core.changes import outcomes
+
+    own, other, later = "abcdef1" + "0" * 33, "abcdef1" + "f" * 33, "1" * 40
+    hist = _History()
+    for sha, parents in ((later, own), (other, own), (own, "")):
+        hist._add(sha, parents, "x", "")
+    refs = outcomes._References(hist, sorted(hist.position))
+    refs.by_token["abcdef1"] = [(later, "regression", "regression from abcdef1")]
+    key = ("reference", "repo-x", "head-x", "generic")
+    outcomes._index[key] = refs
+    try:
+        change = OutcomeTarget("commit-x", own, (own,), "commit", own, "generic", None, None, ())
+        assert outcomes.GitReferenceOutcomes().links(Path("repo-x"), "head-x", change) == []
+        refs.by_token["abcdef10"] = [(later, "regression", "regression from abcdef10")]
+        found = outcomes.GitReferenceOutcomes().links(Path("repo-x"), "head-x", change)
+        assert [link.target_sha for link in found] == [own]
+    finally:
+        outcomes._index.pop(key, None)
+
+
+# -- what cannot be read reads unknown -----------------------------------------
+
+
+def test_a_failed_git_read_is_unknown_and_not_kept(root, monkeypatch):
+    from repowise.core.analysis.decisions import reverts
+    from repowise.core.changes.outcomes import OutcomeUnknownError
+
+    change = _commit(root, {"src/a.py": "a = 1\n"}, "feat: a (#1)", T0 + DAY)
+    real = reverts._git_out
+    monkeypatch.setattr(reverts, "_git_out", lambda *_a, **_k: None)
+    with pytest.raises(OutcomeUnknownError):
+        outcome_links(root, _head(root), _target(root, change))
+    with pytest.raises(OutcomeUnknownError):
+        file_fix_rate(root, _head(root), _target(root, change), 30)
+    monkeypatch.setattr(reverts, "_git_out", real)
+    assert outcome_links(root, _head(root), _target(root, change)) == []
+
+
+def test_nothing_to_count_reads_unknown_with_a_reason(root):
+    from repowise.core.changes.outcomes import OutcomeUnknownError
+
+    change = _commit(root, {"src/a.py": "a = 1\n"}, "feat: a (#1)", T0 + DAY)
+    with pytest.raises(OutcomeUnknownError, match="no files"):
+        file_fix_rate(root, _head(root), _target(root, change, files=()), 30)
+    with pytest.raises(OutcomeUnknownError, match="no merge time"):
+        file_fix_rate(root, _head(root), replace(_target(root, change), merged_at=None), 30)
+
+
+class _Session:
+    """Enough of a session for ``get_change`` to find nothing."""
+
+    async def execute(self, *_a, **_k):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            scalar_one_or_none=lambda: None, scalars=lambda: SimpleNamespace(all=list)
+        )
+
+
+def _row(sha: str, *, files=("src/a.py",)):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        change_id="pr-1",
+        head_sha=sha,
+        commit_shas_json=json.dumps([sha]),
+        identity_kind="pr",
+        identity_value="1",
+        forge="generic",
+        forge_ref="#1",
+        merged_at=datetime.fromtimestamp(T0 + DAY, tz=UTC),
+        files_json=json.dumps([{"path": p, "added": 1, "deleted": 0} for p in files]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_unknown_items_are_stamped_so_they_are_not_read_every_time(root, tmp_path):
+    from repowise.core.changes.collect import outcomes_item, outcomes_key, outcomes_stale
+
+    change = _commit(root, {"src/a.py": "a = 1\n"}, "feat: a (#1)", T0 + DAY)
+    shallow = tmp_path / "shallow"
+    _git(tmp_path, "clone", "-q", "--depth", "1", root.as_uri(), str(shallow))
+    key = await outcomes_key(shallow)
+    item = await outcomes_item(_Session(), "r", shallow, _row(_head(shallow)), key)
+    assert (item.status, item.basis) == ("unknown", "unresolved")
+    reason = "a shallow clone cuts off the history outcomes are read from"
+    assert item.details == [{"reason": reason, "as_of": key[0], "days": 30}]
+    kept = ChangeEvidence("pr-1", None, "2026-01-02T00:00:00+00:00", [item])
+    assert not await outcomes_stale(shallow, kept)
+
+    key = await outcomes_key(root)
+    no_files = await outcomes_item(_Session(), "r", root, _row(change, files=()), key)
+    rate = [d for d in no_files.details if d["kind"] == "file_fix_rate"]
+    assert rate == [
+        {"kind": "file_fix_rate", "basis": "unresolved", "reason": "the change lists no files"}
+    ]
+    assert no_files.value["files"] is None and no_files.status == "ok"
+
+
+def test_fix_days_reads_the_config_within_bounds(tmp_path):
+    from repowise.core.changes.outcomes import DEFAULT_FIX_DAYS, fix_days
+
+    cfg = tmp_path / ".repowise" / "config.yaml"
+    cfg.parent.mkdir()
+    assert fix_days(tmp_path) == DEFAULT_FIX_DAYS == 30
+    for raw, want in (("45", 45), ("1", 1), ("365", 365), ("0", 30), ("366", 30), ("soon", 30)):
+        cfg.write_text(f"changes:\n  outcome_fix_days: {raw}\n", encoding="utf-8")
+        assert fix_days(tmp_path) == want, raw
+    cfg.write_text("changes: 12\n", encoding="utf-8")
+    assert fix_days(tmp_path) == 30
+
+
+# -- keeping ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_checklist_gains_outcomes_and_a_merge_keeps_a_newer_rebuild(
+    tmp_path, root
+):
+    from repowise.core.changes.collect import (
+        cached_evidence,
+        change_evidence,
+        keep_outcomes,
+        outcomes_item,
+        outcomes_key,
+        save_evidence,
+    )
+    from repowise.core.changes.evidence import EvidenceItem
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+    from tests.unit.core.test_change_evidence import _index
+
+    head = _commit(root, {"src/a.py": "a = 1\n"}, "feat: a and web (#7)", T0 + DAY)
+    engine, factory, repo_id = await _index(tmp_path, root, head)
+    health = EvidenceItem("health_delta", "Health delta", "ok", "measured", {"introduced": 0})
+    legacy = ChangeEvidence("pr-7", head, "2026-01-01T00:00:00+00:00", [health])
+    try:
+        async with get_session(factory) as session:
+            await save_evidence(session, repo_id, "pr-7", legacy)
+        async with get_session(factory) as session:
+            row = await get_change(session, repo_id, "pr-7")
+            got = await change_evidence(session, repo_id, root, row)
+        assert [i.kind for i in got.items] == ["health_delta", "outcomes"]
+        assert got.generated_at == legacy.generated_at
+        async with get_session(factory) as session:
+            stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
+        assert stored.to_dict() == got.to_dict()
+
+        # An outcomes read that finishes after a full rebuild was kept merges
+        # into the rebuild, and one read at the same HEAD is not written twice.
+        key = await outcomes_key(root)
+        async with get_session(factory) as session:
+            row = await get_change(session, repo_id, "pr-7")
+            item = await outcomes_item(session, repo_id, root, row, key)
+        rebuilt = ChangeEvidence("pr-7", head, "2026-02-01T00:00:00+00:00", [health])
+        async with get_session(factory) as session:
+            await save_evidence(session, repo_id, "pr-7", rebuilt)
+        async with get_session(factory) as session:
+            merged = await keep_outcomes(session, repo_id, "pr-7", item)
+        assert merged.generated_at == rebuilt.generated_at
+        assert [i.kind for i in merged.items] == ["health_delta", "outcomes"]
+        async with get_session(factory) as session:
+            again = await keep_outcomes(session, repo_id, "pr-7", item)
+        assert again.to_dict() == merged.to_dict()
+    finally:
+        await engine.dispose()
