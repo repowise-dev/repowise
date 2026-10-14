@@ -259,7 +259,8 @@ anywhere.
 The commit table led by repo-relative review priority, a supporting diff-shape
 score distribution, a
 code-evolution chart, commit-category breakdowns, and AI-agent provenance
-badges plus their trend over time where the commits carry agent trailers. The
+badges plus their trend over time, shown as agent, human-attested and unknown
+commits with the agent share of covered commits beside its coverage. The
 risk model is documented in
 [docs/layers/CHANGE_RISK.md](../layers/CHANGE_RISK.md).
 
