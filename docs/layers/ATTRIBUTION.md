@@ -53,7 +53,7 @@ Other agents are read through public markers only. The `Attribution` column of
 [INTEGRATIONS.md](../agent/INTEGRATIONS.md) is the live list.
 
 The hook stores line hashes, the repo-relative path, an opaque session id, the tool and
-the model in `.repowise/attribution/events.jsonl`. `repowise update` (which the
+the model in `.repowise/attribution/events.jsonl`, never prompts or code. `repowise update` (which the
 post-commit hook runs) matches those hashes to the lines new commits added and labels a
 matched commit with the agent. An unmatched commit stays `unknown`.
 
