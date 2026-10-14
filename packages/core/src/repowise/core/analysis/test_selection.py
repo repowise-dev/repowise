@@ -80,12 +80,13 @@ RUN_ALL = ":all"
 RUNNERS = ("auto", "pytest", "go", "jest", "files")
 
 SHARED_TEST_DATA_REASON = "shared test data can change any test"
+DEPENDENCIES_REASON = "dependencies can change any test"
 
 # (why it forces a full run, gitwildmatch patterns). The config extends these,
 # never replaces them. Ceiling: no opt-out until someone needs one.
 _FULL_RUN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
-        "dependencies can change any test",
+        DEPENDENCIES_REASON,
         (
             "package-lock.json",
             "yarn.lock",

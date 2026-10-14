@@ -29,6 +29,7 @@ __all__ = [
     "ManifestParser",
     "extract_external_systems",
     "is_manifest_path",
+    "manifest_ecosystem",
 ]
 
 _PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, cmake, bazel)
@@ -64,6 +65,12 @@ def is_manifest_path(path: Path | str) -> bool:
     extractor actually parses. Only the basename matters.
     """
     return _parser_for(Path(path)) is not None
+
+
+def manifest_ecosystem(path: Path | str) -> str | None:
+    """The ``ecosystem`` of the parser that reads ``path``, or ``None``."""
+    parser = _parser_for(Path(path))
+    return parser.ecosystem if parser is not None else None
 
 
 def extract_external_systems(

@@ -152,6 +152,15 @@ def test_hot_files_leave_out_manifests_and_lockfiles(repo_with_history: Path) ->
     assert [path for path, _, _ in rows] == ["hot.py"]
 
 
+def test_hot_files_keep_runner_configs_with_prior_fixes() -> None:
+    """Only dependency files drop out; runner configs and build files can break."""
+    kept = ("tox.ini", "web/tsconfig.json", "CMakeLists.txt", "lib/BUILD.bazel")
+    paths = (*kept, "package.json", "web/yarn.lock", "go.sum")
+    pressure = {path: 2.0 for path in paths}
+    rows = hot_files(pressure, [(path, 1) for path in paths], limit=len(paths))
+    assert sorted(path for path, _, _ in rows) == sorted(kept)
+
+
 def test_fix_density_is_orthogonal_to_diff_size(repo_with_history: Path) -> None:
     """One line in the fragile file outranks a thousand in the safe one."""
     pressure = fix_pressure(str(repo_with_history), "HEAD")

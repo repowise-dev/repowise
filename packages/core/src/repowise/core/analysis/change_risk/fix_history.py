@@ -22,8 +22,9 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Iterable, Sequence
 
+from ...ingestion.external_systems import manifest_ecosystem
 from ...ingestion.git_indexer._constants import is_fix_commit
-from ..selection_scopes import is_manifest
+from ..test_selection import DEPENDENCIES_REASON, full_run_reason
 from .features import GIT_TIMEOUT_SECONDS, _git
 from .normalize import RiskNormalizer
 
@@ -264,20 +265,37 @@ MAX_HOT_FILES = 5
 MIN_DENSITY_POPULATION = 8
 
 
+#: Manifest parsers whose files hold build logic as well as dependencies.
+_BUILD_ECOSYSTEMS = frozenset({"cmake", "bazel"})
+
+
+def is_dependency_file(path: str) -> bool:
+    """A dependency manifest or lockfile: a fix that bumps a dependency edits it.
+
+    Such a file did not break. Runner configs (``tox.ini``, ``tsconfig.json``)
+    and build files the cmake and bazel parsers read (``CMakeLists.txt``,
+    ``BUILD``) are not dependency files and keep their fix record.
+    """
+    ecosystem = manifest_ecosystem(path)
+    if ecosystem is not None:
+        return ecosystem not in _BUILD_ECOSYSTEMS
+    return full_run_reason(path) == DEPENDENCIES_REASON
+
+
 def hot_files(
     pressure: dict[str, float], changes: Iterable[tuple[str, int]], *, limit: int = MAX_HOT_FILES
 ) -> tuple[tuple[str, int, float], ...]:
     """The change's fix-bearing files as ``(path, churn, pressure)``, worst first.
 
     Shared by every surface so the CLI, the MCP payload and the HTTP API cannot
-    order or round the same list differently. Manifests and lockfiles are left
-    out of the list: a fix that bumps a dependency edits them, and they are not
-    files that broke. Display only; *pressure* and every density keep them.
+    order or round the same list differently. Dependency manifests and
+    lockfiles are left out of the list (:func:`is_dependency_file`). Display
+    only; *pressure* and every density keep them.
     """
     rows = [
         (path, churn, pressure[rename_target(path)])
         for path, churn in changes
-        if pressure.get(rename_target(path)) and not is_manifest(rename_target(path))
+        if pressure.get(rename_target(path)) and not is_dependency_file(rename_target(path))
     ]
     rows.sort(key=lambda row: -row[2])
     return tuple((path, churn, round(p, 2)) for path, churn, p in rows[:limit])
