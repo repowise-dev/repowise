@@ -392,13 +392,10 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # constant (a stylesheet string assigned to a module-level name), which
     # this test cannot distinguish from a genuinely dynamic value without
     # dataflow, so the pattern is a places-to-read signal rather than a
-    # confirmed sink. A type keyword there (``__html: string``) is a TS
-    # annotation, not a value.
+    # confirmed sink. A type annotation (``__html: string``) is dropped by
+    # ``_is_html_type_annotation``, which needs the syntax around it.
     (
-        re.compile(
-            r"__html\s*:\s*(?=[A-Za-z_$(])"
-            r"(?!(?:string|number|boolean|any|unknown|never|undefined|null|TrustedHTML)\b)"
-        ),
+        re.compile(r"__html\s*:\s*(?=[A-Za-z_$(])"),
         "unsafe_inner_html",
         "med",
     ),
@@ -1187,6 +1184,41 @@ def _is_missing_table_error(exc: Exception) -> bool:
     return "no such table" in message or "does not exist" in message
 
 
+_TS_TYPE_VALUE = re.compile(
+    r"(?:string|number|boolean|any|unknown|never|undefined|null|TrustedHTML)\b"
+    r"(?:\s*\|\s*[\w$.]+)*\s*"
+)
+# What opens an object type on the line: an annotation ``:``, a generic ``<``,
+# ``as``, ``interface X`` or ``type X =``. A ternary's ``:`` reads the same; the
+# rare ``c ? a : {__html: string}`` is the accepted miss.
+_TYPE_OPENER = re.compile(
+    r"(?:[:<]|\bas|\binterface\s+[\w$]+[^{=]*|\btype\s+[\w$]+[^=]*=)\s*$"
+)
+
+
+def _is_html_type_annotation(line: str, match: re.Match) -> bool:
+    """Whether ``__html: <type keyword>`` sits in a type, not an object value.
+
+    A type keyword counts only in a type position: a member closed by ``;``, or
+    an object type opened by ``_TYPE_OPENER``. ``{{__html: string}}`` and
+    ``= {__html: string}`` read a variable named ``string`` and stay findings.
+    """
+    keyword = _TS_TYPE_VALUE.match(line, match.end())
+    if keyword is None:
+        return False
+    if line.startswith(";", keyword.end()):
+        return True
+    depth = 0
+    for i in range(match.start() - 1, -1, -1):
+        if line[i] == "}":
+            depth += 1
+        elif line[i] == "{":
+            if depth == 0:
+                return bool(_TYPE_OPENER.search(line[:i]))
+            depth -= 1
+    return False
+
+
 def _match_starting_in(pattern: re.Pattern, line: str, kept: str) -> re.Match | None:
     """First match of *pattern* on *line* whose first character survived masking in *kept*."""
     for match in pattern.finditer(line):
@@ -1278,6 +1310,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
             else:
                 # Vendor key shapes are real wherever they sit, comments included.
                 match = pattern.search(line)
+                if match and kind == "unsafe_inner_html" and _is_html_type_annotation(line, match):
+                    match = None
             if match:
                 value_span = _value_span(kind, match, line) if match.groups() else (0, 0)
                 value = line[slice(*value_span)] if match.groups() else ""
@@ -1371,8 +1405,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         if _is_low_for_path(finding["kind"], is_low_sev_file, origin):
             finding["severity"] = "low"
 
-    # Symbol-name scan (informational / low)
-    for sym in symbols:
+    # Symbol-name scan (informational / low). Machine output and declarations
+    # hold no written code, so their names are not ours to flag.
+    for sym in () if secrets_only else symbols:
         name = getattr(sym, "name", "") or getattr(sym, "qualified_name", "") or ""
         if name and _SYMBOL_KEYWORDS.search(name):
             findings.append(

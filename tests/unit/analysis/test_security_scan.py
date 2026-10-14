@@ -1495,6 +1495,39 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         source = f"interface Props {{\n  dangerouslySetInnerHTML: {{ __html: {annotation} }};\n}}\n"
         assert self._found("src/props.ts", source) == []
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "interface P { __html: string }\n",
+            "interface P {\n  __html: string;\n}\n",
+            "type P = { __html: string | TrustedHTML };\n",
+            "const [h, setH] = useState<{ __html: string }>(init);\n",
+            "function f(p: { __html: TrustedHTML }) {}\n",
+        ],
+    )
+    def test_inner_html_in_a_type_position_is_not_a_sink(self, source: str) -> None:
+        assert self._found("src/props.tsx", source) == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "<div dangerouslySetInnerHTML={{__html: string}} />\n",
+            "<div dangerouslySetInnerHTML={{ __html: TrustedHTML }} />\n",
+            "const props = { __html: string };\n",
+            "return {\n  __html: string,\n};\n",
+        ],
+    )
+    def test_inner_html_from_a_value_named_like_a_type_is_still_medium(self, source: str) -> None:
+        assert self._found("src/view.tsx", source) == [("unsafe_inner_html", "med")]
+
+    def test_no_written_code_raises_no_symbol_finding(self) -> None:
+        sym = SimpleNamespace(name="password", start_line=1)
+        source = "declare const password: string;\n"
+        for path in ("types/auth.d.ts", "dist/app.min.js"):
+            assert scan_source(path, source, [sym]) == []
+        kinds = {f["kind"] for f in scan_source("src/auth.ts", source, [sym])}
+        assert kinds == {"security_sensitive_symbol"}
+
     def test_declaration_file_holds_no_sink(self) -> None:
         assert self._found("types/react.d.ts", "type T = { __html: SafeHtml };\n") == []
 
