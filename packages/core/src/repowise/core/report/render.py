@@ -56,10 +56,15 @@ def _code(text: Any) -> str:
     return "`" + " ".join(str(text).split()).replace("`", "'") + "`"
 
 
+def _title(document: dict[str, Any]) -> str:
+    kind = str(document.get("kind") or "assessment").capitalize()
+    return f"{kind}: {document['scope'].get('name') or document['scope']['kind']}"
+
+
 def render_markdown(document: dict[str, Any]) -> str:
     gen = document["generator"]
     lines = [
-        f"# Assessment: {_line(document['scope'].get('name') or document['scope']['kind'])}",
+        f"# {_line(_title(document))}",
         "",
         document["notice"],
         "",
@@ -126,7 +131,7 @@ ul.details { margin: .25rem 0 0; padding-left: 1.1rem; color: var(--muted); }
 def render_html(document: dict[str, Any]) -> str:
     e = html.escape
     gen = document["generator"]
-    title = f"Assessment: {document['scope'].get('name') or document['scope']['kind']}"
+    title = _title(document)
     out = [
         "<!doctype html>",
         '<html lang="en"><head><meta charset="utf-8">',

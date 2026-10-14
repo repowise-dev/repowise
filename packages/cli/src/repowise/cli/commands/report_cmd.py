@@ -13,12 +13,13 @@ from repowise.core.registry import LazyCommand
 #: ``"module:attr"`` of each ``repowise report`` subcommand.
 _SUBCOMMANDS: tuple[str, ...] = (
     "repowise.cli.commands.report_assessment_cmd:assessment_command",
+    "repowise.cli.commands.report_inventory_cmd:inventory_command",
 )
 
 
 @click.group("report")
 def report_group() -> None:
-    """Evidence reports built from the index: assessment."""
+    """Evidence reports built from the index: assessment, inventory."""
 
 
 for _target in _SUBCOMMANDS:

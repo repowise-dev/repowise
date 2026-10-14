@@ -1657,6 +1657,7 @@ repowise report assessment [PATH] [--sections a,b] [--format json|markdown|html]
 | Section | Measures | Basis |
 |---|---|---|
 | `components` | Each component's NLOC-weighted health, catalog facts and `components ownership` findings | `measured`; `gated` on a language health is held back on |
+| `inventory` | Each component's declared owner teams, languages, entry points and the third-party packages its files import ([package usage](PACKAGE_USAGE.md)) | `measured`; owners `declared` |
 | `hotspots` | Files with high recent churn, per component | `measured` |
 | `bus-factor` | Fewest primary owners holding over half of each component's owned files; components at 1 or 2 are counted and named in the summary unless the catalog marks them | `measured`; `inferred` under five owned files |
 | `dead-code` | Open findings by confidence tier; `safe_to_delete` is not used | `inferred`; `gated` for held-back languages |
@@ -1665,6 +1666,8 @@ repowise report assessment [PATH] [--sections a,b] [--format json|markdown|html]
 | `decisions` | Accepted decisions governing each component's files, and the stale ones | `declared` |
 | `provenance` | Commits in the last 90 indexed days with a known source (a count, not a score), and the agents and models named (listed, not counted) | `measured`, `declared`; `unresolved` with no markers |
 | `trend` | What moved since a same-stamp snapshot at least 90 days older, by the `events` diff rules and only for the event kinds the repository has on | `measured` |
+
+`repowise report inventory [PATH]` renders the `inventory` section alone, with the same `--format`, `--out`, `--workspace`, `--no-workspace` and `--repo` options: the component inventory a software inventory review (PCI DSS 6.3.2) asks for. Its JSON `data` keeps every component's owner teams, languages, entry points and packages; the text lists the components with no declared owner team.
 
 Basis `unresolved` means the evidence is missing. Each per-component section opens with one summary row counting components by outcome; a component gets its own item only when there is something to note (an ownership finding, a bus factor of 2 or less on a component the catalog gives a criticality or tags, hotspots, a stale decision, provided contracts, or unresolved or gated evidence), the rest are named in the summary, and the JSON `data` keeps every component's figures. Local paths are removed from every item. A section is a `Section` on `SeamRegistry("report-section")`: each module in `repowise/core/report/sections/` registers one, a plugin registers its own the same way, and a section whose data is absent returns `None` and is left out (an outcomes section is added this way once change outcomes exist). Renderers live on `SeamRegistry("report-renderer")` and are picked with `--format`. Modernization candidates are not reported, since no existing signal measures them.
 

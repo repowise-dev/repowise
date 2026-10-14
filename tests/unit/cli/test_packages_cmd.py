@@ -92,3 +92,15 @@ def test_no_index_is_a_clear_error(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["packages", "where", "x", "--path", str(tmp_path)])
     assert result.exit_code != 0
     assert "run `repowise init`" in result.output
+
+
+def test_report_inventory(repo):
+    result = _invoke(["report", "inventory", str(repo), "--format", "json", "--no-workspace"])
+    assert result.exit_code == 0, result.output
+    doc = json.loads(result.output)
+    assert doc["kind"] == "inventory"
+    assert [s["id"] for s in doc["sections"]] == ["inventory"]
+
+    md = _invoke(["report", "inventory", str(repo), "--no-workspace"])
+    assert md.exit_code == 0, md.output
+    assert md.output.startswith("# Inventory: ")
