@@ -257,8 +257,8 @@ Code health reports `ungoverned_hotspot`, `stale_governance` and
   is not grounded is cleared; a candidate with no grounded field is rejected.
 - Confidence is capped at 0.99 and rises with source authority and independent
   corroboration. It is a ranking aid, not a probability.
-- The `session` source ships off: most of its records carry neither a context
-  nor a rationale ([measurement](../architecture/decisions.md#session-mining)).
+- The `session` source ships off: of 139 records here, none has a context and 115
+  have no rationale either ([measurement](../architecture/decisions.md#session-mining)).
 - Lineage comes only from explicit `--superseded-by` and commit reversals.
 - Staleness measures whether governed files changed, not whether the decision
   is still true.

@@ -81,8 +81,8 @@ the seven cells, and most misses are dynamic dispatch. C#, C++, Rust and Python
 
 Per-language figures, the five-tool table and sample sizes:
 [BENCHMARKS.md: accuracy by language](../BENCHMARKS.md#accuracy-by-language),
-[call graph against a compiler](../BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control)
-and [hand-graded](../BENCHMARKS.md#7-edge-precision).
+[call graph against a compiler](../BENCHMARKS.md#call-graph-against-a-compiler-five-tools)
+and [hand-graded](../BENCHMARKS.md#call-edges-hand-graded-across-nine-languages).
 
 ## What is in the graph
 

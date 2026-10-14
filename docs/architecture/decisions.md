@@ -133,7 +133,7 @@ Three stages:
    record is written as a `proposed` candidate with `source: session`. Repeat
    observations add evidence rows.
 
-The `session` source ships off. Run on the Repowise repository it produced 139
+The `session` source ships off. In a measured run on the Repowise repository it produced 139
 records, none with a context and 115 with neither context nor rationale.
 
 Staging lives in `.repowise/sessions/sessions.db`. Transcripts never leave the
