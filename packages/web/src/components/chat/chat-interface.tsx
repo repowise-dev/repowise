@@ -197,6 +197,7 @@ export function ChatInterface({
       onArtifactPin={pinArtifact}
       onOpenArtifactSource={openArtifactSource}
       artifactOverrides={artifactOverrides}
+      unverifiedFigureCopy={{ flag: t("unverifiedFigure"), note: t("unverifiedFiguresNote") }}
       sendDisabled={!anyConfigured}
       sendDisabledReason={
         <span>

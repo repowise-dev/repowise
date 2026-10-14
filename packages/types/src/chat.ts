@@ -11,11 +11,13 @@ import type { GraphExport } from "./graph.js";
 import type { Hotspot } from "./git.js";
 import type { DeadCodeFinding } from "./dead-code.js";
 import type { DecisionRecord } from "./decisions.js";
-import type { EvidenceCard } from "./cards.js";
+import type { CardRef, EvidenceCard } from "./cards.js";
 import type { ViewPart } from "./views.js";
+import type { ChatFigure } from "./generated/http.js";
 
 /** Headless chat session wire types, generated from the server schema. */
 export type {
+  ChatFigure,
   ChatSessionMessageRequest,
   ChatSessionOpenRequest,
   ChatSessionPolicyRequest,
@@ -141,6 +143,9 @@ export interface ChatMessage {
     cards?: unknown[];
     /** View parts `show_view` built this turn, unvalidated until parsed. */
     views?: unknown[];
+    /** Each number the answer states, looked up in the turn's tool results. */
+    figures?: ChatFigure[];
+    diagnostics?: { figures_checked?: number; figures_unverified?: number };
   };
   created_at: string;
 }
@@ -178,6 +183,15 @@ export interface ChatUIMessage {
   cards?: EvidenceCard[];
   /** Validated view parts for this turn, in the order they were built. */
   views?: ViewPart[];
+  /** Figures in `text` no tool result of the turn holds; flagged, not removed. */
+  unverifiedFigures?: ChatFigureSpan[];
+}
+
+/** A figure's place in the text a message shows, in UTF-16 offsets. */
+export interface ChatFigureSpan {
+  text: string;
+  start: number;
+  end: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +207,10 @@ export interface ChatCitation {
   symbol_name?: string;
   start_line?: number;
   end_line?: number;
+  /** The tool result that cited this file. */
+  artifact_id?: string;
+  /** The file or symbol as an entity ref, resolved like a card's. */
+  ref?: CardRef;
 }
 
 export interface ArtifactEvidence {
@@ -714,6 +732,14 @@ export type ChatSSEEvent =
   /** A limit stopped the turn before a final answer; `done` still follows.
    *  `reason` is `loop_cap` (every call ended in a tool call) or `token_budget`. */
   | { type: "truncated"; loops: number; reason?: "loop_cap" | "token_budget" }
+  /** The post-turn numeric check, sent before `suggestions` when the answer
+   *  states a figure. Spans are offsets into the streamed text. */
+  | {
+      type: "diagnostics";
+      figures_checked: number;
+      figures_unverified: number;
+      unverified_figures: ChatFigureSpan[];
+    }
   /** Next steps for the turn that just finished, sent just before `done`.
    *  A turn that failed or called no tool sends none. */
   | { type: "suggestions"; suggestions: ChatSuggestion[] }

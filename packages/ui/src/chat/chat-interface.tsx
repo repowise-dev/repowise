@@ -32,7 +32,7 @@ import { Button } from "../ui/button";
 import { ActivityDot } from "../ui/activity-dot";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../lib/cn";
-import { ChatMessage } from "./chat-message";
+import { ChatMessage, type UnverifiedFigureCopy } from "./chat-message";
 import { ArtifactPanel } from "./artifact-panel";
 import { ChatContextIndicator } from "./chat-context-indicator";
 import {
@@ -125,6 +125,8 @@ export interface ChatInterfaceProps {
   onDraftChange?: (draft: string) => void;
   onContextRemove?: () => void;
   composerRef?: RefObject<HTMLTextAreaElement | null>;
+  /** Copy for figures the numeric check flagged; English by default. */
+  unverifiedFigureCopy?: UnverifiedFigureCopy;
   /** Focus the composer on mount. The dock and the full page both do; a host
    *  embedding chat below other content should not. */
   autoFocus?: boolean;
@@ -154,6 +156,7 @@ export function ChatInterface({
   historySlot,
   buildCitationHref,
   linkPrefix,
+  unverifiedFigureCopy,
   suggestions,
   placeholder,
   statusSlot,
@@ -422,6 +425,7 @@ export function ChatInterface({
                   {...(onEditAndResend ? { onEditAndResend } : {})}
                   {...(buildCitationHref ? { buildCitationHref } : {})}
                   {...(linkPrefix ? { linkPrefix } : {})}
+                  {...(unverifiedFigureCopy ? { unverifiedFigureCopy } : {})}
                 />
                 );
               })}

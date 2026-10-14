@@ -64,6 +64,29 @@ describe("toChatUiMessages", () => {
     expect(toChatUiMessages(stored)[0]?.toolCalls[0]?.status).toBe(expected);
   });
 
+  it("reloads only the unverified figures as flags", () => {
+    const stored: ChatMessageResponse[] = [
+      {
+        id: "m1",
+        conversation_id: "c1",
+        role: "assistant",
+        content: {
+          text: "3 fixes and 17 callers.",
+          figures: [
+            { text: "3", start: 0, end: 1, verified: true, artifact_id: "a".repeat(32) },
+            { text: "17", start: 12, end: 14, verified: false },
+          ],
+          diagnostics: { figures_checked: 2, figures_unverified: 1 },
+        },
+        created_at: "2026-10-14T00:00:00Z",
+      },
+    ];
+
+    expect(toChatUiMessages(stored)[0]?.unverifiedFigures).toEqual([
+      { text: "17", start: 12, end: 14 },
+    ]);
+  });
+
   it("restores the persisted artifact envelope without rebuilding it", () => {
     const stored: ChatMessageResponse[] = [
       {

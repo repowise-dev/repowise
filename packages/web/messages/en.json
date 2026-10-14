@@ -759,7 +759,9 @@
   },
   "chat": {
     "noProvider": "No chat provider is configured. Add an API key in <link>settings</link> to start asking questions.",
-    "noProviderShort": "No chat provider is configured. Add an API key in <link>settings</link>."
+    "noProviderShort": "No chat provider is configured. Add an API key in <link>settings</link>.",
+    "unverifiedFigure": "Not found in this turn's tool results",
+    "unverifiedFiguresNote": "Figures with a dotted underline were not found in this turn's tool results."
   },
   "codeHealth": {
     "hotspots": {

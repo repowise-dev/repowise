@@ -12,6 +12,19 @@ import { EvidenceCardList, cardRefHref } from "../cards/evidence-card";
 import { ViewPartList } from "./view-part";
 import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 
+/** Copy for figures the numeric check could not find in the turn's tool results. */
+export interface UnverifiedFigureCopy {
+  /** Tooltip and screen-reader text on each flagged figure. */
+  flag: string;
+  /** One line under an answer that has flagged figures. */
+  note: string;
+}
+
+export const DEFAULT_UNVERIFIED_FIGURE_COPY: UnverifiedFigureCopy = {
+  flag: "Not found in this turn's tool results",
+  note: "Figures with a dotted underline were not found in this turn's tool results.",
+};
+
 interface ChatMessageProps {
   message: ChatUIMessage;
   repoId: string;
@@ -29,6 +42,7 @@ interface ChatMessageProps {
   error?: string | null;
   onRetry?: (message: ChatUIMessage) => void | Promise<void>;
   onEditAndResend?: (message: ChatUIMessage, text: string) => void | Promise<void>;
+  unverifiedFigureCopy?: UnverifiedFigureCopy;
 }
 
 /**
@@ -50,10 +64,14 @@ function ChatMessageImpl({
   error,
   onRetry,
   onEditAndResend,
+  unverifiedFigureCopy = DEFAULT_UNVERIFIED_FIGURE_COPY,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const dock = density === "dock";
   const stage = isUser ? null : chatStage(message);
+  const flagged = !message.isStreaming && message.unverifiedFigures?.length
+    ? message.unverifiedFigures
+    : undefined;
 
   if (isUser) {
     return (
@@ -105,7 +123,19 @@ function ChatMessageImpl({
         )}
 
         {message.text && (
-          <Markdown content={message.text} density={dock ? "narrow" : "reading"} streaming={message.isStreaming} fill />
+          <Markdown
+            content={message.text}
+            density={dock ? "narrow" : "reading"}
+            streaming={message.isStreaming}
+            fill
+            {...(flagged ? { flags: flagged, flagLabel: unverifiedFigureCopy.flag } : {})}
+          />
+        )}
+
+        {flagged && (
+          <p data-chat-unverified-figures={flagged.length} className="text-xs text-[var(--color-text-tertiary)]">
+            {unverifiedFigureCopy.note}
+          </p>
         )}
 
         {/* Views arrive live, each right after the call that built it. */}

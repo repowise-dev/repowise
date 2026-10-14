@@ -16,6 +16,16 @@ function storedViews(message: ChatMessageResponse): Pick<ChatUIMessage, "views">
   return views.length ? { views } : {};
 }
 
+/** Figures the numeric check found in no tool result; offsets index `content.text`. */
+function storedUnverifiedFigures(
+  message: ChatMessageResponse,
+): Pick<ChatUIMessage, "unverifiedFigures"> {
+  const spans = (message.content.figures ?? [])
+    .filter((figure) => !figure.verified)
+    .map(({ text, start, end }) => ({ text, start, end }));
+  return spans.length ? { unverifiedFigures: spans } : {};
+}
+
 /** Normalize stored API messages into the same shape produced while streaming. */
 export function toChatUiMessages(
   messages: ChatMessageResponse[],
@@ -76,5 +86,6 @@ export function toChatUiMessages(
       : {}),
     ...storedCards(message),
     ...storedViews(message),
+    ...storedUnverifiedFigures(message),
   }));
 }

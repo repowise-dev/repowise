@@ -395,6 +395,29 @@ describe("useChat grounding and truncation events", () => {
     expect(result.current.error).toBeNull();
   });
 
+  it("marks the figures the numeric check could not find", async () => {
+    const spans = [{ text: "17", start: 9, end: 11 }];
+    const push = streamed([
+      { type: "text_delta", text: "a.py has 17 callers." },
+      {
+        type: "diagnostics",
+        figures_checked: 1,
+        figures_unverified: 1,
+        unverified_figures: spans,
+      },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("callers?");
+      await push();
+      await sending;
+    });
+
+    expect(result.current.messages.at(-1)?.unverifiedFigures).toEqual(spans);
+  });
+
   it("shows a show_view call as a step and puts its view on the answer", async () => {
     const view = fixture.valid.c1;
     const receipt = { view_id: "c1", kind: "chart", title: view.title };

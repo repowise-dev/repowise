@@ -367,6 +367,14 @@ export interface CallersCalleesResponse {
   relations?: SymbolRelationGroup[];
 }
 
+/** An entity a card or view points at. Never a URL; the renderer resolves it. */
+export interface CardRef {
+  type: "repo" | "file" | "symbol" | "module" | "component" | "commit" | "change" | "decision";
+  id: string;
+  start_line?: number | null;
+  end_line?: number | null;
+}
+
 export interface ChangeAuthor {
   name: string;
   email: string;
@@ -497,6 +505,28 @@ export interface ChatArtifactEnvelope {
   created_at?: string | null;
 }
 
+/** A file a tool result cited, and that result's ``artifact_id``. */
+export interface ChatCitation {
+  file_path: string;
+  symbol_name?: string | null;
+  start_line?: number | null;
+  end_line?: number | null;
+  artifact_id?: string | null;
+  ref?: CardRef | null;
+}
+
+/**
+ * A number the answer states. Offsets are UTF-16 units into ``answer``;
+ * a verified figure carries the ``artifact_id`` of the result holding it.
+ */
+export interface ChatFigure {
+  text: string;
+  start: number;
+  end: number;
+  verified: boolean;
+  artifact_id?: string | null;
+}
+
 export interface ChatMessageResponse {
   id: string;
   conversation_id: string;
@@ -602,9 +632,11 @@ export interface ChatTurnResultResponse {
   stop_reason: "answered" | "loop_cap" | "token_budget" | "turn_budget" | "refused" | "cancelled" | "error";
   provider: string;
   model: string;
-  citations?: Record<string, unknown>[];
+  citations?: ChatCitation[];
   cards?: Record<string, unknown>[];
   views?: Record<string, unknown>[];
+  figures?: ChatFigure[];
+  diagnostics?: Record<string, number>;
   tool_trace?: ChatToolTraceEntry[];
   follow_ups?: ChatSuggestion[];
   usage?: ChatTurnUsage;

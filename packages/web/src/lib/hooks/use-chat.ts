@@ -292,6 +292,11 @@ export function useChat(repoId: string) {
               case "truncated":
                 return { ...m, truncated: true };
 
+              case "diagnostics":
+                return ev.unverified_figures.length
+                  ? { ...m, unverifiedFigures: ev.unverified_figures }
+                  : m;
+
               case "suggestions":
                 return { ...m, followUps: ev.suggestions };
 
