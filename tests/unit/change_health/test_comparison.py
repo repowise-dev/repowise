@@ -598,3 +598,39 @@ def test_the_analyzer_fingerprint_is_reported_on_both_sides(make_repo):
     assert delta.fingerprint.analyzer_version > 0
     assert delta.fingerprint.performance_model_version > 0
     assert delta.comparison_basis == "both_sides_analyzed"
+
+
+def test_a_query_file_change_is_data_not_a_gap(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"queries/java.scm": "(identifier) @name\n"})
+    repo.commit("edit", {"queries/java.scm": "(type_identifier) @name\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "unavailable"
+    assert delta.skipped == {"queries/java.scm": "not_analyzable_data"}
+    assert delta.code_skipped == {}
+    assert "query" in delta.explanation
+    assert not delta.is_clean
+
+
+def test_a_query_file_beside_code_does_not_make_the_run_partial(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "queries/java.scm": "(identifier) @a\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", "queries/java.scm": "(identifier) @b\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "available"
+    assert delta.code_skipped == {}
+
+
+def test_a_scheme_file_outside_queries_is_still_a_gap(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"src/main.scm": "(define (f x) x)\n"})
+    repo.commit("edit", {"src/main.scm": "(define (f x) (+ x 1))\n"})
+
+    delta = compare(repo)
+
+    assert delta.skipped == {"src/main.scm": "unsupported_language"}
+    assert delta.code_skipped == {"src/main.scm": "unsupported_language"}

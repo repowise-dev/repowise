@@ -444,6 +444,47 @@ async def _unresolved_reason(
     }
 
 
+def _history_tier_card(target: str, meta: Any, security_signals: list[dict]) -> dict:
+    """The card for a file indexed at the history tier (``meta.history_only``).
+
+    A non-code file keeps commit counts, windows and authorship, but no churn
+    percentile, hotspot flag, co-change partners or fix rollup, so the scored
+    card would print zeros nothing measured. This one carries only what was.
+    """
+    commits = meta.commit_count_total or 0
+    last = meta.last_commit_at.isoformat() if meta.last_commit_at else None
+    owner = meta.primary_owner_name or "unknown"
+    pct = meta.primary_owner_commit_pct or 0.0
+    return {
+        "target": target,
+        "signal_tier": "history",
+        "signal_tier_reason": (
+            "not a parsed code file: only commit history is indexed, so hotspot, "
+            "co-change and risk classification do not apply"
+        ),
+        "commit_count_total": commits,
+        "commit_count_90d": meta.commit_count_90d or 0,
+        "last_commit_at": last,
+        "trend": _compute_trend(meta),
+        "primary_owner": owner,
+        "owner_pct": pct,
+        "contributor_count": meta.contributor_count or 0,
+        "security_signals": security_signals,
+        # Workspace enrichment adds its rows here; co-change covers code files only.
+        "relationship_analysis": {
+            "co_change": {
+                "status": "unavailable",
+                "scope": "git_history",
+                "reason": "history-tier file",
+            }
+        },
+        "risk_summary": (
+            f"{target}: history only, {commits} commits, last {last[:10] if last else 'unknown'}, "
+            f"{_owner_clause(owner, pct, None)}"
+        ),
+    }
+
+
 async def _assess_one_target(
     session: AsyncSession,
     repository: Repository,
@@ -597,6 +638,10 @@ async def _assess_one_target(
                 f"{target} — not resolved to an indexed file; no risk signal was computed"
             ),
         }
+
+    if getattr(meta, "history_only", False) is True:
+        security = await _get_security_signals(session, repo_id, lookup_path)
+        return _history_tier_card(target, meta, security)
 
     if meta is None:
         result_data["hotspot_score"] = 0.0

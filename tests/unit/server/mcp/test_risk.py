@@ -1159,3 +1159,48 @@ async def test_get_risk_pr_mode_puts_docs_and_config_cards_last(setup_mcp):
     files = ["CHANGES.rst", "setup.cfg", "src/auth/service.py"]
     result = await get_risk(files, changed_files=files)
     assert next(iter(result["targets"])) == "src/auth/service.py"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["queries/java.scm", "docs/guide.md"])
+async def test_get_risk_history_tier_file_omits_unmeasured_signals(setup_mcp, session, path):
+    """A history-only row carries commits and owner, never zeros posing as measurements."""
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_risk
+
+    session.add(
+        GitMetadata(
+            id=f"gm-history-{path}",
+            repository_id=setup_mcp,
+            file_path=path,
+            history_only=True,
+            commit_count_total=11,
+            commit_count_90d=4,
+            commit_count_30d=1,
+            last_commit_at=datetime(2026, 3, 1, tzinfo=UTC),
+            primary_owner_name="Carol",
+            primary_owner_commit_pct=0.5,
+            top_authors_json=json.dumps([{"name": "Carol", "count": 6}]),
+        )
+    )
+    await session.flush()
+
+    for result in (
+        await get_risk([path], include=["graph", "churn"]),
+        await get_risk([path], changed_files=[path]),
+    ):
+        card = result["targets"][path]
+        assert card["signal_tier"] == "history"
+        assert card["commit_count_total"] == 11
+        assert card["last_commit_at"].startswith("2026-03-01")
+        assert card["primary_owner"] == "Carol"
+        for key in ("hotspot_score", "is_hotspot", "co_change_partners", "risk_type"):
+            assert key not in card
+        assert "co_change_partners_emitted" not in card
+        assert "hotspot" not in card["risk_summary"]
+        # Detailed owner metrics stay behind include=["owners"], as on a scored card.
+        assert "owner_pct" not in card and "contributor_count" not in card
+    owners = (await get_risk([path], include=["owners"]))["targets"][path]
+    assert owners["owner_pct"] == 0.5

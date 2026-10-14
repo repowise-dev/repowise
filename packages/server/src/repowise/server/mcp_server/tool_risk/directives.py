@@ -629,8 +629,8 @@ def _build_pr_directive(
     # response carries an expandable [repowise#<ref>] marker for it.
     for r in response["targets"].values():
         # The counts below would be the structural zeros get_risk stopped
-        # emitting for a card that resolved nothing.
-        if r.get("resolved") is False:
+        # emitting for a card that resolved nothing or holds history only.
+        if r.get("resolved") is False or r.get("signal_tier") == "history":
             continue
         partners = r.get("co_change_partners") or []
         if len(partners) > 3:

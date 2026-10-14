@@ -234,13 +234,22 @@ def _render_card(name: str, card: dict) -> None:
         console.print(f"  [dim]unresolved: {reason}[/dim]")
         return
     trend = card.get("trend") or "unknown"
-    console.print(
-        f"  [dim]hotspot {float(card.get('hotspot_score') or 0.0):.0%} ({trend}) · "
-        f"{card.get('dependents_count', 0)} direct dependents · "
-        f"{card.get('risk_type', 'unknown')} · owned "
-        f"{_ta.owner_share(card.get('owner_pct'))} by "
-        f"{escape(str(card.get('primary_owner') or 'unknown'))}[/dim]"
-    )
+    if card.get("signal_tier") == "history":
+        # Nothing measured a hotspot, dependents or classification for this file.
+        last = str(card.get("last_commit_at") or "unknown")[:10]
+        console.print(
+            f"  [dim]history only · {card.get('commit_count_total', 0)} commits ({trend}) · "
+            f"last {escape(last)} · owned {_ta.owner_share(card.get('owner_pct'))} by "
+            f"{escape(str(card.get('primary_owner') or 'unknown'))}[/dim]"
+        )
+    else:
+        console.print(
+            f"  [dim]hotspot {float(card.get('hotspot_score') or 0.0):.0%} ({trend}) · "
+            f"{card.get('dependents_count', 0)} direct dependents · "
+            f"{card.get('risk_type', 'unknown')} · owned "
+            f"{_ta.owner_share(card.get('owner_pct'))} by "
+            f"{escape(str(card.get('primary_owner') or 'unknown'))}[/dim]"
+        )
     # Kept in the projection, so each owes a line here: a key kept in the
     # payload that no renderer prints is the second silent failure mode of a
     # trim, and the one a projection test cannot see.
