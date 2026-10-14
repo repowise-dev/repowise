@@ -40,7 +40,13 @@ function makeGit(overrides: Partial<FileDetailGit> = {}): FileDetailGit {
     significant_commits: [],
     top_authors: [],
     co_change_partners: [],
-    agent: { agent_commit_count: 0, agent_authored_pct: null, tier_counts: {} },
+    agent: {
+      agent_commit_count: 0,
+      agent_authored_pct: null,
+      tier_counts: {},
+      attribution_coverage: null,
+      agent_share_suppressed: null,
+    },
     first_commit_at: null,
     ...overrides,
   };

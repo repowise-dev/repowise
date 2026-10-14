@@ -262,11 +262,17 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
           </span>
           <span className="font-mono">{data.contributor_count}</span>
         </div>
-        {data.agent_authored_pct != null && (data.agent_commit_count ?? 0) > 0 && (
+        {(data.agent_commit_count ?? 0) > 0 && (
+          // Share of commits with a known source, beside that coverage;
+          // withheld below the coverage floor. Unknown is never human.
           <div className="flex items-center justify-between gap-2">
             <span className="text-[var(--color-text-tertiary)]">Agent-authored</span>
             <span className="font-mono">
-              {Math.round(data.agent_authored_pct * 100)}% · {data.agent_commit_count}
+              {data.agent_authored_pct != null
+                ? `≥${Math.round(data.agent_authored_pct * 100)}% of covered · `
+                : ""}
+              {data.agent_commit_count} · coverage{" "}
+              {Math.round((data.attribution_coverage ?? 0) * 100)}%
             </span>
           </div>
         )}

@@ -120,7 +120,7 @@ export async function getCommitsPage(
   repoId: string,
   options: {
     sort?: "risk" | "date";
-    authorship?: "all" | "agent" | "human";
+    authorship?: "all" | "agent" | "human" | "unknown";
     /** Narrows the whole repository, not the page: the high review-priority
      *  band, or bug-fix commits. */
     kind?: "all" | "high" | "fixes";

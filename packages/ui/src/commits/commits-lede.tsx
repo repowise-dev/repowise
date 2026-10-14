@@ -37,7 +37,6 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
   const total = stats.total_commits;
   const highPct = pct(stats.high_priority_count, total);
   const fixPct = pct(stats.fix_commit_count, total);
-  const agentPct = pct(stats.agent_commit_count, total);
 
   const reads: ReadItem[] = [
     {
@@ -49,13 +48,19 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
       href: `${base}/code-health?tab=triage`,
     },
   ];
-  if (stats.agent_commit_count > 0) {
+  if (stats.agent_commit_count != null && stats.agent_commit_count > 0) {
+    // The share is of commits with a known source, never of all commits:
+    // a commit without a marker is unknown, not human.
+    const coverage = Math.round(stats.attribution_coverage_pct ?? 0);
     reads.push({
       key: "agent",
       label: "Written by an agent",
       value: stats.agent_commit_count.toLocaleString(),
-      unit: `${agentPct}%`,
-      why: "Read from commit trailers, so it counts what was declared.",
+      unit:
+        stats.agent_pct_of_covered != null
+          ? `at least ${Math.round(stats.agent_pct_of_covered)}% of covered, coverage ${coverage}%`
+          : `coverage ${coverage}%`,
+      why: "Read from public markers such as bot authors, trailers and notes. Commits without one are unknown, so the share is of covered commits only.",
       href: `${base}/commits`,
     });
   }

@@ -29,12 +29,15 @@ export function CommitQueue({
   initial,
   total,
   counts,
+  attributionEnabled = true,
 }: {
   repoId: string;
   initial: Paginated<CommitResponse>;
   total: number;
   /** Repo-wide chip counts, from the stats endpoint the page already fetches. */
   counts?: { all: number; high: number; fixes: number } | undefined;
+  /** False when AI attribution is off for the repo: no authorship filter. */
+  attributionEnabled?: boolean;
 }) {
   const [sort, setSort] = useState<CommitSort>("date");
   const [authorship, setAuthorship] = useState<CommitAuthorship>("all");
@@ -90,10 +93,14 @@ export function CommitQueue({
         reset();
       }}
       authorship={authorship}
-      onAuthorshipChange={(a) => {
-        setAuthorship(a);
-        reset();
-      }}
+      onAuthorshipChange={
+        attributionEnabled
+          ? (a) => {
+              setAuthorship(a);
+              reset();
+            }
+          : undefined
+      }
       kind={kind}
       onKindChange={(k) => {
         setKind(k);

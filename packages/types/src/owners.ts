@@ -79,8 +79,10 @@ export interface OwnerProfile {
 export interface OwnerAgentCollab {
   files_with_agent_commits: number;
   agent_commit_count: number;
-  /** Commit-weighted agent share across owned files, 0–100; null when no
-   * owned file has a provenance-aware rollup yet. */
+  /** Agent share of the owned files' commits with a known source, 0–100;
+   * null below the coverage floor. */
   agent_share_pct: number | null;
+  /** Commits with a known source / all commits on owned files, 0–100. */
+  coverage_pct?: number | null;
   tier_counts: Record<string, number>;
 }

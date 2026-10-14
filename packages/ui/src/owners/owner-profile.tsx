@@ -147,8 +147,8 @@ export function OwnerProfileView({
       unit: "commits",
       why:
         (a.agent_share_pct != null
-          ? `${a.agent_share_pct.toFixed(2)}% of the commits on their owned files carry a coding-agent trailer. `
-          : "Read from commit trailers, so it counts what was declared. ") +
+          ? `At least ${Math.round(a.agent_share_pct)}% of the covered commits on their owned files came from a coding agent (coverage ${Math.round(a.coverage_pct ?? 0)}%). `
+          : `Read from public markers such as trailers; coverage ${Math.round(a.coverage_pct ?? 0)}% is too low for a share. `) +
         `${a.files_with_agent_commits.toLocaleString()} owned ${a.files_with_agent_commits === 1 ? "file has" : "files have"} one.`,
       href: `${base}/commits`,
     });

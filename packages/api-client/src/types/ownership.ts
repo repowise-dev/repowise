@@ -70,7 +70,9 @@ export interface OwnerProfileResponse {
 export interface OwnerAgentCollab {
   files_with_agent_commits: number;
   agent_commit_count: number;
+  /** Agent share of commits with a known source, 0-100; null below the floor. */
   agent_share_pct: number | null;
+  coverage_pct?: number | null;
   tier_counts: Record<string, number>;
 }
 
