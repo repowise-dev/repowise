@@ -639,7 +639,7 @@ attribution:
 
 The same block in `~/.repowise/config.yaml` applies to every repository, and the stricter value wins per key: `enabled: false` in either file, the lower capture level, and the agents both files list. With `enabled: false` nothing about AI is stored or shown in the API, CLI, MCP, web or wiki, and `DO_NOT_TRACK=1` keeps capture off. `repowise attribution status` shows the effective, repo and user values with the coverage of the indexed history.
 
-`capture: local` records the listed agents' edits as line hashes in `.repowise/attribution/`; `capture: notes` also writes git-ai notes on `refs/notes/ai`. What each level stores, and what leaves the machine, is in [ATTRIBUTION.md](../layers/ATTRIBUTION.md).
+`capture: local` records the listed agents' edits as line hashes in `.repowise/attribution/`; `capture: notes` also writes git-ai notes on `refs/notes/ai`. What each level stores, and what leaves the machine, is in [ATTRIBUTION.md](../layers/ATTRIBUTION.md). The same consent lets `repowise attribution backfill --agent claude-code,codex` bind past commits from the transcripts these agents keep on this machine.
 
 ### The `refactoring:` block
 
