@@ -85,6 +85,8 @@ STORE_FORMAT_VERSION: int = 2
 #: a type body holding ``#if`` keeps its members.
 #: A Python call chained on a method call (``a.get().close()``) carries that
 #: inner call.
+#: A Dart call chained on a call (``a.b().c()``) carries that inner call too,
+#: and a Dart function's signature carries its declared return type.
 PARSER_SCHEMA_VERSION: int = 8
 
 #: state.json key holding the store format version that wrote the store.

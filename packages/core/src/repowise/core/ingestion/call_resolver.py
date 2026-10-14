@@ -160,8 +160,12 @@ _EXTENSION_KINDS = frozenset({"impl"})
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
 PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset(
-    {"cpp", "csharp", "go", "java", "python"}
+    {"cpp", "csharp", "dart", "go", "java", "python"}
 )
+
+# Chain languages that type the inner call by the identity of the type it
+# returns (``_returned_type_id``); the rest read its type name.
+_RETURNED_TYPE_ID_LANGUAGES = frozenset({"dart", "go", "python"})
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
@@ -1270,10 +1274,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             if tabled is not None
             else self._chain_inner_callee(file_path, call, inner, caller_id, language)
         )
-        if language in ("go", "python") and inner_callee is not None:
+        if language in _RETURNED_TYPE_ID_LANGUAGES and inner_callee is not None:
             # A go method may sit in any file of its type's package, so the
             # type is read by identity and the method asked for across it.
-            # Python reads its annotation in the callee's file the same way.
+            # Python and Dart read the return type in the callee's file the same way.
             type_id = self._returned_type_id(inner_callee)
             hit = (
                 None
@@ -1283,9 +1287,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             if hit is not None:
                 tier = hit.origin.removeprefix("receiver_typed_")
                 return True, self._return_typed_call(caller_id, hit.callee_id, tier, call.line)
-        if language == "python":
+        if language in ("python", "dart"):
             # A type name read in the caller's file is not evidence, and an
-            # inherited method is not a refusal: the bare name keeps the site.
+            # inherited method is not a refusal: the bare name keeps the site
+            # where the language allows one.
             return False, None
         type_name = (
             tabled
@@ -1888,6 +1893,12 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         receiver_name = call.receiver_name
         method_name = call.target_name
         assert receiver_name is not None
+
+        hit = self._first_strategy_hit(
+            self._strategies_for(file_path).constructor, file_path, call, caller_id
+        )
+        if hit is not None:
+            return True, hit
 
         # Every strategy below ends in a lookup keyed on the method name, so a
         # name the repo declares nowhere cannot resolve.

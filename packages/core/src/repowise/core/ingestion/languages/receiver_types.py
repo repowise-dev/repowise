@@ -722,6 +722,20 @@ def scan_call_shadows(text: str, language: str) -> tuple[tuple[int, str], ...]:
     return tuple(sorted(lines))
 
 
+def dart_named_constructors(body: str, class_name: str) -> frozenset[str]:
+    """The names *class_name*'s Dart *body* declares constructors under: ``Foo.named(``.
+
+    Read where a declaration starts a line, with comments blanked. Ceiling: a
+    body-internal ``Foo.x(..)`` call at a line's start reads as one, which a
+    valid program only writes for a constructor or a static of the class.
+    """
+    declared = re.compile(
+        rf"^[ \t]*(?:(?:const|factory|external)\s+)*{re.escape(class_name)}\s*\.\s*(\w+)\s*\(",
+        re.MULTILINE,
+    )
+    return frozenset(declared.findall(_without_comments(body, "dart")))
+
+
 # What a scope binds beyond its positional bindings. A TypeScript/JavaScript
 # ``function`` declaration is hoisted, so it binds from the top of its scope
 # whatever its line. A Python ``global`` name is the module's in that scope,

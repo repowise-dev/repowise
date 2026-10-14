@@ -44,6 +44,15 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
     ):
         # TS/JS use return_type; Go uses result
         return f"function {name}{params_text}{_ret(('return_type', 'result'))}"
+    if node_type == "function_signature":
+        # Dart: the return type is the unfielded nodes ahead of the name.
+        name_node = def_node.child_by_field_name("name")
+        returns = ""
+        for child in def_node.children if name_node is not None else ():
+            if child == name_node:
+                break
+            returns += node_text(child, src)
+        return f"{name}{params_text} -> {returns}" if returns else f"{name}{params_text}"
     if node_type in ("class_definition", "class_declaration", "abstract_class_declaration"):
         base = f"class {name}"
         if params_text:

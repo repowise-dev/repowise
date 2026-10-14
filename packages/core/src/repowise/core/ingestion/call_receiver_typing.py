@@ -1335,16 +1335,17 @@ class ReceiverTypingMixin:
         return self._returned_type_id(resolved.callee_id, awaited)
 
     def _returned_type_id(self, callee_id: str, awaited: bool = False) -> str | None:
-        """The repository type a go call to *callee_id* yields, as a symbol id.
+        """The repository type a call to *callee_id* yields, as a symbol id.
 
-        ``T`` is looked up in the callee's own package and ``pkg.T`` in the
+        A go ``T`` is looked up in the callee's own package and ``pkg.T`` in the
         package the callee's file imports as ``pkg``; exactly one type there
         must carry the name. A slice, map or external type yields None.
 
         A Python return annotation must be one bare class name, quoted or not,
         read in the callee's file as a chain hop reads a field's type. A
         property is read, not called, and an ``async def`` returns a coroutine
-        unless the call is *awaited*.
+        unless the call is *awaited*. Any other language's declared return
+        type is read by ``_written_returned_class``.
         """
         symbol = self._symbols_by_id.get(callee_id)
         path = self._symbol_paths_by_id.get(callee_id)
@@ -1352,8 +1353,17 @@ class ReceiverTypingMixin:
             return None
         if symbol.kind in _TYPE_KINDS:
             return callee_id  # a conversion, ``T(x)``
-        if symbol.language != "python":
+        if symbol.language == "go":
             return self._go_returned_type_id(symbol, path)
+        if symbol.language == "python":
+            return self._python_call_returns(symbol, path, awaited)
+        return self._written_returned_class(symbol, path)
+
+    def _python_call_returns(self, symbol: Symbol, path: str, awaited: bool) -> str | None:
+        """``_returned_type_id`` for a Python function.
+
+        A property or an unawaited coroutine types nothing.
+        """
         if is_property_accessor(symbol.decorators) or (symbol.is_async and not awaited):
             return None
         return self._python_returned_class(symbol, path)
@@ -1379,6 +1389,39 @@ class ReceiverTypingMixin:
             and posixpath.dirname(self._symbol_paths_by_id.get(type_id, "")) == package
         ]
         return found[0] if len(found) == 1 else None
+
+    def _written_returned_class(self, symbol: Symbol, path: str) -> str | None:
+        """The class *symbol*'s declared return type names, as its file *path* sees it.
+
+        One unqualified class name, nullable or not. Ceiling: a generic
+        (``Result<T>``) or prefixed (``p.Foo``) return type types nothing.
+        """
+        raw = declared_return_type(symbol.signature or "")
+        written = raw.rstrip("?") if raw else ""
+        if not written.isidentifier():
+            return None
+        found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
+        return None if found is None else found.callee_id
+
+    def _class_seen_from(
+        self, file_path: str, scope_id: str, name: str, line: int
+    ) -> ResolvedCall | None:
+        """The edge a bare ``name(..)`` in *scope_id* draws, when it lands on a class.
+
+        The tiers a constructor call takes say which class a name means in a
+        file. A repository-wide guess is no evidence of that and is not taken.
+        """
+        probe = CallSite(
+            target_name=name,
+            receiver_name=None,
+            caller_symbol_id=scope_id,
+            line=line,
+            argument_count=None,
+        )
+        hit = self._resolve_free_call(file_path, probe, scope_id)
+        if hit is None or "global" in hit.origin:
+            return None
+        return hit if self._symbols_by_id[hit.callee_id].kind in _TYPE_KINDS else None
 
     def _python_returned_class(self, symbol: Symbol, path: str) -> str | None:
         """The class id *symbol*'s return annotation names, read in *path*.
@@ -1420,11 +1463,11 @@ class ReceiverTypingMixin:
         """``x.m()`` where ``x`` holds the type *type_id*, bound by identity.
 
         A go method may sit in any file of its type's package, so the method
-        is looked for across that package, not only the type's own file. A
-        Python method is the one its class declares.
+        is looked for across that package, not only the type's own file. Any
+        other language's method is the one its class declares.
         """
-        if self._symbols_by_id[type_id].language == "python":
-            return self._python_typed_call(file_path, call, caller_id, type_id)
+        if self._symbols_by_id[type_id].language != "go":
+            return self._class_typed_call(file_path, call, caller_id, type_id)
         hit = self._package_method(type_id, call.target_name)
         if hit is None or hit[1] == caller_id:
             return None
@@ -1438,10 +1481,10 @@ class ReceiverTypingMixin:
             tier = "import"
         return self._body_typed_call(caller_id, sym_id, tier, call.line)
 
-    def _python_typed_call(
+    def _class_typed_call(
         self, file_path: str, call: CallSite, caller_id: str, type_id: str
     ) -> ResolvedCall | None:
-        """``_call_typed_receiver`` for a Python class: no package tier."""
+        """``_call_typed_receiver`` for a class: no package tier."""
         hit = self._located(file_path, self._declares(type_id, call.target_name))
         if hit is None or hit[1] == caller_id:
             return None

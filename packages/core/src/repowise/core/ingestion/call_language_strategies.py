@@ -10,8 +10,14 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any
 
-from .call_receiver_typing import _FUNCTION_KINDS, _TYPE_KINDS
+from .call_receiver_typing import (
+    _BODY_TYPE_CACHE_ENTRIES,
+    _FUNCTION_KINDS,
+    _TYPE_KINDS,
+    _store_capped,
+)
 from .lang_helpers.kotlin_lambdas import in_lambda
+from .languages.receiver_types import dart_named_constructors
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
 from .symbol_identity import outer_scope
@@ -25,7 +31,9 @@ class _LanguageCallStrategies:
     ``free`` runs after the same-file tier and before the import tiers;
     ``member`` runs before every receiver strategy; ``member_fallback`` runs
     after all of them, so a strategy there only ever sees a call nothing else
-    claimed and can only add an edge. All three stop at the first hit.
+    claimed and can only add an edge. ``constructor`` runs ahead of ``member``,
+    even for a name no symbol carries, since a named constructor is no symbol.
+    All four stop at the first hit.
     Strategies are named rather than bound so a probe can substitute one.
 
     ``member_bare_fallback`` lets a member or chained call nothing claimed fall
@@ -35,6 +43,7 @@ class _LanguageCallStrategies:
     """
 
     free: tuple[str, ...] = ()
+    constructor: tuple[str, ...] = ()
     member: tuple[str, ...] = ()
     member_fallback: tuple[str, ...] = ()
     member_bare_fallback: bool = True
@@ -97,11 +106,18 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     "kotlin": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
     "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    # Swift and Dart register the fallback and nothing else: neither has a
-    # package tier of its own, so a typed receiver is looked for in the
-    # caller's file, in what the file imports, and then in the global pair index.
+    # Swift and Dart register the fallback: neither has a package tier of its
+    # own, so a typed receiver is looked for in the caller's file, in what the
+    # file imports, and then in the global pair index. A Dart chained call is
+    # resolved by its inner call's return type or not at all: on pub its bare
+    # name bound `File(p).statSync()` and `.then()` to repo functions. The
+    # flag reaches chains only, since no Dart member call has a bare twin.
     "swift": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    "dart": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    "dart": _LanguageCallStrategies(
+        constructor=("_resolve_dart_named_constructor",),
+        member_fallback=_TYPED_RECEIVER,
+        member_bare_fallback=False,
+    ),
     # TypeScript's typed fallback also walks a dotted receiver's fields.
     "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     # Rust types a local or parameter only; a `self.field` receiver is not
@@ -128,6 +144,8 @@ class LanguageStrategiesMixin:
 
         # {Kotlin function id: the type it extends, or None}
         self._kotlin_receivers: dict[str, str | None] = {}
+        # {Dart class id: the named constructors its body declares}
+        self._dart_constructors: dict[str, frozenset[str]] = {}
 
         # JVM same-package resolution (lazy JvmWorkspaceIndex)
         self._jvm_index: Any = None
@@ -517,6 +535,38 @@ class LanguageStrategiesMixin:
             if sym_id is not None and sym_id != caller_id:
                 return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
         return None
+
+    def _resolve_dart_named_constructor(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``Foo.named(..)``: the class, when its body declares that constructor.
+
+        A Dart named or factory constructor is no symbol, so the call binds to
+        its class, as ``Foo(..)`` does. A static member of the name is a symbol
+        and is left to the member tiers. Ceiling: a prefixed ``p.Foo.named(..)``
+        is not captured with ``Foo`` as its receiver, so it binds nothing.
+        """
+        class_name = call.receiver_name or ""
+        if class_name not in self._known_type_names:
+            return None
+        hit = self._class_seen_from(file_path, caller_id, class_name, call.line)
+        if hit is None or self._declares(hit.callee_id, call.target_name) is not None:
+            return None
+        return hit if call.target_name in self._dart_constructors_of(hit.callee_id) else None
+
+    def _dart_constructors_of(self, class_id: str) -> frozenset[str]:
+        """The named constructors the Dart class *class_id* declares, scanned once."""
+        found = self._dart_constructors.get(class_id)
+        if found is None:
+            class_file = self._symbol_paths_by_id.get(class_id, "")
+            start, end = self._spans_for(class_file).get(class_id, (1, 0))
+            body = "\n".join(self._text_of(class_file).splitlines()[start - 1 : end])
+            found = dart_named_constructors(body, self._symbols_by_id[class_id].name)
+            _store_capped(self._dart_constructors, class_id, found, _BODY_TYPE_CACHE_ENTRIES)
+        return found
 
     def _lacks_extension_receiver(self, file_path: str, call: CallSite, callee_id: str) -> bool:
         """Is *callee_id* a Kotlin extension this bare call has no receiver for?

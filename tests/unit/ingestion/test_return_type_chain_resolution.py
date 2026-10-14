@@ -215,7 +215,10 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
-    assert frozenset({"cpp", "csharp", "go", "java", "python"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+    assert (
+        frozenset({"cpp", "csharp", "dart", "go", "java", "python"})
+        == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+    )
 
 
 def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
@@ -727,3 +730,128 @@ def test_csharp_chain_link_whose_declarations_disagree_has_no_type(tmp_path: Pat
     )
 
     assert ("WithMessage", 1) in edges
+
+
+_DART_REPO = (
+    "class Item {\n  void save() {}\n}\n"
+    "class Repo {\n"
+    "  Repo();\n"
+    "  // Repo.ghost(1) is only a comment.\n"
+    "  Repo.fromJson(Object json);\n"
+    "  factory Repo.load(String path) => Repo();\n"
+    "  factory Repo.copy() {\n    return Repo.other();\n  }\n"
+    "  static Repo parse(String text) => Repo();\n"
+    "  Item item(int i) => Item();\n"
+    "  Item? maybe() => null;\n"
+    "  Future<Item> later() async => Item();\n"
+    "  void close() {}\n"
+    "}\n"
+)
+
+# The methods a wrongly typed chain could land on.
+_DART_OUTER = frozenset({"repo.dart::Item::save", "repo.dart::Repo::close"})
+
+
+def _dart_edges(tmp_path: Path, body: str) -> set[tuple[int, str, str]]:
+    """``(line, callee, origin)`` for the calls of ``App.run`` holding *body*."""
+    app = (
+        "import 'repo.dart';\n"
+        "class App {\n  final Repo repo;\n  App(this.repo);\n"
+        f"  void run(Repo r) {{\n{body}\n  }}\n"
+        "  Repo helper() => Repo();\n}\n"
+    )
+    parsed = _parse(tmp_path, "repo.dart", "dart", _DART_REPO)
+    parsed |= _parse(tmp_path, "app.dart", "dart", app)
+    for imp in parsed["app.dart"].imports:
+        imp.resolved_file = "repo.dart"
+    resolver = CallResolver(parsed, {"app.dart": {"repo.dart"}, "repo.dart": set()})
+    return {
+        (rc.line - 5, rc.callee_id, rc.origin)
+        for rc in resolver.resolve_file("app.dart", parsed["app.dart"].calls)
+        if rc.caller_id == "app.dart::App::run"
+    }
+
+
+def test_dart_signature_carries_the_declared_return_type(tmp_path: Path) -> None:
+    parsed = _parse(tmp_path, "repo.dart", "dart", _DART_REPO)
+    signatures = {s.name: s.signature for s in parsed["repo.dart"].symbols}
+
+    assert signatures["item"] == "item(int i) -> Item"
+    assert signatures["maybe"] == "maybe() -> Item?"
+    assert signatures["close"] == "close() -> void"
+
+
+def test_dart_named_and_factory_constructors_bind_their_class(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "Repo.fromJson(1);\nRepo.load('x');\nRepo.parse('y');")
+
+    assert edges == {
+        (1, "repo.dart::Repo", "import_merged"),
+        (2, "repo.dart::Repo", "import_merged"),
+        (3, "repo.dart::Repo::parse", "receiver_import"),
+    }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Repo.nope();",  # declared nowhere
+        "Repo.ghost(1);",  # named only in a comment
+        "Repo.other();",  # called in the class body, never declared
+    ],
+)
+def test_dart_constructor_the_class_does_not_declare_binds_nothing(
+    tmp_path: Path, body: str
+) -> None:
+    assert _dart_edges(tmp_path, body) == set()
+
+
+def test_dart_untyped_member_call_binds_no_bare_name(tmp_path: Path) -> None:
+    """A Dart member call has no bare-name reading: an untyped receiver draws no edge."""
+    assert _dart_edges(tmp_path, "var a = unknown();\na.save();") == set()
+
+
+@pytest.mark.parametrize(
+    ("body", "callee"),
+    [
+        ("r.item(1).save();", "repo.dart::Item::save"),  # a parameter
+        ("repo.item(1).save();", "repo.dart::Item::save"),  # a field
+        ("r.maybe()?.save();", "repo.dart::Item::save"),  # a nullable return
+        ("this.helper().close();", "repo.dart::Repo::close"),  # on this
+        ("Repo().close();", "repo.dart::Repo::close"),  # on a constructor
+        ("Repo.fromJson(2).close();", "repo.dart::Repo::close"),  # on a named one
+    ],
+)
+def test_dart_chain_binds_the_method_of_the_inner_return_type(
+    tmp_path: Path, body: str, callee: str
+) -> None:
+    assert (1, callee, "return_type_import") in _dart_edges(tmp_path, body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "r.later().save();",  # a Future is not the class it wraps
+        "r.item(1).close();",  # the returned class lacks the method
+        "unknown().save();",  # nothing types the inner call
+        "r..item(1)..close();",  # a cascade is not a chain
+        "r?.item(1).save();",  # a null-aware first link is not captured
+    ],
+)
+def test_dart_chain_without_a_typed_method_binds_no_bare_name(tmp_path: Path, body: str) -> None:
+    assert {e for e in _dart_edges(tmp_path, body) if e[1] in _DART_OUTER} == set()
+
+
+def test_dart_third_link_of_a_chain_is_dropped_not_misbound(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "r.item(1).save().close();")
+
+    assert {e[1] for e in edges if e[1] in _DART_OUTER} == {"repo.dart::Item::save"}
+
+
+def test_dart_constructor_initializers_are_not_calls(tmp_path: Path) -> None:
+    source = (
+        "class A {\n  A.named(int x);\n}\n"
+        "class B extends A {\n  B.x() : super.named(1);\n  B.y() : this.x();\n}\n"
+    )
+    parsed = _parse(tmp_path, "b.dart", "dart", source)
+
+    assert parsed["b.dart"].calls == []

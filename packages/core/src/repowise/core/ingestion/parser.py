@@ -194,6 +194,8 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
     which call is carried into resolution.
     """
 
+    if node.type == "identifier":
+        return _dart_call_receiver(node, src)
     arguments = node.child_by_field_name("arguments")
     argument_count = _count_arguments(arguments) if arguments is not None else None
 
@@ -247,6 +249,30 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
     if receiver is not None and receiver.type in ("identifier", "this"):
         receiver_name = _node_text(receiver, src).strip() or None
     return CallReceiver(target_name, receiver_name, argument_count)
+
+
+def _dart_call_receiver(name: Node, src: str) -> CallReceiver | None:
+    """The Dart call whose *name* the query captured: ``a.b(..)``, ``B(..)``.
+
+    A Dart call is a flat selector run with no call node, so the name's
+    siblings are read: the selector after it holds the arguments, and the
+    node before a ``.b`` selector is its receiver.
+    """
+    if name.parent.type == "unconditional_assignable_selector":
+        head = name.parent.parent
+        receiver: str | None = _node_text(head.prev_named_sibling, src).strip()
+    else:
+        head, receiver = name, None
+    return CallReceiver(
+        _node_text(name, src).strip(), receiver, _dart_argument_count(head.next_named_sibling)
+    )
+
+
+def _dart_argument_count(selector: Node | None) -> int | None:
+    """The arguments a Dart ``(selector (argument_part (arguments)))`` passes."""
+    parts = selector.named_children if selector is not None else ()
+    found = [arg for part in parts for arg in part.named_children if arg.type == "arguments"]
+    return _count_arguments(found[0]) if found else None
 
 
 @cache
