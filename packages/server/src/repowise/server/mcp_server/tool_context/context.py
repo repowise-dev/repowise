@@ -160,7 +160,7 @@ async def get_context(
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")
-    routes = route_targets(targets) if repo is None else None
+    routes = await route_targets(targets) if repo is None else None
     if needs_routing(routes):
         return await run_grouped(
             routes,

@@ -192,7 +192,7 @@ async def get_health(
     )
     if conflict is not None:
         return _note_inapplicable_controls(conflict, scope, counts)
-    routes = route_targets(targets, paths_only=True) if repo is None and targets else None
+    routes = await route_targets(targets, paths_only=True) if repo is None and targets else None
     routed_repo = None
     if needs_routing(routes):
         routed_repo = single_repo(routes)

@@ -1,12 +1,13 @@
-"""Workspace fan-out for ``repo="all"``: one per-repo call run across every repo.
+"""Workspace fan-out: one per-repo call run across every repo, or a chosen few.
 
-Every tool that answers across the workspace goes through :class:`Federation`,
-so concurrency, timeouts, partial results and freshness mean the same thing in
-each of them. A repo that cannot be opened, raises or runs past its timeout is
-named in ``repos_failed`` and the rest still answer; a repo whose index is
-behind its checkout is named in ``repos_stale`` and its rows carry
-``stale: true``. Both keys are added only when non-empty, so a healthy
-workspace gets the response shape it always had.
+Every tool that answers across repos (``repo="all"``, and targets routed to
+several repos) goes through :class:`Federation`, so concurrency, timeouts,
+partial results and freshness mean the same thing in each of them. A repo
+that cannot be opened, raises or runs past its timeout is named in
+``repos_failed`` and the rest still answer; a repo whose index is behind its
+checkout is named in ``repos_stale`` and its rows carry ``stale: true``. Both
+keys are added only when non-empty, so a healthy workspace gets the response
+shape it always had.
 
 The merge rules live here too, one per kind of result: ranked lists
 (:func:`merge_ranked`), findings (:func:`merge_findings`) and aggregates
@@ -103,9 +104,23 @@ class Federation:
     read-only connections for fan-out are the upgrade path.
     """
 
-    def __init__(self, *, concurrency: int | None = None, timeout_s: float | None = None):
+    def __init__(
+        self,
+        *,
+        aliases: Sequence[str] | None = None,
+        concurrency: int | None = None,
+        timeout_s: float | None = None,
+        check_freshness: bool = True,
+    ):
+        """*aliases* limits the call to those repos (default: all of them);
+        ``check_freshness=False`` skips ``repos_stale`` for answers that carry
+        their own freshness."""
         registry = _state._registry
-        self._aliases: list[str | None] = registry.get_all_aliases() if registry else [None]
+        if aliases is not None:
+            self._aliases: list[str | None] = list(aliases)
+        else:
+            self._aliases = registry.get_all_aliases() if registry else [None]
+        self._check = check_freshness
         self._semaphore = asyncio.Semaphore(concurrency or fanout_concurrency())
         self._timeout_s = timeout_s or fanout_timeout_s()
         self._failed: dict[str | None, str] = {}
@@ -137,7 +152,7 @@ class Federation:
 
     async def _call(self, alias: str | None, fn: Callable[[Any], Awaitable[T]]) -> tuple[Any, T]:
         ctx = await _open(alias)
-        if ctx.alias not in self._checked:
+        if self._check and ctx.alias not in self._checked:
             self._checked.add(ctx.alias)
             await self._check_freshness(ctx)
         return ctx, await fn(ctx)

@@ -478,7 +478,7 @@ async def get_risk(
     if not targets and not changed_files:
         return {"error": "targets or changed_files is required", "_meta": _build_meta()}
     routes = (
-        route_targets([*(targets or []), *(changed_files or [])], paths_only=True)
+        await route_targets([*(targets or []), *(changed_files or [])], paths_only=True)
         if repo is None
         else None
     )
