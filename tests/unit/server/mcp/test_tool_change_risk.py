@@ -297,6 +297,29 @@ async def test_impacted_tests_degrade_on_an_unreadable_index(
 
 
 @pytest.mark.asyncio
+async def test_impacted_tests_read_the_change_less_repowise_output(monkeypatch, factory, tmp_path):
+    """Selection drops repowise's own output, the one exclusion every block shares."""
+    from repowise.core.analysis import changed_lines
+
+    seen: dict = {}
+
+    def _change_set(*_a, **kwargs):
+        seen.update(kwargs)
+        raise ValueError("stop here")
+
+    monkeypatch.setattr(changed_lines, "change_set", _change_set)
+    await tool._impacted_tests_block(
+        SimpleNamespace(session_factory=factory, path=str(tmp_path)),
+        {"a.py": {1}},
+        None,
+        OmissionCollector("get_change_risk", repo_root=tmp_path),
+        working_tree=True,
+        owned_excludes=("/AGENTS.md",),
+    )
+    assert seen["exclude_patterns"] == ("/AGENTS.md",)
+
+
+@pytest.mark.asyncio
 async def test_independent_changes_are_silent_for_one_file_or_an_unreadable_index(
     monkeypatch, factory, tmp_path
 ):

@@ -26,7 +26,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .git_cli import _git, split_revspec, untracked_paths
+from .git_cli import _git, path_filter, split_revspec, untracked_paths
 
 # ``@@ -a,b +c,d @@`` - both sides. ``b``/``d`` default to 1 when omitted; a
 # count of 0 means "nothing on that side" (pure insertion / pure deletion).
@@ -305,12 +305,14 @@ def change_set(
     *,
     staged: bool = False,
     working_tree: bool = False,
+    exclude_patterns: tuple[str, ...] = (),
 ) -> ChangeSet:
     """The change :func:`changed_lines` reads, with every touched path and its ends.
 
     *working_tree* reads what ``HEAD`` does not have, staged or not, untracked
-    files included; its base is ``HEAD``. Raises ``ValueError`` on an unknown
-    revision, as :func:`changed_lines` does.
+    files included; its base is ``HEAD``. *exclude_patterns* (gitignore-style)
+    drops paths that are not part of the change at all, such as repowise's own
+    output. Raises ``ValueError`` on an unknown revision, as :func:`changed_lines` does.
     """
     if working_tree:
         command, revisions, label = ["diff"], ["HEAD"], working_tree_label()
@@ -322,15 +324,16 @@ def change_set(
     fields = [f.strip("\n") for f in listing.split("\0")]
     files: dict[str, FileDiff] = {}
     deleted: set[str] = set()
+    counts = path_filter(exclude_patterns=exclude_patterns)
     for status, path in zip(fields[0::2], fields[1::2], strict=False):
-        if not path:
+        if not path or not counts(path):
             continue
         if status.startswith("D"):
             deleted.add(path)
         else:
             files[path] = diffs.get(path) or FileDiff(path=path)
     if working_tree:
-        files.update(untracked_diffs(repo_path))
+        files.update(untracked_diffs(repo_path, exclude_patterns))
     base, head = _change_ends(repo_path, revspec, staged=staged or working_tree)
     return ChangeSet(files, deleted, label, base, head)
 

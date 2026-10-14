@@ -218,6 +218,7 @@ async def _attach_change_blocks(
         collector,
         revspec=revspec,
         working_tree=result.working_tree,
+        owned_excludes=result.owned_excludes,
     )
     patch_changed, patch_error, patch_label, patch_revspec = await _push_change(
         str(ctx.path),
@@ -1441,13 +1442,16 @@ async def _impacted_tests_block(
     *,
     revspec: str | None = None,
     working_tree: bool = False,
+    owned_excludes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The tests the change needs, decided as ``repowise impacted-tests`` decides them.
 
     The same collection and fail-closed selection (``test_collection`` then
     ``select_tests``) over the whole change, every touched path included, so a
     manifest, a conftest or a test that walks the source tree weighs here as it
-    does in CI. ``line_coverage`` classifies the scored files' lines against
+    does in CI. The caller's suffix, include and exclude filters do not narrow
+    it; only *owned_excludes*, repowise's own output, leaves it, as it leaves
+    every other block. ``line_coverage`` classifies the scored files' lines against
     the per-test map, on the side of the diff the map was measured at.
     Any failure degrades to a ``status`` string with ``run_all`` true and never
     raises, so it cannot fail the surrounding score.
@@ -1471,6 +1475,7 @@ async def _impacted_tests_block(
                 str(ctx.path),
                 None if working_tree else revspec or "HEAD",
                 working_tree=working_tree,
+                exclude_patterns=owned_excludes,
             )
         )
     except Exception:  # git refused the change, or could not run

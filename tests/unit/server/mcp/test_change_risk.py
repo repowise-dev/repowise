@@ -632,6 +632,48 @@ async def test_get_change_risk_untracked_only_tree_is_one_change(tmp_path, monke
     assert result["exclude_patterns"] == ["/.github/copilot-instructions.md"]
 
 
+@pytest.mark.parametrize(("user_text", "selected"), [("# Mine\n", False), ("# Mine, edited\n", True)])
+@pytest.mark.asyncio
+async def test_impacted_tests_skip_a_managed_file_only_repowise_changed(
+    tmp_path, monkeypatch, user_text, selected
+) -> None:
+    """A refreshed managed block leaves test selection; the user's edit beside it does not."""
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+    from repowise.core.analysis import changed_lines
+
+    def block(body: str) -> str:
+        return f"\n{DISTILL_MARKER_START}\n{body}\n{DISTILL_MARKER_END}\n"
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "a = 1\n", "AGENTS.md": "# Mine\n" + block("v1")}, "chore: seed")
+    (repo / "src" / "app.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+    (repo / "AGENTS.md").write_text(user_text + block("v2"), encoding="utf-8")
+
+    seen: dict = {}
+    real = changed_lines.change_set
+
+    def _spy(*args, **kwargs):
+        change = real(*args, **kwargs)
+        seen["files"] = set(change.files)
+        return change
+
+    monkeypatch.setattr(changed_lines, "change_set", _spy)
+    factory = await _factory_with_repo(None)
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk(baseline=0)
+
+    assert result["working_tree"] is True
+    assert "src/app.py" in seen["files"]
+    assert ("AGENTS.md" in seen["files"]) is selected
+
+
 @pytest.mark.asyncio
 async def test_get_change_risk_keeps_is_fix_when_true(tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"

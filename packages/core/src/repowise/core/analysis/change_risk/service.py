@@ -46,6 +46,10 @@ class ChangeRiskResult:
     riskignore_excludes: tuple[str, ...]
     request_excludes: tuple[str, ...]
     working_tree: bool = False  # scored the uncommitted change, not a commit
+    # The part of ``riskignore_excludes`` that is repowise's own output rather
+    # than the user's ``.riskignore``: not the change at all, so test selection
+    # drops it too, while the user's filters leave selection whole.
+    owned_excludes: tuple[str, ...] = ()
     # Bug-fix history of the ground this change stands on. ``density`` is the
     # churn-weighted mean fix pressure of the touched files, ``percentile`` ranks
     # it against the same measure over the repo's own recent commits, and
@@ -189,10 +193,12 @@ def score_live_change(
     baseline_excludes = from_riskignore + exclude_patterns
     target = revspec or "HEAD"
     uncommitted = None
+    generated: tuple[str, ...] = ()
     if revspec is None and working_tree_is_dirty(repo_path):
         # A managed file (CLAUDE.md, .mcp.json) whose edit is only repowise's
         # block or entry is repowise's output too, while the user's edits count.
-        worktree_ignores = from_riskignore + generated_worktree_paths(repo_path)
+        generated = generated_worktree_paths(repo_path)
+        worktree_ignores = from_riskignore + generated
         uncommitted = extract_worktree_features(
             repo_path,
             extensions=extensions,
@@ -259,7 +265,9 @@ def score_live_change(
         riskignore_excludes=from_riskignore,
         request_excludes=exclude_patterns,
     )
-    return replace(result, history_ref=history)
+    owned = tuple(p for p in from_riskignore if p in OWNED_PATTERNS)
+    owned += generated if working_tree else ()
+    return replace(result, history_ref=history, owned_excludes=owned)
 
 
 def assess_change(

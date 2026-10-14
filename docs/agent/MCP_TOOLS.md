@@ -263,7 +263,7 @@ Reviews one commit, a `base..head` range, or uncommitted work by comparing the t
 | `revspec` | string | uncommitted work | A commit, `base..head`, or `base...head` (from the merge-base). Pass `HEAD` when the tree is clean |
 | `extensions` | list[string] | all | File suffixes to count, e.g. `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | none | Gitignore-style paths to omit; combined with a root `.riskignore` |
-| `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or one comma-separated string. Like `exclude_patterns`, it scopes the score, the health delta and every per-file block; `impacted_tests` still selects over the whole change |
+| `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or one comma-separated string. Like `exclude_patterns`, it scopes the score, the health delta and every per-file block; `impacted_tests` still selects over the whole change, less only repowise's own output |
 | `baseline` | int | `200` | Recent commits sampled for percentile ranking; `0` disables percentiles |
 | `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics, plus the delta's analyzer, revisions and limits), `scales` (units) |
 | `finding_id` | string | none | Expand one `health_delta` finding |

@@ -592,6 +592,21 @@ def test_a_tracked_edit_and_an_untracked_file_both_count(git_repo: Path) -> None
     assert _working_tree_file_sets(git_repo, result) == ({"src/a.py", "src/new.py"},) * 2
 
 
+def test_owned_excludes_name_repowise_output_not_the_users_filters(git_repo: Path) -> None:
+    """Test selection drops only repowise's output; .riskignore and request excludes stay."""
+    _commit(git_repo, {"src/a.py": "x = 1\n", ".riskignore": "vendor/\n"}, "feat: a", "Dev")
+    (git_repo / "src" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    (git_repo / "AGENTS.md").write_text(_BLOCK.format(body="hi"), encoding="utf-8")
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "config.yaml").write_text("provider: x\n", encoding="utf-8")
+
+    result = score_live_change(str(git_repo), baseline=0, exclude_patterns=("docs/",))
+
+    assert result.working_tree is True
+    assert result.owned_excludes == (".repowise/", "/AGENTS.md")
+    assert {"vendor/", "docs/"} <= set(result.riskignore_excludes + result.request_excludes)
+
+
 def test_explicit_head_scores_the_commit_even_when_dirty(git_repo: Path) -> None:
     """An explicit revspec always means committed refs."""
     _commit(git_repo, {"src/a.py": "x = 1\n"}, "feat: a", author="Dev")
