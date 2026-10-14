@@ -76,6 +76,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
     not_in_report: 1,
     no_line_data: 0,
     no_coverable_changes: 0,
+    stale_file: 0,
     out_of_scope: 0,
   },
   files: [

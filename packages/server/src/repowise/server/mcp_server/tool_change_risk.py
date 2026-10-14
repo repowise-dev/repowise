@@ -1373,6 +1373,7 @@ async def _patch_coverage_block(
                 head_commit=head_commit,
                 config=configured_coverage(ctx.path),
                 working_tree_mtime=mtime,
+                repo_path=str(ctx.path),
             )
             # An unreadable index row leaves risk to git alone and hints null.
             if patch is not None:

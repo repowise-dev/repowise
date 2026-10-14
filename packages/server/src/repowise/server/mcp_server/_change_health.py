@@ -91,20 +91,16 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
 
     Names the scope and the tests to extend from the rows' hints, riskiest
     file first, so the agent writes the missing test where the suite already
-    exercises the code. Stale coverage leads instead: its gaps are not real yet.
+    exercises the code. Files changed since the coverage was measured lead
+    instead: they carry no figure until the tests run again.
     """
+    if stale := _stale_action(block):
+        return stale
     uncovered = block["coverable_line_count"] - block["covered_line_count"] if block else 0
     if uncovered <= 0:
         return _partial_action(block)
     lines = f"{uncovered} changed executable line{'' if uncovered == 1 else 's'}"
     lines += _scope_words(block["scope"].get("label") or "")
-    if block["scope"]["freshness"] == "stale":
-        # Stale line numbers describe other code: the fix is a fresh run first.
-        return (
-            "Stored coverage predates this change: re-run the tests with coverage, then "
-            "`repowise coverage add` (the hook does it automatically) and call again "
-            f"({lines} read as uncovered until then)"
-        )
     tests = _hinted_tests(block["files"])
     text = f"{lines} {'is' if uncovered == 1 else 'are'} uncovered; "
     if tests:
@@ -112,10 +108,22 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
     return text + "add tests for them (patch_coverage.files)"
 
 
+def _stale_action(block: dict[str, Any] | None) -> str | None:
+    """Re-measure first when changed files have no figure because they changed since."""
+    stale = ((block or {}).get("file_counts") or {}).get("stale_file", 0)
+    if not stale:
+        return None
+    return (
+        "Stored coverage predates this change: re-run the tests with coverage, then "
+        "`repowise coverage add` (the hook does it automatically) and call again "
+        f"({stale} changed file{'' if stale == 1 else 's'} not measured until then)"
+    )
+
+
 def _partial_action(block: dict[str, Any] | None) -> str | None:
     """The next action when every changed line ran but some took only part of their branches."""
     partial = _partial_line_count(block)
-    if not partial or block["scope"]["freshness"] == "stale":
+    if not partial:
         return None
     lines = f"{partial} changed line{'' if partial == 1 else 's'}"
     lines += _scope_words(block["scope"].get("label") or "")

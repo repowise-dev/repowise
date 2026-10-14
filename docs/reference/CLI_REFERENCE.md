@@ -1452,7 +1452,7 @@ carries `patch_coverage_pct`, `covered_line_count`, `coverable_line_count`,
 `threshold`, `min_coverable_lines`, `gate` (`pass`, `fail`, `no_data`,
 `not_set`, `too_small`; `fail` when any gate fails), `file_counts`
 (`measured`, `not_in_report`, `no_line_data`, `no_coverable_changes`,
-`out_of_scope`), `files[]` (`file_path`, `status`, `changed_line_count`,
+`stale_file` (stored coverage only, always 0 here), `out_of_scope`), `files[]` (`file_path`, `status`, `changed_line_count`,
 `coverable_line_count`, `covered_line_count`, `patch_coverage_pct`,
 `uncovered_ranges`, `branch_taken`, `branch_total`, `partial_ranges` (0 and
 empty without branch data), `risk`: `fix_pressure`, `dependents`, `hotspot`,

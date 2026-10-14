@@ -2499,7 +2499,7 @@ export interface PatchCoverageBranches {
 
 export interface PatchCoverageFile {
   file_path: string;
-  status: "measured" | "not_in_report" | "no_line_data" | "no_coverable_changes";
+  status: "measured" | "not_in_report" | "no_line_data" | "no_coverable_changes" | "stale_file";
   changed_line_count: number;
   coverable_line_count: number;
   covered_line_count: number;
@@ -2517,6 +2517,7 @@ export interface PatchCoverageFileCounts {
   not_in_report: number;
   no_line_data: number;
   no_coverable_changes: number;
+  stale_file: number;
   out_of_scope: number;
 }
 

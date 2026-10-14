@@ -207,6 +207,7 @@ REST patch-coverage route the editor reads.
 | `no_coverable_changes` | The report names the file, but no changed line is executable | No |
 | `not_in_report` | The report does not name the file (e.g. a new file no test loaded) | No; listed, never 0% |
 | `no_line_data` | The report names the file but gives no executable-line set | No |
+| `stale_file` | Stored coverage only: the file changed since the commit the coverage was measured at | No; listed, no figures |
 
 Exit `0` passes or had nothing to judge, `1` is below a gate, `2` means the
 check could not run (no usable report, unknown revision, shallow clone without

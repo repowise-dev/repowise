@@ -760,10 +760,16 @@ def test_the_directive_names_the_scope_and_the_tests_to_extend():
         "1 changed executable line in the working tree is uncovered; "
         "add tests for them (patch_coverage.files)"
     )
-    # Stale coverage leads: its gaps are not real until the tests run again.
-    assert patch_coverage_action(_patch_block(0, 1, hints, freshness="stale")).startswith(
+    # Files changed since the coverage was measured lead: they have no figure yet.
+    stale = {**_patch_block(0, 1, hints, freshness="stale"), "file_counts": {"stale_file": 2}}
+    assert patch_coverage_action(stale) == (
         "Stored coverage predates this change: re-run the tests with coverage, then "
-        "`repowise coverage add`"
+        "`repowise coverage add` (the hook does it automatically) and call again "
+        "(2 changed files not measured until then)"
+    )
+    # A file untouched since the measurement keeps real figures, stale or not.
+    assert patch_coverage_action(_patch_block(0, 1, freshness="stale")).endswith(
+        "is uncovered; add tests for them (patch_coverage.files)"
     )
 
 
