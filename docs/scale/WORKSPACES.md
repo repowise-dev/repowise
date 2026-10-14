@@ -551,7 +551,7 @@ my-workspace/
     .repowise/
 ```
 
-`workspace.db` is derived from each repo's own index and refreshed after every workspace update and whenever a repo's index changes, so deleting it is always safe: it is rebuilt the next time it is needed.
+`workspace.db` is derived from each repo's own index and refreshed after every workspace update and whenever a repo is re-indexed, so deleting it is always safe: it is rebuilt the next time it is needed.
 
 What lives in each repo's `.repowise/` is described in
 [CONFIG.md](../reference/CONFIG.md#the-repowise-directory).

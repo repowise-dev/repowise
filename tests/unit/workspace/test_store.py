@@ -102,6 +102,12 @@ async def make_workspace(tmp_path: Path) -> tuple[WorkspaceConfig, Path]:
     return make_config("api", "web"), tmp_path
 
 
+def symbols(path: Path, names: list[str]) -> dict:
+    found = lookup_symbols(path, names)
+    assert found is not None
+    return found[0]
+
+
 def rows(path: Path, sql: str) -> list[tuple]:
     conn = sqlite3.connect(path)
     try:
@@ -128,8 +134,9 @@ async def test_refresh_builds_every_table_from_the_repo_indexes(tmp_path):
     ]
     # Derived components (top-level directories here) per repo.
     assert ("api", "src") in rows(path, "SELECT alias, name FROM components")
+    assert lookup_symbols(path, [], components_of="api") == ({}, {"src"})
 
-    assert lookup_symbols(path, ["serve", "App.run", "run", "missing"]) == {
+    assert symbols(path, ["serve", "App.run", "run", "missing"]) == {
         "serve": [
             ("api", "src/app.py::serve", "src/app.py"),
             ("web", "src/ui.ts::serve", "src/ui.ts"),
@@ -144,7 +151,7 @@ async def test_a_deleted_store_is_rebuilt(tmp_path):
     path = await refresh_workspace_store(config, root)
     path.unlink()
     assert await refresh_workspace_store(config, root) == path
-    assert lookup_symbols(path, ["render"]) == {
+    assert symbols(path, ["render"]) == {
         "render": [("web", "src/ui.ts::render", "src/ui.ts")]
     }
 
@@ -157,12 +164,12 @@ async def test_only_repos_whose_index_moved_are_reread(tmp_path):
     # A database write alone (a serving read, a cache) leaves the stamp alone.
     await add_symbol(root / "api", "api", "src/app.py", "late")
     await refresh_workspace_store(config, root)
-    assert lookup_symbols(path, ["late"]) == {}
+    assert symbols(path, ["late"]) == {}
 
     # An index run rewrites state.json: that repo, and only it, is re-read.
     touch_state(root / "api")
     await refresh_workspace_store(config, root)
-    assert lookup_symbols(path, ["late"]) == {"late": [("api", "src/app.py::late", "src/app.py")]}
+    assert symbols(path, ["late"]) == {"late": [("api", "src/app.py::late", "src/app.py")]}
     after = dict(rows(path, "SELECT alias, refreshed_at FROM repos"))
     assert after["web"] == before["web"]
     assert after["api"] != before["api"]
@@ -192,7 +199,7 @@ async def test_a_corrupt_store_is_rebuilt_never_fatal(tmp_path):
     path.write_bytes(b"not a database at all" * 100)
 
     assert await refresh_workspace_store(config, root) == path
-    assert "render" in lookup_symbols(path, ["render"])
+    assert "render" in symbols(path, ["render"])
 
 
 async def test_a_corrupt_store_found_by_a_reader_is_discarded(tmp_path):
@@ -202,7 +209,7 @@ async def test_a_corrupt_store_found_by_a_reader_is_discarded(tmp_path):
     assert lookup_symbols(path, ["render"]) is None
     assert not path.exists()
     await refresh_workspace_store(config, root)
-    assert "render" in lookup_symbols(path, ["render"])
+    assert "render" in symbols(path, ["render"])
 
 
 async def test_an_older_schema_is_rebuilt(tmp_path):
@@ -215,13 +222,13 @@ async def test_an_older_schema_is_rebuilt(tmp_path):
     await refresh_workspace_store(config, root)
     assert rows(path, "PRAGMA user_version") == [(SCHEMA_VERSION,)]
     assert not rows(path, "SELECT name FROM sqlite_master WHERE name='leftover'")
-    assert "render" in lookup_symbols(path, ["render"])
+    assert "render" in symbols(path, ["render"])
 
 
 async def test_workspace_update_hooks_refresh_the_store(tmp_path):
     config, root = await make_workspace(tmp_path)
     await run_cross_repo_hooks(config, root, ["api", "web"])
-    assert "serve" in lookup_symbols(store_path(root), ["serve"])
+    assert "serve" in symbols(store_path(root), ["serve"])
 
 
 async def test_a_single_repo_workspace_gets_no_store(tmp_path):
@@ -238,4 +245,17 @@ async def test_a_store_missing_its_tables_is_rebuilt(tmp_path):
     conn.close()
     assert await refresh_workspace_store(config, root) is None  # discarded, not served
     assert await refresh_workspace_store(config, root) == path
-    assert "render" in lookup_symbols(path, ["render"])
+    assert "render" in symbols(path, ["render"])
+
+
+async def test_an_unmoved_workspace_refreshes_without_opening_the_store(tmp_path, monkeypatch):
+    from repowise.core.workspace import store as store_mod
+
+    config, root = await make_workspace(tmp_path)
+    path = await refresh_workspace_store(config, root)
+
+    def refuse(*_args):
+        raise AssertionError("opened the store")
+
+    monkeypatch.setattr(store_mod, "WorkspaceStore", refuse)
+    assert await refresh_workspace_store(config, root) == path

@@ -259,13 +259,15 @@ async def located_ws(routed_ws):
 
     root = routed_ws.workspace_root
     await write_repo_index(
-        root / "backend", "backend", {"src/probe.py": ["backend_probe", "everywhere"]}
+        root / "backend",
+        "backend",
+        {"src/probe.py": ["backend_probe", "everywhere"], "auth/login.py": ["login"]},
     )
     await write_repo_index(
         root / "web-client",
         "frontend",
         {
-            "src/only_fe.py": ["only_fe", "Widget.paint", "twice"],
+            "src/only_fe.py": ["only_fe", "Widget.paint", "twice", "auth"],
             "src/probe.py": ["everywhere"],
             "gen/out.py": ["generated_only"],
         },
@@ -285,6 +287,8 @@ async def test_router_routes_bare_names_by_the_locator(located_ws):
         "backend_probe",
         "nowhere_at_all",
         "generated_only",
+        "auth",
+        "only fe",
     ]
     routes = _by_target(await route_targets(targets))
     for name in ("only_fe", "Widget.paint", "paint"):
@@ -297,6 +301,10 @@ async def test_router_routes_bare_names_by_the_locator(located_ws):
     # Unknown, or only in a file its repo excludes: the default repo, as before.
     assert routes["nowhere_at_all"] == Route("nowhere_at_all", "nowhere_at_all", "backend")
     assert routes["generated_only"] == Route("generated_only", "generated_only", "backend")
+    # A default-repo component name stays there, though another repo has the symbol.
+    assert routes["auth"] == Route("auth", "auth", "backend")
+    # Only identifier-shaped names are looked up.
+    assert routes["only fe"] == Route("only fe", "only fe", "backend")
     # Paths and target kinds are untouched by the locator.
     assert (await route_targets(["module:src"]))[0] == Route("module:src", "module:src", "backend")
 
@@ -354,3 +362,24 @@ async def test_a_routed_batch_survives_a_failing_repo(routed_ws, monkeypatch):
     assert result["repos_failed"] == [
         {"repo": "frontend", "reason": "RuntimeError: index unreadable"}
     ]
+
+
+async def test_a_routed_batch_survives_a_repo_timing_out(routed_ws, monkeypatch):
+    import asyncio
+
+    from repowise.server.mcp_server import get_context
+
+    real_get = routed_ws.get
+
+    async def slow(alias):
+        if alias == "frontend":
+            await asyncio.sleep(30)
+        return await real_get(alias)
+
+    monkeypatch.setenv("REPOWISE_WORKSPACE_REPO_TIMEOUT_S", "0.5")
+    monkeypatch.setattr(routed_ws, "get", slow)
+    result = await get_context(targets=["src/probe.py", "src/only_fe.py"])
+    assert result["targets"]["src/probe.py"]["docs"]["title"] == "Backend Probe"
+    assert result["targets"]["src/only_fe.py"]["repo"] == "frontend"
+    assert "did not answer" in result["targets"]["src/only_fe.py"]["error"]
+    assert result["repos_failed"] == [{"repo": "frontend", "reason": "timed out after 0.5s"}]

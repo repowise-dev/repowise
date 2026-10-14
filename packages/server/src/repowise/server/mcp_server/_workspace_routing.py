@@ -17,11 +17,12 @@ Rules, exact matches only:
   answer (suggestions, ``moved_to``) is kept; :func:`hint_misses` only adds a
   pointer to ``search_codebase``. In a change set it is a deleted file and
   gets no hint (:func:`settle_missing`).
-- A bare symbol name (``get_answer``, ``Client.send``) is looked up in the
+- A bare identifier (``get_answer``, ``Client.send``) is looked up in the
   workspace store's symbol locator, by exact name or qualified name. The
-  default repo keeps it when it has the symbol, or a path of that name;
-  otherwise it routes to the one other repo that has it, and several give
-  candidates. A name no repo has stays with the default repo.
+  default repo keeps it when it has the symbol, a component of that name or
+  a path of that name; otherwise it routes to the one other repo that has it,
+  and several give candidates. A name no repo has, or one that is not
+  identifier-shaped, stays with the default repo.
 - Omission refs (``repowise#<hex>``) stay with the default repo here;
   ``get_symbol`` looks them up in every repo's omission store.
 
@@ -34,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -46,6 +48,8 @@ from repowise.server.mcp_server._query_shape import _LINE_SUFFIX_RE, _is_path
 _log = logging.getLogger("repowise.mcp")
 
 _TARGET_KINDS = frozenset({"component", "change", "module"})
+# A dotted identifier: the only bare targets the symbol locator routes.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*")
 
 
 @dataclass(frozen=True)
@@ -94,7 +98,7 @@ async def route_targets(
     routes = [_route_one(t, roots, default, paths_only) for t in targets]
     names = [r.target for r in routes if r.name]
     if names and len(roots) > 1:
-        owners = await _symbol_owners(names, roots)
+        owners = await _symbol_owners(names, roots, default)
         routes = [_route_name(r, owners, roots, default) if r.name else r for r in routes]
     return routes
 
@@ -270,7 +274,7 @@ def _route_one(target: str, roots: dict[str, Path], default: str, paths_only: bo
     if not file_part or file_part.startswith("repowise#"):
         return Route(target, target, default)
     if not (paths_only or "::" in target or _is_path(file_part)):
-        return Route(target, target, default, name=True)
+        return Route(target, target, default, name=bool(_IDENTIFIER_RE.fullmatch(target)))
 
     if Path(file_part).is_absolute():
         return _route_absolute(target, file_part, roots, default)
@@ -287,7 +291,10 @@ def _route_one(target: str, roots: dict[str, Path], default: str, paths_only: bo
 def _route_name(
     route: Route, owners: dict[str, list[str]], roots: dict[str, Path], default: str
 ) -> Route:
-    """Route a bare symbol name by the repos the locator says hold it."""
+    """Route a bare symbol name by the repos the locator says hold it.
+
+    *owners* carries the default repo for a name it keeps (see
+    :func:`_symbol_owners`)."""
     repos = owners.get(route.target, [])
     if not repos or default in repos or _exists(roots.get(default), route.target):
         return Route(route.target, route.local, default)
@@ -299,36 +306,55 @@ def _route_name(
 _store_lock = asyncio.Lock()
 
 
-async def _symbol_owners(names: list[str], roots: dict[str, Path]) -> dict[str, list[str]]:
+async def _symbol_owners(
+    names: list[str], roots: dict[str, Path], default: str
+) -> dict[str, list[str]]:
     """``name -> repos holding it``, in workspace order, from the workspace store.
 
     Refreshes the store first when a repo's index moved. A symbol in a file its
-    repo excludes does not count. Empty when the store is unavailable, so every
-    name stays with the default repo.
+    repo excludes does not count, and a default-repo component of that name
+    counts as the default repo having it. Empty when the store is unavailable,
+    so every name stays with the default repo.
     """
-    from repowise.core.exclusion import build_exclude_spec, is_excluded
-    from repowise.core.workspace.store import lookup_symbols, refresh_workspace_store
+    from repowise.core.workspace.store import refresh_workspace_store
 
     registry = _state._registry
     try:
         async with _store_lock:
             path = await refresh_workspace_store(registry.ws_config, Path(registry.workspace_root))
-        hits = await asyncio.to_thread(lookup_symbols, path, names) if path else None
+        if path is None:
+            return {}
+        return await asyncio.to_thread(_owners_from_store, path, names, roots, default)
     except Exception:
         _log.warning("Workspace store lookup failed", exc_info=True)
-        hits = None
+        return {}
+
+
+def _owners_from_store(
+    path: Path, names: list[str], roots: dict[str, Path], default: str
+) -> dict[str, list[str]]:
+    from repowise.core.exclusion import build_exclude_spec, is_excluded
+    from repowise.core.workspace.store import lookup_symbols
+
+    found_rows = lookup_symbols(path, names, components_of=default)
+    if found_rows is None:
+        return {}
+    hits, default_components = found_rows
     owners: dict[str, list[str]] = {}
+    # build_exclude_spec memoises by rule-file stamps; this keeps it to one
+    # build per repo per call.
     specs: dict[str, Any] = {}
-    for name, rows in (hits or {}).items():
-        found: set[str] = set()
-        for alias, _symbol_id, file_path in rows:
+    for name in names:
+        found: set[str] = {default} if name.casefold() in default_components else set()
+        for alias, _symbol_id, file_path in hits.get(name, ()):
             if alias in found or alias not in roots:
                 continue
             if alias not in specs:
                 specs[alias] = build_exclude_spec(roots[alias])
             if not is_excluded(file_path, specs[alias]):
                 found.add(alias)
-        owners[name] = [a for a in roots if a in found]
+        if found:
+            owners[name] = [a for a in roots if a in found]
     return owners
 
 

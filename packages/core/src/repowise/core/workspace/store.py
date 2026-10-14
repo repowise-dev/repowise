@@ -15,6 +15,7 @@ and lazily when a reader finds a stamp moved.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -38,6 +39,10 @@ _BUSY_TIMEOUT_MS = 5000
 #: Change summaries kept per repo, newest first. Ceiling: older changes stay
 #: in the repo's own ``changes`` table; raise this when a reader needs more.
 CHANGES_PER_REPO = 200
+#: Rows per ``executemany``. Ceiling: one repo's rows are still read whole
+#: into memory before the write (tens of MB at ~100k symbols); streaming the
+#: read in chunks of this size is the upgrade path.
+_INSERT_CHUNK = 5000
 
 _SCHEMA = """
 CREATE TABLE repos (
@@ -149,9 +154,12 @@ class WorkspaceStore:
         conn = sqlite3.connect(self.path, isolation_level=None)
         try:
             apply_sqlite_pragmas(conn, _BUSY_TIMEOUT_MS)
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version != SCHEMA_VERSION:
+            if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
                 with _transaction(conn):
+                    # Re-read under the write lock: another process may have
+                    # just built the schema.
+                    if conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION:
+                        return conn
                     for (table,) in conn.execute(
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     ).fetchall():
@@ -192,20 +200,18 @@ class WorkspaceStore:
                     rows.error,
                 ),
             )
-            conn.executemany(
-                "INSERT OR IGNORE INTO files VALUES (?, ?)", ((alias, f) for f in rows.files)
-            )
-            conn.executemany(
-                "INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?)", ((alias, *s) for s in rows.symbols)
-            )
-            conn.executemany(
-                "INSERT OR IGNORE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                ((alias, *c) for c in rows.components),
-            )
-            conn.executemany(
-                "INSERT OR IGNORE INTO changes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ((alias, *c) for c in rows.changes),
-            )
+            for table, items in (
+                ("files", [(f,) for f in rows.files]),
+                ("symbols", rows.symbols),
+                ("components", rows.components),
+                ("changes", rows.changes),
+            ):
+                if not items:
+                    continue
+                marks = ", ".join("?" * (len(items[0]) + 1))
+                sql = f"INSERT OR IGNORE INTO {table} VALUES ({marks})"
+                for i in range(0, len(items), _INSERT_CHUNK):
+                    conn.executemany(sql, ((alias, *r) for r in items[i : i + _INSERT_CHUNK]))
 
     def drop_repos(self, aliases: Iterable[str]) -> None:
         with _transaction(self._conn):
@@ -284,7 +290,10 @@ async def _read(session: Any, repo_path: Path, services: list[tuple[str, str]]) 
         return RepoRows()
     rows = RepoRows(
         indexed=True,
-        indexed_commit=resolve_indexed_commit(repo_path, repo.head_commit).sha,
+        # May spawn git (ancestry), so off the event loop.
+        indexed_commit=(
+            await asyncio.to_thread(resolve_indexed_commit, repo_path, repo.head_commit)
+        ).sha,
         index_updated_at=repo.updated_at.isoformat() if repo.updated_at else None,
     )
     rows.files = list(
@@ -368,12 +377,58 @@ async def _read(session: Any, repo_path: Path, services: list[tuple[str, str]]) 
 
 async def refresh_workspace_store(ws_config: Any, workspace_root: Path) -> Path | None:
     """Bring the store up to date with every repo's index; the store's path, or
-    None when it cannot be written. Only repos whose stamp moved are re-read."""
+    None when it cannot be written. Only repos whose stamp moved are re-read.
+
+    Every SQLite and file step runs in a worker thread, so a writer holding the
+    store (a concurrent ``repowise update``) never blocks the caller's loop.
+    """
     from repowise.core.components.store import services_from_system_graph
 
-    from .system_graph import load_system_graph
-
     path = store_path(workspace_root)
+    wanted = {
+        e.alias: (Path(workspace_root) / e.path).resolve() for e in ws_config.repos
+    }
+    plan = await asyncio.to_thread(_plan, path, wanted)
+    if plan is None:
+        return None
+    stamps, stale = plan
+    if not stale:
+        return path
+    graph = await asyncio.to_thread(_system_graph_dict, workspace_root)
+    rows: dict[str, RepoRows] = {}
+    for alias in stale:
+        services = services_from_system_graph(graph, alias)
+        rows[alias] = await read_repo_rows(alias, wanted[alias], services)
+    ok = await asyncio.to_thread(_write, path, stamps, rows)
+    return path if ok else None
+
+
+#: ``store path -> (repo stamps, store file stat)`` after this process's last
+#: refresh. When both still match, a refresh is a few ``stat`` calls and opens
+#: no database.
+_last_refresh: dict[Path, tuple[Any, Any]] = {}
+
+
+def _file_stat(path: Path) -> tuple[tuple[int, int] | None, ...]:
+    out = []
+    for suffix in ("", "-wal"):
+        try:
+            st = Path(f"{path}{suffix}").stat()
+            out.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def _plan(
+    path: Path, wanted: dict[str, Path]
+) -> tuple[dict[str, tuple[str, str]], list[str]] | None:
+    """``(alias -> (path key, stamp), stale aliases)``; drops repos no longer
+    configured. None when the store cannot be opened."""
+    stamps = {alias: (str(repo), repo_stamp(repo)) for alias, repo in wanted.items()}
+    memo = (tuple(sorted(stamps.items())), _file_stat(path))
+    if _last_refresh.get(path) == memo and memo[1][0] is not None:
+        return stamps, []
     try:
         store = WorkspaceStore(path)
     except (OSError, sqlite3.Error):
@@ -381,38 +436,62 @@ async def refresh_workspace_store(ws_config: Any, workspace_root: Path) -> Path 
         return None
     try:
         known = store.stamps()
-        wanted: dict[str, tuple[Path, str, str]] = {}
-        for entry in ws_config.repos:
-            repo_path = (Path(workspace_root) / entry.path).resolve()
-            wanted[entry.alias] = (repo_path, str(repo_path), repo_stamp(repo_path))
         store.drop_repos(a for a in known if a not in wanted)
-        stale = [a for a, (_p, key, stamp) in wanted.items() if known.get(a) != (key, stamp)]
-        if stale:
-            graph = load_system_graph(workspace_root)
-            graph_dict = graph.to_dict() if graph else None
-            for alias in stale:
-                repo_path, key, stamp = wanted[alias]
-                rows = await read_repo_rows(
-                    alias, repo_path, services_from_system_graph(graph_dict, alias)
-                )
-                store.replace_repo(alias, key, stamp, rows)
     except sqlite3.Error as exc:
-        _log.warning("Workspace store at %s failed mid-refresh", path, exc_info=True)
-        store.close()
-        if isinstance(exc, sqlite3.DatabaseError) and _corrupt(exc):
-            discard(path)  # rebuilt on the next refresh rather than served
+        _failed(store, path, exc)
         return None
     store.close()
-    return path
+    stale = [a for a, key in stamps.items() if known.get(a) != key]
+    if not stale:
+        _last_refresh[path] = (memo[0], _file_stat(path))
+    return stamps, stale
+
+
+def _write(path: Path, stamps: dict[str, tuple[str, str]], rows: dict[str, RepoRows]) -> bool:
+    try:
+        store = WorkspaceStore(path)
+    except (OSError, sqlite3.Error):
+        _log.warning("Workspace store at %s cannot be opened", path, exc_info=True)
+        return False
+    try:
+        for alias, repo_rows in rows.items():
+            key, stamp = stamps[alias]
+            store.replace_repo(alias, key, stamp, repo_rows)
+    except sqlite3.Error as exc:
+        _failed(store, path, exc)
+        return False
+    store.close()
+    _last_refresh[path] = (tuple(sorted(stamps.items())), _file_stat(path))
+    return True
+
+
+def _failed(store: WorkspaceStore, path: Path, exc: sqlite3.Error) -> None:
+    _log.warning("Workspace store at %s failed mid-refresh", path, exc_info=True)
+    store.close()
+    _last_refresh.pop(path, None)
+    if isinstance(exc, sqlite3.DatabaseError) and _corrupt(exc):
+        discard(path)  # rebuilt on the next refresh rather than served
+
+
+def _system_graph_dict(workspace_root: Path) -> dict[str, Any] | None:
+    from .system_graph import load_system_graph
+
+    graph = load_system_graph(workspace_root)
+    return graph.to_dict() if graph else None
 
 
 def lookup_symbols(
-    path: Path, names: Iterable[str]
-) -> dict[str, list[tuple[str, str, str]]] | None:
-    """``name -> [(alias, symbol_id, file_path)]`` for the symbols whose name or
-    qualified name is exactly *name*; None when the store cannot be read (a
-    corrupt file is discarded so the next refresh rebuilds it)."""
+    path: Path, names: Iterable[str], *, components_of: str | None = None
+) -> tuple[dict[str, list[tuple[str, str, str]]], set[str]] | None:
+    """``(name -> [(alias, symbol_id, file_path)], component names)``.
+
+    The first holds the symbols whose name or qualified name is exactly
+    *name*; the second the casefolded component names of *components_of*.
+    None when the store cannot be read (a corrupt file is discarded so the
+    next refresh rebuilds it).
+    """
     out: dict[str, list[tuple[str, str, str]]] = {}
+    components: set[str] = set()
     try:
         uri = f"{Path(path).resolve().as_uri()}?mode=ro"
         with closing(sqlite3.connect(uri, uri=True)) as conn:
@@ -425,9 +504,17 @@ def lookup_symbols(
                 ).fetchall()
                 if rows:
                     out[name] = [(a, s, f) for a, s, f in rows]
+            if components_of is not None:
+                components = {
+                    str(n).casefold()
+                    for (n,) in conn.execute(
+                        "SELECT name FROM components WHERE alias = ?", (components_of,)
+                    )
+                }
     except sqlite3.Error as exc:
         if isinstance(exc, sqlite3.DatabaseError) and _corrupt(exc):
             _log.warning("Workspace store at %s is unreadable; discarding it", path)
+            _last_refresh.pop(path, None)
             discard(path)
         return None
-    return out
+    return out, components
