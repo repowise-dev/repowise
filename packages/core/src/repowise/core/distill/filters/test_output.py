@@ -200,92 +200,112 @@ class _TestBuffer:
         return errors
 
 
-def _distill_go(lines: list[str]) -> str:
-    out: list[str] = []
-    passes = 0
-    runs = 0
-    in_fail_block = False
-    current_test: str | None = None
-    buffers: dict[str, _TestBuffer] = {}
+class _GoDistiller:
+    """Stateful distiller for `go test` and `go test -v` outputs."""
 
-    def parse_test_name(line: str) -> str | None:
+    def __init__(self, lines: list[str]) -> None:
+        self.lines = lines
+        self.out: list[str] = []
+        self.passes = 0
+        self.runs = 0
+        self.in_fail_block = False
+        self.current_test: str | None = None
+        self.buffers: dict[str, _TestBuffer] = {}
+
+    def _parse_test_name(self, line: str) -> str | None:
         m = _GO_STATUS_PARSE_RE.match(line)
         return m.group("name") if m else None
 
-    def active_parent(test_name: str | None) -> str | None:
+    def _active_parent(self, test_name: str | None) -> str | None:
         if test_name and "/" in test_name:
             parent = test_name.rsplit("/", 1)[0]
-            if parent in buffers:
+            if parent in self.buffers:
                 return parent
         return None
 
-    for line in lines:
-        if line.startswith("exit status "):
-            if current_test and current_test in buffers:
-                out.extend(buffers.pop(current_test).drain())
-            for buf in buffers.values():
-                out.extend(buf.drain_errors())
-            buffers.clear()
-            out.append(line)
-            current_test = None
-            in_fail_block = False
-            continue
+    def _handle_exit_status(self, line: str) -> None:
+        if self.current_test and self.current_test in self.buffers:
+            self.out.extend(self.buffers.pop(self.current_test).drain())
+        for buf in self.buffers.values():
+            self.out.extend(buf.drain_errors())
+        self.buffers.clear()
+        self.out.append(line)
+        self.current_test = None
+        self.in_fail_block = False
 
+    def _handle_run(self, line: str) -> bool:
         run_m = _GO_RUN_PARSE_RE.match(line)
-        if run_m:
-            verb = run_m.group("verb")
-            name = run_m.group("name")
-            in_fail_block = False
-            if verb == "RUN":
-                runs += 1
-                current_test = name
-                if name:
-                    buffers[name] = _TestBuffer()
-            elif verb in ("CONT", "NAME"):
-                current_test = name
-                if name and name not in buffers:
-                    buffers[name] = _TestBuffer()
-            elif verb == "PAUSE":
-                current_test = None
-            continue
+        if not run_m:
+            return False
+        verb = run_m.group("verb")
+        name = run_m.group("name")
+        self.in_fail_block = False
+        if verb == "RUN":
+            self.runs += 1
+            self.current_test = name
+            if name:
+                self.buffers[name] = _TestBuffer()
+        elif verb in ("CONT", "NAME"):
+            self.current_test = name
+            if name and name not in self.buffers:
+                self.buffers[name] = _TestBuffer()
+        elif verb == "PAUSE":
+            self.current_test = None
+        return True
 
-        if _GO_FAIL_RE.match(line):
-            is_test_fail = line.lstrip().startswith("--- FAIL")
-            in_fail_block = is_test_fail
-            out.append(line)
-            test_name = parse_test_name(line) if is_test_fail else current_test
-            if test_name and test_name in buffers:
-                out.extend(buffers.pop(test_name).drain())
-            current_test = active_parent(test_name)
-            continue
+    def _handle_fail(self, line: str) -> bool:
+        if not _GO_FAIL_RE.match(line):
+            return False
+        is_test_fail = line.lstrip().startswith("--- FAIL")
+        self.in_fail_block = is_test_fail
+        self.out.append(line)
+        test_name = self._parse_test_name(line) if is_test_fail else self.current_test
+        if test_name and test_name in self.buffers:
+            self.out.extend(self.buffers.pop(test_name).drain())
+        self.current_test = self._active_parent(test_name)
+        return True
 
-        if _GO_PASS_RE.match(line) or line.lstrip().startswith("--- SKIP"):
-            in_fail_block = False
-            if line.startswith(("ok", "PASS")):
-                out.append(line)
-                current_test = None
-            else:
-                if not line.lstrip().startswith("--- SKIP"):
-                    passes += 1
-                test_name = parse_test_name(line)
-                if test_name and test_name in buffers:
-                    out.extend(buffers.pop(test_name).drain_errors())
-                current_test = active_parent(test_name)
-            continue
+    def _handle_pass_or_skip(self, line: str) -> bool:
+        if not (_GO_PASS_RE.match(line) or line.lstrip().startswith("--- SKIP")):
+            return False
+        self.in_fail_block = False
+        if line.startswith(("ok", "PASS")):
+            self.out.append(line)
+            self.current_test = None
+            return True
+        if not line.lstrip().startswith("--- SKIP"):
+            self.passes += 1
+        test_name = self._parse_test_name(line)
+        if test_name and test_name in self.buffers:
+            self.out.extend(self.buffers.pop(test_name).drain_errors())
+        self.current_test = self._active_parent(test_name)
+        return True
 
-        if current_test is not None:
-            buffers[current_test].append(line)
-        elif in_fail_block or is_error_line(line):
-            out.append(line)
+    def _handle_line(self, line: str) -> None:
+        if line.startswith("exit status "):
+            self._handle_exit_status(line)
+        elif self._handle_run(line) or self._handle_fail(line) or self._handle_pass_or_skip(line):
+            return
+        elif self.current_test is not None:
+            self.buffers[self.current_test].append(line)
+        elif self.in_fail_block or is_error_line(line):
+            self.out.append(line)
 
-    for buf in buffers.values():
-        out.extend(buf.drain_errors())
+    def distill(self) -> str:
+        for line in self.lines:
+            self._handle_line(line)
+        for buf in self.buffers.values():
+            self.out.extend(buf.drain_errors())
 
-    if not out and passes == 0 and runs == 0:
-        raise ValueError("not go test output")
-    if passes or runs:
-        out.insert(0, f"({passes or runs} passing tests omitted)")
-    return "\n".join(out)
+        if not self.out and self.passes == 0 and self.runs == 0:
+            raise ValueError("not go test output")
+        if self.passes or self.runs:
+            self.out.insert(0, f"({self.passes or self.runs} passing tests omitted)")
+        return "\n".join(self.out)
+
+
+def _distill_go(lines: list[str]) -> str:
+    return _GoDistiller(lines).distill()
 
 
 # -- cargo test --------------------------------------------------------------
