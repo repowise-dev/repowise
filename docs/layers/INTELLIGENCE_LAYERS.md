@@ -51,6 +51,8 @@ no import between them can still change together every week.
 | Hidden coupling | Files that change together with no import link | [CHANGE_RISK.md](CHANGE_RISK.md) |
 | Branch overlap | Other branches editing the same files or their co-change partners | [CHANGE_RISK.md](CHANGE_RISK.md#branch-overlap) |
 | Secrets in history | Keys and tokens anywhere in the full history, not only the working tree | [SECURITY.md](SECURITY.md) |
+| Change Records | Each merged PR, MR or commit with its commits, files and provenance, exportable as in-toto | [CHANGES.md](CHANGES.md) |
+| AI attribution | Agent, human-attested or unknown per commit, from public markers and opt-in edit capture, with coverage | [ATTRIBUTION.md](ATTRIBUTION.md) |
 
 ## 3. Docs: the codebase, readable and searchable
 

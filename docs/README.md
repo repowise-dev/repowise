@@ -61,6 +61,13 @@ For a map of every layer and how they feed each other, read
 | [layers/SECURITY.md](layers/SECURITY.md) | The local scan: 22 pattern kinds plus a symbol-name scan, history scanning for secrets, and its limits |
 | [start/CI.md](start/CI.md) | Gate pull requests with the GitHub Action or the GitLab template |
 
+### Know what landed, and who wrote it
+
+| Doc | What it covers |
+|-----|----------------|
+| [layers/CHANGES.md](layers/CHANGES.md) | Change Records: each merged PR, MR or commit read back from git, with an in-toto export |
+| [layers/ATTRIBUTION.md](layers/ATTRIBUTION.md) | AI attribution: public markers read by default, opt-in edit capture, and coverage beside every share |
+
 ### Know which tests matter
 
 | Doc | What it covers |
