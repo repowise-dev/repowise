@@ -27,4 +27,27 @@ describe("commit table empty states", () => {
     expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "High priority" })).toBeInTheDocument();
   });
+
+  it("renders Size and spread column header and sort option", () => {
+    const commitItem: Commit = {
+      sha: "9e51b06e65c4f28834aa2037a63e082da0ab4cf5",
+      short_sha: "9e51b06",
+      author_name: "Dev",
+      author_email: "dev@example.com",
+      committed_at: "2026-09-19T12:00:00Z",
+      subject: "test commit",
+      lines_added: 10,
+      lines_deleted: 2,
+      files_changed: 1,
+      dirs_changed: 1,
+      subsystems_changed: 1,
+      entropy: 0,
+      is_fix: false,
+      risk_percentile: 50,
+      review_priority: "moderate",
+    };
+    render(<CommitTable commits={[commitItem]} sort="risk" kind="all" />);
+
+    expect(screen.getAllByText("Size and spread").length).toBeGreaterThan(0);
+  });
 });

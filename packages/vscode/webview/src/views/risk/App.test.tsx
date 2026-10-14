@@ -363,7 +363,9 @@ describe("risk App", () => {
     );
 
     expect(await screen.findByText("Elevated")).toBeTruthy();
+    expect(screen.getByText("Size and spread")).toBeTruthy();
     expect(screen.getByText("88th percentile")).toBeTruthy();
+    expect(screen.queryByText(/74th percentile/)).toBeNull();
     expect(screen.getByText("7.4/10")).toBeTruthy();
     expect(screen.getByText("+1.80")).toBeTruthy();
     expect(screen.getByText("−0.50")).toBeTruthy();

@@ -112,7 +112,7 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
   },
   {
     key: "risk",
-    header: "Review priority",
+    header: "Size and spread",
     headerClassName: "w-28",
     // No ChurnBar. The cell was carrying the same fact three times over (a
     // filled bar, the percentile, and the pill), and because the queue sorts
@@ -137,9 +137,9 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
 ];
 
 /**
- * The review-priority queue: per-commit change-risk, ranked. Ordering is
+ * The review queue: per-commit change-risk, ranked. Ordering is
  * server-driven (risk vs date); search + priority filters are client-side over
- * the loaded page. Review priority is shown as a **repo-relative** percentile + category,
+ * the loaded page. Size and spread is shown as a **repo-relative** percentile + category,
  * so the column is portable across repos.
  */
 export function CommitTable({
@@ -188,7 +188,7 @@ export function CommitTable({
   ];
 
   const sorts: { key: CommitSort; label: string }[] = [
-    { key: "risk", label: "Review priority" },
+    { key: "risk", label: "Size and spread" },
     { key: "date", label: "Most recent" },
   ];
 

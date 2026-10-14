@@ -92,7 +92,8 @@ export function CommitDetailCard({
       <div className="mt-7">
         {/* Named for what it measures: diff size, not danger. */}
         <PageLede
-          label="Review priority"
+          label="Size and spread"
+          labelHint="diff size, not a bug predictor"
           value={`${Math.round(c.risk_percentile)}th`}
           unit="percentile in this repo"
           badge={<PriorityBadge priority={c.review_priority} />}
@@ -206,8 +207,8 @@ function reconcile(c: CommitDetail, fixPercentile: number | null): string | null
   const gap = fixPercentile - c.risk_percentile;
   if (Math.abs(gap) < 25) return null;
   return gap > 0
-    ? `Ordinary in size, but it lands in files with a heavy fix record — ${Math.round(fixPercentile)}th percentile for prior fixes. That is the signal worth reading here.`
-    : `Large for this repo, but it lands in files that have rarely broken — ${Math.round(fixPercentile)}th percentile for prior fixes.`;
+    ? "Ordinary in size, but it lands in files with a heavy fix record. That is the signal worth reading here."
+    : "Large for this repo, but it lands in files that have rarely broken.";
 }
 
 /**
@@ -219,10 +220,10 @@ function reconcile(c: CommitDetail, fixPercentile: number | null): string | null
  */
 function riskSentence(c: CommitDetail): string {
   const tercile: Record<string, string> = {
-    high: "sits in the top third of this repo's own diff-shape distribution, the review-priority band worth reviewing",
+    high: "sits in the top third of this repo's own diff-shape distribution by size and spread",
     moderate:
-      "sits in the middle third of this repo's own diff-shape distribution, so its review priority is typical here",
-    low: "sits in the bottom third of this repo's own diff-shape distribution",
+      "sits in the middle third of this repo's own diff-shape distribution by size and spread",
+    low: "sits in the bottom third of this repo's own diff-shape distribution by size and spread",
   };
   let out = `This commit ${tercile[c.review_priority] ?? tercile.moderate}`;
 
