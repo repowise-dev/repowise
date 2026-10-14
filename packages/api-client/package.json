@@ -49,6 +49,7 @@
     "./security": "./src/security.ts",
     "./stats": "./src/stats.ts",
     "./symbols": "./src/symbols.ts",
+    "./views": "./src/views.ts",
     "./workspace": "./src/workspace.ts"
   },
   "publishConfig": {

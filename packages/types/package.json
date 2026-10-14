@@ -19,6 +19,7 @@
     "./symbols": "./src/symbols.ts",
     "./chat": "./src/chat.ts",
     "./cards": "./src/cards.ts",
+    "./views": "./src/views.ts",
     "./workspace": "./src/workspace.ts",
     "./blast-radius": "./src/blast-radius.ts",
     "./risk-semantics": "./src/risk-semantics.ts",

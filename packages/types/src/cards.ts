@@ -24,41 +24,16 @@ export const EVIDENCE_CARD_KINDS = [
 ] as const;
 export type EvidenceCardKind = (typeof EVIDENCE_CARD_KINDS)[number];
 
-/**
- * How a value is known: `measured` from the index, git or a coverage report;
- * `inferred` from the graph or a heuristic; `declared` by the repo's own
- * config or files; `unresolved` when the evidence could not be read.
- */
-export const CARD_BASIS_KINDS = ["measured", "inferred", "declared", "unresolved"] as const;
-export type CardBasisKind = (typeof CARD_BASIS_KINDS)[number];
+import type { CardBasis, CardRef } from "./evidence.js";
 
-export interface CardBasis {
-  kind: CardBasisKind;
-  /** What produced the value, e.g. `git history`, `get_risk`, `CODEOWNERS`. */
-  source: string;
-}
-
-export const CARD_REF_TYPES = [
-  "repo",
-  "file",
-  "symbol",
-  "module",
-  "component",
-  "commit",
-  "change",
-  "decision",
-] as const;
-export type CardRefType = (typeof CARD_REF_TYPES)[number];
-
-/** An entity a card points at. Never a URL; the renderer resolves it. */
-export interface CardRef {
-  type: CardRefType;
-  /** Path for a file, qualified id for a symbol, sha for a commit. */
-  id: string;
-  /** 1-based line range, for file and symbol refs. */
-  start_line?: number;
-  end_line?: number;
-}
+export {
+  CARD_BASIS_KINDS,
+  CARD_REF_TYPES,
+  type CardBasis,
+  type CardBasisKind,
+  type CardRef,
+  type CardRefType,
+} from "./evidence.js";
 
 export const CARD_CONFIDENCE_LEVELS = ["high", "medium", "low"] as const;
 export type CardConfidence = (typeof CARD_CONFIDENCE_LEVELS)[number];
