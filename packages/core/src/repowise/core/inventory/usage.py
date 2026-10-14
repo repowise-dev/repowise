@@ -77,6 +77,10 @@ _IMPORT_STARTS = tuple("iufrleo}#cv")
 _BLOCK_OPEN = re.compile(r"import\s*\(\s*$")
 #: Files larger than this are not read for the import line; the site keeps no line.
 _MAX_READ_BYTES = 2_000_000
+#: File-to-file edges that load the target: static imports, and the dynamic
+#: loads the parsers resolve (``importlib.import_module`` and ``"module:attr"``
+#: string tables, such as the CLI's lazily loaded commands).
+_LOAD_EDGE_TYPES = (IMPORT_EDGE_TYPE, "dynamic_imports", "dynamic_uses")
 #: Bound parameters per ``IN`` list, well under SQLite's variable limit.
 _CHUNK = 500
 
@@ -86,11 +90,11 @@ METHOD = {
     "inferred: matched by import name only, no declaration linked",
     "line": "first import statement of the file (a line starting with an import "
     "keyword, or inside a Go import block) that names the module; absent when none does",
-    "reachability": "reachable: an entry point or reachability root imports the file "
-    "through stored import edges; unreachable: an open dead-code unreachable_file finding; "
+    "reachability": "reachable: an entry point or reachability root loads the file "
+    "through stored import or resolved dynamic-load edges; unreachable: an open dead-code unreachable_file finding; "
     "test: a test file; unknown: neither",
-    "owners": "declared teams from the catalog spec.owner and CODEOWNERS; "
-    "individuals are never named",
+    "owners": "declared teams from the catalog spec.owner and CODEOWNERS; individual "
+    "and unresolved owners are counted in owner_counts, never named",
 }
 
 
@@ -253,20 +257,20 @@ class FileFacts:
     import_lines: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
     repo_root: Path | None = None
 
-    def teams(self, path: str) -> list[str]:
-        """Declared owner teams of *path*: the component's, then CODEOWNERS'."""
-        out: list[str] = []
+    def owners(self, path: str) -> tuple[list[str], dict[str, int]]:
+        """Declared owner teams of *path* (the component's, then CODEOWNERS'), and
+        how many other declared owners there are by kind: ``individual`` and
+        ``unresolved`` (a bare ``@name`` that may be a person or a GitLab group).
+        Those are counted, never named, as in ``components ownership``."""
+        refs = []
         comp_owner = self.component_owner.get(self.component_of.get(path, ""))
         if comp_owner and self.declared is not None:
-            ref = self.declared.from_backstage(comp_owner)
-            if ref.kind == "team":
-                out.append(ref.name)
+            refs.append(self.declared.from_backstage(comp_owner))
         if self.declared is not None and self.declared.rules:
-            for owner in self.declared.codeowners_of(path):
-                ref = self.declared.from_codeowners(owner)
-                if ref.kind == "team":
-                    out.append(ref.name)
-        return list(dict.fromkeys(out))
+            refs.extend(self.declared.from_codeowners(o) for o in self.declared.codeowners_of(path))
+        teams = list(dict.fromkeys(r.name for r in refs if r.kind == "team"))
+        others = Counter(r.kind for r in dict.fromkeys(refs) if r.kind != "team")
+        return teams, dict(sorted(others.items()))
 
     def line_of(self, path: str, tokens: Sequence[str]) -> tuple[int, str] | None:
         """``(1-based line, text)`` of the first import statement naming a token."""
@@ -362,7 +366,7 @@ async def _reachability(
             await session.execute(
                 select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
                     GraphEdge.repository_id == repository_id,
-                    GraphEdge.edge_type == IMPORT_EDGE_TYPE,
+                    GraphEdge.edge_type.in_(_LOAD_EDGE_TYPES),
                 )
             )
         ).all()
@@ -453,7 +457,9 @@ def _enrich(site: dict[str, Any], name: str, facts: FileFacts) -> dict[str, Any]
         site["line"], site["statement"] = found
     if path in facts.component_of:
         site["component"] = facts.component_of[path]
-    site["owners"] = facts.teams(path)
+    site["owners"], others = facts.owners(path)
+    if others:
+        site["owner_counts"] = others
     site["reachability"] = facts.reachability.get(path, {"state": "unknown", "basis": "not_in_graph"})
     return site
 

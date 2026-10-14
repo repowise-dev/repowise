@@ -26,6 +26,8 @@ def _site_row(site: dict[str, Any]) -> dict[str, Any]:
         row["symbols"] = site["symbols"]
     if site["owners"]:
         row["owners"] = site["owners"]
+    if "owner_counts" in site:
+        row["owner_counts"] = site["owner_counts"]
     row["reachability"] = site["reachability"]
     return row
 

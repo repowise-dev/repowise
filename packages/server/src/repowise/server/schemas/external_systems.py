@@ -184,6 +184,8 @@ class PackageUsageSite(BaseModel):
     statement: str | None = None
     component: str | None = None
     owners: list[str]
+    #: Declared owners that are not teams, by kind (individual, unresolved): counted, never named.
+    owner_counts: dict[str, int] | None = None
     reachability: PackageUsageReachability
 
 

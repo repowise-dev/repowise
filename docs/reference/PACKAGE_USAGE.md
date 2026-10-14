@@ -9,8 +9,8 @@
 | `mapping: declared` | Indexing linked the import to the package's manifest declaration: the module is the declared name or starts with it (`requests.adapters`, `lodash/merge`). Each entry in `modules` carries its own mapping, and a file's symbols and line come from its declared modules when it has any. |
 | `mapping: inferred` | No declaration is linked; the module merely starts with the name asked for. A Python distribution imported under another name (`PyYAML` as `yaml`) is found only by asking for the import name. |
 | `line` | The first import statement in the file that names the module: a line that starts with an import keyword (comments never count), or a line inside a Go `import ( ... )` block. Absent when none matches. |
-| `owners` | Declared teams only: the catalog `spec.owner` and CODEOWNERS teams. Individuals are never listed. |
-| `reachability` | `reachable`: an entry point imports the file through stored import edges. `unreachable`: an open `unreachable_file` finding that the dead-code surface serves. `test`: a test file. `unknown`: neither, since a framework, script or reflection may still load it. |
+| `owners` | Declared teams only: the catalog `spec.owner` and CODEOWNERS teams. Individual owners, and bare `@name` handles that may be a person or a GitLab group (`unresolved`), are counted in `owner_counts` and never named. |
+| `reachability` | `reachable`: an entry point loads the file through stored import edges or the dynamic loads indexing resolves (`importlib.import_module`, `"module:attr"` string tables such as lazily loaded CLI commands). `unreachable`: an open `unreachable_file` finding that the dead-code surface serves. `test`: a test file. `unknown`: neither, since a framework, script or reflection may still load it. |
 
 ## Export and import
 

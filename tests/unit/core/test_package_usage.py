@@ -46,6 +46,8 @@ async def test_sites_carry_line_component_owners_and_reachability(session, tmp_p
     legacy = sites["src/old/legacy.py"]
     assert legacy["reachability"] == {"state": "unreachable", "basis": "dead_code"}
     assert legacy["owners"] == []  # an individual CODEOWNERS entry is never named
+    assert legacy["owner_counts"] == {"individual": 1}  # but it is counted
+    assert "owner_counts" not in util
     assert legacy["component"] == "src"  # the derived top-level directory
 
     assert sites["tests/test_util.py"]["reachability"]["state"] == "test"
@@ -201,3 +203,21 @@ def test_import_lines_skip_comments_and_read_go_blocks(tmp_path):
     js = tmp_path / "a.js"
     js.write_text("// require('lodash')\nconst _ = require('lodash')\n", encoding="utf-8")
     assert _import_lines(js) == [(2, "const _ = require('lodash')")]
+
+
+async def test_a_resolved_dynamic_load_reaches_a_file(session, tmp_path):  # noqa: F811
+    from repowise.core.persistence.models import GraphEdge
+
+    # A "module:attr" string table in an entry point loads the file lazily.
+    session.add(
+        GraphEdge(
+            repository_id=REPO,
+            source_node_id="src/app/main.py",
+            target_node_id="src/jobs/worker.py",
+            edge_type="dynamic_uses",
+        )
+    )
+    await session.commit()
+    doc = await package_usage(session, REPO, tmp_path, "requests")
+    worker = _by_path(doc)["src/jobs/worker.py"]
+    assert worker["reachability"] == {"state": "reachable", "basis": "import_graph"}
