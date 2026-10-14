@@ -50,10 +50,8 @@ def get_tool_catalog(
     return catalog
 
 
-def get_tool_schemas_for_llm(
-    repo_path: str | None, principal: Principal | None = None
-) -> list[dict[str, Any]]:
-    """Return OpenAI-format definitions from FastMCP's canonical schemas."""
+def tool_schemas(catalog: list[ChatToolContract]) -> list[dict[str, Any]]:
+    """OpenAI-format definitions for *catalog*, the only tools a model is shown."""
     return [
         {
             "type": "function",
@@ -63,8 +61,15 @@ def get_tool_schemas_for_llm(
                 "parameters": tool.parameters,
             },
         }
-        for tool in get_tool_catalog(repo_path, principal)
+        for tool in catalog
     ]
+
+
+def get_tool_schemas_for_llm(
+    repo_path: str | None, principal: Principal | None = None
+) -> list[dict[str, Any]]:
+    """Return OpenAI-format definitions from FastMCP's canonical schemas."""
+    return tool_schemas(get_tool_catalog(repo_path, principal))
 
 
 def _make_json_serializable(obj: Any) -> Any:
@@ -182,19 +187,43 @@ def _catalog_entry(tool_name: str, repo_path: str | None) -> ToolEntry | None:
     )
 
 
-def get_artifact_type(tool_name: str, repo_path: str | None) -> str:
-    entry = _catalog_entry(tool_name, repo_path)
-    return entry.artifact_type if entry is not None else "generic"
+class LocalToolBackend:
+    """The default chat ``ToolBackend``: this server's configured MCP surface.
 
+    One instance is bound to one session's repository and principal, which is
+    the per-session part of tool state. The tools' data handles (database,
+    search, workspace registry) stay process-wide in ``mcp_server``, published
+    by :func:`init_tool_state` and :func:`set_tool_workspace`, so one process
+    serves one index or workspace; repo scoping keeps sessions apart within it.
+    """
 
-def get_artifact_presentation(tool_name: str, repo_path: str | None) -> str:
-    entry = _catalog_entry(tool_name, repo_path)
-    return entry.presentation if entry is not None else "generic"
+    def __init__(
+        self,
+        repo_path: str | None,
+        *,
+        repo_alias: str | None = None,
+        repo_id: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        self.repo_path = repo_path
+        self.repo_alias = repo_alias
+        self.repo_id = repo_id
+        self.principal = principal
 
+    def catalog_for(self, policy: Any, principal: Principal | None) -> list[ChatToolContract]:
+        """The repository's surface within *principal*'s tool scope. The session
+        narrows it further by *policy*, for every backend alike."""
+        return get_tool_catalog(self.repo_path, principal)
 
-def get_artifact_evidence_basis(tool_name: str, repo_path: str | None) -> str:
-    entry = _catalog_entry(tool_name, repo_path)
-    return entry.evidence_basis if entry is not None else "unknown"
+    async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return await execute_tool(
+            name,
+            arguments,
+            repo_path=self.repo_path,
+            repo=self.repo_alias,
+            principal=self.principal,
+            repo_id=self.repo_id,
+        )
 
 
 def init_tool_state(

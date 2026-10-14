@@ -638,7 +638,9 @@ class ChatStreamEvent:
     - ``text_delta``: incremental text token(s) in ``text``
     - ``tool_start``: a completed tool call block in ``tool_call``
     - ``tool_result``: tool execution result (from internal loops) in ``tool_call`` + ``tool_result_data``
-    - ``usage``: token counts in ``input_tokens`` / ``output_tokens``
+    - ``usage``: the call's token counts in ``input_tokens`` / ``output_tokens``.
+      At most one per ``stream_chat`` call, after ``stop``, and only when the
+      SDK reported usage; no ``usage`` event means the counts are unknown.
     - ``stop``: end of generation (may follow tool_start if stop_reason is tool_use)
     - ``assistant_content``: the turn's provider-native blocks in ``content_blocks``,
       after ``stop``. The caller stores them on the assistant message as

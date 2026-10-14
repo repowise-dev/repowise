@@ -14,6 +14,17 @@ import type { DecisionRecord } from "./decisions.js";
 import type { EvidenceCard } from "./cards.js";
 import type { ViewPart } from "./views.js";
 
+/** Headless chat session wire types, generated from the server schema. */
+export type {
+  ChatSessionMessageRequest,
+  ChatSessionOpenRequest,
+  ChatSessionPolicyRequest,
+  ChatSessionResponse,
+  ChatToolTraceEntry,
+  ChatTurnResultResponse,
+  ChatTurnUsage,
+} from "./generated/http.js";
+
 // ---------------------------------------------------------------------------
 // Product context surrounding a chat composer
 // ---------------------------------------------------------------------------
@@ -698,10 +709,11 @@ export type ChatSSEEvent =
   /** A table or chart the server built from a tool result of this turn,
    *  sent right after the `show_view` call's `tool_result`. */
   | { type: "view"; tool_id: string; view: ViewPart }
-  /** Every turn ended in a tool call; `done` still follows. */
-  | { type: "truncated"; loops: number }
+  /** A limit stopped the turn before a final answer; `done` still follows.
+   *  `reason` is `loop_cap` (every call ended in a tool call) or `token_budget`. */
+  | { type: "truncated"; loops: number; reason?: "loop_cap" | "token_budget" }
   /** Next steps for the turn that just finished, sent just before `done`.
    *  A turn that failed or called no tool sends none. */
   | { type: "suggestions"; suggestions: ChatSuggestion[] }
-  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
+  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string; replayed?: boolean }
   | { type: "error"; message: string };

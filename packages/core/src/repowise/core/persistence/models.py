@@ -1499,9 +1499,18 @@ class DecisionAlias(Base):
 
 
 class Conversation(Base):
-    """A chat conversation for a repository."""
+    """A chat conversation for a repository.
+
+    A headless session also carries the caller's opaque thread key
+    (``namespace`` plus ``external_ref``, unique together), its scope, the
+    principal that opened it, the policy frozen at open, and running token
+    and turn counts. Conversations started from the web leave them empty.
+    """
 
     __tablename__ = "conversations"
+    __table_args__ = (
+        Index("uq_conversations_external_ref", "namespace", "external_ref", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
     repository_id: Mapped[str] = mapped_column(
@@ -1510,6 +1519,19 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False, default="New conversation")
     pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    namespace: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    external_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # {"kind": "repo" | "workspace", "alias": str | None}; NULL reads as repo.
+    scope_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    principal_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    policy_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    output_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -1522,6 +1544,11 @@ class ChatMessage(Base):
     """A single message in a chat conversation."""
 
     __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index(
+            "uq_chat_messages_idempotency_key", "conversation_id", "idempotency_key", unique=True
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
     conversation_id: Mapped[str] = mapped_column(
@@ -1529,6 +1556,9 @@ class ChatMessage(Base):
     )
     role: Mapped[str] = mapped_column(String(32), nullable=False)  # user | assistant
     content_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    #: On a user message: the caller's key for this send, so a retry returns
+    #: the stored reply instead of running the turn again.
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

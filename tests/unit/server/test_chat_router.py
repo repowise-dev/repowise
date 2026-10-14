@@ -10,8 +10,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from repowise.core.providers.llm.base import ChatStreamEvent, ChatToolCall, ProviderError
+from repowise.server.chat_prompt import _build_system_prompt
+from repowise.server.chat_session import WEB_POLICY
 from repowise.server.chat_tools import get_tool_catalog
-from repowise.server.routers.chat import _MAX_AGENTIC_LOOPS, _build_system_prompt
 from repowise.server.schemas.chat import ChatPageContext
 from tests.unit.server.test_chat_stream_terminal_event import (
     _REPO_ID,
@@ -21,7 +22,8 @@ from tests.unit.server.test_chat_stream_terminal_event import (
 )
 
 _PROVIDER = "repowise.server.routers.chat.get_chat_provider_instance"
-_EXECUTE = "repowise.server.routers.chat.execute_tool"
+_EXECUTE = "repowise.server.chat_tools.execute_tool"
+_MAX_AGENTIC_LOOPS = WEB_POLICY.max_tool_loops
 
 _FILE_PAGE = {"kind": "file", "label": "Files", "target": "src/a.py", "target_kind": "path"}
 _CONTEXT_RESULT = {"targets": {"src/a.py": {"docs": {"title": "A", "content_md": "alpha"}}}}

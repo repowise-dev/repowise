@@ -133,9 +133,17 @@ def auth_is_open(request: Request) -> bool:
     return not get_authenticator().configured() and client_is_local(request)
 
 
-#: Routes a repo-scoped principal may call without naming a repo, because the
-#: handler filters its output to the principal's scope.
-_SCOPE_FILTERED_ROUTES = frozenset({("GET", "/api/repos"), ("GET", "/api/repos/summary")})
+#: Routes a repo-scoped principal may call without naming a repo in the path,
+#: because the handler filters its output to, or checks, the principal's scope.
+_SCOPE_FILTERED_ROUTES = frozenset(
+    {
+        ("GET", "/api/repos"),
+        ("GET", "/api/repos/summary"),
+        ("POST", "/api/chat/sessions"),
+        ("GET", "/api/chat/sessions"),
+        ("POST", "/api/chat/sessions/{session_id}/messages"),
+    }
+)
 
 
 async def _repo_identifiers(request: Request, repo_id: str) -> tuple[str, ...]:

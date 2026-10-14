@@ -502,7 +502,7 @@ async def test_show_view_streams_a_view_event_and_stores_the_view():
     execute = AsyncMock(return_value=DEAD_CODE)
 
     with patch(_PROVIDER, return_value=provider), patch(
-        "repowise.server.routers.chat.execute_tool", execute
+        "repowise.server.chat_tools.execute_tool", execute
     ):
         events = _data_events(await _post(app, {"message": "Show dead code by tier"}))
 
@@ -526,7 +526,7 @@ async def test_a_turn_without_show_view_stores_no_views():
     app = await _make_app()
     provider = _ScriptedProvider([[_call("t1", "get_risk", {})], [ChatStreamEvent(type="text_delta", text="ok")]])
     with patch(_PROVIDER, return_value=provider), patch(
-        "repowise.server.routers.chat.execute_tool", AsyncMock(return_value=RISK)
+        "repowise.server.chat_tools.execute_tool", AsyncMock(return_value=RISK)
     ):
         events = _data_events(await _post(app, {"message": "risk?"}))
     assert "view" not in [event["type"] for event in events]

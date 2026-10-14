@@ -286,9 +286,13 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
             async with self._client.messages.stream(**kwargs) as stream:
                 async for event in _iter_anthropic_stream_events(stream):
                     yield event
-                blocks = _thinking_turn_blocks(await stream.get_final_message())
+                final = await stream.get_final_message()
+                blocks = _thinking_turn_blocks(final)
                 if blocks:
                     yield ChatStreamEvent(type="assistant_content", content_blocks=blocks)
+                usage = _final_usage(final)
+                if usage is not None:
+                    yield usage
 
 
 def _translate_anthropic_errors() -> AbstractContextManager[None]:
@@ -361,21 +365,30 @@ async def _iter_anthropic_stream_events(stream: Any) -> AsyncIterator[ChatStream
 
 
 def _message_delta_events(event: Any) -> list[ChatStreamEvent]:
-    """Usage and stop events carried by a ``message_delta``, in that order."""
-    events: list[ChatStreamEvent] = []
-    usage = getattr(event, "usage", None)
-    if usage:
-        events.append(
-            ChatStreamEvent(
-                type="usage",
-                input_tokens=getattr(usage, "input_tokens", 0) or 0,
-                output_tokens=getattr(usage, "output_tokens", 0) or 0,
-            )
-        )
+    """The stop event carried by a ``message_delta``; usage is read once, at the end."""
     stop = getattr(event.delta, "stop_reason", None)
-    if stop:
-        events.append(ChatStreamEvent(type="stop", stop_reason=stop))
-    return events
+    return [ChatStreamEvent(type="stop", stop_reason=stop)] if stop else []
+
+
+def _final_usage(message: Any) -> ChatStreamEvent | None:
+    """The call's ``usage`` event from the final message, cache reads and writes
+    counted as input as ``generate`` does; None when the SDK reported none."""
+    usage = getattr(message, "usage", None)
+    counts = [
+        getattr(usage, key, None)
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
+    ]
+    if not isinstance(counts[0], int) or not isinstance(counts[1], int):
+        return None
+    cached = sum(c for c in counts[2:] if isinstance(c, int))
+    return ChatStreamEvent(
+        type="usage", input_tokens=counts[0] + cached, output_tokens=counts[1]
+    )
 
 
 def _build_cached_payload(
