@@ -1,0 +1,19 @@
+# Package usage
+
+`repowise packages where <name>` lists the files that import a third-party package, with the import line, the component each file belongs to, its declared owner teams, and whether it is reachable. Packages come from the manifests the index already parses (`package.json`, `pyproject.toml`, `requirements*.txt`, `Cargo.toml`, `go.mod`, `.csproj`, `pom.xml`); import sites come from the import graph. The same answer is served by `get_context(targets=["package:<name>"])` and `GET /api/repos/{id}/external-systems/{package}/usage`.
+
+## What each field rests on
+
+| Field | Basis |
+|---|---|
+| `mapping: declared` | Indexing linked the import to the package's manifest declaration: the module is the declared name or starts with it (`requests.adapters`, `lodash/merge`). |
+| `mapping: inferred` | No declaration is linked; the module merely starts with the name asked for. A Python distribution imported under another name (`PyYAML` as `yaml`) is found only by asking for the import name. |
+| `line` | The first import statement in the file that names the module, by text match. Absent when none matches. |
+| `owners` | Declared teams only: the catalog `spec.owner` and CODEOWNERS teams. Individuals are never listed. |
+| `reachability` | `reachable`: an entry point imports the file through stored import edges. `unreachable`: dead-code analysis reported the file as `unreachable_file`. `test`: a test file. `unknown`: neither, since a framework, script or reflection may still load it. |
+
+## Export and import
+
+`repowise packages export --format cyclonedx` writes a CycloneDX 1.6 JSON document: one `library` component per declared package, with `evidence.occurrences` (`location`, `line`, `symbol`, `additionalContext`) for each declared import site. It records where packages are used. It is not an SBOM: there are no hashes or licenses, no transitive dependencies, and no resolved versions; the manifest's version specifier is kept as the `repowise:declared_version` property.
+
+`repowise packages import <file>` reads a Syft JSON, SPDX 2.x JSON, CycloneDX JSON or OSV JSON file you supply (a record, a list of records, or OSV-Scanner output) and joins its packages to usage by name, and by ecosystem when the file gives one. Repowise never fetches advisory feeds and never matches vulnerabilities itself: an OSV file's own affected-package list is joined by name and its version ranges are not evaluated. The reader is the local default of the `advisory-source` seam (`REPOWISE_SEAM_ADVISORY_SOURCE`); a plugin can register another source, which receives the repository's declared packages.

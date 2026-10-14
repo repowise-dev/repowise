@@ -1596,6 +1596,18 @@ repowise components ownership [--path PATH] [--format table|json]
 
 ---
 
+### `repowise packages`
+
+`where` lists the files that import a third-party package (a name or `ecosystem:name`) with the import line, component, declared owner teams and reachability, each with its basis. `export --format cyclonedx` writes the declared packages and their import sites as CycloneDX 1.6 JSON (`evidence.occurrences`); it is not an SBOM. `import` joins a Syft, SPDX, CycloneDX or OSV JSON file you supply to usage by package name; nothing is fetched and no vulnerability is matched. See [PACKAGE_USAGE.md](PACKAGE_USAGE.md).
+
+```bash
+repowise packages where NAME [--path PATH] [--format text|json]
+repowise packages export [--format cyclonedx] [-o FILE] [--path PATH]
+repowise packages import FILE [--path PATH] [--format text|json]
+```
+
+---
+
 ### `repowise changes`
 
 Merged changes read back from git at each index and update: one per first-parent commit, identified by the PR or MR number its message names, then a Gerrit `Change-Id`, then the merge or commit sha. A merge lands the commits its branch brought in, and rebase merges read as one change per commit. `show` takes an id (`pr-123`) or any commit sha the change landed, and prints the versioned JSON record or, with `--format in-toto`, an in-toto Statement v1 whose subjects are the commits.
