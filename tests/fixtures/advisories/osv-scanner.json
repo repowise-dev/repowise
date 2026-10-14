@@ -1,0 +1,17 @@
+{
+  "results": [
+    {
+      "source": {"path": "requirements.txt", "type": "lockfile"},
+      "packages": [
+        {
+          "package": {"name": "requests", "version": "2.31.0", "ecosystem": "PyPI"},
+          "vulnerabilities": [{"id": "GHSA-9wx4-h78v-vm56", "aliases": ["CVE-2024-35195"], "affected": []}]
+        },
+        {
+          "package": {"name": "jinja2", "version": "3.1.2", "ecosystem": "PyPI"},
+          "vulnerabilities": [{"id": "GHSA-h5c8-rqwp-cp95", "aliases": ["CVE-2024-22195"]}]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "demo",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-pypi-PyYAML",
+      "name": "PyYAML",
+      "versionInfo": "6.0.1",
+      "externalRefs": [
+        {"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:pypi/pyyaml@6.0.1"}
+      ]
+    },
+    {"SPDXID": "SPDXRef-Package-requests", "name": "requests", "versionInfo": "2.31.0"}
+  ]
+}
