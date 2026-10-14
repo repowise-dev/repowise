@@ -263,7 +263,11 @@ def _dart_call_receiver(name: Node, src: str) -> CallReceiver | None:
     """
     if name.parent.type == "unconditional_assignable_selector":
         head = name.parent.parent
-        receiver: str | None = _node_text(head.prev_named_sibling, src).strip()
+        prev = head.prev_named_sibling
+        if prev is not None and any(c.type == "argument_part" for c in prev.named_children):
+            receiver = None
+        else:
+            receiver = _node_text(prev, src).strip() if prev is not None else None
     else:
         head, receiver = name, None
     return CallReceiver(

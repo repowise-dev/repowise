@@ -1774,11 +1774,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         A receiver records one hop, but the parser keeps every link of a chain
         as its own site on the chain's first line, so the hop below is read
-        off the site *inner* names. C#, Go and Java read it, so a builder chain
+        off the site *inner* names. C#, Dart, Go and Java read it, so a builder chain
         types each link from the one before; elsewhere an inner call is still
         typed as if nothing were chained under it.
         """
-        if language not in ("csharp", "go", "java"):
+        if language not in ("csharp", "dart", "go", "java"):
             return None
         sites = self._chained_sites.get(file_path)
         if sites is None:
