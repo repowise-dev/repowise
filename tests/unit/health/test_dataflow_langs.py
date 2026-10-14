@@ -2793,3 +2793,343 @@ def test_csharp_lambda_writing_outer_local_records_def():
     assert any(occ.name == "tryCount" for occ in fn.def_use.captured.writes)
     extractions = find_extractions(fn, lmap)
     assert not any(x.start_line <= 4 and x.end_line >= 5 for x in extractions)
+
+
+# == Scala ======================================================================
+
+# Every Scala write shape in one method: ``val`` / ``var`` / ``lazy val``, a tuple
+# pattern, plain and compound assignment, a ``for`` head with a guard and a ``=``
+# binder, a ``case`` binding, and targets that are not locals.
+_SCALA_SHAPES = """
+class Demo {
+  var field = 0
+  def shapes(input: List[Int], base: Int): Int = {
+    var total = 0
+    val (p, q) = (1, 2)
+    lazy val w = p + q
+    total = total + base
+    total += input.head
+    this.field = 3
+    input(0) = 4
+    for (i <- input if i > 0; j = i * 2) { total += j }
+    val r = base match { case a if a > 1 => a; case (b, c) => b; case _ => 0 }
+    total + w + r
+  }
+}
+"""
+
+
+def test_scala_def_use_classification():
+    fn = _first("scala", _SCALA_SHAPES)
+    defs = {(d.var, d.declares) for d in fn.def_use.definitions}
+    assert {("total", True), ("p", True), ("q", True), ("w", True), ("r", True)} <= defs
+    assert {("i", True), ("j", True)} <= defs  # for generator + ``=`` binder
+    assert {("a", True), ("b", True), ("c", True)} <= defs  # case pattern bindings
+    assert {"input", "base"} <= _def_names(fn)  # parameters
+    # ``this.field = ...`` and ``input(0) = ...`` bind no local.
+    assert "field" not in _def_names(fn)
+    uses = _use_names(fn)
+    assert {"input", "base", "total", "i", "w", "r"} <= uses
+    assert "this" not in uses  # the receiver, not a variable
+
+
+def test_scala_compound_assignment_is_found_by_operator_text():
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(t: Int): Int = {
+            var x = 1
+            x += t
+            val sum = x + t
+            val le = x <= t
+            val ne = x != t
+            x *= 2
+            x
+          }
+        }
+        """,
+    )
+    writes = sorted(d.line for d in fn.def_use.definitions if d.var == "x" and not d.declares)
+    # Only ``x += t`` (line 5) and ``x *= 2`` (line 9): ``x + t``, ``x <= t`` and
+    # ``x != t`` are the same ``infix_expression`` and write nothing.
+    assert writes == [5, 9]
+    # A compound write also reads the old value.
+    assert any(u.name == "x" and u.line == 5 for b in fn.def_use.blocks.values() for u in b.uses)
+    assert not [d for d in fn.def_use.definitions if d.var in ("sum", "le", "ne") and d.may]
+
+
+def test_scala_collection_append_is_a_may_def_and_a_use():
+    # ``buf += x`` mutates a ListBuffer and rebinds nothing, but it is the same
+    # node as ``count += x`` on an ``Int`` var: both are a may-def plus a use.
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(t: Int): Int = {
+            val buf = scala.collection.mutable.ListBuffer.empty[Int]
+            buf += t
+            buf.size
+          }
+        }
+        """,
+    )
+    assert any(d.var == "buf" and d.may for d in fn.def_use.definitions)
+    assert any(u.name == "buf" and u.line == 5 for b in fn.def_use.blocks.values() for u in b.uses)
+
+
+def test_scala_named_argument_is_not_a_read_or_a_write():
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(p: P): Int = {
+            val a = 1
+            val p2 = p.copy(a = 2)
+            a + p2.a
+          }
+        }
+        """,
+    )
+    # ``a = 2`` is a named argument: it neither rebinds ``a`` nor reads it, and
+    # ``p`` is read, not written.
+    assert [d.var for d in fn.def_use.definitions if d.var == "a"] == ["a"]
+    assert "p" not in {d.var for d in fn.def_use.definitions if not d.declares and d.may}
+    assert "p" in _use_names(fn)
+
+
+def test_scala_lambda_does_not_leak_its_identifiers():
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(xs: List[Int], t: Int): Int = {
+            val g = xs.map { v => v + t }
+            g.sum
+          }
+        }
+        """,
+    )
+    assert "v" not in _use_names(fn)
+    assert "v" not in _def_names(fn)
+    assert "t" in {o.name for o in fn.def_use.captured.reads}  # a closure read still counts
+
+
+def test_scala_lambda_mutating_a_captured_var_is_a_closure_write():
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(xs: List[Int]): Int = {
+            var total = 0
+            xs.foreach { v => total += v }
+            total
+          }
+        }
+        """,
+    )
+    assert "total" in {o.name for o in fn.def_use.captured.writes}
+    assert "total" in {o.name for o in fn.def_use.captured.shared}
+
+
+def test_scala_catch_arm_writes_are_closure_writes():
+    # ``catch_kinds`` is empty for Scala, so the CFG never sees a handler arm; it
+    # is read as a closure instead of being dropped.
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(t: Int): Int = {
+            var x = 0
+            try { x = t } catch { case e: Exception => x = 1 }
+            x
+          }
+        }
+        """,
+    )
+    assert "x" in {o.name for o in fn.def_use.captured.writes}
+
+
+def test_scala_braceless_arms_keep_their_writes():
+    # ``if (c) errors += 1 else buf += r`` has no ``block``: the CFG builder hands
+    # over the arm's tokens one by one, so the dialect reads the arm whole.
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(records: List[Int]): Int = {
+            var errors = 0
+            for (r <- records) if (r < 0) errors += 1 else println(r)
+            errors
+          }
+        }
+        """,
+    )
+    assert any(d.var == "errors" and d.may for d in fn.def_use.definitions)
+    assert not [u for b in fn.def_use.blocks.values() for u in b.uses if u.name == "+="]
+
+
+_SCALA_PROCESS = """
+class Demo {
+  def process(records: Array[Int], threshold: Int): Int = {
+    var errors = 0
+    val results = scala.collection.mutable.ListBuffer.empty[Int]
+    for (r <- records) {
+      if (r < 0) { errors += 1 } else { results += r }
+    }
+    var total = 0
+    var count = 0
+    for (v <- results) {
+      if (v > threshold) {
+        total += v
+        count += 1
+      } else {
+        total -= v
+      }
+    }
+    var average = 0
+    if (count > 0) {
+      average = total / count
+    }
+    average + errors
+  }
+}
+"""
+
+
+def test_scala_extract_method_fires():
+    lmap = get_language_map("scala")
+    extractions = find_extractions(_first("scala", _SCALA_PROCESS), lmap)
+    assert extractions, "expected at least one Scala extraction"
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params and "threshold" in best.params
+    assert len(best.returns) <= 1
+    assert best.ccn_removed >= 1
+    assert best.slice_nloc >= 6
+
+
+def test_scala_braceless_arm_plans_match_the_braced_ones():
+    lmap = get_language_map("scala")
+    braceless = _SCALA_PROCESS.replace(
+        "if (r < 0) { errors += 1 } else { results += r }", "if (r < 0) errors += 1 else results += r"
+    )
+
+    def spans(src):
+        return [(e.start_line, e.end_line, e.params, e.returns) for e in find_extractions(_first("scala", src), lmap)]
+
+    assert spans(braceless) == spans(_SCALA_PROCESS)
+
+
+def test_scala_span_ending_in_the_final_expression_is_refused():
+    lmap = get_language_map("scala")
+    src = _SCALA_PROCESS
+    last_stmt_line = src.splitlines().index("    average + errors") + 1
+    for e in find_extractions(_first("scala", src), lmap):
+        # The block's last expression is the function's value: a span holding it
+        # would drop it, so none ends on it.
+        assert e.end_line < last_stmt_line
+    # ...and a span stopping before it returns the local the tail reads.
+    assert any("average" in e.returns for e in find_extractions(_first("scala", src), lmap))
+
+
+def test_scala_span_with_return_or_throw_is_refused():
+    lmap = get_language_map("scala")
+    src = _SCALA_PROCESS.replace(
+        "      average = total / count\n", "      average = total / count\n      if (average > 99) return 0\n"
+    )
+    assert "return 0" in src
+    ret_line = src.splitlines().index("      if (average > 99) return 0") + 1
+    for e in find_extractions(_first("scala", src), lmap):
+        assert not e.start_line <= ret_line <= e.end_line
+
+
+def test_scala_extractions_are_deterministic():
+    lmap = get_language_map("scala")
+    fn = _first("scala", _SCALA_PROCESS)
+
+    def serialize():
+        return [
+            (e.start_line, e.end_line, e.params, e.returns, e.ccn_removed)
+            for e in find_extractions(fn, lmap)
+        ]
+
+    first = serialize()
+    for _ in range(3):
+        assert serialize() == first
+
+
+def test_scala_flagged_only_gate_skips_small_functions():
+    _require("scala")
+    lines = ["class Demo {", "  def big(x: Int): Int = {", "    var y = 0"]
+    for i in range(12):
+        lines += [f"    if (x == {i}) {{", f"      y = {i}", "    }"]
+    lines += ["    y", "  }", "  def tiny(): Int = 1", "}"]
+    result = build_cfgs_for_file("m.scala", "scala", "\n".join(lines).encode())
+    if result.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for scala")
+    assert result.stats.functions_seen == 2
+    assert result.stats.functions_built == 1
+    assert [fc.name for fc in result.functions] == ["big"]
+
+
+_SCALA_COUNTERS = """
+class Demo {
+  def f(xs: List[Int]): Int = {
+    var total = 0
+    val buf = scala.collection.mutable.ListBuffer.empty[Int]
+    var pos = 0
+    var neg = 0
+    for (x <- xs) {
+      if (x > 0) { buf += x; pos += 1 } else { buf += -x; neg += 1 }
+    }
+    var zeros = 0
+    for (x <- xs) {
+      if (x == 0) { zeros += 1 } else if (x > 100) { zeros -= 1 }
+    }
+    var seen = 0
+    TOTAL_LINE
+    seen += 1
+    var avg = 0
+    if (total > 0) {
+      avg = total / 2
+    } else {
+      avg = 1
+    }
+    val n = buf.size
+    avg + total + n + pos + neg + zeros + seen
+  }
+}
+"""
+
+
+def test_scala_closure_write_to_a_captured_var_blocks_a_split():
+    # The control reads ``total`` where a plain write sets it, so the tail
+    # ``if`` is a clean extraction. When a lambda writes ``total`` instead, the
+    # write happens when the closure runs, not where it is written: the span
+    # would read a stale copy, so it is refused.
+    lmap = get_language_map("scala")
+
+    def spans(total_line):
+        fn = _first("scala", _SCALA_COUNTERS.replace("TOTAL_LINE", total_line))
+        return {(e.start_line, e.end_line) for e in find_extractions(fn, lmap)}
+
+    assert spans("total += xs.size")
+    assert not spans("xs.foreach { v => total += v }")
+
+
+def test_scala_implicit_parameter_is_carried_by_a_span_that_calls():
+    # An implicit is a use no call site writes: a span holding a call carries it
+    # as a parameter (the helper's author marks it ``implicit``).
+    src = _SCALA_PROCESS.replace(
+        "(records: Array[Int], threshold: Int)", "(records: Array[Int], threshold: Int)(implicit ec: Ec)"
+    ).replace("total += v", "total += load(v)")
+    call_line = src.splitlines().index("        total += load(v)") + 1
+    spans = find_extractions(_first("scala", src), get_language_map("scala"))
+    with_call = [e for e in spans if e.start_line <= call_line <= e.end_line]
+    assert with_call
+    assert all("ec" in e.params for e in with_call)
+    # No implicit, no extra parameter.
+    plain = _SCALA_PROCESS.replace("total += v", "total += load(v)")
+    spans = find_extractions(_first("scala", plain), get_language_map("scala"))
+    assert spans and all("ec" not in e.params for e in spans)

@@ -20,6 +20,7 @@ from . import go as _go
 from . import java as _java
 from . import python as _python
 from . import rust as _rust
+from . import scala as _scala
 from . import ts_js as _ts_js
 from .base import (
     DEFUSE_DIALECTS,
@@ -46,6 +47,7 @@ _REGISTER: tuple[tuple[str, BaseDefUseDialect], ...] = (
     ("rust", _rust.DIALECT),
     ("cpp", _cpp.DIALECT),
     ("csharp", _csharp.DIALECT),
+    ("scala", _scala.DIALECT),
     ("razor", _csharp.DIALECT),
     # A C parse tree carries no C++-only node (``for_range_loop``, lambdas,
     # ``co_await``), so the C++ dialect reads it whole.

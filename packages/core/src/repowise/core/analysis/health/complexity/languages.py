@@ -1041,6 +1041,32 @@ _SCALA = LanguageNodeMap(
     call_kinds=frozenset({"call_expression", "instance_expression"}),
     # Scala has no async syntax; the perf dialect's ``is_async_fn`` sniffs a
     # declared ``Future[...]`` return type instead.
+    #
+    # Dataflow (Extract Method). ``x = e`` is an ``assignment_expression``;
+    # ``val`` / ``var`` (``lazy val`` too) are the declarations. Compound
+    # assignment (``x += 1``) is NOT an assignment node: it is an
+    # ``infix_expression`` whose operator text ends in ``=``, the same node as
+    # ``a + b``, so it cannot be an ``augmented_assign_kinds`` member (the
+    # slicer would read every infix as a write) and that set stays empty; the
+    # dialect finds the write by the operator text instead. ``if`` / ``match`` /
+    # ``try`` / ``return`` / ``throw`` are expressions, mapped to their
+    # statement-level kinds. ``break_kinds`` / ``continue_kinds`` stay empty:
+    # Scala has no such keywords (``break()`` is a library call).
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"val_definition", "var_definition"}),
+    if_kinds=frozenset({"if_expression"}),
+    # ``indented_block`` is the Scala 3 brace-less ``block``.
+    block_kinds=frozenset({"block", "indented_block"}),
+    return_kinds=frozenset({"return_expression"}),
+    raise_kinds=frozenset({"throw_expression"}),
+    # Scala is expression-oriented: a block's last expression is its value, so
+    # a span ending on it would drop that value when lifted. A non-empty
+    # ``statement_wrapper_kinds`` is the slicer's marker for such a grammar and
+    # makes it refuse those spans. tree-sitter-scala wraps no statement, so the
+    # kind named here is one it never emits, which keeps the CFG builder's
+    # unwrapping inert. Ceiling: any block whose last statement is not a
+    # ``val`` / ``var`` is taken to carry a value (a ``Unit`` loop included).
+    statement_wrapper_kinds=frozenset({"expression_statement"}),
 )
 
 
