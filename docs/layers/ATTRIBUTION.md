@@ -57,6 +57,14 @@ the model in `.repowise/attribution/events.jsonl`, never prompts or code. `repow
 post-commit hook runs) matches those hashes to the lines new commits added and labels a
 matched commit with the agent. An unmatched commit stays `unknown`.
 
+### Backfill from transcripts
+
+`repowise attribution backfill --agent claude-code,codex` binds past commits from the
+transcripts these agents keep on this machine, under the same consent. It keeps line
+hashes only, binds an edit to a commit made within 14 days after it, and needs a run of 6
+substantive lines. When it binds new commits, the next `repowise update` re-reads git
+history once to label them.
+
 ### `local` and `notes`: what leaves the machine
 
 | Level | Writes | Leaves the machine |
@@ -94,6 +102,7 @@ Key reference: [CONFIG.md](../reference/CONFIG.md#the-attribution-block).
 | Command | What it does |
 |---|---|
 | `repowise attribution status [--format json]` | Effective, repo and user values, why any differ, capture per agent, sidecar counts, and commits by label with coverage |
+| `repowise attribution backfill --agent claude-code,codex [--format json]` | Binds past commits from local transcripts; prints commits scanned, bound and coverage before and after |
 | `repowise attribution purge [--yes]` | Deletes the index labels and file rollups, the `.repowise/attribution/` sidecar and the notes Repowise wrote locally. Git history, trailers and notes written by anything else stay |
 | `repowise doctor` | At `capture: notes`, checks the fetch refspec, the push refspec and `notes.rewriteRef`, and names the command for anything missing |
 
