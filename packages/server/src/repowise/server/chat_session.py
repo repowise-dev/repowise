@@ -326,7 +326,7 @@ class _Turn:
         plan = plan_grounding(page_context, (tool.entry for tool in self.catalog.values()))
         if plan is not None and _history_has_call(self.base, plan.tool_name, plan.arguments):
             plan = None
-        grounding = await run_grounding(plan, self.execute)
+        grounding = await run_grounding(plan, self.execute, unstamp=self.views.unstamp)
         if grounding is None:
             return None
         self.rounds.append(grounding.llm_messages())
@@ -471,13 +471,16 @@ class _Turn:
         """Record one tool result as a stored call and return its events: the
         result, then the view a successful ``show_view`` built."""
         tool = self.catalog.get(name)
-        summary = _build_tool_summary(name, result)
+        # The stored artifact keeps the tool's own data; only the model's copy is stamped.
+        artifact_id, data = self.views.unstamp(result)
+        summary = _build_tool_summary(name, data)
         artifact = create_artifact_envelope(
             tool_name=name,
             artifact_type=tool.entry.artifact_type if tool else "generic",
             presentation=tool.entry.presentation if tool else "generic",
-            data=result,
+            data=data,
             title=summary,
+            artifact_id=artifact_id,
             evidence_basis=tool.entry.evidence_basis if tool else "unknown",
         )
         self.tool_calls.append(_stored_tool_call(tool_id, name, arguments, summary, artifact))
