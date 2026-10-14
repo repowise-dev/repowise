@@ -318,7 +318,10 @@ presentation and policy layer is what's rolling out commercially.
   scope already shipping in OSS).
 - **Custom decision policies** *(planned)*: required-reviewer rules, mandatory
   `get_why` checks for governed paths, and merge-gating policies tied to Repowise
-  findings.
+  findings. Policy authoring and local or CI evaluation are planned for open
+  source, following the local security gate that ships today. The commercial layer adds
+  central policy management, organisation-wide enforcement across repositories,
+  approval workflows and a policy audit trail.
 
 ### 5.4 Enterprise Operations
 
