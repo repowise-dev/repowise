@@ -708,3 +708,113 @@ def risk_hotspots_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> di
         rows=rows,
         total_rows=total,
     )
+
+
+def _changes_block(artifact: ViewArtifact) -> Mapping[str, Any]:
+    block = artifact.data.get("changes")
+    if not isinstance(block, Mapping) or not block.get("total"):
+        raise ViewError(
+            'this result has no change records; call get_overview(include=["changes"])'
+        )
+    return block
+
+
+def _window(block: Mapping[str, Any]) -> str:
+    window = block.get("window")
+    days = window.get("days") if isinstance(window, Mapping) else None
+    return f" over the last {days} days of merged changes" if isinstance(days, int) else ""
+
+
+@register_view_builder(
+    "changes.by_category",
+    description="Merged changes per category (feature, fix, ...).",
+    artifact_types={"overview"},
+    options=frozenset(),
+)
+def changes_by_category_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
+    block = _changes_block(artifact)
+    by_category = block.get("by_category")
+    rows = [
+        {"category": category, "changes": count}
+        for category, count in (by_category.items() if isinstance(by_category, Mapping) else ())
+        if isinstance(count, int) and not isinstance(count, bool)
+    ]
+    return _chart(
+        title="Changes by category",
+        summary=f"{sum(r['changes'] for r in rows)} changes{_window(block)}.",
+        basis=_basis("measured", "git history"),
+        x=("category", "Category"),
+        series=[("changes", "Changes")],
+        unit="changes",
+        rows=rows,
+    )
+
+
+@register_view_builder(
+    "changes.by_week",
+    description="Merged changes per week.",
+    artifact_types={"overview"},
+    options=frozenset(),
+)
+def changes_by_week_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
+    block = _changes_block(artifact)
+    weeks = block.get("by_week")
+    rows = [
+        {"week": w["week"], "changes": w["changes"]}
+        for w in (weeks if isinstance(weeks, list) else ())
+        if isinstance(w, Mapping)
+        and isinstance(w.get("week"), str)
+        and isinstance(w.get("changes"), int)
+        and not isinstance(w.get("changes"), bool)
+    ][-VIEW_LIMITS["chart_points"] :]
+    return _chart(
+        chart_type="line",
+        title="Changes per week",
+        summary=f"{len(rows)} weeks{_window(block)}, oldest first.",
+        basis=_basis("measured", "git history"),
+        x=("week", "Week of"),
+        series=[("changes", "Changes")],
+        unit="changes",
+        rows=rows,
+    )
+
+
+_PROVENANCE_BANDS = (
+    ("agent", "agent_changes"),
+    ("human attested", "human_attested_changes"),
+    ("unknown", "unknown_changes"),
+)
+
+
+@register_view_builder(
+    "changes.provenance",
+    description="Merged changes by source: agent, human-attested, unknown.",
+    artifact_types={"overview"},
+    options=frozenset(),
+    coverage_metric="attribution",
+)
+def changes_provenance_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
+    block = _changes_block(artifact)
+    provenance = block.get("provenance")
+    if not isinstance(provenance, Mapping) or "coverage" not in provenance:
+        raise ViewError("attribution is off for this repository", code="attribution_off")
+    # Unknown is its own band, never folded into human.
+    rows = [
+        {"source": label, "changes": provenance[key]}
+        for label, key in _PROVENANCE_BANDS
+        if isinstance(provenance.get(key), int) and not isinstance(provenance.get(key), bool)
+    ]
+    part = _chart(
+        chart_type="donut",
+        title="Changes by source",
+        summary=f"{sum(r['changes'] for r in rows)} changes{_window(block)}.",
+        basis=_basis("measured", "git attribution markers"),
+        x=("source", "Source"),
+        series=[("changes", "Changes")],
+        unit="changes",
+        rows=rows,
+    )
+    coverage = provenance.get("coverage")
+    if isinstance(coverage, (int, float)) and not isinstance(coverage, bool):
+        part["coverage"] = {"metric": "attribution", "ratio": coverage}
+    return part

@@ -32,6 +32,9 @@ Optional ``include`` parameter widens the response:
   - include=["health"]    → code-health scores and biomarkers for the target
   - include=["doc_drift"] → documents that name this file, and their drift
   - include=["symbols"]   → every symbol in a file card, not the ranked top 15
+  - include=["changes"]   → recent Change Records touching a file target
+  - include=["provenance"]→ a file's commits by source (agent, human-attested,
+                            unknown) with coverage and the honest agent share
 
 An unrecognised key is dropped and named in ``ignored_arguments`` rather than
 silently ignored: an unknown key otherwise produces exactly the response the
@@ -55,6 +58,7 @@ from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._changes import change_cards, is_change_target
 from repowise.server.mcp_server._components import component_cards, is_component_target
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
@@ -100,6 +104,8 @@ _INCLUDE_BLOCKS = frozenset(
         "health",
         "doc_drift",
         "symbols",
+        "changes",
+        "provenance",
     }
 )
 
@@ -128,9 +134,8 @@ async def get_context(
     decision_record titles. A symbol row without symbol_id is path::name.
     fix_history appears only on files with counted bug fixes (count, age,
     bug_magnet); hotspot is churn. Either one is a cue to
-    call get_risk. episodes counts the dated records bound to a target — what
-    happened here and why — and appears only when there is at least one;
-    get_why serves the bodies. A symbol target is counted as its file, and a
+    call get_risk. episodes counts the dated records bound to a target
+    (absent at zero); get_why serves the bodies. A symbol target is counted as its file, and a
     module aggregates everything beneath it.
     Batch targets in one call. No source bytes by default: pass
     include=["skeleton"] for the whole file body-elided and line-verified in
@@ -144,11 +149,12 @@ async def get_context(
     Include-gated blocks are projections, not omissions.
 
     Args:
-        targets: paths, "path::Symbol" ids, or "component:<name>".
+        targets: paths, "path::Symbol" ids, "component:<name>", or
+            "change:<id>" (pr-123 or a commit sha).
         include: opt-in blocks: full_doc | ownership | last_change | callers
             | callees | references | metrics | community | decisions | skeleton
             | skeleton+ | health | doc_drift (docs naming this file)
-            | symbols (all of a file's symbols, not the top 15).
+            | symbols (all, not the top 15) | changes | provenance.
         compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.
     """
@@ -202,10 +208,13 @@ async def get_context(
         # batch. Any exception is converted below into a per-target error
         # entry that carries "target", so the comprehension keyed on target
         # below never KeyErrors.
-        # Component targets resolve first, in turn on this session and from one
-        # component load, so they never share the session with the gather.
+        # Component and change targets resolve first, in turn on this session,
+        # so they never share the session with the gather.
         cards = await _component_cards(
             session, repository, [t for t in targets if is_component_target(t)], ctx, exclude_spec
+        )
+        cards |= await _change_cards(
+            session, repository, [t for t in targets if is_change_target(t)], collector
         )
         gathered = await asyncio.gather(
             *[
@@ -221,12 +230,12 @@ async def get_context(
                     as_of_ts=as_of_ts,
                 )
                 for t in targets
-                if not is_component_target(t)
+                if t not in cards
             ],
             return_exceptions=True,
         )
         rest = iter(gathered)
-        raw_results = [cards[t] if is_component_target(t) else next(rest) for t in targets]
+        raw_results = [cards[t] if t in cards else next(rest) for t in targets]
 
         # One batched read for every target that asked for it, on the session
         # they share, and a no-op for every call that did not. Deliberately
@@ -347,5 +356,17 @@ async def _component_cards(
             alias=ctx.alias,
             exclude_spec=exclude_spec,
         )
+    except Exception as exc:
+        return {t: exc for t in targets}
+
+
+async def _change_cards(
+    session: Any, repository: Any, targets: list[str], collector: OmissionCollector
+) -> dict[str, Any]:
+    """Cards for the batch's ``change:`` targets; a failure becomes each one's error."""
+    if not targets:
+        return {}
+    try:
+        return await change_cards(session, repository, targets, collector)
     except Exception as exc:
         return {t: exc for t in targets}

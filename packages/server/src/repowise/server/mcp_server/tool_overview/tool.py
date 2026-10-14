@@ -16,6 +16,7 @@ from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._changes import overview_changes
 from repowise.server.mcp_server._components import component_list
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -68,9 +69,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     ``next_actions`` (top work for the week and quarter).
     Skip it on later calls; go straight to ``get_context`` / ``get_answer``.
 
-    Compact by default: ``content_md`` carries only the overview essay's summary
-    section, and the outline, onboarding, ownership and graph blocks ship only
-    on request. The response's ``more`` field names them.
+    Compact by default: ``content_md`` carries only the essay's summary
+    section; other blocks ship on request, named in ``more``.
 
     Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
     carry counts and recovery status in ``_meta``.
@@ -92,6 +92,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
             ``"graph"`` — ``community_summary``, code-community clusters.
             ``"ownership"`` — ``knowledge_map``: top 3 owners by files owned.
             ``"components"`` — component list with file counts.
+            ``"changes"`` — changes by category, week and source, with coverage.
     """
     if repo == "all":
         return await _workspace_overview()
@@ -116,6 +117,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
                 exclude_spec=exclude_spec,
                 collector=collector,
             )
+        if "changes" in want:
+            result["changes"] = await overview_changes(session, repository)
 
         # Made once per session, so this is where the full scope that every
         # other response's compact projection points at is worth its bytes.

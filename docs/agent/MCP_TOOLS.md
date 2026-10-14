@@ -161,14 +161,16 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `targets` | list[string] | required | File paths, module paths, `"path::Symbol"` ids, or `"component:<name>"` |
-| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols` |
+| `targets` | list[string] | required | File paths, module paths, `"path::Symbol"` ids, `"component:<name>"`, or `"change:<id>"` |
+| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols`, `changes`, `provenance` |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported (returns an error) |
 
 **Key return fields:** `targets` keyed by target, each with title, summary, symbols, `hotspot`, `fix_history` (files with counted bug fixes), `episodes`, decision titles, `file_preview` (for files with no symbols), `resolved_to` (a symbol miss falling back to its file); `dropped_targets` and `recovery` when the budget forced targets out; `_meta.complete` for whole files served.
 
 A `component:<name>` target returns the component's declared context (owner, system, criticality, tags) and `facts` rolled up over its files: health, hotspots, bus factor, test reach and dead code, each with a `basis` (`measured`, `inferred` or `unavailable`). Components come from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or are derived from the index. `include` does not apply to component targets; health and dead code leave out files in gated languages and say how many.
+
+A `change:<id>` target (`change:pr-123`, or a commit sha the change landed) returns the [Change Record](../reference/CLI_REFERENCE.md#repowise-changes): title, forge ref, `merged_at`, category, files and provenance with its coverage. On a file target, `changes` lists the newest Change Records that touched it, and `provenance` gives the file's commits by source (agent, human-attested, unknown) with coverage; the agent share is withheld below 30% coverage. With attribution off, `provenance` reads `{"unavailable": "attribution_off"}` and change rows carry none.
 
 A file's compact symbol list holds its top 15 symbols: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules) first, then functions and methods, then the rest, each group by centrality. `symbols_truncated` gives the total, and `include=["symbols"]` lists them all. When the response budget trims the list further, it keeps symbols by kind and name match, not centrality. A row without `symbol_id` is `path::name`; methods and overload variants carry theirs, so pass a row's id to `get_symbol` when it has one.
 
@@ -242,7 +244,7 @@ What history says about touching a file: hotspot score, bug-fix record, owners, 
 |-----------|------|---------|---------|
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
-| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `owners` (owner percentages, bus factor, contributor count), `tests` (typed `test_recommendations` in PR mode), `blast` (`pr_blast_radius` in PR mode), `scales` (units and calibration, identical per call) |
+| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `owners` (owner percentages, bus factor, contributor count), `tests` (typed `test_recommendations` in PR mode), `blast` (`pr_blast_radius` in PR mode), `scales` (units and calibration, identical per call), `changes` (each file's newest Change Records) |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
 **Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners` (`file_path`, `support`, `conf_ab`, `has_import_link`), `primary_owner` (detailed owner metrics are opt-in under `include=["owners"]`), test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `missing_cochanges`, `tests_to_run` (the same selection `repowise impacted-tests` makes), `tests_to_run_basis` (`measured`, `inferred` or `none`), `tests_run_all` (with `tests_run_all_reasons` when every test must run), `tests_to_update` (test files to edit, each with a `name_pair`, `imports` or `co_change` reason), `coverage`, `recommended_reviewers`, `next_calls`, and `reach` (`localized`, `moderate` or `broad`; `null` when no structural score was computed). `include=["blast"]` adds `pr_blast_radius`; the raw 0 to 10 `structural_impact_score` and its scale appear there only with `include=["blast", "scales"]`. `missing_tests` appears only when coverage can back it. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
@@ -293,7 +295,7 @@ Why code is shaped the way it is: decision records, with git archaeology and min
 
 Modes: a question searches decision records; a path returns that file's `decisions`, `candidates` and `history` plus its origin story and `alignment`; `targets` alone asks about those files; no arguments returns the health dashboard (stale decisions, conflicts, ungoverned hotspots); `id` resolves one record directly.
 
-**Key return fields:** `decisions` (accepted, binding), `candidates` (inferred, nobody accepted them: hints, not rules), `history` (accepted, since withdrawn), `answer_basis` (the strongest lane served; only `decision` is a ruling), `alignment`, `git_archaeology`, `evidence_refs`.
+**Key return fields:** `decisions` (accepted, binding), `candidates` (inferred, nobody accepted them: hints, not rules), `history` (accepted, since withdrawn), `answer_basis` (the strongest lane served; only `decision` is a ruling), `alignment`, `git_archaeology`, `evidence_refs`. A commit row that landed in a PR or MR carries `change` (`id`, `ref`, and `title` when the commit message is not already the title).
 
 ```
 get_why(query="why JWT over sessions?")
@@ -307,7 +309,7 @@ The architecture map: summary, key modules, entry points, layers, code and git h
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners), `components` (declared and derived components with file counts) |
+| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners), `components` (declared and derived components with file counts), `changes` (Change Records by category and week, and the agent share of changes with coverage) |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` for the cross-repo topology |
 
 **Key return fields:** `title`, `content_md` (summary section by default), `key_modules`, `entry_points`, `architecture` (layers in stack order, plus `dependencies`: the ten heaviest package-to-package edges with `from`, `to`, `verb` and `weight`, and `edges_total` when more exist; absent in a single-package repo), `code_health`, `git_health`, `next_actions`, `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.

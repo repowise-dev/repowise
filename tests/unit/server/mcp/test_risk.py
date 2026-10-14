@@ -860,7 +860,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
         {
             "argument": "include",
             "values": ["nonsense"],
-            "valid": ["blast", "churn", "graph", "owners", "scales", "tests"],
+            "valid": ["blast", "changes", "churn", "graph", "owners", "scales", "tests"],
         }
     ]
 

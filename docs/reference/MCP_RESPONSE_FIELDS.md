@@ -9,6 +9,7 @@ The field dictionary for every repowise MCP tool response. [MCP_TOOLS.md](../age
 - [Truncation and recovery](#truncation-and-recovery)
 - [Ignored arguments](#ignored-arguments)
 - [Next-call shape](#next-call-shape)
+- [Workspace routing](#workspace-routing)
 - Per tool: [get_answer](#get_answer) · [get_context](#get_context) · [get_symbol](#get_symbol) · [search_codebase](#search_codebase) · [get_risk](#get_risk) · [get_change_risk](#get_change_risk) · [get_why](#get_why) · [get_overview](#get_overview) · [get_health](#get_health) · [get_dead_code](#get_dead_code) · [list_repos](#list_repos) · [workspace tools](#workspace-tools)
 
 ---
@@ -119,6 +120,19 @@ Every suggested follow-up (`get_health`'s `fix_first.lead.next_call`, the refact
 
 ---
 
+## Workspace routing
+
+In workspace mode `get_context`, `get_symbol`, `get_risk` and `get_health` serve a path (or `alias:path`) from the repo that has it, when no `repo` is passed.
+
+| Field | Meaning |
+|-------|---------|
+| `repo` | On a `get_context` card, or at the top of a `get_symbol`, `get_risk` or `get_health` response: the alias that answered, present when the target was routed away from the default repo |
+| `candidates` | On a target present in several repos (per card, or top level in `get_symbol`): their aliases, beside an `error` naming the `alias:path` form to pass. Nothing is guessed |
+| `routes` | On a refusal from a one-repo tool whose targets span repos: per target, `{"repo": alias}` or `{"candidates": [...]}`, with the per-repo calls named in `error` |
+| `hint` | On a target no workspace repo has: points at `search_codebase(query=..., repo="all")` |
+
+---
+
 ## `get_answer`
 
 | Field | Meaning |
@@ -157,7 +171,13 @@ Per target, under `targets`:
 | `cross_repo` | Workspace mode: `co_changes_with` partners in other repos and contract `consumers` / `providers` |
 | `*_basis` | Beside an empty `callers`, `callees` or `used_by`: the language, how many call edges the index resolved for it, and the share that are guesses. An empty list means no resolved edge, not proof of none |
 
-Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor count), `last_change`, `callers`, `callees`, `metrics` (PageRank, betweenness, percentiles), `community`, `skeleton`, `health`, `doc_drift`, `symbols` (every symbol of a file).
+Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor count), `last_change`, `callers`, `callees`, `metrics` (PageRank, betweenness, percentiles), `community`, `skeleton`, `health`, `doc_drift`, `symbols` (every symbol of a file), `changes`, `provenance`.
+
+**changes.** On a file target, `recent_changes` lists the newest five Change Records whose files include it, each `{id, ref, title, merged_at, category, provenance}`; `ref` is the forge's number (`#123`, `!12`) and is absent for an unnamed change, and `provenance` is `{label, coverage}` (`agent`, `human_attested` or `unknown`; absent when the change was stored without a label or attribution is off). `recent_changes_total` appears when more touched the file.
+
+**provenance.** A file's commits by source: `agent_commits`, `human_attested_commits`, `unknown_commits`, `coverage` (known over all commits), `agent_share` (agent over known commits) and a one-line `summary`. Below 30% coverage `agent_share` is null with `suppressed_reason: "coverage_below_floor"`. Unknown is never counted as human. With attribution off the block is `{"unavailable": "attribution_off"}`.
+
+**Change targets.** A `change:<id>` target (an id such as `pr-123`, or a commit sha the change landed) returns `type: "change"`, `id`, `ref`, `title`, `merged_at`, `category`, `shape` (`merge`, `squash`, `commit`), `head_sha`, `commit_count`, `files_changed`, `lines_added`, `lines_deleted`, `files` (paths, the first 25 with `files_total` and an omission ref past that), `linked_issues` when the messages close any, and `provenance`: `{label, agent_commits, human_attested_commits, unknown_commits, coverage}`, `{"unavailable": "attribution_off"}`, or `{"unavailable": "not_recorded"}` for a change stored while attribution was off. An unknown id returns `error`.
 
 **Skeleton.** Sliced from the index's stored symbol bounds, with no parsing at query time: every signature, the import preamble, and the bodies of the top symbols ranked by centrality, hotspot and query match. Elision markers carry 1-indexed line ranges, so you can read any part back.
 
@@ -217,7 +237,7 @@ Per file:
 | `resolved`, `unresolved_reason` | A target naming no indexed file: `unsupported_target_kind` (a `module:` id), `directory`, `not_indexed`, `no_such_path`. Counts are omitted, never zeroed |
 | `signal_tier`, `signal_tier_reason` | `"history"` on a file indexed for commit history only (docs, config, query and other non-code files): the card carries commit counts, `last_commit_at`, `trend`, owner and `security_signals`, and omits hotspot, co-change, dependents and classification rather than zeroing them |
 
-Opt-in blocks: `owners` adds `owner_pct`, `owner_line_pct`, `recent_owner`, `recent_owner_pct`, `bus_factor` and `contributor_count`. `tests` adds the PR directive's typed `test_recommendations`, and `blast` adds `pr_blast_radius`, the PR dossier behind the directive (transitive files, co-change warnings, test gaps, the structural score; reviewers stay in the directive). `graph` adds typed `dependents` (direct versus transitive), `consumers` (typed contract consumers only), `cross_repo_links`, `impact_surface` and `direct_risks`, with `relationship_analysis` distinguishing an empty analysis from an unavailable or partial one. `churn` adds `change_magnitude`, `risk_type` and `change_pattern`. `scales` adds the unit, range and calibration of every scalar; it is identical on every call, so ask once. A multi-target call also carries `global_hotspots`.
+Opt-in blocks: `changes` adds `recent_changes` (and `recent_changes_total`), shaped as in `get_context`. `owners` adds `owner_pct`, `owner_line_pct`, `recent_owner`, `recent_owner_pct`, `bus_factor` and `contributor_count`. `tests` adds the PR directive's typed `test_recommendations`, and `blast` adds `pr_blast_radius`, the PR dossier behind the directive (transitive files, co-change warnings, test gaps, the structural score; reviewers stay in the directive). `graph` adds typed `dependents` (direct versus transitive), `consumers` (typed contract consumers only), `cross_repo_links`, `impact_surface` and `direct_risks`, with `relationship_analysis` distinguishing an empty analysis from an unavailable or partial one. `churn` adds `change_magnitude`, `risk_type` and `change_pattern`. `scales` adds the unit, range and calibration of every scalar; it is identical on every call, so ask once. A multi-target call also carries `global_hotspots`.
 
 **PR mode** (`changed_files` passed). The response starts with `directive`:
 
@@ -289,6 +309,7 @@ Every float is rounded to 4 significant digits. Direct rows' `structural_score` 
 | `alignment` | Path mode: `active_count`, `deprecated_count`, `uncheckable_count`, `candidate_count`, summing to `governing_count`. `score` comes from `active_count` alone |
 | `git_archaeology` | Present when no decision governs the path. `git_log` keeps its first five rows (the file's newest commits); the rest are recoverable through the omission marker |
 | `provenance`, `evidence_refs` | Self-contained evidence references. Matching ids mean shared evidence, not independent corroboration. Commit rows under `git_archaeology` and `origin_story.key_commits` inherit the block's `provenance` rather than repeating it per row |
+| `change` | On a commit row that landed in a named change (a PR, MR or Gerrit change): `id` (pass it as `get_context(targets=["change:<id>"])`), `ref` (`#123`), and `title` when the commit message is not already the title. A short sha in two changes cites neither. Absent with `repo="all"` |
 
 Read the lane, not `status`: a record can carry `status: "active"` with no acceptance behind it. Only `repowise decision confirm` or a committed ADR marked accepted produces an acceptance.
 
@@ -309,7 +330,9 @@ The `candidates` and `history` lanes shed first under budget pressure, so an abs
 | `more` | Names the opt-in blocks |
 | `workspace` | Workspace mode footer |
 
-Opt-in blocks: `outline` (wiki page tree, two levels), `tour` (`guided_tour`, `reading_order`), `decisions` (`key_decisions`), `graph` (`community_summary`), `ownership` (`knowledge_map`). They are not computed unless named.
+Opt-in blocks: `outline` (wiki page tree, two levels), `tour` (`guided_tour`, `reading_order`), `decisions` (`key_decisions`), `graph` (`community_summary`), `ownership` (`knowledge_map`), `components`, `changes`. They are not computed unless named.
+
+**changes.** Change Records over a 90-day `window` ending at the newest merged change (`since`, `until`): `total`, `by_category` (largest first), `by_week` (`{week, changes}` per week starting Monday, zero weeks included) and `provenance` over changes: `agent_changes`, `human_attested_changes`, `unknown_changes`, `coverage`, `agent_share` (withheld below 30% coverage with `suppressed_reason`) and `summary`. A change stored without a label counts as unknown, never human. `{"total": 0}` when no Change Records are stored; `provenance` is `{"unavailable": "attribution_off"}` with attribution off. Grouped by change and category only, never by person.
 
 ---
 
