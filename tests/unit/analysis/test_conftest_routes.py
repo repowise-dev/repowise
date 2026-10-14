@@ -6,7 +6,11 @@ from textwrap import dedent
 
 import pytest
 
-from repowise.core.analysis.conftest_routes import ConftestFacts, conftest_use
+from repowise.core.analysis.conftest_routes import (
+    ConftestFacts,
+    conftest_use,
+    literal_constants,
+)
 
 ROUTE = ["src/app/store.py"]
 
@@ -268,3 +272,79 @@ def test_star_imports_plugins_and_unparsable_files_fail_closed() -> None:
     assert _use("from app.store import *\n").run_all
     assert _use("from app import store\npytest_plugins = ['x']\nstore.X\n").run_all
     assert _use("def broken(:\n").run_all
+
+
+_STORE_CONSTANTS = {"src/app/store.py": literal_constants('SIZE = 3\nNAMES = ("a", "b")\n')}
+
+
+def _autouse(imports: str, line: str, constants=None):
+    source = f"import pytest\n{imports}\n\n@pytest.fixture(autouse=True)\ndef _f():\n    {line}\n"
+    return conftest_use(source, "tests/conftest.py", ROUTE, constants)
+
+
+@pytest.mark.parametrize(
+    ("imports", "line"),
+    [
+        ("from app.store import NAMES", "loggers = [n for n in NAMES]"),
+        ("from app import store", "assert store.SIZE * 2"),
+        ("import app.store", "x = app.store.NAMES[0].upper()"),
+    ],
+)
+def test_an_autouse_fixture_reading_a_literal_constant_reaches_only_its_module(
+    imports: str, line: str
+) -> None:
+    """The constant's value is the defining module's text, which the change is not in."""
+    assert _autouse(imports, line, _STORE_CONSTANTS).run_all is None
+    # Without the module's constants (the change is in it), the read reaches it.
+    assert _autouse(imports, line).run_all
+
+
+@pytest.mark.parametrize("line", ["store.OTHER", "store.SIZE = 4", "store.configure(store.SIZE)"])
+def test_anything_but_reading_a_literal_constant_still_reaches(line: str) -> None:
+    use = _autouse("from app import store", line, _STORE_CONSTANTS)
+    assert use.run_all and "autouse fixture _f uses store" in use.run_all
+
+
+def test_a_lazy_constant_import_in_a_requested_fixture_still_reaches_its_users() -> None:
+    """The import itself runs when the fixture does."""
+    source = (
+        "import pytest\n\n@pytest.fixture\ndef names():\n"
+        "    from app.store import NAMES\n    return NAMES\n"
+    )
+    assert conftest_use(source, "tests/conftest.py", ROUTE, _STORE_CONSTANTS).fixtures == {"names"}
+
+
+def test_module_level_code_reading_a_literal_constant_does_not_keep_every_test() -> None:
+    source = "from app import store\nLIMIT = store.SIZE\n"
+    assert conftest_use(source, "tests/conftest.py", ROUTE, _STORE_CONSTANTS).run_all is None
+    assert conftest_use(source, "tests/conftest.py", ROUTE).run_all
+
+
+def test_literal_constants_are_names_bound_once_at_top_level_to_immutable_literals() -> None:
+    source = dedent(
+        """
+        from x import IMPORTED
+        A = 1
+        B: int = -2
+        C = ("a", ("b", None))
+        D = frozenset({"x", "y"})
+        E = frozenset()
+        LIST = ["a"]
+        CALL = make()
+        NAME = A
+        TWICE = 1
+        TWICE = 2
+        LOCAL = 3
+        GLOBAL = 4
+        if FLAG:
+            NESTED = 5
+
+        def f():
+            LOCAL = 0
+            global GLOBAL
+        """
+    )
+    assert literal_constants(source) == {"A", "B", "C", "D", "E"}
+    assert literal_constants("from x import *\nA = 1\n") == frozenset()
+    assert literal_constants("frozenset = list\nA = frozenset(())\n") == frozenset()
+    assert literal_constants("def broken(:\n") == frozenset()

@@ -221,6 +221,7 @@ async def collect(
     pytest_texts: dict | None = None,
     *,
     indexed_commit: str | None = None,
+    read_source: Callable[[str], str | None] | None = None,
 ) -> dict:
     """Resolve the change's files to impacted tests + labelled fallbacks.
 
@@ -230,7 +231,8 @@ async def collect(
     files a scope runs the tests of (:func:`plan_scopes`). With *explain*, the
     import route from that test to a changed file is looked up as well.
     *pytest_texts* are the checkout's conftests and pytest configs by path;
-    without them no conftest route is narrowed.
+    without them no conftest route is narrowed. *read_source* (``Checkout.read``)
+    lets that narrowing read the modules a conftest takes constants from.
     """
     from ..persistence.crud import get_health_metrics, get_test_coverage_summary
     from ..persistence.crud.analysis.coverage_map import MAX_TEST_COVERAGE_ROWS
@@ -265,6 +267,7 @@ async def collect(
         roots,
         routes,
         pytest_texts,
+        read_source=read_source,
     )
     await _place_tests(session, repo_id, out)
     if explain:
@@ -440,6 +443,8 @@ async def resolve_impacted(
     roots: PytestRoots | None = None,
     routes: tuple[str, ...] | list[str] = (),
     pytest_texts: dict | None = None,
+    *,
+    read_source: Callable[[str], str | None] | None = None,
 ) -> dict:
     """Classify each changed file: covered tests, inferred tests, or unknown.
 
@@ -480,7 +485,13 @@ async def resolve_impacted(
         return out
     try:
         graph = await _graph_candidates(
-            session, repo_id, graph_targets, roots, pytest_texts=pytest_texts, changed=changed
+            session,
+            repo_id,
+            graph_targets,
+            roots,
+            pytest_texts=pytest_texts,
+            changed=changed,
+            read_source=read_source,
         )
     except Exception as exc:
         # Nothing the graph said can be trusted; selection runs everything.
@@ -573,14 +584,15 @@ async def _graph_candidates(
     *,
     pytest_texts: dict | None = None,
     changed: Collection[str] | None = None,
+    read_source: Callable[[str], str | None] | None = None,
 ) -> GraphCandidates:
     """``{target: [(test file, via), ...]}`` from the graph, each test file's importers, notes.
 
     Candidates come strongest tier first. The importers map says, for every
     test file the walk met, which test files import it. A conftest reached only
     through its imports stands for the tests it can break
-    (:mod:`repowise.core.analysis.conftest_routes`), read from *pytest_texts*;
-    the notes say what was decided.
+    (:mod:`repowise.core.analysis.conftest_routes`), read from *pytest_texts*
+    and *read_source*; the notes say what was decided.
 
     One walk per tier for every target, not one per file: the seed set
     is what makes it cheap. Uncapped, since a trimmed list would drop tests a
@@ -614,6 +626,7 @@ async def _graph_candidates(
         test_files,
         texts.get,
         plugin_loader=plugin_loader(texts.items()),
+        read_source=read_source,
     )
     importers = {test: sorted(found_by) for test, found_by in parents.items()}
     sources = targets if changed is None else [t for t in targets if t in changed]
@@ -803,6 +816,7 @@ async def select_for_change(
         plan.routes,
         dict(checkout.pytest_texts),
         indexed_commit=indexed_commit,
+        read_source=checkout.read,
     )
     result["diff"] = change.label
     _stop(cancelled)
@@ -833,16 +847,20 @@ async def narrow_scopes(
         return out
     local = await session.get(Repository, repo_id)
     texts: dict[str, str] = {}
+    read_source = None
     if local is not None and local.local_path and Path(local.local_path).is_dir():
         try:
             checkout = await asyncio.to_thread(read_checkout, local.local_path)
             texts = dict(checkout.pytest_texts)
+            read_source = checkout.read
         except Exception as exc:  # unread conftests keep every test under them
             log.debug("narrow_scopes_checkout_failed", error=str(exc))
     files = sorted({t.split("::", 1)[0] for t in scoped})
     try:
         candidates = (
-            await _graph_candidates(session, repo_id, files, pytest_texts=texts)
+            await _graph_candidates(
+                session, repo_id, files, pytest_texts=texts, read_source=read_source
+            )
         ).candidates
     except Exception as exc:  # the walk's own answer stands: every test under each scope
         log.debug("narrow_scopes_failed", error=str(exc))

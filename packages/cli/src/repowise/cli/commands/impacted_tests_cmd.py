@@ -200,6 +200,7 @@ async def _collect(
             plan.routes if plan else [],
             dict(checkout.pytest_texts),
             indexed_commit=repo_row.head_commit if repo_row else None,
+            read_source=checkout.read,
         )
         return await _decide(session, repo_id, out, *decide)
 

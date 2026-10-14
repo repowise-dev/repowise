@@ -29,9 +29,12 @@ through its imports can break a test through either:
 
 Granularity is the module, not the function: a fixture that names anything in
 a module on the route to the change counts as reaching it, however deep the
-change is. A binding the conftest never reads (``import app.models  #
-registers them``) is imported for its side effects, which every test sees, so
-it keeps every test.
+change is. One exception: reading a literal constant of a module on the route
+(a name it binds once, at top level, to a literal, a tuple or a ``frozenset``
+of literals) depends on that module's text alone, so it reaches a change only
+in that module (:func:`literal_constants`). A binding the conftest never
+reads (``import app.models  # registers them``) is imported for its side
+effects, which every test sees, so it keeps every test.
 
 Fails closed, keeping every test under the conftest with the reason, when the
 conftest does not parse, loads plugins, star-imports a module on the route, has
@@ -43,8 +46,11 @@ edges.
 
 Ceiling: an import-time side effect of the changed module itself (it registers
 itself in a shared registry) that a test observes without any import route of
-its own to that module is seen only through the import check. Upgrade path: a
-per-test map built from a coverage run, which records what each test executed.
+its own to that module is seen only through the import check. So is an
+import-time side effect (plugin registration, a patch) elsewhere in the closure
+of a module whose literal constant the conftest reads, since that read still
+imports it. Upgrade path: a per-test map built from a coverage run, which
+records what each test executed.
 """
 
 from __future__ import annotations
@@ -151,7 +157,7 @@ def _from_module(node: ast.ImportFrom, here: tuple[str, ...]) -> tuple[str, ...]
 def _bindings(
     node: ast.Import | ast.ImportFrom, here: tuple[str, ...], entries: list[tuple[str, ...]]
 ) -> tuple[dict[str, tuple[str, ...]], set[tuple[str, ...]], bool]:
-    """``({bound name: entry}, entries matched, star-imports an entry)`` for one import."""
+    """``({bound name: the dotted path it names}, entries matched, star-imports an entry)``."""
     bound: dict[str, tuple[str, ...]] = {}
     matched: set[tuple[str, ...]] = set()
     star = False
@@ -159,7 +165,7 @@ def _bindings(
         for alias in node.names:
             parts = tuple(alias.name.split("."))
             if e := _imported_entry(parts, entries):
-                bound[alias.asname or parts[0]] = e
+                bound[alias.asname or parts[0]] = parts if alias.asname else parts[:1]
                 matched.add(e)
         return bound, matched, star
 
@@ -173,7 +179,7 @@ def _bindings(
             module, entries, package=False
         )
         if e:
-            bound[alias.asname or alias.name] = e
+            bound[alias.asname or alias.name] = (*module, alias.name)
             matched.add(e)
     return bound, matched, star
 
@@ -194,6 +200,91 @@ def _patch_target(name: ast.Name, parents: Mapping[int, ast.AST]) -> bool:
     func = par.func
     called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
     return called in _TARGET_CALLS
+
+
+def _is_literal(node: ast.AST, bound: Collection[str]) -> bool:
+    """Whether *node* builds an immutable value from literals alone (``frozenset`` the one call)."""
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp):
+        return isinstance(node.operand, ast.Constant)
+    if isinstance(node, ast.Tuple):
+        return all(_is_literal(e, bound) for e in node.elts)
+    if isinstance(node, ast.Call):
+        return (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "frozenset"
+            and "frozenset" not in bound
+            and not node.keywords
+            and len(node.args) <= 1
+            and all(
+                isinstance(a, (ast.Set, ast.Tuple, ast.List))
+                and all(_is_literal(e, bound) for e in a.elts)
+                for a in node.args
+            )
+        )
+    return False
+
+
+def _bound_names(node: ast.AST) -> list[str]:
+    """The names *node* binds in its scope (``["*"]`` for a star import)."""
+    if isinstance(node, ast.Name):
+        return [] if isinstance(node.ctx, ast.Load) else [node.id]
+    if isinstance(node, (*_DEFS, ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+        return [node.name] if node.name else []
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return node.names
+    if isinstance(node, ast.MatchMapping):
+        return [node.rest] if node.rest else []
+    if isinstance(node, ast.alias):
+        return [node.asname or node.name.split(".")[0]]
+    return []
+
+
+def _assigned(stmt: ast.stmt) -> tuple[str, ast.AST] | None:
+    """``(name, value)`` for a ``NAME = value`` or ``NAME: T = value`` statement."""
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+        target = stmt.targets[0]
+    elif isinstance(stmt, ast.AnnAssign) and stmt.simple:
+        target = stmt.target
+    else:
+        return None
+    value = getattr(stmt, "value", None)
+    return (target.id, value) if isinstance(target, ast.Name) and value is not None else None
+
+
+def literal_constants(source: str) -> frozenset[str]:
+    """Names a Python module binds once, at its top level, to an immutable literal.
+
+    Reading one depends on that module's text alone, not on what it imports.
+    A name bound anywhere else in the module (a local, a ``global``, an import)
+    is left out, and so is everything when the module star-imports. Ceiling:
+    another module rebinding it at runtime (``mod.NAME = ...``) is not seen.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return frozenset()
+    counts: dict[str, int] = {}
+    for node in ast.walk(tree):
+        for n in _bound_names(node):
+            counts[n] = counts.get(n, 0) + 1
+    if "*" in counts:
+        return frozenset()
+    assigned = (a for stmt in tree.body if (a := _assigned(stmt)))
+    return frozenset(
+        name for name, value in assigned if counts[name] == 1 and _is_literal(value, counts)
+    )
+
+
+def _dotted_read(name: ast.Name, parents: Mapping[int, ast.AST]) -> tuple[ast.AST, list[str]]:
+    """The outermost ``name.a.b`` attribute chain read from *name*, and its attributes."""
+    node: ast.AST = name
+    attrs: list[str] = []
+    while isinstance(par := parents.get(id(node)), ast.Attribute) and par.value is node:
+        node = par
+        attrs.append(par.attr)
+    return node, attrs
 
 
 def _fixture_info(node: ast.AST) -> tuple[str | None, bool]:
@@ -347,12 +438,19 @@ class ConftestFacts:
                 if isinstance(e, ast.Constant) and isinstance(e.value, str)
             }
 
-    def use(self, entries: Collection[str]) -> ConftestUse:
-        """What the conftest does with *entries*, the files it imports on a route."""
+    def use(
+        self, entries: Collection[str], constants: Mapping[str, Collection[str]] | None = None
+    ) -> ConftestUse:
+        """What the conftest does with *entries*, the files it imports on a route.
+
+        *constants* are, per entry the change is not in, its literal constants
+        (:func:`literal_constants`): reading one does not reach the change.
+        """
         if self.error:
             return ConftestUse(run_all=self.error)
         # Sorted: an import binds the first entry it names, so order must not vary.
         targets = [module_parts(e) for e in sorted(entries)]
+        stable = {module_parts(e): names for e, names in (constants or {}).items()}
         star_import = ConftestUse(run_all=f"{self.path} star-imports a module on the route")
         hot, matched, star = self._bind(self.imports, targets)
         if star:
@@ -365,7 +463,7 @@ class ConftestFacts:
             if star:
                 return star_import
             matched |= hits
-            reach[name] = self._unit_reach(unit, local, hot)
+            reach[name] = self._unit_reach(unit, local, hot, stable)
             loaded |= {n.id for n in unit.loads}
 
         if missed := [e for e in targets if e not in matched]:
@@ -377,7 +475,11 @@ class ConftestFacts:
         module_refs: set[str] = set()
         for load in self.code_loads:
             loaded.add(load.id)
-            if load.id in hot and not _patch_target(load, self.parents):
+            if (
+                load.id in hot
+                and not _patch_target(load, self.parents)
+                and not self._reads_constant(load, hot[load.id], stable)
+            ):
                 return ConftestUse(run_all=f"module-level code in {self.path} uses {load.id}")
             if load.id in self.units:
                 module_refs.add(load.id)
@@ -391,7 +493,7 @@ class ConftestFacts:
     def _bind(
         self, nodes: list[Any], targets: list[tuple[str, ...]]
     ) -> tuple[dict[str, tuple[str, ...]], set[tuple[str, ...]], bool]:
-        """``({bound name: entry}, entries matched, star-imports an entry)`` over *nodes*.
+        """``({bound name: the dotted path it names}, entries matched, star-imports an entry)``.
 
         Stops at the first star import, which the caller answers on its own.
         """
@@ -406,21 +508,41 @@ class ConftestFacts:
         return bound, matched, False
 
     def _unit_reach(
-        self, unit: _Unit, local: Mapping[str, tuple[str, ...]], hot: Mapping[str, tuple[str, ...]]
+        self,
+        unit: _Unit,
+        local: Mapping[str, tuple[str, ...]],
+        hot: Mapping[str, tuple[str, ...]],
+        stable: Mapping[tuple[str, ...], Collection[str]],
     ) -> _Reach:
         """How *unit* uses the route, given its own (*local*) and module (*hot*) bindings."""
         r = _Reach(imports=next(iter(local), None))
         for load in unit.loads:
-            if load.id not in local and load.id not in hot:
+            path = local.get(load.id) or hot.get(load.id)
+            if path is None:
                 continue
             if _patch_target(load, self.parents):
                 r.patch = r.patch or load.id
-            else:
+            elif not self._reads_constant(load, path, stable):
                 r.run = r.run or load.id
         # A local import nothing reads is there for its side effects.
         if r.run is None and (unread := sorted(set(local) - {n.id for n in unit.loads})):
             r.run = unread[0]
         return r
+
+    def _reads_constant(
+        self,
+        load: ast.Name,
+        path: tuple[str, ...],
+        stable: Mapping[tuple[str, ...], Collection[str]],
+    ) -> bool:
+        """Whether *load* (bound to *path*) only reads a literal constant of a *stable* entry."""
+        outer, attrs = _dotted_read(load, self.parents)
+        full = (*path, *attrs)
+        return isinstance(getattr(outer, "ctx", None), ast.Load) and any(
+            full[k] in names and _names(full[:k], entry, package=False)
+            for entry, names in stable.items()
+            for k in range(1, len(full))
+        )
 
     def _propagate(self, reach: dict[str, _Reach]) -> None:
         """A unit uses what the units it names and the fixtures it requests use."""
@@ -467,9 +589,14 @@ class ConftestFacts:
         )
 
 
-def conftest_use(source: str, path: str, entries: Collection[str]) -> ConftestUse:
+def conftest_use(
+    source: str,
+    path: str,
+    entries: Collection[str],
+    constants: Mapping[str, Collection[str]] | None = None,
+) -> ConftestUse:
     """What the conftest at *path* (text *source*) does with *entries*. Pure."""
-    return ConftestFacts.parse(source, path).use(entries)
+    return ConftestFacts.parse(source, path).use(entries, constants)
 
 
 @dataclass(frozen=True)
@@ -561,17 +688,20 @@ async def scoped_candidates(
     read: Callable[[str], str | None],
     *,
     plugin_loader: str | None = None,
+    read_source: Callable[[str], str | None] | None = None,
 ) -> tuple[dict[str, list[tuple[str, str]]], list[str]]:
     """Each target's ``[(test file, via)]`` with conftest routes narrowed, and the notes.
 
     *found* are the walks' picks per target and *entries* the files each was
     reached through; *parents* the test files importing each test file and
     *parent_entries* the files each importer reached it through; *read* returns
-    a conftest's text. Every conftest on a route that this
-    module cannot narrow keeps today's answer: every test under it.
+    a conftest's text and *read_source* any file's, for the literal constants a
+    conftest reads (without it, every read counts as reaching). Every conftest
+    on a route that this module cannot narrow keeps today's answer: every test
+    under it.
     """
     routes = _conftest_routes(found, entries, parents, parent_entries)
-    _judge_routes(routes, read, plugin_loader)
+    _judge_routes(routes, read, plugin_loader, read_source)
     scope = await _load_scope(session, repo_id, routes, parents, test_files)
     out: dict[str, list[tuple[str, str]]] = {}
     notes: dict[tuple[str, str], list[str]] = {}
@@ -615,16 +745,23 @@ def _judge_routes(
     routes: Mapping[str, Mapping[str, _Route]],
     read: Callable[[str], str | None],
     plugin_loader: str | None,
+    read_source: Callable[[str], str | None] | None = None,
 ) -> None:
-    """Set each route's use and reason. One parse per conftest; each distinct route through
-    it is matched against it once."""
+    """Set each route's use and reason. One parse per conftest and per entry; each distinct
+    route through it is matched against it once."""
     facts: dict[str, ConftestFacts | None] = {}
-    uses: dict[tuple[str, frozenset[str]], ConftestUse] = {}
-    for conf, route in (pair for by_conf in routes.values() for pair in by_conf.items()):
+    consts: dict[str, frozenset[str]] = {}
+    uses: dict[tuple, ConftestUse] = {}
+    for target, conf, route in ((t, c, r) for t, by in routes.items() for c, r in by.items()):
         if conf not in facts:
             source = read(conf)
             facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
-        _judge(conf, route, facts[conf], plugin_loader, uses)
+        # The changed file's own constants may be what changed.
+        others = route.entries - {target}
+        for e in others - set(consts) if read_source else ():
+            consts[e] = literal_constants(read_source(e) or "")
+        stable = {e: consts[e] for e in others if consts.get(e)}
+        _judge(conf, route, facts[conf], plugin_loader, uses, stable)
 
 
 def _judge(
@@ -632,7 +769,8 @@ def _judge(
     route: _Route,
     parsed: ConftestFacts | None,
     plugin_loader: str | None,
-    uses: dict[tuple[str, frozenset[str]], ConftestUse],
+    uses: dict[tuple, ConftestUse],
+    stable: Mapping[str, frozenset[str]],
 ) -> None:
     if plugin_loader:
         route.reason = f"{plugin_loader} loads pytest plugins by name"
@@ -641,9 +779,9 @@ def _judge(
     elif parsed is None:
         route.reason = f"{conf} could not be read"
     else:
-        key = (conf, route.entries)
+        key = (conf, route.entries, frozenset(stable))
         if key not in uses:
-            uses[key] = parsed.use(route.entries)
+            uses[key] = parsed.use(route.entries, stable)
         route.use = uses[key]
         route.reason = route.use.run_all
 

@@ -432,6 +432,37 @@ async def test_a_conftest_only_patching_the_route_runs_one_import_check(async_se
     assert _pairs(out, "src/app/util.py") == {"tests/test_a.py": "conftest-import-check"}
 
 
+async def test_an_autouse_fixture_reading_a_constant_reaches_only_the_defining_module(
+    async_session,
+) -> None:
+    """``store.SIZE`` is store's text: a change behind store runs the import check only."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    source = (
+        "import pytest\nfrom app import store\n\n\n@pytest.fixture(autouse=True)\n"
+        "def _size():\n    assert store.SIZE\n"
+    )
+    files = {"src/app/store.py": "from app import util\n\nSIZE = 3\n"}
+
+    picks = {}
+    for changed in ("src/app/util.py", "src/app/store.py"):
+        out = _empty_result(1)
+        await _resolve_impacted(
+            async_session,
+            repo.id,
+            {changed: None},
+            set(),
+            out,
+            pytest_texts={"tests/conftest.py": source},
+            read_source=files.get,
+        )
+        picks[changed] = _pairs(out, changed)
+
+    assert picks["src/app/util.py"] == {"tests/test_a.py": "conftest-import-check"}
+    # The change is in the module the constant is read from.
+    assert "tests/conftest.py" in picks["src/app/store.py"]
+
+
 async def _add_edge(session, repo_id, source, target, edge_type, hint=None, **flags) -> None:
     from repowise.core.persistence.models import GraphEdge
 
