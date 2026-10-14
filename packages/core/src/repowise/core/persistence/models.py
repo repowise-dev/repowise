@@ -695,13 +695,15 @@ class GitMetadata(Base):
     # a busy repository clears for most of its files.
     prior_defect_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
-    # Agent-provenance rollup: how much of this file's indexed history is
-    # agent-attributed (deterministic local-channel classification — identity
-    # fields, message footers, co-author trailers; see
-    # ingestion.git_indexer.agent_provenance). agent_tier_counts_json maps
+    # Agent-provenance rollup (deterministic local channels; see
+    # ingestion.git_indexer.agent_provenance). attribution_known_count is the
+    # file's commits with a known source (agent or human-attested), and
+    # agent_authored_pct the agent share of those, never of all commits: unknown
+    # is not human (repowise.core.attribution). agent_tier_counts_json maps
     # autonomy tier ("1" near-autonomous / "2" human-driven / "3" assisted)
-    # to commit counts. agent_authored_pct stays NULL until the next reindex.
+    # to commit counts.
     agent_commit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attribution_known_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     agent_authored_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     agent_tier_counts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
@@ -785,8 +787,10 @@ class GitCommit(Base):
     # Agent provenance: which coding agent (if any) authored this commit, at
     # what autonomy tier (1 near-autonomous bot account · 2 human-driven agent
     # · 3 assisted/co-authored), via which attribution channel, and with what
-    # confidence band. NULL throughout = human-authored (or pre-migration rows;
-    # back-populated on the next index). Deterministic local-git channels only.
+    # confidence band. Deterministic local-git channels only. attribution is the
+    # three-state label (agent / human_attested / unknown); NULL on rows written
+    # before it existed (read through repowise.core.attribution.commit_label) or
+    # while attribution is switched off.
     agent_name: Mapped[str | None] = mapped_column(String(32), nullable=True)
     agent_autonomy_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)
     agent_channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -796,6 +800,7 @@ class GitCommit(Base):
     # attributed the commit. Set only for the ``agent_trace`` channel (no other
     # local channel carries a model); NULL for human or non-trace commits.
     agent_model_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    attribution: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

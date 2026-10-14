@@ -330,7 +330,7 @@ class GitIndexer:
         if on_start is not None:
             on_start(len(indexable_files) + len(history_files))
 
-        fallback_note_agents: dict[str, str] = {}
+        fallback_note_agents: dict[str, Any] = {}
         if fallback_files.intersection(indexable_files):
             from ..git_commit_index import load_git_ai_note_agents
 
@@ -684,7 +684,7 @@ class GitIndexer:
                 fallback_files = sample.fallback_files
         history_files -= fallback_files
         history_changed -= fallback_files
-        fallback_note_agents: dict[str, str] = {}
+        fallback_note_agents: dict[str, Any] = {}
         if fallback_files.intersection(changed_file_paths):
             from ..git_commit_index import load_git_ai_note_agents
 

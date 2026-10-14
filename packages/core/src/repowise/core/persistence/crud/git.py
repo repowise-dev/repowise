@@ -739,12 +739,18 @@ async def get_author_commit_counts(session: AsyncSession, repository_id: str) ->
 
 
 def _commit_authorship_clause(authorship: str | None):
-    """Optional authorship predicate: ``agent`` keeps agent-attributed commits,
-    ``human`` keeps the rest. ``None`` / ``"all"`` means no filtering."""
+    """Optional authorship predicate over the three-state label: ``agent``,
+    ``human`` (human-attested only; a commit without a marker is never human)
+    or ``unknown``. ``None`` / ``"all"`` means no filtering."""
     if authorship == "agent":
         return GitCommit.agent_name.is_not(None)
     if authorship == "human":
-        return GitCommit.agent_name.is_(None)
+        return GitCommit.attribution == "human_attested"
+    if authorship == "unknown":
+        return and_(
+            GitCommit.agent_name.is_(None),
+            or_(GitCommit.attribution.is_(None), GitCommit.attribution == "unknown"),
+        )
     return None
 
 
@@ -841,7 +847,7 @@ async def get_git_commits(
 
     ``sort="risk"`` ranks by ``change_risk_score`` descending (the review-
     priority order); ``sort="date"`` ranks by ``committed_at`` descending.
-    ``authorship`` narrows to ``agent`` / ``human``; ``kind`` narrows to the
+    ``authorship`` narrows to ``agent`` / ``human`` / ``unknown``; ``kind`` narrows to the
     ``high`` review-priority band or to ``fixes``. Both filter the repository
     rather than the page, so a filter still answers when the page it would
     have filtered is uniform.

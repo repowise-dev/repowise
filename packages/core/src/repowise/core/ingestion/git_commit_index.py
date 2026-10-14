@@ -18,7 +18,7 @@ import structlog
 
 if TYPE_CHECKING:
     from .git_indexer import RenameTrail, _CommitRec
-    from .git_indexer.agent_provenance import AgentProvenance
+    from .git_indexer.agent_provenance import AgentProvenance, GitAiNote
 
 logger = structlog.get_logger(__name__)
 
@@ -50,28 +50,34 @@ def _count_non_merge_commits(repo: object) -> int | None:
         return None
 
 
-def load_git_ai_note_agents(repo: object, commit_limit: int | None) -> dict[str, str]:
-    """Map ``commit_sha → agent`` from git-ai authorship notes (``refs/notes/ai``).
+def load_git_ai_note_agents(repo: object, commit_limit: int | None) -> dict[str, GitAiNote]:
+    """Map ``commit_sha → GitAiNote`` from git-ai authorship notes (``refs/notes/ai``).
 
-    A repo without the ref costs one ``for-each-ref`` and gets ``{}``. The
-    notes walk covers *commit_limit* commits, or the whole history with
-    ``None``. Any failure returns ``{}``: a notes read must never break the git
-    index. See the git-ai standard v3.0.0 for the note format.
+    Only notes that name an agent or attest a human are kept. A repo without
+    the ref costs one ``for-each-ref`` and gets ``{}``, as does a repo with
+    ``attribution.enabled: false``. The notes walk covers *commit_limit*
+    commits, or the whole history with ``None``. Any failure returns ``{}``: a
+    notes read must never break the git index. See the git-ai standard v3.0.0
+    for the note format.
     """
-    from .git_indexer import _FIELD_SEP, _RECORD_SEP
-    from .git_indexer.agent_provenance import _agent_from_git_ai_note
+    from repowise.core.attribution import attribution_enabled
 
-    agents: dict[str, str] = {}
+    from .git_indexer import _FIELD_SEP, _RECORD_SEP
+    from .git_indexer.agent_provenance import parse_git_ai_note
+
+    if not attribution_enabled(getattr(repo, "working_tree_dir", None)):
+        return {}
+    notes: dict[str, GitAiNote] = {}
     for chunk in _git_ai_notes_log(repo, commit_limit).split(_RECORD_SEP):
         if not chunk.strip():
             continue
-        sha, sep, note = chunk.partition(_FIELD_SEP)
+        sha, sep, raw = chunk.partition(_FIELD_SEP)
         if not sep:
             continue
-        agent = _agent_from_git_ai_note(note)
-        if agent:
-            agents[sha.strip()] = agent
-    return agents
+        note = parse_git_ai_note(raw)
+        if note.agent or note.human:
+            notes[sha.strip()] = note
+    return notes
 
 
 def _git_ai_notes_log(repo: object, commit_limit: int | None) -> str:
@@ -329,29 +335,19 @@ class _CommitLabeler:
     ) -> None:
         from .git_indexer.agent_provenance import AgentProvenanceClassifier, AgentTraceIndex
 
-        self._note_agents = load_git_ai_note_agents(repo, note_depth)
-        self._trace_index = trace_index if trace_index is not None else AgentTraceIndex.load(repo)
         self._classifier = classifier if classifier is not None else AgentProvenanceClassifier()
+        enabled = getattr(self._classifier, "enabled", True)
+        self._notes = load_git_ai_note_agents(repo, note_depth) if enabled else {}
+        if not enabled:
+            trace_index = AgentTraceIndex()
+        self._trace_index = trace_index if trace_index is not None else AgentTraceIndex.load(repo)
         self._sink = sink
 
     def label(self, header: dict, changes: list[tuple[str, int, int]]) -> AgentProvenance:
-        # The agent-trace channel checks overlap with the commit's changed paths.
-        trace_hit = (
-            self._trace_index.resolve(  # type: ignore[attr-defined]
-                header["sha"], header["parents"], {t for t, _, _ in changes}
-            )
-            if self._trace_index
-            else None
-        )
-        prov: AgentProvenance = self._classifier.classify(  # type: ignore[attr-defined]
-            header["author_name"],
-            header["author_email"],
-            header["committer_name"],
-            header["committer_email"],
-            f"{header['subject']}\n{header['body']}",
-            note_agent=self._note_agents.get(header["sha"]),
-            trace_agent=trace_hit[0] if trace_hit else None,
-            trace_confidence=trace_hit[1] if trace_hit else "high",
+        from .git_indexer.agent_provenance import classify_commit
+
+        prov, trace_hit = classify_commit(
+            self._classifier, header, {t for t, _, _ in changes}, self._notes, self._trace_index
         )
         if self._sink is not None:
             self._sink.append(_sink_row(header, changes, prov, trace_hit))
@@ -376,6 +372,7 @@ def _sink_row(
         "agent_autonomy_tier": prov.autonomy_tier,
         "agent_channel": prov.channel,
         "agent_confidence": prov.confidence,
+        "attribution": prov.attribution,
         # Model id only when the trace channel actually won: a note
         # or service-identity match can outrank the trace above, and
         # only the trace record carries a model.
@@ -424,6 +421,7 @@ class _FileBuckets:
                         deleted=deleted,
                         agent=prov.agent,
                         agent_tier=prov.autonomy_tier,
+                        attribution=prov.attribution,
                         pure_move=target in pure_moves,
                     )
                 )

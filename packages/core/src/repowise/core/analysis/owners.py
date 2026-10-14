@@ -100,7 +100,8 @@ class OwnerAccumulator:
     # Agent-provenance rollup across primary-owned files.
     owned_files_with_agents: int = 0
     owned_agent_commits: int = 0
-    owned_attributed_commits: int = 0  # total commits on owned files with a rollup
+    owned_attributed_commits: int = 0  # total commits on owned files
+    owned_known_commits: int = 0  # of those, commits with a known source
     owned_agent_tier_counts: Counter[str] = field(default_factory=Counter)
 
     # co-author tally: other_key -> shared file count
@@ -232,16 +233,17 @@ def aggregate_owners(
                 primary.module_hotspots[module] += 1
             if (row_field(m, "bus_factor") or 0) <= 1:
                 primary.bus_factor_risk_files += 1
-            # agent_authored_pct is None on rows indexed before provenance
-            # existed; skip those so the agent share stays honest.
-            if row_field(m, "agent_authored_pct") is not None:
-                primary.owned_attributed_commits += row_field(m, "commit_count_total") or 0
-                agent_commits = row_field(m, "agent_commit_count") or 0
-                if agent_commits > 0:
-                    primary.owned_files_with_agents += 1
-                    primary.owned_agent_commits += agent_commits
-                    for tier, n in json_field(m, "agent_tier_counts_json", {}).items():
-                        primary.owned_agent_tier_counts[str(tier)] += int(n)
+            # Every commit counts toward the denominator; one without a known
+            # source is unknown, never human (repowise.core.attribution).
+            primary.owned_attributed_commits += row_field(m, "commit_count_total") or 0
+            agent_commits = row_field(m, "agent_commit_count") or 0
+            known = row_field(m, "attribution_known_count") or 0
+            primary.owned_known_commits += max(known, agent_commits)
+            if agent_commits > 0:
+                primary.owned_files_with_agents += 1
+                primary.owned_agent_commits += agent_commits
+                for tier, n in json_field(m, "agent_tier_counts_json", {}).items():
+                    primary.owned_agent_tier_counts[str(tier)] += int(n)
 
         # Co-author tally: each pair of distinct touchers shares this file.
         for i, a in enumerate(touchers):

@@ -37,6 +37,7 @@ _COMPARED_FIELDS = [
     "bus_factor",
     "prior_defect_count",
     "agent_commit_count",
+    "attribution_known_count",
     "agent_authored_pct",
     "agent_tier_counts_json",
 ]
@@ -104,7 +105,9 @@ async def test_update_path_classifies_agent_provenance(tmp_path) -> None:
     (meta,) = upd_meta
 
     assert meta["agent_commit_count"] == 1
-    assert meta["agent_authored_pct"] == pytest.approx(0.5)
+    # One agent commit and one unmarked: the share is of the known commit only.
+    assert meta["attribution_known_count"] == 1
+    assert meta["agent_authored_pct"] == pytest.approx(1.0)
     assert meta["agent_tier_counts_json"] != "{}"
 
 

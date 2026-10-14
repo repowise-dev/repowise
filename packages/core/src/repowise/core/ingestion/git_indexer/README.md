@@ -154,10 +154,17 @@ Design rules:
   (`service_emails`, `footer_patterns`, `coauthor_patterns`) — additive on top
   of the built-ins, malformed entries skipped with a warning.
 
-Persisted as five nullable columns on `git_commits`
-(`agent_name`/`agent_autonomy_tier`/`agent_channel`/`agent_confidence`/`agent_model_id`)
+Every commit also carries a three-state `attribution` label: `agent`,
+`human_attested` (only from an explicit human record such as git-ai `h_` keys
+or an Agent Trace `human` contributor) or `unknown`. Shares are always of the
+commits with a known source and travel with that coverage, withheld below 30%
+(`repowise.core.attribution`). With `attribution.enabled: false` the walk
+labels nothing and reads no notes or trace files.
+
+Persisted as six nullable columns on `git_commits`
+(`agent_name`/`agent_autonomy_tier`/`agent_channel`/`agent_confidence`/`agent_model_id`/`attribution`)
 and a per-file rollup on `git_metadata` (`agent_commit_count`,
-`agent_authored_pct`, `agent_tier_counts_json` at the commit level;
+`attribution_known_count`, `agent_authored_pct`, `agent_tier_counts_json` at the commit level;
 `agent_line_count`, `agent_line_model_json` at the line level), surfaced in the
 `/git-metadata` file view and the MCP `get_context` ownership block.
 

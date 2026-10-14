@@ -131,6 +131,7 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
                 "agent_channel": c.get("agent_channel"),
                 "agent_confidence": c.get("agent_confidence"),
                 "agent_model_id": c.get("agent_model_id"),
+                "attribution": c.get("attribution"),
             }
         )
     return rows
