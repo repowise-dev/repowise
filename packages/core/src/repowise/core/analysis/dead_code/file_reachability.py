@@ -46,6 +46,7 @@ from repowise.core.entry_candidacy import is_reachability_root
 from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
 from ...ingestion.barrels import BARREL_FILENAMES
+from ...ingestion.cohesion import records_no_use
 from .constants import never_flag_path
 from .cpp_reachability import build_cpp_package_files, is_cpp_file_reachable, is_cpp_path
 from .go_reachability import build_go_package_files, is_go_file_reachable
@@ -194,14 +195,18 @@ def _is_structural_edge(neighbor: str, path: str, edge_data: Mapping[str, Any], 
     return not (SYMBOL_SEP in neighbor and file_path_of(neighbor) == path)
 
 
-def file_dependency_neighbors(graph: Any, path: str, *, incoming: bool) -> list[str]:
+def file_dependency_neighbors(
+    graph: Any, path: str, *, incoming: bool, uses_only: bool = False
+) -> list[str]:
     """Structural file neighbours of *path* in the requested direction.
 
     Every file-to-file edge except co-change counts, which keeps import,
     type-use, framework and future structural edge types while excluding
     symbol containment and historical association. Code we do not own is
     excluded outright: this list names files, and a reader following it wants
-    somewhere in the repository to go.
+    somewhere in the repository to go. ``uses_only`` also drops edges that
+    record no use (a Go package sibling, the reverse of a header pair):
+    reachability needs them, a count of the files that use *path* does not.
     """
     if path not in graph:
         return []
@@ -211,6 +216,8 @@ def file_dependency_neighbors(graph: Any, path: str, *, incoming: bool) -> list[
     for source, target, edge_data in edges:
         neighbor = source if incoming else target
         if is_external(neighbor) or graph.nodes.get(neighbor, {}).get("language") == "external":
+            continue
+        if uses_only and records_no_use(edge_data, source, target):
             continue
         if _is_structural_edge(neighbor, path, edge_data, graph):
             neighbors.append(neighbor)

@@ -125,8 +125,11 @@ def loop_size(magnitude: str | None) -> str:
     return humanize(magnitude) if magnitude else "unknown"
 
 
-def imports_it(dependents: int) -> str:
-    """``1 file imports it`` / ``7 files import it``."""
+def imports_it(dependents: int, *, function: bool = False) -> str:
+    """``1 file imports it`` / ``7 files import it``; for a function or class,
+    which no file imports on its own, ``its file is imported by 7 files``."""
+    if function:
+        return f"its file is imported by {plural(dependents, 'file')}"
     return f"{plural(dependents, 'file')} import{'s' if dependents == 1 else ''} it"
 
 
@@ -236,12 +239,18 @@ def size_brief(shape: dict[str, int]) -> str:
     return ", ".join(parts) or "large"
 
 
-def exposure(dependents: int | None, commits: int, coverage: float | None = None) -> str:
+def exposure(
+    dependents: int | None,
+    commits: int,
+    coverage: float | None = None,
+    *,
+    function: bool = False,
+) -> str:
     """``; 7 files import it, changed 15 times in 90 days, tests run 40% of
     its lines``, or nothing. Coverage only when a report measured the file."""
     parts = []
     if dependents:
-        parts.append(imports_it(dependents))
+        parts.append(imports_it(dependents, function=function))
     if commits:
         parts.append(f"changed {plural(commits, 'time')} in 90 days")
     if coverage is not None:

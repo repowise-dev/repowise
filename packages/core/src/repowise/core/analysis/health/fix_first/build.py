@@ -191,6 +191,19 @@ def _tail(symbol: str | None) -> str | None:
     return re.split(r"::|\.", symbol)[-1] if symbol else None
 
 
+def _about(function: str | None, symbol: str | None) -> bool:
+    """Whether a history row on ``function`` speaks to an item on ``symbol``:
+    a file-level row or item, the same function, or a member of the item's
+    class. ``Engine.run`` never keeps ``Other.run``; a bare name on either
+    side matches by name, since it names no class to tell them apart."""
+    if not function or not symbol:
+        return True
+    own = text.short_symbol(symbol) or ""
+    if function == own or function.startswith(f"{own}."):
+        return True
+    return ("." not in function or "." not in own) and _tail(function) == _tail(own)
+
+
 def symbol_key(path: str, symbol: str | None) -> str | None:
     """A function's ``git_function_blame`` key, ``path::name``; ``None`` for no symbol."""
     name = text.short_symbol(symbol)
@@ -227,7 +240,7 @@ def _quantile_cut(values: list[int]) -> float:
     return hot_cut(sorted(values)[hot_cut_offset(len(values))])
 
 
-def _risk(files_touched: int, dependents: int | None) -> FixRisk:
+def _risk(files_touched: int, dependents: int | None, *, function: bool = False) -> FixRisk:
     deps = dependents or 0
     if files_touched >= 5 or deps >= 20:
         level = "high"
@@ -237,7 +250,7 @@ def _risk(files_touched: int, dependents: int | None) -> FixRisk:
         level = "low"
     parts = [f"touches {text.plural(files_touched, 'file')}"]
     if dependents:
-        parts.append(text.imports_it(dependents))
+        parts.append(text.imports_it(dependents, function=function))
     return FixRisk(level, dependents, files_touched, "; ".join(parts).capitalize() + ".")
 
 
@@ -476,6 +489,7 @@ class _Files:
         dependents: int | None = None,
         cloned: bool = False,
         changes: int | None = None,
+        function: bool = False,
     ) -> str:
         """One sentence: the problem, then why it matters here (how often the
         function changed, who imports the file, how often it changes, how much
@@ -486,10 +500,15 @@ class _Files:
             head += f", {text.CLONED}"
         if changes is not None and changes >= MIN_CHURN_COMMITS:
             head += f"; {text.own_changes(changes)}"
-        return f"{head}{text.exposure(deps, self.commits(path), self.coverage(path))}."
+        exposure = text.exposure(
+            deps, self.commits(path), self.coverage(path), function=function
+        )
+        return f"{head}{exposure}."
 
-    def context(self, path: str) -> tuple[FixContext, ...]:
-        """History is context: shown beside the item, never lifting its band."""
+    def context(self, path: str, symbol: str | None = None) -> tuple[FixContext, ...]:
+        """History is context: shown beside the item, never lifting its band.
+        An item on ``symbol`` shows its file's rows and its own, never another
+        function's."""
         out: list[FixContext] = []
         commits = self.commits(path)
         if commits:
@@ -499,17 +518,22 @@ class _Files:
             out.append(FixContext("file kind", "test"))
         ranked = sorted(self.history.get(path, ()), key=lambda f: -_num(field(f, "health_impact")))
         for f in ranked:
+            if not _about(field(f, "function_name"), symbol):
+                continue
             marker = field(f, "biomarker_type") or ""
             sentence = text.history_fact(marker, detail_map(f), field(f, "function_name"))
             if sentence:
                 out.append(FixContext(text.HISTORY_LABEL.get(marker, "history"), sentence))
         return tuple(out[:MAX_CONTEXT])
 
-    def common_facts(self, path: str, dependents: int | None = None) -> list[FixFact]:
+    def common_facts(
+        self, path: str, dependents: int | None = None, *, function: bool = False
+    ) -> list[FixFact]:
         out = []
         deps = dependents if dependents is not None else self.dependents(path)
         if deps:
-            out.append(FixFact("files that import it", str(deps)))
+            label = "files that import its file" if function else "files that import it"
+            out.append(FixFact(label, str(deps)))
         commits = self.commits(path)
         if commits:
             out.append(FixFact("changes in 90 days", str(commits)))
@@ -1023,11 +1047,13 @@ def _refactor_fields(plan: _RefactorPlan) -> dict[str, Any]:
     )
     fix_steps = _refactor_fix_steps(plan, profiles, verify.command)
     n_steps, mechanical_n = text.plural(len(plan.steps), "step"), plan.mechanical_n
+    # The symbol the lead step edits; ``None`` for a file-level plan.
+    symbol = plan.sym if lead.get("target_symbol") else None
     return {
         "title": text.clip(_refactor_title(plan, lead_plan)),
         "target": FixTarget(
             path,
-            plan.sym if lead.get("target_symbol") else None,
+            symbol,
             fix_steps[0].line,
             lead.get("line_end"),
         ),
@@ -1038,17 +1064,22 @@ def _refactor_fields(plan: _RefactorPlan) -> dict[str, Any]:
             dependents=rank.dependents,
             cloned=rank.cloned,
             changes=rank.changes,
+            function=symbol is not None,
         ),
-        "facts": _refactor_facts(plan),
+        "facts": _refactor_facts(plan, function=symbol is not None),
         "action": _action(f"{n_steps}, {mechanical_n} mechanical", fix_steps, plan.mechanical),
         "gain": _health_gain(rank.gain, ceiling=False),
         "effort": FixEffortEstimate(plan.effort, "sized by the stored plan"),
-        "risk": _risk(int(field(plan.row, "affected_files_total") or 1), rank.dependents),
+        "risk": _risk(
+            int(field(plan.row, "affected_files_total") or 1),
+            rank.dependents,
+            function=symbol is not None,
+        ),
         "confidence": FixConfidence(
             plan.confidence, f"{mechanical_n} of {n_steps} proven mechanical by the plan"
         ),
         "verify": verify,
-        "context": files.context(path),
+        "context": files.context(path, symbol),
         "source": FixSource(
             field(plan.row, "opportunity_id"),
             tuple(s.get("plan_id") for s in plan.steps if s.get("plan_id")),
@@ -1118,14 +1149,14 @@ def _break_up_title(sym: str, shape: Mapping[str, int], span: str, suffix: str =
     return head + suffix
 
 
-def _refactor_facts(plan: _RefactorPlan) -> tuple[FixFact, ...]:
+def _refactor_facts(plan: _RefactorPlan, *, function: bool) -> tuple[FixFact, ...]:
     rank, held_back = plan.rank, plan.held_back
     facts = [
         FixFact("health recoverable", f"+{rank.gain:.1f}", "inferred"),
         *_size_facts(rank.shape),
         FixFact("steps", f"{len(plan.steps)} ({plan.mechanical_n} mechanical)"),
         *([FixFact("steps held back", text.held_back(held_back))] if held_back else []),
-        *plan.files.common_facts(plan.path, rank.dependents),
+        *plan.files.common_facts(plan.path, rank.dependents, function=function),
     ]
     nloc = plan.files.nloc(plan.path)
     if nloc:
@@ -1301,7 +1332,7 @@ def _perf_fields(cause: _PerfCause) -> dict[str, Any]:
             or f"{text.humanize(field(lead, 'actionability_state'))} plan",
         ),
         "verify": verify,
-        "context": cause.files.context(path),
+        "context": cause.files.context(path, symbol),
         "source": FixSource(field(lead, "opportunity_id")),
         "next_call": _opportunity_call(
             "The full opportunity: ordered steps, validation and other causes here",
@@ -1459,22 +1490,23 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate |
                 fallback=text.problem(marker, where),
                 cloned=rank.cloned,
                 changes=rank.changes,
+                function=function is not None,
             ),
             "facts": tuple(
                 [
                     FixFact("finding", text.marker_label(marker)),
                     *_size_facts(rank.shape),
                     FixFact("severity", _severity(field(lead, "severity"), rank.low)),
-                    *files.common_facts(path),
+                    *files.common_facts(path, function=function is not None),
                 ][:MAX_FACTS]
             ),
             "action": _action(text.first_sentence(suggestion_for(marker)), (first,), False),
             "gain": _health_gain(rank.gain, ceiling=True),
-            "risk": _risk(1, files.dependents(path)),
+            "risk": _risk(1, files.dependents(path), function=function is not None),
             "verify": _verify(
                 validate(path, function, line, field(lead, "line_end")) if validate else None
             ),
-            "context": files.context(path),
+            "context": files.context(path, function),
             **_finding_plan_fields(led, path, public_id),
         }
 

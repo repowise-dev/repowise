@@ -99,7 +99,7 @@ def test_text_quotes_the_stored_numbers() -> None:
     # The size is a fact; the why says why it matters here.
     assert core.why == (
         "run has many paths; easier to read and change once split; "
-        "9 files import it, changed 12 times in 90 days."
+        "its file is imported by 9 files, changed 12 times in 90 days."
     )
     assert ("size", "CCN 44, 50 lines, nests 4 deep") in [(f.label, f.value) for f in core.facts]
     assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
@@ -638,3 +638,44 @@ def test_a_dismissed_plan_never_gives_a_finding_its_step() -> None:
     run = _run(plans, refactoring)
     assert run.title == "Break up run (CCN 44, 50 lines)"
     assert run.source.plan_ids == () and "Extract" not in run.action.steps[0].text
+
+
+def _hotspot(function: str, commits: int) -> dict:
+    return {
+        "file_path": "src/core.py", "biomarker_type": "function_hotspot", "severity": "medium",
+        "function_name": function, "health_impact": 0.4, "public_id": f"finding_fh_{function}",
+        "dimension": "defect", "details": {"modification_count": commits},
+    }
+
+
+def test_a_function_item_shows_its_own_history_never_another_functions() -> None:
+    findings = [*FINDINGS, _hotspot("Client.__init__", 7), _hotspot("Engine.run", 9)]
+    core = next(i for i in _build(findings=findings).items if i.kind == "refactor")
+    values = [c.value for c in core.context]
+    assert "Engine.run changed in 9 commits" in values
+    assert not any("__init__" in v for v in values)
+    # File-level history still rides along.
+    assert ("recent changes", "changed 12 times in 90 days") in [
+        (c.label, c.value) for c in core.context
+    ]
+
+
+def test_a_function_item_says_its_file_is_imported_not_that_it_is() -> None:
+    core = next(i for i in _build().items if i.kind == "refactor")
+    assert core.why.endswith("its file is imported by 9 files, changed 12 times in 90 days.")
+    assert core.risk.text == "Touches 1 file; its file is imported by 9 files."
+    assert ("files that import its file", "9") in [(f.label, f.value) for f in core.facts]
+
+
+def test_history_matches_the_items_qualified_symbol() -> None:
+    from repowise.core.analysis.health.fix_first.build import _about
+
+    # Same method name in two classes: only the item's own class.
+    assert _about("Engine.run", "src/core.py::Engine.run")
+    assert not _about("Other.run", "src/core.py::Engine.run")
+    # A class item keeps its members, not a class sharing its prefix.
+    assert _about("Engine.run", "Engine")
+    assert not _about("EngineTest.run", "Engine")
+    # File-level rows and items keep everything; a bare name matches by name.
+    assert _about(None, "Engine.run") and _about("Other.run", None)
+    assert _about("run", "Engine.run") and not _about("walk", "Engine.run")

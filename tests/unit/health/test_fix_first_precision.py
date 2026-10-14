@@ -426,7 +426,7 @@ def test_why_says_why_it_matters_not_the_titles_size() -> None:
     assert "249" not in item.why and "1,280" not in item.why and "CCN" not in item.why
     assert item.why == (
         "run has many paths; easier to read and change once split; "
-        "9 files import it, changed 12 times in 90 days."
+        "its file is imported by 9 files, changed 12 times in 90 days."
     )
 
 

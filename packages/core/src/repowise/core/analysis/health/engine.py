@@ -659,8 +659,9 @@ def _compute_repo_function_mod_p80(
 
 
 def _dependents_count(graph: Any, path: str) -> int:
-    """Distinct files that depend on *path* in code; co-change is history, not a dependent."""
-    return len(set(file_dependency_neighbors(graph, path, incoming=True)))
+    """Distinct files that use *path* in code: co-change is history, and a Go
+    package sibling or a synthetic header pair edge uses nothing."""
+    return len(set(file_dependency_neighbors(graph, path, incoming=True, uses_only=True)))
 
 
 def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | None:
