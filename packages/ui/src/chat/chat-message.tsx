@@ -9,6 +9,7 @@ import { CHAT_STAGES, chatStage } from "./chat-stage";
 import { Markdown } from "../shared/markdown";
 import { SourceCitations, type SourceReference } from "./source-citations";
 import { EvidenceCardList, cardRefHref } from "../cards/evidence-card";
+import { ViewPartList } from "./view-part";
 import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 
 interface ChatMessageProps {
@@ -95,14 +96,24 @@ function ChatMessageImpl({
       )}
       <div className={cn("max-w-full", dock ? "space-y-2.5" : "space-y-3")}>
         {message.toolCalls.length > 0 && (
-          <ToolCallGroup
-            toolCalls={message.toolCalls}
-            {...(onViewArtifact ? { onViewArtifact } : {})}
-          />
+          <div className="print:hidden">
+            <ToolCallGroup
+              toolCalls={message.toolCalls}
+              {...(onViewArtifact ? { onViewArtifact } : {})}
+            />
+          </div>
         )}
 
         {message.text && (
           <Markdown content={message.text} density={dock ? "narrow" : "reading"} streaming={message.isStreaming} fill />
+        )}
+
+        {/* Views arrive live, each right after the call that built it. */}
+        {message.views && message.views.length > 0 && (
+          <ViewPartList
+            views={message.views}
+            buildRefHref={(ref) => cardRefHref(ref, linkPrefix ?? `/repos/${repoId}`)}
+          />
         )}
 
         {/* Only stored messages carry cards for now; the stream sends none. */}
@@ -136,7 +147,7 @@ function ChatMessageImpl({
           // the turn from thinking through each tool to writing.
           <div
             data-chat-stage={stage}
-            className="flex min-h-8 items-center gap-2 text-xs text-[var(--color-text-tertiary)]"
+            className="flex min-h-8 print:hidden items-center gap-2 text-xs text-[var(--color-text-tertiary)]"
           >
             <WorkingOrb state={CHAT_STAGES[stage].state} />
             <span>{CHAT_STAGES[stage].label}</span>

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessageResponse } from "@/lib/api/types";
 import { toChatUiMessages } from "./to-chat-ui-messages";
+import fixture from "../../../../types/fixtures/views.conformance.json";
 
 describe("toChatUiMessages", () => {
-  it("hides a stored show_view call and tolerates stored views", () => {
+  it("keeps a stored show_view call as a step with no artifact, and restores valid views", () => {
     const stored: ChatMessageResponse[] = [
       {
         id: "m1",
@@ -14,15 +15,31 @@ describe("toChatUiMessages", () => {
             { id: "t1", name: "get_risk", result: { score: 1 } },
             { id: "t2", name: "show_view", result: { view_id: "v1" } },
           ],
-          views: [{ id: "v1", kind: "table" }],
+          views: [fixture.valid.c1, { id: "v1", kind: "table" }],
         },
         created_at: "2026-10-14T00:00:00Z",
       },
     ];
 
-    expect(toChatUiMessages(stored)[0]?.toolCalls.map((call) => call.name)).toEqual([
-      "get_risk",
-    ]);
+    const [message] = toChatUiMessages(stored);
+    expect(message?.toolCalls.map((call) => call.name)).toEqual(["get_risk", "show_view"]);
+    expect(message?.toolCalls[1]).not.toHaveProperty("artifact");
+    expect(message?.toolCalls[0]?.artifact).toBeDefined();
+    expect(message?.views?.map((view) => view.id)).toEqual(["c1"]);
+  });
+
+  it("leaves a turn with no valid views without the field", () => {
+    const stored: ChatMessageResponse[] = [
+      {
+        id: "m1",
+        conversation_id: "c1",
+        role: "assistant",
+        content: { text: "x", views: [{ id: "v1", kind: "table" }] },
+        created_at: "2026-10-14T00:00:00Z",
+      },
+    ];
+
+    expect(toChatUiMessages(stored)[0]).not.toHaveProperty("views");
   });
 
   it.each([

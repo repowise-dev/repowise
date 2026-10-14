@@ -44,7 +44,7 @@ export function cardRefHref(ref: CardRef, prefix: string): string | undefined {
   }
 }
 
-function refLabel(ref: CardRef): string {
+export function refLabel(ref: CardRef): string {
   const name =
     ref.type === "file"
       ? (ref.id.split("/").pop() ?? ref.id)
@@ -74,9 +74,9 @@ function subject(card: EvidenceCard): string | CardRef {
   }
 }
 
-type RefHref = (ref: CardRef) => string | undefined;
+export type RefHref = (ref: CardRef) => string | undefined;
 
-function RefView({ cardRef, buildRefHref }: { cardRef: CardRef; buildRefHref?: RefHref | undefined }) {
+export function RefView({ cardRef, buildRefHref }: { cardRef: CardRef; buildRefHref?: RefHref | undefined }) {
   const href = buildRefHref?.(cardRef);
   const label = refLabel(cardRef);
   const className = "font-mono text-xs [overflow-wrap:anywhere]";
@@ -96,7 +96,7 @@ function RefView({ cardRef, buildRefHref }: { cardRef: CardRef; buildRefHref?: R
 }
 
 /** Basis is spelled out, never colour-coded, so it reads the same in every theme. */
-function BasisNote({ basis }: { basis: CardBasis }) {
+export function BasisNote({ basis }: { basis: CardBasis }) {
   return (
     <span data-card-basis={basis.kind} className="text-xs text-[var(--color-text-tertiary)]">
       <span className="sr-only">Basis: </span>

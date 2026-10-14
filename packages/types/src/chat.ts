@@ -176,6 +176,8 @@ export interface ChatUIMessage {
   followUps?: ChatSuggestion[];
   /** Validated evidence cards for this turn. */
   cards?: EvidenceCard[];
+  /** Validated view parts for this turn, in the order they were built. */
+  views?: ViewPart[];
 }
 
 // ---------------------------------------------------------------------------

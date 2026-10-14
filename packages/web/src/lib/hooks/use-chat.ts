@@ -9,7 +9,7 @@ import type {
   ChatUIToolCall as ChatToolCall,
   ChatUIMessage as ChatMessage,
 } from "@repowise-dev/types/chat";
-import { SHOW_VIEW_TOOL } from "@repowise-dev/types/views";
+import { SHOW_VIEW_TOOL, parseViewParts } from "@repowise-dev/api-client/views";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { toChatUiMessages } from "@/lib/chat/to-chat-ui-messages";
 
@@ -245,9 +245,6 @@ export function useChat(repoId: string) {
                 };
 
               case "tool_start":
-                // Views have no renderer yet; without a row here the
-                // matching tool_result and view events are no-ops too.
-                if (ev.tool_name === SHOW_VIEW_TOOL) return m;
                 return {
                   ...m,
                   toolCalls: [
@@ -277,12 +274,19 @@ export function useChat(repoId: string) {
                           ...tc,
                           result: data,
                           summary: ev.summary,
-                          artifact: ev.artifact,
+                          // A show_view receipt is not evidence; the view itself renders inline.
+                          ...(ev.tool_name === SHOW_VIEW_TOOL ? {} : { artifact: ev.artifact }),
                           status: failed ? ("error" as const) : ("done" as const),
                         }
                       : tc,
                   ),
                 };
+              }
+
+              case "view": {
+                // Wire data: only a part that validates, once per id, renders.
+                const views = parseViewParts([...(m.views ?? []), ev.view]);
+                return views.length > (m.views?.length ?? 0) ? { ...m, views } : m;
               }
 
               case "truncated":
