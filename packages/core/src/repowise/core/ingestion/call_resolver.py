@@ -248,15 +248,18 @@ _UNJUDGED_LEVEL = {**dict.fromkeys(_JAVA_WIDENING, 2), "String": 1, "null": 1}
 
 
 def _argument_fit(parameter: str, argument: str) -> int | None:
-    """How a Java argument reaches *parameter*: 0 exactly, 1 widened, 2 boxed; None never.
+    """How near a Java argument reaches *parameter*: 0 exactly, 1 widened, 2 boxed; None never.
 
-    *argument* is a literal's type or a named argument's declared one. A
-    coarse form of the most-specific rule: a call ``f(true)`` takes
-    ``f(boolean)`` over ``f(Object)``, and ``f('c')`` takes ``f(int)`` over it.
+    *argument* is a literal's type or a named argument's declared one; a
+    named ``String`` or primitive takes the literal path. A coarse form of the
+    most-specific rule: a call ``f(true)`` takes ``f(boolean)`` over
+    ``f(Object)``, and ``f('c')`` takes ``f(int)`` over it.
     """
     levels = _JAVA_LITERAL_LEVELS.get(argument)
     if levels is None:
         return _reference_fit(parameter, argument)
+    if parameter.endswith("[]"):
+        return 1 if argument == "null" else None
     if parameter not in _JAVA_JUDGED_PARAMETERS:
         return _UNJUDGED_LEVEL[argument]
     return levels.get(parameter)
@@ -265,19 +268,42 @@ def _argument_fit(parameter: str, argument: str) -> int | None:
 def _reference_fit(parameter: str, argument: str) -> int | None:
     """How a value of class or array type *argument* reaches *parameter*.
 
-    0 as itself, 2 unboxed to a primitive, None where it never can (a
-    primitive, another final class, an array it is not). Any other
+    0 as itself; 2 unboxed, 3 unboxed and widened; None where it never can
+    (a primitive, another final class, an array it is not). An array reaches
+    a covariant array at 1 and anything else (``Object``) at 2. Any other
     parameter may be a supertype or a type variable: 1, which an exact
     match beats and nothing else tells apart.
     """
     if parameter == argument:
         return 0
     if parameter in _JAVA_PRIMITIVES:
-        unboxed = _JAVA_UNBOXED.get(argument)
-        return 2 if unboxed is not None and parameter in _JAVA_WIDENING[unboxed] else None
+        return _unboxed_fit(parameter, argument)
+    if argument.endswith("[]"):
+        return _array_fit(parameter, argument)
     if parameter in _JAVA_FINAL_PARAMETERS or parameter.endswith("[]"):
         return None
     return 1
+
+
+def _unboxed_fit(parameter: str, argument: str) -> int | None:
+    """A box reaching primitive *parameter*: 2 unboxed, 3 unboxed and widened; None never."""
+    unboxed = _JAVA_UNBOXED.get(argument)
+    if unboxed is None or parameter not in _JAVA_WIDENING[unboxed]:
+        return None
+    return 2 if parameter == unboxed else 3
+
+
+def _array_fit(parameter: str, argument: str) -> int | None:
+    """``String[]`` reaches ``Object[]`` (1, covariance) and ``Object`` (2).
+
+    A primitive array reaches no other array, and no array a final class.
+    """
+    if not parameter.endswith("[]"):
+        return None if parameter in _JAVA_FINAL_PARAMETERS else 2
+    element, takes = argument.removesuffix("[]"), parameter.removesuffix("[]")
+    if element in _JAVA_PRIMITIVES or takes in _JAVA_PRIMITIVES:
+        return None
+    return None if _argument_fit(takes, element) is None else 1
 
 
 def _closest_fit(
@@ -294,7 +320,7 @@ def _closest_fit(
     ranked: dict[int, list[str]] = defaultdict(list)
     for member, parameters in members:
         fits = [
-            _argument_fit(_parameter_at(parameters, index, expanded) or "", argument)
+            _argument_fit(_parameter_taking(parameters, argument_types, index, expanded), argument)
             for index, argument in enumerate(argument_types)
             if argument is not None
         ]
@@ -313,6 +339,21 @@ def _untyped_agree(
         for index, argument in enumerate(argument_types)
         if argument is None
     )
+
+
+def _parameter_taking(
+    parameters: list[str], argument_types: tuple[str | None, ...], index: int, expanded: bool
+) -> str:
+    """The parameter type typed argument *index* is judged against.
+
+    An array that alone fills the varargs position is passed as the array
+    itself (``addChildren(index, children)``), not expanded into it.
+    """
+    argument = argument_types[index] or ""
+    alone = index == len(parameters) - 1 == len(argument_types) - 1
+    if expanded and alone and argument.endswith("[]"):
+        return parameters[-1]
+    return _parameter_at(parameters, index, expanded) or ""
 
 
 def _parameter_at(parameters: list[str], index: int, expanded: bool) -> str | None:
@@ -1239,7 +1280,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if name in body_types:
             type_name = body_types[name]
         else:
-            type_name, scope, _ = self._receiver_type_and_scope(file_path, caller_id, language, name)
+            type_name, scope, _ = self._receiver_type_and_scope(
+                file_path, caller_id, language, name
+            )
             if scope == "field" and self._declares_name(file_path, caller_id, name):
                 return None
         if type_name is None or "::" in type_name:

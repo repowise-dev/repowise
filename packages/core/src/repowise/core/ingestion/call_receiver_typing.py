@@ -67,7 +67,11 @@ _SOURCE_CACHE_FILES = 4
 
 # Any Java type spelling before a declared name, for ``_declares_name``; the
 # words that may precede a bare name without declaring it.
-_JAVA_ANY_TYPE = r"[\w$]+(?:\.[\w$]+)*(?:<[^;{}()]*>)?(?:\[\])*"
+_JAVA_ANY_TYPE = r"[\w$]+(?:\.[\w$]+)*(?:<[^;{}()]*>)?(?:\[\])*(?:\.\.\.)?"
+# Every name a Java owner declares with any type.
+_JAVA_ANY_DECLARATION = re.compile(
+    rf"(?<![\w.@$])(?P<type>{_JAVA_ANY_TYPE})\s+(?P<name>[\w$]+)\s*(?=[=;,):])"
+)
 _NOT_A_TYPE = frozenset({"return", "throw", "new", "else", "case", "yield", "assert"})
 
 # Where a Java declaration header opens its type-parameter list: after a type's
@@ -197,6 +201,7 @@ class ReceiverTypingMixin:
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
         self._binding_positions: dict[str, tuple[tuple[int, int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
+        self._declared_names: dict[tuple[str, str], frozenset[str]] = {}
         self._scope_chain_cache: dict[str, dict[str, tuple[_Scope, ...]]] = {}
         # {file: {name: type}} — module-level defs a framework decorator retyped.
         self._framework_types: dict[str, dict[str, str]] = {}
@@ -694,13 +699,21 @@ class ReceiverTypingMixin:
         return None
 
     def _declares_name(self, file_path: str, owner_id: str, name: str) -> bool:
-        """Does *owner_id*, a method or a class's own scope, declare *name* with any type?
+        """Does *owner_id*, a method or a class's own scope, declare *name* with any type?"""
+        return name in self._names_declared_by(file_path, owner_id)
 
-        A scan for the one name, run only where an inherited field would
-        answer: admitting every type spelling to the declaration scan slows
-        it by about two thirds. Ceiling: a later declarator (``int a, x;``) is
-        missed.
+    def _names_declared_by(self, file_path: str, owner_id: str) -> frozenset[str]:
+        """Every name *owner_id* declares with any type.
+
+        One scan per owner, asked only where an inherited field or a named
+        argument would answer: admitting every type spelling to the
+        declaration scan slows it by about two thirds. Ceiling: a later
+        declarator (``int a, x;``) is missed.
         """
+        key = (file_path, owner_id)
+        found = self._declared_names.get(key)
+        if found is not None:
+            return found
         spans = self._spans_for(file_path)
         start, end = spans.get(owner_id, (1, 0))
         owner = self._symbols_by_id.get(owner_id)
@@ -711,14 +724,19 @@ class ReceiverTypingMixin:
             and owner.kind not in _FUNCTION_KINDS
             and getattr(self._symbols_by_id.get(sym_id), "kind", None) in _FUNCTION_KINDS
         )
-        declared = re.compile(rf"(?<![\w.@$])(?P<type>{_JAVA_ANY_TYPE})\s+{re.escape(name)}\s*[=;,):]")
         lines = self._text_of(file_path).splitlines()
-        return any(
-            match.group("type") not in _NOT_A_TYPE
-            for number in range(start, min(end, len(lines)) + 1)
-            if not in_spans(bodies, number)
-            for match in declared.finditer(lines[number - 1])
-        )
+        names: set[str] = set()
+        for number in range(start, min(end, len(lines)) + 1):
+            if in_spans(bodies, number):
+                continue
+            names.update(
+                match.group("name")
+                for match in _JAVA_ANY_DECLARATION.finditer(lines[number - 1])
+                if match.group("type") not in _NOT_A_TYPE
+            )
+        found = frozenset(names)
+        _store_capped(self._declared_names, key, found, _BODY_TYPE_CACHE_ENTRIES)
+        return found
 
     def _module_receiver_type(
         self,

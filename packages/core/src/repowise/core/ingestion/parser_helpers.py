@@ -359,7 +359,9 @@ def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
     if language != "java" or not arg_nodes:
         return []
     skip_types = frozenset({"(", ")", ","})
-    return [c for c in arg_nodes[0].children if c.type not in skip_types and "comment" not in c.type]
+    return [
+        c for c in arg_nodes[0].children if c.type not in skip_types and "comment" not in c.type
+    ]
 
 
 def _argument_literal_types(arguments: list[Node], src: str) -> tuple[str | None, ...] | None:

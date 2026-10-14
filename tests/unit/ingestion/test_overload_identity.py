@@ -30,8 +30,8 @@ from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.return_types import signature_parameter_range
 from repowise.core.ingestion.symbol_identity import (
-    _erased_parameter_type,
     base_symbol_id,
+    erased_type,
     id_segment_name,
     overload_sets,
     split_symbol_id,
@@ -256,7 +256,7 @@ class TestJavaOverloads:
     def test_an_erased_parameter_type_never_holds_a_name_separator(
         self, parameter: str, erased: str
     ) -> None:
-        got = _erased_parameter_type(parameter)
+        got = erased_type(parameter)
         assert got == erased
         assert not any(sep in got for sep in (".", "/", "::", "(", ")", "#"))
 
@@ -1011,7 +1011,6 @@ class TestJavaLiteralArguments:
         assert edges == {("app/V.java::V::use", f"app/V.java::V::{member}")}
 
 
-
 class TestJavaNamedArguments:
     """A named argument's declared type breaks a tie the way a literal's does."""
 
@@ -1080,3 +1079,126 @@ class TestJavaNamedArguments:
         (call,) = _parse("A.java", "java", text).calls
         assert call.argument_names == ("x", None, None, None, "z")
         assert call.argument_types == (None, "int", None, "String", None)
+
+    @pytest.mark.parametrize(
+        "members",
+        [
+            "  public void f(Object o) { }\n  public void f(Object[] os) { }\n",
+            "  public void f(Object[] os) { }\n  public void f(Object o) { }\n",
+        ],
+        ids=["object-first", "array-first"],
+    )
+    def test_an_array_reaches_a_covariant_array_before_object(
+        self, tmp_path: Path, members: str
+    ) -> None:
+        text = (
+            f"package app;\npublic class A {{\n{members}"
+            "  void use(String[] names) {\n    f(names);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/A.java": ("java", text)})
+        assert edges == {("app/A.java::A::use", "app/A.java::A::f#1(Object[])")}
+
+    def test_a_named_primitive_never_takes_an_array(self, tmp_path: Path) -> None:
+        text = (
+            "package app;\npublic class A {\n"
+            "  public void f(int[] xs) { }\n  public void f(long x) { }\n"
+            "  void use(int n) {\n    f(n);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/A.java": ("java", text)})
+        assert edges == {("app/A.java::A::use", "app/A.java::A::f#1(long)")}
+
+    def test_a_varargs_parameter_is_its_array_over_a_field(self, tmp_path: Path) -> None:
+        text = (
+            "package app;\npublic class A {\n  private long xs;\n"
+            "  public void f(long x) { }\n  public void f(int[] xs) { }\n"
+            "  void use(int... xs) {\n    f(xs);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/A.java": ("java", text)})
+        assert edges == {("app/A.java::A::use", "app/A.java::A::f#1(int[])")}
+
+    @pytest.mark.parametrize(
+        ("members", "member"),
+        [
+            # Phase one takes Integer as an Object, with no unboxing.
+            ("  void f(int i) { }\n  void f(long l) { }\n  void f(Object o) { }\n",
+             "f#1(Object)"),
+            # Unboxed to int before widened to long.
+            ("  void f(long l) { }\n  void f(int i) { }\n", "f#1(int)"),
+        ],
+        ids=["object", "unboxed"],
+    )
+    def test_a_boxed_argument(self, tmp_path: Path, members: str, member: str) -> None:
+        text = (
+            f"package app;\npublic class A {{\n{members}"
+            "  void use(Integer boxed) {\n    f(boxed);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/A.java": ("java", text)})
+        assert edges == {("app/A.java::A::use", f"app/A.java::A::{member}")}
+
+    @pytest.mark.parametrize(
+        "lambda_", ["n -> mul(n, 2)", "(n) -> mul(n, 2)", "(a, n) -> mul(n, 2)"]
+    )
+    def test_a_lambda_parameter_hides_the_field(self, tmp_path: Path, lambda_: str) -> None:
+        """Read as the ``long`` field, ``n`` would pick ``mul(long, int)``.
+
+        A lambda parameter is a binding the scan reads, so ``n`` stays untyped
+        and the tie stands.
+        """
+        body = (
+            "  private long n;\n"
+            f"  void use(java.util.function.IntConsumer c) {{\n    c = {lambda_};\n  }}\n"
+        )
+        edges = _edges(tmp_path, {"app/M.java": ("java", self._MATH.replace("BODY", body))})
+        assert edges == {("app/M.java::M::use", "app/M.java::M::mul#2(int,int)")}
+
+    def test_an_instanceof_pattern_variable_is_typed(self, tmp_path: Path) -> None:
+        text = (
+            "package app;\npublic class Shape {\n"
+            "  public void f(Object o) { }\n  public void f(Shape s) { }\n"
+            "  void use(Object o, boolean ok) {\n"
+            "    if (o instanceof Shape s && ok) {\n      f(s);\n    }\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/Shape.java": ("java", text)})
+        assert edges == {("app/Shape.java::Shape::use", "app/Shape.java::Shape::f#1(Shape)")}
+
+    @pytest.mark.parametrize(
+        ("loop", "member"),
+        [("for (long t : ts)", "mul#2(long,int)"), ("for (var t : ts)", "mul#2(int,int)")],
+        ids=["typed", "var"],
+    )
+    def test_a_for_each_variable(self, tmp_path: Path, loop: str, member: str) -> None:
+        """A typed loop variable is read; a ``var`` one hides the ``long`` field ``t``."""
+        body = f"  private long t;\n  void use(long[] ts) {{\n    {loop} mul(t, 2);\n  }}\n"
+        edges = _edges(tmp_path, {"app/M.java": ("java", self._MATH.replace("BODY", body))})
+        assert edges == {("app/M.java::M::use", f"app/M.java::M::{member}")}
+
+    def test_a_call_on_an_array_element_keeps_its_edge(self, tmp_path: Path) -> None:
+        """An array is a builtin type now; ``items[0].m()`` names no receiver and still binds."""
+        files = {
+            "app/B.java": ("java", "package app;\npublic class B {\n  public void m() { }\n}\n"),
+            "app/A.java": (
+                "java",
+                "package app;\npublic class A {\n"
+                "  void use(B[] items) {\n    items[0].m();\n  }\n}\n",
+            ),
+        }
+        assert ("app/A.java::A::use", "app/B.java::B::m") in _edges(tmp_path, files)
+
+    @pytest.mark.parametrize(
+        "members",
+        [
+            "  void add(Node... ns) { }\n  void add(int at, Node... ns) { }\n",
+            "  void add(int at, Node... ns) { }\n  void add(Node... ns) { }\n",
+        ],
+        ids=["shorter-first", "longer-first"],
+    )
+    def test_an_array_alone_in_the_varargs_position_is_passed_whole(
+        self, tmp_path: Path, members: str
+    ) -> None:
+        """``add(index, nodes)`` with ``Node... nodes`` passes the array, not one ``Node``."""
+        text = (
+            f"package app;\npublic class Node {{\n{members}"
+            "  void use(int index, Node... nodes) {\n    add(index, nodes);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/Node.java": ("java", text)})
+        assert edges == {("app/Node.java::Node::use", "app/Node.java::Node::add#2")}
