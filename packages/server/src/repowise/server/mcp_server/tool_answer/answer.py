@@ -538,6 +538,7 @@ async def get_answer(
         repository,
         t0,
         _retrieval_quality(hits, agreement_dominant, question),
+        hits,
     )
     if union_payload is not None:
         return _with_candidates(
@@ -704,11 +705,12 @@ async def get_answer(
 
     quotes = build_quotes(hits, answer_text)
 
-    # ``served_named_body``: the question-named symbol's live body is inlined, so
-    # the response is content-grounded even when synthesis hedges.
+    # ``served_named_body``: the question-named symbol's live body is inlined and
+    # carries what was asked, so the response is content-grounded even when
+    # synthesis hedges.
     repo_root = _repo_root(ctx)
     symbol_bodies, served_named_body = _build_symbol_bodies(
-        _gather_body_candidates(hits, answer_text), repo_root
+        _gather_body_candidates(hits, answer_text), repo_root, question=question, hits=hits
     )
 
     # One coverage measurement for the grade and the retrieval rating.

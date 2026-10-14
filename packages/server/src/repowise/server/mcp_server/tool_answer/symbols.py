@@ -497,6 +497,7 @@ async def _anchor_chosen_symbols(
             {
                 "name": sym.name,
                 "kind": sym.kind,
+                "parent_name": sym.parent_name,
                 "start_line": vd["start_line"],
                 "end_line": vd["end_line"],
                 **({"_named_by": named_by} if named_by else {}),

@@ -26,6 +26,8 @@ from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server.tool_answer.confidence import (
     _Grade,
     _is_enclosing_continuation,
+    body_leaves_out,
+    hit_stems,
 )
 from repowise.server.mcp_server.tool_answer.config import (
     _GATED_RETURN_HITS,
@@ -200,6 +202,7 @@ def _union_answer_payload(
     repository,
     t0: float,
     retrieval_quality: str,
+    hits: list[dict] | None = None,
 ) -> dict | None:
     """The answer-by-union reply, or None to let synthesis handle the question.
 
@@ -209,7 +212,8 @@ def _union_answer_payload(
 
     Returns None when the union is not the answer: a prose question merely
     mentioning a generic many-def method, a mechanism question whose answer
-    often lives elsewhere, or unreadable bodies.
+    often lives elsewhere, a question no body carries the rest of
+    (:func:`body_leaves_out`), or unreadable bodies.
     """
     union_groups = homonyms.get("union") or {}
     if union_groups and union_defers_to_synthesis(question, question_ids, union_groups):
@@ -220,7 +224,8 @@ def _union_answer_payload(
         return None
     repo_root = _repo_root(ctx)
     union_bodies, more_defs = build_homonym_union_bodies(repo_root, union_groups)
-    if not union_bodies:
+    served = hit_stems(hits or [])
+    if not union_bodies or all(body_leaves_out(question, b, served) for b in union_bodies):
         return None
     names = sorted(union_groups)
     total = sum(len(v) for v in union_groups.values())
@@ -524,11 +529,7 @@ async def _hedged_payload(
                 "the full live body of the symbol(s) you named — cite that "
                 "directly, no verification Read needed."
             )
-        else:
-            payload["note"] = (
-                "Synthesis hedged, but symbol_bodies carries the live body "
-                "of the symbol(s) you named — read that to answer."
-            )
+        # Otherwise the bodies lack what was asked: the note's fallback_targets stand.
     # A hedge often means the rationale is a code comment, not wiki prose. A
     # comment already visible in symbol_bodies must not surface twice.
     code_rationale = await _gather_code_rationale(ctx, hits, fallback_targets, question)

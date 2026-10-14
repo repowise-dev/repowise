@@ -271,10 +271,18 @@ def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     reason = payload.get("degraded")
     if not reason:
         return
-    if payload.get("symbol_bodies"):
+    if payload.get("symbol_bodies") and payload.get("grounding"):
         payload["answer"] = (
             f"Synthesis is unavailable ({reason}), but symbol_bodies contains live source "
             "for the named code. Use that evidence directly."
+        )
+    elif payload.get("symbol_bodies"):
+        # No ``grounding``: the question names this code as the place it asks about.
+        payload["answer"] = (
+            f"Synthesis is unavailable ({reason}). symbol_bodies holds the code the "
+            "question names, but not what it asks; "
+            f"{'best_guesses' if payload.get('best_guesses') else 'retrieval'} "
+            "ranks the files to read."
         )
     elif (row := _lead_rationale(payload)) is not None:
         conclusion = _text(row, "rationale", "comment", "quote", "source", "text")

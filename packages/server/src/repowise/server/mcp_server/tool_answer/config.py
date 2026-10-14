@@ -306,7 +306,8 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 # 21: impact questions carry ``graph_neighbors``, the users of the lead file.
 # 22: ``confidence`` also asks whether the top hit covers the question's words.
 # 23: bodies include the function holding a literal the question writes, and an
-#     exact name off the topic no longer anchors its definition.
+#     exact name off the topic no longer anchors its definition; a question-named
+#     body grounds the answer only when it carries what else was asked.
 _ANSWER_SCHEMA_VERSION = 23
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence

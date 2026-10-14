@@ -517,16 +517,50 @@ def uncovered_terms(question: str, hits: list[dict]) -> list[str]:
     Returns ``[]`` when the hit covers at least :data:`_ANSWER_COVERAGE_FLOOR`
     of that weight.
     """
-    words = {
-        t: w for t, w in _text_words(question).items() if t not in _QUESTION_FRAME_STEMS
-    }
-    if not words or not hits:
+    if not hits:
         return []
-    served = [_text_stems(_retrieval_corpus([h], include_paths=True)) for h in hits]
+    served = hit_stems(hits)
+    return _left_out(_question_words(question), served[0], served)
+
+
+def hit_stems(hits: list[dict]) -> list[set[str]]:
+    """Each hit's served text as stems, the population coverage weighs words over."""
+    return [_text_stems(_retrieval_corpus([h], include_paths=True)) for h in hits]
+
+
+def body_leaves_out(question: str, body: dict, served: list[set[str]]) -> list[str]:
+    """The question's words a body served for the name it carries leaves out.
+
+    A question can name a function as the place it asks about ("the FTS
+    timeout in get_answer"): the body is the named code, not the answer. The
+    words besides the body's own name and owner that some retrieved hit
+    carries (*served*, from :func:`hit_stems`) must be in its source, weighed
+    as in :func:`uncovered_terms`. A word no hit carries ("definitions",
+    "parameters") is framing, not a fact found elsewhere, so it never counts.
+    ``[]`` when nothing else is asked.
+    """
+    named = _text_stems(f"{body.get('name') or ''} {body.get('parent_name') or ''}")
+    words = {
+        t: w
+        for t, w in _question_words(question).items()
+        if t not in named and any(_stem_hit(t, s) for s in served)
+    }
+    return _left_out(words, _text_stems(body.get("source") or ""), served)
+
+
+def _question_words(question: str) -> dict[str, str]:
+    return {t: w for t, w in _text_words(question).items() if t not in _QUESTION_FRAME_STEMS}
+
+
+def _left_out(words: dict[str, str], covering: set[str], served: list[set[str]]) -> list[str]:
+    """*words* missing from *covering*, when their rarity weight across *served*
+    exceeds what :data:`_ANSWER_COVERAGE_FLOOR` lets go."""
+    if not words:
+        return []
     weight = {
         t: window_term_weight(sum(_stem_hit(t, s) for s in served), len(served)) for t in words
     }
-    missing = [t for t in words if not _stem_hit(t, served[0])]
+    missing = [t for t in words if not _stem_hit(t, covering)]
     left_out = sum(weight[t] for t in missing)
     if left_out <= (1.0 - _ANSWER_COVERAGE_FLOOR) * sum(weight.values()):
         return []

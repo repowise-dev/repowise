@@ -122,14 +122,18 @@ async def _degraded_payload(
     """
     retrieval_quality = _retrieval_quality(hits, agreement_dominant, question)
     repo_root = _repo_root(ctx)
-    symbol_bodies, _served_named_body = _build_symbol_bodies(
+    # A named body that leaves out the rest of the question is served as
+    # evidence, never as the answer the payload leads with.
+    symbol_bodies, served_named_body = _build_symbol_bodies(
         _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
         repo_root,
+        question=question,
+        hits=hits,
     )
     # Inlined bodies are citations in the ordinary sense.
     citations = list(dict.fromkeys(b["path"] for b in symbol_bodies))
 
-    summary = _degraded_summary(reason, symbol_bodies, len(hits))
+    summary = _degraded_summary(reason, symbol_bodies if served_named_body else [], len(hits))
 
     best_guesses = _build_best_guesses(hits)
     # No quotes to check against here — there is no prose to quote from.
@@ -154,7 +158,7 @@ async def _degraded_payload(
                 citations.append(path)
 
     # The file ``answer`` will name first, in the projection's order.
-    if symbol_bodies:
+    if served_named_body:
         lead = symbol_bodies[0]["path"]
     elif best_guesses:
         lead = best_guesses[0]["file"]
@@ -188,6 +192,7 @@ async def _degraded_payload(
         )
     if symbol_bodies:
         payload["symbol_bodies"] = symbol_bodies
+    if served_named_body:
         payload["grounding"] = "symbol_body"
         payload["next_action_hint"] = await _degraded_next_action(
             symbol_bodies, ctx, repository, exclude_spec
@@ -210,7 +215,7 @@ async def _degraded_payload(
                 confidence,
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
-                has_bodies=bool(symbol_bodies),
+                has_bodies=served_named_body,
             ),
             repository=repository,
             targets=[*citations, *fallback_targets],
