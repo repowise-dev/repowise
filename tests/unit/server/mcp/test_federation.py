@@ -59,12 +59,15 @@ async def test_concurrency_bound_is_respected_and_order_kept(registry):
     registry([f"r{i}" for i in range(6)])
     in_flight = 0
     peak = 0
+    full = asyncio.Event()
 
     async def work(ctx):
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
-        await asyncio.sleep(0.01)
+        if in_flight == 2:
+            full.set()
+        await full.wait()
         in_flight -= 1
         return ctx.alias.upper()
 
@@ -79,7 +82,7 @@ async def test_timeout_names_the_slow_repo_and_keeps_the_rest(registry):
 
     async def work(ctx):
         if ctx.alias == "slow":
-            await asyncio.sleep(5)
+            await asyncio.Event().wait()
         return ctx.alias
 
     fed = Federation(timeout_s=0.05)
@@ -113,6 +116,13 @@ async def test_exception_in_one_repo_is_isolated_and_skipped_later(registry):
         {"repo": "b", "reason": "RuntimeError: index corrupt"},
         {"repo": "c", "reason": "OSError: cannot open c"},
     ]
+
+
+def test_multi_follows_the_configured_repos_not_the_answers(registry):
+    registry(["only"])
+    assert not Federation().multi
+    registry(["a", "b"], broken=("b",))
+    assert Federation().multi
 
 
 async def test_happy_path_adds_nothing(registry):

@@ -112,6 +112,11 @@ class Federation:
         self._stale: dict[str, dict[str, Any]] = {}
         self._checked: set[str] = set()
 
+    @property
+    def multi(self) -> bool:
+        """More than one repo configured: rows are tagged by repo even if one failed."""
+        return len(self._aliases) > 1
+
     async def run(self, fn: Callable[[Any], Awaitable[T]]) -> list[tuple[Any, T]]:
         """``(context, fn(context))`` for every repo that answered, in workspace order."""
         live = [alias for alias in self._aliases if alias not in self._failed]

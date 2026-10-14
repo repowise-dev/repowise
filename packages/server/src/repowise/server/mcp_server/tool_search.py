@@ -41,7 +41,6 @@ from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     _get_exclude_spec,
     _get_repo,
-    _is_workspace_mode,
     _resolve_repo_context,
     attach_ignored_arguments,
     filter_dicts_by_key,
@@ -1072,7 +1071,7 @@ async def _structured_search(
     single-repo helpers). The grep_hint is attached only as a fallback — when
     the structural index produced nothing, the agent still has a path forward.
     """
-    multi = fed is not None and _is_workspace_mode()
+    multi = fed is not None and fed.multi
 
     # A hybrid query is prose wrapped around an identifier ("where is X
     # defined"). The symbol scorer ranks on token overlap, so handing it the
