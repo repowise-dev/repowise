@@ -159,6 +159,21 @@ def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
     assert derive_tier(_HooksOnly()) is Tier.GOOD
 
 
+def test_a_capture_adapter_does_not_move_the_tier() -> None:
+    """Capture is opt-in and off by default, so it is no depth an agent always has."""
+
+    class _Captured:
+        id = "captured"
+        display_name = "Captured"
+        docs_url = None
+        hook_adapter = "cursor"
+        session_adapter = None
+        capture_adapter = "cursor"
+        methods = get_target("cursor").methods
+
+    assert derive_tier(_Captured()) is derive_tier(get_target("cursor")) is Tier.GOOD
+
+
 @pytest.mark.parametrize(
     ("provides", "tier"),
     [

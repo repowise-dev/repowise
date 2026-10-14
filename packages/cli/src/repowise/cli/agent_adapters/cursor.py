@@ -238,3 +238,85 @@ def cursor_rewrite_hook_matcher() -> str | None:
             matcher = entry.get("matcher")
             return matcher if isinstance(matcher, str) else ""
     return None
+
+
+# ---------------------------------------------------------------------------
+# Opt-in edit capture: ``afterFileEdit`` in ~/.cursor/hooks.json.
+# ---------------------------------------------------------------------------
+
+_CAPTURE_EVENT = "afterFileEdit"
+_CAPTURE_HOOK_ENTRY = {"command": "repowise augment --client cursor", "timeout": 5}
+
+
+def _is_capture_hook(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    command = entry.get("command")
+    if not isinstance(command, str):
+        return False
+    parts = command.replace("\\", "/").split()
+    if len(parts) < 2:
+        return False
+    exe = parts[0].strip("\"'").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    return exe == "repowise" and parts[1] == "augment"
+
+
+def cursor_capture_hook_installed() -> bool:
+    path = user_hooks_path()
+    if not path.exists():
+        return False
+    try:
+        hooks = _load(path).get("hooks")
+    except Exception:
+        return False
+    entries = hooks.get(_CAPTURE_EVENT) if isinstance(hooks, dict) else None
+    return isinstance(entries, list) and any(_is_capture_hook(e) for e in entries)
+
+
+def install_cursor_capture_hook() -> Path | None:
+    """Register the capture entry under ``afterFileEdit``; the path, or None on failure.
+
+    Only written once the user has opted Cursor into capture: Cursor starts a
+    process per agent file edit, which nobody should pay for a feature they
+    have not turned on.
+    """
+    path = user_hooks_path()
+    try:
+        doc = _load(path) if path.exists() else {}
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        entries = doc.setdefault("hooks", {}).setdefault(_CAPTURE_EVENT, [])
+        if not any(_is_capture_hook(entry) for entry in entries):
+            doc.setdefault("version", 1)
+            entries.append(dict(_CAPTURE_HOOK_ENTRY))
+            _write(path, doc)
+        return path
+    except Exception:
+        return None
+
+
+def uninstall_cursor_capture_hook() -> bool:
+    """Remove our ``afterFileEdit`` entry; True when the file changed."""
+    path = user_hooks_path()
+    if not path.exists():
+        return False
+    try:
+        doc = _load(path)
+        hooks = doc.get("hooks")
+        entries = hooks.get(_CAPTURE_EVENT) if isinstance(hooks, dict) else None
+        if not isinstance(entries, list):
+            return False
+        kept = [entry for entry in entries if not _is_capture_hook(entry)]
+        if len(kept) == len(entries):
+            return False
+        if kept:
+            hooks[_CAPTURE_EVENT] = kept
+        else:
+            hooks.pop(_CAPTURE_EVENT)
+        if not hooks and set(doc) <= {"version", "hooks"}:
+            path.unlink()
+        else:
+            _write(path, doc)
+        return True
+    except Exception:
+        return False

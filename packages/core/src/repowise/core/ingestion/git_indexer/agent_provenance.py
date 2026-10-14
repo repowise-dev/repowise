@@ -30,6 +30,11 @@ Three cross-cutting channels ride the same rule set:
     Tier 2 (``agent_trace`` channel).
   * a ``Generated-by:`` trailer (Apache's AI-attribution footer) naming a
     recognized agent — Tier 2 (``generated_by_trailer`` channel).
+  * an **edit-capture binding** (opt-in ``attribution.capture``): this
+    machine's hook recorded the agent's edits and :mod:`repowise.core.edit_capture`
+    matched them to the commit by content hash. Passed in like a git-ai note
+    with ``source="edit_capture"``; Tier 2 (``edit_capture`` channel), below a
+    note actually attached to the commit.
 
 Precedence is tier order (1 > 2 > 3); first match wins. Every commit gets a
 three-state label (:mod:`repowise.core.attribution`): ``agent`` on a match,
@@ -232,6 +237,9 @@ class GitAiNote:
     # Files the attestation names; a human attestation counts only when it
     # covers every path the commit changed.
     paths: frozenset[str] = frozenset()
+    # The channel the agent label is stored under: ``edit_capture`` for a
+    # commit bound from this machine's own capture sidecar.
+    source: str = "git_ai_note"
 
 
 # A note is a few KB; past this it is not read (a hostile or broken ref must
@@ -715,6 +723,7 @@ class AgentProvenanceClassifier:
         trace_confidence: str = "high",
         note_human: bool = False,
         trace_human: bool = False,
+        note_channel: str = "git_ai_note",
     ) -> AgentProvenance:
         """Classify one commit from local metadata. *message* is the full
         commit message (subject + body) — trailers and footers live in the
@@ -736,6 +745,7 @@ class AgentProvenanceClassifier:
             note_agent,
             trace_agent,
             trace_confidence,
+            note_channel,
         )
         if prov is not None:
             return prov
@@ -754,6 +764,7 @@ class AgentProvenanceClassifier:
         note_agent: str | None,
         trace_agent: str | None,
         trace_confidence: str,
+        note_channel: str = "git_ai_note",
     ) -> AgentProvenance | None:
         # T1 — agent service identity AUTHORED the commit.
         hit = self._identity_match(author_email)
@@ -763,7 +774,7 @@ class AgentProvenanceClassifier:
         # this commit. Below T1 (a bot service account is more autonomous) but
         # above the message-derived channels.
         if note_agent:
-            return _agent(note_agent, 2, "git_ai_note")
+            return _agent(note_agent, 2, note_channel)
         # T2 — agent-trace record resolved to this commit. Below the git-ai
         # note (a commit-attached attestation beats heuristic revision
         # mapping), above the message-derived channels.
@@ -830,6 +841,7 @@ def classify_commit(
         trace_confidence=trace_hit[1] if trace_hit else "high",
         note_human=note.human and bool(changed_paths) and changed_paths <= note.paths,
         trace_human=bool(trace_index) and trace_index.resolve_human(sha, parents, changed_paths),
+        note_channel=note.source,
     )
     return prov, trace_hit
 

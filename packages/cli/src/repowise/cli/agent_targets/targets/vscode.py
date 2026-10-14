@@ -333,6 +333,7 @@ class VSCodeTarget:
     docs_url = DOCS_URL
     hook_adapter = IDENTITY.hook_adapter
     session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 

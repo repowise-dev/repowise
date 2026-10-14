@@ -599,6 +599,8 @@ attribution:
 
 The same block in `~/.repowise/config.yaml` applies to every repository, and the stricter value wins per key: `enabled: false` in either file, the lower capture level, and the agents both files list. With `enabled: false` nothing about AI is stored or shown in the API, CLI, MCP, web or wiki, and `DO_NOT_TRACK=1` keeps capture off. `repowise attribution status` shows the effective, repo and user values with the coverage of the indexed history.
 
+With `capture: local` the edit hooks of the listed agents (those with `Yes` under Attribution in [INTEGRATIONS.md](../agent/INTEGRATIONS.md)) record which lines the agent wrote, as hashes with the file, session and model, in `.repowise/attribution/`; prompts and code are never stored. `repowise update` matches them to new commits by content and labels a matched commit with the agent; an unmatched commit stays unknown. `capture: notes` also writes a git-ai v3 note on `refs/notes/ai` and sets `notes.rewriteRef` so the note follows a local amend or rebase; teammates see notes once you `git push origin refs/notes/ai` and add the fetch refspec `repowise doctor` names. Cursor records edits through an `afterFileEdit` hook, which `repowise agents add --target=cursor --scope=user` adds once your user config captures Cursor.
+
 ### The `refactoring:` block
 
 Controls the refactoring-intelligence layer: the structured Extract Class /

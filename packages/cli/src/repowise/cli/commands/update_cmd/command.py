@@ -9,6 +9,7 @@ rendering (:mod:`.reporting`).
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import time
 from collections.abc import Callable
@@ -1092,6 +1093,12 @@ def run_update(
     # it must not wait on a re-score (7-day decay) or cost an indexing run.
     if not dry_run:
         _repair_module_attribution(repo_path)
+        # Opt-in edit capture: bind pending agent edits to the new commits
+        # before the git walk labels them. A no-op unless capture is on.
+        with contextlib.suppress(Exception):
+            from repowise.core.edit_capture.binder import bind_repo
+
+            bind_repo(Path(repo_path))
 
     analyzer_changed = health_analyzer_changed(state)
     # Stored per-file git rows written under older history rules. Only a full

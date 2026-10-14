@@ -69,6 +69,10 @@ registers it any more — see :mod:`.codex`.)
       decision, strictly capped); Codex lifecycle hooks instead get the
       index-staleness reminder below.
 
+  PostToolUse → edit tools, Cursor afterFileEdit
+    * Opt-in edit capture (``attribution.capture``): the lines the agent
+      wrote, as hashes, in a local sidecar. Silent; see :mod:`.edit_capture`.
+
   PostToolUse → edit tools (Codex)
     * After file edits, emit a short reminder that the indexed context may
       be stale.
@@ -111,6 +115,7 @@ from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .coverage_reingest import coverage_reingest_notice
 from .decision_capture import commit_capture_notice
+from .edit_capture import capture_edit
 from .read_state import _handle_edit_post, _handle_read_post, _record_edit
 from .search import _handle_search_post
 from .served_reads import _handle_mcp_read_post, _log_read_after_served
@@ -144,9 +149,9 @@ def _adapter(client: str | None):
 @click.command("augment")
 @click.option(
     "--client",
-    type=click.Choice(["codex"]),
+    type=click.Choice(["codex", "cursor"]),
     default=None,
-    help="Hook client marker. Codex lifecycle hooks pass this explicitly.",
+    help="Hook client marker. Codex and Cursor hooks pass this explicitly.",
 )
 @click.option(
     "--coverage-only",
@@ -193,6 +198,15 @@ def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> N
 
     if coverage_only:
         _run_coverage_only(payload, client)
+        return
+
+    # Opt-in edit capture for AI attribution. First, so a slow enrichment
+    # below cannot cost an event; it returns at once when capture is off.
+    if event == "afterFileEdit" or (
+        event == "PostToolUse" and tool_name in _adapter(client).edit_tool_names
+    ):
+        capture_edit(_adapter(client).name, payload)
+    if event == "afterFileEdit":
         return
 
     if client == "codex" and event in ("SessionStart", "UserPromptSubmit"):

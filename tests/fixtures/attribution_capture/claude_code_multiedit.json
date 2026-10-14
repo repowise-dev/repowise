@@ -1,0 +1,27 @@
+{
+  "session_id": "6f1c2b9e-0000-4000-8000-00000000c1a0",
+  "transcript_path": "/home/dev/.claude/projects/-work-demo/6f1c2b9e.jsonl",
+  "cwd": "/work/demo",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_use_id": "toolu_01EXAMPLE",
+  "duration_ms": 41,
+  "tool_name": "MultiEdit",
+  "tool_input": {
+    "file_path": "/work/demo/src/billing.py",
+    "edits": [
+      {
+        "old_string": "TAX = 0\n",
+        "new_string": "TAX_RATE = Decimal('0.20')\n"
+      },
+      {
+        "old_string": "def total(items):\n    return 0\n",
+        "new_string": "def total(items):\n    return sum(item.price for item in items) * (1 + TAX_RATE)\n",
+        "replace_all": false
+      }
+    ]
+  },
+  "tool_response": {
+    "filePath": "/work/demo/src/billing.py"
+  }
+}

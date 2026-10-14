@@ -2,9 +2,9 @@
 
 ``status`` shows what is switched on (effective value beside the repo and user
 values), for which agents, and how much of the indexed history has a known
-source. ``purge`` deletes the attribution the local index derived. Capture is
-not wired yet, so there is no sidecar, cursor or Repowise-written note to
-remove; third-party git-ai notes are never touched.
+source, plus edit capture per agent. ``purge`` deletes the attribution the
+local index derived, the capture sidecar (events, bindings, cursor) and the
+git-ai notes Repowise itself wrote; notes from anyone else are never touched.
 """
 
 from __future__ import annotations
@@ -48,6 +48,23 @@ async def _label_counts(repo_path: Path) -> dict[str, int] | None:
 
 
 _DEFAULTS: dict[str, Any] = {"enabled": True, "capture": "off", "agents": ()}
+
+
+def _capture_by_agent(settings: Any) -> dict[str, str]:
+    """Per agent target: its capture level here, or why it is not captured."""
+    from repowise.cli.agent_targets.registry import all_targets
+
+    out: dict[str, str] = {}
+    for target in all_targets():
+        if target.capture_adapter is None:
+            out[target.id] = "no capture adapter (git markers only)"
+        elif settings.capture == "off":
+            out[target.id] = "off"
+        elif target.id not in settings.agents:
+            out[target.id] = "off (not in attribution.agents)"
+        else:
+            out[target.id] = settings.capture
+    return out
 
 
 def _fmt(value: Any) -> str:
@@ -121,9 +138,15 @@ def attribution_status(path: str | None, fmt: str) -> None:
         if counts is not None
         else None
     )
+    from repowise.core.edit_capture.store import summary as capture_summary
+
+    capture = _capture_by_agent(settings)
+    sidecar = capture_summary(repo_path)
     if fmt == "json":
         emit_json(
             {
+                "capture_by_agent": capture,
+                "capture_sidecar": sidecar,
                 "effective": {
                     "enabled": settings.enabled,
                     "capture": settings.capture,
@@ -158,6 +181,13 @@ def attribution_status(path: str | None, fmt: str) -> None:
         console.print(f"  [yellow]![/yellow] {error} (treated as the strictest value)")
     for reason in _explanations(settings):
         console.print(f"  [dim]{reason}[/dim]")
+    for target_id, level in capture.items():
+        console.print(f"  capture  {target_id:<12} {level}")
+    if any(sidecar.values()):
+        console.print(
+            f"  sidecar  {sidecar['pending_events']} pending edit events,"
+            f" {sidecar['bound_commits']} bound commits, {sidecar['notes_written']} notes written"
+        )
     if not settings.enabled:
         console.print("  Nothing about AI is stored or shown for this repository.")
     elif counts is None:
@@ -182,23 +212,42 @@ async def _purge(repo_path: Path) -> bool:
         return True
 
 
+def _purge_capture(repo_path: Path) -> tuple[int, bool]:
+    """Remove our notes, then the sidecar that names them: ``(notes, sidecar)``."""
+    from repowise.core.edit_capture.notes import purge_notes
+    from repowise.core.edit_capture.store import delete_sidecar
+
+    notes = purge_notes(repo_path)
+    return notes, delete_sidecar(repo_path)
+
+
 @attribution_group.command(name="purge")
 @click.argument("path", required=False, type=click.Path(exists=True, file_okay=False))
 @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt.")
 def attribution_purge(path: str | None, yes: bool) -> None:
-    """Delete the AI attribution derived into the local index.
+    """Delete the AI attribution derived into the local index and captured here.
 
-    Clears every commit label and file rollup. Git history, trailers and notes
-    in the repository are left as they are.
+    Clears every commit label and file rollup, the edit-capture sidecar under
+    .repowise/attribution/ and the git-ai notes Repowise wrote. Git history,
+    trailers and notes written by anything else are left as they are.
     """
     repo_path = resolve_repo_path(path)
     if not yes and not click.confirm(
-        "Delete all AI attribution derived into this repository's index?", default=False
+        "Delete all AI attribution derived into this repository's index and captured here?",
+        default=False,
     ):
         console.print("Nothing deleted.")
         return
+    notes, sidecar = _purge_capture(repo_path)
+    if sidecar:
+        console.print("[green]✓[/green] Edit-capture sidecar deleted.")
+    if notes:
+        console.print(
+            f"[green]✓[/green] {notes} git-ai note(s) Repowise wrote removed locally."
+            " Repowise never pushes, so notes you already pushed stay on the remote."
+        )
     if not run_async(_purge(repo_path)):
-        console.print("No index found; nothing to delete.")
+        console.print("No index found; nothing else to delete.")
         return
     console.print("[green]✓[/green] AI attribution deleted from the local index.")
     if _settings(repo_path).enabled:

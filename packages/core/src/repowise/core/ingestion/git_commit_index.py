@@ -77,7 +77,23 @@ def load_git_ai_note_agents(repo: object, commit_limit: int | None) -> dict[str,
         note = parse_git_ai_note(raw)
         if note.agent or note.human:
             notes[sha.strip()] = note
+    _merge_capture_bindings(repo, notes)
     return notes
+
+
+def _merge_capture_bindings(repo: object, notes: dict[str, GitAiNote]) -> None:
+    """Add commits this machine's edit capture bound; a real note wins."""
+    root = getattr(repo, "working_tree_dir", None)
+    if not root:
+        return
+    from repowise.core.edit_capture.store import bound_commits
+
+    from .git_indexer.agent_provenance import GitAiNote, _normalize_agent_token
+
+    for sha, agent in bound_commits(root).items():
+        label = _normalize_agent_token(agent.replace("_", " "), allow_slug=True)
+        if label and sha not in notes:
+            notes[sha] = GitAiNote(agent=label, source="edit_capture")
 
 
 def _git_ai_notes_log(repo: object, commit_limit: int | None) -> str:

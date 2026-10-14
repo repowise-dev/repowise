@@ -2222,11 +2222,11 @@ does not know or list the commands. See [pluggable storage and capability seams]
 Inspect and clear AI attribution for a repository.
 
 ```bash
-repowise attribution status [PATH] [--format json]   # what is on, for which agents, coverage
-repowise attribution purge [PATH] [--yes]            # delete attribution derived into the local index
+repowise attribution status [PATH] [--format json]   # what is on, capture per agent, coverage
+repowise attribution purge [PATH] [--yes]            # delete derived attribution, captured edits and our notes
 ```
 
-`purge` leaves git history, trailers and notes in the repository as they are.
+`purge` deletes the index labels, the `.repowise/attribution/` sidecar and the git-ai notes Repowise wrote locally. Git history, trailers and notes written by anything else stay as they are.
 Settings live in the `attribution:` block of [CONFIG.md](CONFIG.md#the-attribution-block).
 
 ---
