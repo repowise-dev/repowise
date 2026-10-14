@@ -19,7 +19,7 @@ from ..finding_registry import excluded_types, gate_for, is_served, language_lab
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
-from .analyzer import RevisionHealthAnalyzer, language_for, language_of
+from .analyzer import RevisionAnalysis, RevisionHealthAnalyzer, language_for, language_of
 from .attribution import FindingAttributor, changed_symbols_for
 from .identity import change_finding_id, finding_key, severity_rank
 from .matcher import FindingMatcher, MatchedFinding
@@ -260,8 +260,11 @@ class ChangeHealthDeltaService:
         )
         base_sources = self.source.read(pair.base_sha, base_paths)
 
+        rename = pair.rename_map()
         head_run = self.analyzer.analyze(head_sources, subject_paths=set(head_paths))
-        base_run = self.analyzer.analyze(base_sources, subject_paths=set(base_paths))
+        base_run = self.analyzer.analyze(
+            base_sources, subject_paths=set(base_paths), dependents=_on_base(head_run, rename)
+        )
 
         skipped.update(head_run.skipped)
         # A file whose BASE side failed has no baseline, so every finding at its
@@ -282,8 +285,7 @@ class ChangeHealthDeltaService:
             1 for r in skipped.values() if r.removeprefix("base_") in {"parse_failed", "unreadable"}
         )
 
-        rename = pair.rename_map()
-        matcher = FindingMatcher(rename)
+        matcher = FindingMatcher(rename, _hunks(eligible))
         # Both sides are restricted to the same comparable set, so an excluded
         # file cannot contribute a one-sided "introduced" or "resolved".
         # Advisory markers deduct nothing, so adding one is not a regression
@@ -443,6 +445,21 @@ def _limits(head_findings: list[HealthFindingData]) -> list[str]:
             "are not compared: they are held back pending verification there."
         )
     return limits
+
+
+def _on_base(head_run: RevisionAnalysis, rename: dict[str, str]) -> dict[str, int]:
+    """Head's dependents counts under base-side paths, to score base against.
+
+    See :meth:`RevisionHealthAnalyzer.analyze`: one centrality context for both
+    sides, so only the code can move a centrality-gated finding.
+    """
+    to_base = {head: base for base, head in rename.items()}
+    return {to_base.get(path, path): count for path, count in head_run.dependents.items()}
+
+
+def _hunks(changes: list[FileChange]) -> dict[str, list[tuple[int, int, int, int]]]:
+    """Each changed file's diff hunks, by head path, for the matcher's line map."""
+    return {c.head_path: c.diff.hunks for c in changes if c.head_path and c.diff}
 
 
 def _comparable(finding: HealthFindingData, withheld: frozenset[str]) -> bool:

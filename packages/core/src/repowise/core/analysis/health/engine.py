@@ -664,7 +664,7 @@ def _dependents_count(graph: Any, path: str) -> int:
     return len(set(file_dependency_neighbors(graph, path, incoming=True, uses_only=True)))
 
 
-def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | None:
+def _compute_repo_dependents_p80(dependents: dict[str, int]) -> int | None:
     """Repo-wide 80th percentile of file-level in-degree (dependents).
 
     Restricted to files that actually have ≥1 dependent — this is the
@@ -676,17 +676,7 @@ def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | N
     sparse-graph languages (TS/Rust) instead of assuming Python's denser
     import graph.
     """
-    if graph is None:
-        return None
-    counts: list[int] = []
-    for pf in parsed_files:
-        path = pf.file_info.path
-        if path not in graph:
-            continue
-        deg = _dependents_count(graph, path)
-        if deg > 0:
-            counts.append(deg)
-    return _percentile_p80(counts)
+    return _percentile_p80([deg for deg in dependents.values() if deg > 0])
 
 
 def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | None:
@@ -798,6 +788,7 @@ class HealthAnalyzer:
         repo_root: Any | None = None,
         source_reader: SourceReader | None = None,
         stored_blame_findings: dict[str, list[Any]] | None = None,
+        file_dependents: dict[str, int] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -845,9 +836,33 @@ class HealthAnalyzer:
         # without a blame index (a re-score from stored git metadata) so the
         # pass does not delete what it cannot recompute.
         self.stored_blame_findings = stored_blame_findings or {}
+        # Dependents counts to gate centrality on instead of this graph's. A
+        # revision comparison passes the other side's, so a file crossing a
+        # centrality gate inside a partial graph is not read as a code change.
+        self._file_dependents_override = file_dependents
         self._package_roots_cache: set[str] | None = None
         self._tests_reach_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
+
+    def file_dependents(self) -> dict[str, int]:
+        """Each analysed file's dependents count, as the centrality gates read it."""
+        if self._file_dependents_override is not None:
+            return dict(self._file_dependents_override)
+        if self.graph is None:
+            return {}
+        return {
+            pf.file_info.path: _dependents_count(self.graph, pf.file_info.path)
+            for pf in self.parsed_files
+            if pf.file_info.path in self.graph
+        }
+
+    def _dependents(self, path: str) -> int:
+        override = self._file_dependents_override
+        if override is not None and path in override:
+            return override[path]
+        if self.graph is None or path not in self.graph:
+            return 0
+        return _dependents_count(self.graph, path)
 
     def _execution_graph(self) -> CallGraphIndex | None:
         """Build the reliable execution index at most once per analysis."""
@@ -1205,7 +1220,7 @@ class HealthAnalyzer:
             graph_view=ImportEdgeView(self.graph) if self.graph is not None else None,
             dup_report=dup_report,
             function_mod_p80=fn_mod_p80,
-            dependents_p80=_compute_repo_dependents_p80(self.parsed_files, self.graph),
+            dependents_p80=_compute_repo_dependents_p80(self.file_dependents()),
             active_contributors=_compute_repo_active_contributors(self.git_meta_map),
             # Repo-wide SCC index (import cycles), computed once so Break
             # Cycle never recomputes it per file.
@@ -1299,7 +1314,7 @@ class HealthAnalyzer:
             path = s.file_path
             if path in out or path not in self.graph:
                 continue
-            out[path] = float(_dependents_count(self.graph, path))
+            out[path] = float(self._dependents(path))
         return out
 
     def _apply_cross_file_oracles(self, walked: list[tuple[Any, FileComplexity]]) -> None:
@@ -1628,9 +1643,7 @@ class HealthAnalyzer:
         max_nesting = max((fc.max_nesting for fc in fc_list), default=0)
         nloc = fcx.file_nloc
 
-        dependents_count = 0
-        if self.graph is not None:
-            dependents_count = _dependents_count(self.graph, file_path)
+        dependents_count = self._dependents(file_path)
 
         cov = self.coverage_map.get(file_path)
         if cov is None:
