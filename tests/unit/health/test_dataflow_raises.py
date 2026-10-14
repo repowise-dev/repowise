@@ -110,6 +110,102 @@ def test_a_raise_in_a_switch_arm_is_recorded_and_a_closure_raise_is_not():
     assert _facts("typescript", src) == [(6, "raise", "RangeError", 10)]
 
 
+def test_try_inside_switch_arm_in_typescript_and_java():
+    ts = """
+    function f(k) {
+      switch (k) {
+        case 1:
+          try {
+            throw new RangeError("a");
+          } catch (e) {
+            throw e;
+          }
+        default:
+          break;
+      }
+    }
+    """
+    assert _facts("typescript", ts) == [
+        (6, "raise", "RangeError", 7),
+        (8, "rethrow", None, None),
+    ]
+    (ts_region,) = _cfg("typescript", ts).try_regions
+    assert ts_region.start_line == 5 and ts_region.end_line == 9
+
+    java = """
+    class A {
+      void f(int k) {
+        switch (k) {
+          case 1:
+            try {
+              throw new IllegalArgumentException();
+            } catch (IllegalArgumentException e) {
+              throw e;
+            }
+        }
+      }
+    }
+    """
+    assert _facts("java", java) == [
+        (7, "raise", "IllegalArgumentException", 8),
+        (9, "rethrow", "IllegalArgumentException", None),
+    ]
+    (java_region,) = _cfg("java", java).try_regions
+    assert java_region.start_line == 6 and java_region.end_line == 10
+
+
+def test_try_inside_switch_arm_handler_with_if_else_exits():
+    ts = """
+    function f(k, c) {
+      switch (k) {
+        case 1:
+          try {
+            throw new RangeError("a");
+          } catch (e) {
+            if (c) {
+              return 1;
+            } else {
+              throw e;
+            }
+          }
+        default:
+          break;
+      }
+    }
+    """
+    cfg = _cfg("typescript", ts)
+    (region,) = cfg.try_regions
+    (handler,) = region.handlers
+    assert handler.completes is False
+
+
+
+def test_try_inside_match_arm_in_python_and_extract_method_refusal():
+    src = """
+    def f(k):
+        x = 0
+        match k:
+            case 1:
+                try:
+                    x = g(k)
+                    if x:
+                        x = h(x)
+                        note(x)
+                    log(x)
+                    send(k)
+                except Exception:
+                    return x
+            case _:
+                pass
+        return x
+    """
+    cfg = _cfg("python", src)
+    (region,) = cfg.try_regions
+    assert (region.start_line, region.end_line) == (6, 14)
+    assert _refusal(src, 7, 12) == EXCEPTION_STATE
+    assert _refusal(src, 6, 7) == TRY_SPLIT
+
+
 def test_java_union_catch_and_csharp_bare_rethrow():
     java = """
     class A { void f() {
