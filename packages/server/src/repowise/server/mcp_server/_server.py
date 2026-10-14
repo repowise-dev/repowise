@@ -745,7 +745,55 @@ async def _lifespan(server: FastMCP):
 # Create the MCP server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP(
+class _RepowiseMCP(FastMCP):
+    """FastMCP plus the HTTP bearer gate and per-call principal scope.
+
+    Both are inert without an authenticated HTTP principal, so stdio and an
+    unconfigured HTTP server behave exactly like plain FastMCP.
+    """
+
+    def streamable_http_app(self):  # type: ignore[override]
+        from repowise.server.mcp_server._http_auth import gate_if_configured
+
+        return gate_if_configured(super().streamable_http_app(), self.settings.streamable_http_path)
+
+    def sse_app(self, mount_path: str | None = None):  # type: ignore[override]
+        from repowise.server.mcp_server._http_auth import gate_if_configured
+
+        return gate_if_configured(super().sse_app(mount_path), self.settings.sse_path)
+
+    def _request_principal(self) -> Any:
+        try:
+            request = self._mcp_server.request_context.request
+        except LookupError:
+            return None
+        state = getattr(request, "scope", {}).get("state") or {}
+        return state.get("principal")
+
+    async def list_tools(self):  # type: ignore[override]
+        tools = await super().list_tools()
+        principal = self._request_principal()
+        if principal is None:
+            return tools
+        from repowise.server.auth import get_authorizer
+
+        authorizer = get_authorizer()
+        return [t for t in tools if authorizer.can_use_tool(principal, t.name)]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
+        principal = self._request_principal()
+        if principal is not None:
+            from mcp.server.fastmcp.exceptions import ToolError
+
+            from repowise.server.mcp_server._http_auth import call_denial
+
+            denial = call_denial(principal, name, arguments)
+            if denial is not None:
+                raise ToolError(denial)
+        return await super().call_tool(name, arguments)
+
+
+mcp = _RepowiseMCP(
     "repowise",
     # Hosts that defer tool schemas show the model only tool names and this
     # string, so it says when to call; tests pin the key lines and a length cap.

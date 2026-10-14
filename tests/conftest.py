@@ -111,6 +111,13 @@ def _isolate_db_url_env():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_tokens_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory):
+    """Keep a developer's ``~/.repowise/tokens.yaml`` from turning server auth on."""
+    missing = tmp_path_factory.getbasetemp() / "no-tokens.yaml"
+    monkeypatch.setenv("REPOWISE_TOKENS_FILE", str(missing))
+
+
+@pytest.fixture(autouse=True)
 def _fresh_per_index_caches():
     """Drop the MCP server's per-index caches before every test.
 
