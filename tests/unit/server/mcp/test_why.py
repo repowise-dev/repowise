@@ -808,3 +808,56 @@ async def test_get_why_targets_do_not_bind_a_record_whose_files_are_gone(session
 
     governing = result["target_context"][path]["governing_decisions"]
     assert [d["id"] for d in governing] == ["goneFalse"]
+
+
+_OFF_TOPIC = "why does the connection pool retry on timeout"
+
+
+async def _accept_dec2(session) -> None:
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
+
+    await accept_decision(
+        session, await session.get(DecisionRecord, "dec2"), accepter="test", evidence=["pr#1"]
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_get_why_target_under_a_records_module_is_not_governed(session, setup_mcp):
+    """dec2 names src/db/models.py; its module is only that file's folder.
+
+    A sibling shares the folder, not the decision, and path mode agrees.
+    """
+    from repowise.server.mcp_server import get_why
+
+    await _accept_dec2(session)
+    sibling = "src/db/session.py"
+
+    result = await get_why(_OFF_TOPIC, targets=[sibling])
+
+    assert result["target_context"][sibling]["governing_decisions"] == []
+    assert result.get("answer_basis") != "decision"
+    path_result = await get_why(sibling)
+    assert not path_result.get("decisions")
+
+
+@pytest.mark.asyncio
+async def test_get_why_governed_target_reason_agrees_with_the_basis(session, setup_mcp):
+    """An off-topic question on a governed file still serves its rule.
+
+    The reason must then say so, not that no record covers the call.
+    """
+    from repowise.server.mcp_server import get_why
+
+    await _accept_dec2(session)
+    path = "src/db/models.py"
+
+    result = await get_why(_OFF_TOPIC, targets=[path])
+
+    governing = result["target_context"][path]["governing_decisions"]
+    assert [d["id"] for d in governing] == ["dec2"]
+    assert result["answer_basis"] == "decision"
+    assert "No decision record covers" not in result["reason"]
+    assert "binds it whatever the question" in result["reason"]
+    assert "try_instead" not in result

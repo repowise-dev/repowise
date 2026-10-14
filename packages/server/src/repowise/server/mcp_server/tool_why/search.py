@@ -23,13 +23,14 @@ from repowise.server.mcp_server._why_relevance import (
     question_terms,
     recovery_note,
     redirect_for,
+    redirect_when_governed,
     redirect_when_served,
     relevance,
     term_idf,
     word_set,
 )
 from repowise.server.mcp_server.tool_why.archaeology import question_commits
-from repowise.server.mcp_server.tool_why.basis import _has_archaeology
+from repowise.server.mcp_server.tool_why.basis import _has_archaeology, rests_on_decision
 from repowise.server.mcp_server.tool_why.caps import (
     _MAX_SEARCH_DECISIONS,
     _SEMANTIC_WINDOW,
@@ -316,9 +317,13 @@ async def _why_no_match(
         )
         _cap_supporting_lanes(result, collector, label=query)
         _cap_target_context(result["target_context"], collector)
-    # Don't redirect away from evidence this response is already serving.
+    # Don't redirect away from evidence this response is already serving, and
+    # read the ruling from the fact ``answer_basis`` reads, so they agree.
     served = _served_lanes(result)
-    if served:
+    if rests_on_decision(result):
+        result.pop("try_instead", None)
+        result.update(redirect_when_governed())
+    elif served:
         result.pop("try_instead", None)
         recall = f"get_why(targets={json.dumps(targets)})" if targets else None
         result.update(redirect_when_served(served, recall))

@@ -315,16 +315,13 @@ async def _build_target_context(
 
 
 def _records_governing_target(all_decisions: list, target: str) -> list:
-    """Records naming *target*, or a module it sits under, best-first."""
-    governing_records = []
-    for d in all_decisions:
-        # Same gate as ``_why_path``, which one target routes to.
-        if not binds_to_paths(d.scope_basis):
-            continue
-        affected = json.loads(d.affected_files_json)
-        affected_mods = json.loads(d.affected_modules_json)
-        if target in affected or any(target.startswith(m + "/") for m in affected_mods):
-            governing_records.append(d)
+    """Records naming *target*, best-first, by the same rule as ``_why_path``.
+
+    A record's modules are mostly its files' folders, so a file merely under
+    one shares a folder with the decision, not its subject. Path mode and the
+    decision graph match a module only as itself, and so does this.
+    """
+    governing_records = _records_naming_path(all_decisions, target)
     governing_records.sort(key=_path_decision_sort_key)
     return governing_records
 

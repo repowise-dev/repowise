@@ -303,3 +303,19 @@ def redirect_when_served(lanes: list[str], recall: str | None) -> dict[str, Any]
             f"unfiltered by the question: {recall}."
         )
     }
+
+
+def redirect_when_governed() -> dict[str, Any]:
+    """The reason for a call that missed on its terms but names a governed file.
+
+    An accepted rule binds its files whatever the question, so the target card
+    serves it and ``answer_basis`` is ``decision``. Saying no record covers the
+    call beside it would contradict both.
+    """
+    return {
+        "reason": (
+            "No decision record carries this question's terms. The accepted "
+            "decision governing a named file binds it whatever the question; "
+            "anything else served is evidence, not a ruling."
+        )
+    }
