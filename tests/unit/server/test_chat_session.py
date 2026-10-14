@@ -183,7 +183,7 @@ class MemoryStore:
             if key == idempotency_key:
                 after = rows[index + 1 : index + 2]
                 reply = after[0][0] if after and after[0][0].role == "assistant" else None
-                return message.id, reply
+                return message, reply
         return None
 
     async def add_user_message(self, conversation_id, content, *, idempotency_key):
@@ -684,3 +684,18 @@ async def test_show_view_is_offered_under_the_read_only_ceiling_but_follows_the_
     assert SHOW_VIEW_TOOL in open_provider.calls[0]["tools"]
     assert SHOW_VIEW_TOOL not in narrow.calls[0]["tools"]
     assert [t.ok for t in result.tool_trace] == [False]
+
+
+async def test_a_key_reused_with_another_message_conflicts(store):
+    from repowise.server.chat_session import IdempotencyConflictError
+
+    provider = ScriptedProvider(lambda i: [_text("ok")])
+    session = await _open(store, provider)
+    await session.send("first question", idempotency_key="k1")
+
+    with pytest.raises(IdempotencyConflictError):
+        await session.check_send("another question", "k1")
+    with pytest.raises(IdempotencyConflictError):
+        await session.send("another question", idempotency_key="k1")
+    await session.check_send("first question", "k1")
+    assert len(provider.calls) == 1

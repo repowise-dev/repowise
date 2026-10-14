@@ -104,13 +104,13 @@ class SqlConversationStore:
 
     async def find_sent(
         self, conversation_id: str, idempotency_key: str
-    ) -> tuple[str, StoredMessage | None] | None:
+    ) -> tuple[StoredMessage, StoredMessage | None] | None:
         async with get_session(self._factory) as session:
             found = await crud.find_idempotent_turn(session, conversation_id, idempotency_key)
             if found is None:
                 return None
             sent, reply = found
-            return sent.id, (_message(reply) if reply is not None else None)
+            return _message(sent), (_message(reply) if reply is not None else None)
 
     async def add_user_message(
         self, conversation_id: str, content: dict[str, Any], *, idempotency_key: str | None

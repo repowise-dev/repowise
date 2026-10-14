@@ -191,8 +191,8 @@ class ConversationStore(Protocol):
 
     async def find_sent(
         self, conversation_id: str, idempotency_key: str
-    ) -> tuple[str, StoredMessage | None] | None:
-        """``(user message id, reply or None)`` for a key already sent, else None."""
+    ) -> tuple[StoredMessage, StoredMessage | None] | None:
+        """``(user message, reply or None)`` for a key already sent, else None."""
         ...
 
     async def add_user_message(

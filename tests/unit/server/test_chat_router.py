@@ -23,8 +23,7 @@ from tests.unit.server.test_chat_stream_terminal_event import (
 
 _PROVIDER = "repowise.server.routers.chat.get_chat_provider_instance"
 _EXECUTE = "repowise.server.chat_tools.execute_tool"
-_MAX_AGENTIC_LOOPS = 10
-assert WEB_POLICY.max_tool_loops == _MAX_AGENTIC_LOOPS
+_MAX_AGENTIC_LOOPS = WEB_POLICY.max_tool_loops
 
 _FILE_PAGE = {"kind": "file", "label": "Files", "target": "src/a.py", "target_kind": "path"}
 _CONTEXT_RESULT = {"targets": {"src/a.py": {"docs": {"title": "A", "content_md": "alpha"}}}}

@@ -35,6 +35,7 @@ from repowise.server.chat_session import (
     DEFAULT_POLICY,
     WEB_POLICY,
     ChatSession,
+    IdempotencyConflictError,
     SessionNotFoundError,
 )
 from repowise.server.chat_suggestions import page_suggestions
@@ -172,8 +173,12 @@ async def _session_sse(open_session: Any, run: Any) -> AsyncIterator[str]:
             "data", {"type": "error", "message": f"Internal error: {type(exc).__name__}: {exc}"}
         )
         return
-    async for event in run(session):
-        yield _sse_event("data", event)
+    try:
+        async for event in run(session):
+            yield _sse_event("data", event)
+    except IdempotencyConflictError as exc:
+        # Checked before the response; only a concurrent send reaches this.
+        yield _sse_event("data", {"type": "error", "message": str(exc)})
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +423,10 @@ async def _find_session(request: Request, session_id: str) -> StoredConversation
 @router.post(
     "/api/chat/sessions/{session_id}/messages",
     response_model=ChatTurnResultResponse,
-    responses={200: {"content": {"text/event-stream": {}}}},
+    responses={
+        200: {"content": {"text/event-stream": {}}},
+        409: {"description": "The idempotency key was already sent with another message"},
+    },
 )
 async def send_chat_session_message(
     session_id: str, body: ChatSessionMessageRequest, request: Request
@@ -430,18 +438,26 @@ async def send_chat_session_message(
     )
     provider = _chat_provider(scope.repo_path, scope.repo_id, body.provider, body.model)
 
-    async def open_session() -> ChatSession:
-        return await ChatSession.open(
+    try:
+        session = await ChatSession.open(
             scope=scope,
             provider=provider,
             principal=request_principal(request),
             conversation_id=session_id,
         )
+        await session.check_send(body.message, body.idempotency_key)
+    except SessionNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except IdempotencyConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    async def opened() -> ChatSession:
+        return session
 
     if body.stream:
         return _sse_response(
             _session_sse(
-                open_session,
+                opened,
                 lambda session: session.stream(
                     body.message,
                     context=body.context,
@@ -451,15 +467,14 @@ async def send_chat_session_message(
             )
         )
     try:
-        session = await open_session()
-    except SessionNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    result = await session.send(
-        body.message,
-        context=body.context,
-        idempotency_key=body.idempotency_key,
-        is_cancelled=request.is_disconnected,
-    )
+        result = await session.send(
+            body.message,
+            context=body.context,
+            idempotency_key=body.idempotency_key,
+            is_cancelled=request.is_disconnected,
+        )
+    except IdempotencyConflictError as exc:  # a concurrent send won the key
+        raise HTTPException(409, str(exc)) from exc
     return ChatTurnResultResponse.model_validate(asdict(result))
 
 

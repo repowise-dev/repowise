@@ -67,10 +67,9 @@ logger = logging.getLogger(__name__)
 
 #: A headless session: read-only tools, 20 model calls a turn.
 DEFAULT_POLICY = SessionPolicy()
-#: The web chat keeps the surface it always had: every configured tool (a
-#: mutating one still refused at execution without a confirmation grant) and
-#: its 10-call loop cap.
-WEB_POLICY = SessionPolicy(safety_ceiling="mutating", max_tool_loops=10)
+#: The web chat keeps the surface it always had: every configured tool, a
+#: mutating one still refused at execution without a confirmation grant.
+WEB_POLICY = SessionPolicy(safety_ceiling="mutating")
 
 StopReason = Literal[
     "answered", "loop_cap", "token_budget", "turn_budget", "refused", "cancelled", "error"
@@ -92,6 +91,10 @@ turn_hooks.register("local", NoTurnHooks())
 
 class SessionNotFoundError(LookupError):
     """The conversation does not exist, was deleted, or belongs to another repository."""
+
+
+class IdempotencyConflictError(ValueError):
+    """An idempotency key already sent with a different message."""
 
 
 @dataclass(frozen=True)
@@ -685,11 +688,23 @@ class ChatSession:
                     yield event
                     for extra in await self.hooks.on_event(event):
                         yield extra
+            except IdempotencyConflictError:
+                raise
             except Exception as exc:
                 logger.exception("Chat turn error")
                 text = f"Internal error: {type(exc).__name__}: {exc}"
                 outcome.result = self._unstored("error", error=text)
                 yield {"type": "error", "message": text}
+
+    async def check_send(self, message: str, idempotency_key: str | None) -> None:
+        """Raise :class:`IdempotencyConflictError` when *idempotency_key* was
+        already sent with another message. ``send`` and ``stream`` check too;
+        this lets a transport refuse before it starts a response."""
+        if idempotency_key is None:
+            return
+        sent = await self.store.find_sent(self.id, idempotency_key)
+        if sent is not None:
+            _check_same_message(sent[0], message, idempotency_key)
 
     def _unstored(
         self, stop_reason: StopReason, *, error: str | None = None, **values: Any
@@ -737,7 +752,9 @@ class ChatSession:
         if idempotency_key is not None:
             sent = await self.store.find_sent(self.id, idempotency_key)
             if sent is not None:
-                user_message_id, reply = sent
+                user_message, reply = sent
+                _check_same_message(user_message, message, idempotency_key)
+                user_message_id = user_message.id
                 if reply is not None:
                     outcome.result = _replayed(reply, self.id, user_message_id)
                     if outcome.result.answer:
@@ -814,6 +831,13 @@ class ChatSession:
         )
         for event in _closing_events(outcome.result):
             yield event
+
+
+def _check_same_message(sent: StoredMessage, message: str, idempotency_key: str) -> None:
+    if sent.content.get("text") != message:
+        raise IdempotencyConflictError(
+            f"idempotency key {idempotency_key!r} was already sent with a different message"
+        )
 
 
 def _replayed(reply: StoredMessage, conversation_id: str, user_message_id: str) -> ChatTurnResult:

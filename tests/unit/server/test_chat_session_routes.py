@@ -86,6 +86,25 @@ async def test_send_returns_the_turn_result_as_json_and_replays_a_retry():
     assert len(provider.calls) == 2
 
 
+async def test_a_reused_key_with_another_message_is_a_conflict():
+    app = await _make_app()
+    provider = _ScriptedProvider(lambda _i: [_text("ok")])
+    async with await _client(app) as client:
+        session = await _open(client)
+        url = f"/api/chat/sessions/{session['id']}/messages"
+        with patch(_PROVIDER, return_value=provider):
+            first = await client.post(url, json={"message": "one", "idempotency_key": "k"})
+            json_conflict = await client.post(url, json={"message": "two", "idempotency_key": "k"})
+            sse_conflict = await client.post(
+                url, json={"message": "two", "idempotency_key": "k", "stream": True}
+            )
+
+    assert first.status_code == 200
+    assert json_conflict.status_code == 409
+    assert sse_conflict.status_code == 409
+    assert len(provider.calls) == 1
+
+
 async def test_send_can_stream_the_same_events_the_web_reads():
     app = await _make_app()
     provider = _ScriptedProvider([[_text("Hello.")]])
