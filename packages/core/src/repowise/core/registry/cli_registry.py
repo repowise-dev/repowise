@@ -78,7 +78,8 @@ class CLIRegistry:
 
     def __init__(self) -> None:
         self._entries: list[tuple[click.BaseCommand | None, click.BaseCommand | LazyCommand]] = []
-        self._applied_to: list[int] = []
+        #: root id -> how many entries are already attached to it.
+        self._applied: dict[int, int] = {}
 
     def register(
         self,
@@ -107,15 +108,15 @@ class CLIRegistry:
     def apply(self, root: click.BaseCommand) -> click.BaseCommand:
         """Attach every registered command. Returns *root* for chaining.
 
-        Idempotent per *root* — calling ``apply`` twice with the same
-        Click group is a no-op. Passing a different group registers
-        every entry against that group too (useful for tests that build
-        an isolated root).
+        Idempotent per *root* — a repeat call attaches only entries
+        registered since the last one (plugins discovered after startup),
+        so with nothing new it is a no-op. Passing a different group
+        registers every entry against that group too (useful for tests
+        that build an isolated root).
         """
         root_id = id(root)
-        if root_id in self._applied_to:
-            return root
-        for parent, command in self._entries:
+        start = self._applied.get(root_id, 0)
+        for parent, command in self._entries[start:]:
             target = parent if parent is not None else root
             if isinstance(command, LazyCommand):
                 add_lazy = getattr(target, "add_lazy_command", None)
@@ -126,13 +127,13 @@ class CLIRegistry:
                 # at the cost of importing it now.
                 command = command.load()
             target.add_command(command)  # type: ignore[attr-defined]
-        self._applied_to.append(root_id)
+        self._applied[root_id] = len(self._entries)
         return root
 
     def reset(self) -> None:
         """Drop every registered entry. Used by tests."""
         self._entries.clear()
-        self._applied_to.clear()
+        self._applied.clear()
 
     def commands(self) -> list[click.BaseCommand]:
         """Return every registered command, importing lazy ones. Used by tests."""

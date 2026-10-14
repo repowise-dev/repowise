@@ -80,6 +80,7 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`doctor`](#repowise-doctor-path) ·
 [`whats-new`](#repowise-whats-new) ·
 [`telemetry`](#repowise-telemetry) ·
+[`plugins`](#repowise-plugins) ·
 [`login`](#repowise-login) ·
 [`logout`](#repowise-logout) ·
 [`whoami`](#repowise-whoami) ·
@@ -2191,6 +2192,15 @@ repowise telemetry status                # show whether telemetry is enabled, an
 repowise telemetry enable
 repowise telemetry disable
 ```
+
+---
+
+### `repowise plugins`
+
+List the plugins repowise loaded (from `repowise.plugins` entry points and
+`REPOWISE_PLUGINS`), whether each loaded or why it failed, the seams each
+registered, and the implementation chosen for each seam. `--format json` gives
+the same as JSON. See [pluggable storage and capability seams](../architecture/pluggable-storage.md).
 
 ---
 

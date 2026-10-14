@@ -20,7 +20,7 @@ from repowise.cli._instrumented_group import InstrumentedGroup
 from repowise.core.registry import cli_registry, register_lazy_command
 
 
-@click.group(cls=InstrumentedGroup)
+@click.group(cls=InstrumentedGroup, discover_plugins=True)
 @click.version_option(version=__version__, prog_name="repowise")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
@@ -104,6 +104,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("logout", "login_cmd:logout_command"),
     ("whoami", "login_cmd:whoami_command"),
     ("workspace", "workspace_cmd:workspace_group"),
+    ("plugins", "plugins_cmd:plugins_command"),
 )
 
 # Register OSS commands through the shared registry so third-party

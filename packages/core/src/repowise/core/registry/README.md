@@ -23,6 +23,7 @@ needs the collected entries.
 | `cli_registry` | `cli_registry` | Collect Click commands; `apply(root)` attaches them |
 | `mcp_tool_registry` | `mcp_tool_registry` | Collect MCP tool functions; `apply(mcp)` registers them with FastMCP |
 | `pipeline_hooks` | `pipeline_hooks` | Pre/post phase hooks; wrap a `ProgressCallback` with `HookProgressCallback` to fire them |
+| `plugins` | `load_plugins()` | Discover plugins (`repowise.plugins` entry points, `REPOWISE_PLUGINS`); `SeamRegistry` maps a seam to named implementations |
 
 The convenience helpers `register_command(...)` and `register_hook(...)`
 operate on the default singletons. Tests construct their own
@@ -37,11 +38,12 @@ registry/
   cli_registry.py        # CLIRegistry + cli_registry singleton
   mcp_tool_registry.py   # MCPToolRegistry + mcp_tool_registry singleton
   pipeline_hooks.py      # PipelineHookRegistry + HookProgressCallback + singleton
+  plugins.py             # load_plugins + SeamRegistry
   README.md
 ```
 
-Every file is under 200 lines; no module-level state beyond the three
-singletons.
+No module-level state beyond the three singletons, the plugin loader's
+record of what loaded, and the seams defined so far.
 
 ## Extension points
 
@@ -61,6 +63,7 @@ singletons.
 - `tests/unit/registry/test_cli_registry.py`
 - `tests/unit/registry/test_mcp_tool_registry.py`
 - `tests/unit/registry/test_pipeline_hooks.py`
+- `tests/unit/registry/test_plugins.py`
 
 Each test uses an isolated registry instance to avoid coupling across
 tests.

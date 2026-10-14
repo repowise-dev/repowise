@@ -396,6 +396,9 @@ _ROUTERS = (
 
 def create_app() -> FastAPI:
     """Build and return the configured FastAPI application."""
+    from repowise.core.registry.plugins import load_plugins
+
+    load_plugins()
     app = FastAPI(
         title="repowise API",
         description="REST API for repowise — codebase documentation engine",
