@@ -40,6 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.analysis.git_cat_file import cat_file_batch
 from repowise.core.analysis.secret_allowlist import secret_path_allowlist
 from repowise.core.analysis.security_scan import (
     SECRET_KINDS,
@@ -88,32 +89,6 @@ def _parse_author_date(iso: str) -> datetime | None:
         return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(UTC)
     except ValueError:
         return None
-
-
-def _parse_cat_file_batch(data: bytes) -> dict[str, str]:
-    """Parse ``git cat-file --batch`` stdout into ``{blob_sha: content}``."""
-    contents: dict[str, str] = {}
-    pos = 0
-    while pos < len(data):
-        nl = data.find(b"\n", pos)
-        if nl == -1:
-            break
-        header = data[pos:nl].decode("ascii", errors="replace")
-        pos = nl + 1
-        parts = header.split()
-        if len(parts) < 3:
-            continue
-        sha = parts[0]
-        try:
-            size = int(parts[2])
-        except ValueError:
-            continue
-        chunk = data[pos : pos + size]
-        pos += size
-        if pos < len(data) and data[pos : pos + 1] == b"\n":
-            pos += 1
-        contents[sha] = chunk.decode("utf-8", errors="replace")
-    return contents
 
 
 @dataclass
@@ -267,19 +242,14 @@ class HistorySecurityScanner:
         """Return ``{blob_sha: content}`` via a single ``git cat-file --batch``."""
         if not blob_shas:
             return {}
-        try:
-            result = subprocess.run(
-                ["git", "cat-file", "--batch"],
-                cwd=str(repo_path),
-                input=("\n".join(blob_shas) + "\n").encode(),
-                capture_output=True,
-                timeout=120.0,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return {}
-        if result.returncode != 0:
-            return {}
-        return _parse_cat_file_batch(result.stdout)
+        read = cat_file_batch(
+            str(repo_path), blob_shas, on_missing="omit", timeout=120.0, check=True
+        )
+        return {
+            sha: blob.decode("utf-8", errors="replace")
+            for sha, blob in (read or [])
+            if blob is not None
+        }
 
     @staticmethod
     def _is_source(path: str) -> bool:

@@ -12,6 +12,7 @@ Covers the maintainer's review points for issue #818:
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -512,3 +513,13 @@ async def test_blob_introductions_resolves_real_blobs(secret_repo: Path) -> None
     for sha in source:
         assert sha in intro, f"blob {sha} has no introducing commit (SHA width mismatch?)"
         assert dates.get(intro[sha]), "introducing commit has no author date"
+
+
+def test_read_blobs_batch_git_failure_raises(tmp_path: Path) -> None:
+    """A git failure in history scan must raise rather than silently returning {}."""
+    scanner = HistorySecurityScanner.__new__(HistorySecurityScanner)
+    not_a_repo = tmp_path / "not_a_repo"
+    not_a_repo.mkdir()
+    with pytest.raises(subprocess.CalledProcessError):
+        scanner._read_blobs_batch(not_a_repo, ["abc1234"])
+
