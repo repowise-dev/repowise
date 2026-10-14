@@ -184,6 +184,31 @@ def _module_dir(repo_path: Path, module_name: str, overrides: dict[str, str]) ->
 # Source-set discovery
 # ---------------------------------------------------------------------------
 
+# ``<module>/src/<set>/kotlin/``: the source-set directory a JVM file sits in.
+_SOURCE_SET_DIR_RE = re.compile(r"(?:^|/)src/[^/]+/(?=(?:java|kotlin)/)")
+
+
+def source_set_dir(path: str) -> str | None:
+    """The source-set directory *path* sits in (``okio/src/jvmMain/``), or None."""
+    match = _SOURCE_SET_DIR_RE.search(path)
+    return path[: match.end()] if match else None
+
+
+def declaration_rank(importer: str, candidate: str, is_expect: bool) -> int:
+    """How directly *importer* sees *candidate*, one of a name's declarations; lowest wins.
+
+    Kotlin Multiplatform declares a name once per source set: ``expect`` in
+    common code and ``actual`` in each platform's. A file binds its own source
+    set's declaration (0), else the ``expect`` its set depends on (1); another
+    platform's ``actual`` (2) is not visible to it. Elsewhere only a
+    declaration in the file's own source set moves ahead.
+    """
+    own = source_set_dir(importer)
+    if own is not None and source_set_dir(candidate) == own:
+        return 0
+    return 1 if is_expect else 2
+
+
 def _is_test_source_set(name: str) -> bool:
     lower = name.lower()
     return any(marker in lower for marker in _TEST_SOURCESET_MARKERS)

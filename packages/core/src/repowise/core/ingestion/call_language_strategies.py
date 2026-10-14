@@ -20,6 +20,7 @@ from .lang_helpers.kotlin_lambdas import in_lambda
 from .languages.receiver_types import dart_named_constructors
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
+from .resolvers.jvm_gradle import declaration_rank
 from .symbol_identity import outer_scope
 from .type_names import bare_type_name, kotlin_extension_receiver
 
@@ -424,19 +425,32 @@ class LanguageStrategiesMixin:
         index = self._get_jvm_index()
         if index is None:
             return None
-        found: str | None = None
-        for sibling in self._same_package_siblings(index, file_path):
-            sym_id = self._package_symbol(sibling, call.target_name, caller_id)
-            if sym_id is not None:
-                if not unique_only:
-                    return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
-                if found is not None:
-                    # Two siblings declare it and nothing here can tell them apart.
-                    return None
-                found = sym_id
-        if found is None:
+        found = [
+            (sibling, sym_id)
+            for sibling in self._same_package_siblings(index, file_path)
+            if (sym_id := self._package_symbol(sibling, call.target_name, caller_id)) is not None
+        ]
+        # Two siblings declare it and, for Java, nothing here can tell them apart.
+        if not found or (unique_only and len(found) > 1):
             return None
-        return ResolvedCall(caller_id, found, 0.90, call.line, "same_package")
+        sym_id = self._most_visible(file_path, found)
+        return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
+
+    def _most_visible(self, file_path: str, found: list[tuple[str, str]]) -> str:
+        """The first of *found*'s ``(file, symbol id)`` declarations *file_path* sees most directly.
+
+        A Kotlin Multiplatform name has one declaration per source set; see
+        ``declaration_rank``. A member counts as ``expect`` when its type is.
+        """
+
+        def rank(entry: tuple[str, str]) -> int:
+            path, sym_id = entry
+            symbol = self._symbols_by_id[sym_id]
+            owner = self._symbols_by_id.get(self._caller_class_id(sym_id)) if symbol.parent_name else None
+            expect = "expect" in symbol.modifiers or (owner is not None and "expect" in owner.modifiers)
+            return declaration_rank(file_path, path, expect)
+
+        return min(found, key=rank)[1]
 
     def _package_symbol(self, sibling: str, name: str, caller_id: str) -> str | None:
         """What *name* means in *sibling* to a bare call from another package file.
@@ -473,11 +487,15 @@ class LanguageStrategiesMixin:
         index = self._get_jvm_index()
         if index is None:
             return None
-        for sibling in self._same_package_siblings(index, file_path):
-            sym_id = self._file_methods.get(sibling, {}).get(key)
-            if sym_id is not None:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
-        return None
+        found = [
+            (sibling, sym_id)
+            for sibling in self._same_package_siblings(index, file_path)
+            if (sym_id := self._file_methods.get(sibling, {}).get(key)) is not None
+        ]
+        if not found:
+            return None
+        sym_id = self._most_visible(file_path, found)
+        return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
 
     def _resolve_go_package_call(
         self,

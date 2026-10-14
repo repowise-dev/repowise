@@ -35,11 +35,13 @@ _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)", re.MULTILINE)
 # before their single-keyword prefixes in the alternation, otherwise the
 # bare ``enum`` / ``annotation`` branch matches first and captures the
 # literal word "class" as the type name. ``trait`` and the ``case`` /
-# ``implicit`` modifiers cover Scala's type declarations.
+# ``implicit`` modifiers cover Scala's type declarations, ``expect`` and
+# ``actual`` Kotlin Multiplatform's, whose ``actual`` is often a ``typealias``.
 _TOP_LEVEL_TYPE_RE = re.compile(
     r"^\s*(?:public\s+|private\s+|protected\s+|internal\s+|abstract\s+|final\s+"
-    r"|sealed\s+|open\s+|data\s+|value\s+|inline\s+|case\s+|implicit\s+)*"
-    r"(?:annotation\s+class|enum\s+class|class|interface|trait|enum|object|record|annotation)\s+(\w+)",
+    r"|sealed\s+|open\s+|data\s+|value\s+|inline\s+|case\s+|implicit\s+|expect\s+|actual\s+)*"
+    r"(?:annotation\s+class|enum\s+class|class|interface|trait|enum|object|record|annotation"
+    r"|typealias)\s+(\w+)",
     re.MULTILINE,
 )
 _JVM_EXTENSIONS = frozenset({".java", ".kt", ".scala"})

@@ -62,6 +62,7 @@ from .models import (
 )
 from .resolved_call import ResolvedCall
 from .resolvers.cpp import _SOURCE_TU_EXTS
+from .resolvers.jvm_workspace import classify_jvm_import
 from .return_types import (
     declared_return_type,
     normalize_return_type,
@@ -145,6 +146,10 @@ _NON_CALLABLE_KINDS = frozenset({"property"})
 # Languages whose ``variable`` is always a property (`val`/`var`/`let`): a data
 # member. Calling one invokes the value it holds, which is not this symbol.
 _PROPERTY_VARIABLE_LANGUAGES = frozenset({"kotlin", "swift"})
+
+
+def _is_kotlin_alias(sym: Symbol | None) -> bool:
+    return sym is not None and sym.kind == "type_alias" and sym.language == "kotlin"
 
 
 def _is_data_member(sym: Symbol) -> bool:
@@ -1375,11 +1380,19 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         call: CallSite,
         caller_id: str,
     ) -> ResolvedCall | None:
-        """A receiver-less call, refused where it lands on an extension it has no receiver for."""
+        """A receiver-less call, refused where it lands on an extension it has no receiver for.
+
+        Also refused on a Kotlin ``typealias``: ``IOException(..)`` through
+        ``actual typealias IOException = java.io.IOException`` constructs the
+        aliased type, which the alias is not. Ceiling: an alias of a repo class
+        draws no edge to that class.
+        """
         invoked = self._operator_invoke_call(file_path, call, caller_id)
         if invoked is not None:
             return invoked
         hit = self._resolve_free_call(file_path, call, caller_id)
+        if hit is not None and _is_kotlin_alias(self._symbols_by_id.get(hit.callee_id)):
+            return None
         if hit is None or call.receiver_call is not None:
             return hit
         return None if self._lacks_extension_receiver(file_path, call, hit.callee_id) else hit
@@ -1932,7 +1945,24 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # repo symbol that merely shares it is not what the call site named.
         if target_name in get_builtin_methods(self._language_of(file_path) or ""):
             return None
+        # Nor is it when the file imports the name from the JVM or Kotlin
+        # standard library (``import java.io.IOException``), which binds it.
+        if target_name in self._jvm_stdlib_imported_names(file_path):
+            return None
         return ResolvedCall(caller_id, sym_id, 0.85, call.line, "import_merged")
+
+    def _jvm_stdlib_imported_names(self, file_path: str) -> set[str]:
+        """The simple names a Kotlin file imports from the JVM or Kotlin standard library."""
+        parsed = self._parsed_files.get(file_path)
+        if parsed is None or parsed.file_info.language != "kotlin":
+            return set()
+        return {
+            name
+            for imp in parsed.imports
+            if classify_jvm_import(imp.module_path, kotlin=True) == "stdlib"
+            for name in (*imp.local_names, imp.module_path.rsplit(".", 1)[-1])
+            if name and name != "*"
+        }
 
     def _repo_wide_free_call(
         self,
