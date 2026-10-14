@@ -106,10 +106,12 @@ async def test_get_owner_profile(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_owner_profile_agent_collab_and_totals(client: AsyncClient, app) -> None:
+async def test_owner_profile_has_no_ai_figures_and_matches_totals(
+    client: AsyncClient, app
+) -> None:
+    """AI attribution is reported per file, component and repo, never per person."""
     repo = await create_test_repo(client)
     await _seed(app.state.session_factory, repo["id"])
-    # Give Alice's owned file an agent-provenance rollup.
     async with get_session(app.state.session_factory) as session:
         await crud.upsert_git_metadata(
             session,
@@ -125,24 +127,10 @@ async def test_owner_profile_agent_collab_and_totals(client: AsyncClient, app) -
     resp = await client.get(f"/api/repos/{repo['id']}/owners/{key}")
     assert resp.status_code == 200
     data = resp.json()
-    collab = data["agent_collab"]
-    assert collab is not None
-    assert collab["files_with_agent_commits"] == 1
-    assert collab["agent_commit_count"] == 10
-    # 10 agent of the 20 commits with a known source, 20 of 50 known: the
-    # share is of covered commits and travels with its coverage.
-    assert collab["agent_share_pct"] == 50.0
-    assert collab["coverage_pct"] == 40.0
-    assert collab["tier_counts"] == {"2": 7, "3": 3}
+    assert not any(k.startswith("agent") for k in data)
     # Truncation totals match the (small) fixture exactly.
     assert data["files_touched_total"] == len(data["top_files"])
     assert data["co_authors_total"] == len(data["co_authors"])
-
-    # Bob owns only utils.py, which has no provenance rollup -> null.
-    bob = await client.get(
-        f"/api/repos/{repo['id']}/owners/{quote('bob@example.com', safe='')}"
-    )
-    assert bob.json()["agent_collab"] is None
 
 
 @pytest.mark.asyncio

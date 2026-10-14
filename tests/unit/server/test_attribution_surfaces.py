@@ -116,7 +116,7 @@ async def test_commit_filters_use_the_three_states(client: AsyncClient, app) -> 
 
 
 @pytest.mark.asyncio
-async def test_stats_file_and_owner_shares_are_of_covered(client: AsyncClient, app) -> None:
+async def test_stats_and_file_shares_are_of_covered(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _seed(app, repo["id"])
     rid = repo["id"]
@@ -136,9 +136,9 @@ async def test_stats_file_and_owner_shares_are_of_covered(client: AsyncClient, a
     detail = (await client.get(f"/api/repos/{rid}/files/src/main.py")).json()
     assert detail["git"]["agent"]["agent_authored_pct"] == pytest.approx(0.6)
 
+    # Never per person: the owner profile carries no AI figure.
     owner = (await client.get(f"/api/repos/{rid}/owners/{quote('ann@example.com', safe='')}")).json()
-    assert owner["agent_collab"]["agent_share_pct"] == 60.0
-    assert owner["agent_collab"]["coverage_pct"] == 50.0
+    assert "agent_collab" not in owner
 
 
 @pytest.mark.asyncio
@@ -174,6 +174,3 @@ async def test_disabled_attribution_shows_nothing_about_ai(client: AsyncClient, 
 
     file_detail = (await client.get(f"/api/repos/{rid}/files/src/main.py")).json()
     assert file_detail["git"]["agent"] is None
-
-    owner = (await client.get(f"/api/repos/{rid}/owners/{quote('ann@example.com', safe='')}")).json()
-    assert owner["agent_collab"] is None

@@ -2322,21 +2322,6 @@ export interface OkResponse {
   ok?: boolean;
 }
 
-/**
- * How much coding-agent activity lands on the files this person owns.
- *
- * Aggregated from the per-file agent-provenance rollup (GitMetadata) over
- * the owner's primary-owned files — agent identity per commit lives on the
- * commits surface, the per-file rollup only carries counts and tiers.
- */
-export interface OwnerAgentCollab {
-  files_with_agent_commits: number;
-  agent_commit_count: number;
-  agent_share_pct: number | null;
-  coverage_pct?: number | null;
-  tier_counts?: Record<string, unknown>;
-}
-
 export interface OwnerCoAuthor {
   name: string;
   email: string | null;
@@ -2397,7 +2382,6 @@ export interface OwnerProfileResponse {
   co_authors: OwnerCoAuthor[];
   co_authors_total?: number;
   commit_categories: Record<string, unknown>;
-  agent_collab?: OwnerAgentCollab | null;
 }
 
 export interface OwnershipEntry {

@@ -138,22 +138,6 @@ export function OwnerProfileView({
       href: `${base}/owners`,
     });
   }
-  if (owner.agent_collab && owner.agent_collab.agent_commit_count > 0) {
-    const a = owner.agent_collab;
-    reads.push({
-      key: "agent",
-      label: "Agent-assisted",
-      value: a.agent_commit_count.toLocaleString(),
-      unit: "commits",
-      why:
-        (a.agent_share_pct != null
-          ? `At least ${Math.round(a.agent_share_pct)}% of the covered commits on their owned files came from a coding agent (coverage ${Math.round(a.coverage_pct ?? 0)}%). `
-          : `Read from public markers such as trailers; coverage ${Math.round(a.coverage_pct ?? 0)}% is too low for a share. `) +
-        `${a.files_with_agent_commits.toLocaleString()} owned ${a.files_with_agent_commits === 1 ? "file has" : "files have"} one.`,
-      href: `${base}/commits`,
-    });
-  }
-
   // Volume figures, none of which appear in the lede, the reads column or a
   // section below. The two line counts are the payload's `_est` fields, so an
   // exact six-digit figure would claim a precision the number does not have.
