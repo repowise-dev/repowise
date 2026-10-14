@@ -370,7 +370,11 @@ def _read_blobs(root: str, specs: Sequence[str]) -> list[str | None]:
         )
     except ValueError as exc:
         raise MissingObjectError(str(exc)) from exc
-    return [_text(blob) if blob is not None else None for _, blob in (read or [])]
+    if read is None or len(read) != len(specs):
+        raise MissingObjectError(
+            f"git cat-file returned incomplete batch for {len(specs)} specs"
+        )
+    return [_text(blob) if blob is not None else None for _, blob in read]
 
 
 def _custom_spans(

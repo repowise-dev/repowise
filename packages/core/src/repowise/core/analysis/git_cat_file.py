@@ -64,13 +64,32 @@ def cat_file_batch(
     for spec in specs:
         nl = data.find(b"\n", pos)
         if nl == -1:
+            if on_missing == "raise":
+                raise ValueError(f"git cat-file stream ended unexpectedly for {spec!r}")
             break
         header = data[pos:nl]
         fields = header.decode("utf-8", "replace").split()
         if header.endswith(b" missing"):
             pos = nl + 1
             if on_missing == "raise":
-                raise ValueError(f"git has no object for {spec!r}")
+                is_submodule = False
+                if ":" in spec:
+                    rev, path = spec.split(":", 1)
+                    if rev and path:
+                        try:
+                            chk = subprocess.run(
+                                ["git", "ls-tree", rev, path],
+                                cwd=repo_path,
+                                capture_output=True,
+                                timeout=5.0,
+                                text=True,
+                            )
+                            if chk.returncode == 0 and chk.stdout.startswith("160000 commit "):
+                                is_submodule = True
+                        except (OSError, subprocess.SubprocessError):
+                            pass
+                if not is_submodule:
+                    raise ValueError(f"git has no object for {spec!r}")
             out.append((spec, None))
             continue
         if fields[1:] == ["submodule"]:
@@ -78,6 +97,10 @@ def cat_file_batch(
             out.append((spec, None))
             continue
         if len(fields) < 3 or not fields[2].isdigit():
+            if on_missing == "raise":
+                raise ValueError(
+                    f"git cat-file unparseable header for {spec!r}: {header.decode('utf-8', 'replace')}"
+                )
             break  # unparseable header: stop rather than misread the stream
         obj_type = fields[1]
         size = int(fields[2])

@@ -184,3 +184,19 @@ def test_cat_file_batch_sets_env_vars(sample_repo: Path, monkeypatch: pytest.Mon
     assert captured_env.get("GIT_NO_LAZY_FETCH") == "1"
     assert captured_env.get("GIT_LITERAL_PATHSPECS") == "1"
 
+
+def test_cat_file_batch_ambiguous_header(sample_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _mock_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=b"deadbeef ambiguous\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    assert cat_file_batch(str(sample_repo), ["deadbeef"], on_missing="omit") == []
+    with pytest.raises(ValueError, match=r"unparseable header"):
+        cat_file_batch(str(sample_repo), ["deadbeef"], on_missing="raise")
+
+
