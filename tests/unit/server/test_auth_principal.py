@@ -484,13 +484,47 @@ async def test_mcp_list_repos_filters_to_scope(monkeypatch) -> None:
             {"alias": "beta", "path": "beta", "is_default": False},
         ],
     )
-    reset = auth.current_principal.set(Principal("token:ci", "token", frozenset({"beta"}), None))
-    try:
-        scoped = await tool_repos.list_repos()
-    finally:
-        auth.current_principal.reset(reset)
-    assert [r["alias"] for r in scoped["repos"]] == ["beta"]
-    assert len((await tool_repos.list_repos())["repos"]) == 2
+    async def listed(scope):
+        principal = Principal("token:ci", "token", frozenset(scope), None)
+        reset = auth.current_principal.set(principal)
+        try:
+            return await tool_repos.list_repos()
+        finally:
+            auth.current_principal.reset(reset)
+
+    beta_only = await listed({"beta"})
+    assert [r["alias"] for r in beta_only["repos"]] == ["beta"]
+    assert beta_only["default_repo"] is None
+    alpha_only = await listed({"alpha"})
+    assert alpha_only["default_repo"] == "alpha"
+    nothing = await listed({"gamma"})
+    assert nothing["repos"] == [] and nothing["default_repo"] is None
+    unrestricted = await tool_repos.list_repos()
+    assert len(unrestricted["repos"]) == 2 and unrestricted["default_repo"] == "alpha"
+
+
+async def test_mcp_list_repos_single_repo_respects_scope(monkeypatch) -> None:
+    from repowise.server.mcp_server import tool_repos
+
+    monkeypatch.setattr(_state, "_registry", None)
+    monkeypatch.setattr(_state, "_repo_path", "/work/alpha")
+    monkeypatch.setattr(_state, "_served_repo_id", "id-alpha")
+
+    async def listed(principal):
+        reset = auth.current_principal.set(principal)
+        try:
+            return await tool_repos.list_repos()
+        finally:
+            auth.current_principal.reset(reset)
+
+    out_of_scope = await listed(Principal("token:ci", "token", frozenset({"beta"}), None))
+    assert out_of_scope["repos"] == [] and out_of_scope["default_repo"] is None
+    by_name = await listed(Principal("token:ci", "token", frozenset({"alpha"}), None))
+    assert len(by_name["repos"]) == 1 and by_name["default_repo"] == "default"
+    by_id = await listed(Principal("token:ci", "token", frozenset({"id-alpha"}), None))
+    assert len(by_id["repos"]) == 1
+    unrestricted = await tool_repos.list_repos()
+    assert unrestricted["default_repo"] == "default" and len(unrestricted["repos"]) == 1
 
 
 # ---------------------------------------------------------------------------
