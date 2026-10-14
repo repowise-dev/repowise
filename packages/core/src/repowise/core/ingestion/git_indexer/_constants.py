@@ -128,7 +128,8 @@ _MAX_FILES_PER_COMMIT_FOR_COCHANGE: int = 200
 # excludes very wide commits from the History Complexity Metric because a
 # sweeping edit spreads its "change probability" so thinly that it adds noise
 # rather than signal. 30 follows the commonly cited Hassan filter; commits
-# above it are dropped from the entropy accumulation entirely.
+# above it are dropped from the entropy accumulation entirely, and from the
+# focused co-change count hidden coupling reads as evidence.
 _MAX_FILES_PER_COMMIT_FOR_ENTROPY: int = 30
 
 # Commit message classification regexes. "fix" is not here: a
@@ -318,7 +319,9 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: v1: change numbers and author identity read through ``repowise.core.forges``
 #: (GitLab ``!N`` merge requests, Azure and Bitbucket PRs, GitLab noreply and
 #: forge bot accounts).
-GIT_HISTORY_VERSION: int = 1
+#: v2: co-change records carry focused_frequency, the shared commits no wider
+#: than the change-entropy sweep cap.
+GIT_HISTORY_VERSION: int = 2
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 
 

@@ -31,6 +31,7 @@ def _partners(
                 "file_path": p,
                 "co_change_count": float(support),
                 "frequency": support,
+                "focused_frequency": support,
                 "self_commits": self_commits,
                 "partner_commits": repo_commits.get(p, 0),
                 "structural": structural,
@@ -340,3 +341,43 @@ def test_more_shared_commits_than_the_smaller_file_has_is_not_reported():
         repo_commits={"src/billing.py": 30},
     )
     assert HiddenCouplingDetector().detect(ctx) == []
+
+
+def _record(**overrides) -> FileContext:
+    record = {
+        "file_path": "src/billing.py",
+        "co_change_count": 1.0,
+        "frequency": 18,
+        "focused_frequency": 18,
+        "self_commits": 20,
+        "partner_commits": 22,
+        "structural": STRUCTURAL_UNEXPLAINED,
+        **overrides,
+    }
+    record = {k: v for k, v in record.items() if v is not None}
+    return FileContext(
+        file_path="src/payments.py",
+        language="python",
+        nloc=120,
+        has_test_file=False,
+        module=None,
+        git_meta={"co_change_partners_json": json.dumps([record])},
+        dependents_count=0,
+    )
+
+
+def test_a_pair_seen_only_in_sweep_commits_is_not_hidden_coupling():
+    """18 shared commits, every one a wide sweep: no evidence the two belong together."""
+    assert HiddenCouplingDetector().detect(_record(focused_frequency=0)) == []
+
+
+def test_the_ratio_counts_only_focused_shared_commits():
+    (out,) = HiddenCouplingDetector().detect(_record(focused_frequency=12))
+    assert out.details["co_change_count"] == 12
+    assert out.details["correlation"] == 0.6
+    assert "in 12 of this file's 20 commits" in out.reason
+
+
+def test_a_record_without_the_focused_count_yields_nothing():
+    """Written before the walk counted it: sweeps cannot be told apart, so silence."""
+    assert HiddenCouplingDetector().detect(_record(focused_frequency=None)) == []

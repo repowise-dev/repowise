@@ -112,6 +112,8 @@ def test_current_stamp_forces_no_walk(tmp_path, walks) -> None:
 def test_missing_stamp_is_stale() -> None:
     assert git_history_stale({})
     assert git_history_stale({GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION - 1})
+    # v1 co-change records have no focused_frequency, so v1 must rewalk.
+    assert git_history_stale({GIT_HISTORY_VERSION_KEY: 1})
     assert not git_history_stale({GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION})
 
 

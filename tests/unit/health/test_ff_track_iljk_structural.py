@@ -217,6 +217,7 @@ def test_detector_caps_small_sample_pair_at_medium():
                         "file_path": "src/billing.py",
                         "co_change_count": 4,
                         "frequency": 4,
+                        "focused_frequency": 4,
                         "self_commits": 5,
                         "partner_commits": 5,
                         "structural": "unexplained",

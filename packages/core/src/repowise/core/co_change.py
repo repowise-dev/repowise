@@ -84,7 +84,9 @@ class CoChangePartner:
     commits; ``support`` is that plain count. ``self_commits`` and
     ``partner_commits`` are each file's commit total over the same walk, so
     ``support / self_commits`` is an honest directional confidence. They are
-    zero on an index written before they were recorded.
+    zero on an index written before they were recorded. ``focused_support`` is
+    ``support`` counted over commits narrow enough to be evidence (the sweep cap
+    change entropy uses), ``None`` before it was recorded.
 
     ``dependency_kind`` is the ``edge_type`` behind a ``corroborated``
     verdict, or ``"barrel"`` when the pair is joined through a re-export
@@ -101,6 +103,7 @@ class CoChangePartner:
     support: int = 0
     self_commits: int = 0
     partner_commits: int = 0
+    focused_support: int | None = None
     structural: str | None = None
     dependency_kind: str | None = None
     record: dict = field(default_factory=dict, compare=False, repr=False)
@@ -158,6 +161,11 @@ def parse_partners(raw: object) -> list[CoChangePartner]:
                 support=_as_count(record.get("frequency")),
                 self_commits=_as_count(record.get("self_commits")),
                 partner_commits=_as_count(record.get("partner_commits")),
+                focused_support=(
+                    _as_count(record["focused_frequency"])
+                    if "focused_frequency" in record
+                    else None
+                ),
                 structural=structural if isinstance(structural, str) else None,
                 dependency_kind=kind if isinstance(kind, str) else None,
                 record=record,

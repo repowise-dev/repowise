@@ -1285,3 +1285,45 @@ class TestCoChangeCommitWidth:
         assert partner["frequency"] == 2
         assert partner["self_commits"] == 11  # 2 shared + 9 alone
         assert partner["partner_commits"] == 2
+
+    def test_the_focused_count_leaves_out_sweep_commits(self) -> None:
+        """A sweep is still a commit of every file it touches, and still a
+        shared commit, but not one the focused count holds as evidence."""
+        import time
+
+        from repowise.core.ingestion.git_indexer._constants import (
+            _MAX_FILES_PER_COMMIT_FOR_ENTROPY,
+        )
+
+        now = int(time.time())
+        sweep = ("a.py", "b.py", *(f"s{i}.py" for i in range(_MAX_FILES_PER_COMMIT_FOR_ENTROPY)))
+        mock_repo = MagicMock()
+        mock_repo.git.log.return_value = self._log(now, ("a.py", "b.py"), sweep, sweep)
+
+        result = compute_co_changes_and_entropy(mock_repo, set(sweep), commit_limit=500)
+
+        partner = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
+        assert partner["frequency"] == 3
+        assert partner["focused_frequency"] == 1
+        assert partner["self_commits"] == 3
+
+    def test_the_sweep_cap_is_inclusive(self) -> None:
+        """A commit of exactly the cap is focused; one file more is a sweep."""
+        import time
+
+        from repowise.core.ingestion.git_indexer._constants import (
+            _MAX_FILES_PER_COMMIT_FOR_ENTROPY as CAP,
+        )
+
+        now = int(time.time())
+        at_cap = ("a.py", "b.py", *(f"s{i}.py" for i in range(CAP - 2)))
+        over_cap = (*at_cap, "extra.py")
+        assert (len(at_cap), len(over_cap)) == (CAP, CAP + 1)
+        mock_repo = MagicMock()
+        mock_repo.git.log.return_value = self._log(now, at_cap, over_cap)
+
+        result = compute_co_changes_and_entropy(mock_repo, set(over_cap), commit_limit=500)
+
+        partner = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
+        assert partner["frequency"] == 2
+        assert partner["focused_frequency"] == 1
