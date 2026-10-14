@@ -42,6 +42,7 @@ from pathlib import PurePosixPath
 
 import pathspec
 
+from ..support_paths import DOC_EXTENSIONS
 from ..test_paths import is_test_related_path
 from .test_selection import (
     JS_SUFFIXES,
@@ -119,7 +120,7 @@ _OWNED = frozenset(
 # Prose that needs no tests when nothing names it and no package holds it, as
 # under ``docs/``. Not ``.txt``: outside docs it is mostly data read by
 # convention or a glob (a Spring ``banner.txt``, a dependency baseline).
-_PROSE = frozenset({".md", ".rst", ".adoc", ".markdown"})
+_PROSE = (DOC_EXTENSIONS - {".txt", ".mdx"}) | {".markdown"}
 # Assets only a naming file stands for: a test may glob a query or data file.
 # Data only below the root: a root-level ``*.yaml`` or ``*.json`` configures a tool.
 _NAMED_ONLY = frozenset({".scm", ".graphql", ".gql", ".sql"})
