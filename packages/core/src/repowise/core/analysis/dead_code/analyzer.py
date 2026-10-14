@@ -213,13 +213,15 @@ def _is_framework_registered(
 
     A qualified annotation (``@androidx.compose.ui.tooling.preview.Preview``)
     is also matched by its type name, and *meta_annotations* names the repo's
-    own annotation classes that carry one of these (a Compose multipreview).
+    own annotation classes that carry one of these (a Compose multipreview):
+    an unqualified use by its in-scope local name, a qualified use by its
+    fully qualified name.
     """
     bases = _decorator_bases(decorators)
     type_names = [n for n in (b.rsplit(".", 1)[-1] for b in bases) if n[:1].isupper()]
     if any(b.startswith(_FRAMEWORK_DECORATORS) for b in (*bases, *type_names)):
         return True
-    if not meta_annotations.isdisjoint(type_names):
+    if not meta_annotations.isdisjoint(bases):
         return True
     if any(b.endswith(_FRAMEWORK_DECORATOR_SUFFIXES) for b in bases):
         return True

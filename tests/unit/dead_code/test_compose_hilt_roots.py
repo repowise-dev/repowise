@@ -99,6 +99,7 @@ def test_hilt_module_is_loaded_by_the_component(tmp_path: Path):
 # Two annotation classes named ``ThemeShots``: only ``org.sample.ui``'s is a
 # multipreview. A use counts only where that one is the class in scope.
 _UI_SHOTS = "package org.sample.ui\n\n@Preview\nannotation class ThemeShots\n"
+_UI_FQN = "org.sample.ui.ThemeShots"
 _OTHER_SHOTS = "package org.sample.other\n\nannotation class ThemeShots\n"
 _USERS = {
     "app/SamePackage.kt": "package org.sample.ui\n",
@@ -118,12 +119,29 @@ def test_same_named_annotation_counts_only_where_it_is_in_scope():
         **{path: text.encode() for path, text in _USERS.items()},
     }
     meta = MetaAnnotations(sources, _is_framework_registered)
-    assert meta.visible_in("app/SamePackage.kt") == {"ThemeShots"}
-    assert meta.visible_in("app/Imported.kt") == {"ThemeShots"}
-    assert meta.visible_in("app/Star.kt") == {"ThemeShots"}
-    assert meta.visible_in("app/Aliased.kt") == {"UiShots"}
+    assert meta.visible_in("app/SamePackage.kt") == {"ThemeShots", _UI_FQN}
+    assert meta.visible_in("app/Imported.kt") == {"ThemeShots", _UI_FQN}
+    assert meta.visible_in("app/Star.kt") == {"ThemeShots", _UI_FQN}
+    assert meta.visible_in("app/Aliased.kt") == {"UiShots", _UI_FQN}
     for path in ("app/OtherImport.kt", "app/OtherPackage.kt", "app/Unrelated.kt"):
-        assert meta.visible_in(path) == frozenset(), path
+        assert meta.visible_in(path) == {_UI_FQN}, path
     # Unique repo-wide, the name counts wherever it is used.
     unique = MetaAnnotations({"ui/ThemeShots.kt": _UI_SHOTS.encode()}, _is_framework_registered)
-    assert unique.visible_in("app/Unrelated.kt") == {"ThemeShots"}
+    assert unique.visible_in("app/Unrelated.kt") == {"ThemeShots", _UI_FQN}
+
+
+def test_qualified_use_matches_by_fully_qualified_name():
+    sources = {
+        "ui/ThemeShots.kt": _UI_SHOTS.encode(),
+        "other/ThemeShots.kt": _OTHER_SHOTS.encode(),
+        "app/Unrelated.kt": _USERS["app/Unrelated.kt"].encode(),
+        "app/OtherPackage.kt": _USERS["app/OtherPackage.kt"].encode(),
+    }
+    meta = MetaAnnotations(sources, _is_framework_registered)
+    for path in ("app/Unrelated.kt", "app/OtherPackage.kt"):
+        visible = meta.visible_in(path)
+        # Out of scope by simple name, the preview one still counts qualified.
+        assert _is_framework_registered([f"@{_UI_FQN}"], visible), path
+        assert not _is_framework_registered(["@org.sample.other.ThemeShots"], visible), path
+    # In the other class's package, the bare name means the non-preview one.
+    assert not _is_framework_registered(["@ThemeShots"], meta.visible_in("app/OtherPackage.kt"))

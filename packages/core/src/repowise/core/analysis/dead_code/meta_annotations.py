@@ -47,9 +47,11 @@ class MetaAnnotations:
 
     A class is matched by simple name only when no other repo annotation class
     shares that name, or the using file is in its package or imports it (by
-    name, alias or star). Registration is resolved to a fixpoint, so a
-    multipreview built from another multipreview counts too; each round adds a
-    class or stops, which bounds the loop by the number of annotation classes.
+    name, alias or star). A qualified use matches the class's fully qualified
+    name in any file, so every registering class's FQN is visible everywhere.
+    Registration is resolved to a fixpoint, so a multipreview built from
+    another multipreview counts too; each round adds a class or stops, which
+    bounds the loop by the number of annotation classes.
 
     Ceiling: reads Kotlin sources only. Java ``@interface`` meta-annotations are
     not resolved.
@@ -84,7 +86,7 @@ class MetaAnnotations:
             self._registering |= found
 
     def visible_in(self, path: str) -> frozenset[str]:
-        """Local names of the registering annotation classes *path* can mean."""
+        """Local and qualified names of the registering annotation classes *path* can mean."""
         names = self._visible.get(path)
         if names is None:
             names = self._visible[path] = self._names_seen_by(path)
@@ -97,6 +99,8 @@ class MetaAnnotations:
         names: set[str] = set()
         for decl in self._registering:
             fqn = f"{decl.package}.{decl.name}" if decl.package else decl.name
+            if decl.package:
+                names.add(fqn)
             if fqn in scope.named:
                 names.add(scope.named[fqn])
             elif (
