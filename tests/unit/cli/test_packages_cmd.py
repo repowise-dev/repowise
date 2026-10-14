@@ -50,8 +50,10 @@ def test_where_json_and_text(repo):
 
     text = _invoke(["packages", "where", "pypi:requests", "--path", str(repo)])
     assert text.exit_code == 0, text.output
-    assert "src/app/util.py" in text.output
+    assert "src/app/util.py:2" in text.output
     assert "1 reachable" in text.output
+    assert "1 individual(s)" in text.output  # counted, never named
+    assert "someone" not in text.output
 
 
 def test_export_writes_cyclonedx(repo, tmp_path):

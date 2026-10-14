@@ -39,6 +39,16 @@ def packages_group() -> None:
     """Where third-party packages are used (import sites, components, owners)."""
 
 
+def _owners(site: dict[str, Any]) -> str:
+    """Declared teams by name; individual and unresolved owners only by count."""
+    counts = site.get("owner_counts", {})
+    parts = [
+        *site["owners"],
+        *(f"{n} {'individual(s)' if kind == 'individual' else kind}" for kind, n in counts.items()),
+    ]
+    return ", ".join(parts)
+
+
 def _reach(site: dict[str, Any]) -> str:
     r = site["reachability"]
     return r["state"] if r["state"] != "unknown" else f"unknown ({r['basis']})"
@@ -71,17 +81,27 @@ def packages_where(name: str, repo: str | None, fmt: str) -> None:
         console.print(f"[dim]{escape(doc['note'])}[/dim]")
     if not doc["sites"]:
         return
-    table = Table("File", "Line", "Imports", "Component", "Owners", "Reachability", "Mapping")
+    # The path is the answer, so it folds onto a second line rather than being
+    # cut; the other columns give way first.
+    inferred = any(s["mapping"] == "inferred" for s in doc["sites"])
+    table = Table()
+    table.add_column("File", overflow="fold", ratio=3)
+    table.add_column("Imports", overflow="ellipsis", no_wrap=True, max_width=24)
+    table.add_column("Component", overflow="fold", max_width=20)
+    table.add_column("Owners", overflow="fold", max_width=24)
+    table.add_column("Reachability", overflow="fold", max_width=24)
+    if inferred:
+        table.add_column("Mapping")
     for s in doc["sites"]:
-        table.add_row(
-            escape(s["path"]),
-            str(s.get("line", "")),
+        where = f"{s['path']}:{s['line']}" if "line" in s else s["path"]
+        row = [
+            escape(where),
             escape(", ".join(s["symbols"] or [m["name"] for m in s["modules"]])),
             escape(s.get("component", "")),
-            escape(", ".join(s["owners"])),
+            escape(_owners(s)),
             _reach(s),
-            s["mapping"],
-        )
+        ]
+        table.add_row(*row, *([s["mapping"]] if inferred else []))
     console.print(table)
     summary = doc["summary"]
     reach = ", ".join(f"{n} {k}" for k, n in summary["reachability"].items() if n)
