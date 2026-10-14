@@ -157,7 +157,7 @@ RISK_PAYLOAD = {
             "commit_count_capped": False,
             "episodes": 22,
             "_base_dep_count": 52,
-            "risk_summary": "persist.py — 22 bug fixes in 6mo, hotspot score 100% (increasing)",
+            "risk_summary": "persist.py — 22 bug fixes in 6mo, churn hotspot, top 1% (increasing)",
         }
     },
     "global_hotspots": [

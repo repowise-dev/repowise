@@ -39,15 +39,15 @@ def _by_target(routes: list[Route]) -> dict[str, Route]:
 # -- the router -------------------------------------------------------------
 
 
-def test_router_is_off_outside_workspace_mode():
+async def test_router_is_off_outside_workspace_mode():
     assert _state._registry is None
-    assert route_targets(["src/probe.py", "frontend:src/probe.py"]) is None
+    assert await route_targets(["src/probe.py", "frontend:src/probe.py"]) is None
 
 
 async def test_router_rules(routed_ws):
     abs_fe = str(routed_ws.workspace_root / "web-client" / "src" / "only_fe.py")
     routes = _by_target(
-        route_targets(
+        await route_targets(
             [
                 "src/probe.py",
                 "src/only_fe.py",
@@ -79,7 +79,7 @@ async def test_router_rules(routed_ws):
 
 
 async def test_router_never_lets_a_path_escape_its_repo(routed_ws):
-    (route,) = route_targets(["../web-client/src/only_fe.py"])
+    (route,) = await route_targets(["../web-client/src/only_fe.py"])
     assert (route.repo, route.missed) == ("backend", True)
 
 
@@ -248,3 +248,138 @@ async def test_get_health_refuses_cross_repo_and_ambiguous_hints_unknown(routed_
     unknown = await get_health(targets=["src/nowhere.py"])
     assert "repo" not in unknown
     assert "search_codebase" in unknown["unresolved"][0]["hint"]
+
+
+# -- bare symbol names, through the workspace store -----------------------------
+
+
+@pytest.fixture
+async def located_ws(routed_ws):
+    from tests.unit.workspace.test_store import write_repo_index
+
+    root = routed_ws.workspace_root
+    await write_repo_index(
+        root / "backend",
+        "backend",
+        {"src/probe.py": ["backend_probe", "everywhere"], "auth/login.py": ["login"]},
+    )
+    await write_repo_index(
+        root / "web-client",
+        "frontend",
+        {
+            "src/only_fe.py": ["only_fe", "Widget.paint", "twice", "auth"],
+            "src/probe.py": ["everywhere"],
+            "gen/out.py": ["generated_only"],
+        },
+    )
+    await write_repo_index(root / "docs-site", "docs", {"src/shared.py": ["twice"]})
+    (root / "web-client" / ".gitignore").write_text("gen/\n")
+    return routed_ws
+
+
+async def test_router_routes_bare_names_by_the_locator(located_ws):
+    targets = [
+        "only_fe",
+        "Widget.paint",
+        "paint",
+        "twice",
+        "everywhere",
+        "backend_probe",
+        "nowhere_at_all",
+        "generated_only",
+        "auth",
+        "only fe",
+    ]
+    routes = _by_target(await route_targets(targets))
+    for name in ("only_fe", "Widget.paint", "paint"):
+        assert routes[name] == Route(name, name, "frontend", routed=True)
+    assert routes["twice"].repo is None
+    assert routes["twice"].candidates == ("frontend", "docs")
+    # The default repo keeps a name it has, wherever else it also lives.
+    assert routes["everywhere"] == Route("everywhere", "everywhere", "backend")
+    assert routes["backend_probe"] == Route("backend_probe", "backend_probe", "backend")
+    # Unknown, or only in a file its repo excludes: the default repo, as before.
+    assert routes["nowhere_at_all"] == Route("nowhere_at_all", "nowhere_at_all", "backend")
+    assert routes["generated_only"] == Route("generated_only", "generated_only", "backend")
+    # A default-repo component name stays there, though another repo has the symbol.
+    assert routes["auth"] == Route("auth", "auth", "backend")
+    # Only identifier-shaped names are looked up.
+    assert routes["only fe"] == Route("only fe", "only fe", "backend")
+    # Paths and target kinds are untouched by the locator.
+    assert (await route_targets(["module:src"]))[0] == Route("module:src", "module:src", "backend")
+
+
+async def test_paths_only_tools_never_read_the_locator(located_ws):
+    from repowise.core.workspace.store import store_path
+
+    (route,) = await route_targets(["only_fe"], paths_only=True)
+    assert (route.repo, route.missed) == ("backend", True)
+    assert not store_path(located_ws.workspace_root).exists()
+
+
+async def test_get_context_and_get_symbol_route_a_bare_name(located_ws):
+    from repowise.server.mcp_server import get_context, get_symbol
+
+    cards = (await get_context(targets=["only_fe", "twice", "everywhere"]))["targets"]
+    assert cards["only_fe"]["repo"] == "frontend"
+    assert cards["twice"]["candidates"] == ["frontend", "docs"]
+    assert "frontend:twice" in cards["twice"]["error"]
+    assert "repo" not in cards["everywhere"]
+
+    assert (await get_symbol("only_fe"))["repo"] == "frontend"
+    assert (await get_symbol("twice"))["candidates"] == ["frontend", "docs"]
+
+
+async def test_get_symbol_finds_an_omission_ref_in_another_repo(located_ws):
+    from repowise.core.distill.store import OmissionStore, default_store_path
+    from repowise.server.mcp_server import get_symbol
+
+    store = OmissionStore(default_store_path(located_ws.workspace_root / "web-client"))
+    ref = store.put("frontend payload", source="mcp:get_context", original_tokens=9, kept_tokens=1)
+    store.close()
+
+    result = await get_symbol(f"repowise#{ref}")
+    assert result["repo"] == "frontend"
+    assert result["content"] == "frontend payload"
+    pinned = await get_symbol(f"repowise#{ref}", repo="backend")
+    assert "error" in pinned
+
+
+async def test_a_routed_batch_survives_a_failing_repo(routed_ws, monkeypatch):
+    from repowise.server.mcp_server import get_context
+
+    real_get = routed_ws.get
+
+    async def flaky(alias):
+        if alias == "frontend":
+            raise RuntimeError("index unreadable")
+        return await real_get(alias)
+
+    monkeypatch.setattr(routed_ws, "get", flaky)
+    result = await get_context(targets=["src/probe.py", "src/only_fe.py"])
+    assert result["targets"]["src/probe.py"]["docs"]["title"] == "Backend Probe"
+    assert "did not answer" in result["targets"]["src/only_fe.py"]["error"]
+    assert result["repos_failed"] == [
+        {"repo": "frontend", "reason": "RuntimeError: index unreadable"}
+    ]
+
+
+async def test_a_routed_batch_survives_a_repo_timing_out(routed_ws, monkeypatch):
+    import asyncio
+
+    from repowise.server.mcp_server import get_context
+
+    real_get = routed_ws.get
+
+    async def slow(alias):
+        if alias == "frontend":
+            await asyncio.sleep(30)
+        return await real_get(alias)
+
+    monkeypatch.setenv("REPOWISE_WORKSPACE_REPO_TIMEOUT_S", "0.5")
+    monkeypatch.setattr(routed_ws, "get", slow)
+    result = await get_context(targets=["src/probe.py", "src/only_fe.py"])
+    assert result["targets"]["src/probe.py"]["docs"]["title"] == "Backend Probe"
+    assert result["targets"]["src/only_fe.py"]["repo"] == "frontend"
+    assert "did not answer" in result["targets"]["src/only_fe.py"]["error"]
+    assert result["repos_failed"] == [{"repo": "frontend", "reason": "timed out after 0.5s"}]

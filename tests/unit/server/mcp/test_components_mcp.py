@@ -222,3 +222,69 @@ async def test_a_component_batch_reads_each_fact_table_once(setup_mcp, tmp_path,
     assert all("facts" in result["targets"][t] for t in result["targets"])
     # git, health and dead-code rows once each, and the run status once, for three components.
     assert (len(reads), len(runs)) == (3, 1)
+
+
+_TEAMS = """\
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: identity
+  annotations:
+    repowise.dev/member-emails: carol@example.com
+spec: {type: team, children: []}
+"""
+
+
+@pytest.mark.asyncio
+async def test_component_ownership_only_with_include(setup_mcp, session, tmp_path):
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.models import GitCommit, GitCommitFile
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server._components import reset_cache
+
+    when = datetime(2026, 9, 1, tzinfo=UTC)
+    session.add_all(
+        [
+            GitCommit(
+                repository_id="repo1",
+                sha="a" * 40,
+                author_name="Carol Diaz",
+                author_email="carol@example.com",
+                committed_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            GitCommit(
+                repository_id="repo1",
+                sha="b" * 40,
+                author_name="Dan Wu",
+                author_email="dan@example.com",
+                committed_at=when,
+            ),
+            GitCommitFile(repository_id="repo1", sha="a" * 40, file_path="src/auth/service.py"),
+            GitCommitFile(repository_id="repo1", sha="b" * 40, file_path="src/auth/service.py"),
+        ]
+    )
+    await session.commit()
+    _write_catalog(tmp_path)
+    (tmp_path / ".repowise" / "teams.yaml").write_text(_TEAMS, encoding="utf-8")
+    reset_cache()
+
+    plain = (await get_context(targets=["component:auth"]))["targets"]["component:auth"]
+    assert "ownership" not in plain
+
+    result = await get_context(
+        targets=["component:auth", "component:billing"], include=["ownership"]
+    )
+    auth = result["targets"]["component:auth"]["ownership"]
+    assert auth["declared_teams"] == [
+        {"team": "identity", "files": 2, "activity": "no_recent_changes"}
+    ]
+    assert [f["kind"] for f in auth["findings"]] == [
+        "declared_owner_inactive",
+        "critical_no_active_owner",
+    ]
+    assert auth["recent"]["commits"] == 1
+    billing = result["targets"]["component:billing"]["ownership"]
+    assert [f["kind"] for f in billing["findings"]] == ["catalog_entry_no_code"]
+    text = json.dumps(result["targets"])
+    assert "carol" not in text.lower() and "dan@" not in text

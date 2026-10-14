@@ -6,11 +6,11 @@ combination of them. This page is the map: what each layer holds, what is built 
 it, and which page has the detail.
 
 ```
-  What you use     answers · change risk · Fix first · dead code · impacted tests
-                   refactoring plans · doc drift · contracts across repositories
-                                             ▲
-  Five layers      1 Graph · 2 Git history · 3 Docs · 4 Decisions · 5 Health
-                                             ▲
+  What you use     answers, change risk, Fix first, dead code, impacted tests,
+                   refactoring plans, doc drift, contracts across repositories
+                                             ^
+  Five layers      1 Graph, 2 Git history, 3 Docs, 4 Decisions, 5 Health
+                                             ^
   One index        your source, its git history, your markdown, your coverage
 ```
 
@@ -51,6 +51,8 @@ no import between them can still change together every week.
 | Hidden coupling | Files that change together with no import link | [CHANGE_RISK.md](CHANGE_RISK.md) |
 | Branch overlap | Other branches editing the same files or their co-change partners | [CHANGE_RISK.md](CHANGE_RISK.md#branch-overlap) |
 | Secrets in history | Keys and tokens anywhere in the full history, not only the working tree | [SECURITY.md](SECURITY.md) |
+| Change Records | Each merged PR, MR or commit with its commits, files and provenance, exportable as in-toto | [CHANGES.md](CHANGES.md) |
+| AI attribution | Agent, human-attested or unknown per commit, from public markers and opt-in edit capture, with coverage | [ATTRIBUTION.md](ATTRIBUTION.md) |
 
 ## 3. Docs: the codebase, readable and searchable
 
@@ -134,8 +136,8 @@ impact and architecture rules you can gate in CI. See
 | What is this file or symbol, who calls it? | `repowise context`, `repowise symbol` | `get_context`, `get_symbol` |
 | What breaks if I change it? | `repowise risk` | `get_risk`, `get_change_risk` |
 | Why is it built this way? | `repowise why` | `get_why` |
-| What should we fix first? | `repowise next`, `repowise health` | `get_health` |
-| What can we delete? | `repowise dead-code` | `get_dead_code` |
+| What should be fixed first? | `repowise next`, `repowise health` | `get_health` |
+| What can be deleted? | `repowise dead-code` | `get_dead_code` |
 | Which tests matter? | `repowise impacted-tests` | `get_risk(changed_files=[...])` |
 
 18 MCP tools are registered; a single-repo server exposes 10 by default and the rest

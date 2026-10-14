@@ -399,7 +399,11 @@ priority order:
    `dist` and `target` are pruned only when the directory itself holds no
    hand-written source file (JavaScript, C/C++ and data formats do not count,
    since builds emit them), so a source package with one of those names is
-   indexed and a committed bundle is not
+   indexed and a committed bundle is not. Any directory that would be pruned
+   by the blocklist can be re-included by an explicit `!pattern` in root or
+   per-directory `.repowiseIgnore` or `exclude_patterns` (e.g. `!src/build/`).
+   Only explicitly named directories are re-included; sub-directories in the
+   blocklist (such as a nested `node_modules`) stay pruned unless also named.
 6. Auto-detection of generated files (files with `// Code generated` headers)
 7. Binary files (detected by null bytes in first 8KB)
 8. Files over `max_file_size_kb` (default: 500KB)

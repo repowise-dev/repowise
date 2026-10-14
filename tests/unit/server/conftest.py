@@ -37,6 +37,7 @@ def _create_test_app():
         decisions,
         doc_drift,
         episodes,
+        events,
         external_systems,
         files,
         git,
@@ -91,6 +92,7 @@ def _create_test_app():
     app.include_router(webhooks.router)
     app.include_router(git.router)
     app.include_router(changes.router)
+    app.include_router(events.router)
     app.include_router(files.router)
     app.include_router(dead_code.router)
     app.include_router(doc_drift.router)

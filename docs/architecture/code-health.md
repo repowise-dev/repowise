@@ -711,6 +711,16 @@ The findings list uses the same rule: worth-doing findings lead and the rest car
 priority there; a performance opportunity is unless production code runs it over
 growing data.
 
+#### Fix first steps
+
+A finding's first step can borrow a stored refactoring plan. A refactoring item is
+`later` when the plan of any of its steps still leaves a function above the
+break-up bar; a finding whose first step borrows such a plan keeps its tier, and
+the step says the plan alone leaves the function above the bar. An Extract Method
+step finds its lines by the text they start and end with, as the plan does, since
+line numbers move with the first edit; when that text also appears elsewhere in
+the file, the step says to keep the edit inside its function.
+
 ### 6.4 Performance opportunities (`perf/`)
 
 User guide: [PERFORMANCE.md](../layers/PERFORMANCE.md).

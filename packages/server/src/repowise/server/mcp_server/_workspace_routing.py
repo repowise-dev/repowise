@@ -7,8 +7,8 @@ a path from another repo silently answers about the default repo.
 Rules, exact matches only:
 
 - ``<alias>:<target>`` names the repo outright (``backend:src/app.py``,
-  ``backend:src/app.py::App``). ``component:`` and ``module:`` stay target
-  kinds, never repo prefixes.
+  ``backend:src/app.py::App``). ``component:``, ``change:`` and ``module:``
+  stay target kinds, never repo prefixes.
 - A path, or the file part of ``path::Name`` / ``path:120-140``, is served by
   the default repo when it exists there, as before. Otherwise it is routed to
   the one other repo whose checkout has it; when several do, the candidates
@@ -17,26 +17,39 @@ Rules, exact matches only:
   answer (suggestions, ``moved_to``) is kept; :func:`hint_misses` only adds a
   pointer to ``search_codebase``. In a change set it is a deleted file and
   gets no hint (:func:`settle_missing`).
-- Bare names and opaque refs stay with the default repo: resolving them
-  elsewhere needs a workspace-wide symbol locator.
+- A bare identifier (``get_answer``, ``Client.send``) is looked up in the
+  workspace store's symbol locator, by exact name or qualified name. The
+  default repo keeps it when it has the symbol, a component of that name or
+  a path of that name; otherwise it routes to the one other repo that has it,
+  and several give candidates. A name no repo has, or one that is not
+  identifier-shaped, stays with the default repo.
+- Omission refs (``repowise#<hex>``) stay with the default repo here;
+  ``get_symbol`` looks them up in every repo's omission store.
 
-Existence is checked on each repo's checkout, so routing opens no database.
-Ceiling: one ``exists()`` per non-default repo per missed target; a workspace
-locator replaces the probe when the workspace store lands.
+Path existence is checked on each repo's checkout, so path routing opens no
+database. Ceiling: one ``exists()`` per non-default repo per missed path.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._query_shape import _LINE_SUFFIX_RE, _is_path
 
-_TARGET_KINDS = frozenset({"component", "module"})
+_log = logging.getLogger("repowise.mcp")
+
+_TARGET_KINDS = frozenset({"component", "change", "module"})
+# A dotted identifier: the only bare targets the symbol locator routes.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*")
 
 
 @dataclass(frozen=True)
@@ -47,8 +60,9 @@ class Route:
     local: str  # the target inside its repo, any ``alias:`` prefix removed
     repo: str | None  # owning alias; None when unresolved
     routed: bool = False  # True when the repo came from a prefix or a lookup
-    candidates: tuple[str, ...] = ()  # set when several repos have the path
+    candidates: tuple[str, ...] = ()  # set when several repos have the path or name
     missed: bool = False  # no repo has the path; served by the default repo
+    name: bool = False  # a bare symbol name, still to be looked up
 
     @property
     def refusal(self) -> str | None:
@@ -68,7 +82,9 @@ class Route:
         return entry
 
 
-def route_targets(targets: Sequence[str], *, paths_only: bool = False) -> list[Route] | None:
+async def route_targets(
+    targets: Sequence[str], *, paths_only: bool = False
+) -> list[Route] | None:
     """One :class:`Route` per target, or None outside workspace mode.
 
     ``paths_only`` reads every target without a path shape as a path anyway
@@ -79,7 +95,12 @@ def route_targets(targets: Sequence[str], *, paths_only: bool = False) -> list[R
         return None
     roots = _repo_roots()
     default = registry.get_default_alias()
-    return [_route_one(t, roots, default, paths_only) for t in targets]
+    routes = [_route_one(t, roots, default, paths_only) for t in targets]
+    names = [r.target for r in routes if r.name]
+    if names and len(roots) > 1:
+        owners = await _symbol_owners(names, roots, default)
+        routes = [_route_name(r, owners, roots, default) if r.name else r for r in routes]
+    return routes
 
 
 def needs_routing(routes: list[Route] | None) -> bool:
@@ -182,12 +203,17 @@ async def run_grouped(
     Cards keep the caller's target order and key; a routed card carries
     ``repo``. Top-level fields come from the default repo's call (else the
     first), with omission refs pooled so nothing dropped is unrecoverable.
-    Sequential on purpose: shared fan-out belongs to one federation helper.
+    The calls run through :class:`Federation`: a repo that fails or times out
+    is named in ``repos_failed`` and its cards say so, while the rest answer.
+    Cards carry their own freshness, so no repo-level check runs.
     """
     groups = _group([r for r in routes if r.repo is not None])
-    results: dict[str, dict[str, Any]] = {}
-    for alias, rs in groups.items():
-        results[alias] = await call(alias, list(dict.fromkeys(r.local for r in rs)))
+    local_targets = {
+        alias: list(dict.fromkeys(r.local for r in rs)) for alias, rs in groups.items()
+    }
+    federation = Federation(aliases=list(groups), check_freshness=False)
+    outcomes = await federation.run(lambda ctx: call(ctx.alias, local_targets[ctx.alias]))
+    results: dict[str, dict[str, Any]] = {ctx.alias: result for ctx, result in outcomes}
 
     default = _state._registry.get_default_alias() if _state._registry is not None else None
     lead = results.get(default) if default in results else next(iter(results.values()), {})
@@ -201,6 +227,12 @@ async def run_grouped(
         if r.repo is None:
             cards[r.target] = r.card()
             continue
+        if r.repo not in results:
+            cards[r.target] = {
+                "repo": r.repo,
+                "error": f"Repo '{r.repo}' did not answer; see repos_failed.",
+            }
+            continue
         result = results[r.repo]
         card = (result.get("targets") or {}).get(r.local)
         if card is None:
@@ -209,7 +241,16 @@ async def run_grouped(
     merged.setdefault("_meta", {})
     response = {"targets": cards, **merged}
     hint_misses(response, routes)
-    return response
+    return federation.annotate(response)
+
+
+def other_repo_roots() -> list[tuple[str, Path]]:
+    """The non-default workspace repos and their checkouts; empty outside workspace mode."""
+    registry = _state._registry
+    if registry is None:
+        return []
+    default = registry.get_default_alias()
+    return [(alias, root) for alias, root in _repo_roots().items() if alias != default]
 
 
 # -- internals ---------------------------------------------------------------
@@ -233,7 +274,7 @@ def _route_one(target: str, roots: dict[str, Path], default: str, paths_only: bo
     if not file_part or file_part.startswith("repowise#"):
         return Route(target, target, default)
     if not (paths_only or "::" in target or _is_path(file_part)):
-        return Route(target, target, default)
+        return Route(target, target, default, name=bool(_IDENTIFIER_RE.fullmatch(target)))
 
     if Path(file_part).is_absolute():
         return _route_absolute(target, file_part, roots, default)
@@ -245,6 +286,76 @@ def _route_one(target: str, roots: dict[str, Path], default: str, paths_only: bo
     if len(owners) > 1:
         return Route(target, target, None, candidates=owners)
     return Route(target, target, default, missed=True)
+
+
+def _route_name(
+    route: Route, owners: dict[str, list[str]], roots: dict[str, Path], default: str
+) -> Route:
+    """Route a bare symbol name by the repos the locator says hold it.
+
+    *owners* carries the default repo for a name it keeps (see
+    :func:`_symbol_owners`)."""
+    repos = owners.get(route.target, [])
+    if not repos or default in repos or _exists(roots.get(default), route.target):
+        return Route(route.target, route.local, default)
+    if len(repos) == 1:
+        return Route(route.target, route.local, repos[0], routed=True)
+    return Route(route.target, route.local, None, candidates=tuple(repos))
+
+
+_store_lock = asyncio.Lock()
+
+
+async def _symbol_owners(
+    names: list[str], roots: dict[str, Path], default: str
+) -> dict[str, list[str]]:
+    """``name -> repos holding it``, in workspace order, from the workspace store.
+
+    Refreshes the store first when a repo's index moved. A symbol in a file its
+    repo excludes does not count, and a default-repo component of that name
+    counts as the default repo having it. Empty when the store is unavailable,
+    so every name stays with the default repo.
+    """
+    from repowise.core.workspace.store import refresh_workspace_store
+
+    registry = _state._registry
+    try:
+        async with _store_lock:
+            path = await refresh_workspace_store(registry.ws_config, Path(registry.workspace_root))
+        if path is None:
+            return {}
+        return await asyncio.to_thread(_owners_from_store, path, names, roots, default)
+    except Exception:
+        _log.warning("Workspace store lookup failed", exc_info=True)
+        return {}
+
+
+def _owners_from_store(
+    path: Path, names: list[str], roots: dict[str, Path], default: str
+) -> dict[str, list[str]]:
+    from repowise.core.exclusion import build_exclude_spec, is_excluded
+    from repowise.core.workspace.store import lookup_symbols
+
+    found_rows = lookup_symbols(path, names, components_of=default)
+    if found_rows is None:
+        return {}
+    hits, default_components = found_rows
+    owners: dict[str, list[str]] = {}
+    # build_exclude_spec memoises by rule-file stamps; this keeps it to one
+    # build per repo per call.
+    specs: dict[str, Any] = {}
+    for name in names:
+        found: set[str] = {default} if name.casefold() in default_components else set()
+        for alias, _symbol_id, file_path in hits.get(name, ()):
+            if alias in found or alias not in roots:
+                continue
+            if alias not in specs:
+                specs[alias] = build_exclude_spec(roots[alias])
+            if not is_excluded(file_path, specs[alias]):
+                found.add(alias)
+        if found:
+            owners[name] = [a for a in roots if a in found]
+    return owners
 
 
 def _route_absolute(target: str, file_part: str, roots: dict[str, Path], default: str) -> Route:

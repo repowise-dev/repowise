@@ -19,10 +19,10 @@ The match is by content hash within a path, and every rule leans toward a miss:
 
 A commit with no bound line stays unknown; nothing here ever says human.
 
-Backfill seam: transcript backfill feeds the same matcher. Inside the existing
-transcript pass, ``adapter.file_edits(use, result)`` yields the edits a recorded
-tool call made, and :func:`event_rows` turns them into the rows this module
-matches, so one read of a transcript serves both decisions and attribution.
+Transcript backfill (:mod:`.backfill`) feeds the same matcher through
+:func:`bind_commits`: ``adapter.file_edits(use, result)`` yields the edits a
+recorded tool call made, and :func:`event_rows` turns them into the rows this
+module matches.
 """
 
 from __future__ import annotations
@@ -161,11 +161,18 @@ def _sole_owner(rows: list[dict[str, Any]], owners: list[int]) -> tuple[str, int
     return next(iter(agents)), max(owners, key=lambda i: rows[i]["ts"])
 
 
-def _hash_owners(rows: list[dict[str, Any]], names: set[str], ct: int) -> dict[str, list[int]]:
-    """Hash to the indexes of rows for *names* recorded before the commit at *ct*."""
+def _hash_owners(
+    rows: list[dict[str, Any]], candidates: list[int], ct: int, window: float | None = None
+) -> dict[str, list[int]]:
+    """Hash to the indexes among *candidates* of rows recorded before the commit at *ct*.
+
+    With *window*, only rows recorded at most that many seconds before it.
+    """
+    earliest = ct - window if window is not None else float("-inf")
     by_hash: dict[str, list[int]] = {}
-    for idx, row in enumerate(rows):
-        if row["path"] in names and row["ts"] <= ct + COMMIT_GRACE_SECONDS:
+    for idx in candidates:
+        row = rows[idx]
+        if earliest <= row["ts"] <= ct + COMMIT_GRACE_SECONDS:
             for h in row["hashes"]:
                 by_hash.setdefault(h, []).append(idx)
     return by_hash
@@ -175,6 +182,7 @@ def _match_file(
     rows: list[dict[str, Any]],
     by_hash: dict[str, list[int]],
     hunks: list[tuple[int, list[str]]],
+    min_run: int = MIN_RUN_SUBSTANTIVE,
 ) -> list[tuple[int, int, str]]:
     """``(row index, line number, hash)`` for every line this file binds."""
     hashed = [[(n + i, text, line_hash(text)) for i, text in enumerate(added)] for n, added in hunks]
@@ -197,17 +205,46 @@ def _match_file(
     return [
         (idx, n, h)
         for run in runs
-        if sum(1 for *_, sub in run if sub) >= MIN_RUN_SUBSTANTIVE
+        if sum(1 for *_, sub in run if sub) >= min_run
         for idx, n, h, _ in run
     ]
 
 
 def _bind_commit(
-    repo: Path, sha: str, rows: list[dict[str, Any]]
+    repo: Path,
+    sha: str,
+    rows: list[dict[str, Any]],
+    by_path: dict[str, list[int]],
+    window: float | None,
+    min_run: int,
 ) -> dict[str, Any] | None:
     ct, files = commit_diff(repo, sha)
-    sessions = _bound_lines(rows, ct, files)
+    sessions = _bound_lines(rows, by_path, ct, files, window, min_run)
     return _binding(sha, ct, sessions) if sessions else None
+
+
+def bind_commits(
+    repo: Path,
+    rows: list[dict[str, Any]],
+    commits: list[str],
+    *,
+    window: float | None = None,
+    min_run: int = MIN_RUN_SUBSTANTIVE,
+) -> list[dict[str, Any]]:
+    """Bind *rows* to *commits* (oldest first), consuming the hashes they bind.
+
+    The matcher :func:`bind_pending` runs, for a caller that holds its own rows
+    and commit list (transcript backfill). *window* bounds how long before a
+    commit an edit may be; *min_run* raises the substantive lines a run needs.
+    """
+    by_path: dict[str, list[int]] = {}
+    for idx, row in enumerate(rows):
+        by_path.setdefault(row["path"], []).append(idx)
+    return [
+        binding
+        for sha in commits
+        if (binding := _bind_commit(repo, sha, rows, by_path, window, min_run)) is not None
+    ]
 
 
 _Sessions = dict[tuple[str, str, str | None], dict[str, list[int]]]
@@ -215,14 +252,18 @@ _Sessions = dict[tuple[str, str, str | None], dict[str, list[int]]]
 
 def _bound_lines(
     rows: list[dict[str, Any]],
+    by_path: dict[str, list[int]],
     ct: int,
     files: list[tuple[str, str | None, list[tuple[int, list[str]]]]],
+    window: float | None,
+    min_run: int,
 ) -> _Sessions:
     """Bound line numbers per ``(agent, session, model)`` and path; consumes matched hashes."""
     sessions: _Sessions = {}
     for path, old, hunks in files:
-        by_hash = _hash_owners(rows, {path, old} if old else {path}, ct)
-        for idx, number, h in _match_file(rows, by_hash, hunks) if by_hash else []:
+        candidates = by_path.get(path, []) + (by_path.get(old, []) if old else [])
+        by_hash = _hash_owners(rows, candidates, ct, window)
+        for idx, number, h in _match_file(rows, by_hash, hunks, min_run) if by_hash else []:
             row = rows[idx]
             if h in row["hashes"]:
                 row["hashes"].remove(h)
@@ -338,7 +379,7 @@ def bind_pending(repo: Path, *, capture: str, now: float | None = None) -> list[
         bindings = _bind_rows(repo, rows)
         append_jsonl(directory / BINDINGS, bindings)
         if capture == "notes" and bindings:
-            _write_notes(repo, bindings)
+            write_notes(repo, bindings)
     finally:
         _return_events(directory, [row for row in rows if row["hashes"]])
     return bindings
@@ -352,11 +393,7 @@ def _bind_rows(repo: Path, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     since = min(row["ts"] for row in rows)
     pending = _commits_to_bind(repo, since, load_state(repo).get("cursor"))
     batch = pending[:MAX_COMMITS]
-    bindings = [
-        binding
-        for sha in batch
-        if sha not in done and (binding := _bind_commit(repo, sha, rows)) is not None
-    ]
+    bindings = bind_commits(repo, rows, [sha for sha in batch if sha not in done])
     # A capped run stops the cursor at its last commit; the next run
     # continues from there instead of skipping the rest.
     cursor = batch[-1] if len(pending) > MAX_COMMITS else _git(repo, "rev-parse", "HEAD").strip()
@@ -367,7 +404,7 @@ def _bind_rows(repo: Path, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return bindings
 
 
-def _write_notes(repo: Path, bindings: list[dict[str, Any]]) -> None:
+def write_notes(repo: Path, bindings: list[dict[str, Any]]) -> None:
     from .notes import ensure_rewrite_ref, render_note, write_note
 
     ensure_rewrite_ref(repo)

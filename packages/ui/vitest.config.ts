@@ -33,6 +33,7 @@ export default defineConfig({
       "@repowise-dev/types/chat": path.resolve(__dirname, "../types/src/chat.ts"),
       "@repowise-dev/types/cards": path.resolve(__dirname, "../types/src/cards.ts"),
       "@repowise-dev/types/changes": path.resolve(__dirname, "../types/src/changes.ts"),
+      "@repowise-dev/types/events": path.resolve(__dirname, "../types/src/events.ts"),
       "@repowise-dev/types/views": path.resolve(__dirname, "../types/src/views.ts"),
       "@repowise-dev/types/workspace": path.resolve(__dirname, "../types/src/workspace.ts"),
       "@repowise-dev/types/blast-radius": path.resolve(__dirname, "../types/src/blast-radius.ts"),

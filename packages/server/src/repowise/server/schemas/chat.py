@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from repowise.server.chat_artifacts import normalize_message_artifacts
+from repowise.server.schemas.evidence import CardRef
 
 
 class ChatPageContext(BaseModel):
@@ -240,6 +241,28 @@ class ChatTurnUsage(BaseModel):
     model_calls: int = 0
 
 
+class ChatCitation(BaseModel):
+    """A file a tool result cited, and that result's ``artifact_id``."""
+
+    file_path: str
+    symbol_name: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    artifact_id: str | None = None
+    ref: CardRef | None = None
+
+
+class ChatFigure(BaseModel):
+    """A number the answer states. Offsets are UTF-16 units into ``answer``;
+    a verified figure carries the ``artifact_id`` of the result holding it."""
+
+    text: str
+    start: int
+    end: int
+    verified: bool
+    artifact_id: str | None = None
+
+
 class ChatTurnResultResponse(BaseModel):
     conversation_id: str
     message_id: str | None = None
@@ -250,9 +273,13 @@ class ChatTurnResultResponse(BaseModel):
     ]
     provider: str
     model: str
-    citations: list[dict[str, Any]] = []
+    citations: list[ChatCitation] = []
     cards: list[dict[str, Any]] = []
     views: list[dict[str, Any]] = []
+    figures: list[ChatFigure] = []
+    #: ``figures_checked``, ``figures_unverified`` and, past the evidence read
+    #: cap, ``figures_not_checked``; empty when the answer states no figure.
+    diagnostics: dict[str, int] = {}
     tool_trace: list[ChatToolTraceEntry] = []
     follow_ups: list[ChatSuggestion] = []
     usage: ChatTurnUsage = ChatTurnUsage()

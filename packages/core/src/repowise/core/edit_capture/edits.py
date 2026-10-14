@@ -24,7 +24,12 @@ Payload shapes, and where each was checked:
   longer a tool in that build; kept for older transcripts, shape as documented.
 * Codex ``PostToolUse``: adds ``model`` and ``turn_id``; ``apply_patch`` carries
   the patch envelope in ``tool_input.command`` and a string ``tool_response``
-  starting ``Exit code: N`` (openai/codex hook schema and hook tests).
+  starting ``Exit code: N`` (openai/codex hook schema and hook tests). In code
+  mode (an ``exec`` cell, Codex 0.144 to 0.162 rollouts on this machine) the
+  envelope is a JavaScript string literal passed to ``tools.apply_patch`` and
+  the response is a list of text blocks opening ``Script completed`` or
+  ``Script failed``; :func:`codex_edits` reads both shapes, whichever one the
+  hook or the rollout hands it.
 * Cursor ``afterFileEdit``: ``conversation_id``, ``generation_id``, ``model``,
   ``workspace_roots``, ``file_path``, ``edits[]`` of
   ``old_string``/``new_string`` (cursor.com/docs/agent/hooks). ``user_email``
@@ -188,9 +193,118 @@ def parse_apply_patch(patch: str) -> list[FileEdit]:
     return [edit for edit in edits if edit.added]
 
 
+_JS_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
+_APPLY_PATCH_CALL = re.compile(r"tools\.apply_patch\s*\(\s*")
+_JS_NAME = re.compile(r"[A-Za-z_$][\w$]*")
+_HEX = re.compile(r"[0-9a-fA-F]+")
+
+
+def _js_escape(source: str, i: int) -> tuple[str, int] | None:
+    """The escape whose letter sits at *source[i]*, decoded, and the index after it."""
+    esc = source[i]
+    if esc in _JS_ESCAPES:
+        return _JS_ESCAPES[esc], i + 1
+    if esc == "\r" and source[i + 1 : i + 2] == "\n":
+        return "", i + 2  # line continuation
+    if esc == "\n":
+        return "", i + 1
+    if esc == "x":
+        digits, end, size = source[i + 1 : i + 3], i + 3, 2
+    elif esc == "u" and source[i + 1 : i + 2] == "{":
+        close = source.find("}", i)
+        digits, end, size = (source[i + 2 : close], close + 1, 0) if close > 0 else ("", i, 0)
+    elif esc == "u":
+        digits, end, size = source[i + 1 : i + 5], i + 5, 4
+    else:
+        return esc, i + 1  # \\ \" \' \` and identity escapes
+    if not _HEX.fullmatch(digits) or (size and len(digits) != size) or int(digits, 16) > 0x10FFFF:
+        return None
+    return chr(int(digits, 16)), end
+
+
+def _js_string(source: str, start: int) -> str | None:
+    """The JavaScript string literal opening at *source[start]*, decoded.
+
+    None when it does not close, or is a template literal that interpolates.
+    """
+    quote, out, i = source[start], [], start + 1
+    while i < len(source):
+        ch = source[i]
+        if ch == quote:
+            try:  # a \\uD83D\\uDE00 pair becomes one character
+                return "".join(out).encode("utf-16", "surrogatepass").decode("utf-16")
+            except UnicodeError:
+                return None
+        if ch == "\\" and i + 1 < len(source):
+            decoded = _js_escape(source, i + 1)
+            if decoded is None:
+                return None
+            out.append(decoded[0])
+            i = decoded[1]
+            continue
+        if (ch == "\n" and quote != "`") or (quote == "`" and source.startswith("${", i)):
+            return None
+        out.append(ch)
+        i += 1
+    return None
+
+
+def _apply_patch_argument(source: str, call: re.Match[str]) -> str | None:
+    """The string literal a ``tools.apply_patch(`` call receives: written in
+    place, or the literal last assigned to the variable it passes."""
+    start = call.end()
+    if source[start : start + 1] in ("\"", "'", "`"):
+        return _js_string(source, start)
+    name = _JS_NAME.match(source, start)
+    if name is None:
+        return None
+    assign = rf"(?<![\w$.]){re.escape(name.group(0))}\s*=\s*(?=[\"'`])"
+    found = list(re.finditer(assign, source[: call.start()]))
+    return _js_string(source, found[-1].end()) if found else None
+
+
+def _exec_cell_patches(source: str) -> list[str]:
+    """Patches a Codex code-mode cell passes to ``tools.apply_patch``.
+
+    The cell is JavaScript (``const patch = "*** Begin Patch\\n..."; await
+    tools.apply_patch(patch)``), so the envelope sits escaped inside a literal.
+    A literal the call does not receive is never read.
+    """
+    found = (_apply_patch_argument(source, m) for m in _APPLY_PATCH_CALL.finditer(source))
+    return [p for p in found if p and p.lstrip().startswith("*** Begin Patch")]
+
+
+def _response_text(tool_response: Any) -> str:
+    if isinstance(tool_response, list):
+        return "\n".join(
+            block["text"]
+            for block in tool_response
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        )
+    return tool_response if isinstance(tool_response, str) else ""
+
+
+def _codex_call_failed(tool_response: Any) -> bool:
+    """Whether a Codex patch call reports it wrote nothing, or cannot say yet.
+
+    ``Exit code: N`` (N not 0) for a direct call; a code-mode cell says
+    ``Script failed``, or ``Script running`` while its outcome is unknown, and
+    a cell that caught a failed patch still prints the verification error.
+    """
+    text = _response_text(tool_response)
+    return bool(
+        re.match(r"Exit code: (?!0\b)-?\d+", text)
+        or text.startswith(("Script failed", "Script running"))
+        or "apply_patch verification failed" in text
+    )
+
+
 def codex_edits(tool_name: str, tool_input: Any, tool_response: Any) -> list[FileEdit]:
-    """Codex ``apply_patch``. A failed call (``Exit code: N``, N not 0) wrote nothing."""
-    if isinstance(tool_response, str) and re.match(r"Exit code: (?!0\b)-?\d+", tool_response):
+    """Codex ``apply_patch``, called directly or from a code-mode cell.
+
+    A call whose response reports a failure (:func:`_codex_call_failed`) wrote nothing.
+    """
+    if _codex_call_failed(tool_response):
         return []
     patch = ""
     if isinstance(tool_input, dict):
@@ -199,7 +313,9 @@ def codex_edits(tool_name: str, tool_input: Any, tool_response: Any) -> list[Fil
         patch = tool_input
     if "*** Begin Patch" not in patch:
         return []
-    return parse_apply_patch(patch)
+    if patch.lstrip().startswith("*** Begin Patch"):
+        return parse_apply_patch(patch)
+    return [edit for body in _exec_cell_patches(patch) for edit in parse_apply_patch(body)]
 
 
 def cursor_edits(tool_name: str, tool_input: Any, tool_response: Any) -> list[FileEdit]:

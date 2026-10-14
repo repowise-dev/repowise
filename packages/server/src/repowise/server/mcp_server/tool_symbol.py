@@ -47,6 +47,7 @@ import json
 import re
 import sqlite3
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -93,6 +94,7 @@ from repowise.server.mcp_server._verify import (
 from repowise.server.mcp_server._workspace_routing import (
     hint_misses,
     needs_routing,
+    other_repo_roots,
     route_targets,
 )
 
@@ -501,26 +503,37 @@ def _extract_omission_ref(symbol_id: str) -> str | None:
 
 
 def _resolve_omission_ref(
-    symbol_id: str, ref: str, query: str | None, repo_root: Any, t0: float
+    symbol_id: str,
+    ref: str,
+    query: str | None,
+    repo_root: Any,
+    t0: float,
+    other_roots: Sequence[tuple[str, Path]] = (),
 ) -> dict:
     """Look *ref* up in the omission store(s) and shape a tool response.
 
-    Checks the repo-local store first, then the user-level fallback —
-    the same order as ``repowise expand``. Stores are only opened when the
-    DB file already exists (opening would otherwise create an empty one).
+    Checks the repo-local store first, then the stores of *other_roots* (the
+    other workspace repos, whose responses write their own), then the
+    user-level fallback — the same order as ``repowise expand``. Stores are
+    only opened when the DB file already exists (opening would otherwise
+    create an empty one). A ref is a content hash, so the first store holding
+    it has the content.
     """
     from repowise.core.distill.store import OmissionStore, default_store_path
 
     canonical_ref = f"repowise#{ref}"
-    candidates: list[Path] = []
+    candidates: list[tuple[str | None, Path]] = []
     if repo_root:
-        candidates.append(default_store_path(Path(str(repo_root))))
+        candidates.append((None, default_store_path(Path(str(repo_root)))))
+    for alias, root in other_roots:
+        candidates.append((alias, default_store_path(root)))
     home_store = default_store_path(Path.home())
-    if home_store not in candidates:
-        candidates.append(home_store)
+    if home_store not in {path for _alias, path in candidates}:
+        candidates.append((None, home_store))
 
     record: dict | None = None
-    for db_path in candidates:
+    found_in: str | None = None
+    for alias, db_path in candidates:
         try:
             if not db_path.exists():
                 continue
@@ -534,6 +547,7 @@ def _resolve_omission_ref(
             # Recovery must never make get_symbol itself fail.
             continue
         if record is not None:
+            found_in = alias
             break
 
     if record is None:
@@ -550,6 +564,7 @@ def _resolve_omission_ref(
 
     created = record.get("created_at")
     response: dict[str, Any] = {
+        **({"repo": found_in} if found_in else {}),
         "symbol_id": symbol_id,
         "ref": canonical_ref,
         "kind": "omission",
@@ -1056,10 +1071,15 @@ async def get_symbol(
     if omission_ref is not None:
         canonical_omission = omission_reference(symbol_id) or symbol_id
         return _resolve_omission_ref(
-            canonical_omission, omission_ref, query, ctx.path, t0
+            canonical_omission,
+            omission_ref,
+            query,
+            ctx.path,
+            t0,
+            other_repo_roots() if repo is None else (),
         )
 
-    routes = route_targets([symbol_id.strip()]) if repo is None else None
+    routes = await route_targets([symbol_id.strip()]) if repo is None else None
     if needs_routing(routes):
         route = routes[0]
         if route.repo is None:

@@ -32,9 +32,12 @@ class Backend:
     success_stdout: Callable[[str], str]
     tokens: tuple[int, int, int]  # parsed (input, output, cached)
     books_cost: bool
-    # Flag that points the CLI at the repo; None means a per-call scratch cwd.
+    # Flag that points the CLI at the repo; None means no flag is passed.
     repo_flag: str | None
     env: dict[str, str] | None  # entries the subprocess env must carry
+    # True when the repo is passed as the subprocess cwd (opencode, after the
+    # OpenCode CLI v2 removed ``--dir``); False means a per-call scratch cwd.
+    repo_cwd: bool = False
 
 
 def _jsonl(*events: dict[str, Any]) -> str:
@@ -97,8 +100,9 @@ BACKENDS = [
         _opencode_stdout,
         tokens=(80, 10, 20),
         books_cost=False,
-        repo_flag="--dir",
+        repo_flag=None,
         env={"OPENCODE_DISABLE_PROJECT_CONFIG": "true"},
+        repo_cwd=True,
     ),
 ]
 
@@ -209,13 +213,16 @@ async def test_runs_against_the_repo_or_a_scratch_dir(backend, monkeypatch, tmp_
     await _make(backend, tmp_path).generate("sys", "user")
 
     args, cwd = calls[0]["args"], calls[0]["kwargs"]["cwd"]
-    if backend.repo_flag is None:
+    if backend.repo_flag is not None:
+        assert args[args.index(backend.repo_flag) + 1] == str(tmp_path.resolve())
+        assert cwd is None
+    elif backend.repo_cwd:
+        # No flag: the repo travels as the subprocess cwd.
+        assert cwd == str(tmp_path.resolve())
+    else:
         # A neutral per-call directory, removed afterwards.
         assert cwd is not None and Path(cwd) != tmp_path.resolve()
         assert not Path(cwd).exists()
-    else:
-        assert args[args.index(backend.repo_flag) + 1] == str(tmp_path.resolve())
-        assert cwd is None
 
 
 async def test_subprocess_env(backend, monkeypatch, tmp_path):

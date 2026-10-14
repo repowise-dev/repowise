@@ -78,7 +78,10 @@ async def test_send_returns_the_turn_result_as_json_and_replays_a_retry():
     result = first.json()
     assert result["answer"] == "Risky."
     assert result["stop_reason"] == "answered"
-    assert result["citations"] == [{"file_path": "src/a.py"}]
+    (citation,) = result["citations"]
+    assert citation["file_path"] == "src/a.py" and len(citation["artifact_id"]) == 32
+    assert citation["ref"]["type"] == "file" and citation["ref"]["id"] == "src/a.py"
+    assert result["figures"] == [] and result["diagnostics"] == {}
     assert [t["name"] for t in result["tool_trace"]] == ["get_risk"]
     assert result["usage"]["model_calls"] == 2
     assert retry.json()["replayed"] is True

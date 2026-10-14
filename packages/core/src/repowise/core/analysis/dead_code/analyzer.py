@@ -1771,7 +1771,12 @@ class DeadCodeAnalyzer:
         if sym.get("kind") == "interface" and not self._file_has_implementors(node):
             confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
-        if is_contract_method(sym_name, sym.get("kind"), sym.get("language", "unknown")):
+        if is_contract_method(
+            sym_name,
+            sym.get("kind"),
+            sym.get("language", "unknown"),
+            modifiers=sym.get("modifiers"),
+        ):
             confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
         if risk_factors:
@@ -2109,7 +2114,10 @@ class DeadCodeAnalyzer:
         if node_data.get("kind") in _UNCALLABLE_TYPE_KINDS:
             return False
         if is_contract_method(
-            sym_name, node_data.get("kind"), node_data.get("language", "unknown")
+            sym_name,
+            node_data.get("kind"),
+            node_data.get("language", "unknown"),
+            modifiers=node_data.get("modifiers"),
         ):
             return False
         if self._name_matches_dynamic(sym_name, dynamic_patterns):

@@ -31,6 +31,7 @@ import { ChatComposer } from "./chat-composer";
 import { ChatContextIndicator } from "./chat-context-indicator";
 import { getChatContextPresentation, type ChatContext } from "./chat-context";
 import { ChatInterface } from "./chat-interface";
+import type { UnverifiedFigureCopy } from "./chat-message";
 import { buildHandoffDraft } from "./chat-handoff";
 import { ChatSuggestions } from "./chat-suggestions";
 import { CHAT_SHORTCUT_HINT } from "./use-chat-shortcut";
@@ -176,6 +177,7 @@ export interface ChatDockProps {
   assistantAvatarSrc?: string;
   buildCitationHref?: (source: SourceReference) => string;
   linkPrefix?: string;
+  unverifiedFigureCopy?: UnverifiedFigureCopy;
   onOpenFullChat?: () => void;
   owlDarkSrc?: string;
   owlLightSrc?: string;
@@ -215,6 +217,7 @@ export function ChatDock({
   assistantAvatarSrc,
   buildCitationHref,
   linkPrefix,
+  unverifiedFigureCopy,
   onOpenFullChat,
   owlDarkSrc = "/repowise-logo.png",
   owlLightSrc = "/repowise-logo-light.png",
@@ -619,6 +622,7 @@ export function ChatDock({
               {...(assistantAvatarSrc ? { assistantAvatarSrc } : {})}
               {...(buildCitationHref ? { buildCitationHref } : {})}
               {...(linkPrefix ? { linkPrefix } : {})}
+              {...(unverifiedFigureCopy ? { unverifiedFigureCopy } : {})}
               {...(onArtifactPin ? { onArtifactPin } : {})}
               {...(onOpenArtifactSource ? { onOpenArtifactSource } : {})}
               {...(artifactOverrides ? { artifactOverrides } : {})}

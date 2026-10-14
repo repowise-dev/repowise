@@ -146,7 +146,8 @@ takes a reasoning flag. The defaults offer one option, the configured model,
 with reasoning `auto`.
 
 `self._repo_path` holds the repo the CLI should read. Pass it with the CLI's
-directory flag (opencode uses `--dir`, codex `--cd`) if the CLI has one.
+directory flag (`codex` uses `--cd`) or, when the CLI has none, as the
+subprocess working directory (`opencode`); `claude_cli` ignores it.
 
 ### Step 2: the `ProviderSpec`
 

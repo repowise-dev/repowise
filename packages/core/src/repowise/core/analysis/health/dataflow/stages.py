@@ -68,6 +68,7 @@ from .slice import (
     _declaration_escapes,
     _declaration_lines,
     _declared_before_read,
+    _disposes_early,
     _function_lines,
     _hoisted_bindings,
     _identifiers,
@@ -77,6 +78,7 @@ from .slice import (
     _reads_observing,
     _receiver_facts,
     _scan_for,
+    _scoped_resource_indexes,
     _stmt_assigns,
     _unwrap_container,
     _valueless_lines,
@@ -378,6 +380,7 @@ class _Cutter:
         # helper instead, and a value carried to the next iteration must come
         # back out of the stage that writes it.
         self.escapes = [escapes(st, lmap) for st in code] if loops else [False] * len(code)
+        self.resources = _scoped_resource_indexes(code, lmap)
         self.carried = carried(facts.analysis, loops, facts.def_lines) if loops else frozenset()
 
     def _sum(self, series: list[int], i: int, j: int) -> int:
@@ -483,6 +486,8 @@ class _Cutter:
         if self._sum(pre.exits, i, j) or self._sum(pre.nested, i, j):
             return False
         if any(self.escapes[i : j + 1]):
+            return False
+        if _disposes_early(self.resources, i, j, pre.code):
             return False
         return not any((i <= a <= j) != (i <= b <= j) for a, b in self.timer_pairs)
 

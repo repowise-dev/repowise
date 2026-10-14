@@ -138,3 +138,43 @@ class TestLivePathNotFlagged:
         # from unreachable_file is the assertion that matters.
         unreachable = _paths(cpp_report, DeadCodeKind.UNREACHABLE_FILE)
         assert not any("brew_test.cc" in p for p in unreachable)
+
+
+def test_ffi_plugin_export_macro_functions_not_unused_exports(tmp_path: Path) -> None:
+    """Header beside the sources (Flutter FFI plugin layout), issue #3689.
+
+    ``FFI_PLUGIN_EXPORT`` is defined in ``dartjni.h`` next to the ``.c``
+    file, with no public-header declaration in CMake and no ``include/``.
+    The functions it tags are the plugin's public surface and must not be
+    reported as ``unused_export``.
+    """
+    root = tmp_path / "plugin"
+    src = root / "src" / "health_connect"
+    src.mkdir(parents=True)
+    (src / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.10)\n"
+        "project(health_connect VERSION 0.0.1 LANGUAGES C)\n"
+        'add_library(health_connect SHARED\n  "./health_connect.c"\n)\n'
+    )
+    (src / "dartjni.h").write_text(
+        "#pragma once\n#if _WIN32\n#define FFI_PLUGIN_EXPORT __declspec(dllexport)\n"
+        "#else\n#define FFI_PLUGIN_EXPORT\n#endif\n"
+        "FFI_PLUGIN_EXPORT int SpawnJvm(int args);\n"
+    )
+    (src / "health_connect.c").write_text(
+        '#include "dartjni.h"\n'
+        "FFI_PLUGIN_EXPORT\nint SpawnJvm(int args) { return args + 1; }\n"
+        "FFI_PLUGIN_EXPORT\nint GetVersion(void) { return 3; }\n"
+    )
+
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=root)
+    for fi in FileTraverser(root).traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+    graph = builder.build()
+    builder.add_framework_edges([])
+
+    report = DeadCodeAnalyzer(graph, git_meta_map={}).analyze({"min_confidence": 0.0})
+    unused = _names(report, DeadCodeKind.UNUSED_EXPORT)
+    assert "SpawnJvm" not in unused
+    assert "GetVersion" not in unused

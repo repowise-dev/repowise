@@ -168,3 +168,57 @@ def test_hook_stdout_stays_json_with_an_invalid_config(repo: Path, user_config: 
     assert "attribution_config_invalid" in out.stderr  # the warning did fire
     if out.stdout.strip():
         json.loads(out.stdout)
+
+
+def _claude_write(home: Path, cwd: Path, rel: str, lines: list[str]) -> None:
+    """One Claude Code ``Write`` of a new file, as the transcript records it."""
+    import time
+
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 600))
+    base = {"sessionId": "s", "cwd": str(cwd), "timestamp": ts}
+    use = base | {"type": "assistant", "message": {"model": "claude-opus-5", "content": [
+        {"type": "tool_use", "id": "toolu_1", "name": "Write",
+         "input": {"file_path": str(cwd / rel), "content": "\n".join(lines)}}]}}
+    result = base | {"type": "user", "toolUseResult": {"type": "create"}, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]}}
+    path = home / ".claude" / "projects" / "p" / "s.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(use) + "\n" + json.dumps(result) + "\n", encoding="utf-8")
+
+
+def test_backfill_refuses_without_consent(repo: Path, user_config: Path) -> None:
+    result = CliRunner().invoke(attribution_group, ["backfill", str(repo), "--agent", "claude-code"])
+    assert result.exit_code != 0
+    assert "attribution.capture is off" in result.output
+
+
+def test_backfill_reports_and_status_shows_the_run(
+    repo: Path, user_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "fakehome"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    _opt_in(repo, user_config, "local", "[claude-code, codex]")
+    lines = [f"value_{i} = compute_value({i}, scale)" for i in range(8)]
+    _claude_write(home, repo, "src/values.py", lines)
+    (repo / "src").mkdir()
+    (repo / "src" / "values.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "values")
+    state = repo / ".repowise" / "state.json"
+    state.write_text(json.dumps({"git_history_version": 3, "last_sync_commit": "abc"}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        attribution_group, ["backfill", str(repo), "--agent", "claude-code,codex", "--format", "json"]
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["bound"] == 1 and report["commits_scanned"] >= 1
+    assert report["covered_after"] == report["covered_before"] + 1
+    # The next update re-reads git history once; nothing else in the state moves.
+    assert report["history_rewalk_on_next_update"] is True
+    assert json.loads(state.read_text(encoding="utf-8")) == {"last_sync_commit": "abc"}
+
+    status = CliRunner().invoke(attribution_group, ["status", str(repo), "--format", "json"])
+    assert json.loads(status.output)["backfill"]["bound"] == 1
+    text = CliRunner().invoke(attribution_group, ["status", str(repo)]).output
+    assert "backfill" in text and "1 bound" in text

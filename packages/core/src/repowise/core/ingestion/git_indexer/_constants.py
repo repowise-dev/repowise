@@ -156,16 +156,19 @@ _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
 # INCLUDE pattern and NO EXCLUDE pattern; merge commits are excluded upstream
 # (the per-file walk skips ``is_merge``), mirroring the bench's ``--no-merges``.
 #
+# Accepts the verb forms ("fix", "fixed", "fixes", "fixing"), compounds
+# ("hotfix", "bugfix"), and issue reference forms ("fixes #12", "fixed #12").
+#
 # The one fix definition: the per-file category counts and the evolution
 # timeline both label a commit "fix" exactly when this rule does, so every
 # fix count the product shows counts the same commits.
 _FIX_COMMIT_INCLUDE: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bfix\b", re.IGNORECASE),
+    re.compile(r"\b(?:hot|bug)?fix(?:e[sd]|ing)?\b", re.IGNORECASE),
     re.compile(r"\bbug\b", re.IGNORECASE),
     re.compile(r"\bpatch\b", re.IGNORECASE),
     re.compile(r"\bresolves?\b", re.IGNORECASE),
-    re.compile(r"closes?\s+#\d+", re.IGNORECASE),
-    re.compile(r"fixes?\s+#\d+", re.IGNORECASE),
+    re.compile(r"\bcloses?\s+#\d+", re.IGNORECASE),
+    re.compile(r"\bfix(?:e[sd])?\s+#\d+", re.IGNORECASE),
 )
 _FIX_COMMIT_EXCLUDE: tuple[re.Pattern[str], ...] = (
     re.compile(r"^Merge ", re.IGNORECASE),

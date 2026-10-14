@@ -170,3 +170,39 @@ def test_a_source_package_named_like_an_output_dir_keeps_its_history(tmp_path) -
     kept = _history_tier_files(tmp_path, ["pkg/coverage/README.md", "dist/notes.md"])
 
     assert kept == {"pkg/coverage/README.md"}
+
+
+def test_history_tier_keeps_files_in_reincluded_dir(tmp_path: Path) -> None:
+    from repowise.core.ingestion.git_indexer.records import _history_tier_files
+
+    for rel in ("src/build/README.md", "dist/notes.md"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x\n", encoding="utf-8")
+
+    # Without negation rule, both output-named directories are dropped.
+    assert _history_tier_files(tmp_path, ["src/build/README.md", "dist/notes.md"]) == set()
+
+    # With !src/build/, history rows for src/build are kept.
+    (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+    kept = _history_tier_files(tmp_path, ["src/build/README.md", "dist/notes.md"])
+    assert kept == {"src/build/README.md"}
+
+    # Also works via extra_exclude_patterns directly
+    (tmp_path / ".repowiseIgnore").unlink()
+    kept_patterns = _history_tier_files(
+        tmp_path,
+        ["src/build/README.md", "dist/notes.md"],
+        extra_exclude_patterns=["!src/build/"],
+    )
+    assert kept_patterns == {"src/build/README.md"}
+
+    # Also works via custom extra_ignore_filename
+    (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+    kept_custom = _history_tier_files(
+        tmp_path,
+        ["src/build/README.md", "dist/notes.md"],
+        extra_ignore_filename=".customIgnore",
+    )
+    assert kept_custom == {"src/build/README.md"}
+
+

@@ -17,6 +17,7 @@
     "./cache": "./src/cache.ts",
     "./cards": "./src/cards.ts",
     "./changes": "./src/changes.ts",
+    "./events": "./src/events.ts",
     "./chat": "./src/chat.ts",
     "./code-health": "./src/code-health.ts",
     "./costs": "./src/costs.ts",

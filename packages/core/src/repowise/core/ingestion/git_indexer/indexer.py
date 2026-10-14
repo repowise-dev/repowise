@@ -215,6 +215,7 @@ class GitIndexer:
 
         import pathspec
 
+        self._exclude_patterns = exclude_patterns
         self._exclude = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns or [])
 
     async def index_repo(
@@ -271,7 +272,9 @@ class GitIndexer:
         # is not vendored, a lockfile or binary gets its history tier (counts,
         # span, authors) from the shared repo-wide walk only.
         indexable_files = [fp for fp in tracked_files if not _should_skip_index(fp)]
-        history_files = _history_tier_files(self.repo_path, tracked_files)
+        history_files = _history_tier_files(
+            self.repo_path, tracked_files, extra_exclude_patterns=self._exclude_patterns
+        )
 
         from concurrent.futures import ThreadPoolExecutor
 
@@ -628,7 +631,11 @@ class GitIndexer:
         # drawn from the same tracked-file set: the parsed files miss .rst,
         # LICENSE and the like.
         tier_paths = (self._get_tracked_files(repo) or all_files) if all_files else None
-        history_files = _history_tier_files(self.repo_path, tier_paths or changed_file_paths)
+        history_files = _history_tier_files(
+            self.repo_path,
+            tier_paths or changed_file_paths,
+            extra_exclude_patterns=self._exclude_patterns,
+        )
         history_changed = history_files.intersection(changed_file_paths)
         changed_file_paths = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
         if all_files:

@@ -866,6 +866,8 @@ class Change(Base):
     approvals: Mapped[int | None] = mapped_column(Integer, nullable=True)
     labels_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     linked_issues_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Evidence checklist JSON, built on first read and kept until a refresh.
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -2504,6 +2506,69 @@ class HealthSnapshot(Base):
     maintainability_average: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Stored documentation drift findings at this instant. NULL before recorded.
     doc_drift_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class SnapshotRun(Base):
+    """One index run's component snapshot (see :mod:`repowise.core.events`).
+
+    ``stamp`` joins the analyzer and parser versions the facts were computed
+    under; a run is only diffed against a predecessor with the same stamp.
+    ``compacted`` marks a run kept as its week's representative.
+    """
+
+    __tablename__ = "snapshot_runs"
+    __table_args__ = (Index("ix_snapshot_runs_repo_taken", "repository_id", "taken_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    taken_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    stamp: Mapped[str] = mapped_column(String(64), nullable=False)
+    compacted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class ComponentSnapshot(Base):
+    """One component's facts at one :class:`SnapshotRun`, as versioned JSON."""
+
+    __tablename__ = "component_snapshots"
+    __table_args__ = (UniqueConstraint("run_id", "component", name="uq_component_snapshot"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    run_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("snapshot_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    component: Mapped[str] = mapped_column(String(255), nullable=False)
+    facts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+
+class EngineEventRecord(Base):
+    """A typed event from two consecutive same-stamp snapshot runs.
+
+    ``id`` is derived from the commit pair, kind, component and subject, so a
+    re-delivered event keeps its id. Events outlive the runs they came from.
+    """
+
+    __tablename__ = "events"
+    __table_args__ = (Index("ix_events_repo_occurred", "repository_id", "occurred_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    component: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    base_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    stamp: Mapped[str] = mapped_column(String(64), nullable=False)
+    # {"evidence", "vcs", "source"}: what the wire form needs beyond the columns.
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 class CoverageFile(Base):

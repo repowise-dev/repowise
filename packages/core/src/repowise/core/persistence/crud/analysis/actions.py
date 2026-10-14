@@ -508,7 +508,8 @@ async def write_actions_snapshot(session: AsyncSession, repo_id: str) -> bool:
 
 
 async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
-    """Store the Fix first queue, then the actions view that quotes its head.
+    """Store the Fix first queue, then the actions view that quotes its head,
+    then the run's component snapshot (:mod:`repowise.core.events`).
 
     For a writer whose stores are final for this run, on the session that
     wrote them or a later one. Best-effort, each in its own savepoint: a view
@@ -529,6 +530,21 @@ async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
     # kind that failed may have left an older row, which the commit drops.
     if written:
         await mark_current(session)
+    # The run's component snapshot and its events read the same final stores.
+    try:
+        from repowise.core.events.store import record_snapshot
+
+        async with session.begin_nested():
+            await record_snapshot(session, repo_id)
+    except Exception as exc:  # history skips a run; the index is unaffected
+        logger.warning("component snapshot not written: %s", exc)
+        try:  # so the next snapshot is a baseline, not a diff across the gap
+            from repowise.core.events.store import record_gap
+
+            async with session.begin_nested():
+                await record_gap(session, repo_id, "failed")
+        except Exception as gap_exc:
+            logger.warning("component snapshot gap not recorded: %s", gap_exc)
 
 
 def _view(ruled: dict[str, Any], states: dict[str, ActionStateRecord], now: datetime) -> dict:

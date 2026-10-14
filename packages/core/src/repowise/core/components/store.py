@@ -8,10 +8,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from repowise.core.analysis.finding_registry import excluded_types
-from repowise.core.components.catalog import Catalog, read_catalog
+from repowise.core.components.catalog import Catalog, Component, read_catalog
+from repowise.core.components.ownership import Activity, assess_component, build_activity
 from repowise.core.components.resolve import (
     ResolvedComponents,
     derive_from_directories,
@@ -24,6 +25,8 @@ from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.crud.repository import ANALYSIS_RAN_KEY
 from repowise.core.persistence.models import (
     DeadCodeFinding,
+    GitCommit,
+    GitCommitFile,
     GitMetadata,
     GraphNode,
     HealthFileMetric,
@@ -211,3 +214,68 @@ async def component_rollups(
         )
         for name, paths in files_by_component.items()
     }
+
+
+async def load_activity(session: Any, repository_id: str, files: list[str]) -> Activity:
+    """Recent commit activity on *files*, and every author the index knows."""
+    from datetime import timedelta
+
+    from repowise.core.analysis.owners import ACTIVITY_WINDOW_DAYS, as_utc
+
+    authors = (
+        await session.execute(
+            select(GitCommit.author_name, GitCommit.author_email, func.count()).where(
+                GitCommit.repository_id == repository_id
+            ).group_by(GitCommit.author_name, GitCommit.author_email)
+        )
+    ).all()
+    # The bound keeps the stored value's form (naive on SQLite), as other window reads do.
+    newest = await session.scalar(
+        select(func.max(GitCommit.committed_at)).where(GitCommit.repository_id == repository_id)
+    )
+    recent: list[Any] = []
+    if newest is not None and files:
+        query = (
+            select(
+                GitCommitFile.file_path,
+                GitCommit.sha,
+                GitCommit.author_name,
+                GitCommit.author_email,
+            )
+            .join(
+                GitCommit,
+                (GitCommit.repository_id == GitCommitFile.repository_id)
+                & (GitCommit.sha == GitCommitFile.sha),
+            )
+            .where(
+                GitCommitFile.repository_id == repository_id,
+                GitCommit.committed_at >= newest - timedelta(days=ACTIVITY_WINDOW_DAYS),
+            )
+        )
+        recent = await _rows_for(session, query, GitCommitFile.file_path, files)
+    # One pair per commit, so the resolver's counts match every other people figure.
+    pairs = [(name, email) for name, email, n in authors for _ in range(n)]
+    return build_activity(pairs, [tuple(r) for r in recent], as_utc(newest))
+
+
+async def component_ownership(
+    session: Any,
+    repository_id: str,
+    repo_root: Path | str,
+    components: list[tuple[Component, list[str]]],
+    bus_factors: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """The ``ownership`` block per component name (see :mod:`.ownership`), and
+    the team directory's read problems."""
+    from repowise.core.ownership.directory import team_directories
+
+    declared = team_directories.get().load(Path(repo_root))
+    files = sorted({f for _c, paths in components for f in paths})
+    activity = await load_activity(session, repository_id, files)
+    out = {
+        comp.name: assess_component(
+            comp, paths, declared, activity, (bus_factors or {}).get(comp.name)
+        )
+        for comp, paths in components
+    }
+    return out, list(declared.issues)

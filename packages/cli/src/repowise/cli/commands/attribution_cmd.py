@@ -2,9 +2,11 @@
 
 ``status`` shows what is switched on (effective value beside the repo and user
 values), for which agents, and how much of the indexed history has a known
-source, plus edit capture per agent. ``purge`` deletes the attribution the
-local index derived, the capture sidecar (events, bindings, cursor) and the
-git-ai notes Repowise itself wrote; notes from anyone else are never touched.
+source, plus edit capture per agent and the last backfill. ``backfill`` binds
+past commits from the agent transcripts on this machine, only when asked.
+``purge`` deletes the attribution the local index derived, the capture sidecar
+(events, bindings, cursors) and the git-ai notes Repowise itself wrote; notes
+from anyone else are never touched.
 """
 
 from __future__ import annotations
@@ -142,11 +144,13 @@ def attribution_status(path: str | None, fmt: str) -> None:
 
     capture = _capture_by_agent(settings)
     sidecar = capture_summary(repo_path)
+    backfill = _last_backfill(repo_path)
     if fmt == "json":
         emit_json(
             {
                 "capture_by_agent": capture,
                 "capture_sidecar": sidecar,
+                "backfill": backfill,
                 "effective": {
                     "enabled": settings.enabled,
                     "capture": settings.capture,
@@ -167,6 +171,8 @@ def attribution_status(path: str | None, fmt: str) -> None:
     console.print("[bold]AI attribution[/bold]")
     _print_settings(settings)
     _print_capture(capture, sidecar)
+    if backfill:
+        console.print(f"  backfill {_backfill_line(backfill)}")
     _print_commits(settings, counts, share)
 
 
@@ -219,6 +225,158 @@ def _print_commits(settings: Any, counts: dict[str, int] | None, share: Any) -> 
         )
         if share is not None:
             console.print(f"  share    {share.summary()}")
+
+
+def _request_history_rewalk(repo_path: Path) -> bool:
+    """Make the next ``repowise update`` re-read git history once, which labels
+    the newly bound commits in the index; False when there is no index.
+
+    Drops the git-history stamp in ``.repowise/state.json``, the same signal a
+    history-rules change raises. No update flag re-walks git history alone.
+    """
+    import json
+
+    from repowise.core.fsutils import atomic_write_text
+    from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION_KEY
+
+    state_path = repo_path / ".repowise" / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    state.pop(GIT_HISTORY_VERSION_KEY, None)
+    atomic_write_text(state_path, json.dumps(state, indent=2))
+    return True
+
+
+def _last_backfill(repo_path: Path) -> dict[str, Any] | None:
+    from repowise.core.edit_capture.store import load_state
+
+    last = load_state(repo_path).get("backfill")
+    return last if isinstance(last, dict) else None
+
+
+def _pct(part: int, whole: int) -> str:
+    return f"{round(100 * part / whole)}%" if whole else "n/a"
+
+
+def _backfill_line(last: dict[str, Any]) -> str:
+    from datetime import datetime
+
+    commits = int(last.get("commits") or 0)
+    before, after = int(last.get("covered_before") or 0), int(last.get("covered_after") or 0)
+    when = datetime.fromtimestamp(float(last.get("at") or 0)).strftime("%Y-%m-%d")
+    return (
+        f"{when}: {commits} commits scanned, {last.get('bound', 0)} bound;"
+        f" known source {before} -> {after} ({_pct(before, commits)} -> {_pct(after, commits)})"
+    )
+
+
+async def _known_shas(repo_path: Path) -> set[str]:
+    """Commits the index labels agent or human-attested (empty without an index)."""
+    from sqlalchemy import select
+
+    from repowise.core.attribution import AGENT, HUMAN_ATTESTED, commit_label
+    from repowise.core.persistence.models import GitCommit
+
+    async with repo_index_session(repo_path) as opened:
+        if opened is None:
+            return set()
+        session, repo_id = opened
+        rows = await session.execute(
+            select(GitCommit.sha, GitCommit.attribution, GitCommit.agent_name).where(
+                GitCommit.repository_id == repo_id
+            )
+        )
+        return {
+            sha
+            for sha, attribution, agent in rows.all()
+            if commit_label(attribution, agent) in (AGENT, HUMAN_ATTESTED)
+        }
+
+
+@attribution_group.command(name="backfill")
+@click.argument("path", required=False, type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--agent",
+    "agents",
+    required=True,
+    help="Comma-separated agents whose transcripts to read, e.g. claude-code,codex.",
+)
+@format_option(choices=("table", "json"))
+def attribution_backfill(path: str | None, agents: str, fmt: str) -> None:
+    """Attribute past commits from the agent transcripts on this machine.
+
+    Reads Claude Code and Codex transcripts where they are and keeps only line
+    hashes of edits to this repository; an edit binds to a commit made within
+    14 days after it. Each agent needs attribution.capture set to local or
+    notes and the agent listed in attribution.agents, in both the repo and the
+    user config. Runs only when you ask. The first run reads every transcript
+    these agents keep on this machine (about 4 minutes for 7 GB on a laptop);
+    a later run reads only what the agents wrote since. When it binds new
+    commits in an indexed repo, the next `repowise update` re-reads git history
+    once to label these commits.
+    """
+    from repowise.core.edit_capture.backfill import backfill, consent
+
+    repo_path = resolve_repo_path(path)
+    requested = list(dict.fromkeys(a.strip() for a in agents.split(",") if a.strip()))
+    allowed, refused = consent(repo_path, requested)
+    for agent, why in refused.items():
+        console.print(f"[yellow]![/yellow] {agent}: not read, {why}.")
+    if not allowed:
+        raise click.ClickException(
+            "No agent can be backfilled. `repowise attribution status` shows the settings."
+        )
+    if fmt != "json":
+        console.print(
+            f"Reading {', '.join(allowed)} transcripts on this machine; only line hashes of"
+            " edits to this repository are kept."
+        )
+    result = backfill(
+        repo_path,
+        allowed,
+        capture=_settings(repo_path).capture,
+        known=run_async(_known_shas(repo_path)),
+    )
+    rewalk = bool(result.bindings) and _request_history_rewalk(repo_path)
+    commits = len(result.commits)
+    if fmt == "json":
+        emit_json(
+            {
+                "agents": allowed,
+                "refused": refused,
+                "transcripts": result.transcripts,
+                "edits": result.edits,
+                "edits_in_repo": result.edits_in_repo,
+                "commits_scanned": commits,
+                "bound": len(result.bindings),
+                "already_bound": len(result.bound_before),
+                "covered_before": result.covered_before,
+                "covered_after": result.covered_after,
+                "handed_to_capture": result.handed_over,
+                "history_rewalk_on_next_update": rewalk,
+            }
+        )
+        return
+    files = ", ".join(f"{n} {agent}" for agent, n in result.transcripts.items())
+    console.print(f"  transcripts  {files}")
+    console.print(f"  edits        {result.edits} found, {result.edits_in_repo} in this repository")
+    console.print(
+        f"  commits      {commits} scanned, {len(result.bindings)} bound"
+        f" ({len(result.bound_before)} already bound)"
+    )
+    console.print(
+        f"  coverage     {result.covered_before} -> {result.covered_after} of {commits}"
+        " scanned commits have a known source"
+        f" ({_pct(result.covered_before, commits)} -> {_pct(result.covered_after, commits)})"
+    )
+    if rewalk:
+        console.print(
+            "  The next `repowise update` re-reads git history once to label these commits."
+        )
 
 
 async def _purge(repo_path: Path) -> bool:

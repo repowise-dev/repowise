@@ -46,6 +46,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server._basis import call_resolution_basis, same_file_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._changes import file_changes, file_provenance, load_file_meta
 from repowise.server.mcp_server._edit_sites import reference_edit_set
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
@@ -1224,6 +1225,21 @@ async def _resolve_one_target(
             last_change["author"] = None
             last_change["days_ago"] = None
         result_data["last_change"] = last_change
+
+    # --- Change Records and provenance (file targets, opt-in) ---
+    if include and target_type == "file" and file_path_for_git and include & {
+        "changes",
+        "provenance",
+    }:
+        attribution = attribution_enabled(repository.local_path)
+        if "changes" in include:
+            found = await file_changes(
+                session, repository, [file_path_for_git], attribution=attribution
+            )
+            result_data.update(found[file_path_for_git])
+        if "provenance" in include:
+            meta = await load_file_meta(session, repo_id, file_path_for_git) if attribution else None
+            result_data["provenance"] = file_provenance(meta, attribution)
 
     # --- Decisions ---
     if include is None or "decisions" in include:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -347,6 +348,23 @@ def _fix_clause(profile: dict | None) -> str:
         f"{n} bug fix{'es' if n != 1 else ''} in 6mo, "
         f"last {profile['last_fix_days_ago']}d before the indexed commit{magnet}, "
     )
+
+
+def _churn_clause(churn_percentile: float, is_hotspot: bool, trend: str) -> str:
+    """Churn clause for ``risk_summary``, or empty when the file is not a hotspot.
+
+    ``churn_percentile`` is a rank (0 to 1), not a risk. Printed as a bare
+    percentage it read like "100% risk", and it was printed for files below the
+    hotspot cut too. So the clause states the rank as a rank ("top N%") and only
+    for files the stored ``is_hotspot`` flag marks; ``trend`` stays available as
+    its own field either way. Trailing separator included, as in ``_fix_clause``.
+    """
+    if not is_hotspot:
+        return ""
+    # Round before the ceiling: 1 - 0.86 is 0.14000000000000001 in floats, and
+    # that would otherwise print as top 15%.
+    top_pct = max(1, math.ceil(round((1.0 - churn_percentile) * 100, 6)))
+    return f"churn hotspot, top {top_pct}% ({trend}), "
 
 
 def _defect_profile(meta: Any, now: datetime | None = None) -> dict | None:
@@ -745,10 +763,10 @@ async def _assess_one_target(
     # on a churn percentile even where risk_type said "bug-prone", so the first
     # thing an agent read disagreed with the classification beside it. Counted
     # fixes are the better grounded defect signal, so they go first and churn
-    # keeps its place as the next clause.
+    # keeps its place as the next clause, for files that are churn hotspots.
     result_data["risk_summary"] = (
         f"{target} — {_fix_clause(defect_profile)}"
-        f"hotspot score {hotspot_score:.0%} ({trend}), "
+        f"{_churn_clause(hotspot_score, result_data['is_hotspot'], trend)}"
         f"{dep_count} direct dependents, {risk_type}, {change_pattern}, "
         f"{co_changes_total} co-change partners, {_owner_clause(owner, pct, line_pct)}"
         f"{bus_note}{capped_note}"

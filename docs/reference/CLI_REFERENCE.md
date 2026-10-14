@@ -36,10 +36,12 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`dead-code`](#repowise-dead-code-path) ·
 [`doc-drift`](#repowise-doc-drift-path) ·
 [`security`](#repowise-security) ·
+[`check`](#repowise-check-revspec) ·
 [`impacted-tests`](#repowise-impacted-tests-revspec) ·
 [`coverage`](#repowise-coverage) ·
 [`components`](#repowise-components) ·
-[`changes`](#repowise-changes)
+[`changes`](#repowise-changes) ·
+[`events`](#repowise-events)
 
 **Decisions**
 [`decision`](#repowise-decision)
@@ -1583,11 +1585,12 @@ repowise coverage suggest-gates --format json
 
 ### `repowise components`
 
-`check` validates `.repowise/components.yaml` and a repo-root `catalog-info.yaml` (Backstage entities, see [CONFIG.md](CONFIG.md#repowisecomponentsyaml)) against the files git tracks, and exits 1 on any error, so it fits a CI step. `list` shows declared and derived components with their file counts.
+`check` validates `.repowise/components.yaml` and a repo-root `catalog-info.yaml` (Backstage entities, see [CONFIG.md](CONFIG.md#repowisecomponentsyaml)) against the files git tracks, and exits 1 on any error, so it fits a CI step. `list` shows declared and derived components with their file counts. `ownership` compares each component's declared owners (catalog `spec.owner`, CODEOWNERS, [`.repowise/teams.yaml`](CONFIG.md#repowiseteamsyaml)) with indexed commits in the last 90 days and lists findings: a high or critical component with no active declared owner or a bus factor of 1, a declared owner with no recent changes, and a catalog entry that claims no files. An owner none of whose identities appears in the indexed history is unknown, never inactive, so `critical_no_active_owner` does not fire when every declared owner is unknown. Individuals match only through an exact git email or a forge noreply login, and a bare `@name` outside `.github/CODEOWNERS` that names no declared team stays unresolved (on GitLab it may be a group). Findings name components and teams; individual owners are counted, never named.
 
 ```bash
 repowise components check [--path PATH] [--format table|json]
 repowise components list [--path PATH] [--format table|json]
+repowise components ownership [--path PATH] [--format table|json]
 ```
 
 ---
@@ -1596,10 +1599,37 @@ repowise components list [--path PATH] [--format table|json]
 
 Merged changes read back from git at each index and update: one per first-parent commit, identified by the PR or MR number its message names, then a Gerrit `Change-Id`, then the merge or commit sha. A merge lands the commits its branch brought in, and rebase merges read as one change per commit. `show` takes an id (`pr-123`) or any commit sha the change landed, and prints the versioned JSON record or, with `--format in-toto`, an in-toto Statement v1 whose subjects are the commits.
 
+`show` also prints the change's evidence checklist: components touched, declared owners, suggested reviewers, reaching tests, contracts, consumers in other repos, decisions crossed, health delta, AI provenance and the diff size rank, each with a status (`ok`, `attention`, `unknown`) and the basis it rests on. The checklist is built on first read and kept on the change; `--refresh` rebuilds it. `export` writes every change merged in a `--since`/`--until` window (UTC, `--until` exclusive) with its checklist, streamed as JSON Lines (one record per line) or CSV rows (one row per change and item); building a missing checklist costs a few seconds per change.
+
 ```bash
 repowise changes list [--path PATH] [--category C] [--shape merge|squash|commit] [--grep TEXT] [--limit N] [--offset N] [--format table|json]
-repowise changes show REF [--path PATH] [--format table|json|in-toto]
+repowise changes show REF [--path PATH] [--format table|json|in-toto] [--no-evidence] [--refresh]
+repowise changes export [--path PATH] [--since DATE] [--until DATE] [--format json|csv] [--refresh]
 ```
+
+---
+
+### `repowise check [REVSPEC]`
+
+Evaluates `.repowise/policies.yaml` (see [CONFIG.md](CONFIG.md#repowisepoliciesyaml)) against a change: components touched and their tags, provenance from public git markers, and, with an index, reaching tests, governing decisions crossed and bus factor. Rules that wrap a gate run `security check`, `coverage check` or `doc-drift --check` exactly as those commands run alone, and without a policy file every gate behaves as before while `check` reports nothing to evaluate. Exit 1 when a `fail` rule fires, 2 when the policy is invalid or a `fail` gate cannot be evaluated, else 0; `--sarif-file` writes SARIF 2.1.0 for code scanning or reviewdog and `--junit-file` a JUnit report from the same run.
+
+```bash
+repowise check [REVSPEC] [--path PATH] [--policies FILE] [--sarif-file FILE] [--junit-file FILE] [--format table|json|sarif|junit]
+```
+
+Teams that already run OPA can use the `evidence` object of `repowise check --format json` as OPA `input`: it is the change's evidence checklist, one item per kind (`components_touched`, `provenance`, `reaching_tests`, `decisions_crossed`, `contracts`) with its status, basis and per-file details. `opa eval --input check.json --data policy.rego 'data.repowise.deny'` then evaluates Rego rules over `input.evidence.items` next to, or instead of, `policies.yaml`.
+
+---
+
+### `repowise events`
+
+Typed events between consecutive index runs. Each `init` and `update` stores a snapshot of every component (ownership counts, bus factor, hotspots, dead code, governing decisions, provided contracts, test reach, attribution with coverage) under the analyzer and parser stamp it ran with. When an index run and the run right before it share a stamp, what moved is stored as an event. A stamp change starts a new baseline, and so does the first run after one that took no snapshot (events switched off, or the snapshot failed); a run on the commit already snapshotted, including `--working-tree` on it, is skipped. Events are written as CloudEvents JSON lines to `.repowise/events.jsonl` and read back here, oldest first.
+
+```bash
+repowise events [--path PATH] [--since 7d|12h|ISO-DATE] [--kind KIND]... [--limit N] [--format table|json|jsonl]
+```
+
+Kinds: `ownership_shift`, `owner_inactive`, `bus_factor_drop` (critical components), `new_hotspot` (off by default), `contract_added`, `contract_broken`, `decision_stale`, `dead_code_growth`, `test_reach_drop`, `attribution_jump` (regulated components). The `events:` block in `.repowise/config.yaml` sets `enabled`, `retention_days` (365), `compact_after_days` (30; older runs keep one per week), per-kind switches under `kinds`, and the `sinks` to deliver to (`jsonl` by default, `stdout` for CI).
 
 ---
 
@@ -2234,9 +2264,12 @@ does not know or list the commands. See [pluggable storage and capability seams]
 Inspect and clear AI attribution for a repository.
 
 ```bash
-repowise attribution status [PATH] [--format json]   # what is on, capture per agent, coverage
+repowise attribution status [PATH] [--format json]   # what is on, capture per agent, coverage, last backfill
+repowise attribution backfill [PATH] --agent claude-code,codex [--format json]  # bind past commits from local transcripts
 repowise attribution purge [PATH] [--yes]            # delete derived attribution, captured edits and our notes
 ```
+
+`backfill` reads the Claude Code and Codex transcripts on this machine, keeps only line hashes of edits to this repository (worktrees included), and binds them to commits made within 14 days after each edit. It runs only when you ask, for agents that `capture` and `agents` allow in both configs, and prints the commits scanned, bound, and their coverage before and after; when it binds new commits in an indexed repo, the next `repowise update` re-reads git history once to label these commits. The first run reads every transcript these agents keep (about 4 minutes for 7 GB on a laptop); a later run reads only what they wrote since.
 
 `purge` deletes the index labels, the `.repowise/attribution/` sidecar and the git-ai notes Repowise wrote locally. Git history, trailers and notes written by anything else stay as they are.
 Settings live in the `attribution:` block of [CONFIG.md](CONFIG.md#the-attribution-block).

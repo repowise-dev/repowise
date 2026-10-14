@@ -26,7 +26,9 @@ async def test_get_risk_single_target(setup_mcp):
     assert t["primary_owner"] == "Alice"
     assert "owner_pct" not in t  # detailed owner metrics require include=["owners"]
     assert "risk_summary" in t
-    assert "hotspot score" in t["risk_summary"]
+    # churn_percentile=0.92 and is_hotspot → named as a rank, not a bare percentage
+    assert "churn hotspot, top 8% (" in t["risk_summary"]
+    assert "hotspot score" not in t["risk_summary"]
 
     # include=["owners"] opt-in adds owner_pct
     owners_result = await get_risk(["src/auth/service.py"], include=["owners"])
@@ -858,7 +860,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
         {
             "argument": "include",
             "values": ["nonsense"],
-            "valid": ["blast", "churn", "graph", "owners", "scales", "tests"],
+            "valid": ["blast", "changes", "churn", "graph", "owners", "scales", "tests"],
         }
     ]
 

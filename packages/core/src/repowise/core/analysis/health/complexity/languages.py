@@ -270,6 +270,15 @@ class LanguageNodeMap:
     await_scope_kinds: frozenset[str] = frozenset()
     exit_macro_kinds: frozenset[str] = frozenset()
     exit_macro_names: frozenset[str] = frozenset()
+    #   * ``scoped_resource_decl_kinds`` / ``scoped_resource_decl_tokens`` --
+    #     a declaration whose resource the enclosing block disposes at its end
+    #     (C# ``using var``: a ``local_declaration_statement`` carrying a
+    #     ``using`` token). A helper holding one disposes it when the helper
+    #     returns, so the slicer refuses a span that holds one unless the span
+    #     runs to the end of the block. Block-scoped forms (``using (...) { }``,
+    #     ``with``, try-with-resources) need no entry: a span holds them whole.
+    scoped_resource_decl_kinds: frozenset[str] = frozenset()
+    scoped_resource_decl_tokens: frozenset[str] = frozenset()
     #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
     #     node the CFG builder should classify, as their last named child.
     #     Expression-oriented grammars need this: tree-sitter-rust parses every
@@ -974,6 +983,8 @@ _CSHARP = LanguageNodeMap(
     raise_kinds=frozenset({"throw_statement"}),
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
+    scoped_resource_decl_kinds=frozenset({"local_declaration_statement"}),
+    scoped_resource_decl_tokens=frozenset({"using"}),
 )
 
 

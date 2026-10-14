@@ -60,7 +60,7 @@ export function MessageActions({
   };
 
   return (
-    <div className="mt-2 space-y-1.5">
+    <div className="mt-2 space-y-1.5 print:hidden">
       {error && <ErrorNotice error={error} onRetry={onRetry} />}
       {message.text && (
         <div
@@ -110,7 +110,7 @@ function MessageEditForm({
 }) {
   return (
     <form
-      className="mt-2 w-full space-y-2"
+      className="mt-2 w-full space-y-2 print:hidden"
       onSubmit={(event) => {
         event.preventDefault();
         const text = draft.trim();

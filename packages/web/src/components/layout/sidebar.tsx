@@ -116,7 +116,7 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        "hidden md:flex h-full flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 motion-safe:transition-all motion-safe:duration-200",
+        "hidden md:flex print:hidden h-full flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 motion-safe:transition-all motion-safe:duration-200",
         isIconOnly ? "w-[56px]" : "w-[280px]",
       )}
     >

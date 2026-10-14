@@ -489,8 +489,10 @@ class TestGitWindowAnchor:
 
 
 class TestFixCommitClassifier:
-    """``is_fix_commit`` must agree byte-for-byte with the benchmark's
-    ``lib/defect_counter.find_fix_commits`` keyword rule (product == benchmark)."""
+    """``is_fix_commit`` must agree with the benchmark's
+    ``lib/defect_counter.find_fix_commits`` keyword rule (product == benchmark),
+    including verb inflections ("fixed", "fixes", "fixing") and compounds
+    ("hotfix", "bugfix")."""
 
     def test_include_patterns_match(self) -> None:
         from repowise.core.ingestion.git_indexer._constants import is_fix_commit
@@ -501,6 +503,12 @@ class TestFixCommitClassifier:
         assert is_fix_commit("closes #123")
         assert is_fix_commit("fixes #99 regression")
         assert is_fix_commit("squash a nasty bug")
+        assert is_fix_commit("Fixed #36012 -- Made QuerySet.update() respect ...")
+        assert is_fix_commit("Fixes crash when config is empty")
+        assert is_fix_commit("Fixing race in worker shutdown")
+        assert is_fix_commit("Fixed a crash in the pager")
+        assert is_fix_commit("hotfix: restore login")
+        assert is_fix_commit("bugfix: off-by-one in pager")
 
     def test_exclude_overrides_include(self) -> None:
         from repowise.core.ingestion.git_indexer._constants import is_fix_commit
@@ -511,12 +519,21 @@ class TestFixCommitClassifier:
         assert not is_fix_commit("Merge fix branch")
         assert not is_fix_commit("bump deps to fix CVE")
         assert not is_fix_commit("fix a typo")
+        assert not is_fix_commit("Fixed typo in docs")
+        assert not is_fix_commit("Fixes lint")
+        assert not is_fix_commit("Fixing formatting in docs")
 
     def test_non_fixes_silent(self) -> None:
         from repowise.core.ingestion.git_indexer._constants import is_fix_commit
 
         assert not is_fix_commit("feat: add new endpoint")
         assert not is_fix_commit("refactor the walker")
+        assert not is_fix_commit("affixed the label")
+        assert not is_fix_commit("fixture update")
+        assert not is_fix_commit("prefix with namespace")
+        assert not is_fix_commit("postfix expression")
+        assert not is_fix_commit("prefixed #123")
+        assert not is_fix_commit("affixed #123")
         assert not is_fix_commit("")
 
 

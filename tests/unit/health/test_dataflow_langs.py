@@ -1480,6 +1480,112 @@ def test_csharp_extract_method_fires():
     assert best.slice_nloc >= 6
 
 
+# A ``using var`` is disposed at the end of the block that declares it, so a
+# helper holding it would dispose it when the helper returns (#3452).
+_CSHARP_USING_DECLARATION = """
+class Demo {
+    int Process(string path, int[] records, int threshold) {
+        %s var stream = System.IO.File.OpenRead(path);
+        int total = 0;
+        int count = 0;
+        foreach (int v in records) {
+            if (v > threshold) {
+                total += v + (int)stream.Position;
+                count++;
+            } else {
+                total -= v;
+            }
+        }
+        if (count > 0) {
+            total = total / count;
+        }
+        if (total > 100) {
+            total = 100;
+        }
+        System.IO.File.Delete(path);
+        return total;
+    }
+}
+"""
+
+
+@pytest.mark.parametrize("keyword", ["using", "await using"])
+def test_csharp_span_never_ends_a_using_declaration_early(keyword):
+    _require("csharp")
+    src = _CSHARP_USING_DECLARATION % keyword
+    using_line = next(n for n, ln in enumerate(src.splitlines(), 1) if "var stream" in ln)
+    extractions = find_extractions(_first("csharp", src), get_language_map("csharp"))
+    assert not [
+        (e.start_line, e.end_line) for e in extractions if e.start_line <= using_line <= e.end_line
+    ]
+    # A span after the declaration takes the resource as a parameter.
+    assert any(e.start_line == using_line + 1 and "stream" in e.params for e in extractions)
+
+
+def test_csharp_span_inside_a_using_block_is_still_offered():
+    _require("csharp")
+    src = """
+class Demo {
+    int Process(string path, int[] records, int threshold) {
+        using (var stream = System.IO.File.OpenRead(path)) {
+            int total = 0;
+            int count = 0;
+            foreach (int v in records) {
+                if (v > threshold) {
+                    total += v + (int)stream.Position;
+                    count++;
+                } else {
+                    total -= v;
+                }
+            }
+            if (count > 0) {
+                total = total / count;
+            }
+            if (total > 100) {
+                total = 100;
+            }
+            System.IO.File.Delete(path);
+            return total;
+        }
+    }
+}
+"""
+    lines = src.splitlines()
+    block_start = next(n for n, ln in enumerate(lines, 1) if "using (" in ln)
+    block_end = next(n for n, ln in enumerate(lines, 1) if "return total;" in ln) + 1
+    extractions = find_extractions(_first("csharp", src), get_language_map("csharp"))
+    assert any(block_start < e.start_line and e.end_line < block_end for e in extractions)
+
+
+def test_csharp_stage_never_ends_a_using_declaration_early():
+    _require("csharp")
+    from repowise.core.analysis.health.dataflow.stages import find_stages
+
+    section = """
+        if (a > {n}) {{
+            total += {n};
+        }} else {{
+            total -= {n};
+        }}
+        if (total > {n}0) {{
+            total = {n};
+        }}"""
+    src = (
+        "class Demo {\n    int Run(string path, int a) {\n        int total = 0;\n"
+        "        using var stream = System.IO.File.OpenRead(path);"
+        + "".join(section.format(n=k) for k in range(1, 7))
+        + "\n        System.IO.File.Delete(path);\n        return total;\n    }\n}\n"
+    )
+    using_line = next(n for n, ln in enumerate(src.splitlines(), 1) if "using var" in ln)
+    plan = find_stages(_first("csharp", src), get_language_map("csharp"))
+    assert plan.stages
+    assert not [
+        (st.start_line, st.end_line)
+        for st in plan.stages
+        if st.start_line <= using_line <= st.end_line
+    ]
+
+
 def test_csharp_extractions_are_deterministic():
     lmap = get_language_map("csharp")
     fn = _first("csharp", _CSHARP_PROCESS)

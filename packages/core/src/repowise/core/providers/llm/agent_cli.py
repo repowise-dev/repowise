@@ -173,7 +173,8 @@ class AgentCliProvider(BaseProvider):
         self._model = normalize_model(model, self.provider_name, self.default_model)
         if self._model is not None and self.validates_model_name:
             validate_model_name(self.provider_name, self._model)
-        # Where the CLI is pointed (``--cd`` / ``--dir``); claude_cli ignores it.
+        # Where the CLI is pointed (``--cd`` for codex, the subprocess cwd for
+        # opencode); claude_cli ignores it.
         self._repo_path = (
             Path(repo_path).resolve() if repo_path is not None else Path.cwd().resolve()
         )

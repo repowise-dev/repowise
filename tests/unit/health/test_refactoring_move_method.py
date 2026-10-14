@@ -431,6 +431,7 @@ def test_override_virtual_and_abstract_modifiers_never_move():
         ("cs", "csharp", ("public", "abstract")),
         ("kt", "kotlin", ("override",)),
         ("kt", "kotlin", ("open",)),
+        ("kt", "kotlin", ("operator",)),
         ("vb", "vbnet", ("public", "overrides")),
     ):
         g = _envy_graph_in(ext, language)

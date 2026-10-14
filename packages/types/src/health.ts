@@ -1073,7 +1073,10 @@ export interface FileHealthTrend {
 export interface HealthTrendResponse {
   history: Array<{
     taken_at: string | null;
-    /** `null` under a narrowed scope, which recorded only the average. */
+    /**
+     * `null` under a narrowed scope, which recorded only the average, and on
+     * the full scope when that snapshot recorded no hotspot files.
+     */
     hotspot_health: number | null;
     average_health: number;
     worst_performer_path: string | null;
@@ -1091,7 +1094,10 @@ export interface HealthTrendResponse {
     doc_drift_count?: number | null;
   }>;
   summary: {
-    /** `null` under a narrowed scope: only the average covers both populations. */
+    /**
+     * `null` under a narrowed scope (only the average covers both populations),
+     * and on the full scope when the newest snapshot recorded no hotspot files.
+     */
     current_hotspot_health: number | null;
     current_average_health: number;
     previous_hotspot_health: number | null;

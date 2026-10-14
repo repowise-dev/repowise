@@ -110,3 +110,88 @@ async def test_attribution_off_hides_provenance(client: AsyncClient, app) -> Non
     assert page["attribution"] is False
     assert all(c["provenance"] is None for c in page["items"])
     assert (await client.get(f"/api/repos/{repo['id']}/changes/pr-1")).json()["provenance"] is None
+
+
+def _fake_build(monkeypatch, seen: list[str], gate=None):
+    import asyncio
+
+    from repowise.core.changes.evidence import ChangeEvidence, EvidenceItem
+    from repowise.server.routers import changes as route
+
+    async def _build(session, repo_id, root, row):
+        seen.append(row.change_id)
+        if gate is not None:
+            await gate.wait()
+        await asyncio.sleep(0)
+        return ChangeEvidence(
+            change_id=row.change_id,
+            revspec=row.head_sha,
+            generated_at="2026-10-14T00:00:00+00:00",
+            items=[
+                EvidenceItem(
+                    "health_delta", "Health delta", "ok", "measured", {"introduced": 0}, [], "change health"
+                )
+            ],
+        )
+
+    monkeypatch.setattr(route, "build_stored_evidence", _build)
+    return route
+
+
+@pytest.mark.asyncio
+async def test_detail_carries_evidence_only_when_asked_and_keeps_it(
+    client: AsyncClient, app, monkeypatch
+) -> None:
+    seen: list[str] = []
+    _fake_build(monkeypatch, seen)
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    base = f"/api/repos/{repo['id']}/changes/pr-1"
+
+    plain = (await client.get(base)).json()
+    assert plain["evidence"] is None and plain["evidence_building"] is False and seen == []
+    record = (await client.get(base, params={"evidence": "true"})).json()
+    evidence = record["evidence"]
+    assert evidence["schema_version"] == 1 and evidence["change_id"] == "pr-1"
+    assert evidence["items"][0] == {
+        "kind": "health_delta",
+        "label": "Health delta",
+        "status": "ok",
+        "basis": "measured",
+        "value": {"introduced": 0},
+        "details": [],
+        "source": "change health",
+    }
+    # Kept: the next read builds nothing; refresh builds again.
+    again = (await client.get(base, params={"evidence": "true"})).json()
+    assert again["evidence"] == evidence and seen == ["pr-1"]
+    await client.get(base, params={"evidence": "true", "refresh": "true"})
+    assert seen == ["pr-1", "pr-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_build_answers_building_and_runs_once(client: AsyncClient, app, monkeypatch) -> None:
+    import asyncio
+
+    seen: list[str] = []
+    gate = asyncio.Event()
+    route = _fake_build(monkeypatch, seen, gate)
+    monkeypatch.setattr(route, "EVIDENCE_WAIT_SECONDS", 0.05)
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    base = f"/api/repos/{repo['id']}/changes/pr-1"
+
+    first, second = await asyncio.gather(
+        client.get(base, params={"evidence": "true"}),
+        client.get(base, params={"evidence": "true"}),
+    )
+    for reply in (first.json(), second.json()):
+        assert reply["evidence"] is None and reply["evidence_building"] is True
+    assert seen == ["pr-1"]
+    gate.set()
+    for _ in range(100):
+        if not route._BUILDS:
+            break
+        await asyncio.sleep(0.01)
+    done = (await client.get(base, params={"evidence": "true"})).json()
+    assert done["evidence"]["change_id"] == "pr-1" and seen == ["pr-1"]

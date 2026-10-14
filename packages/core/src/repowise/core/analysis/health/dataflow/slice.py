@@ -216,6 +216,7 @@ def find_extractions(
     for block, loop in all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
         stmts = block.named_children
         n = len(stmts)
+        resources = _scoped_resource_indexes(stmts, lmap)
         is_body = block.id == body_container.id
         keeps_tail = tail_stmt_kinds is not None and _tail_is_block_value(
             stmts, tail_stmt_kinds, fn_node, lmap
@@ -264,6 +265,8 @@ def find_extractions(
                     s, e, returns, decl_lines, def_lines, use_lines, declared_first, outer
                 ):
                     continue
+                if _disposes_early(resources, i, j, pre.code):
+                    continue
                 if pre.nested[j + 1] > pre.nested[i]:
                     continue
                 if shared is not None and _closure_state_crosses(shared, span, s, e, block, lmap):
@@ -292,6 +295,27 @@ def find_extractions(
                     )
                 )
     return _sorted(out)
+
+
+def _scoped_resource_indexes(stmts: list[Node], lmap: LanguageNodeMap) -> list[int]:
+    """Positions in *stmts* of declarations whose resource the block disposes
+    at its end (``scoped_resource_decl_kinds``)."""
+    if not lmap.scoped_resource_decl_kinds:
+        return []
+    return [
+        k
+        for k, st in enumerate(stmts)
+        if st.type in lmap.scoped_resource_decl_kinds
+        and any(not c.is_named and c.type in lmap.scoped_resource_decl_tokens for c in st.children)
+    ]
+
+
+def _disposes_early(resources: list[int], i: int, j: int, code: list[int]) -> bool:
+    """Whether statements ``i..j`` hold a declaration from *resources* while code
+    after them still runs in the block (*code* is the block's code-line prefix
+    sum). A helper would dispose the resource when it returns, before that code
+    runs, where the original disposes it at the end of the block."""
+    return code[-1] > code[j + 1] and any(i <= k <= j for k in resources)
 
 
 @dataclass(frozen=True)

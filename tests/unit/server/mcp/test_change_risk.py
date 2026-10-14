@@ -724,3 +724,107 @@ async def test_get_change_risk_keeps_is_fix_when_true(tmp_path, monkeypatch) -> 
     result = await module.get_change_risk("HEAD", baseline=0)
 
     assert result["is_fix"] is True
+
+
+@pytest.mark.asyncio
+async def test_evidence_include_adds_the_checklist_and_nothing_else(tmp_path, monkeypatch) -> None:
+    from repowise.core.changes.evidence import KINDS
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "def value():\n    return 1\n"}, "feat: app")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    default = await module.get_change_risk("HEAD", baseline=0)
+    assert "evidence" not in default
+    asked = await module.get_change_risk("HEAD", baseline=0, include=["evidence"])
+    assert set(asked) - set(default) == {"evidence"}
+
+    evidence = asked["evidence"]
+    assert evidence["schema_version"] == 1 and evidence["revspec"] == "HEAD"
+    by = {i["kind"]: i for i in evidence["items"]}
+    assert list(by) == list(KINDS)
+    # No index here: the index-backed items say so instead of reading as clear.
+    assert by["owners"]["details"] == [{"reason": "the repository has no index"}]
+    assert by["health_delta"]["basis"] == "measured"
+    # baseline=0 ranks nothing, so the one risk row is unknown, never a verdict.
+    assert by["risk_score"]["status"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_evidence_for_a_stored_change_is_its_kept_record(tmp_path, monkeypatch, factory) -> None:
+    import json
+    from datetime import UTC, datetime
+
+    from sqlalchemy.exc import OperationalError
+
+    from repowise.core.persistence import upsert_repository
+    from repowise.core.persistence.crud import upsert_changes
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "def value():\n    return 1\n"}, "feat: app (#3)")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    kept = {
+        "schema_version": 1,
+        "change_id": "pr-3",
+        "revspec": head,
+        "generated_at": "2026-10-14T00:00:00+00:00",
+        "index_commit": None,
+        "items": [],
+    }
+    async with factory() as session:
+        row = await upsert_repository(session, name="repo", local_path=str(repo))
+        await upsert_changes(
+            session,
+            row.id,
+            [
+                {
+                    "change_id": "pr-3",
+                    "identity_kind": "pr",
+                    "identity_value": "3",
+                    "shape": "squash",
+                    "title": "feat: app (#3)",
+                    "merged_at": datetime(2026, 3, 1, tzinfo=UTC),
+                    "head_sha": head,
+                    "commit_shas_json": json.dumps([head]),
+                    "evidence_json": json.dumps(kept),
+                }
+            ],
+        )
+        await session.commit()
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    async def _repo(session):
+        from repowise.core.persistence.crud import get_repository_by_path
+
+        return await get_repository_by_path(session, str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    monkeypatch.setattr(module, "_get_repo", _repo)
+    # No filters of the caller's own: the same record `changes show` serves.
+    same = await module.get_change_risk("HEAD", include=["evidence"])
+    assert same["evidence"] == kept
+
+    async def _broken(_session):
+        raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(module, "_get_repo", _broken)
+    degraded = await module.get_change_risk("HEAD", baseline=0, include=["evidence"])
+    owners = {i["kind"]: i for i in degraded["evidence"]["items"]}["owners"]
+    assert "database is locked" in owners["details"][0]["reason"]

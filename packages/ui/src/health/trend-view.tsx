@@ -90,10 +90,16 @@ function codeHealthStat(summary: TrendSummary, otherReading: boolean): RibbonSta
   };
 }
 
-function hotspotStat(summary: TrendSummary, otherReading: boolean): RibbonStat {
-  // Absent under a narrowed scope: only the average was recorded for both
-  // populations, so a repo-wide hotspot figure would describe files this view
-  // has dropped. Say so rather than printing one.
+function hotspotStat(
+  summary: TrendSummary,
+  otherReading: boolean,
+  narrowed: boolean,
+): RibbonStat {
+  // Absent for one of two reasons. Under a narrowed scope only the average was
+  // recorded for both populations, so a repo-wide hotspot figure would describe
+  // files this view has dropped. On the full scope it means the newest snapshot
+  // recorded no hotspot files at all. Say which, rather than blaming the scope
+  // for a repository that simply has none.
   const hotspot = summary.current_hotspot_health;
   return {
     label: "Hotspot health",
@@ -104,7 +110,9 @@ function hotspotStat(summary: TrendSummary, otherReading: boolean): RibbonStat {
           ...(hotspot == null ? {} : { valueColor: scoreTextColor(hotspot) }),
           sub:
             hotspot == null
-              ? "not measured for this scope"
+              ? narrowed
+                ? "not measured for this scope"
+                : "no hotspot files"
               : deltaSub(summary.hotspot_delta, summary.previous_hotspot_health),
           ...(hotspot != null && Math.abs(summary.hotspot_delta ?? 0) >= 0.05
             ? { subColor: deltaColor(summary.hotspot_delta) }
@@ -234,10 +242,13 @@ export function TrendView({
   // the other reading of them here put two different numbers under one name on
   // one screen — the exact confusion the single headline exists to end.
   const otherReading = counts === "code_shape";
+  // The response names the scope it used, which is what tells a null hotspot
+  // figure under a narrowed scope apart from one on the full scope.
+  const narrowed = data.scope === "production";
 
   const stats: RibbonStat[] = [
     codeHealthStat(data.summary, otherReading),
-    hotspotStat(data.summary, otherReading),
+    hotspotStat(data.summary, otherReading, narrowed),
     {
       label: "Snapshots",
       value: String(data.snapshot_count),

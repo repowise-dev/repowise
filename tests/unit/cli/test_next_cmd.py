@@ -10,6 +10,7 @@ import asyncio
 import datetime
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -264,7 +265,7 @@ def test_reads_a_repo_local_index_after_the_folder_is_moved(
     asyncio.run(_build_index(original))
     if outdated_schema:
         # Reconciliation must finish before the relocated repository is read.
-        with sqlite3.connect(original / ".repowise" / "wiki.db") as conn:
+        with closing(sqlite3.connect(original / ".repowise" / "wiki.db")) as conn:
             conn.execute("ALTER TABLE health_file_metrics DROP COLUMN analyzed_commit")
     moved = tmp_path / "moved"
     original.rename(moved)

@@ -15,7 +15,7 @@ import pytest
 
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import find_extractions
-from repowise.core.analysis.health.dataflow.stages import SWITCH_ARM_WRITE, find_stages
+from repowise.core.analysis.health.dataflow.stages import find_stages
 from repowise.core.analysis.health.refactoring.extract_method import (
     STAGE_REFUSED_DETAIL,
     ExtractMethodDetector,
@@ -325,13 +325,12 @@ function pick(client, options, raw) {
 """
 
 
-def test_a_stage_reading_what_only_the_arms_wrote_is_still_refused():
-    # ``input`` is declared without a value and written in the arms; the stage
-    # from the ``switch`` to the call reads it and is not given it, because a
-    # stage's inputs are read off line order and a write earlier in the stage
-    # covers the read. The refusal is what keeps that stage from being served.
+def test_a_stage_reading_what_only_the_arms_wrote_is_not_served():
+    # ``input`` is declared without a value and written only in the arms, so the
+    # read at the call may still see the declaration. No stage that reads it
+    # without being given it may be served.
     fn = _functions(_ARMS_ONLY, "typescript", "ts")[0]
-    assert find_stages(fn, get_language_map("typescript")).refused == {SWITCH_ARM_WRITE}
+    assert find_stages(fn, get_language_map("typescript")).stages == ()
 
 
 # -- closures and outer scopes ----------------------------------------------------

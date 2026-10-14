@@ -238,7 +238,7 @@ workspace overlays, MCP responses, and CLI output.
 | Risk type | Human bucket for the kind of risk. | `tool_risk._classify_risk_type()` | `bug-prone`, `churn-heavy`, `bus-factor-risk`, `high-coupling`, `stable` |
 | Change pattern | Human label from dominant commit category. | `tool_risk._derive_change_pattern()` | `feature-active`, `fix-heavy`, `dependency-churn`, `mixed-activity` |
 | Impact surface | PageRank-ranked structural reverse-dependency reach within two hops. It preserves distance and does not claim runtime breakage. | `tool_risk._compute_impact_surface()` | `[{file_path: "src/api.py", distance: 2, claim: "structural_reach"}]` |
-| Risk summary | One-line synthesized risk sentence for MCP; its dependency count is direct-only. | `tool_risk._assess_one_target()` | `src/auth.py - hotspot score 88% (increasing), 6 direct dependents...` |
+| Risk summary | One-line synthesized risk sentence for MCP; its dependency count is direct-only. | `tool_risk._assess_one_target()` | `src/auth.py - churn hotspot, top 12% (increasing), 6 direct dependents...` |
 | Top hotspots | Highest churn/hotspot files returned for context. | `get_risk()` | `[{file_path: "src/db.py", hotspot_score: 0.94}]` |
 
 ## Code Health And Defect-Score Benchmark Metrics

@@ -367,9 +367,27 @@ export interface CallersCalleesResponse {
   relations?: SymbolRelationGroup[];
 }
 
+/** An entity a card or view points at. Never a URL; the renderer resolves it. */
+export interface CardRef {
+  type: "repo" | "file" | "symbol" | "module" | "component" | "commit" | "change" | "decision";
+  id: string;
+  start_line?: number | null;
+  end_line?: number | null;
+}
+
 export interface ChangeAuthor {
   name: string;
   email: string;
+}
+
+/** The evidence checklist (``repowise.core.changes.evidence``), versioned. */
+export interface ChangeEvidence {
+  schema_version: number;
+  change_id?: string | null;
+  revspec?: string | null;
+  generated_at: string;
+  index_commit?: string | null;
+  items: EvidenceItem[];
 }
 
 /** The Kamei change-shape features the risk model scores. */
@@ -441,6 +459,8 @@ export interface ChangeRecord {
   commits: string[];
   files: ChangeFile[];
   metadata: ChangeForgeMetadata;
+  evidence?: ChangeEvidence | null;
+  evidence_building?: boolean;
 }
 
 export interface ChangeSummary {
@@ -495,6 +515,28 @@ export interface ChatArtifactEnvelope {
   evidence?: Record<string, unknown>;
   pinned?: boolean;
   created_at?: string | null;
+}
+
+/** A file a tool result cited, and that result's ``artifact_id``. */
+export interface ChatCitation {
+  file_path: string;
+  symbol_name?: string | null;
+  start_line?: number | null;
+  end_line?: number | null;
+  artifact_id?: string | null;
+  ref?: CardRef | null;
+}
+
+/**
+ * A number the answer states. Offsets are UTF-16 units into ``answer``;
+ * a verified figure carries the ``artifact_id`` of the result holding it.
+ */
+export interface ChatFigure {
+  text: string;
+  start: number;
+  end: number;
+  verified: boolean;
+  artifact_id?: string | null;
 }
 
 export interface ChatMessageResponse {
@@ -602,9 +644,11 @@ export interface ChatTurnResultResponse {
   stop_reason: "answered" | "loop_cap" | "token_budget" | "turn_budget" | "refused" | "cancelled" | "error";
   provider: string;
   model: string;
-  citations?: Record<string, unknown>[];
+  citations?: ChatCitation[];
   cards?: Record<string, unknown>[];
   views?: Record<string, unknown>[];
+  figures?: ChatFigure[];
+  diagnostics?: Record<string, number>;
   tool_trace?: ChatToolTraceEntry[];
   follow_ups?: ChatSuggestion[];
   usage?: ChatTurnUsage;
@@ -652,6 +696,17 @@ export interface ClaudeMdResponse {
   generated_at: string;
   repo_name: string;
   sections?: string[];
+}
+
+export interface CloudEvent {
+  specversion: string;
+  id: string;
+  source: string;
+  type: string;
+  time: string;
+  datacontenttype: string;
+  subject?: string | null;
+  data: Record<string, unknown>;
 }
 
 /**
@@ -1523,6 +1578,21 @@ export interface EpisodeSummary {
   birth_at: string | null;
   last_seen_at: string | null;
   still_true?: string | null;
+}
+
+export interface EventListResponse {
+  events: CloudEvent[];
+}
+
+/** One checklist row: what was found, whether it needs a look, how it is known. */
+export interface EvidenceItem {
+  kind: string;
+  label: string;
+  status: "ok" | "attention" | "unknown";
+  basis: "measured" | "inferred" | "declared" | "unresolved";
+  value?: unknown;
+  details: Record<string, unknown>[];
+  source: string;
 }
 
 /** The top-ranked evidence row, slimmed for list rows. */

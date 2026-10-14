@@ -12,6 +12,7 @@ code text and person identities are never stored.
 * :mod:`.store` - the consent gate and the sidecar files.
 * :mod:`.binder` - commit binding (precision first: a miss beats a false hit).
 * :mod:`.notes` - git-ai v3 note writing and removal of only our own notes.
+* :mod:`.backfill` - past commits bound from local agent transcripts, on request.
 
 Every module here is stdlib-only at import: the hook path imports it.
 """

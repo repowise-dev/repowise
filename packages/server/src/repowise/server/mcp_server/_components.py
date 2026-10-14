@@ -1,9 +1,11 @@
 """Component targets for get_context and the component list for get_overview.
 
 Both are opt-in: a ``component:<name>`` target, or ``include=["components"]``.
-Neither runs on a default call. The resolved components are cached per repo,
-index state, catalog file times, workspace graph and exclusion rules, so a
-batch of component targets and a later overview resolve them once.
+Neither runs on a default call. A component card gains declared against
+observed ownership only with ``include=["ownership"]``. The resolved
+components are cached per repo, index state, catalog file times, workspace
+graph and exclusion rules, so a batch of component targets and a later
+overview resolve them once.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import Any
 from repowise.core.components.catalog import CATALOG_FILES, Component
 from repowise.core.components.store import (
     RepoComponents,
+    component_ownership,
     component_rollups,
     load_repo_components,
     services_from_system_graph,
@@ -125,9 +128,11 @@ async def component_cards(
     repo_root: Any,
     alias: str | None,
     exclude_spec: Any,
+    ownership: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """get_context cards for ``component:<name>`` *targets*: components resolved
-    once and each fact table read once for the whole batch, in turn on *session*."""
+    once and each fact table read once for the whole batch, in turn on *session*.
+    *ownership* adds each card's declared against observed ownership block."""
     found = await _load(session, repository, repo_root, alias, exclude_spec)
     wanted = {t: found.resolved.get(t[len(COMPONENT_PREFIX) :].strip()) for t in targets}
     to_fold = {
@@ -140,6 +145,17 @@ async def component_cards(
         if to_fold
         else {}
     )
+    owners: dict[str, dict[str, Any]] = {}
+    directory_issues: list[str] = []
+    if ownership:
+        found_comps = {c.name: c for c in wanted.values() if c is not None}
+        owners, directory_issues = await component_ownership(
+            session,
+            repository.id,
+            repo_root,
+            [(c, found.resolved.files[c.name]) for c in found_comps.values()],
+            {n: r["bus_factor"] for n, r in rollups.items()},
+        )
     cards: dict[str, dict[str, Any]] = {}
     for target, comp in wanted.items():
         name = target[len(COMPONENT_PREFIX) :].strip()
@@ -164,6 +180,12 @@ async def component_cards(
             facts.pop("file_count")
             card["sample_files"] = files[:_SAMPLE_FILES]
             card["facts"] = facts
+        if comp.name in owners:
+            card["ownership"] = dict(owners[comp.name])
+            if directory_issues:
+                # Once per call, on the first card that carries ownership.
+                card["ownership"]["directory_issues"] = directory_issues
+                directory_issues = []
         cards[target] = card
     return cards
 

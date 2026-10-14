@@ -14,8 +14,10 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
+[`policies.yaml`](#repowisepoliciesyaml) ·
 [The `security:` block](#the-security-block) ·
 [The `attribution:` block](#the-attribution-block) ·
+[The `events:` block](#the-events-block) ·
 [The `refactoring:` block](#the-refactoring-block) ·
 [The `assertions:` block](#the-assertions-block)
 
@@ -73,6 +75,8 @@ repo root on first `init`.
 ├── lancedb/             # Vector search index (LanceDB)
 ├── omissions/           # Distill omission store + savings ledger (omissions.db)
 ├── config.yaml          # Provider, model, embedder, exclude patterns, distill/mcp/refactoring blocks
+├── events.jsonl         # Typed events as CloudEvents JSON lines (the jsonl event sink)
+├── events.key           # Random key the owner digests in component snapshots are made with
 ├── health-rules.json    # Per-file code-health marker overrides
 ├── state.json           # Last sync commit, page counts, token usage
 ├── mcp.json             # MCP server configuration
@@ -571,6 +575,45 @@ re-extraction.
 
 Components name the parts of a repository that health, hotspots, bus factor, test reach and dead code roll up to. The file is multi-document Backstage YAML (`Component`, `System` and `Group` on `backstage.io/v1alpha1`), with Repowise data in `repowise.dev/paths` (gitignore-style globs written with `/`, matched case-sensitively), `repowise.dev/criticality` (`low`, `medium`, `high`, `critical`), `repowise.dev/tags` and `repowise.dev/capability` annotations; a repo-root `catalog-info.yaml` is read the same way, so a developer portal and Repowise share one file. Without a file, components are derived from workspace services, then module pages, then top-level directories; a declared component claims the files its globs match (where two match a file, the first declared wins), and one named like a derived component replaces it and, with no paths of its own, keeps its directory. See [examples/components](../../examples/components/components.yaml) and `repowise components check`.
 
+### `.repowise/policies.yaml`
+
+The change policy `repowise check` evaluates. Each rule selects components (`match`, `exclude`), tests conditions over the change's evidence (`when`, all must hold) and names an action: `warn`, `require_owner_review`, `require_tests` or `fail`. A rule can instead wrap an existing gate (`security`, `coverage` or `doc_drift`) with that command's options under `with`; it runs exactly as the command does on its own, and `doc_drift` is scoped to the change (`since`) unless the rule sets it. `require_owner_review` and `require_tests` are advisory: they are reported in every format and `repowise check` still exits 0; only `fail` exits 1.
+
+```yaml
+version: 1
+rules:
+  - name: agent-pci-needs-owner
+    match:
+      components: {tags: [pci]}          # also names, criticality; each list is any-of
+    when:
+      attribution: agent                 # agent, human_attested or unknown
+      reaching_tests: missing            # a changed file in scope has no reaching test
+    action: require_owner_review
+  - name: no-new-secrets
+    gate: security
+    with: {fail_on: high, baseline: .security-baseline.json}
+    action: fail                         # the default for a gate
+```
+
+Conditions are `attribution`, `agent_tier` (1, 2 or 3), `reaching_tests` (`missing` or `present`), `contract_break`, `decision_crossed` and `bus_factor_below`; there is no risk-score condition. A condition whose evidence is not available (no index, attribution off) leaves the rule not evaluated, and it never fires. Exit 2 (`policy_invalid`, every problem listed) on an unknown key, condition or gate option, a bad action, or a duplicate rule name.
+
+### `.repowise/teams.yaml`
+
+Declared teams with the members who count as the team's activity, for `repowise components ownership` and `get_context(include=["ownership"])` on a component. Each team is a Backstage `Group` whose `spec.members` lists forge logins and whose `repowise.dev/member-emails` annotation lists git author emails; members are used only for matching commits and never appear in output. A CODEOWNERS `@org/team` (GitHub or GitLab, sections included) and a catalog `spec.owner` of `group:default/team` both resolve to the Group named `team`. Group entities in the catalog files add team names; their `spec.members` is not read.
+
+```yaml
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: payments
+  annotations:
+    repowise.dev/member-emails: "ana@acme.com, li@acme.com"
+spec:
+  type: team
+  children: []
+  members: [ana-acme, li-acme]
+```
+
 ### The `security:` block
 
 Secret shapes of your own for `repowise security check`.
@@ -599,7 +642,20 @@ attribution:
 
 The same block in `~/.repowise/config.yaml` applies to every repository, and the stricter value wins per key: `enabled: false` in either file, the lower capture level, and the agents both files list. With `enabled: false` nothing about AI is stored or shown in the API, CLI, MCP, web or wiki, and `DO_NOT_TRACK=1` keeps capture off. `repowise attribution status` shows the effective, repo and user values with the coverage of the indexed history.
 
-With `capture: local` the edit hooks of the listed agents (those with `Yes` under Attribution in [INTEGRATIONS.md](../agent/INTEGRATIONS.md)) record which lines the agent wrote, as hashes with the file, session and model, in `.repowise/attribution/`; prompts and code are never stored. `repowise update` matches them to new commits by content and labels a matched commit with the agent; an unmatched commit stays unknown. `capture: notes` also writes a git-ai v3 note on `refs/notes/ai` and sets `notes.rewriteRef` so the note follows a local amend or rebase; teammates see notes once you `git push origin refs/notes/ai` and add the fetch refspec `repowise doctor` names. Cursor records edits through an `afterFileEdit` hook, which `repowise agents add --target=cursor --scope=user` adds once your user config captures Cursor.
+`capture: local` records the listed agents' edits as line hashes in `.repowise/attribution/`; `capture: notes` also writes git-ai notes on `refs/notes/ai`. What each level stores, and what leaves the machine, is in [ATTRIBUTION.md](../layers/ATTRIBUTION.md). The same consent lets `repowise attribution backfill --agent claude-code,codex` bind past commits from the transcripts these agents keep on this machine.
+
+### The `events:` block
+
+```yaml
+events:
+  enabled: true            # snapshot components at each index run and diff them
+  retention_days: 365      # older runs and events are dropped
+  compact_after_days: 30   # older runs keep one per ISO week
+  kinds: {new_hotspot: true}
+  sinks: [jsonl]           # jsonl (.repowise/events.jsonl), stdout, or a plugin's sink
+```
+
+An index run diffs into typed events against the run right before it when both ran under the same analyzer and parser stamp; a stamp change, or a run in between that took no snapshot, starts a new baseline. Owners are compared as keyed digests made with a random per-repository key in `.repowise/events.key`; a declared owner is named only when it is a group. `repowise doctor` names any value in this block that fell back to its default. Severity follows the component's `repowise.dev/criticality`. `new_hotspot` is off by default; every other kind is on. Read them with `repowise events` or `GET /api/repos/{id}/events`.
 
 ### The `refactoring:` block
 

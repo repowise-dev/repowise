@@ -1279,7 +1279,8 @@ async def run_cross_repo_hooks(
     Detects cross-repo co-changes (files committed by the same author within
     a time window across repos) and package/manifest dependencies. Results are
     persisted to ``.repowise-workspace/cross_repo_edges.json`` and loaded by
-    the MCP server's :class:`CrossRepoEnricher` at startup.
+    the MCP server's :class:`CrossRepoEnricher` at startup. Ends by refreshing
+    the workspace store (:mod:`.store`).
     """
     if len(ws_config.repos) < 2:
         return
@@ -1302,6 +1303,17 @@ async def run_cross_repo_hooks(
         await _run_phases(ws_config, workspace_root, changed_repos, timings, workspace_index)
     finally:
         await workspace_index.close()
+
+    # Last: derived components read the system graph the phases just wrote.
+    from .store import refresh_workspace_store
+
+    timings.on_phase_start("workspace_store", None)
+    try:
+        await refresh_workspace_store(ws_config, workspace_root)
+    except Exception:
+        _log.warning("Workspace store refresh failed", exc_info=True)
+    timings.on_phase_done("workspace_store")
+    _log_phase(timings, "workspace_store")
 
 
 async def _run_phases(

@@ -42,9 +42,8 @@ In the dashboard, open the **Dead code** view of a repository.
 
 Methods, fields, properties and enum members are never reported as unused
 exports: they are reached through their container. `unused_internal` is
-withheld from the dashboard and default MCP responses because its measured
-precision was very low ([Accuracy and limits](#accuracy-and-limits)); ask for
-it with `--include-internals` or `include_internals=True`.
+withheld from the dashboard and default MCP responses because its precision is
+very low ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
 
 ## Reading the results
 
@@ -65,7 +64,7 @@ deadness is. It starts from a base value per kind and can only be lowered:
 Several caps then pull a finding down to `0.40`, the review tier: a runtime
 loader in the same directory, a path that looks like config or bootstrap code,
 an unused export's name written somewhere else in the repository, or a name that
-appears in a file repowise could not index. Each cap adds a line to the
+appears in a file Repowise could not index. Each cap adds a line to the
 finding's evidence saying why.
 
 ### Tiers
@@ -135,7 +134,7 @@ There is no allowlist file for dead-code findings; use the dashboard status.
 
 ## False positives and dynamic code
 
-When a file contains a runtime loader, repowise assumes its neighbours in the
+When a file contains a runtime loader, Repowise assumes its neighbours in the
 same directory may be reached through it and caps their confidence at `0.40`.
 Markers are recognised in Python, JavaScript and TypeScript, Java, Kotlin,
 Ruby, PHP, Go, Swift, Scala, Rust, C# and C/C++. Examples: `importlib.import_module`,
@@ -185,11 +184,10 @@ See [WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
 
 ## Accuracy and limits
 
-- `unused_internal` was measured at under 1% precision on 1,511 hand-labelled
-  findings from one TypeScript/Python monorepo, which is why it is withheld by
-  default. Private symbols used within their own file are often invisible to
-  the graph.
-- Whole unreachable files were measured well below the deletion-ready bar
+- `unused_internal` precision is under 1% on 1,511 hand-labelled findings from
+  one TypeScript/Python monorepo, so it is withheld by default. Private symbols
+  used within their own file are often invisible to the graph.
+- Precision on whole unreachable files is well below the deletion-ready bar
   (build scripts, manifests and runtime loaders read files by path), so they
   are never marked `safe_to_delete`.
 - Unused-export confidence is only as good as the graph's call and import

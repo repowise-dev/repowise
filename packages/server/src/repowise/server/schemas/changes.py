@@ -7,6 +7,8 @@ commit lists and carries their counts.
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
 from pydantic import BaseModel
 
 
@@ -68,10 +70,37 @@ class ChangeSummary(BaseModel):
     provenance: ChangeProvenance | None = None
 
 
+class EvidenceItem(BaseModel):
+    """One checklist row: what was found, whether it needs a look, how it is known."""
+
+    kind: str
+    label: str
+    status: Literal["ok", "attention", "unknown"]
+    basis: Literal["measured", "inferred", "declared", "unresolved"]
+    value: Any = None
+    details: list[dict[str, Any]]
+    source: str
+
+
+class ChangeEvidence(BaseModel):
+    """The evidence checklist (``repowise.core.changes.evidence``), versioned."""
+
+    schema_version: int
+    change_id: str | None = None
+    revspec: str | None = None
+    generated_at: str
+    index_commit: str | None = None
+    items: list[EvidenceItem]
+
+
 class ChangeRecord(ChangeSummary):
     commits: list[str]
     files: list[ChangeFile]
     metadata: ChangeForgeMetadata
+    # Present only when the request asked for it (``?evidence=true``).
+    evidence: ChangeEvidence | None = None
+    # True when the checklist is still being built; ask again shortly.
+    evidence_building: bool = False
 
 
 class ChangeListResponse(BaseModel):

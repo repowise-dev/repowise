@@ -82,10 +82,11 @@ You can also persist it:
 REPOWISE_PROVIDER=opencode repowise update
 ```
 
-The provider runs:
+The provider runs `opencode run --format json` with the repository as the
+subprocess working directory:
 
 ```bash
-opencode run --format json --dangerously-skip-permissions --dir /absolute/path/to/repo
+cd /absolute/path/to/repo && opencode run --format json
 ```
 
 Repowise sends the combined system + user prompt on **stdin**, parses
@@ -129,8 +130,8 @@ The provider enforces several safety measures:
 - Model names are validated against a safe character set
   (`[a-zA-Z0-9][a-zA-Z0-9._/\-]*`), rejecting shell metacharacters
   before anything reaches the subprocess.
-- All paths are resolved with `Path.resolve()` before being passed to
-  `--dir`.
+- All paths are resolved with `Path.resolve()` before the repo is used as
+  the subprocess working directory.
 - Subprocess execution is serialized via `asyncio.Semaphore(1)`.
 - A 600-second hard timeout with process kill prevents runaway calls.
 

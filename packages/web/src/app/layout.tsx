@@ -96,15 +96,17 @@ export default async function RootLayout({
         <TooltipProvider delayDuration={300}>
           <Suspense fallback={<AppShellSkeleton />}>
             <ContextDrawerShell>
-              <div className="flex h-screen flex-col overflow-hidden">
+              {/* Printed, the shell unclips so a long page (a chat
+                  transcript) flows across sheets instead of one viewport. */}
+              <div className="flex h-screen flex-col overflow-hidden print:block print:h-auto print:overflow-visible">
                 <UpgradeBanner />
-                <div className="flex flex-1 overflow-hidden">
+                <div className="flex flex-1 overflow-hidden print:block print:overflow-visible">
                 <Sidebar
                   repos={repos}
                   workspace={workspace}
                   reposUnavailable={reposUnavailable}
                 />
-                <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+                <div className="flex flex-1 flex-col min-w-0 overflow-hidden print:block print:overflow-visible">
                   <MobileNav repos={repos} workspace={workspace} />
                   {/* A flex column, so anything a route layout stacks above
                       the page (repo breadcrumb, reindex hint, active-job
@@ -118,7 +120,7 @@ export default async function RootLayout({
                       it could not be clicked. */}
                   <main
                     id="main-content"
-                    className="relative flex flex-1 flex-col overflow-auto min-w-0"
+                    className="relative flex flex-1 flex-col overflow-auto min-w-0 print:block print:overflow-visible"
                   >
                     {children}
                   </main>

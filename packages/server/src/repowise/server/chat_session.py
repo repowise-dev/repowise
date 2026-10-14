@@ -25,6 +25,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from repowise.core.providers.llm.base import ChatProvider, ProviderError
 from repowise.server.auth import Principal
 from repowise.server.chat_artifacts import create_artifact_envelope
@@ -34,6 +36,7 @@ from repowise.server.chat_context import (
     compose_request,
     is_context_overflow,
 )
+from repowise.server.chat_figures import check_figures
 from repowise.server.chat_grounding import plan_grounding, run_grounding
 from repowise.server.chat_prompt import (
     _build_system_prompt,
@@ -62,6 +65,7 @@ from repowise.server.chat_suggestions import conversation_title, follow_up_sugge
 from repowise.server.chat_summaries import _build_tool_summary
 from repowise.server.chat_tools import ChatToolContract, LocalToolBackend, tool_schemas
 from repowise.server.chat_views import SHOW_VIEW_TOOL, TurnViews, show_view_schema
+from repowise.server.schemas.evidence import CardRef
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +125,10 @@ class ChatTurnResult:
     citations: list[dict[str, Any]] = field(default_factory=list)
     cards: list[dict[str, Any]] = field(default_factory=list)
     views: list[dict[str, Any]] = field(default_factory=list)
+    #: Each number the answer states, looked up in the turn's tool results;
+    #: a verified one carries the ``artifact_id`` it came from.
+    figures: list[dict[str, Any]] = field(default_factory=list)
+    diagnostics: dict[str, int] = field(default_factory=dict)
     tool_trace: list[ToolTraceEntry] = field(default_factory=list)
     follow_ups: list[dict[str, Any]] = field(default_factory=list)
     usage: TurnUsage = field(default_factory=TurnUsage)
@@ -157,11 +165,13 @@ async def _never_cancelled() -> bool:
 
 
 def _citations(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Files the turn's tool results cite, first mention first."""
+    """Files the turn's tool results cite, first mention first, each with the
+    ``artifact_id`` of the result that cited it and its entity ``ref``."""
     seen: set[tuple[Any, ...]] = set()
     out: list[dict[str, Any]] = []
     for call in tool_calls:
-        data = (call.get("artifact") or {}).get("data") or {}
+        artifact = call.get("artifact") or {}
+        data = artifact.get("data") or {}
         raw = data.get("citations") if isinstance(data, dict) else None
         for item in raw if isinstance(raw, list) else []:
             if isinstance(item, str):
@@ -175,10 +185,33 @@ def _citations(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             else:
                 continue
             key = tuple(sorted(citation.items()))
-            if key not in seen:
-                seen.add(key)
-                out.append(citation)
+            if key in seen:
+                continue
+            seen.add(key)
+            if isinstance(artifact.get("id"), str):
+                citation["artifact_id"] = artifact["id"]
+            ref = _citation_ref(citation)
+            if ref is not None:
+                citation["ref"] = ref
+            out.append(citation)
     return out
+
+
+def _citation_ref(citation: dict[str, Any]) -> dict[str, Any] | None:
+    """The file or symbol a citation names, as a ``CardRef``; None when it does not validate."""
+    symbol = citation.get("symbol_name")
+    ref: dict[str, Any] = (
+        {"type": "symbol", "id": f"{citation['file_path']}::{symbol}"}
+        if isinstance(symbol, str) and symbol
+        else {"type": "file", "id": citation["file_path"]}
+    )
+    for key in ("start_line", "end_line"):
+        if key in citation:
+            ref[key] = citation[key]
+    try:
+        return CardRef.model_validate(ref).model_dump(exclude_none=True)
+    except ValidationError:
+        return None
 
 
 def _tool_trace(tool_calls: list[dict[str, Any]]) -> list[ToolTraceEntry]:
@@ -220,6 +253,8 @@ def _result_from_content(
         citations=_citations(tool_calls),
         cards=list(content.get("cards") or []),
         views=list(content.get("views") or []),
+        figures=list(content.get("figures") or []),
+        diagnostics=dict(content.get("diagnostics") or {}),
         tool_trace=_tool_trace(tool_calls),
         follow_ups=list(content.get("follow_ups") or []),
         usage=TurnUsage(**usage) if isinstance(usage, dict) else TurnUsage(),
@@ -227,8 +262,26 @@ def _result_from_content(
     )
 
 
-def _closing_events(result: ChatTurnResult) -> list[dict[str, Any]]:
+def _closing_events(result: ChatTurnResult, text_shift: int = 0) -> list[dict[str, Any]]:
+    """``text_shift`` moves figure offsets from the answer onto the streamed
+    text, which also holds what the model wrote before its tool calls."""
     events: list[dict[str, Any]] = []
+    if result.diagnostics:
+        events.append(
+            {
+                "type": "diagnostics",
+                **result.diagnostics,
+                "unverified_figures": [
+                    {
+                        "text": f["text"],
+                        "start": f["start"] + text_shift,
+                        "end": f["end"] + text_shift,
+                    }
+                    for f in result.figures
+                    if not f.get("verified")
+                ],
+            }
+        )
     if result.follow_ups:
         events.append({"type": "suggestions", "suggestions": result.follow_ups})
     done: dict[str, Any] = {
@@ -269,6 +322,8 @@ class _Turn:
         tokens_before: int,
         is_cancelled: IsCancelled,
         shows_views: bool = False,
+        question: str = "",
+        prior_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         self.provider = provider
         self.tools = tools
@@ -281,6 +336,11 @@ class _Turn:
         self.tokens_before = tokens_before
         self.is_cancelled = is_cancelled
         self.text_parts: list[str] = []
+        #: Text streamed this turn in UTF-16 units, the offsets a browser uses.
+        self.streamed_units = 0
+        self.question = question
+        #: Earlier turns' tool calls: a figure restated from them is still a tool's.
+        self.prior_calls = prior_calls or []
         self.provider_content: list[dict[str, Any]] | None = None
         self.tool_calls: list[dict[str, Any]] = []
         self.stop_reason: StopReason = "answered"
@@ -419,6 +479,7 @@ class _Turn:
     def _on_provider_event(self, event: Any, pending: list[dict[str, Any]]) -> list[dict]:
         if event.type == "text_delta" and event.text:
             self.text_parts.append(event.text)
+            self.streamed_units += len(event.text.encode("utf-16-le")) // 2
             return [{"type": "text_delta", "text": event.text}]
         if event.type == "usage":
             self.input_tokens = (self.input_tokens or 0) + event.input_tokens
@@ -512,6 +573,39 @@ class _Turn:
         if self.views.parts:
             content["views"] = self.views.parts
         return content
+
+    async def check_figures(self, content: dict[str, Any]) -> None:
+        """Add the numeric check to *content*; CPU-bound, so off the event loop."""
+        check = await asyncio.to_thread(
+            check_figures,
+            content["text"],
+            [
+                *_artifact_sources(self.tool_calls),
+                *((part["source"]["artifact_id"], part) for part in self.views.parts),
+            ],
+            self.question,
+            _artifact_sources(self.prior_calls),
+        )
+        if check.figures:
+            content["figures"] = [figure.to_json() for figure in check.figures]
+        if diagnostics := check.diagnostics():
+            content["diagnostics"] = diagnostics
+
+    @property
+    def answer_shift(self) -> int:
+        """UTF-16 units streamed before the final answer's text."""
+        answer = "".join(self.text_parts)
+        return self.streamed_units - len(answer.encode("utf-16-le")) // 2
+
+
+def _artifact_sources(tool_calls: list[dict[str, Any]]) -> list[tuple[str | None, Any]]:
+    """``(artifact_id, data)`` of each stored tool call that has a result."""
+    sources: list[tuple[str | None, Any]] = []
+    for call in tool_calls:
+        artifact = call.get("artifact") or {}
+        if isinstance(artifact, dict) and "data" in artifact:
+            sources.append((artifact.get("id"), artifact["data"]))
+    return sources
 
 
 def _stored_tool_call(
@@ -799,6 +893,14 @@ class ChatSession:
             tokens_before=conversation.tokens_used,
             is_cancelled=is_cancelled,
             shows_views=shows_views,
+            question=message,
+            prior_calls=[
+                call
+                for stored in history
+                if stored.id != user_message_id
+                for call in stored.content.get("tool_calls") or []
+                if isinstance(call, dict)
+            ],
         )
         grounded = await turn.ground(context)
         if grounded is not None:
@@ -820,6 +922,7 @@ class ChatSession:
             return
 
         content = turn.reply_content()
+        await turn.check_figures(content)
         title = conversation_title(message, tool_names(turn.tool_calls)) if opening else None
         message_id = await self.store.add_reply(
             self.id, content, title=title, usage=turn.usage
@@ -832,7 +935,7 @@ class ChatSession:
             user_message_id=user_message_id,
             stop_reason=turn.stop_reason,
         )
-        for event in _closing_events(outcome.result):
+        for event in _closing_events(outcome.result, turn.answer_shift):
             yield event
 
 

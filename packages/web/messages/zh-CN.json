@@ -273,7 +273,15 @@
       "coverage": "覆盖率 {pct}%",
       "back": "全部变更",
       "shape": "形式",
-      "head": "头部提交"
+      "head": "头部提交",
+      "detailEvidence": "证据清单",
+      "evidenceLoading": "正在生成证据清单。首次查看一个变更需要几秒钟。",
+      "evidenceUnavailable": "无法为此变更生成证据清单。",
+      "evidenceBuilding": "证据清单仍在生成中，请稍后重新加载页面。",
+      "evidenceGenerated": "生成于 {date}",
+      "statusOk": "正常",
+      "statusAttention": "需关注",
+      "statusUnknown": "未知"
     },
     "architecture": {
       "tabs": {
@@ -759,7 +767,9 @@
   },
   "chat": {
     "noProvider": "尚未配置对话提供商。请先在<link>设置</link>中添加 API 密钥，然后就可以开始提问了。",
-    "noProviderShort": "尚未配置对话提供商。请先在<link>设置</link>中添加 API 密钥。"
+    "noProviderShort": "尚未配置对话提供商。请先在<link>设置</link>中添加 API 密钥。",
+    "unverifiedFigure": "未在本轮工具结果中找到",
+    "unverifiedFiguresNote": "带点状下划线的数字未在本轮工具结果中找到。"
   },
   "codeHealth": {
     "hotspots": {

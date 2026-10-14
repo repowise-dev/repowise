@@ -640,13 +640,23 @@ async def create_decision(
 
 
 async def _transition_status(
-    session: AsyncSession, decision_id: str, status: str, superseded_by: str | None
+    session: AsyncSession,
+    repo_id: str,
+    decision_id: str,
+    status: str,
+    superseded_by: str | None,
 ):
     """Move a decision to *status* as a person on the web, or 400/404."""
     # The successor is a caller-supplied id too, and storing a retired one
     # would record a pointer that no longer resolves.
     if superseded_by is not None:
-        superseded_by = await _live_decision_id(session, superseded_by)
+        successor = await _decision_in_repo(session, repo_id, superseded_by)
+        if successor.id == decision_id:
+            raise HTTPException(
+                status_code=400,
+                detail="A decision cannot supersede itself",
+            )
+        superseded_by = successor.id
     try:
         rec = await crud.update_decision_status(
             session,
@@ -685,7 +695,9 @@ async def patch_decision(
     decision_id = rec.id
 
     if body.status is not None:
-        rec = await _transition_status(session, decision_id, body.status, body.superseded_by)
+        rec = await _transition_status(
+            session, repo_id, decision_id, body.status, body.superseded_by
+        )
     elif body.superseded_by is not None:
         raise HTTPException(
             status_code=400,

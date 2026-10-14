@@ -4,6 +4,8 @@
 validates them against the files git tracks; it needs no index and exits
 non-zero on any error, so it fits a CI step. ``list`` shows declared and
 derived components with their file counts, from the index when there is one.
+``ownership`` compares declared owners (catalog, CODEOWNERS, teams.yaml) with
+recent commit activity per component and lists the findings.
 """
 
 from __future__ import annotations
@@ -160,3 +162,70 @@ def components_list(repo: str | None, fmt: str) -> None:
         console.print("[dim]No index found: derived components are top-level directories.[/dim]")
     if data["catalog"].errors:
         console.print("[yellow]The catalog has errors; run `repowise components check`.[/yellow]")
+
+
+async def _ownership(root: Path) -> dict[str, Any]:
+    from repowise.core.components.ownership import Activity, assess_component
+    from repowise.core.components.store import (
+        component_ownership,
+        component_rollups,
+        load_repo_components,
+        workspace_services,
+    )
+    from repowise.core.ownership.directory import team_directories
+
+    async with repo_index_session(root) as opened:
+        if opened is not None:
+            session, repo_id = opened
+            found = await load_repo_components(
+                session, repo_id, root, services=workspace_services(root)
+            )
+            files = found.resolved.files
+            rollups = await component_rollups(
+                session, repo_id, {n: p for n, p in files.items() if p}, found.test_files
+            )
+            comps = [(c, files[c.name]) for c in found.resolved.components]
+            blocks, issues = await component_ownership(
+                session, repo_id, root, comps, {n: r["bus_factor"] for n, r in rollups.items()}
+            )
+            return {"indexed": True, "components": comps, "blocks": blocks, "issues": issues}
+    data = await _list(root)
+    declared = team_directories.get().load(root)
+    resolved = data["resolved"]
+    comps = [(c, resolved.files[c.name]) for c in resolved.components]
+    blocks = {c.name: assess_component(c, p, declared, Activity()) for c, p in comps}
+    return {"indexed": False, "components": comps, "blocks": blocks, "issues": declared.issues}
+
+
+@components_group.command("ownership")
+@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd).")
+@format_option()
+def components_ownership(repo: str | None, fmt: str) -> None:
+    """Compare declared owners with recent activity per component."""
+    root = _repo_root(repo)
+    data = run_async(_ownership(root))
+    blocks = data["blocks"]
+    if fmt == "json":
+        out = {
+            "indexed": data["indexed"],
+            "components": [{"name": c.name, **blocks[c.name]} for c, _ in data["components"]],
+        }
+        if data["issues"]:
+            out["directory_issues"] = data["issues"]
+        emit_json(out)
+        return
+    from rich.markup import escape
+
+    for issue in data["issues"]:
+        console.print(f"[yellow]warning[/yellow] {escape(issue)}")
+
+    findings = [(c.name, f) for c, _ in data["components"] for f in blocks[c.name]["findings"]]
+    for name, f in findings:
+        console.print(f"[yellow]{f['kind']}[/yellow] {escape(name)}: {escape(f['message'])}")
+    if not findings:
+        console.print("[green]No ownership findings.[/green]")
+    if not data["indexed"]:
+        console.print(
+            "[dim]No index found: recent activity is unknown, "
+            "so only declared facts are checked.[/dim]"
+        )

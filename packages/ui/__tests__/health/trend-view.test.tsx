@@ -29,6 +29,62 @@ const deltas = (n: number, offset = 0) =>
     delta: -1,
   }));
 
+describe("TrendView — hotspot health stat", () => {
+  const noHotspots = {
+    current_hotspot_health: null,
+    current_average_health: 8.1,
+    previous_hotspot_health: null,
+    previous_average_health: 8,
+    hotspot_delta: null,
+    average_delta: 0.1,
+  };
+
+  it("says a repository has no hotspot files on the full scope, not that the scope hid them", () => {
+    render(
+      <TrendView
+        data={response({ scope: "all", summary: noHotspots })}
+        isLoading={false}
+        error={null}
+      />,
+    );
+    expect(screen.getByText("no hotspot files")).toBeTruthy();
+    expect(screen.queryByText("not measured for this scope")).toBeNull();
+  });
+
+  it("keeps saying the figure was not measured under a narrowed scope", () => {
+    render(
+      <TrendView
+        data={response({ scope: "production", summary: noHotspots })}
+        isLoading={false}
+        error={null}
+      />,
+    );
+    expect(screen.getByText("not measured for this scope")).toBeTruthy();
+    expect(screen.queryByText("no hotspot files")).toBeNull();
+  });
+
+  it("still shows the score and its delta when a hotspot figure exists", () => {
+    render(
+      <TrendView
+        data={response({
+          scope: "all",
+          summary: {
+            ...noHotspots,
+            current_hotspot_health: 6.5,
+            previous_hotspot_health: 5,
+            hotspot_delta: 1.5,
+          },
+        })}
+        isLoading={false}
+        error={null}
+      />,
+    );
+    expect(screen.getByText("6.5")).toBeTruthy();
+    expect(screen.queryByText("no hotspot files")).toBeNull();
+    expect(screen.queryByText("not measured for this scope")).toBeNull();
+  });
+});
+
 describe("TrendView — largest score changes", () => {
   // Two caps sit between the response and the picture: the server slices its
   // list, and the chart draws only the largest few of what arrives. The block

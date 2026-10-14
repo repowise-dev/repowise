@@ -20,6 +20,7 @@
     "./chat": "./src/chat.ts",
     "./cards": "./src/cards.ts",
     "./changes": "./src/changes.ts",
+    "./events": "./src/events.ts",
     "./views": "./src/views.ts",
     "./workspace": "./src/workspace.ts",
     "./blast-radius": "./src/blast-radius.ts",

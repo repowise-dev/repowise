@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,8 +55,19 @@ async def get_newest_change_head(session: AsyncSession, repository_id: str) -> s
     ).scalar_one_or_none()
 
 
-def _filters(repository_id: str, category: str | None, shape: str | None, q: str | None):
+def _filters(
+    repository_id: str,
+    category: str | None,
+    shape: str | None,
+    q: str | None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+):
     clauses = [Change.repository_id == repository_id]
+    if since is not None:
+        clauses.append(Change.merged_at >= since)
+    if until is not None:
+        clauses.append(Change.merged_at < until)
     if category:
         clauses.append(Change.category == category)
     if shape:
@@ -79,11 +91,17 @@ async def list_changes(
     category: str | None = None,
     shape: str | None = None,
     q: str | None = None,
-    limit: int = 50,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int | None = 50,
     offset: int = 0,
 ) -> tuple[list[Change], int]:
-    """A page of changes, newest merged first, and the total that matched."""
-    clauses = _filters(repository_id, category, shape, q)
+    """A page of changes, newest merged first, and the total that matched.
+
+    *since* is inclusive and *until* exclusive, on ``merged_at``; ``limit=None``
+    returns every match.
+    """
+    clauses = _filters(repository_id, category, shape, q, since, until)
     total = (await session.execute(select(func.count()).select_from(Change).where(*clauses))).scalar_one()
     rows = await session.execute(
         select(Change)
@@ -96,29 +114,41 @@ async def list_changes(
 
 
 async def get_change(session: AsyncSession, repository_id: str, ref: str) -> Change | None:
-    """A change by its id, or the change that landed a commit (a sha of 7+ hex)."""
+    """A change by its id, or the newest change that landed a commit (a sha of 7+ hex)."""
+    found = await find_changes(session, repository_id, ref, limit=1)
+    return found[0] if found else None
+
+
+async def find_changes(
+    session: AsyncSession, repository_id: str, ref: str, *, limit: int = 2
+) -> list[Change]:
+    """Changes *ref* names, newest first: the one with that id, else up to
+    *limit* that landed a commit starting with *ref* (7+ hex). More than one
+    means a short sha is ambiguous.
+    """
     row = (
         await session.execute(
             select(Change).where(Change.repository_id == repository_id, Change.change_id == ref)
         )
     ).scalar_one_or_none()
-    if row is not None or len(ref) < 7 or any(c not in "0123456789abcdef" for c in ref.lower()):
-        return row
+    if row is not None:
+        return [row]
+    if len(ref) < 7 or any(c not in "0123456789abcdef" for c in ref.lower()):
+        return []
     sha = escape_like(ref.lower())
-    return (
-        await session.execute(
-            select(Change)
-            .where(
-                Change.repository_id == repository_id,
-                or_(
-                    Change.head_sha.like(f"{sha}%", escape=LIKE_ESCAPE),
-                    Change.commit_shas_json.like(f'%"{sha}%', escape=LIKE_ESCAPE),
-                ),
-            )
-            .order_by(Change.merged_at.desc().nulls_last())
-            .limit(1)
+    rows = await session.execute(
+        select(Change)
+        .where(
+            Change.repository_id == repository_id,
+            or_(
+                Change.head_sha.like(f"{sha}%", escape=LIKE_ESCAPE),
+                Change.commit_shas_json.like(f'%"{sha}%', escape=LIKE_ESCAPE),
+            ),
         )
-    ).scalar_one_or_none()
+        .order_by(Change.merged_at.desc().nulls_last())
+        .limit(limit)
+    )
+    return list(rows.scalars().all())
 
 
 async def get_commit_labels(

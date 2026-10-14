@@ -182,7 +182,7 @@ def _overrides(graph: Any, data: dict, own_class_id: str, language: str) -> bool
         return True
     if _CONTRACT_MODIFIERS.intersection(data.get("modifiers") or ()):
         return True
-    if is_contract_method(name, data.get("kind"), language):
+    if is_contract_method(name, data.get("kind"), language, modifiers=data.get("modifiers")):
         return True
     declared = {
         (_node(graph, member) or {}).get("name")

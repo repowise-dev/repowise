@@ -479,7 +479,14 @@ async def test_a_retried_send_returns_the_stored_reply(store):
     assert again.replayed and not first.replayed
     assert again.message_id == first.message_id
     assert again.answer == first.answer == "answer"
-    assert again.citations == first.citations == [{"file_path": "src/a.py"}]
+    assert again.citations == first.citations
+    (citation,) = first.citations
+    stored = (await store.messages(session.id))[-1].content
+    assert citation == {
+        "file_path": "src/a.py",
+        "artifact_id": stored["tool_calls"][0]["artifact"]["id"],
+        "ref": {"type": "file", "id": "src/a.py"},
+    }
     assert events[-1]["type"] == "done" and events[-1]["replayed"] is True
     assert [m.role for m in await store.messages(session.id)] == ["user", "assistant"]
 
@@ -699,3 +706,69 @@ async def test_a_key_reused_with_another_message_conflicts(store):
         await session.send("another question", idempotency_key="k1")
     await session.check_send("first question", "k1")
     assert len(provider.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Numeric check
+# ---------------------------------------------------------------------------
+
+
+def _figure_turns(answer: str) -> Callable[[int], list]:
+    return lambda i: [_text("Let me look. "), _tool("t1", "get_risk")] if i == 0 else [_text(answer)]
+
+
+async def test_figures_are_checked_against_the_turns_tool_results(store):
+    session = await _open(store, ScriptedProvider(_figure_turns("src/a.py has 3 fixes and 17 callers.")))
+
+    events = await _collect(session.stream("how risky is a.py?"))
+
+    streamed = "".join(e["text"] for e in events if e["type"] == "text_delta")
+    (diagnostics,) = [e for e in events if e["type"] == "diagnostics"]
+    assert diagnostics["figures_checked"] == 2 and diagnostics["figures_unverified"] == 1
+    # Offsets index the streamed text, which also holds the text before the tool call.
+    (span,) = diagnostics["unverified_figures"]
+    assert streamed[span["start"] : span["end"]] == span["text"] == "17"
+    assert [e["type"] for e in events][-3:] == ["diagnostics", "suggestions", "done"]
+
+    content = (await store.messages(session.id))[-1].content
+    artifact_id = content["tool_calls"][0]["artifact"]["id"]
+    assert content["diagnostics"] == {"figures_checked": 2, "figures_unverified": 1}
+    assert content["figures"] == [
+        {"text": "3", "start": 13, "end": 14, "verified": True, "artifact_id": artifact_id},
+        {"text": "17", "start": 25, "end": 27, "verified": False},
+    ]
+
+
+async def test_the_result_and_a_replay_carry_the_figures(store):
+    session = await _open(store, ScriptedProvider(_figure_turns("3 fixes, 40 callers.")))
+
+    first = await session.send("q", idempotency_key="k1")
+    replay_events = await _collect(session.stream("q", idempotency_key="k1"))
+
+    assert first.diagnostics == {"figures_checked": 2, "figures_unverified": 1}
+    assert [f["verified"] for f in first.figures] == [True, False]
+    (diagnostics,) = [e for e in replay_events if e["type"] == "diagnostics"]
+    # A replay streams the answer alone, so the offsets are the stored ones.
+    assert diagnostics["unverified_figures"] == [{"text": "40", "start": 9, "end": 11}]
+
+
+async def test_a_figure_from_an_earlier_turns_tool_result_is_verified(store):
+    provider = ScriptedProvider(
+        lambda i: [_tool("t1", "get_risk")] if i == 0 else [_text("Noted." if i == 1 else "Still 3 fixes.")]
+    )
+    session = await _open(store, provider)
+
+    await session.send("first")
+    later = await session.send("and now?")
+
+    assert later.diagnostics == {"figures_checked": 1, "figures_unverified": 0}
+
+
+async def test_an_answer_without_figures_stores_no_check(store):
+    session = await _open(store, ScriptedProvider([[_text("No numbers here.")]]))
+
+    events = await _collect(session.stream("hello"))
+
+    assert "diagnostics" not in [e["type"] for e in events]
+    content = (await store.messages(session.id))[-1].content
+    assert "figures" not in content and "diagnostics" not in content

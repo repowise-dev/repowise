@@ -161,14 +161,16 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `targets` | list[string] | required | File paths, module paths, `"path::Symbol"` ids, or `"component:<name>"` |
-| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols` |
+| `targets` | list[string] | required | File paths, module paths, `"path::Symbol"` ids, `"component:<name>"`, or `"change:<id>"` |
+| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols`, `changes`, `provenance` |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported (returns an error) |
 
 **Key return fields:** `targets` keyed by target, each with title, summary, symbols, `hotspot`, `fix_history` (files with counted bug fixes), `episodes`, decision titles, `file_preview` (for files with no symbols), `resolved_to` (a symbol miss falling back to its file); `dropped_targets` and `recovery` when the budget forced targets out; `_meta.complete` for whole files served.
 
-A `component:<name>` target returns the component's declared context (owner, system, criticality, tags) and `facts` rolled up over its files: health, hotspots, bus factor, test reach and dead code, each with a `basis` (`measured`, `inferred` or `unavailable`). Components come from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or are derived from the index. `include` does not apply to component targets; health and dead code leave out files in gated languages and say how many.
+A `component:<name>` target returns the component's declared context (owner, system, criticality, tags) and `facts` rolled up over its files: health, hotspots, bus factor, test reach and dead code, each with a `basis` (`measured`, `inferred` or `unavailable`). Components come from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or are derived from the index. With `include=["ownership"]` a component card adds `ownership`: declared teams with their activity over the last 90 days, a count of individual owners, and findings (`critical_no_active_owner`, `declared_owner_inactive`, `critical_bus_factor_one`, `catalog_entry_no_code`). An owner with no identity in the indexed history is `unknown` and raises no finding, so `critical_no_active_owner` does not fire when every owner is unknown; individuals match only by exact git email or forge noreply login. No other `include` applies to component targets. Health and dead code leave out files in gated languages and say how many.
+
+A `change:<id>` target (`change:pr-123`, or a commit sha the change landed) returns the [Change Record](../reference/CLI_REFERENCE.md#repowise-changes): title, forge ref, `merged_at`, category, files and provenance with its coverage. On a file target, `changes` lists the newest Change Records that touched it, and `provenance` gives the file's commits by source (agent, human-attested, unknown) with coverage; the agent share is withheld below 30% coverage. With attribution off, `provenance` reads `{"unavailable": "attribution_off"}` and change rows carry none.
 
 A file's compact symbol list holds its top 15 symbols: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules) first, then functions and methods, then the rest, each group by centrality. `symbols_truncated` gives the total, and `include=["symbols"]` lists them all. When the response budget trims the list further, it keeps symbols by kind and name match, not centrality. A row without `symbol_id` is `path::name`; methods and overload variants carry theirs, so pass a row's id to `get_symbol` when it has one.
 
@@ -242,7 +244,7 @@ What history says about touching a file: hotspot score, bug-fix record, owners, 
 |-----------|------|---------|---------|
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
-| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `owners` (owner percentages, bus factor, contributor count), `tests` (typed `test_recommendations` in PR mode), `blast` (`pr_blast_radius` in PR mode), `scales` (units and calibration, identical per call) |
+| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `owners` (owner percentages, bus factor, contributor count), `tests` (typed `test_recommendations` in PR mode), `blast` (`pr_blast_radius` in PR mode), `scales` (units and calibration, identical per call), `changes` (each file's newest Change Records) |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
 **Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners` (`file_path`, `support`, `conf_ab`, `has_import_link`), `primary_owner` (detailed owner metrics are opt-in under `include=["owners"]`), test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `missing_cochanges`, `tests_to_run` (the same selection `repowise impacted-tests` makes), `tests_to_run_basis` (`measured`, `inferred` or `none`), `tests_run_all` (with `tests_run_all_reasons` when every test must run), `tests_to_update` (test files to edit, each with a `name_pair`, `imports` or `co_change` reason), `coverage`, `recommended_reviewers`, `next_calls`, and `reach` (`localized`, `moderate` or `broad`; `null` when no structural score was computed). `include=["blast"]` adds `pr_blast_radius`; the raw 0 to 10 `structural_impact_score` and its scale appear there only with `include=["blast", "scales"]`. `missing_tests` appears only when coverage can back it. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
@@ -265,7 +267,7 @@ Reviews one commit, a `base..head` range, or uncommitted work by comparing the t
 | `exclude_patterns` | list[string] | none | Gitignore-style paths to omit; combined with a root `.riskignore` |
 | `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or one comma-separated string. Like `exclude_patterns`, it scopes the score, the health delta and every per-file block; `impacted_tests` still selects over the whole change, less only repowise's own output |
 | `baseline` | int | `200` | Recent commits sampled for percentile ranking; `0` disables percentiles |
-| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics, plus the delta's analyzer, revisions and limits), `scales` (units) |
+| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics, plus the delta's analyzer, revisions and limits), `scales` (units), `evidence` (the change's evidence checklist, the same record `repowise changes show` prints) |
 | `finding_id` | string | none | Expand one `health_delta` finding |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
@@ -307,7 +309,7 @@ The architecture map: summary, key modules, entry points, layers, code and git h
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners), `components` (declared and derived components with file counts) |
+| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners), `components` (declared and derived components with file counts), `changes` (Change Records by category and week, and the agent share of changes with coverage) |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` for the cross-repo topology |
 
 **Key return fields:** `title`, `content_md` (summary section by default), `key_modules`, `entry_points`, `architecture` (layers in stack order, plus `dependencies`: the ten heaviest package-to-package edges with `from`, `to`, `verb` and `weight`, and `edges_total` when more exist; absent in a single-package repo), `code_health`, `git_health`, `next_actions`, `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.
@@ -528,6 +530,8 @@ Only four tools answer across every repo with `repo="all"`. The rest return an e
 | `get_blast_radius`, `get_architecture`, `list_repos` | No `repo` parameter; they always read the whole workspace |
 
 With `repo` omitted, `get_context`, `get_symbol`, `get_risk` and `get_health` route each path or `path::Name` target to its repo: the default repo when the file exists there, else the one other repo whose checkout has it. Write `<alias>:<target>` (for example `web:src/app.ts::App`) to name the repo outright. A path found in several other repos returns its `candidates`. A path in no repo gets the default repo's usual not-found answer plus a `hint` naming `search_codebase(repo="all")` and the `<alias>:<path>` form; routed results carry `repo`. `get_context` takes a batch spanning repos, while `get_risk` and `get_health` answer one repo per call and name the per-repo calls when a batch spans several.
+
+`get_context` and `get_symbol` route a bare symbol name (`render`, `Client.send`) the same way, through the workspace store's symbol index: the default repo keeps a name it has, one other repo that has it gets the call, and several return `candidates`. A `repowise#<ref>` omission ref is found in whichever repo's omission store holds it.
 
 A `repo="all"` call queries up to 4 repos at a time and gives each 60 seconds (`REPOWISE_WORKSPACE_CONCURRENCY`, `REPOWISE_WORKSPACE_REPO_TIMEOUT_S`). A repo that fails to open, errors or times out is listed in `repos_failed` with its reason while the other repos still answer. A repo whose index is behind its checkout is listed in `repos_stale` with `indexed_commit` and `live_head`, and its rows carry `stale: true`. Both keys appear only when non-empty.
 

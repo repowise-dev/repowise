@@ -310,13 +310,31 @@ class WorkspaceIndex:
         self._repos.clear()
 
 
-async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
-    """Open *repo_path*'s ``wiki.db`` read side, or None when it has no index."""
+async def checkout_repository(session: AsyncSession, repo_path: Path) -> Any:
+    """The ``repositories`` row describing *repo_path*, or None in an empty index.
+
+    A wiki.db normally holds one repository row; prefer the one recorded at
+    this checkout when it holds more, since test runs and moved checkouts leave
+    others behind. Newest first so the fallback is a decision rather than
+    whatever order the scan returns.
+    """
     from sqlalchemy import select
 
     from repowise.core.persistence.crud.repository import get_repository_by_path
     from repowise.core.persistence.models import Repository
 
+    repo = await get_repository_by_path(session, str(repo_path))
+    if repo is None:
+        repo = (
+            await session.execute(
+                select(Repository).order_by(Repository.updated_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+    return repo
+
+
+async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
+    """Open *repo_path*'s ``wiki.db`` read side, or None when it has no index."""
     from .registry import open_repo_db, repo_db_path
 
     if not repo_db_path(repo_path).is_file():
@@ -326,17 +344,7 @@ async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
     session = session_factory()
     ok = False
     try:
-        # A wiki.db normally holds one repository row; prefer the one recorded
-        # at this checkout when it holds more, since test runs and moved
-        # checkouts leave others behind. Newest first so the fallback is a
-        # decision rather than whatever order the scan returns.
-        repo = await get_repository_by_path(session, str(repo_path))
-        if repo is None:
-            repo = (
-                await session.execute(
-                    select(Repository).order_by(Repository.updated_at.desc()).limit(1)
-                )
-            ).scalar_one_or_none()
+        repo = await checkout_repository(session, repo_path)
         if repo is None:
             raise LookupError(f"No repository row in {repo_path}")
         index = RepoIndex(alias, repo_path, session, engine, repo_id=repo.id)

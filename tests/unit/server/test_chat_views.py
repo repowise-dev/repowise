@@ -322,6 +322,71 @@ def test_attribution_below_the_floor_is_refused_with_its_coverage(ratio, refused
         assert turn.parts[0]["coverage"]["ratio"] == ratio
 
 
+def _overview_changes(coverage: float = 0.5, /, **provenance: Any) -> dict:
+    return {
+        "changes": {
+            "window": {"days": 90, "since": "2025-12-15T00:00:00+00:00", "until": "2026-03-15"},
+            "total": 4,
+            "by_category": {"feature": 3, "fix": 1},
+            "by_week": [{"week": "2026-03-02", "changes": 3}, {"week": "2026-03-09", "changes": 1}],
+            "provenance": provenance
+            or {
+                "agent_changes": 1,
+                "human_attested_changes": 1,
+                "unknown_changes": 2,
+                "coverage": coverage,
+                "agent_share": 0.5,
+            },
+        }
+    }
+
+
+def test_changes_by_category_and_week_plot_the_source_counts():
+    data = _overview_changes()
+    part = _build(data, "overview", "get_overview", "changes.by_category")
+    assert part["data"]["rows"] == [
+        {"category": "feature", "changes": 3},
+        {"category": "fix", "changes": 1},
+    ]
+    assert "90 days" in part["summary"]
+    week = _build(data, "overview", "get_overview", "changes.by_week")
+    assert week["chart_type"] == "line"
+    assert _series(week, "changes") == [3, 1]
+
+
+def test_changes_provenance_keeps_unknown_as_its_own_band():
+    part = _build(_overview_changes(), "overview", "get_overview", "changes.provenance")
+    assert part["chart_type"] == "donut"
+    assert part["data"]["rows"] == [
+        {"source": "agent", "changes": 1},
+        {"source": "human attested", "changes": 1},
+        {"source": "unknown", "changes": 2},
+    ]
+    assert part["coverage"] == {"metric": "attribution", "ratio": 0.5}
+
+
+@pytest.mark.parametrize(
+    ("data", "code", "coverage"),
+    [
+        (_overview_changes(0.2), "insufficient_coverage", 0.2),
+        (
+            _overview_changes(unknown_changes=4, coverage=0.2, agent_share=None),
+            "insufficient_coverage",
+            0.2,
+        ),
+        (_overview_changes(unavailable="attribution_off"), "attribution_off", None),
+        ({"changes": {"total": 0}}, "view_unavailable", None),
+    ],
+)
+def test_changes_provenance_is_refused_without_enough_coverage(data, code, coverage):
+    turn = TurnViews()
+    stamped = turn.record("get_overview", {}, data, artifact_type="overview")
+    result = turn.show({"artifact_id": stamped[ARTIFACT_ID_FIELD], "view": "changes.provenance"})
+    assert result["error_code"] == code
+    assert result.get("coverage") == coverage
+    assert turn.parts == []
+
+
 def test_a_risk_score_is_never_a_chart_series():
     @register_view_builder("test.risk_chart", description="never allowed", options=frozenset())
     def _risk_chart(artifact, options):

@@ -231,6 +231,98 @@ class TestFileTraverser:
 
         assert paths == {"app.py"}
 
+    def test_reincluded_dir_in_root_repowise_ignore_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text('{"name":"tool","type":"module"}', encoding="utf-8")
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text(
+            "export function bundle(entries) { return entries.map(String); }\n", encoding="utf-8"
+        )
+        (tmp_path / "src" / "app").mkdir(parents=True)
+        (tmp_path / "src" / "app" / "main.js").write_text(
+            'import { bundle } from "../build/index.js";\n', encoding="utf-8"
+        )
+
+        # Without negation rule, build holding only JS is pruned as an output dir.
+        paths_without = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" not in paths_without
+
+        # With !src/build/, the directory is re-included and indexed.
+        (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+        paths_with = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths_with
+        assert "src/app/main.js" in paths_with
+
+    def test_reincluded_dir_in_exclude_patterns_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text('{"name":"tool","type":"module"}', encoding="utf-8")
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+
+        paths = {
+            f.path
+            for f in FileTraverser(tmp_path, extra_exclude_patterns=["!src/build/"]).traverse()
+        }
+        assert "src/build/index.js" in paths
+
+    def test_reincluded_dir_in_nested_repowise_ignore_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / "src" / ".repowiseIgnore").write_text("!build/\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths
+
+    def test_reincluded_dir_does_not_reopen_nested_blocked_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+        (tmp_path / "src" / "build" / "node_modules").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / "src" / "build" / "node_modules" / "x.js").write_text(
+            "export const y = 2;\n", encoding="utf-8"
+        )
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths
+        assert "src/build/node_modules/x.js" not in paths
+
+    def test_negation_cannot_bypass_nested_repo_or_submodule_boundary(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowiseIgnore").write_text("!vendor/\n", encoding="utf-8")
+        nested = tmp_path / "vendor" / "nested_repo"
+        nested.mkdir(parents=True)
+        (nested / ".git").mkdir()
+        (nested / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "vendor" / "lib.py").write_text("y = 2\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        # vendor/lib.py is re-included by !vendor/
+        assert "vendor/lib.py" in paths
+        # But the nested git repository boundary is NEVER bypassed
+        assert "vendor/nested_repo/mod.py" not in paths
+
+    def test_cached_negations_refresh_on_file_creation_or_edit(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+
+        # 1st traversal: no ignore file, build directory is skipped as output
+        paths1 = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" not in paths1
+
+        # Now create nested .repowiseIgnore in the same process
+        (tmp_path / "src" / ".repowiseIgnore").write_text("!build/\n", encoding="utf-8")
+
+        # 2nd traversal: cache refreshes and re-includes the directory
+        paths2 = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths2
+
+    def test_custom_ignore_filename_negations(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+
+        paths = {
+            f.path
+            for f in FileTraverser(tmp_path, extra_ignore_filename=".customIgnore").traverse()
+        }
+        assert "src/build/index.js" in paths
+
     def test_traverses_e2e_specs(self, tmp_path: Path) -> None:
         """e2e spec files are indexed so they can get a file_page (#1497).
 
@@ -437,6 +529,30 @@ class TestFileTraverser:
         assert files["demo/test_selection.py"] is False
         assert files["tests/test_demo.py"] is True
         assert files["tools/test_cli.py"] is True
+
+    def test_csharp_test_project_classifies_files_as_tests(self, tmp_path: Path) -> None:
+        (tmp_path / "acceptance" / "Acme.Acceptance.csproj").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "acceptance" / "Acme.Acceptance.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup>\n"
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.0" />\n'
+            '    <PackageReference Include="xunit" Version="2.9.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n"
+        )
+        (tmp_path / "acceptance" / "Authentication" / "AuthSteps.cs").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "acceptance" / "Authentication" / "AuthSteps.cs").write_text("public class AuthSteps {}\n")
+        (tmp_path / "acceptance" / "Authentication" / "AuthenticationTests.cs").write_text(
+            "public class AuthenticationTests {}\n"
+        )
+        (tmp_path / "src" / "App" / "Program.cs").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "App" / "Program.cs").write_text("public class Program {}\n")
+
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["acceptance/Authentication/AuthSteps.cs"] is True
+        assert files["acceptance/Authentication/AuthenticationTests.cs"] is True
+        assert files["src/App/Program.cs"] is False
 
     def test_file_info_fields(self, tmp_path: Path) -> None:
         (tmp_path / "calc.py").write_text("class Calc: pass")

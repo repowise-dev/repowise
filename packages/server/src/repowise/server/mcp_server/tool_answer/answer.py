@@ -196,6 +196,7 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _extract_value_answer,
     _hydrate_candidate_defines,
     _hydrate_symbols_for_hits,
+    drop_ruled_out_files,
     lead_with_files,
     place_named_files,
 )
@@ -354,6 +355,7 @@ async def _run_retrieval_pipeline(
             hits = lead_with_files(hits, traced)
         if named := _in_scope(issue.named):
             hits = place_named_files(hits, named)
+    hits = drop_ruled_out_files(hits, question)
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)

@@ -541,6 +541,8 @@ my-workspace/
     system_graph.json              # Service-granular system graph + diagnostics
     breaking_changes.json          # Breaking provider changes vs the last index
     conformance.json               # Architecture rule violations + dependency cycles
+    workspace.db                   # Workspace store: symbol and path index, components,
+                                   # recent changes, per-repo health and freshness
   .claude/
     CLAUDE.md                      # Workspace-level CLAUDE.md for AI editors
   backend/
@@ -548,6 +550,8 @@ my-workspace/
   frontend/
     .repowise/
 ```
+
+`workspace.db` is derived from each repo's own index and refreshed after every workspace update and whenever a repo is re-indexed, so deleting it is always safe: it is rebuilt the next time it is needed.
 
 What lives in each repo's `.repowise/` is described in
 [CONFIG.md](../reference/CONFIG.md#the-repowise-directory).

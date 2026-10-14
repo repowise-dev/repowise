@@ -101,3 +101,73 @@ def test_no_index_exits_non_zero(tmp_path):
     (root / ".git").mkdir(parents=True)
     result = CliRunner().invoke(changes_group, ["list", "--path", str(root)])
     assert result.exit_code == 1 and "No index" in result.output
+
+
+def _fake_evidence(monkeypatch):
+    """Stand in for the review: these tests are about the command, not the evidence."""
+    from repowise.core.changes import collect
+    from repowise.core.changes.evidence import ChangeEvidence, EvidenceItem
+
+    calls: list[str] = []
+
+    async def _evidence(session, repo_id, root, row, *, refresh=False):
+        calls.append(row.change_id)
+        return ChangeEvidence(
+            change_id=row.change_id,
+            revspec=row.head_sha,
+            generated_at="2026-10-14T00:00:00+00:00",
+            items=[
+                EvidenceItem("owners", "Declared owners", "attention", "declared", ["@core"], [], "CODEOWNERS"),
+                EvidenceItem("risk_score", "Diff size rank", "ok", "measured", {"percentile": 40.0}, [], "change risk"),
+            ],
+        )
+
+    monkeypatch.setattr(collect, "change_evidence", _evidence)
+    return calls
+
+
+def test_show_carries_the_checklist_unless_asked_not_to(tmp_path, monkeypatch):
+    root = _repo(tmp_path)
+    calls = _fake_evidence(monkeypatch)
+    runner = CliRunner()
+
+    shown = json.loads(
+        runner.invoke(changes_group, ["show", "pr-5", "--path", str(root), "--format", "json"]).output
+    )
+    assert shown["evidence"]["schema_version"] == 1
+    assert [i["kind"] for i in shown["evidence"]["items"]] == ["owners", "risk_score"]
+
+    table = runner.invoke(changes_group, ["show", "pr-5", "--path", str(root)])
+    assert table.exit_code == 0 and "Evidence checklist" in table.output and "attention" in table.output
+
+    bare = json.loads(
+        runner.invoke(
+            changes_group, ["show", "pr-5", "--path", str(root), "--format", "json", "--no-evidence"]
+        ).output
+    )
+    assert "evidence" not in bare and calls == ["pr-5", "pr-5"]
+
+
+def test_export_windows_and_formats(tmp_path, monkeypatch):
+    root = _repo(tmp_path)
+    _fake_evidence(monkeypatch)
+    runner = CliRunner(mix_stderr=False)
+
+    inside = runner.invoke(
+        changes_group,
+        ["export", "--path", str(root), "--since", "2026-02-01", "--until", "2026-04-01"],
+    )
+    assert inside.exit_code == 0, inside.output
+    records = [json.loads(line) for line in inside.stdout.splitlines()]
+    assert "evidence 1/1: pr-5" in inside.stderr
+    assert [c["id"] for c in records] == ["pr-5"]
+    assert records[0]["evidence"]["items"][0]["kind"] == "owners"
+
+    outside = runner.invoke(changes_group, ["export", "--path", str(root), "--since", "2026-03-02"])
+    assert outside.exit_code == 0 and outside.stdout == ""
+
+    csv_out = runner.invoke(changes_group, ["export", "--path", str(root), "--format", "csv"])
+    lines = csv_out.stdout.strip().splitlines()
+    assert lines[0] == "change_id,merged_at,title,kind,label,status,basis,value,source"
+    assert lines[1].startswith("pr-5,2026-03-01") and ",owners,Declared owners,attention,declared," in lines[1]
+    assert len(lines) == 3
