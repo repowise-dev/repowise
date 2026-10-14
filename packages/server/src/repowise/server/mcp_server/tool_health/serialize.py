@@ -189,4 +189,6 @@ def _serialize_metric(
         "primary_biomarker": lead.get("primary_biomarker") if lead else None,
         "primary_reason": lead.get("primary_reason") if lead else None,
         "total_deduction": lead.get("total_deduction") if lead else None,
+        # Only when a type this surface withholds took points off the score.
+        **({"withheld_deduction": w} if lead and (w := lead.get("withheld_deduction")) else {}),
     }

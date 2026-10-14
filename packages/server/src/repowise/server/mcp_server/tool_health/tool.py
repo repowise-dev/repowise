@@ -9,9 +9,11 @@ accounting and projection passes (``paging`` / ``projection``).
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from time import perf_counter
 from typing import Any
 
+from repowise.core.analysis.finding_registry import withheld_summary
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.refactoring.serving import (
     DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT,
@@ -252,6 +254,7 @@ async def get_health(
         else:
             _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
         _attach_gated(result["_meta"], data)
+        _attach_withheld(result, data)
         pager.report_omissions(result, omission_collector)
         omission_collector.attach(result)
         _attach_semantics(result, req)
@@ -265,6 +268,23 @@ def _attach_gated(meta: dict[str, Any], data: HealthData) -> None:
     drops it: an agent must read "held back", never "nothing found"."""
     if data.gated:
         meta["gated"] = {**data.gated, "opt_in": {"include": ["unverified"]}}
+
+
+def _attach_withheld(result: dict[str, Any], data: HealthData) -> None:
+    """The withheld types behind the ``withheld_deduction`` of each emitted
+    file row, so none is unexplained. Absent when no emitted row carries one."""
+    paths = {
+        row["file_path"]
+        for rows in result.values()
+        if isinstance(rows, list)
+        for row in rows
+        if isinstance(row, dict) and "withheld_deduction" in row
+    }
+    counts = Counter(
+        r.biomarker_type for r in data.withheld_rows if r.health_impact and r.file_path in paths
+    )
+    if counts:
+        result["_meta"]["withheld"] = withheld_summary(counts, counts)
 
 
 def _attach_semantics(result: dict[str, Any], req: HealthRequest) -> None:

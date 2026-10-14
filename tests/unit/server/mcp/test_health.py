@@ -189,6 +189,60 @@ async def test_get_health_dashboard_surfaces_leverage(setup_mcp, health_data):
     assert gap["files_for_half_gap"] == 1
 
 
+def test_gap_analysis_needs_no_file_when_the_average_is_at_target():
+    """Above target on average, one file below it: nothing to reach, so no file
+    is needed, while the gross gap still names the below-target file."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_health.summary import _gap_analysis
+
+    gap = _gap_analysis(
+        [SimpleNamespace(score=7.0, nloc=10), SimpleNamespace(score=9.0, nloc=100)]
+    )
+    assert gap["weighted_gap_points"] == 0
+    assert gap["files_to_reach_target"] == 0
+    assert gap["files_for_half_gap"] == 0
+    assert gap["files_below_target"] == 1
+    assert gap["weighted_gross_gap_points"] == 10
+
+
+@pytest.mark.asyncio
+async def test_targeted_card_accounts_for_a_withheld_deduction(setup_mcp, health_data, session):
+    """A hidden finding type never lists, but the score counted it, so the card
+    reports its deduction and ``_meta.withheld`` names it."""
+    from repowise.server.mcp_server import get_health
+
+    session.add(
+        HealthFinding(
+            id="dry-models",
+            repository_id=health_data,
+            file_path="src/db/models.py",
+            biomarker_type="dry_violation",
+            severity="high",
+            details_json="{}",
+            health_impact=0.6,
+            reason="36% duplicated with src/db/other.py",
+            dimension="maintainability",
+            status="open",
+        )
+    )
+    await session.commit()
+
+    result = await get_health(targets=["src/db/models.py"])
+    card = result["metrics"][0]
+    assert card["total_deduction"] == 0.6
+    assert card["withheld_deduction"] == 0.6
+    assert card["primary_biomarker"] is None
+    assert all(f["biomarker_type"] != "dry_violation" for f in result["findings"])
+    assert result["_meta"]["withheld"]["dry_violation"]["count"] == 1
+    assert result["_meta"]["withheld"]["dry_violation"]["status"] == "hidden"
+
+    # A file with no withheld deduction carries neither field.
+    other = await get_health(targets=["src/auth/service.py"])
+    assert "withheld_deduction" not in other["metrics"][0]
+    assert "withheld" not in other["_meta"]
+
+
 @pytest.mark.asyncio
 async def test_get_health_refactoring_capped_and_leverage_ranked(setup_mcp, health_data):
     """refactoring_plans is bounded by limit and reports the honest total.

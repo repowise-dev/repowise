@@ -16,20 +16,35 @@ from repowise.core.analysis.health.scoring import (
 from repowise.core.persistence.models import HealthFileMetric
 
 
-def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
+def _leads_by_file(
+    findings: list[Any], withheld: list[Any] | None = None
+) -> dict[str, dict[str, Any]]:
     """Reduce each file's findings to its dominant cause + pre-clamp magnitude.
 
     ``primary_*`` is the one reason to lead with; ``total_deduction`` (summed
     ``health_impact``) tells apart two files that both floor at 1.0. The
     selection rule lives in ``analysis.health.models.primary_finding``.
+
+    *withheld* rows, of types the registry keeps off this surface, never lead.
+    The score counted them, so they add to ``total_deduction`` and show as
+    ``withheld_deduction``: the card always accounts for what lowered the score.
     """
     by_file: dict[str, list[Any]] = {}
     for f in findings:
         by_file.setdefault(f.file_path, []).append(f)
+    hidden: dict[str, float] = {}
+    for f in withheld or ():
+        hidden[f.file_path] = hidden.get(f.file_path, 0.0) + float(f.health_impact or 0.0)
     leads: dict[str, dict[str, Any]] = {}
-    for path, fs in by_file.items():
+    for path in by_file.keys() | hidden.keys():
+        fs = by_file.get(path, [])
+        withheld_points = round(hidden.get(path, 0.0), 3)
+        total = round(sum(float(x.health_impact or 0.0) for x in fs) + withheld_points, 3)
+        extra = {"withheld_deduction": withheld_points} if withheld_points else {}
         primary = primary_finding(fs)
         if primary is None:
+            if withheld_points:
+                leads[path] = {"total_deduction": total, **extra}
             continue
         # No edit resolves a history marker, so ``actionable_*`` uses code shape
         # alone and ``watch_*`` carries history as context.
@@ -43,7 +58,8 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
             "actionable_reason": actionable.reason if actionable else None,
             "watch_biomarker": watch.biomarker_type if watch else None,
             "watch_reason": watch.reason if watch else None,
-            "total_deduction": round(sum(float(x.health_impact or 0.0) for x in fs), 3),
+            "total_deduction": total,
+            **extra,
         }
     return leads
 
@@ -87,6 +103,8 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
         }
 
     def _files_for(points: float) -> int:
+        if points <= 0:
+            return 0
         acc = 0.0
         for i, d in enumerate(below, 1):
             acc += d
@@ -96,10 +114,11 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
 
     # At or above target there is nothing to reach, but the gross gap still
     # stands while any file is below target.
-    reachable = max(net_gap, 0)
+    # Rounded first, so a gap reported as 0 never needs a file to close it.
+    reachable = round(max(net_gap, 0))
     return {
         "target_score": TARGET_SCORE,
-        "weighted_gap_points": round(max(net_gap, 0)),
+        "weighted_gap_points": reachable,
         "weighted_gross_gap_points": round(gross_gap),
         "files_below_target": len(below),
         "files_to_reach_target": _files_for(reachable),

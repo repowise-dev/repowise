@@ -336,6 +336,8 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 
 Findings, performance causes and refactoring plans carry the same count object when their list is named in `only`: `top_findings_counts`, `performance_opportunities_counts`, `refactoring_plans_counts`. The CLI and dashboard report the same numbers.
 
+`top_findings_counts` is the Fix first queue's judgement of the scoring findings (performance and zero-impact findings are not queue units), while `top_findings` ranks every open production finding by impact, so `top_findings_total` can exceed `in_scope` and its `shown` (rows listed) can exceed `eligible`.
+
 Items are ordered by value first, then tier. History markers (churn, ownership, co-change, prior fixes) never create or lead an item; they ride on an item under `context`, and history-only files count under `counts.excluded.history_only`. `fix_first` always describes production code, whatever `scope` says; `limit` caps the items, never which leads.
 
 ### Dashboard and metric rows
@@ -348,11 +350,11 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 | `worst_files`, `test_worst_files` | Lowest raw scores, production and test |
 | `high_leverage_files` | Ranked by `weighted_deficit`, with `share_of_repo_gap_pct` |
 | `top_findings` / `findings`, `test_findings` | Production and test findings; their totals sum to the whole open set |
-| metric row | `score` (defect dimension and headline), `maintainability_score`, `performance_score`, `weighted_deficit` = (8 - score) x NLOC, `is_test`, `has_test_file`, `primary_biomarker` |
+| metric row | `score` (defect dimension and headline), `maintainability_score`, `performance_score`, `weighted_deficit` = (8 - score) x NLOC, `is_test`, `has_test_file`, `primary_biomarker`, `total_deduction`, and `withheld_deduction` when part of it comes from a withheld finding type |
 
 `weighted_deficit` and the gap fields share one unit, score points x NLOC; they compare only with each other. Non-code files score a mechanical 10.0 because no marker reads them; `average_health_code_only` shows the headline without them. `primary_biomarker` prefers a discrete finding over the continuous `coverage_gradient`. Each finding carries a `dimension`; `advisory` findings (`assertion_free_test`, `mock_saturated_test`) never deduct and appear only with `include=["advisory"]`.
 
-Provisional finding types appear only with `include=["unverified"]`, each marked `verification: "unverified"`. Targeted mode is never split into production and test.
+Provisional finding types appear only with `include=["unverified"]`, each marked `verification: "unverified"`. A withheld type never lists but still lowers the score it was counted in, so a file row reports it as `withheld_deduction` and `_meta.withheld` names the type, its count and why it is held back. Targeted mode is never split into production and test.
 
 Health findings, refactoring plans and opportunities, and performance opportunities on Java, C#, C and C++ files are held back pending verification for those languages. They are still stored and a lookup by id still answers; `_meta.gated` counts them per layer and language, and `include=["unverified"]` shows them.
 

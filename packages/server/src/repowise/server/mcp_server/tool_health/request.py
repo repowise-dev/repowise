@@ -123,7 +123,8 @@ class HealthRequest:
         # eligible for the impact cap rather than filtering an already-capped list.
         self.dimension_filter = self.include_set & set(ALL_DIMENSIONS)
         # Finding types the registry keeps off this surface, dropped at the read
-        # so no list, lead or total counts one.
+        # so no list or total counts one; ``read_withheld_rows`` reads them back
+        # only for the deduction the score took from them.
         self.include_unverified = "unverified" in self.include_set
         self.withheld_types = excluded_types(include_provisional=self.include_unverified)
         # Performance findings carry zero impact, so an impact-ranked list

@@ -244,6 +244,31 @@ async def _read_findings_by_id(session: Any, ids: list[str]) -> dict[str, Any]:
     }
 
 
+async def read_withheld_rows(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> list[Any]:
+    """Open findings of a type the registry withholds from this surface.
+
+    No list or total shows them, but the stored score counted them, so the
+    per-file leads report their deduction and ``_meta.withheld`` names them:
+    a score never drops for a reason the response hides.
+    """
+    if not req.withheld_types:
+        return []
+    query = select(
+        HealthFinding.file_path, HealthFinding.biomarker_type, HealthFinding.health_impact
+    ).where(
+        HealthFinding.repository_id == repository.id,
+        HealthFinding.status == "open",
+        # No language gate: a withheld type is withheld on every language, and
+        # ``gated_findings`` counts only shown types, so no row is named twice.
+        HealthFinding.biomarker_type.in_(req.withheld_types),
+    )
+    if pop.scoped:
+        query = query.where(HealthFinding.file_path.in_(pop.effective_targets))
+    return pop.in_counts_findings(pop.in_scope_rows(plain_rows(await session.execute(query))))
+
+
 async def read_accuracy_rows(
     session: Any, repository: Any, pop: Population, req: HealthRequest
 ) -> list[Any]:
