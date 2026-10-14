@@ -10,12 +10,22 @@ Only hashes leave this module; the text never does.
 from __future__ import annotations
 
 import hashlib
+import re
 
 #: A line needs this many non-space characters, one of them alphanumeric, to
 #: count toward a binding. Blank, brace-only and short lines (``}``, ``pass``,
 #: ``return x``) occur everywhere, so they can ride inside a bound run but never
 #: anchor one.
 MIN_SUBSTANTIVE_CHARS = 10
+
+#: Stub statements long enough to pass the length rule but written the same way
+#: everywhere (Python, JS, TS), so they never anchor a run either.
+_STUB_LINE = re.compile(
+    r"(?:return\s+(?:none|null|undefined|true|false)"
+    r"|raise\s+NotImplementedError(?:\(.*\))?"
+    r"|throw\s+new\s+Error\(\s*(['\"`])not\s+implemented\.?\1\s*\))\s*;?",
+    re.IGNORECASE,
+)
 
 
 def normalize_line(line: str) -> str:
@@ -41,7 +51,11 @@ def line_hash(line: str) -> str:
 
 def is_substantive(line: str) -> bool:
     stripped = normalize_line(line).strip()
-    return len(stripped) >= MIN_SUBSTANTIVE_CHARS and any(ch.isalnum() for ch in stripped)
+    return (
+        len(stripped) >= MIN_SUBSTANTIVE_CHARS
+        and any(ch.isalnum() for ch in stripped)
+        and not _STUB_LINE.fullmatch(stripped)
+    )
 
 
 def opaque_id(value: str) -> str:

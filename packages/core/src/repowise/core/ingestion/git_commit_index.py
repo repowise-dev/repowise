@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import json
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,10 +96,27 @@ def _merge_capture_bindings(repo: object, notes: dict[str, GitAiNote]) -> None:
 
     from .git_indexer.agent_provenance import GitAiNote, _normalize_agent_token
 
-    for sha, agent in bound_commits(root).items():
-        label = _normalize_agent_token(agent.replace("_", " "), allow_slug=True)
+    for sha, row in bound_commits(root).items():
+        label = _normalize_agent_token(row["agent"].replace("_", " "), allow_slug=True)
         if label and sha not in notes:
-            notes[sha] = GitAiNote(agent=label, source="edit_capture")
+            notes[sha] = GitAiNote(
+                agent=label, source="edit_capture", model=_binding_model(row, row["agent"])
+            )
+
+
+def _binding_model(row: dict, agent: str) -> str | None:
+    """The model behind most of *agent*'s lines in a binding row; None if unrecorded or tied."""
+    from .git_indexer.agent_provenance import _MODEL_ID_MAXLEN, _dominant
+
+    lines: Counter[str] = Counter()
+    for session in row.get("sessions") or []:
+        if not isinstance(session, dict) or session.get("agent") != agent:
+            continue
+        model, files = session.get("model"), session.get("files")
+        if isinstance(model, str) and model.strip() and isinstance(files, dict):
+            count = sum(len(n) for n in files.values() if isinstance(n, list))
+            lines[model.strip()[:_MODEL_ID_MAXLEN]] += count
+    return _dominant(+lines)
 
 
 def _git_ai_notes_log(repo: object, commit_limit: int | None) -> str:
@@ -371,7 +389,8 @@ class _CommitLabeler:
             self._classifier, header, {t for t, _, _ in changes}, self._notes, self._trace_index
         )
         if self._sink is not None:
-            self._sink.append(_sink_row(header, changes, prov, trace_hit))
+            note = self._notes.get(header["sha"])
+            self._sink.append(_sink_row(header, changes, prov, trace_hit, note))
         return prov
 
 
@@ -380,6 +399,7 @@ def _sink_row(
     changes: list[tuple[str, int, int]],
     prov: AgentProvenance,
     trace_hit: tuple[str, str, str | None] | None,
+    note: GitAiNote | None = None,
 ) -> dict:
     return {
         "sha": header["sha"],
@@ -394,13 +414,22 @@ def _sink_row(
         "agent_channel": prov.channel,
         "agent_confidence": prov.confidence,
         "attribution": prov.attribution,
-        # Model id only when the trace channel actually won: a note
-        # or service-identity match can outrank the trace above, and
-        # only the trace record carries a model.
-        "agent_model_id": (
-            trace_hit[2] if (trace_hit and prov.channel == "agent_trace") else None
-        ),
+        # Model id only from the record whose channel won: a
+        # service-identity match carries none.
+        "agent_model_id": _winning_model(prov, trace_hit, note),
     }
+
+
+def _winning_model(
+    prov: AgentProvenance,
+    trace_hit: tuple[str, str, str | None] | None,
+    note: GitAiNote | None,
+) -> str | None:
+    if trace_hit and prov.channel == "agent_trace":
+        return trace_hit[2]
+    if note and prov.agent and prov.channel == note.source:
+        return note.model
+    return None
 
 
 class _FileBuckets:

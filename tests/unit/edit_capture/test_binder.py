@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from repowise.core.edit_capture.binder import bind_pending
 from repowise.core.edit_capture.edits import CapturedCall, FileEdit
+from repowise.core.edit_capture.hashing import is_substantive
 from repowise.core.edit_capture.store import (
     EVENTS,
     append_jsonl,
@@ -60,6 +63,38 @@ def test_bound_commit_feeds_three_state_provenance(repo, user_config) -> None:
     assert all(not n.human for n in notes.values()) and len(notes) == 1
 
 
+def test_bound_model_reaches_the_commit_row(repo, user_config) -> None:
+    import git as gitpython
+
+    from repowise.core.ingestion.git_commit_index import _sink_row, load_git_ai_note_agents
+    from repowise.core.ingestion.git_indexer.agent_provenance import AgentProvenance
+
+    call = CapturedCall(
+        tool="apply_patch",
+        edits=[FileEdit("src/settle.py", BODY)],
+        session_id="s1",
+        model="gpt-5.5-codex",
+        cwd=str(repo.root),
+    )
+    record_call(repo.root, "codex", call)
+    repo.write("src/settle.py", "\n".join(BODY) + "\n")
+    sha = repo.commit("settle")
+    bind_pending(repo.root, capture="local")
+    on = "attribution:\n  capture: local\n  agents: [codex]\n"
+    repo.configure(on)
+    user_config.write_text(on, encoding="utf-8")
+    note = load_git_ai_note_agents(gitpython.Repo(repo.root), None)[sha]
+    assert note.model == "gpt-5.5-codex"
+
+    header = {"sha": sha, "author_name": "Dev", "author_email": "dev@example.com", "ts": 0}
+    header |= {"subject": "settle"}
+    won = AgentProvenance(note.agent, 2, "edit_capture", "high", "agent")
+    assert _sink_row(header, [], won, None, note)["agent_model_id"] == "gpt-5.5-codex"
+    # A channel the note did not win carries no model.
+    other = AgentProvenance(note.agent, 2, "message_footer", "high", "agent")
+    assert _sink_row(header, [], other, None, note)["agent_model_id"] is None
+
+
 def test_capture_off_binds_nothing(repo) -> None:
     _agent_edit(repo, "src/settle.py", BODY)
     repo.write("src/settle.py", "\n".join(BODY) + "\n")
@@ -73,6 +108,47 @@ def test_boilerplate_collision_is_a_miss(repo) -> None:
     _agent_edit(repo, "src/a.py", ["    }", "    return None", "", "    pass", "else:"])
     repo.write("src/a.py", "    }\n    return None\n\n    pass\nelse:\n")
     repo.commit("human")
+    assert bind_pending(repo.root, capture="local") == []
+
+
+STUBS = [
+    "    return None",
+    "    raise NotImplementedError('todo')",
+    "  return undefined;",
+    '  throw new Error("Not implemented");',
+]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        *STUBS,
+        "return null;",
+        "return False",
+        "raise NotImplementedError",
+        "throw new Error('not implemented.')",
+    ],
+)
+def test_stub_statements_are_not_substantive(line: str) -> None:
+    assert not is_substantive(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "return None if empty else head",
+        "raise ValueError('bad ledger')",
+        "throw new Error('ledger closed');",
+    ],
+)
+def test_real_statements_stay_substantive(line: str) -> None:
+    assert is_substantive(line)
+
+
+def test_a_stub_only_edit_is_a_miss(repo) -> None:
+    _agent_edit(repo, "src/a.py", STUBS)
+    repo.write("src/a.py", "\n".join(STUBS) + "\n")
+    repo.commit("stubs")
     assert bind_pending(repo.root, capture="local") == []
 
 

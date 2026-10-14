@@ -39,13 +39,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.fsutils import relative_files
 from repowise.core.precedent.store import (
     _IN_CHUNK,
     TIER_TRANSCRIPT,
     Episode,
     EpisodeStore,
 )
-from repowise.core.sessions.events import event_files, is_prose_user_text, relative_files
+from repowise.core.sessions.events import event_files, is_prose_user_text
 
 _log = logging.getLogger(__name__)
 

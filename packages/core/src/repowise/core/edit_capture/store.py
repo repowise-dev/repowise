@@ -82,7 +82,7 @@ def edit_event(agent_slug: str, call: CapturedCall, edit: FileEdit, ts: float) -
 
 def _repo_relative(repo_root: Path, cwd: str, path: str) -> str | None:
     """*path* (absolute, or relative to *cwd*) relative to *repo_root*; None outside it."""
-    from repowise.core.sessions.events import relative_files
+    from repowise.core.fsutils import relative_files
 
     path = path.replace("\\", "/")
     if not (path.startswith("/") or (len(path) > 1 and path[1] == ":")):
@@ -154,13 +154,13 @@ def save_state(repo_root: Path | str, state: dict[str, Any]) -> None:
     os.replace(tmp, directory / STATE)
 
 
-def bound_commits(repo_root: Path | str) -> dict[str, str]:
-    """``commit sha -> agent slug`` for every commit the binder attributed."""
-    out: dict[str, str] = {}
+def bound_commits(repo_root: Path | str) -> dict[str, dict[str, Any]]:
+    """``commit sha -> binding row`` for every commit the binder attributed to an agent."""
+    out: dict[str, dict[str, Any]] = {}
     for row in read_jsonl(sidecar_dir(repo_root) / BINDINGS):
         sha, agent = row.get("commit"), row.get("agent")
         if isinstance(sha, str) and isinstance(agent, str) and agent:
-            out[sha] = agent
+            out[sha] = row
     return out
 
 

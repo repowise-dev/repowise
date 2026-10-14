@@ -59,6 +59,18 @@ def test_rendered_note_has_the_spec_shape() -> None:
     assert "human_author" not in session and "humans" not in meta
     assert all(_KEY_LINE.match(line) for line in spec_lines if line.startswith("  s_"))
     assert parse_git_ai_note(note).agent == "claude"
+    # render_note writes "unknown" for a missing model; that is not a model.
+    assert parse_git_ai_note(note).model is None
+
+
+def test_note_model_is_the_agents_most_common() -> None:
+    def session(sid: str, model: str | None) -> dict:
+        return {"tool": "codex", "session": sid, "model": model, "files": {"a.py": [1]}}
+
+    note = render_note("a" * 40, [session("s1", "gpt-5.5-codex"), session("s2", "gpt-5.5-codex")])
+    assert parse_git_ai_note(note).model == "gpt-5.5-codex"
+    tied = render_note("a" * 40, [session("s1", "gpt-5.5-codex"), session("s2", "o4")])
+    assert parse_git_ai_note(tied).model is None
 
 
 def test_session_key_and_ranges_follow_the_spec() -> None:

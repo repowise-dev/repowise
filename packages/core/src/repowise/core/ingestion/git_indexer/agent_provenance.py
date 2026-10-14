@@ -240,6 +240,8 @@ class GitAiNote:
     # The channel the agent label is stored under: ``edit_capture`` for a
     # commit bound from this machine's own capture sidecar.
     source: str = "git_ai_note"
+    # The agent's most common recorded model, ``None`` when unrecorded or tied.
+    model: str | None = None
 
 
 # A note is a few KB; past this it is not read (a hostile or broken ref must
@@ -279,15 +281,22 @@ def parse_git_ai_note(note: str) -> GitAiNote:
             return GitAiNote()
         entries = data.get("sessions") or data.get("prompts") or {}
         counts: dict[str, int] = {}
+        models: dict[str, Counter[str]] = {}
         for entry in entries.values() if isinstance(entries, dict) else []:
-            tool = ((entry or {}).get("agent_id") or {}).get("tool")
+            agent_id = (entry or {}).get("agent_id") or {}
+            tool = agent_id.get("tool")
             agent = _normalize_agent_token(str(tool), allow_slug=True) if tool else None
             if agent:
                 counts[agent] = counts.get(agent, 0) + 1
+                model = str(agent_id.get("model") or "").strip()
+                if model and model != "unknown":
+                    models.setdefault(agent, Counter())[model[:_MODEL_ID_MAXLEN]] += 1
         if counts:
             top = max(counts.values())
             leaders = [a for a, c in counts.items() if c == top]
-            return GitAiNote(agent=leaders[0] if len(leaders) == 1 else None)
+            if len(leaders) != 1:
+                return GitAiNote()
+            return GitAiNote(agent=leaders[0], model=_dominant(models.get(leaders[0])))
         human_keys = ai_keys = 0
         paths: set[str] = set()
         for line in lines[:div]:
