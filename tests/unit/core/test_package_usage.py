@@ -24,6 +24,12 @@ async def test_sites_carry_line_component_owners_and_reachability(session, tmp_p
     ]
     util = sites["src/app/util.py"]
     assert util["line"] == 2 and util["statement"] == "from requests import get"
+    # requests.compat has no declaration link: it stays inferred, and the
+    # declared module alone gives the site its symbols and line.
+    assert util["modules"] == [
+        {"name": "requests", "mapping": "declared"},
+        {"name": "requests.compat", "mapping": "inferred"},
+    ]
     assert util["symbols"] == ["get"]
     assert util["component"] == "app"
     assert util["owners"] == ["platform"]
@@ -31,8 +37,8 @@ async def test_sites_carry_line_component_owners_and_reachability(session, tmp_p
     assert util["reachability"] == {"state": "reachable", "basis": "import_graph"}
 
     worker = sites["src/jobs/worker.py"]
-    assert worker["modules"] == ["requests.adapters"]
-    assert worker["line"] == 1
+    assert worker["modules"] == [{"name": "requests.adapters", "mapping": "declared"}]
+    assert worker["line"] == 2  # line 1 is a comment that names requests
     assert worker["owners"] == ["batch-team"]
     # Nothing imports it, but no dead-code finding says so: unknown, not unreachable.
     assert worker["reachability"] == {"state": "unknown", "basis": "no_import_path"}
@@ -57,11 +63,12 @@ async def test_import_name_alone_is_inferred_and_ecosystem_scoped(session, tmp_p
         session, REPO, tmp_path, [("yaml", None), ("yaml", "npm"), ("pyyaml", "pypi")]
     )
     assert [(s["path"], s["mapping"]) for s in yaml["sites"]] == [("src/jobs/worker.py", "inferred")]
-    assert yaml["sites"][0]["line"] == 2
+    assert yaml["sites"][0]["line"] == 3
     assert "No manifest declares" in yaml["note"]
     assert yaml_npm["sites"] == []  # a Python file's import is not an npm package
-    # Declared under its distribution name, imported as ``yaml``: no link, said so.
-    assert [d["package_key"] for d in pyyaml["declared"]] == ["pypi:PyYAML"]
+    # Declared under its distribution name (in two spellings), imported as
+    # ``yaml``: no link, said so.
+    assert [d["package_key"] for d in pyyaml["declared"]] == ["pypi:PyYAML", "pypi:pyyaml"]
     assert pyyaml["sites"] == []
     assert "import name may differ" in pyyaml["note"]
 
@@ -81,7 +88,8 @@ async def test_component_inventory(session, tmp_path):  # noqa: F811
     assert app["entry_points"] == ["src/app/main.py"]
     assert app["packages"] == [{"package_key": "pypi:requests", "files": 1}]
     assert comps["jobs"]["owners"]["teams"] == [{"team": "batch-team", "files": 1}]
-    assert inv["packages"]["declared_not_imported"] == ["pypi:PyYAML", "pypi:pytest"]
+    assert inv["packages"]["declared_not_imported"] == ["pypi:pytest", "pypi:pyyaml"]
+    assert inv["packages"]["declared"] == 3  # PyYAML and pyyaml are one package
     text = repr(inv)
     assert "someone" not in text  # individuals never appear
 
@@ -145,7 +153,17 @@ async def test_cyclonedx_shape_matches_the_1_6_schema_keys(session, tmp_path):  
         "additionalContext": "from requests import get",
     }
     assert {"name": "repowise:declared_version", "value": ">=2.31"} in req["properties"]
-    assert "evidence" not in by_ref["pypi:PyYAML"]  # declared, no linked import
+    # Only declared modules become occurrences, from the declared statement.
+    assert len(req["evidence"]["occurrences"]) == 4
+    # Two spellings of one distribution are one component.
+    yaml = by_ref["pypi:pyyaml"]
+    assert yaml["name"] == "PyYAML" and yaml["purl"] == "pkg:pypi/pyyaml"
+    assert [p["value"] for p in yaml["properties"] if p["name"] == "repowise:declared_in"] == [
+        "pyproject.toml",
+        "requirements.txt",
+    ]
+    assert "evidence" not in yaml  # declared, no linked import
+    assert sum(1 for c in bom["components"] if c["bom-ref"].startswith("pypi:pyyaml")) == 1
 
 
 def test_purl():
@@ -154,3 +172,32 @@ def test_purl():
     assert purl("maven", "com.google.guava:guava") == "pkg:maven/com.google.guava/guava"
     assert purl("go", "github.com/x/y") == "pkg:golang/github.com/x/y"
     assert purl("bazel", "x") is None
+    assert purl("maven", "guava") is None  # no group
+
+
+
+async def test_only_open_served_dead_code_findings_mark_a_file_unreachable(session, tmp_path):  # noqa: F811
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import DeadCodeFinding
+
+    await session.execute(update(DeadCodeFinding).values(status="acknowledged"))
+    await session.commit()
+    doc = await package_usage(session, REPO, tmp_path, "requests")
+    legacy = _by_path(doc)["src/old/legacy.py"]
+    assert legacy["reachability"] == {"state": "unknown", "basis": "no_import_path"}
+
+
+def test_import_lines_skip_comments_and_read_go_blocks(tmp_path):
+    from repowise.core.inventory.usage import _import_lines
+
+    src = tmp_path / "main.go"
+    src.write_text(
+        'package main\n// import "fmt" in a comment\nimport (\n\t"fmt"\n\t// "os"\n'
+        '\t"github.com/x/y"\n)\nvar s = "import fmt"\n',
+        encoding="utf-8",
+    )
+    assert _import_lines(src) == [(4, '"fmt"'), (6, '"github.com/x/y"')]
+    js = tmp_path / "a.js"
+    js.write_text("// require('lodash')\nconst _ = require('lodash')\n", encoding="utf-8")
+    assert _import_lines(js) == [(2, "const _ = require('lodash')")]

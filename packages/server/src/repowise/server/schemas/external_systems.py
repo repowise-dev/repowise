@@ -166,11 +166,18 @@ class PackageUsageReachability(BaseModel):
     basis: str
 
 
+class PackageUsageModule(BaseModel):
+    """One module the file imports and how it was matched to the package."""
+
+    name: str
+    mapping: Literal["declared", "inferred"]
+
+
 class PackageUsageSite(BaseModel):
     """One file importing the package."""
 
     path: str
-    modules: list[str]
+    modules: list[PackageUsageModule]
     symbols: list[str]
     mapping: Literal["declared", "inferred"]
     line: int | None = None

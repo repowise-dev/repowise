@@ -31,6 +31,7 @@ import re
 from collections import Counter, deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -61,18 +62,32 @@ LANGUAGE_ECOSYSTEM = {
     "scala": "maven",
 }
 
-_IMPORT_KEYWORD = re.compile(r"\b(import|from|require|use|using|include|load|extern)\b|#\s*include")
+#: A statement that imports, anchored at the start of the line so a comment or a
+#: string that mentions a module never counts. ``const x = require(...)`` is the
+#: one form where the keyword is not first (and its ``import(...)`` twin).
+_IMPORT_LINE = re.compile(
+    r"(?:(?:import|from|use|using|require|include|load|extern|export|open)\b"
+    r"|\}\s*from\b"  # the last line of a multi-line JS/TS import
+    r"|#\s*include\b|#import\b"
+    r"|(?:const|let|var)\b.*\b(?:require|import)\s*\()"
+)
+#: First characters :data:`_IMPORT_LINE` can match on, checked before the regex.
+_IMPORT_STARTS = tuple("iufrleo}#cv")
+#: Opens an ``import ( ... )`` block (Go): each line inside names one module.
+_BLOCK_OPEN = re.compile(r"import\s*\(\s*$")
 #: Files larger than this are not read for the import line; the site keeps no line.
 _MAX_READ_BYTES = 2_000_000
+#: Bound parameters per ``IN`` list, well under SQLite's variable limit.
+_CHUNK = 500
 
 METHOD = {
     "import_sites": "imports edges from a file to an external graph node",
     "mapping": "declared: linked to the manifest declaration by ingestion; "
     "inferred: matched by import name only, no declaration linked",
-    "line": "first line of the importing file that names the module in an import "
-    "statement (text match); absent when none matches",
+    "line": "first import statement of the file (a line starting with an import "
+    "keyword, or inside a Go import block) that names the module; absent when none does",
     "reachability": "reachable: an entry point or reachability root imports the file "
-    "through stored import edges; unreachable: a dead-code unreachable_file finding; "
+    "through stored import edges; unreachable: an open dead-code unreachable_file finding; "
     "test: a test file; unknown: neither",
     "owners": "declared teams from the catalog spec.owner and CODEOWNERS; "
     "individuals are never named",
@@ -85,9 +100,7 @@ def dist_key(name: str) -> str:
 
 
 def _same_name(ecosystem: str, a: str, b: str) -> bool:
-    if ecosystem == "pypi":
-        return dist_key(a) == dist_key(b)
-    return a.casefold() == b.casefold()
+    return lookup_key(ecosystem, a) == lookup_key(ecosystem, b)
 
 
 def parse_query(query: str) -> tuple[str, str | None]:
@@ -128,32 +141,47 @@ class UsageIndex:
     edges: list[tuple[str, str, list[str]]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        # Built once so each query below is a few dict lookups, however many a
+        # supplied SBOM asks about.
         self.by_target: dict[str, list[tuple[str, list[str]]]] = {}
         for src, dst, names in self.edges:
             self.by_target.setdefault(dst, []).append((src, names))
-
-    def match(self, name: str, ecosystem: str | None = None) -> tuple[list[Declaration], dict[str, str]]:
-        """The declarations of *name* and each matching external node's mapping basis."""
-        decls = [
-            d
-            for d in self.declarations
-            if (ecosystem is None or d.ecosystem == ecosystem) and _same_name(d.ecosystem, d.name, name)
-        ]
-        ids = {d.id: d for d in decls}
-        mapped: dict[str, str] = {}
+        self._decls_by_name: dict[str, list[Declaration]] = {}
+        for d in self.declarations:
+            self._decls_by_name.setdefault(lookup_key(d.ecosystem, d.name), []).append(d)
+        self._nodes_by_decl: dict[int, list[str]] = {}
+        self._unlinked_by_name: dict[str, list[str]] = {}
         for node_id, decl_id in self.nodes.items():
             if decl_id is not None:
-                if decl_id in ids:
-                    mapped[node_id] = "declared"
-            elif _import_name_matches(node_id, name):
-                mapped[node_id] = "inferred"
-        return decls, mapped
+                self._nodes_by_decl.setdefault(decl_id, []).append(node_id)
+                continue
+            suffix = node_id[len(EXTERNAL_NODE_PREFIX) :]
+            for cand in {c.casefold() for c in declaration_name_candidates(suffix)}:
+                self._unlinked_by_name.setdefault(cand, []).append(node_id)
+
+    def match(
+        self, name: str, ecosystem: str | None = None
+    ) -> tuple[list[Declaration], dict[str, str]]:
+        """The declarations of *name* and each matching external node's mapping basis."""
+        found = {
+            d.id: d
+            for key in dict.fromkeys((name.casefold(), dist_key(name)))
+            for d in self._decls_by_name.get(key, ())
+            if (ecosystem is None or d.ecosystem == ecosystem)
+            and _same_name(d.ecosystem, d.name, name)
+        }
+        mapped: dict[str, str] = {}
+        for decl_id in found:
+            for node_id in self._nodes_by_decl.get(decl_id, ()):
+                mapped[node_id] = "declared"
+        for node_id in self._unlinked_by_name.get(name.casefold(), ()):
+            mapped[node_id] = "inferred"
+        return list(found.values()), mapped
 
 
-def _import_name_matches(node_id: str, name: str) -> bool:
-    suffix = node_id[len(EXTERNAL_NODE_PREFIX) :]
-    wanted = name.casefold()
-    return any(c.casefold() == wanted for c in declaration_name_candidates(suffix))
+def lookup_key(ecosystem: str, name: str) -> str:
+    """One spelling per package within an ecosystem: PEP 503 for PyPI, else case-folded."""
+    return dist_key(name) if ecosystem == "pypi" else name.casefold()
 
 
 def _is_file(node_id: str) -> bool:
@@ -221,7 +249,8 @@ class FileFacts:
     language: dict[str, str] = field(default_factory=dict)
     reachability: dict[str, dict[str, str]] = field(default_factory=dict)
     declared: Any = None  # DeclaredOwnership
-    lines: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
+    #: Path to its import statements as ``(1-based line, stripped text)``, read once.
+    import_lines: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
     repo_root: Path | None = None
 
     def teams(self, path: str) -> list[str]:
@@ -243,25 +272,45 @@ class FileFacts:
         """``(1-based line, text)`` of the first import statement naming a token."""
         if self.repo_root is None:
             return None
-        if path not in self.lines:
-            self.lines[path] = _read_lines(self.repo_root / path)
-        lines = self.lines[path]
-        if not lines:
-            return None
-        patterns = [re.compile(rf"(?<![\w@/.-]){re.escape(t)}(?![\w-])") for t in tokens if t]
-        for i, text in enumerate(lines, 1):
-            if _IMPORT_KEYWORD.search(text) and any(p.search(text) for p in patterns):
-                return i, text.strip()[:200]
+        if path not in self.import_lines:
+            self.import_lines[path] = _import_lines(self.repo_root / path)
+        patterns = [_token_pattern(t) for t in tokens if t]
+        for number, text in self.import_lines[path]:
+            if any(p.search(text) for p in patterns):
+                return number, text
         return None
 
 
-def _read_lines(path: Path) -> tuple[str, ...] | None:
+@lru_cache(maxsize=4096)
+def _token_pattern(token: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![\w@/.-]){re.escape(token)}(?![\w-])")
+
+
+def _import_lines(path: Path) -> list[tuple[int, str]]:
+    """The file's import statements, as ``(1-based line, stripped text)``; empty
+    when it is unreadable or too large. The text itself is not kept."""
     try:
         if path.stat().st_size > _MAX_READ_BYTES:
-            return None
-        return tuple(path.read_text(encoding="utf-8", errors="replace").splitlines())
+            return []
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return None
+        return []
+    out: list[tuple[int, str]] = []
+    in_block = False
+    for number, raw in enumerate(lines, 1):
+        text = raw.strip()
+        if in_block:
+            if text.startswith(")"):
+                in_block = False
+            elif text and not text.startswith("//"):
+                out.append((number, text[:200]))
+        # The cheap prefix test skips most lines before any regex runs.
+        elif text.startswith(_IMPORT_STARTS):
+            if _BLOCK_OPEN.match(text):
+                in_block = True
+            elif _IMPORT_LINE.match(text):
+                out.append((number, text[:200]))
+    return out
 
 
 async def load_file_facts(
@@ -290,8 +339,8 @@ async def _reachability(
     session: Any, repository_id: str, files: set[str], test_files: set[str]
 ) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
     from repowise.core.analysis.dead_code.models import DeadCodeKind
-    from repowise.core.analysis.finding_registry import excluded_types, is_served
-    from repowise.core.persistence.models import DeadCodeFinding, GraphEdge, GraphNode
+    from repowise.core.persistence.crud import get_dead_code_findings
+    from repowise.core.persistence.models import GraphEdge, GraphNode
 
     nodes = (
         await session.execute(
@@ -328,22 +377,17 @@ async def _reachability(
                 if nxt not in reached:
                     reached.add(nxt)
                     queue.append(nxt)
+    # What the dead-code surface serves: open findings of a shown kind, no gated language.
     unreachable: set[str] = set()
-    if files:
-        excluded = excluded_types()
-        kind = DeadCodeKind.UNREACHABLE_FILE.value
-        rows = (
-            await session.execute(
-                select(DeadCodeFinding.file_path).where(
-                    DeadCodeFinding.repository_id == repository_id,
-                    DeadCodeFinding.kind == kind,
-                    DeadCodeFinding.status != "false_positive",
-                )
-            )
-        ).all()
-        unreachable = {
-            p for (p,) in rows if p in files and is_served("dead_code", kind, p, excluded)
-        }
+    ordered = sorted(files)
+    for i in range(0, len(ordered), _CHUNK):
+        found = await get_dead_code_findings(
+            session,
+            repository_id,
+            kind=DeadCodeKind.UNREACHABLE_FILE.value,
+            file_paths=ordered[i : i + _CHUNK],
+        )
+        unreachable.update(f.file_path for f in found)
     out: dict[str, dict[str, str]] = {}
     for path in files:
         if path in test_files:
@@ -365,7 +409,7 @@ async def _reachability(
 def _sites(
     index: UsageIndex, mapped: dict[str, str], ecosystem: str | None, facts: FileFacts | None
 ) -> list[dict[str, Any]]:
-    by_file: dict[str, dict[str, Any]] = {}
+    by_file: dict[str, dict[str, dict[str, Any]]] = {}
     pairs = ((src, dst, names) for dst in mapped for src, names in index.by_target.get(dst, ()))
     for src, dst, names in pairs:
         basis = mapped[dst]
@@ -377,21 +421,33 @@ def _sites(
             and LANGUAGE_ECOSYSTEM.get(facts.language.get(src, "")) != ecosystem
         ):
             continue  # an undeclared import name from another ecosystem
-        row = by_file.setdefault(
-            src, {"path": src, "modules": [], "symbols": [], "mapping": basis}
-        )
         module = dst[len(EXTERNAL_NODE_PREFIX) :]
-        if module not in row["modules"]:
-            row["modules"].append(module)
-        row["symbols"].extend(n for n in names if n not in row["symbols"])
-        if basis == "declared":
-            row["mapping"] = "declared"
-    return [by_file[p] for p in sorted(by_file)]
+        entry = by_file.setdefault(src, {}).setdefault(
+            module, {"name": module, "mapping": basis, "symbols": []}
+        )
+        entry["symbols"].extend(n for n in names if n not in entry["symbols"])
+    sites = []
+    for path in sorted(by_file):
+        modules = sorted(by_file[path].values(), key=lambda m: m["name"])
+        declared = [m for m in modules if m["mapping"] == "declared"]
+        # A declared link outranks an import-name match in the same file: the
+        # site's symbols and line come from the declared modules alone.
+        chosen = declared or modules
+        sites.append(
+            {
+                "path": path,
+                "modules": [{"name": m["name"], "mapping": m["mapping"]} for m in modules],
+                "symbols": list(dict.fromkeys(n for m in chosen for n in m["symbols"])),
+                "mapping": "declared" if declared else "inferred",
+            }
+        )
+    return sites
 
 
 def _enrich(site: dict[str, Any], name: str, facts: FileFacts) -> dict[str, Any]:
     path = site["path"]
-    tokens = [*site["modules"], *(c for m in site["modules"] for c in declaration_name_candidates(m)), name]
+    names = [m["name"] for m in site["modules"] if m["mapping"] == site["mapping"]]
+    tokens = [*names, *(c for m in names for c in declaration_name_candidates(m)), name]
     found = facts.line_of(path, list(dict.fromkeys(tokens)))
     if found is not None:
         site["line"], site["statement"] = found
@@ -494,6 +550,7 @@ __all__ = [
     "dist_key",
     "load_file_facts",
     "load_usage_index",
+    "lookup_key",
     "package_usage",
     "package_usages",
     "parse_query",

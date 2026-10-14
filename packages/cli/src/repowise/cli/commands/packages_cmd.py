@@ -76,7 +76,7 @@ def packages_where(name: str, repo: str | None, fmt: str) -> None:
         table.add_row(
             escape(s["path"]),
             str(s.get("line", "")),
-            escape(", ".join(s["symbols"] or s["modules"])),
+            escape(", ".join(s["symbols"] or [m["name"] for m in s["modules"]])),
             escape(s.get("component", "")),
             escape(", ".join(s["owners"])),
             _reach(s),

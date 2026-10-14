@@ -15,9 +15,15 @@ from typing import Any
 
 from sqlalchemy import select
 
-from repowise.core.inventory.usage import load_usage_index
+from repowise.core.analysis.external_systems import package_key
+from repowise.core.inventory.usage import load_usage_index, lookup_key
 
 INVENTORY_VERSION = 1
+
+
+def _key(decl: Any) -> str:
+    """One key per package however its manifests spell it."""
+    return package_key(decl.ecosystem, lookup_key(decl.ecosystem, decl.name))
 
 
 async def component_inventory(
@@ -48,7 +54,7 @@ async def component_inventory(
     for src, dst, _names in index.edges:
         decl = decl_by_id.get(index.nodes.get(dst))  # type: ignore[arg-type]
         if decl is not None:
-            packages_of.setdefault(src, set()).add(decl.key)
+            packages_of.setdefault(src, set()).add(_key(decl))
 
     components = []
     imported: set[str] = set()
@@ -86,7 +92,7 @@ async def component_inventory(
                 row[key] = getattr(comp, key)
         components.append(row)
 
-    declared_keys = {d.key for d in index.declarations}
+    declared_keys = {_key(d) for d in index.declarations}
     return {
         "kind": "repowise.inventory",
         "version": INVENTORY_VERSION,

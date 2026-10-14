@@ -41,8 +41,10 @@ spec: {type: service, lifecycle: production}
 
 SOURCES = {
     "src/app/main.py": "from src.app import util\n",
-    "src/app/util.py": "import os\nfrom requests import get\n",
-    "src/jobs/worker.py": "from requests.adapters import HTTPAdapter\nimport yaml\n",
+    "src/app/util.py": "import os\nfrom requests import get\nfrom requests.compat import urljoin\n",
+    # A comment naming the module is not an import statement.
+    "src/jobs/worker.py": "# import requests directly\nfrom requests.adapters import HTTPAdapter\n"
+    "import yaml\n",
     "src/old/legacy.py": "import requests\n",
     "tests/test_util.py": "import requests\n",
 }
@@ -82,6 +84,11 @@ def rows(root: Path) -> list:
             id=3, repository_id=REPO, name="pytest", ecosystem="pypi",
             declared_in="pyproject.toml", is_dev_dep=True,
         ),
+        # The same distribution spelled another way in a second manifest.
+        ExternalSystem(
+            id=4, repository_id=REPO, name="pyyaml", ecosystem="pypi",
+            version="6.0.1", declared_in="requirements.txt",
+        ),
     ]  # fmt: skip
     for path in SOURCES:
         out.append(
@@ -98,6 +105,7 @@ def rows(root: Path) -> list:
         ("external:requests", 1),
         ("external:requests.adapters", 1),
         ("external:yaml", None),
+        ("external:requests.compat", None),
     ):
         out.append(
             GraphNode(
@@ -112,6 +120,7 @@ def rows(root: Path) -> list:
         ("src/app/util.py", "external:requests", '["get"]'),
         ("src/jobs/worker.py", "external:requests.adapters", '["HTTPAdapter"]'),
         ("src/jobs/worker.py", "external:yaml", "[]"),
+        ("src/app/util.py", "external:requests.compat", '["urljoin"]'),
         ("src/old/legacy.py", "external:requests", "[]"),
         ("tests/test_util.py", "external:requests", "[]"),
     ):

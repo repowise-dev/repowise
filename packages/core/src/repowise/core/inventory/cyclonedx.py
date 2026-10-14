@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from repowise.core.inventory.usage import dist_key, load_usage_index, package_usages
+from repowise.core.inventory.usage import (
+    dist_key,
+    load_usage_index,
+    lookup_key,
+    package_usages,
+)
 
 SPEC_VERSION = "1.6"
 _PURL_TYPE = {
@@ -37,8 +42,10 @@ def purl(ecosystem: str, name: str) -> str | None:
         return None
     if ecosystem == "pypi":
         name = dist_key(name)
-    if ecosystem == "maven" and ":" in name:
-        group, _, artifact = name.partition(":")
+    if ecosystem == "maven":
+        group, sep, artifact = name.partition(":")
+        if not sep or not group or not artifact:
+            return None  # a purl names a Maven package by group and artifact
         return f"pkg:maven/{quote(group)}/{quote(artifact)}"
     return f"pkg:{kind}/" + "/".join(quote(part) for part in name.split("/"))
 
@@ -55,17 +62,23 @@ def _occurrence(site: dict[str, Any]) -> dict[str, Any]:
 
 
 def _component(ecosystem: str, name: str, doc: dict[str, Any]) -> dict[str, Any]:
-    ref = f"{ecosystem}:{name}"
+    # One component per package however its manifests spell it (``PyYAML``,
+    # ``pyyaml``): the bom-ref uses the same normalised name the lookup does.
+    ref = f"{ecosystem}:{lookup_key(ecosystem, name)}"
     comp: dict[str, Any] = {"type": "library", "bom-ref": ref, "name": name}
     if (url := purl(ecosystem, name)) is not None:
         comp["purl"] = url
     props = [{"name": "repowise:ecosystem", "value": ecosystem}]
+    seen: set[tuple[str, str]] = set()
     for decl in doc["declared"]:
-        if decl["package_key"] != ref:
+        if not decl["package_key"].startswith(f"{ecosystem}:"):
             continue
-        props.append({"name": "repowise:declared_in", "value": decl["declared_in"]})
-        if decl["version"]:
-            props.append({"name": "repowise:declared_version", "value": decl["version"]})
+        for key in ("declared_in", "version"):
+            value = decl[key]
+            if value and (key, value) not in seen:
+                seen.add((key, value))
+                label = "declared_in" if key == "declared_in" else "declared_version"
+                props.append({"name": f"repowise:{label}", "value": value})
     states = doc["summary"]["reachability"]
     props.extend(
         {"name": f"repowise:importing_files_{state}", "value": str(n)}
@@ -87,7 +100,10 @@ async def cyclonedx_bom(
     from repowise.core import __version__
 
     index = await load_usage_index(session, repository_id)
-    keys = sorted({(d.ecosystem, d.name) for d in index.declarations})
+    names: dict[tuple[str, str], str] = {}
+    for d in sorted(index.declarations, key=lambda d: d.name):
+        names.setdefault((d.ecosystem, lookup_key(d.ecosystem, d.name)), d.name)
+    keys = sorted((eco, name) for (eco, _key), name in names.items())
     docs = await package_usages(
         session, repository_id, repo_root, [(name, eco) for eco, name in keys], index=index
     )
