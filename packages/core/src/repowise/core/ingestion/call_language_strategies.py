@@ -142,8 +142,8 @@ class LanguageStrategiesMixin:
         self._go_index: Any = None
         self._go_index_built = False
 
-        # {Kotlin function id: the type it extends, or None}
-        self._kotlin_receivers: dict[str, str | None] = {}
+        # {(Kotlin function id, line): the type it extends, or None}
+        self._kotlin_receivers: dict[tuple[str, int], str | None] = {}
         # {Dart class id: the named constructors its body declares}
         self._dart_constructors: dict[str, frozenset[str]] = {}
 
@@ -616,14 +616,16 @@ class LanguageStrategiesMixin:
         return in_lambda(source, caller is not None and caller.kind in _FUNCTION_KINDS)
 
     def _kotlin_receiver(self, symbol: Symbol) -> str | None:
-        """The type a Kotlin function extends, read off its header (annotations included)."""
-        if symbol.id not in self._kotlin_receivers:
+        """The type a Kotlin function extends, read off its header (annotations included).
+
+        Kept per declaration: same-named functions of one file share an id.
+        """
+        key = (symbol.id, symbol.start_line)
+        if key not in self._kotlin_receivers:
             path = self._symbol_paths_by_id.get(symbol.id, "")
-            lines = self._text_of(path).splitlines()[symbol.start_line - 1 : symbol.start_line + 7]
-            self._kotlin_receivers[symbol.id] = kotlin_extension_receiver(
-                " ".join(lines), symbol.name
-            )
-        return self._kotlin_receivers[symbol.id]
+            lines = self._lines_of(path)[symbol.start_line - 1 : symbol.start_line + 7]
+            self._kotlin_receivers[key] = kotlin_extension_receiver(" ".join(lines), symbol.name)
+        return self._kotlin_receivers[key]
 
     def _implicit_receivers(self, caller: Symbol) -> set[str]:
         """The bare type names ``this`` may be inside *caller*."""

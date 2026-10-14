@@ -138,6 +138,23 @@ class TestTiers:
         found = _resolve(tmp_path, files, "src/Consumer.cs")
         assert found["Net"] == ("receiver_extension_global", 0.75)
 
+    def test_an_extension_on_a_base_serves_a_derived_receiver(self, tmp_path: Path) -> None:
+        files = {
+            "src/Base.cs": "namespace Acme;\npublic class BaseOrder { }\n",
+            "src/Order.cs": "namespace Acme;\npublic class Order : BaseOrder { }\n",
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static int Net(this BaseOrder o) { return 1; }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run() { Order o = new Order(); var z = o.Net(); }\n}\n"
+            ),
+        }
+        heritage = {"src/Order.cs::Order": {"src/Base.cs::BaseOrder"}}
+        found = _resolve(tmp_path, files, "src/Consumer.cs", heritage=heritage)
+        assert found["Net"] == ("receiver_extension_global", 0.75)
+
     def test_an_instance_method_outranks_an_extension(self, tmp_path: Path) -> None:
         """C# dispatches to the instance method, so the extension must not answer."""
         files = {

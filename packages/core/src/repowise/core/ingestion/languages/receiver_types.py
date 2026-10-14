@@ -370,6 +370,9 @@ IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "dart", "java", "kotlin", "swift
 # Only where nothing in the repo can add a method to a builtin type: C#
 # extension methods, Kotlin and Swift extensions and Rust trait impls all can.
 EXTERNAL_TYPE_LANGUAGES = frozenset({"java"})
+# Those, and Kotlin, whose scan keeps the marked declaration without refusing:
+# a call on it may still reach a repo extension of the builtin.
+_MARKED_BUILTIN_LANGUAGES = EXTERNAL_TYPE_LANGUAGES | {"kotlin"}
 _EXTERNAL_TYPE = "external:"
 
 # A decorator that changes what the symbol it wraps *is*: `@shared_task` leaves
@@ -1004,7 +1007,7 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
             raw = match.group("type")
             if raw not in resolved:
                 resolved[raw] = _usable_type_name(raw, language)
-                if resolved[raw][0] is None and language in EXTERNAL_TYPE_LANGUAGES:
+                if resolved[raw][0] is None and language in _MARKED_BUILTIN_LANGUAGES:
                     resolved[raw] = (_builtin_type_name(raw, language), False)
             type_name, unwrapped = resolved[raw]
             if type_name is None:

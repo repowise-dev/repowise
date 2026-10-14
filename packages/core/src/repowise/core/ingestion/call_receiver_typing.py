@@ -62,6 +62,39 @@ from .type_names import (
 # from a local.
 _TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"})
 _FUNCTION_KINDS = frozenset({"function", "method"})
+# Languages whose extensions the extension index holds, keyed on the type extended.
+_EXTENSION_LANGUAGES = frozenset({"csharp", "kotlin"})
+# Members an extension of the same name can never beat: those of Kotlin's
+# ``Any``, which every type has, and the common ones of the builtin types a
+# library declares, which the repo's index cannot see. Not exhaustive.
+_ANY_MEMBERS = frozenset({"equals", "hashCode", "toString"})
+_LIBRARY_MEMBERS = frozenset(
+    {
+        "get",
+        "set",
+        "contains",
+        "containsAll",
+        "containsKey",
+        "containsValue",
+        "size",
+        "isEmpty",
+        "iterator",
+        "indexOf",
+        "lastIndexOf",
+        "subList",
+        "add",
+        "addAll",
+        "remove",
+        "removeAll",
+        "retainAll",
+        "clear",
+        "put",
+        "putAll",
+        "length",
+        "subSequence",
+        "compareTo",
+    }
+)
 
 _SOURCE_CACHE_FILES = 4
 
@@ -224,24 +257,77 @@ class ReceiverTypingMixin:
         """The extension method a ``(type, method)`` pair names, and its scope.
 
         Same three scopes as ``_receiver_pair_match``, over the extension index.
+        Kotlin has no global one: see ``_kotlin_extension_scope``.
         """
         site = self._extension_methods.get(key)
         if site is None:
             return None
         type_name, method_name = key
-        # An import bound the name outside the repo, so a local holder of the
-        # same simple name is not what the call site named.
-        if type_name in self._externally_bound_names(file_path):
+        if not self._writes_one_type(file_path, site[0], type_name):
             return None
-        if self._inherits_the_method(type_name, method_name):
+        if self._reaches_a_member(type_name, method_name):
             return None
         own = self._file_extension_methods.get(file_path, {})
         if key in own:
             return own[key], "same_file"
+        if self._language_of(file_path) == "kotlin":
+            return self._kotlin_extension_scope(file_path, site, method_name)
         merged = self._merged_extension_methods_for(file_path)
         if key in merged:
             return merged[key], "import"
         return site[1], "global"
+
+    def _kotlin_extension_scope(
+        self, file_path: str, site: tuple[str, str], name: str
+    ) -> tuple[str, str] | None:
+        """The Kotlin extension at *site*, scoped ``import`` when *file_path* sees it.
+
+        Kotlin brings a top-level function into scope only from the caller's
+        own package (an implicit import) or by an import naming it or its
+        package's ``*``, so a repo-wide name match is no evidence. ``private``
+        stays in its file and ``internal`` in its build.
+        """
+        path, sym_id = site
+        if self._symbols_by_id[sym_id].visibility == "private":
+            return None
+        if not self._in_reach_of_build(file_path, path):
+            return None
+        index = self._get_jvm_index()
+        package = index.package_for_file(path) if index is not None else None
+        if package is None:
+            seen = posixpath.dirname(path) == posixpath.dirname(file_path)
+        else:
+            parsed = self._parsed_files.get(file_path)
+            wanted = {f"{package}.{name}", f"{package}.*"}
+            seen = index.package_for_file(file_path) == package or any(
+                imp.module_path in wanted for imp in (parsed.imports if parsed else ())
+            )
+        return (sym_id, "import") if seen else None
+
+    def _writes_one_type(self, file_path: str, other_path: str, name: str) -> bool:
+        """Do the two files mean one type by *name*?
+
+        Both a repo or builtin one, or both the same library import.
+        """
+        written = self._external_import(file_path, name)
+        other = self._external_import(other_path, name)
+        if (written is None) != (other is None):
+            return False
+        return not (written and other and written != other)
+
+    def _external_import(self, file_path: str, name: str) -> str | None:
+        """The path *file_path* imports *name* from outside the repo, else None.
+
+        Empty when the name is bound outside but no statement names it alone.
+        """
+        if name not in self._externally_bound_names(file_path):
+            return None
+        parsed = self._parsed_files.get(file_path)
+        for imp in parsed.imports if parsed else ():
+            outside = not imp.resolved_file or imp.resolved_file.startswith("external:")
+            if outside and name in imp.local_names:
+                return imp.module_path
+        return ""
 
     def _typed_receiver_language(self, file_path: str, call: CallSite) -> str | None:
         """The language receiver typing may run in here, or None to decline.
@@ -263,7 +349,8 @@ class ReceiverTypingMixin:
             return None
 
         # Refuse before reading the file: nothing resolves unless some class
-        # declares a method of this name, which a free function does not prove.
+        # declares a method of this name or an extension carries it, which a
+        # free function does not prove.
         if call.target_name not in self._method_names():
             return None
         return language
@@ -588,9 +675,10 @@ class ReceiverTypingMixin:
             return None
         builtin = external_type_name(type_name)
         if builtin is not None:
-            # Typed only when a repo class shadows the builtin's name.
+            # A builtin's own members are not the repo's: only an extension on
+            # it is, unless a repo class shadows the builtin's name.
             if builtin not in self._known_type_names:
-                return None
+                return self._typed_extension_call(file_path, call, caller_id, builtin, language)
             type_name = builtin
         if "::" in type_name:
             # A symbol id, recorded by ``_add_call_typed_locals``.
@@ -600,8 +688,8 @@ class ReceiverTypingMixin:
 
         found = self._typed_receiver_target(typing_file, call, caller_id, type_name)
         if found is None:
-            # Last, because C# prefers an instance method to an extension.
-            return self._typed_extension_call(file_path, call, caller_id, type_name, language)
+            # Last, because C# and Kotlin prefer a member to an extension.
+            return self._extension_call(file_path, call, caller_id, type_name)[1]
         sym_id, tier = found
         if scope == "framework":
             return self._framework_typed_call(caller_id, sym_id, tier, call.line)
@@ -1077,6 +1165,39 @@ class ReceiverTypingMixin:
             return None
         return type_name
 
+    def _extension_call(
+        self, file_path: str, call: CallSite, caller_id: str, type_name: str
+    ) -> tuple[bool, ResolvedCall | None]:
+        """The extension a *type_name* receiver reaches, as ``(answered, edge)``.
+
+        One on the type itself, else one on an ancestor, which serves every
+        type deriving from it. Ancestors on two branches answering is
+        ambiguous: answered, with no edge.
+        """
+        language = self._language_of(file_path) or ""
+        if language not in _EXTENSION_LANGUAGES:
+            return False, None
+        own = self._typed_extension_call(file_path, call, caller_id, type_name, language)
+        if own is not None:
+            return True, own
+        hits = {}
+        for name in self._ancestor_names(type_name, language):
+            hit = self._typed_extension_call(file_path, call, caller_id, name, language)
+            if hit is not None:
+                hits[hit.callee_id] = hit
+        if not hits:
+            return False, None
+        return True, next(iter(hits.values())) if len(hits) == 1 else None
+
+    def _ancestor_names(self, type_name: str, language: str) -> list[str]:
+        """The names of the repo ancestors of the one *language* type *type_name* names."""
+        type_id = self._unique_type_id(type_name, language)
+        return [
+            symbol.name
+            for ancestor in (self._ancestors_of(type_id) if type_id is not None else ())
+            if (symbol := self._symbols_by_id.get(ancestor)) is not None
+        ]
+
     def _typed_extension_call(
         self,
         file_path: str,
@@ -1085,12 +1206,12 @@ class ReceiverTypingMixin:
         type_name: str,
         language: str,
     ) -> ResolvedCall | None:
-        if language != "csharp":
+        if language not in _EXTENSION_LANGUAGES:
             return None
         # Extensions are indexed by the type they name, written without arity.
         key = (id_segment_name(type_name), call.target_name)
         extension = self._extension_target(file_path, key)
-        if extension is None:
+        if extension is None or self._symbols_by_id[extension[0]].language != language:
             return None
         return self._extension_typed_call(caller_id, *extension, call.line)
 
@@ -1152,26 +1273,32 @@ class ReceiverTypingMixin:
             return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_framework_import")
         return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_framework_global")
 
-    def _inherits_the_method(self, type_name: str, method_name: str) -> bool:
-        """Could a class of this name reach *method_name* through an ancestor?
+    def _reaches_a_member(self, type_name: str, method_name: str) -> bool:
+        """Could a class of this name reach a member *method_name*, its own or inherited?
 
-        C# dispatches to an inherited instance method in preference to an
-        extension, and every tier above asks only for the literal
-        ``(type, method)`` pair, so none of them sees one. Asked of every class
-        sharing the simple name: which is meant is not settled here.
+        C# and Kotlin dispatch to a member in preference to an extension, and
+        every tier above asks only for the literal ``(type, method)`` pair, so
+        none of them sees an inherited one, nor one it refused as ambiguous.
+        Asked of every class sharing the simple name: which is meant is not
+        settled here. A member the repo cannot see, of ``Any`` or of a library
+        type, is read off a short list instead.
         """
+        if method_name in _ANY_MEMBERS:
+            return True
+        if type_name not in self._known_type_names and method_name in _LIBRARY_MEMBERS:
+            return True
         for sym_id in self._global_symbols.get(type_name, ()):
             symbol = self._symbols_by_id.get(sym_id)
             if symbol is None or symbol.kind not in _TYPE_KINDS:
                 continue
-            if any(self._declares(a, method_name) for a in self._ancestors_of(sym_id)):
+            if any(self._declares(a, method_name) for a in (sym_id, *self._ancestors_of(sym_id))):
                 return True
         return False
 
     def _extension_typed_call(
         self, caller_id: str, sym_id: str, tier: str, line: int
     ) -> ResolvedCall:
-        """Stamp an edge onto a C# extension method.
+        """Stamp an edge onto a C# extension method or a Kotlin extension function.
 
         One family whatever scope typed the receiver, unlike the three-way
         typed/field/framework split above: what an audit needs to separate is
@@ -1184,9 +1311,11 @@ class ReceiverTypingMixin:
         return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_extension_global")
 
     def _method_names(self) -> frozenset[str]:
-        """Every name declared as a method of some class, built once."""
+        """Every name a typed receiver can reach: a class's method or an extension, built once."""
         if self._method_name_set is None:
-            self._method_name_set = frozenset(method for _, method in self._global_methods)
+            self._method_name_set = frozenset(
+                method for _, method in (*self._global_methods, *self._extension_methods)
+            )
         return self._method_name_set
 
     def _receiver_type_is_external(self, file_path: str, call: CallSite, caller_id: str) -> bool:

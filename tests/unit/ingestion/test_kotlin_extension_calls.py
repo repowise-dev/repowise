@@ -150,3 +150,173 @@ class TestLambdaScan:
     )
     def test_in_lambda(self, source: str, has_body: bool, inside: bool) -> None:
         assert in_lambda(source, has_body) is inside
+
+
+TYPED = """\
+package app
+
+interface Helper {
+    fun log(name: String)
+}
+
+open class Base
+class Derived : Base()
+
+class Owner {
+    fun own() = 1
+}
+
+fun Helper.logScreen(name: String) = log(name)
+fun Base.describe() = "base"
+fun ByteArray.toText(): String = ""
+fun List<String>.firstTwo() = take(2)
+fun Owner.own() = 2
+fun <T> T.also2(): T = this
+
+class Uses(private val helper: Helper) {
+    fun typed(derived: Derived, bytes: ByteArray, names: List<String>, maybe: Derived?) {
+        helper.logScreen("x")
+        derived.describe()
+        bytes.toText()
+        names.firstTwo()
+        maybe?.describe()
+    }
+
+    fun refused(owner: Owner, derived: Derived) {
+        owner.own()
+        derived.also2()
+    }
+}
+"""
+
+
+def _typed_callees(tmp_path: Path, caller: str) -> set[str]:
+    path = tmp_path / "Typed.kt"
+    path.write_text(TYPED, encoding="utf-8")
+    info = FileInfo(
+        path="Typed.kt",
+        abs_path=str(path),
+        language="kotlin",
+        size_bytes=len(TYPED),
+        git_hash="",
+        last_modified=datetime.now(),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    parsed = {"Typed.kt": parse_file(info, TYPED.encode("utf-8"))}
+    heritage = {"Typed.kt::Derived": {"Typed.kt::Base"}}
+    resolver = CallResolver(
+        parsed, {"Typed.kt": set()}, repo_path=str(tmp_path), heritage_parents=heritage
+    )
+    return {
+        rc.callee_id
+        for rc in resolver.resolve_file("Typed.kt", parsed["Typed.kt"].calls)
+        if rc.caller_id == f"Typed.kt::Uses::{caller}"
+    }
+
+
+def test_a_typed_receiver_reaches_the_extension_on_its_type_or_ancestor(tmp_path: Path) -> None:
+    assert _typed_callees(tmp_path, "typed") == {
+        "Typed.kt::logScreen",
+        "Typed.kt::describe",  # declared on Derived's base
+        "Typed.kt::toText",  # a library receiver
+        "Typed.kt::firstTwo",
+    }
+
+
+def test_a_member_wins_and_a_generic_receiver_is_not_indexed(tmp_path: Path) -> None:
+    assert _typed_callees(tmp_path, "refused") == {"Typed.kt::Owner::own"}
+
+
+def _resolve_files(tmp_path: Path, files: dict[str, str], caller_file: str) -> set[str]:
+    parsed = {}
+    for rel, text in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        info = FileInfo(
+            path=rel,
+            abs_path=str(path),
+            language="kotlin",
+            size_bytes=len(text),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        parsed[rel] = parse_file(info, text.encode("utf-8"))
+    # What the builder's import pass would record: `a.Foo` is the file in
+    # `src/a` declaring `Foo`.
+    declaring = {
+        f"{rel.split('/')[1]}.{symbol.name}": rel for rel in parsed for symbol in parsed[rel].symbols
+    }
+    for result in parsed.values():
+        for imp in result.imports:
+            imp.resolved_file = declaring.get(imp.module_path)
+    resolver = CallResolver(parsed, {rel: set() for rel in files}, repo_path=str(tmp_path))
+    return {rc.callee_id for rc in resolver.resolve_file(caller_file, parsed[caller_file].calls)}
+
+
+_EXT = "src/a/Ext.kt"
+_FOO = "package a\n\nclass Foo\n"
+
+
+@pytest.mark.parametrize(
+    ("ext", "caller", "callee"),
+    [
+        # The caller's own package sees the extension with no import.
+        ("package a\n\nfun Foo.ext() = 1\n", "package a\n\nfun use(foo: Foo) {\n    foo.ext()\n}\n", _EXT + "::ext"),
+        # An import naming it, or its package's `*`, brings it in.
+        ("package a\n\nfun Foo.ext() = 1\n", "package b\n\nimport a.Foo\nimport a.ext\n\nfun use(foo: Foo) {\n    foo.ext()\n}\n", _EXT + "::ext"),
+        ("package a\n\nfun Foo.ext() = 1\n", "package b\n\nimport a.*\n\nfun use(foo: Foo) {\n    foo.ext()\n}\n", _EXT + "::ext"),
+        # Another package that does not import it does not see it.
+        ("package a\n\nfun Foo.ext() = 1\n", "package b\n\nimport a.Foo\n\nfun use(foo: Foo) {\n    foo.ext()\n}\n", None),
+        # `private` stays in its own file, even within the package.
+        ("package a\n\nprivate fun Foo.ext() = 1\n", "package a\n\nfun use(foo: Foo) {\n    foo.ext()\n}\n", None),
+    ],
+)  # fmt: skip
+def test_an_extension_binds_only_where_kotlin_sees_it(
+    tmp_path: Path, ext: str, caller: str, callee: str | None
+) -> None:
+    files = {"src/a/Foo.kt": _FOO, _EXT: ext, "src/b/Use.kt": caller}
+    if caller.startswith("package a"):
+        files = {"src/a/Foo.kt": _FOO, _EXT: ext, "src/a/Use.kt": caller}
+    found = _resolve_files(tmp_path, files, next(f for f in files if f.endswith("Use.kt")))
+    assert found == ({callee} if callee else set())
+
+
+def test_a_same_named_type_in_another_package_is_not_extended(tmp_path: Path) -> None:
+    files = {
+        "src/a/Foo.kt": _FOO,
+        _EXT: "package a\n\nfun Foo.ext() = 1\n",
+        "src/b/Foo.kt": "package b\n\nclass Foo\n",
+        "src/b/Use.kt": "package b\n\nfun use(foo: Foo) {\n    foo.ext()\n}\n",
+    }
+    assert _resolve_files(tmp_path, files, "src/b/Use.kt") == set()
+
+
+def test_a_member_the_repo_cannot_see_wins(tmp_path: Path) -> None:
+    """`Any` members and a builtin's own members beat any extension of their name."""
+    source = (
+        "package a\n\nclass Foo\n\n"
+        "fun Foo.toString(x: Int) = 1\n"
+        "fun List<String>.get(x: Long) = 1\n"
+        "fun String.trimFoo() = 1\n\n"
+        "fun use(foo: Foo, names: List<String>, name: String) {\n"
+        "    foo.toString(1)\n    names.get(1L)\n    name.trimFoo()\n}\n"
+    )
+    found = _resolve_files(tmp_path, {"src/a/Use.kt": source}, "src/a/Use.kt")
+    assert found == {"src/a/Use.kt::trimFoo"}
+
+
+def test_a_builtin_typed_local_binds_no_class_method(tmp_path: Path) -> None:
+    """`name: String` is typed now, and a repo class's same-named method is not it."""
+    source = (
+        "package a\n\nclass Text {\n    fun shout() = 1\n}\n\n"
+        "fun use(name: String) {\n    name.shout()\n}\n"
+    )
+    assert _resolve_files(tmp_path, {"src/a/Use.kt": source}, "src/a/Use.kt") == set()

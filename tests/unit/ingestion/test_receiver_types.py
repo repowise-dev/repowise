@@ -289,11 +289,11 @@ class TestKotlinShapes:
 
 
 class TestKotlinRefusals:
-    def test_a_builtin_generic_is_refused(self) -> None:
-        """``List<Header>`` bares to ``List``, which the language spec refuses
-        — and must, because the value is a List and not a Header."""
+    def test_a_builtin_generic_is_marked_external(self) -> None:
+        """``List<Header>`` bares to ``List``, marked a builtin: the value is a
+        List and not a Header, so only a repo extension on ``List`` answers."""
         body = "fun run() {\n    val items: List<Header> = call.headers\n}"
-        assert "items" not in declared_types(body, "kotlin")
+        assert external_type_name(declared_types(body, "kotlin")["items"]) == "List"
 
     def test_a_named_argument_is_not_a_declaration(self) -> None:
         """Kotlin spells a named argument with ``=``, which is why the
@@ -314,8 +314,12 @@ class TestKotlinRefusals:
         body = 'class C {\n    @get:JvmName("x")\n    fun f() { }\n}'
         assert declared_types(body, "kotlin") == {}
 
-    def test_a_builtin_type_is_refused(self) -> None:
-        assert declared_types("fun run(name: String, n: Int) { }", "kotlin") == {}
+    def test_a_builtin_type_is_marked_external(self) -> None:
+        types = declared_types("fun run(name: String, n: Int) { }", "kotlin")
+        assert {name: external_type_name(t) for name, t in types.items()} == {
+            "name": "String",
+            "n": "Int",
+        }
 
     def test_a_declaration_in_a_line_comment_is_ignored(self) -> None:
         body = "fun run() { // a val node: Node once lived here\n }"

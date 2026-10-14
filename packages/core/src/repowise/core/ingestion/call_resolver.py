@@ -36,6 +36,7 @@ import structlog
 from .call_language_strategies import _LANGUAGE_CALL_STRATEGIES as _LANGUAGE_CALL_STRATEGIES
 from .call_language_strategies import LanguageStrategiesMixin
 from .call_receiver_typing import (
+    _FUNCTION_KINDS,
     _SOURCE_CACHE_FILES,
     _TYPE_KINDS,
     ReceiverTypingMixin,
@@ -494,8 +495,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # every file's method dict with one short-list lookup.
         self._global_methods: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
 
-        # C# extension methods, keyed on the type they extend rather than on
-        # their holder class: {(type, method): (file_path, symbol_id)} and the
+        # C# extension methods and Kotlin extension functions, keyed on the
+        # type they extend rather than on their holder: {(type, method):
+        # (file_path, symbol_id)} and the
         # per-file view of the same. Held apart from the method index on
         # purpose — merging them would leak C# keys into the C++ and JVM tiers
         # that read ``_global_methods``, and would let an extension answer a
@@ -543,7 +545,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # kind question asked of it and the set is small.
         self._non_callable_ids: set[str] = set()
         self._callable_ids: set[str] = set()
-        # The lines of the file being indexed, for its property declarations.
+        # The lines of the file whose declarations are being read; see ``_lines_of``.
         self._indexed_lines: tuple[str, list[str]] = ("", [])
         # C/C++ symbols with internal linkage; see ``_reachable_by_name``.
         self._tu_local_ids: set[str] = set()
@@ -771,9 +773,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 file_methods[key] = index_id
                 self._global_methods[key].append((path, index_id))
 
-                extended = self._csharp_extended_type(sym)
-                if extended is not None:
-                    extensions[(extended, sym.name)].add((path, index_id))
+            extended = (
+                self._csharp_extended_type(sym)
+                if sym.parent_name
+                else self._kotlin_extended_type(sym)
+            )
+            if extended is not None:
+                extensions[(extended, sym.name)].add((path, index_id))
 
             self._index_globally(path, sym, index_id)
 
@@ -789,6 +795,21 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if extended is None or not is_resolvable_type_name(extended, "csharp"):
             return None
         return extended if extended in self._csharp_type_names else None
+
+    def _kotlin_extended_type(self, sym: Symbol) -> str | None:
+        """The type a top-level Kotlin extension function extends, a library one included.
+
+        Unlike C#, a library receiver is kept: Kotlin types a ``ByteArray`` or
+        ``List`` receiver too, and only an extension can be the repo's callee.
+        A member extension is left out, since only its holder's scope sees it.
+
+        Ceiling: the key is the bare type, so ``List<String>.f`` and
+        ``List<Int>.f`` collide (and refuse as ambiguous), and ``Foo?`` keys as
+        ``Foo``. Keying on type arguments would need the receiver's too.
+        """
+        if sym.language != "kotlin" or sym.kind not in _FUNCTION_KINDS:
+            return None
+        return self._kotlin_receiver(sym)
 
     def _index_globally(self, path: str, sym: Symbol, index_id: str) -> None:
         if _has_internal_linkage(path, sym):
@@ -819,10 +840,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """Is property *sym* declared with a function value (`val f: () -> Unit`)?"""
         if sym.kind != "variable" or sym.language not in _PROPERTY_VARIABLE_LANGUAGES:
             return False
+        lines = self._lines_of(path)[sym.start_line - 1 : max(sym.end_line, sym.start_line)]
+        return holds_function("\n".join(lines), sym.name, sym.language)
+
+    def _lines_of(self, path: str) -> list[str]:
+        """*path*'s lines, split once while its symbols are read one by one."""
         if self._indexed_lines[0] != path:
             self._indexed_lines = (path, self._text_of(path).splitlines())
-        lines = self._indexed_lines[1][sym.start_line - 1 : max(sym.end_line, sym.start_line)]
-        return holds_function("\n".join(lines), sym.name, sym.language)
+        return self._indexed_lines[1]
 
     def _index_overload_sets(self, parsed: ParsedFile) -> dict[str, str]:
         """Record *parsed*'s overload sets; ``{member id: representative}``.
@@ -1457,7 +1482,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         unless an extension the index leaves out carries the name: one on a
         type parameter (``this TBuilder b``) or an external type may be it.
         """
-        type_id = self._csharp_type_id(type_name)
+        type_id = self._unique_type_id(type_name, "csharp")
         if type_id is not None:
             inherited = self._ancestor_method(type_id, call.target_name, caller_id)
             if inherited is not None:
@@ -1465,21 +1490,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 tier = "same_file" if same_file else "import"
                 return True, self._return_typed_call(caller_id, inherited, tier, call.line)
 
-        own = self._typed_extension_call(file_path, call, caller_id, type_name, "csharp")
-        if own is not None:
-            return True, own
-        ancestor_names = [
-            symbol.name
-            for ancestor in (self._ancestors_of(type_id) if type_id is not None else ())
-            if (symbol := self._symbols_by_id.get(ancestor)) is not None
-        ]
-        hits = {}
-        for name in ancestor_names:
-            hit = self._typed_extension_call(file_path, call, caller_id, name, "csharp")
-            if hit is not None:
-                hits[hit.callee_id] = hit
-        if hits:
-            return True, next(iter(hits.values())) if len(hits) == 1 else None
+        answered, hit = self._extension_call(file_path, call, caller_id, type_name)
+        if answered:
+            return True, hit
         # Proven only for a type whose members were all asked: one whose every
         # base is a repository type, or a builtin. A name the repository does
         # not declare may be a type parameter (``TBuilder``), whose members are
@@ -1499,15 +1512,15 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 return False
         return True
 
-    def _csharp_type_id(self, type_name: str) -> str | None:
-        """The one C# type *type_name* (``IFoo`1`` or ``IFoo``) names repo-wide, or None."""
+    def _unique_type_id(self, type_name: str, language: str) -> str | None:
+        """The one *language* type *type_name* (``IFoo`1`` or ``IFoo``) names repo-wide, or None."""
         bare, _, arity = type_name.partition("`")
+        shape = (language, int(arity or 0))
         candidates = [
             symbol
             for sym_id in self._global_symbols.get(bare, ())
             if (symbol := self._symbols_by_id[sym_id]).kind in _TYPE_KINDS
-            and symbol.language == "csharp"
-            and (symbol.type_parameter_count or 0) == int(arity or 0)
+            and (symbol.language, symbol.type_parameter_count or 0) == shape
         ]
         return candidates[0].id if len(candidates) == 1 else None
 
