@@ -77,6 +77,21 @@ _HOMONYM_UNION_BODY_MAX_LINES = 120
 # cases is wide, so this is not tuned to an exact count.
 _HOMONYM_UNION_PROSE_DEF_CEILING = 6
 
+# Exact-identifier trust. On a prose question, a definition named by the
+# question but outside these top retrieved files must earn its anchor: its
+# location shares a word with the question, or the identifier is specific.
+_ANCHOR_TOPICAL_FILES = 5
+# An identifier written in more production files than this names a role many
+# files share (a field, a parameter, a local), not one definition. Both the
+# trust rule above and the literal leg below read it.
+_SPECIFIC_TOKEN_MAX_FILES = 3
+# Identifier-shaped words naming no indexed symbol (a string literal, a key, an
+# environment variable) are scanned for in live source, and the definitions
+# holding them anchored, up to the inline-body cap. Scans per question:
+_LITERAL_SCAN_MAX_TOKENS = 3
+# Definition kinds an exact question name may anchor.
+_ANCHOR_KINDS = ("function", "method", "class", "interface")
+
 # Data-shape grounding: "what fields does each entry in <blob> contain" is
 # answered by mining the field set from source, precision-ordered:
 #   * a documented {...} shape near the identifier (confidence high);
@@ -290,7 +305,9 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 # 20: caller questions carry ``graph_callers`` and synthesise with them.
 # 21: impact questions carry ``graph_neighbors``, the users of the lead file.
 # 22: ``confidence`` also asks whether the top hit covers the question's words.
-_ANSWER_SCHEMA_VERSION = 22
+# 23: bodies include the function holding a literal the question writes, and an
+#     exact name off the topic no longer anchors its definition.
+_ANSWER_SCHEMA_VERSION = 23
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.

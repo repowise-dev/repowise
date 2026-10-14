@@ -49,7 +49,11 @@ def _gather_body_candidates(
         if not path:
             continue
         for s in h.get("_anchor_symbols") or []:
-            if _selection_names(s.get("name"), answer_text, anchor_names):
+            # A def anchored by a literal it holds is selected by that literal too.
+            if any(
+                _selection_names(n, answer_text, anchor_names)
+                for n in (s.get("name"), s.get("_named_by"))
+            ):
                 candidates.append((0, _kind_rank(s), s.get("start_line") or 0, path, s))
         # Tier 1 catches symbols only the prose names; the degraded mode has none.
         if anchor_names is not None:

@@ -238,6 +238,14 @@ def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, An
     return rows, reasons + scan_reasons
 
 
+def production_lines(root: Path, token: str) -> list[dict[str, Any]]:
+    """The word-bounded lines holding *token* in production files, from the
+    same scan a literal search runs. For get_answer, which reads live lines
+    the wiki never rendered (function bodies, string literals)."""
+    rows, _reasons = _scan_listed(root, token, True)
+    return [r for r in rows if _scan_rank(r["path"]) == 0]
+
+
 def scan_literal(
     root: Path, files: list[str], needle: str, word: bool
 ) -> tuple[list[dict[str, Any]], list[str]]:

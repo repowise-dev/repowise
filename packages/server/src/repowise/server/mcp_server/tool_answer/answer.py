@@ -300,6 +300,7 @@ async def _run_retrieval_pipeline(
                     hits,
                     repo_root=_anchor_root,
                     session_factory=ctx.session_factory,
+                    question=question,
                 )
     # Concept anchoring: a why/value question pinning a number to a behaviour
     # anchors the file whose source comment justifies that number.

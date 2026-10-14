@@ -8,7 +8,9 @@ here, since callers and tests import them from this module.
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -16,15 +18,26 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
-from repowise.server.mcp_server._query_shape import _WORD_CHAIN_RE, _identifier_shaped
+from repowise.core.test_paths import is_test_related_path
+from repowise.server.mcp_server._line_hits import production_lines
+from repowise.server.mcp_server._query_shape import (
+    _WORD_CHAIN_RE,
+    _identifier_shaped,
+    _looks_like_code_name,
+)
 from repowise.server.mcp_server._query_terms import split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
+    _ANCHOR_KINDS,
+    _ANCHOR_TOPICAL_FILES,
     _ENRICH_TOP_N_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _HOMONYM_UNION_BODY_MAX_LINES,
     _HOMONYM_UNION_CHAR_BUDGET,
     _HOMONYM_UNION_PROSE_DEF_CEILING,
+    _INLINE_BODY_MAX_SYMBOLS,
+    _LITERAL_SCAN_MAX_TOKENS,
+    _SPECIFIC_TOKEN_MAX_FILES,
     _STOPWORDS,
 )
 from repowise.server.mcp_server.tool_answer.hydration import (  # noqa: F401  re-exported
@@ -70,7 +83,7 @@ from repowise.server.mcp_server.tool_answer.withheld import (  # noqa: F401  re-
     _match_definition,
     withheld_definitions,
 )
-from repowise.server.mcp_server.tool_search import _prose_dominates
+from repowise.server.mcp_server.tool_search import _is_test_query, _prose_dominates
 
 
 def _extract_question_identifiers(question: str) -> set[str]:
@@ -213,6 +226,7 @@ async def _anchor_symbol_hits(
     hits: list[dict],
     repo_root: Path | None = None,
     session_factory: Any = None,
+    question: str = "",
 ) -> tuple[list[dict], dict[str, Any]]:
     """Inject the defining file of a question-named indexed symbol into hits.
 
@@ -242,14 +256,15 @@ async def _anchor_symbol_hits(
         select(WikiSymbol).where(
             WikiSymbol.repository_id == repo_id,
             WikiSymbol.name.in_(list(question_ids)),
-            WikiSymbol.kind.in_(("function", "method", "class", "interface")),
         )
     )
     by_name: dict[str, list] = {}
+    indexed_names: set[str] = set()
     for row in res.scalars().all():
+        indexed_names.add(row.name)
         # A pathless row names nothing the reply can point at: drop it from
         # every route below.
-        if not row.file_path:
+        if not row.file_path or row.kind not in _ANCHOR_KINDS:
             continue
         by_name.setdefault(row.name, []).append(row)
 
@@ -272,12 +287,131 @@ async def _anchor_symbol_hits(
             d["_approx"] = True
         return d
 
+    literal: dict[str, list] = {}
+    if question and repo_root is not None and not is_symbol_lookup_question(question, question_ids):
+        guard = _TopicGuard(repo_root, hits, question, qids_lower)
+        by_name = await _trusted_over_topic(by_name, qids_lower, guard)
+        literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
+
     chosen = await _choose_anchor_symbols(by_name, qids_lower, _verified_dict, homonyms)
-    if not chosen:
+    if not chosen and not literal:
         return hits, homonyms
     await _anchor_chosen_symbols(hits, chosen, _verified_dict)
+    for token, rows in literal.items():
+        await _anchor_chosen_symbols(hits, rows, _verified_dict, named_by=token)
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
     return hits, homonyms
+
+
+class _TopicGuard:
+    """Whether an identifier the question writes may anchor a def over the topic.
+
+    An exact name alone is not enough on a prose question: ``module_path`` can
+    name one def in a provider spec and a field in fifty files, and a test
+    fixture shares its name with the local it stands in for. A def is trusted
+    when its file is among the top retrieved files, when few production files
+    write the identifier (it names one thing), or when its file name or owner
+    shares a word with the rest of the question. A test def is trusted on the
+    last ground only by a question about tests.
+    """
+
+    def __init__(self, root: Path, hits: list[dict], question: str, qids_lower: set[str]):
+        self.root = root
+        self.topical = {
+            h["target_path"] for h in hits[:_ANCHOR_TOPICAL_FILES] if h.get("target_path")
+        }
+        named = set().union(*(_text_stems(q) for q in qids_lower))
+        self.topic_stems = _text_stems(question) - named
+        self.about_tests = _is_test_query(question)
+        self._lines: dict[str, list[dict]] = {}
+
+    async def lines(self, token: str) -> list[dict]:
+        """Production lines writing *token*, scanned at most once per question."""
+        if token not in self._lines:
+            self._lines[token] = await asyncio.to_thread(production_lines, self.root, token)
+        return self._lines[token]
+
+    async def trusts(self, token: str, row) -> bool:
+        if row.file_path in self.topical:
+            return True
+        if len({r["path"] for r in await self.lines(token)}) <= _SPECIFIC_TOKEN_MAX_FILES:
+            return True
+        if is_test_related_path(row.file_path) and not self.about_tests:
+            return False
+        stem = row.file_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        owner = f"{stem} {row.parent_name or ''} {row.name or ''}"
+        return bool(self.topic_stems & _text_stems(owner))
+
+
+async def _trusted_over_topic(
+    by_name: dict[str, list], qids_lower: set[str], guard: _TopicGuard
+) -> dict[str, list]:
+    """*by_name* without the defs an exact name may not anchor (see :class:`_TopicGuard`).
+
+    A def whose parent the question names is the one it means, so it stays.
+    """
+    kept: dict[str, list] = {}
+    for name, cands in by_name.items():
+        trusted = [
+            c
+            for c in cands
+            if _question_names_parent(c, qids_lower) or await guard.trusts(name, c)
+        ]
+        if trusted:
+            kept[name] = trusted
+    return kept
+
+
+async def _literal_holders(
+    session, repo_id: str, tokens: set[str], guard: _TopicGuard
+) -> dict[str, list]:
+    """The functions holding an identifier the index does not define, by identifier.
+
+    A string literal or a key (``"retry_after"``) lives in a function body, so
+    no page and no symbol name carries it. A holder must pass the same guard
+    as a named def; holders in top retrieved files rank first, then by how
+    many of the lines they hold, at most ``_INLINE_BODY_MAX_SYMBOLS`` overall.
+    """
+    # Code-shaped only: ``Authorization`` or ``JVMs`` is a word prose writes too.
+    plain = sorted(
+        (t for t in tokens if "." not in t and _looks_like_code_name(t)),
+        key=lambda t: (-len(t), t),
+    )
+    lines = {t: rows for t in plain[:_LITERAL_SCAN_MAX_TOKENS] if (rows := await guard.lines(t))}
+    if not lines:
+        return {}
+    res = await session.execute(
+        select(WikiSymbol).where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.file_path.in_({r["path"] for rows in lines.values() for r in rows}),
+            WikiSymbol.kind.in_(("function", "method")),
+        )
+    )
+    defs = [d for d in res.scalars().all() if d.start_line and d.end_line]
+    found: list[tuple[tuple, str, Any]] = []
+    for token, rows in lines.items():
+        for d, n in _innermost_holders(defs, rows).items():
+            if await guard.trusts(token, d):
+                key = (d.file_path not in guard.topical, -n, d.file_path, d.start_line)
+                found.append((key, token, d))
+    found.sort(key=lambda t: t[0])
+    out: dict[str, list] = {}
+    for _key, token, d in found[:_INLINE_BODY_MAX_SYMBOLS]:
+        out.setdefault(token, []).append(d)
+    return out
+
+
+def _innermost_holders(defs: list, rows: list[dict]) -> Counter:
+    """How many of *rows* each def holds, counting a line for its innermost def only."""
+    # Comment lines count on purpose: httpx writes NO_PROXY only in its holder's comments.
+    held: Counter = Counter()
+    for r in rows:
+        spans = [
+            d for d in defs if d.file_path == r["path"] and d.start_line <= r["line"] <= d.end_line
+        ]
+        if spans:
+            held[max(spans, key=lambda d: d.start_line)] += 1
+    return held
 
 
 def _question_names_parent(cand, qids_lower: set[str]) -> bool:
@@ -333,8 +467,13 @@ async def _anchor_chosen_symbols(
     hits: list[dict],
     chosen: list,
     verified_dict: Callable[[Any], Awaitable[dict]],
+    named_by: str | None = None,
 ) -> None:
-    """Boost (or insert) each chosen def's file and stash the def on it."""
+    """Boost (or insert) each chosen def's file and stash the def on it.
+
+    ``named_by`` is the identifier the question wrote when the def holds it
+    rather than being named by it.
+    """
     by_path = {h.get("target_path"): h for h in hits}
     top_score = max((h.get("score", 0.0) for h in hits), default=0.0)
     # Above the current top: an exact symbol match is stronger than prose.
@@ -358,6 +497,7 @@ async def _anchor_chosen_symbols(
                 "kind": sym.kind,
                 "start_line": vd["start_line"],
                 "end_line": vd["end_line"],
+                **({"_named_by": named_by} if named_by else {}),
             }
         )
 
