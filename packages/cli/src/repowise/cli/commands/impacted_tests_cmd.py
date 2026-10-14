@@ -141,7 +141,7 @@ def impacted_tests_command(
         cannot_evaluate(fmt, exc.code, str(exc))
 
     explain = explain.replace("\\", "/").removeprefix("./") if explain else None
-    checkout = read_checkout(repo_path)
+    checkout = read_checkout(repo_path, change.head)
     plan = plan_scopes(change, config, checkout) if config is not None else None
     result = run_async(_collect(repo_path, change, checkout, config, explain, plan, prioritize))
     result["diff"] = change.label

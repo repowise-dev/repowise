@@ -317,7 +317,7 @@ async def test_branch_scan_falls_back_to_git_only_when_the_index_will_not_open(
 ):
     """Branch overlap needs only git, so an index failure costs the ranking, not the block."""
     scan = SimpleNamespace(overlap="git-only overlap")
-    monkeypatch.setattr(tool, "_scan_from_trunk", lambda _path, _files: scan)
+    monkeypatch.setattr(tool, "_scan_from_trunk", lambda _path, _files, _current: scan)
     _get_repo_raising(monkeypatch, LookupError("no repo"))
     ctx = SimpleNamespace(path="/repo", session_factory=factory)
     assert await tool._scan_overlap(ctx, ["a.py"]) == "git-only overlap"

@@ -59,8 +59,14 @@ class Checkout:
     holding: Callable[[Collection[str]], Collection[str] | None] | None = None
 
 
-def read_checkout(repo_path) -> Checkout:
-    """Tracked files, their conftests and pytest configs, and pytest's collection roots."""
+def read_checkout(repo_path, head: str | None = None) -> Checkout:
+    """Tracked files, their conftests and pytest configs, and pytest's collection roots.
+
+    With *head* (a change's head commit) ``exists`` also counts that commit's
+    tree: a change read from another worktree's branch holds files this working
+    tree lacks. Ceiling: tracked paths and texts still come from the working
+    tree; reading them at *head* too is the upgrade.
+    """
     from .. import git_refs
     from ..pytest_roots import PYTEST_CONFIG_NAMES, read_pytest_roots
     from .test_selection import is_code_file, is_scan_source
@@ -81,9 +87,18 @@ def read_checkout(repo_path) -> Checkout:
         if (text := read(p)) is not None
     ]
     roots = read_pytest_roots((p, t) for p, t in texts if Path(p).name in PYTEST_CONFIG_NAMES)
-    return Checkout(
-        tracked, texts, roots, read, lambda p: (root / p).is_file(), lambda n: _git_holding(root, n)
-    )
+    at_head: list[frozenset[str]] = []
+
+    def exists(path: str) -> bool:
+        if (root / path).is_file():
+            return True
+        if head is None:
+            return False
+        if not at_head:  # read once, on the first path the disk lacks
+            at_head.append(git_refs.tracked_paths_at(str(root), head))
+        return path in at_head[0]
+
+    return Checkout(tracked, texts, roots, read, exists, lambda n: _git_holding(root, n))
 
 
 # A cold grep of a large checkout takes seconds; past this the full read answers.

@@ -102,6 +102,26 @@ async def test_a_renamed_path_redirects_to_its_new_name(setup_mcp, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_path_on_another_branch_names_that_branch(setup_mcp, tmp_path):
+    """A file committed on a worktree's branch is absent here, not a typo."""
+    from repowise.server.mcp_server import get_risk
+
+    ident = ("-c", "user.email=t@t", "-c", "user.name=t")
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, *ident, "commit", "--allow-empty", "-m", "seed")
+    _git(tmp_path, "worktree", "add", "-b", "feature", str(tmp_path / "wt"), "main")
+    (tmp_path / "wt" / "only_there.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path / "wt", "add", "only_there.py")
+    _git(tmp_path / "wt", *ident, "commit", "-m", "add on the branch")
+
+    card = (await get_risk(["only_there.py"]))["targets"]["only_there.py"]
+
+    assert card["unresolved_reason"] == "no_such_path"
+    assert card["on_branch"] == "feature"
+    assert "branch feature has it" in card["note"]
+
+
+@pytest.mark.asyncio
 async def test_a_real_file_keeps_its_real_counts(setup_mcp):
     """The discriminator: rejecting bad targets must not reject good ones."""
     from repowise.server.mcp_server import get_risk

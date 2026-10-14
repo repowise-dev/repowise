@@ -1899,6 +1899,26 @@ async def test_no_such_path_redirects_to_a_renamed_file(setup_mcp, health_data, 
 
 
 @pytest.mark.asyncio
+async def test_no_such_path_names_the_branch_that_has_it(setup_mcp, health_data, tmp_path):
+    """A file only a worktree's branch has is absent from the served checkout, not a typo."""
+    from repowise.server.mcp_server import get_health
+
+    ident = ("-c", "user.email=t@t", "-c", "user.name=t")
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, *ident, "commit", "--allow-empty", "-m", "seed")
+    _git(tmp_path, "worktree", "add", "-b", "feature", str(tmp_path / "wt"), "main")
+    (tmp_path / "wt" / "only_there.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path / "wt", "add", "only_there.py")
+    _git(tmp_path / "wt", *ident, "commit", "-m", "add on the branch")
+
+    unresolved = (await get_health(targets=["only_there.py"]))["unresolved"][0]
+
+    assert unresolved["reason"] == "no_such_path"
+    assert unresolved["on_branch"] == "feature"
+    assert "branch feature has it" in unresolved["note"]
+
+
+@pytest.mark.asyncio
 async def test_only_projection_keeps_known_modules(setup_mcp, health_data):
     """``known_modules`` is the recovery path for a bad ``module:`` and rides along."""
     from repowise.server.mcp_server import get_health

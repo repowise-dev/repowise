@@ -28,6 +28,7 @@ from repowise.core.analysis.change_risk import (
     normalize_extensions,
     score_live_change,
 )
+from repowise.core.analysis.change_risk.features import revspec_head
 from repowise.core.analysis.change_risk.render import LIMITS, size_text
 from repowise.core.analysis.prior_fix_impact import (
     FixRecord,
@@ -68,7 +69,6 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._meta import read_live_head
 from repowise.server.mcp_server._test_impact import (
     _norm,
     cross_repo_tests,
@@ -266,7 +266,7 @@ async def _attach_branch_blocks(
     # would reach the caller; both are pure cost on that path.
     if finding_id is not None:
         return None
-    overlap = await _branch_overlap_block(ctx, changed, collector)
+    overlap = await _branch_overlap_block(ctx, changed, collector, revspec_head(revspec))
     if overlap is not None:
         payload["branch_overlap"] = overlap
     return await _independent_changes_block(ctx, changed, collector, revspec)
@@ -360,8 +360,10 @@ async def get_change_risk(
     ignored: list[dict] = []
     include_set = _include_blocks(include, ignored)
     payload, diagnostics = _shape_payload(result, include_set, revspec)
+    scored = await asyncio.to_thread(_scored_repo, str(ctx.path), revspec, result.working_tree)
     if result.features.nf == 0:
-        return await _nothing_to_score(ctx, payload["ref"], started)
+        return await _nothing_to_score(ctx, payload["ref"], scored, started)
+    payload = {"ref": payload.pop("ref"), "scored_repo": scored, **payload}
     # Changed lines over the SAME file universe the score counted (its
     # extensions + riskignore + request excludes), so nothing downstream
     # disagrees with the score about which files the change touches. Read once
@@ -580,7 +582,20 @@ def _attach_health(
     payload.update(ordered)
 
 
-async def _nothing_to_score(ctx: Any, ref: str, started: float) -> dict:
+def _scored_repo(path: str, revspec: str | None, working_tree: bool) -> dict[str, Any]:
+    """The checkout the change was read in and the commit its head resolved to.
+
+    ``HEAD`` or a branch name resolves in the served checkout, not in the
+    caller's worktree, so naming both makes a review of the wrong tree visible.
+    Uncommitted work is marked, so its ``head`` does not read as the change.
+    """
+    from repowise.core import git_refs
+
+    head = git_refs.resolve(path, revspec_head(revspec))[:12] or None
+    return {"root": path, "head": head, **({"working_tree": True} if working_tree else {})}
+
+
+async def _nothing_to_score(ctx: Any, ref: str, scored: dict[str, Any], started: float) -> dict:
     """An empty diff, reported as one rather than scored.
 
     Scoring it anyway produced a real-looking "Below typical" verdict, which
@@ -594,7 +609,7 @@ async def _nothing_to_score(ctx: Any, ref: str, started: float) -> dict:
             f"No counted file changes in {ref!r} "
             "(check the revspec, extensions, or exclusion filters)."
         ),
-        "scored_repo": {"root": str(ctx.path), "head": read_live_head(str(ctx.path))},
+        "scored_repo": scored,
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - started) * 1000,
             repository=await _repository(ctx),
@@ -1156,21 +1171,25 @@ async def _independent_changes_block(
     return block
 
 
-def _scan_from_trunk(path: str, files: list[str]) -> Any:
-    """The base lookup and the scan, both git, in one hop off the event loop."""
+def _scan_from_trunk(path: str, files: list[str], current: str) -> Any:
+    """The base lookup and the scan, both git, in one hop off the event loop.
+
+    *current* is the reviewed change's head, so a branch reviewed from another
+    worktree is the change itself, not a rival to the served checkout's branch.
+    """
     from repowise.core.analysis.branch_overlap import scan_branches
     from repowise.core.git_refs import default_base
 
-    return scan_branches(path, files, base=default_base(path))
+    return scan_branches(path, files, base=default_base(path), current=current)
 
 
-async def _scan_overlap(ctx: Any, files: list[str]) -> Any:
+async def _scan_overlap(ctx: Any, files: list[str], current: str = "HEAD") -> Any:
     """Run the branch scan, with the index when one opens and without when it does not."""
     from repowise.core.analysis.branch_overlap import rank_with_index
     from repowise.core.persistence.database import get_session
 
     path = str(ctx.path)
-    scan = await asyncio.to_thread(_scan_from_trunk, path, files)
+    scan = await asyncio.to_thread(_scan_from_trunk, path, files, current)
     session_factory = getattr(ctx, "session_factory", None)
     if session_factory is not None:
         try:
@@ -1183,7 +1202,7 @@ async def _scan_overlap(ctx: Any, files: list[str]) -> Any:
 
 
 async def _branch_overlap_block(
-    ctx: Any, changed: dict[str, set[int]], collector: OmissionCollector
+    ctx: Any, changed: dict[str, set[int]], collector: OmissionCollector, current: str = "HEAD"
 ) -> dict[str, Any] | None:
     """Other open branches editing the files this change edits, or ``None``.
 
@@ -1195,7 +1214,7 @@ async def _branch_overlap_block(
         return None
     try:
         overlap = await asyncio.wait_for(
-            _scan_overlap(ctx, sorted(changed)), timeout=_BRANCH_OVERLAP_TIMEOUT_SECONDS
+            _scan_overlap(ctx, sorted(changed), current), timeout=_BRANCH_OVERLAP_TIMEOUT_SECONDS
         )
     except (TimeoutError, subprocess.SubprocessError, OSError):
         return None
@@ -1305,7 +1324,6 @@ async def _patch_coverage_block(
     the last coverage ingest came after the newest edit to the changed files.
     """
     from repowise.core import git_refs
-    from repowise.core.analysis.change_risk.features import revspec_head
     from repowise.core.analysis.health.coverage import configured_coverage
     from repowise.core.analysis.health.coverage.freshness import newest_mtime
     from repowise.core.analysis.patch_coverage import (

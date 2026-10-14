@@ -403,3 +403,29 @@ def test_a_blob_read_that_stops_early_does_not_read_as_unmoved(tmp_path) -> None
     assert _unread(tmp_path, specs, whole) == set()  # added.py is absent at old
     assert _unread(tmp_path, specs, {(old, "kept.py"): b"x"}) == {"kept.py", "added.py"}
     assert _unread(tmp_path, specs, None) == set()  # nothing read: the caller fails closed
+
+
+def test_read_checkout_with_a_head_answers_exists_for_that_commit(tmp_path) -> None:
+    """A change read from another worktree's branch: its tests exist at its head, not on disk."""
+    import subprocess
+
+    from repowise.core.analysis.test_collection import read_checkout
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=tmp_path, check=True, capture_output=True, text=True,
+        ).stdout.strip()  # fmt: skip
+
+    git("init", "-q", "-b", "main")
+    (tmp_path / "test_a.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "seed")
+    head = git("rev-parse", "HEAD")
+    git("rm", "-q", "test_a.py")
+    git("commit", "-q", "-m", "served branch drops it")
+
+    assert not read_checkout(tmp_path).exists("test_a.py")
+    at_head = read_checkout(tmp_path, head)
+    assert at_head.exists("test_a.py")
+    assert not at_head.exists("test_b.py")

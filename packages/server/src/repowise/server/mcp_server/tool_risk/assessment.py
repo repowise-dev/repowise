@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.pr_blast import untested_files
 from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS
 from repowise.core.co_change import confidence_ratio, parse_partners
-from repowise.core.git_refs import find_path_removal
 from repowise.core.persistence.models import (
     GitMetadata,
     Repository,
@@ -26,7 +25,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import served_root
-from repowise.server.repo_paths import normalize_target_path
+from repowise.server.repo_paths import missing_path_hint, normalize_target_path
 
 #: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
 #: the PR bot uses for prior defects, so the two surfaces agree on "a lot".
@@ -417,9 +416,9 @@ async def _unresolved_reason(
     name", and it resolves a directory to ``not_indexed`` — both would
     prescribe a fix that cannot help here.
 
-    ``no_such_path`` also carries ``moved_to``/``removed_by_commit`` when git
-    can explain the miss as a rename or a same-named-directory split (#2633),
-    found off the thread so the blocking git call does not stall the loop.
+    ``no_such_path`` also carries what :func:`missing_path_hint` finds (a
+    rename, or another branch holding the path), off the thread so the
+    blocking git calls do not stall the loop.
     """
     if target.startswith("module:"):
         return {"unresolved_reason": "unsupported_target_kind"}
@@ -431,17 +430,8 @@ async def _unresolved_reason(
             return {"unresolved_reason": "not_indexed"}
     except (OSError, ValueError):
         pass
-    removal = None
-    if repo_root:
-        with contextlib.suppress(OSError, ValueError):
-            removal = await asyncio.to_thread(find_path_removal, repo_root, lookup_path)
-    if removal is None:
-        return {"unresolved_reason": "no_such_path"}
-    return {
-        "unresolved_reason": "no_such_path",
-        "removed_by_commit": removal.commit,
-        "moved_to": removal.moved_to,
-    }
+    hint = await asyncio.to_thread(missing_path_hint, repo_root, lookup_path)
+    return {"unresolved_reason": "no_such_path", **hint}
 
 
 async def _assess_one_target(

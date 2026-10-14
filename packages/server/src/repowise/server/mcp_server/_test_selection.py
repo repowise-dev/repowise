@@ -103,7 +103,7 @@ async def _select(
     from repowise.core.persistence.database import get_session
     from repowise.server.mcp_server._helpers import _get_repo
 
-    checkout = await asyncio.to_thread(read_checkout, repo_path)
+    checkout = await asyncio.to_thread(read_checkout, repo_path, change.head)
     async with get_session(session_factory) as session:
         repository = await _get_repo(session)
         result, selection = await select_for_change(

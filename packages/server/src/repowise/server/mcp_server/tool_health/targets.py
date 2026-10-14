@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
-from repowise.core.git_refs import find_path_removal
+from repowise.server.repo_paths import missing_path_hint
 
 
 def _expand_module_targets(
@@ -83,15 +83,5 @@ def _miss_reason(
         on_disk = False
     if on_disk:
         return {"reason": "not_indexed"}
-    return {"reason": "no_such_path", **_removal_hint(repo_root, target)}
-
-
-def _removal_hint(repo_root: Any, target: str) -> dict[str, Any]:
-    """``{}``, or ``moved_to``/``removed_by_commit`` when git can explain the miss (#2633)."""
-    try:
-        removal = find_path_removal(str(repo_root), target)
-    except (OSError, ValueError):
-        return {}
-    if removal is None:
-        return {}
-    return {"removed_by_commit": removal.commit, "moved_to": removal.moved_to}
+    root = str(repo_root) if repo_root else None
+    return {"reason": "no_such_path", **missing_path_hint(root, target)}

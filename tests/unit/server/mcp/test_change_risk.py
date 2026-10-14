@@ -178,6 +178,40 @@ async def test_get_change_risk_empty_diff_warns(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_change_risk_names_the_checkout_and_commit_it_scored(tmp_path, monkeypatch) -> None:
+    """``HEAD`` resolves in the served checkout, so a worktree caller sees whose HEAD it was."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    _git(["worktree", "add", "-q", "-b", "feature", str(tmp_path / "wt")], repo)
+    _commit(tmp_path / "wt", {"app.py": "value = 1\n"}, "feat: on the worktree branch")
+    _commit(repo, {"main.py": "value = 2\n"}, "feat: on main")
+
+    def sha(ref: str) -> str:
+        return subprocess.run(
+            ["git", "rev-parse", ref], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    served = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    branch = await module.get_change_risk(f"HEAD~1..{sha('feature')}", baseline=0)
+
+    assert served["scored_repo"] == {"root": str(repo), "head": sha("main")[:12]}
+    assert branch["scored_repo"] == {"root": str(repo), "head": sha("feature")[:12]}
+
+    # Uncommitted work is marked, so its head does not read as the scored change.
+    (repo / "main.py").write_text("value = 3\n", encoding="utf-8")
+    dirty = await module.get_change_risk(baseline=0)
+    assert dirty["scored_repo"] == {"root": str(repo), "head": sha("main")[:12], "working_tree": True}
+
+
+@pytest.mark.asyncio
 async def test_get_change_risk_rejects_repo_all() -> None:
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
     result = await module.get_change_risk(repo="all")

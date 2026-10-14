@@ -11,7 +11,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from .analysis.change_risk.features import _git, split_revspec
 from .forges import parse_remote
@@ -21,6 +21,7 @@ __all__ = [
     "PathRemoval",
     "ahead_behind",
     "ahead_behind_many",
+    "branch_with_path",
     "change_base",
     "changed_files",
     "commit_file_sets",
@@ -356,3 +357,30 @@ def find_path_removal(repo_path: str, path: str) -> PathRemoval | None:
         {line.strip() for line in added.splitlines() if line.strip().startswith(stem_dir)}
     )
     return PathRemoval(commit=sha, moved_to=split_into)
+
+
+def branch_with_path(repo_path: str, path: str) -> str | None:
+    """The newest other local branch whose tip has *path*, ``None`` when none does.
+
+    Worktrees share the repository's branches, so this finds a file that exists
+    only in another worktree's branch. Two git calls whatever the branch count.
+    Ceiling: a detached worktree HEAD is not a branch and is not looked at.
+    """
+    from .analysis.doc_drift.suggest import git_run
+
+    # A path that escapes the tree (``../x``, ``/x``) is simply missing in every
+    # tree, and the read only reads, so no guard is needed here.
+    listing = _read(
+        repo_path,
+        ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(HEAD)", "refs/heads"],
+    )
+    # ``*`` marks the checked-out branch, whose tree the caller already read.
+    rows = (line.partition("\t") for line in listing.splitlines())
+    names = [name for name, _, mark in rows if mark.strip() != "*"]
+    # No other branch sends an empty request, which answers with no lines: None.
+    request = "".join(f"refs/heads/{name}:{path}\n" for name in names).encode("utf-8")
+    ran = git_run(Path(repo_path), "cat-file", "--batch-check=%(objecttype)", stdin=request)
+    lines = ran[1].decode("utf-8", "replace").splitlines() if ran and ran[0] == 0 else []
+    if len(lines) != len(names):
+        return None
+    return next((name for name, kind in zip(names, lines, strict=True) if kind == "blob"), None)
