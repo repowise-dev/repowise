@@ -175,6 +175,62 @@ def test_go_chatty_test_buffer_capped_to_20() -> None:
     assert "log output line 34" in distilled
 
 
+def test_go_passing_test_preserves_error_lines() -> None:
+    raw = "\n".join(
+        [
+            "=== RUN   TestPassingWithError",
+            "    pass_test.go:10: warning: failed connection attempt 1, retrying",
+            "    pass_test.go:11: connection established successfully",
+            "--- PASS: TestPassingWithError (0.01s)",
+            "PASS",
+        ]
+    )
+    f = filter_registry.get("test_output")
+    distilled = f.distill(raw, command="go test -v ./...")
+    assert "failed connection attempt 1" in distilled
+    assert "connection established successfully" not in distilled
+    assert "(1 passing tests omitted)" in distilled
+
+
+def test_go_crash_diagnostics_survive_exit_status() -> None:
+    raw = "\n".join(
+        [
+            "=== RUN   TestCrash",
+            "panic: runtime error: index out of range",
+            "goroutine 1 [running]:",
+            "repowise/internal/crash.TestCrash(0x0)",
+            "exit status 2",
+            "FAIL\texample.com/crash\t0.01s",
+        ]
+    )
+    f = filter_registry.get("test_output")
+    distilled = f.distill(raw, command="go test -v ./...")
+    assert "panic: runtime error: index out of range" in distilled
+    assert "goroutine 1 [running]:" in distilled
+    assert "exit status 2" in distilled
+
+
+def test_go_failure_message_not_evicted_by_many_logs() -> None:
+    lines = [
+        "=== RUN   TestEviction",
+        "    fail_test.go:5: assertion error: expected 1 got 2",
+    ]
+    for i in range(30):
+        lines.append(f"    fail_test.go:{10 + i}: debug message {i}")
+    lines.extend(
+        [
+            "--- FAIL: TestEviction (0.05s)",
+            "FAIL",
+        ]
+    )
+    raw = "\n".join(lines)
+    f = filter_registry.get("test_output")
+    distilled = f.distill(raw, command="go test -v ./...")
+    assert "assertion error: expected 1 got 2" in distilled
+    assert "debug message 29" in distilled
+    assert "debug message 0" not in distilled
+
+
 def test_cargo_failures_section_survives(load_fixture) -> None:
     _raw, distilled = _distill(load_fixture, "cargo_test_fail.txt", "test_output", "cargo test")
     assert "store::tests::test_ttl_prune" in distilled

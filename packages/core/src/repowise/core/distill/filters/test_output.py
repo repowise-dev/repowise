@@ -10,7 +10,6 @@ the pass parade — dots, PASSED lines, ok lines — which is replaced by counts
 from __future__ import annotations
 
 import re
-from collections import deque
 from typing import ClassVar
 
 from repowise.core.distill.filters.base import OutputFilter, cap_block, is_error_line
@@ -172,16 +171,52 @@ def _distill_pytest(lines: list[str]) -> str:
 # -- go test -----------------------------------------------------------------
 
 
+class _TestBuffer:
+    """Bounded per-test buffer that preserves error-classified diagnostics."""
+
+    def __init__(self, max_lines: int = _GO_MAX_BUFFERED_TEST_LINES) -> None:
+        self.lines: list[str] = []
+        self.max_lines = max_lines
+
+    def append(self, line: str) -> None:
+        self.lines.append(line)
+        if len(self.lines) > self.max_lines:
+            # Evict the oldest non-error line so error diagnostics cannot be evicted.
+            for idx, ln in enumerate(self.lines):
+                if not is_error_line(ln):
+                    self.lines.pop(idx)
+                    break
+
+    def drain(self) -> list[str]:
+        lines = self.lines
+        self.lines = []
+        return lines
+
+    def drain_errors(self) -> list[str]:
+        errors = [ln for ln in self.lines if is_error_line(ln)]
+        self.lines = []
+        return errors
+
+
 def _distill_go(lines: list[str]) -> str:
     out: list[str] = []
     passes = 0
     runs = 0
     in_fail_block = False
     current_test: str | None = None
-    buffers: dict[str, deque[str]] = {}
+    buffers: dict[str, _TestBuffer] = {}
+
+    def parse_test_name(line: str) -> str | None:
+        m = _GO_STATUS_PARSE_RE.match(line)
+        return m.group("name") if m else None
 
     for line in lines:
         if line.startswith("exit status "):
+            if current_test and current_test in buffers:
+                out.extend(buffers.pop(current_test).drain())
+            for buf in buffers.values():
+                out.extend(buf.drain_errors())
+            buffers.clear()
             out.append(line)
             current_test = None
             in_fail_block = False
@@ -196,11 +231,11 @@ def _distill_go(lines: list[str]) -> str:
                 runs += 1
                 current_test = name
                 if name:
-                    buffers[name] = deque(maxlen=_GO_MAX_BUFFERED_TEST_LINES)
+                    buffers[name] = _TestBuffer()
             elif verb in ("CONT", "NAME"):
                 current_test = name
                 if name and name not in buffers:
-                    buffers[name] = deque(maxlen=_GO_MAX_BUFFERED_TEST_LINES)
+                    buffers[name] = _TestBuffer()
             elif verb == "PAUSE":
                 current_test = None
             continue
@@ -209,42 +244,32 @@ def _distill_go(lines: list[str]) -> str:
             is_test_fail = line.lstrip().startswith("--- FAIL")
             in_fail_block = is_test_fail
             out.append(line)
-            if is_test_fail:
-                status_m = _GO_STATUS_PARSE_RE.match(line)
-                if status_m:
-                    test_name = status_m.group("name")
-                    if test_name in buffers:
-                        out.extend(buffers.pop(test_name))
-            else:
-                if current_test and current_test in buffers:
-                    out.extend(buffers.pop(current_test))
+            test_name = parse_test_name(line) if is_test_fail else current_test
+            if test_name and test_name in buffers:
+                out.extend(buffers.pop(test_name).drain())
             current_test = None
             continue
 
-        if _GO_PASS_RE.match(line):
+        if _GO_PASS_RE.match(line) or line.lstrip().startswith("--- SKIP"):
             in_fail_block = False
             current_test = None
             if line.startswith(("ok", "PASS")):
                 out.append(line)
             else:
-                passes += 1
-                status_m = _GO_STATUS_PARSE_RE.match(line)
-                if status_m:
-                    buffers.pop(status_m.group("name"), None)
-            continue
-
-        if line.lstrip().startswith("--- SKIP"):
-            in_fail_block = False
-            current_test = None
-            status_m = _GO_STATUS_PARSE_RE.match(line)
-            if status_m:
-                buffers.pop(status_m.group("name"), None)
+                if not line.lstrip().startswith("--- SKIP"):
+                    passes += 1
+                test_name = parse_test_name(line)
+                if test_name and test_name in buffers:
+                    out.extend(buffers.pop(test_name).drain_errors())
             continue
 
         if current_test is not None:
             buffers[current_test].append(line)
         elif in_fail_block or is_error_line(line):
             out.append(line)
+
+    for buf in buffers.values():
+        out.extend(buf.drain_errors())
 
     if not out and passes == 0 and runs == 0:
         raise ValueError("not go test output")
