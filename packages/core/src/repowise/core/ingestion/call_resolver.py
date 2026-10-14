@@ -78,6 +78,7 @@ from .symbol_identity import (
     split_symbol_id,
 )
 from .type_names import (
+    bare_type_name,
     csharp_extension_receiver,
     is_resolvable_type_name,
 )
@@ -2043,7 +2044,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             name
             for imp in imports
             if _imports_a_library(imp)
-            for name in imp.local_names or [imp.module_path.rsplit(".", 1)[-1]]
+            for name in imp.local_names or [bare_type_name(imp.module_path)]
         ) - {"*"}
         self._library_names[file_path] = names
         return names
