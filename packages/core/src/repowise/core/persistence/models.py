@@ -2374,7 +2374,9 @@ class HealthSnapshot(Base):
     taken_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
-    hotspot_health: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
+    # NULL when the repo had no scored hotspot file: averaging an empty set
+    # would read as perfect hotspots. Snapshots before migration 0108 hold 10.0.
+    hotspot_health: Mapped[float | None] = mapped_column(Float, nullable=True)
     average_health: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
     worst_performer_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     worst_performer_score: Mapped[float | None] = mapped_column(Float, nullable=True)

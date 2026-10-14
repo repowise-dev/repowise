@@ -317,7 +317,8 @@ async def overview_summary(
     if len(snapshot.recent) >= 2:
         prev, cur = snapshot.recent[-2], snapshot.recent[-1]
         deltas["average_health"] = round(cur.average_health - prev.average_health, 2)
-        deltas["hotspot_health"] = round(cur.hotspot_health - prev.hotspot_health, 2)
+        if cur.hotspot_health is not None and prev.hotspot_health is not None:
+            deltas["hotspot_health"] = round(cur.hotspot_health - prev.hotspot_health, 2)
         file_counts = await crud.get_health_snapshot_file_counts(session, repo_id, limit=2)
         if len(file_counts) == 2 and all(file_counts):
             deltas["file_count"] = file_counts[1] - file_counts[0]
@@ -539,7 +540,9 @@ async def overview_summary(
                 {
                     "taken_at": s.taken_at.isoformat() if s.taken_at else None,
                     "average_health": round(s.average_health, 2),
-                    "hotspot_health": round(s.hotspot_health, 2),
+                    "hotspot_health": (
+                        round(s.hotspot_health, 2) if s.hotspot_health is not None else None
+                    ),
                 }
                 for s in snapshot.recent
             ],

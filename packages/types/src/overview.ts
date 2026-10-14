@@ -72,7 +72,8 @@ export interface OverviewStats {
 export interface OverviewHealthHistoryPoint {
   taken_at: string | null;
   average_health: number;
-  hotspot_health: number;
+  /** Null on a snapshot whose repo had no scored hotspot file. */
+  hotspot_health: number | null;
 }
 
 export interface OverviewHealth {

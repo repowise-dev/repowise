@@ -926,8 +926,8 @@ def hotspot_health(
     and not a failure — a repo with no recent churn has nothing to be a hotspot.
     It is kept distinct from a low score on purpose: averaging an empty set
     yields 10.0, and reporting that would tell a user their hotspots are perfect
-    when they have none. :func:`compute_kpis` still floors it to 10.0 for the
-    persisted KPI, and says why there.
+    when they have none. :func:`compute_kpis` and the persisted snapshot carry
+    the ``None`` through unchanged.
     """
     rows = [m for m in scored_rows(metrics) if field(m, "file_path") in hotspot_paths]
     if not rows:
@@ -978,7 +978,8 @@ def compute_kpis(
 ) -> dict[str, object]:
     """Repo-level KPIs derived from per-file metrics.
 
-    - ``hotspot_health``: NLOC-weighted average over files in *hotspot_paths*.
+    - ``hotspot_health``: NLOC-weighted average over files in *hotspot_paths*,
+      ``None`` when the repo has no scored hotspot file.
     - ``average_health``: NLOC-weighted average over all files.
     - ``worst_performer``: the worst file in Fix first's scope + score, and
       ``worst_test_performer`` the worst test, as ``ranking.worst_in_scope``
@@ -1026,14 +1027,8 @@ def compute_kpis(
         for half in ("structure", "history")
         for scope, rows in (("average", metrics), ("hotspot", hotspots))
     }
-    # Floored to 10.0 when the repo has no hotspot files, because this dict is
-    # what ``save_health_snapshot`` persists into a non-nullable column and what
-    # the trend alerts diff against. The floor lives here, at the one point that
-    # needs it, rather than inside the arithmetic — surfaces that can say "no
-    # hotspots" out loud read ``hotspot_health()`` and get ``None``.
-    hotspot_kpi = hotspot_health(metrics, hotspot_paths)
     return {
-        "hotspot_health": hotspot_kpi if hotspot_kpi is not None else 10.0,
+        "hotspot_health": hotspot_health(metrics, hotspot_paths),
         "average_health": round(nloc_weighted_score(metrics), 2),
         **worst_kpis(metrics, deductions or {}),
         "file_count": len(metrics),

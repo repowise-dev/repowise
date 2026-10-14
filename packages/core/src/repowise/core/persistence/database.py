@@ -450,7 +450,11 @@ def _run_data_step(step: Callable[[object], object], connection: object) -> None
 #: additive reconciler below never does. Leaf tables only, since nothing may
 #: reference a table that is copied, dropped and renamed. Each holds derived
 #: rows, so an interrupted rebuild costs a recompute, never source data.
-_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset({"health_file_metrics"})
+#: ``health_snapshots`` is history rather than derived, but small, and an
+#: interrupted rebuild leaves its rows in the staging table.
+_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset(
+    {"health_file_metrics", "health_snapshots"}
+)
 
 
 def _relax_not_null(connection: object, table: object) -> None:
@@ -497,8 +501,8 @@ def _loosen_postgres_columns(table: object, live: dict[str, dict], dialect: obje
 
     Only ever loosens: drops a NOT NULL the model no longer declares and widens
     a VARCHAR the model made longer or unbounded. Both are catalog-only changes
-    on PostgreSQL and match what migrations 0062, 0064, 0086 and 0094 do, so a
-    database that never ran Alembic (the Docker image's path) still accepts
+    on PostgreSQL and match what migrations 0062, 0064, 0086, 0094 and 0108 do,
+    so a database that never ran Alembic (the Docker image's path) still accepts
     what the current code writes. Tightening stays an explicit migration.
     """
     statements = []

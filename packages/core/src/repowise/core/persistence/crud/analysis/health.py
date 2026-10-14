@@ -966,7 +966,7 @@ async def save_health_snapshot(
     session: AsyncSession,
     repository_id: str,
     *,
-    hotspot_health: float,
+    hotspot_health: float | None,
     average_health: float,
     worst_performer_path: str | None,
     worst_performer_score: float | None,
@@ -1000,7 +1000,7 @@ async def save_health_snapshot(
         id=_new_uuid(),
         repository_id=repository_id,
         taken_at=taken_at or _now_utc(),
-        hotspot_health=float(hotspot_health),
+        hotspot_health=float(hotspot_health) if hotspot_health is not None else None,
         average_health=float(average_health),
         worst_performer_path=worst_performer_path,
         worst_performer_score=(
@@ -1071,7 +1071,7 @@ class HealthSnapshotScalars(NamedTuple):
 
     taken_at: datetime | None
     average_health: float
-    hotspot_health: float
+    hotspot_health: float | None
 
 
 class HealthSnapshotHeadline(NamedTuple):
@@ -1128,11 +1128,11 @@ async def get_health_snapshot_headline(
     hotspot_health, taken_at, _ = rows[-1]
     window = rows[-recent:] if recent > 0 else []
     return HealthSnapshotHeadline(
-        float(hotspot_health),
+        hotspot_health,
         taken_at,
         len(rows),
         tuple(
-            HealthSnapshotScalars(r_taken_at, float(r_avg), float(r_hotspot))
+            HealthSnapshotScalars(r_taken_at, float(r_avg), r_hotspot)
             for r_hotspot, r_taken_at, r_avg in window
         ),
     )

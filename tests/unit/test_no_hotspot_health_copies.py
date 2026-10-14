@@ -47,6 +47,7 @@ _PLUMBING: dict[str, str] = {
     "repowise/server/schemas/repository.py": "the response field",
     "repowise/server/schemas/code_health.py": "the trend response fields",
     "alembic/versions/0019_code_health.py": "the migration that adds the column",
+    "alembic/versions/0108_health_snapshot_hotspot_nullable.py": "the migration that allows NULL",
     # --- trend surfaces: diff recorded snapshots, no current value -----------
     "repowise/core/analysis/health/trends.py": (
         "diffs snapshots and builds the snapshot writers' arguments; owns no current value"

@@ -21,7 +21,7 @@ import { Sparkline } from "../health/sparkline";
 export interface HealthOverviewPoint {
   taken_at: string | null;
   average_health: number;
-  hotspot_health: number;
+  hotspot_health: number | null;
 }
 
 export interface HealthOverviewData {
@@ -255,7 +255,10 @@ export function HealthOverviewCard({
   const avg = data.average_health;
   const hot = data.hotspot_health;
   const avgSeries = data.history.map((p) => p.average_health);
-  const hotSeries = data.history.map((p) => p.hotspot_health);
+  // A snapshot with no hotspot figure is dropped rather than plotted at zero.
+  const hotSeries = data.history
+    .map((p) => p.hotspot_health)
+    .filter((v): v is number => v !== null);
 
   const severities = SEVERITY_ORDER.map((key) => ({
     key,
