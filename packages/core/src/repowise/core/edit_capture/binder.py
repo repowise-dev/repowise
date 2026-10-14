@@ -282,8 +282,15 @@ def _clean(rows: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
 
 
 def _commits_to_bind(repo: Path, since: float, cursor: str | None) -> list[str]:
+    """Commits after *cursor* and newer than *since*, oldest first.
+
+    No ``--max-count`` here: git applies it before ``--reverse``, which would
+    keep the newest commits and skip the oldest. Listing ids is cheap; the
+    caller caps how many it diffs. ``--topo-order`` puts every parent before
+    its child, so a cursor at the last processed commit covers all before it.
+    """
     args = [
-        "rev-list", "--no-merges", "--reverse", f"--max-count={MAX_COMMITS}",
+        "rev-list", "--no-merges", "--topo-order", "--reverse",
         f"--since={int(since) - COMMIT_GRACE_SECONDS}", "HEAD",
     ]
     if cursor and _git(repo, "cat-file", "-t", cursor).strip() == "commit":
@@ -310,16 +317,20 @@ def bind_pending(repo: Path, *, capture: str, now: float | None = None) -> list[
             state = load_state(repo)
             done = bound_commits(repo)
             since = min(row["ts"] for row in rows)
-            for sha in _commits_to_bind(repo, since, state.get("cursor")):
+            pending = _commits_to_bind(repo, since, state.get("cursor"))
+            batch = pending[:MAX_COMMITS]
+            for sha in batch:
                 if sha in done:
                     continue
                 binding = _bind_commit(repo, sha, rows)
                 if binding is not None:
                     bindings.append(binding)
-            head = _git(repo, "rev-parse", "HEAD").strip()
-            if head:
+            # A capped run stops the cursor at its last commit; the next run
+            # continues from there instead of skipping the rest.
+            cursor = batch[-1] if len(pending) > MAX_COMMITS else _git(repo, "rev-parse", "HEAD").strip()
+            if cursor:
                 state = load_state(repo)
-                state["cursor"] = head
+                state["cursor"] = cursor
                 save_state(repo, state)
         append_jsonl(directory / BINDINGS, bindings)
         if capture == "notes" and bindings:

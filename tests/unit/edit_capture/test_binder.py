@@ -191,6 +191,23 @@ def test_binding_stops_at_the_cursor(repo) -> None:
     assert binding["commit"] == sha
 
 
+def test_capped_run_resumes_past_the_first_batch(repo) -> None:
+    from repowise.core.edit_capture.binder import MAX_COMMITS
+
+    _agent_edit(repo, "src/a.py", BODY)
+    for i in range(MAX_COMMITS):
+        repo.git("commit", "-q", "--allow-empty", "-m", f"filler {i}")
+    repo.write("src/a.py", "\n".join(BODY) + "\n")
+    sha = repo.commit("agent")
+    for i in range(3):
+        repo.git("commit", "-q", "--allow-empty", "-m", f"after {i}")
+    # The first run spends its budget on the oldest commits and stops there.
+    assert bind_pending(repo.root, capture="local") == []
+    assert len(read_jsonl(sidecar_dir(repo.root) / EVENTS)) == 1
+    (binding,) = bind_pending(repo.root, capture="local")
+    assert binding["commit"] == sha
+
+
 def test_bind_repo_uses_the_effective_level(repo, user_config) -> None:
     from repowise.core.edit_capture.binder import bind_repo
 
