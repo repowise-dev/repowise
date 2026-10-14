@@ -169,16 +169,17 @@ def hooks_config() -> dict[str, object]:
     startup and edits alone.
     """
     from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER
+    from repowise.core.owned_paths import CODEX_HOOK_COMMAND
 
     context_hook = {
         "type": "command",
-        "command": "repowise-augment --client codex",
+        "command": CODEX_HOOK_COMMAND,
         "timeout": _HOOK_TIMEOUT,
         "statusMessage": "Loading repowise context...",
     }
     freshness_hook = {
         "type": "command",
-        "command": "repowise-augment --client codex",
+        "command": CODEX_HOOK_COMMAND,
         "timeout": _HOOK_TIMEOUT,
         "statusMessage": "Checking repowise freshness...",
     }

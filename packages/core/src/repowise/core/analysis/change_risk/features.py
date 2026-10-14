@@ -19,11 +19,11 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
 
 import pathspec
 
 from ...ingestion.git_indexer._constants import is_fix_commit
+from ..changed_lines import untracked_diffs
 
 # Re-exported: callers across the package import these from here.
 from ..git_cli import GIT_TIMEOUT_SECONDS, _git, split_revspec  # noqa: F401
@@ -227,29 +227,6 @@ def working_tree_is_dirty(repo_path: str) -> bool:
     return bool(_git(["status", "--porcelain"], repo_path, check=False).strip())
 
 
-#: Untracked files above this are counted as a touched file with zero added
-#: lines rather than read into memory to be counted. A multi-megabyte untracked
-#: blob is a build artifact, not authored code, and its exact line count would
-#: not change the risk band.
-_UNTRACKED_READ_LIMIT = 2_000_000
-
-
-def _untracked_additions(repo_path: str, path: str) -> int:
-    """Line count of an untracked file, matching what git would call additions."""
-    target = Path(repo_path) / path
-    try:
-        if target.stat().st_size > _UNTRACKED_READ_LIMIT:
-            return 0
-        data = target.read_bytes()
-    except OSError:
-        return 0
-    if b"\x00" in data:
-        return 0  # binary: git reports "-" in numstat, which we count as 0
-    if not data:
-        return 0
-    return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
-
-
 def extract_worktree_features(
     repo_path: str,
     *,
@@ -261,21 +238,17 @@ def extract_worktree_features(
     Covers staged and unstaged edits to tracked files plus untracked files,
     which is what a caller who just wrote code and asked "how risky is this?"
     means by "this". Untracked files are invisible to ``git diff HEAD``, so they
-    are folded in as pure additions.
+    are folded in as pure additions, from the same listing the changed lines
+    and the health delta read.
 
     Experience is the configured author's prior commit count at ``HEAD``, and
     ``is_fix`` is always false — an uncommitted change has no subject to read.
     """
-    # Both walks run from the repo root: ``git diff`` reports root-relative
-    # paths whatever the cwd, but ``ls-files --others`` is scoped to the cwd and
-    # reports relative to it, so from a subdirectory the two halves would use
-    # different path roots and only half would match a root-anchored exclude.
+    # Both walks run from the repo root, where untracked paths are read from.
     root = _git(["rev-parse", "--show-toplevel"], repo_path, check=False).strip() or repo_path
     numstat = _git(["diff", "--numstat", "HEAD"], root, check=False)
-    untracked = _git(["ls-files", "--others", "--exclude-standard"], root, check=False)
-    rows = [
-        f"{_untracked_additions(root, path)}\t0\t{path}" for path in untracked.splitlines() if path
-    ]
+    untracked = untracked_diffs(root, exclude_patterns)
+    rows = [f"{len(diff.new_lines)}\t0\t{path}" for path, diff in untracked.items()]
     if rows:
         numstat = numstat.rstrip("\n") + "\n" + "\n".join(rows)
     la, ld, nf, dirs, subs, per_file, files = _accumulate_numstat(

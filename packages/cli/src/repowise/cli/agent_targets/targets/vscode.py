@@ -31,6 +31,9 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
+# Defined in core: change risk tells this recommendation from a user's edit.
+from repowise.core.owned_paths import EXTENSION_ID
+
 from ..formats.server_entry import RemoteServerEntryError
 from ..types import (
     Capability,
@@ -49,7 +52,6 @@ ID = IDENTITY.cli_target_id
 DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://code.visualstudio.com/docs/copilot/chat/mcp-servers"
 
-EXTENSION_ID = "repowise-dev.repowise"
 
 #: Config key gating this agent's managed project files.
 PROJECT_FILE_ID = "vscode_mcp"

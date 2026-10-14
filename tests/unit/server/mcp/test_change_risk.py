@@ -570,6 +570,33 @@ async def test_get_change_risk_keeps_working_tree_without_a_revspec(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_get_change_risk_untracked_only_tree_is_one_change(tmp_path, monkeypatch) -> None:
+    """Score, manifest and delta read one file set; repowise's own output drops out."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    (repo / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (repo / ".github").mkdir()
+    (repo / ".github" / "copilot-instructions.md").write_text(
+        "<!-- REPOWISE_DISTILL:START -->\nx\n<!-- REPOWISE_DISTILL:END -->\n", encoding="utf-8"
+    )
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk(baseline=0, include=["diagnostics"])
+
+    assert result["working_tree"] is True
+    assert result["features"]["nf"] == 1
+    assert result["health_delta"]["scope"]["changed"] == 1
+    assert result["exclude_patterns"] == ["/.github/copilot-instructions.md"]
+
+
+@pytest.mark.asyncio
 async def test_get_change_risk_keeps_is_fix_when_true(tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

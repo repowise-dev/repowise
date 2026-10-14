@@ -941,6 +941,7 @@ async def _changed_with_label(
                 revspec or "HEAD",
                 working_tree=working_tree,
                 base=base,
+                skip_untracked=exclude_patterns,
             )
         )
     except ValueError as exc:

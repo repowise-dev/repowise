@@ -1,13 +1,19 @@
-"""The two git helpers every change reader shares: split a revspec, run git.
+"""The git helpers every change reader shares: split a revspec, run git, list
+the untracked files and the managed files only repowise edited.
 
-A leaf with no package imports, so a caller that only needs the diff shape
-(changed lines, the drift gate's scope) does not load change risk's baseline
-and, through it, GitPython.
+A leaf (only the owned-path list beside it), so a caller that only needs the
+diff shape (changed lines, the drift gate's scope) does not load change risk's
+baseline and, through it, GitPython.
 """
 
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
+
+import pathspec
+
+from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
 
 # Generous ceiling: even a 200-commit numstat walk finishes in seconds. The
 # point is that a stuck git (lock contention, network filesystem) must fail
@@ -49,3 +55,50 @@ def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
             proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr
         )
     return proc.stdout
+
+
+def untracked_paths(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> list[str]:
+    """Untracked, not-ignored files, root-relative like ``git diff``'s paths.
+
+    The one source of untracked files for every working-tree reader (the score,
+    the changed lines, the health delta), so they agree on the file set. Paths
+    repowise writes whole are left out here, before anything reads them: an
+    unignored index directory holds thousands of files. *exclude_patterns*
+    (gitignore-style) drops a caller's excluded paths at the same point.
+    """
+    listing = _git(
+        ["ls-files", "--others", "--exclude-standard", "-z", "--full-name", "--", ":/"],
+        repo_path,
+        check=False,
+    )
+    skip = pathspec.PathSpec.from_lines("gitwildmatch", OWNED_PATTERNS + exclude_patterns)
+    return [path for path in listing.split("\0") if path and not skip.match_file(path)]
+
+
+def generated_worktree_paths(repo_path: str) -> tuple[str, ...]:
+    """Root-anchored patterns for managed files whose uncommitted change is repowise's alone.
+
+    A file is compared at ``HEAD`` and on disk with repowise's block or entry
+    removed, so a refreshed CLAUDE.md block or a newly written ``.mcp.json``
+    drops out while any edit of the user's own text keeps the file in.
+    """
+    root = _git(["rev-parse", "--show-toplevel"], repo_path, check=False).strip()
+    if not root:
+        return ()
+    # --no-renames: a rename entry carries a second path, which would misparse.
+    status = ["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"]
+    listing = _git(
+        [*status, "--", *MANAGED_FILES],
+        root,
+        check=False,
+    )
+    out: list[str] = []
+    for path in sorted({entry[3:] for entry in listing.split("\0") if len(entry) > 3}):
+        try:
+            new = (Path(root) / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            new = ""
+        old = _git(["show", f"HEAD:{path}"], root, check=False)
+        if only_repowise_differs(path, old, new):
+            out.append(f"/{path}")
+    return tuple(out)

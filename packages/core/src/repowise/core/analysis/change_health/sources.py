@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff
-from ..git_cli import split_revspec
+from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff, untracked_diffs
+from ..git_cli import split_revspec, untracked_paths
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -176,13 +176,23 @@ class GitRevisionSource:
 
     def _resolve_working_tree(self) -> RevisionPair:
         head = self._sha("HEAD")
+        # Untracked files are part of the uncommitted change, as change risk
+        # and the changed lines count them.
+        if self.hunks:
+            untracked = untracked_diffs(self.repo_path)
+        else:
+            untracked = dict.fromkeys(untracked_paths(self.repo_path))
         return RevisionPair(
             "HEAD",
             "WORKTREE",
             head,
             "",
             True,
-            self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", "HEAD"]),
+            self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", "HEAD"])
+            + [
+                FileChange(head_path=path, base_path=None, status="added", diff=diff)
+                for path, diff in untracked.items()
+            ],
         )
 
     def _resolve_commit(self, ref: str) -> RevisionPair:

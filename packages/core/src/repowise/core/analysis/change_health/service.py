@@ -147,7 +147,8 @@ class ChangeHealthDeltaService:
         """Identity of a comparison: the two sides plus how they were analysed."""
         if pair.working_tree:
             # Content identity: HEAD alone does not describe an edited tree.
-            paths = sorted(p for p in pair.head_paths)
+            # Only the compared files: an excluded untracked blob is not read.
+            paths = sorted(c.head_path for c in _filter(pair.changes, request) if c.head_path)
             blobs = self.source.read_working_tree(paths)
             digest = hashlib.sha256()
             for path in paths:

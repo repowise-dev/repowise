@@ -7,6 +7,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from ...owned_paths import OWNED_PATTERNS
+from ..git_cli import generated_worktree_paths
 from ..risk_semantics import change_risk_authority, change_risk_scales
 from .baseline import BaselineSample, baseline_samples_cached, densities_excluding, scores_excluding
 from .features import (
@@ -63,7 +65,15 @@ class ChangeRiskResult:
 
 
 def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
-    """Load non-comment patterns from the repository-root ``.riskignore``."""
+    """Non-comment patterns of the repository-root ``.riskignore``, then repowise's own paths.
+
+    Repowise's output is not the user's change, so the paths it writes whole
+    (:data:`~repowise.core.owned_paths.OWNED_PATTERNS`) are left out of every
+    score, commits and ranges included, so a tracked, hand-edited Kiro steering
+    file or workspace config is not scored either. Only those present are
+    listed, so a repo that never ran repowise reports no exclusions it did not
+    ask for.
+    """
     proc = subprocess.run(
         ["git", "-C", repo_path, "rev-parse", "--show-toplevel"],
         capture_output=True,
@@ -74,13 +84,18 @@ def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
     )
     if proc.returncode != 0:
         return ()
-    ignore_file = Path(proc.stdout.strip()) / ".riskignore"
+    root = Path(proc.stdout.strip())
+    owned = tuple(p for p in OWNED_PATTERNS if (root / p).exists())
+    ignore_file = root / ".riskignore"
     if not ignore_file.is_file():
-        return ()
-    return tuple(
-        line
-        for line in ignore_file.read_text(encoding="utf-8").splitlines()
-        if line and not line.startswith("#")
+        return owned
+    return (
+        tuple(
+            line
+            for line in ignore_file.read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#")
+        )
+        + owned
     )
 
 
@@ -168,18 +183,24 @@ def score_live_change(
 
     extensions = normalize_extensions(extensions)
     from_riskignore = riskignore_patterns(repo_path)
-    effective_excludes = from_riskignore + exclude_patterns
+    # The baseline walks committed history, which the working-tree-only
+    # exclusions below say nothing about; keeping them out keeps its cache key.
+    baseline_excludes = from_riskignore + exclude_patterns
     target = revspec or "HEAD"
-    uncommitted = (
-        extract_worktree_features(
-            repo_path, extensions=extensions, exclude_patterns=effective_excludes
+    uncommitted = None
+    if revspec is None and working_tree_is_dirty(repo_path):
+        # A managed file (CLAUDE.md, .mcp.json) whose edit is only repowise's
+        # block or entry is repowise's output too, while the user's edits count.
+        worktree_ignores = from_riskignore + generated_worktree_paths(repo_path)
+        uncommitted = extract_worktree_features(
+            repo_path, extensions=extensions, exclude_patterns=worktree_ignores + exclude_patterns
         )
-        if revspec is None and working_tree_is_dirty(repo_path)
-        else None
-    )
     # A tree dirty only in paths the filters drop is not a change this command
     # can score, so fall through to HEAD rather than answer "empty change".
     working_tree = uncommitted is not None and uncommitted.nf > 0
+    if working_tree:
+        from_riskignore = worktree_ignores
+    effective_excludes = from_riskignore + exclude_patterns
     # Ref whose history the fix record is read from (see ``history_ref``).
     history = history_ref(repo_path, target, working_tree=working_tree)
     if working_tree:
@@ -216,7 +237,7 @@ def score_live_change(
             anchor,
             baseline,
             extensions,
-            exclude_patterns=effective_excludes,
+            exclude_patterns=baseline_excludes,
         )
 
     result = assess_change(
