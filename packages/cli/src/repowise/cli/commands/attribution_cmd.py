@@ -164,11 +164,17 @@ def attribution_status(path: str | None, fmt: str) -> None:
             }
         )
         return
-
-    def _show(value: Any) -> str:
-        return "[dim]unset[/dim]" if value is None else _fmt(value)
-
     console.print("[bold]AI attribution[/bold]")
+    _print_settings(settings)
+    _print_capture(capture, sidecar)
+    _print_commits(settings, counts, share)
+
+
+def _show(value: Any) -> str:
+    return "[dim]unset[/dim]" if value is None else _fmt(value)
+
+
+def _print_settings(settings: Any) -> None:
     for key in ("enabled", "capture", "agents"):
         console.print(
             f"  {key:<8} {_show(getattr(settings, key))}"
@@ -181,6 +187,9 @@ def attribution_status(path: str | None, fmt: str) -> None:
         console.print(f"  [yellow]![/yellow] {error} (treated as the strictest value)")
     for reason in _explanations(settings):
         console.print(f"  [dim]{reason}[/dim]")
+
+
+def _print_capture(capture: dict[str, str], sidecar: dict[str, int]) -> None:
     for target_id, level in capture.items():
         console.print(f"  capture  {target_id:<12} {level}")
     if capture.get("cursor") in ("local", "notes"):
@@ -196,6 +205,9 @@ def attribution_status(path: str | None, fmt: str) -> None:
             f"  sidecar  {sidecar['pending_events']} pending edit events,"
             f" {sidecar['bound_commits']} bound commits, {sidecar['notes_written']} notes written"
         )
+
+
+def _print_commits(settings: Any, counts: dict[str, int] | None, share: Any) -> None:
     if not settings.enabled:
         console.print("  Nothing about AI is stored or shown for this repository.")
     elif counts is None:

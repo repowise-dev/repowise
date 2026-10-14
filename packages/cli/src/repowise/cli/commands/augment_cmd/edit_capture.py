@@ -25,9 +25,11 @@ def _payload_cwd(payload: dict) -> str:
 
 
 def capture_edit(hook_adapter: str, payload: dict) -> int:
-    """Record *payload*'s edits for the agent behind *hook_adapter*; never raises.
+    """Record *payload*'s edits for the agent behind *hook_adapter*.
 
-    Returns the number of events written (0 when capture is off for it).
+    Returns the number of events written (0 when capture is off for it, or
+    when the repo or sidecar cannot be read or written). Anything else is a
+    bug and reaches the hook's top-level guard.
     """
     try:
         from repowise.core.agents.identity import get_identity, slug_for_hook_adapter
@@ -47,5 +49,5 @@ def capture_edit(hook_adapter: str, payload: dict) -> int:
 
         call = CAPTURE_ADAPTERS[identity.capture_adapter](payload)
         return record_call(repo_root, identity.slug, call) if call is not None else 0
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return 0

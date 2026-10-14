@@ -98,17 +98,48 @@ def _replacement_lines(old: Any, new: Any) -> list[str]:
     return added
 
 
+def _plus_lines(hunk: Any) -> list[str]:
+    lines = hunk.get("lines") if isinstance(hunk, dict) else None
+    if not isinstance(lines, list):
+        return []
+    return [
+        normalize_line(line[1:])
+        for line in lines
+        if isinstance(line, str) and line.startswith("+")
+    ]
+
+
 def _patch_added(structured_patch: Any) -> list[str] | None:
     """``+`` lines of a Claude Code ``structuredPatch``, or None when it has none."""
     if not isinstance(structured_patch, list) or not structured_patch:
         return None
+    return [line for hunk in structured_patch for line in _plus_lines(hunk)]
+
+
+def _edits_added(edits: Any) -> list[str]:
+    """Replacement lines of an ``edits[]`` list of old/new string pairs."""
     added: list[str] = []
-    for hunk in structured_patch:
-        lines = hunk.get("lines") if isinstance(hunk, dict) else None
-        for line in lines if isinstance(lines, list) else []:
-            if isinstance(line, str) and line.startswith("+"):
-                added.append(normalize_line(line[1:]))
+    for edit in edits if isinstance(edits, list) else []:
+        if isinstance(edit, dict):
+            added += _replacement_lines(edit.get("old_string"), edit.get("new_string"))
     return added
+
+
+def _claude_code_added(tool_name: str, tool_input: dict, response: dict) -> list[str]:
+    if tool_name == "MultiEdit":
+        return _edits_added(tool_input.get("edits"))
+    if tool_name not in ("Write", "Edit"):
+        return []
+    patched = _patch_added(response.get("structuredPatch"))
+    if patched is not None:
+        return patched
+    if tool_name == "Edit":
+        return _replacement_lines(tool_input.get("old_string"), tool_input.get("new_string"))
+    # A Write without a patch: only a new file is all the agent's; an
+    # overwrite (``update``, or no response) may keep lines it did not write.
+    if response.get("type") == "create":
+        return split_lines(_str(tool_input.get("content")))
+    return []
 
 
 def claude_code_edits(tool_name: str, tool_input: Any, tool_response: Any) -> list[FileEdit]:
@@ -121,36 +152,22 @@ def claude_code_edits(tool_name: str, tool_input: Any, tool_response: Any) -> li
     if not isinstance(tool_input, dict):
         return []
     path = _str(tool_input.get("file_path"))
-    if not path:
-        return []
     response = tool_response if isinstance(tool_response, dict) else {}
-    if response.get("userModified") is True:
+    if not path or response.get("userModified") is True:
         return []
-    patched = _patch_added(response.get("structuredPatch"))
-    if tool_name == "Write":
-        # Without a patch only a new file is all the agent's; an overwrite
-        # (``update``, or no response) may keep lines it did not write.
-        if patched is not None:
-            added = patched
-        elif response.get("type") == "create":
-            added = split_lines(_str(tool_input.get("content")))
-        else:
-            added = []
-    elif tool_name == "Edit":
-        added = (
-            patched
-            if patched is not None
-            else _replacement_lines(tool_input.get("old_string"), tool_input.get("new_string"))
-        )
-    elif tool_name == "MultiEdit":
-        edits = tool_input.get("edits")
-        added = []
-        for edit in edits if isinstance(edits, list) else []:
-            if isinstance(edit, dict):
-                added += _replacement_lines(edit.get("old_string"), edit.get("new_string"))
-    else:
-        return []
+    added = _claude_code_added(tool_name, tool_input, response)
     return [FileEdit(path, added)] if added else []
+
+
+def _patch_header(line: str, current: FileEdit | None, edits: list[FileEdit]) -> FileEdit | None:
+    """The file a ``*** `` header line opens (appended to *edits*), renames, or ends."""
+    if line.startswith(("*** Add File: ", "*** Update File: ")):
+        edits.append(FileEdit(line.split(": ", 1)[1].strip(), []))
+        return edits[-1]
+    if line.startswith("*** Move to: ") and current is not None:
+        current.path = line.split(": ", 1)[1].strip()
+        return current
+    return None
 
 
 def parse_apply_patch(patch: str) -> list[FileEdit]:
@@ -164,13 +181,8 @@ def parse_apply_patch(patch: str) -> list[FileEdit]:
     current: FileEdit | None = None
     for raw in patch.split("\n"):
         line = raw.rstrip("\r")
-        if line.startswith("*** Add File: ") or line.startswith("*** Update File: "):
-            current = FileEdit(line.split(": ", 1)[1].strip(), [])
-            edits.append(current)
-        elif line.startswith("*** Move to: ") and current is not None:
-            current.path = line.split(": ", 1)[1].strip()
-        elif line.startswith("*** "):
-            current = None
+        if line.startswith("*** "):
+            current = _patch_header(line, current, edits)
         elif current is not None and line.startswith("+"):
             current.added.append(normalize_line(line[1:]))
     return [edit for edit in edits if edit.added]
@@ -195,13 +207,7 @@ def cursor_edits(tool_name: str, tool_input: Any, tool_response: Any) -> list[Fi
     if not isinstance(tool_input, dict):
         return []
     path = _str(tool_input.get("file_path"))
-    edits = tool_input.get("edits")
-    if not path or not isinstance(edits, list):
-        return []
-    added: list[str] = []
-    for edit in edits:
-        if isinstance(edit, dict):
-            added += _replacement_lines(edit.get("old_string"), edit.get("new_string"))
+    added = _edits_added(tool_input.get("edits")) if path else []
     return [FileEdit(path, added)] if added else []
 
 

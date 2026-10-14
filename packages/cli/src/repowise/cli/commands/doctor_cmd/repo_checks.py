@@ -257,7 +257,7 @@ def _attribution_notes_check(repo_path: _DoctorPath) -> DoctorCheck | None:
         from repowise.core.edit_capture.notes import FETCH_REFSPEC, NOTES_REF, refspec_status
 
         status = refspec_status(_DoctorPath(repo_path))
-    except Exception as exc:
+    except OSError as exc:
         return _check(name, True, f"could not read git config ({exc})")
     if not status["remote"]:
         return _check(name, True, "no origin remote, so notes stay on this machine")

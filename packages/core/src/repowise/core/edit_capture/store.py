@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .edits import CapturedCall
+from .edits import CapturedCall, FileEdit
 from .hashing import line_hash, opaque_id
 
 EVENTS = "events.jsonl"
@@ -65,36 +65,43 @@ def capture_level(repo_root: Path | str, agent_slug: str) -> str:
     return settings.capture
 
 
-def record_call(repo_root: Path, agent_slug: str, call: CapturedCall) -> int:
-    """Append one event per edited file inside *repo_root*; returns how many."""
+def edit_event(agent_slug: str, call: CapturedCall, edit: FileEdit, ts: float) -> dict[str, Any]:
+    """The event row for one *edit* of *call*; ``edit.path`` is repo-relative."""
+    return {
+        "v": 1,
+        "ts": ts,
+        "agent": agent_slug,
+        "session": opaque_id(call.session_id) if call.session_id else "",
+        "model": call.model,
+        "tool": call.tool,
+        "call": opaque_id(call.call_id) if call.call_id else "",
+        "path": edit.path,
+        "hashes": [line_hash(line) for line in edit.added],
+    }
+
+
+def _repo_relative(repo_root: Path, cwd: str, path: str) -> str | None:
+    """*path* (absolute, or relative to *cwd*) relative to *repo_root*; None outside it."""
     from repowise.core.sessions.events import relative_files
 
+    path = path.replace("\\", "/")
+    if not (path.startswith("/") or (len(path) > 1 and path[1] == ":")):
+        path = f"{cwd}/{path}"
+    rel = relative_files([path], repo_root)
+    return rel[0] if rel else None
+
+
+def record_call(repo_root: Path, agent_slug: str, call: CapturedCall) -> int:
+    """Append one event per edited file inside *repo_root*; returns how many."""
     cwd = (call.cwd or str(repo_root)).replace("\\", "/").rstrip("/")
-    lines: list[str] = []
     now = time.time()
-    for edit in call.edits:
-        path = edit.path.replace("\\", "/")
-        if not (path.startswith("/") or (len(path) > 1 and path[1] == ":")):
-            path = f"{cwd}/{path}"
-        rel = relative_files([path], repo_root)
-        if not rel:
-            continue
-        event = {
-            "v": 1,
-            "ts": now,
-            "agent": agent_slug,
-            "session": opaque_id(call.session_id) if call.session_id else "",
-            "model": call.model,
-            "tool": call.tool,
-            "call": opaque_id(call.call_id) if call.call_id else "",
-            "path": rel[0],
-            "hashes": [line_hash(line) for line in edit.added],
-        }
-        lines.append(json.dumps(event, separators=(",", ":")) + "\n")
-    if not lines:
-        return 0
-    append_lines(sidecar_dir(repo_root) / EVENTS, lines)
-    return len(lines)
+    rows = [
+        edit_event(agent_slug, call, FileEdit(rel, edit.added), now)
+        for edit in call.edits
+        if (rel := _repo_relative(repo_root, cwd, edit.path)) is not None
+    ]
+    append_jsonl(sidecar_dir(repo_root) / EVENTS, rows)
+    return len(rows)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:

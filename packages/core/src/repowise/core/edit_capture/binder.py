@@ -35,7 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .edits import FileEdit
+from .edits import CapturedCall, FileEdit
 from .hashing import is_substantive, line_hash, opaque_id
 from .store import (
     BINDINGS,
@@ -43,6 +43,7 @@ from .store import (
     EVENTS,
     append_jsonl,
     bound_commits,
+    edit_event,
     load_state,
     read_jsonl,
     save_state,
@@ -61,6 +62,7 @@ _GIT_AI_TOOLS = {"claude_code": "claude"}
 
 _WORK = "events.binding.jsonl"
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_DIFF_RE = re.compile(r"^diff --git ", re.MULTILINE)
 
 
 def git_ai_tool(agent: str) -> str:
@@ -68,37 +70,20 @@ def git_ai_tool(agent: str) -> str:
 
 
 def event_rows(
-    agent: str,
-    edits: list[FileEdit],
-    *,
-    ts: float,
-    session: str = "",
-    model: str | None = None,
-    tool: str = "",
-    repo_relative: list[str] | None = None,
+    agent: str, call: CapturedCall, *, ts: float, repo_relative: list[str] | None = None
 ) -> list[dict[str, Any]]:
-    """Event rows for *edits*, the shape :func:`bind_pending` reads.
+    """Event rows for *call*'s edits, the shape :func:`bind_pending` reads.
 
     The live hook writes these through :func:`~.store.record_call`; a backfill
-    builds them in memory from transcript edits. *repo_relative* gives each
-    edit's repo-relative path when the caller already resolved it.
+    builds them in memory from transcript edits wrapped in a
+    :class:`~.edits.CapturedCall`. *repo_relative* gives each edit's
+    repo-relative path when the caller already resolved it.
     """
-    rows = []
-    for i, edit in enumerate(edits):
-        rows.append(
-            {
-                "v": 1,
-                "ts": ts,
-                "agent": agent,
-                "session": opaque_id(session) if session else "",
-                "model": model,
-                "tool": tool,
-                "call": "",
-                "path": repo_relative[i] if repo_relative else edit.path,
-                "hashes": [line_hash(line) for line in edit.added],
-            }
-        )
-    return rows
+    paths = repo_relative or [edit.path for edit in call.edits]
+    return [
+        edit_event(agent, call, FileEdit(path, edit.added), ts)
+        for path, edit in zip(paths, call.edits, strict=True)
+    ]
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -121,51 +106,77 @@ def commit_diff(repo: Path, sha: str) -> tuple[int, list[tuple[str, str | None, 
         repo, "diff-tree", "-p", "-M", "--unified=0", "--no-color", "--no-ext-diff",
         "--root", "--format=%ct", sha,
     )
-    lines = out.split("\n")
+    head, _, body = out.partition("\n")
     try:
-        ct = int(lines[0].strip())
-    except (IndexError, ValueError):
+        ct = int(head.strip())
+    except ValueError:
         return 0, []
-    files: list[tuple[str, str | None, list[tuple[int, list[str]]]]] = []
+    parsed = (_file_diff(chunk) for chunk in _DIFF_RE.split(body)[1:])
+    return ct, [entry for entry in parsed if entry is not None]
+
+
+def _file_diff(chunk: str) -> tuple[str, str | None, list[tuple[int, list[str]]]] | None:
+    """``(path, renamed_from, hunks)`` of one file's diff; None without hunks."""
+    header, sep, rest = chunk.partition("\n@@")
+    path, old = _file_header(header)
+    hunks = _added_hunks(f"@@{rest}".split("\n")) if sep else []
+    if path is None or not hunks:
+        return None
+    return path, old, [h for h in hunks if h[1]]
+
+
+def _file_header(header: str) -> tuple[str | None, str | None]:
+    """``(new path, renamed_from)``; the path is None for a deleted file."""
     path: str | None = None
     old: str | None = None
-    hunks: list[tuple[int, list[str]]] = []
-    in_hunk = False
-
-    def flush() -> None:
-        if path is not None and hunks:
-            files.append((path, old, [h for h in hunks if h[1]]))
-
-    for line in lines[1:]:
-        if line.startswith("diff --git "):
-            flush()
-            path, old, hunks, in_hunk = None, None, [], False
-        elif not in_hunk and line.startswith("rename from "):
+    for line in header.split("\n"):
+        if line.startswith("rename from "):
             old = line[len("rename from ") :]
-        elif not in_hunk and line.startswith("+++ "):
+        elif line.startswith("+++ "):
             target = line[4:].rstrip("\t")
             path = target[2:] if target.startswith("b/") else None
-        elif line.startswith("@@"):
+    return path, old
+
+
+def _added_hunks(lines: list[str]) -> list[tuple[int, list[str]]]:
+    """``(first new line, added lines)`` per ``@@`` hunk header of *lines*."""
+    hunks: list[tuple[int, list[str]]] = []
+    in_hunk = False
+    for line in lines:
+        if line.startswith("@@"):
             match = _HUNK_RE.match(line)
             in_hunk = match is not None
             if match:
                 hunks.append((int(match.group(1)), []))
-        elif in_hunk and line.startswith("+") and hunks:
+        elif in_hunk and line.startswith("+"):
             hunks[-1][1].append(line[1:])
-    flush()
-    return ct, files
+    return hunks
+
+
+def _sole_owner(rows: list[dict[str, Any]], owners: list[int]) -> tuple[str, int] | None:
+    """``(agent, latest row index)`` when one agent claims a hash; None if none or several."""
+    agents = {rows[i]["agent"] for i in owners}
+    if len(agents) != 1:
+        return None
+    return next(iter(agents)), max(owners, key=lambda i: rows[i]["ts"])
+
+
+def _hash_owners(rows: list[dict[str, Any]], names: set[str], ct: int) -> dict[str, list[int]]:
+    """Hash to the indexes of rows for *names* recorded before the commit at *ct*."""
+    by_hash: dict[str, list[int]] = {}
+    for idx, row in enumerate(rows):
+        if row["path"] in names and row["ts"] <= ct + COMMIT_GRACE_SECONDS:
+            for h in row["hashes"]:
+                by_hash.setdefault(h, []).append(idx)
+    return by_hash
 
 
 def _match_file(
     rows: list[dict[str, Any]],
-    candidates: list[int],
+    by_hash: dict[str, list[int]],
     hunks: list[tuple[int, list[str]]],
 ) -> list[tuple[int, int, str]]:
     """``(row index, line number, hash)`` for every line this file binds."""
-    by_hash: dict[str, list[int]] = {}
-    for idx in candidates:
-        for h in rows[idx]["hashes"]:
-            by_hash.setdefault(h, []).append(idx)
     hashed = [[(n + i, text, line_hash(text)) for i, text in enumerate(added)] for n, added in hunks]
     repeats = Counter(h for hunk in hashed for _, _, h in hunk)
     # Runs of consecutive lines one agent claims; a None owner breaks a run.
@@ -173,16 +184,14 @@ def _match_file(
     for hunk in hashed:
         run_agent: str | None = None
         for number, text, h in hunk:
-            owners = by_hash.get(h, [])
-            agents = {rows[i]["agent"] for i in owners}
-            agent = next(iter(agents)) if len(agents) == 1 else None
-            if agent is None:
+            owner = _sole_owner(rows, by_hash.get(h, []))
+            if owner is None:
                 run_agent = None
                 continue
+            agent, latest = owner
             if agent != run_agent:
                 runs.append([])
                 run_agent = agent
-            latest = max(owners, key=lambda i: rows[i]["ts"])
             substantive = is_substantive(text) and repeats[h] < BOILERPLATE_REPEAT
             runs[-1].append((latest, number, h, substantive))
     return [
@@ -197,26 +206,32 @@ def _bind_commit(
     repo: Path, sha: str, rows: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
     ct, files = commit_diff(repo, sha)
-    if not files:
-        return None
-    sessions: dict[tuple[str, str, str | None], dict[str, list[int]]] = {}
+    sessions = _bound_lines(rows, ct, files)
+    return _binding(sha, ct, sessions) if sessions else None
+
+
+_Sessions = dict[tuple[str, str, str | None], dict[str, list[int]]]
+
+
+def _bound_lines(
+    rows: list[dict[str, Any]],
+    ct: int,
+    files: list[tuple[str, str | None, list[tuple[int, list[str]]]]],
+) -> _Sessions:
+    """Bound line numbers per ``(agent, session, model)`` and path; consumes matched hashes."""
+    sessions: _Sessions = {}
     for path, old, hunks in files:
-        names = {path, old} if old else {path}
-        candidates = [
-            i
-            for i, row in enumerate(rows)
-            if row["path"] in names and row["ts"] <= ct + COMMIT_GRACE_SECONDS and row["hashes"]
-        ]
-        if not candidates:
-            continue
-        for idx, number, h in _match_file(rows, candidates, hunks):
+        by_hash = _hash_owners(rows, {path, old} if old else {path}, ct)
+        for idx, number, h in _match_file(rows, by_hash, hunks) if by_hash else []:
             row = rows[idx]
             if h in row["hashes"]:
                 row["hashes"].remove(h)
             key = (row["agent"], row.get("session") or "", row.get("model"))
             sessions.setdefault(key, {}).setdefault(path, []).append(number)
-    if not sessions:
-        return None
+    return sessions
+
+
+def _binding(sha: str, ct: int, sessions: _Sessions) -> dict[str, Any]:
     per_agent: Counter[str] = Counter()
     for (agent, _, _), file_lines in sessions.items():
         per_agent[agent] += sum(len(v) for v in file_lines.values())
@@ -265,20 +280,28 @@ def _clean(rows: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
     seen: set[tuple] = set()
     kept = []
     for row in rows:
-        ts, hashes, path = row.get("ts"), row.get("hashes"), row.get("path")
-        if not isinstance(ts, (int, float)) or now - ts > EVENT_TTL_SECONDS:
-            continue
-        if not isinstance(hashes, list) or not hashes or not isinstance(path, str):
-            continue
-        if not isinstance(row.get("agent"), str):
+        if not _live(row, now):
             continue
         if row.get("call"):
-            key = (row["agent"], row.get("session"), row["call"], path)
+            key = (row["agent"], row.get("session"), row["call"], row["path"])
             if key in seen:
                 continue
             seen.add(key)
         kept.append(row)
     return kept
+
+
+def _live(row: dict[str, Any], now: float) -> bool:
+    """A well-formed event younger than :data:`EVENT_TTL_SECONDS`."""
+    ts, hashes = row.get("ts"), row.get("hashes")
+    if not isinstance(ts, (int, float)) or now - ts > EVENT_TTL_SECONDS:
+        return False
+    return (
+        isinstance(hashes, list)
+        and bool(hashes)
+        and isinstance(row.get("path"), str)
+        and isinstance(row.get("agent"), str)
+    )
 
 
 def _commits_to_bind(repo: Path, since: float, cursor: str | None) -> list[str]:
@@ -311,32 +334,36 @@ def bind_pending(repo: Path, *, capture: str, now: float | None = None) -> list[
         return []
     now = time.time() if now is None else now
     rows = _clean(_take_events(directory), now)
-    bindings: list[dict[str, Any]] = []
     try:
-        if rows:
-            state = load_state(repo)
-            done = bound_commits(repo)
-            since = min(row["ts"] for row in rows)
-            pending = _commits_to_bind(repo, since, state.get("cursor"))
-            batch = pending[:MAX_COMMITS]
-            for sha in batch:
-                if sha in done:
-                    continue
-                binding = _bind_commit(repo, sha, rows)
-                if binding is not None:
-                    bindings.append(binding)
-            # A capped run stops the cursor at its last commit; the next run
-            # continues from there instead of skipping the rest.
-            cursor = batch[-1] if len(pending) > MAX_COMMITS else _git(repo, "rev-parse", "HEAD").strip()
-            if cursor:
-                state = load_state(repo)
-                state["cursor"] = cursor
-                save_state(repo, state)
+        bindings = _bind_rows(repo, rows)
         append_jsonl(directory / BINDINGS, bindings)
         if capture == "notes" and bindings:
             _write_notes(repo, bindings)
     finally:
         _return_events(directory, [row for row in rows if row["hashes"]])
+    return bindings
+
+
+def _bind_rows(repo: Path, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bind *rows* to the next batch of commits and advance the cursor past it."""
+    if not rows:
+        return []
+    done = bound_commits(repo)
+    since = min(row["ts"] for row in rows)
+    pending = _commits_to_bind(repo, since, load_state(repo).get("cursor"))
+    batch = pending[:MAX_COMMITS]
+    bindings = [
+        binding
+        for sha in batch
+        if sha not in done and (binding := _bind_commit(repo, sha, rows)) is not None
+    ]
+    # A capped run stops the cursor at its last commit; the next run
+    # continues from there instead of skipping the rest.
+    cursor = batch[-1] if len(pending) > MAX_COMMITS else _git(repo, "rev-parse", "HEAD").strip()
+    if cursor:
+        state = load_state(repo)
+        state["cursor"] = cursor
+        save_state(repo, state)
     return bindings
 
 
