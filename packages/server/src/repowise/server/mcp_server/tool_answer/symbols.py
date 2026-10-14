@@ -311,8 +311,8 @@ class _TopicGuard:
     fixture shares its name with the local it stands in for. A def is trusted
     when its file is among the top retrieved files, when few production files
     write the identifier (it names one thing), or when its file name or owner
-    shares a word with the rest of the question. A test def is trusted on the
-    last ground only by a question about tests.
+    shares a word with the rest of the question. Off the top files, a test def
+    is trusted only by a question about tests.
     """
 
     def __init__(self, root: Path, hits: list[dict], question: str, qids_lower: set[str]):
@@ -334,10 +334,12 @@ class _TopicGuard:
     async def trusts(self, token: str, row) -> bool:
         if row.file_path in self.topical:
             return True
-        if len({r["path"] for r in await self.lines(token)}) <= _SPECIFIC_TOKEN_MAX_FILES:
-            return True
+        # Before the count: a name only tests write counts zero production files.
         if is_test_related_path(row.file_path) and not self.about_tests:
             return False
+        files = len({r["path"] for r in await self.lines(token)})
+        if (files or self.about_tests) and files <= _SPECIFIC_TOKEN_MAX_FILES:
+            return True
         stem = row.file_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
         owner = f"{stem} {row.parent_name or ''} {row.name or ''}"
         return bool(self.topic_stems & _text_stems(owner))

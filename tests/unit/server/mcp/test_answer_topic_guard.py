@@ -185,3 +185,21 @@ async def test_a_prose_word_is_not_scanned_for(tmp_path):
     )
     assert not any(h.get("_anchor_symbols") for h in out)
 
+
+
+@pytest.mark.asyncio
+async def test_a_name_only_tests_write_does_not_anchor_a_fixture(tmp_path):
+    # No production file writes the name, which must not read as "specific".
+    _write(tmp_path, "core/ingest.py", "def walk():\n    return []\n")
+    _write(tmp_path, "tests/test_walk.py", "def walked_paths():\n    return []\n")
+    row = _Sym("walked_paths", "tests/test_walk.py", 1, 2)
+    out, homonyms = await _anchor_symbol_hits(
+        _Session([row]),
+        "r",
+        {"walked_paths"},
+        [{"target_path": "core/ingest.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question="does the ingestion walk include walked_paths for manifests?",
+    )
+    assert not homonyms["union"]
+    assert not any(h.get("_anchor_symbols") for h in out)
