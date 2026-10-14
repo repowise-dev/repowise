@@ -439,3 +439,8 @@ def test_all_core_filters_registered() -> None:
         "file_listing",
         "logs",
     }
+
+
+def test_git_log_zero_count_renders_only_the_header(load_fixture) -> None:
+    _raw, distilled = _distill(load_fixture, "git_log_full.txt", "git_log", "git log -n 0")
+    assert distilled == "40 commits (showing 0 most recent; subject and author)"

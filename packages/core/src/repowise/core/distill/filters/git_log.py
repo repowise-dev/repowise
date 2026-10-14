@@ -104,7 +104,7 @@ def _short_date(date: str) -> str:
 def _render(commits: list[tuple[str, str, str, str]], limit: int) -> str:
     kept = commits[:limit]
     # Authors as one column; the name only, the email adds tokens and no answer.
-    width = max(len(author) for _, _, author, _ in kept)
+    width = max((len(author) for _, _, author, _ in kept), default=0)
     body = [
         f"{sha[:8]}  {date:<12} {author:<{width}}  {subject}".rstrip()
         for sha, date, author, subject in kept
