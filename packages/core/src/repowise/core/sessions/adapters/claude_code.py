@@ -25,6 +25,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from repowise.core.fs_walk import iter_glob
 from repowise.core.sessions.adapters.base import (
     INTENT_EDIT_CALLS,
     INTENT_SHELL_CALLS,
@@ -82,7 +83,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
         root = projects_root if projects_root is not None else Path.home() / ".claude" / "projects"
         if not root.is_dir():
             return []
-        return sorted(path for path in root.rglob("*.jsonl") if path.is_file())
+        return sorted(path for path in iter_glob(root, "*.jsonl") if path.is_file())
 
     def file_edits(self, use: ToolUse, result: ToolResult | None = None) -> list[FileEdit]:
         """As the base, recovering a subagent's ``Write`` of a new file from its result text.
