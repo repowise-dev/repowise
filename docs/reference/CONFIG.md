@@ -566,6 +566,10 @@ Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 a confirmed (`active`) decision is never walked back to `proposed` by a
 re-extraction.
 
+### `.repowise/components.yaml`
+
+Components name the parts of a repository that health, hotspots, bus factor, test reach and dead code roll up to. The file is multi-document Backstage YAML (`Component`, `System` and `Group` on `backstage.io/v1alpha1`), with Repowise data in `repowise.dev/paths` (gitignore-style globs), `repowise.dev/criticality` (`low`, `medium`, `high`, `critical`), `repowise.dev/tags` and `repowise.dev/capability` annotations; a repo-root `catalog-info.yaml` is read the same way, so a developer portal and Repowise share one file. Without a file, components are derived from workspace services, then module pages, then top-level directories; a declared component claims the files its globs match, and one named like a derived component replaces it and, with no paths of its own, keeps its directory. See [examples/components](../../examples/components/components.yaml) and `repowise components check`.
+
 ### The `security:` block
 
 Secret shapes of your own for `repowise security check`.

@@ -37,7 +37,8 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`doc-drift`](#repowise-doc-drift-path) ·
 [`security`](#repowise-security) ·
 [`impacted-tests`](#repowise-impacted-tests-revspec) ·
-[`coverage`](#repowise-coverage)
+[`coverage`](#repowise-coverage) ·
+[`components`](#repowise-components)
 
 **Decisions**
 [`decision`](#repowise-decision)
@@ -1574,6 +1575,17 @@ printed.
 ```bash
 repowise coverage suggest-gates
 repowise coverage suggest-gates --format json
+```
+
+---
+
+### `repowise components`
+
+`check` validates `.repowise/components.yaml` and a repo-root `catalog-info.yaml` (Backstage entities, see [CONFIG.md](CONFIG.md#repowisecomponentsyaml)) against the files git tracks, and exits 1 on any error, so it fits a CI step. `list` shows declared and derived components with their file counts.
+
+```bash
+repowise components check [--path PATH] [--format table|json]
+repowise components list [--path PATH] [--format table|json]
 ```
 
 ---

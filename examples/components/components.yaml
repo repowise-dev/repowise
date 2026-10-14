@@ -1,0 +1,56 @@
+# .repowise/components.yaml: Backstage entities with Repowise data in annotations.
+# The same documents work in a repo-root catalog-info.yaml.
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: checkout
+  description: Everything a customer touches to pay.
+spec:
+  owner: group:default/payments
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: payments-api
+  title: Payments API
+  description: Card authorisation, capture and refunds.
+  annotations:
+    repowise.dev/paths: services/payments/**, libs/money/**
+    repowise.dev/criticality: critical
+    repowise.dev/tags: pci, customer-facing, regulated
+    repowise.dev/capability: Take payments
+spec:
+  type: service
+  lifecycle: production
+  owner: group:default/payments
+  system: checkout
+---
+# No paths: if a derived component is named "web", this one takes its directory.
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: web
+  annotations:
+    repowise.dev/criticality: high
+    repowise.dev/tags: customer-facing, cra-product
+spec:
+  type: website
+  lifecycle: production
+  owner: group:default/frontend
+  system: checkout
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: payments
+spec:
+  type: team
+  children: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: frontend
+spec:
+  type: team
+  children: []

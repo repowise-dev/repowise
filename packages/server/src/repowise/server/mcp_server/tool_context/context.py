@@ -55,6 +55,7 @@ from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._components import component_card, is_component_target
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -138,7 +139,7 @@ async def get_context(
     Include-gated blocks are projections, not omissions.
 
     Args:
-        targets: file paths, module paths, or "path::Symbol" ids.
+        targets: paths, "path::Symbol" ids, or "component:<name>".
         include: opt-in blocks: full_doc | ownership | last_change | callers
             | callees | references | metrics | community | decisions | skeleton
             | skeleton+ | health | doc_drift (docs naming this file)
@@ -192,7 +193,16 @@ async def get_context(
         # below never KeyErrors.
         raw_results = await asyncio.gather(
             *[
-                _resolve_one_target(
+                component_card(
+                    session,
+                    repository,
+                    t,
+                    repo_root=ctx.path,
+                    alias=ctx.alias,
+                    exclude_spec=exclude_spec,
+                )
+                if is_component_target(t)
+                else _resolve_one_target(
                     session,
                     repository,
                     t,

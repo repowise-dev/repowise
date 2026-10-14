@@ -8,6 +8,7 @@ self-contained README under `examples/<name>/`.
 | Example | What it shows |
 |---------|----------------|
 | [codex/](codex/) | Codex CLI setup: `repowise init --codex`, smoke checks, local plugin install |
+| [components/](components/) | `repowise components check` and `list`: Backstage-shaped components and per-component facts (no LLM key) |
 | [dead-code/](dead-code/) | `repowise dead-code` — unused exports and cleanup candidates (no LLM key) |
 | [decisions/](decisions/) | `repowise decision` list/health/confirm — architectural records (no LLM key) |
 | [distill/](distill/) | `distill` / `expand` / `saved` — compress command output (no LLM key) |
