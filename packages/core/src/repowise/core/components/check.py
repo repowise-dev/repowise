@@ -3,12 +3,12 @@
 Parse problems come from :func:`.catalog.read_catalog` (unknown kinds, wrong
 apiVersion, unknown ``repowise.dev/*`` annotations, missing required spec
 fields). This adds what needs the file list: globs that do not compile or
-match no file, and files two declared components both claim.
+match no file, and files two declared components both claim (an error, or a
+warning when one component's files nest wholly inside the other's).
 """
 
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Iterable
 
 from repowise.core.components.catalog import (
@@ -24,7 +24,7 @@ def check_catalog(catalog: Catalog, file_paths: Iterable[str]) -> list[CatalogIs
     """Every issue in *catalog*, parse-time ones first."""
     files = sorted(set(file_paths))
     issues = list(catalog.issues)
-    claims: dict[str, list[str]] = {}
+    matched_by: dict[str, set[str]] = {}
     for comp in catalog.components:
         label = f"Component:{comp.name}"
         if not comp.paths:
@@ -43,33 +43,40 @@ def check_catalog(catalog: Catalog, file_paths: Iterable[str]) -> list[CatalogIs
             issues.append(
                 CatalogIssue("error", f"glob {glob!r} is not valid", comp.declared_in, label)
             )
+        claimed = matched_by.setdefault(comp.name, set())
         for glob in comp.paths:
             if glob in bad:
                 continue
             single, _ = compile_globs([glob])
-            matched = [f for f in files if single.match_file(f)]
+            matched = {f for f in files if single.match_file(f)}
             if not matched:
                 issues.append(
                     CatalogIssue(
                         "error", f"glob {glob!r} matches no files", comp.declared_in, label
                     )
                 )
-            for f in matched:
-                claimers = claims.setdefault(f, [])
-                if comp.name not in claimers:
-                    claimers.append(comp.name)
+            claimed |= matched
 
-    overlaps = Counter(tuple(names[:2]) for names in claims.values() if len(names) > 1)
-    for (first, second), count in sorted(overlaps.items()):
-        issues.append(
-            CatalogIssue(
-                "error",
-                f"{count} file(s) claimed by both {first!r} and {second!r}; "
-                f"{first!r} is declared first and wins",
-                None,
-                f"Component:{second}",
+    # Declaration order decides a shared file. A component nested wholly inside
+    # another is a deliberate carve-out (warning); a partial overlap is an error.
+    names = list(matched_by)
+    for i, first in enumerate(names):
+        for second in names[i + 1 :]:
+            a, b = matched_by[first], matched_by[second]
+            shared = a & b
+            if not shared:
+                continue
+            nested = a < b or b < a
+            issues.append(
+                CatalogIssue(
+                    "warning" if nested else "error",
+                    f"{len(shared)} file(s) claimed by both {first!r} and {second!r}"
+                    f"{' (one nests inside the other)' if nested else ''}; "
+                    f"{first!r} is declared first and wins",
+                    None,
+                    f"Component:{second}",
+                )
             )
-        )
 
     systems = {s.name for s in catalog.systems}
     groups = {g.name for g in catalog.groups}

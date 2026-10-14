@@ -145,6 +145,7 @@ def test_rollup_folds_existing_per_file_facts():
         git_rows=git_rows,
         health_rows=health_rows,
         dead_rows=dead_rows,
+        dead_code_ran=True,
     )
 
     assert facts["file_count"] == 4
@@ -158,6 +159,9 @@ def test_rollup_folds_existing_per_file_facts():
     # Ann owns 2 of 3 files, over half: one owner covers it.
     assert facts["bus_factor"]["value"] == 1
     assert facts["bus_factor"]["single_owner_files"] == 2
+    assert (facts["bus_factor"]["owned_files"], facts["bus_factor"]["coverage"]) == (3, 0.75)
+    # Three owned files are too few to measure a truck factor.
+    assert facts["bus_factor"]["basis"] == "inferred" and "too few" in facts["bus_factor"]["note"]
     reach = facts["test_reach"]
     assert (reach["reached_files"], reach["production_files"]) == (1, 3)
     assert reach["share"] == 0.33 and reach["basis"] == "inferred"
@@ -176,7 +180,74 @@ def test_rollup_folds_existing_per_file_facts():
 
 def test_rollup_says_unavailable_rather_than_zero():
     facts = rollup_component(
-        ["a.py"], test_files=set(), git_rows={}, health_rows={}, dead_rows=[]
+        ["a.py"], test_files=set(), git_rows={}, health_rows={}, dead_rows=[],
+        dead_code_ran=False,
     )
-    for key in ("health", "hotspots", "bus_factor", "test_reach"):
+    for key in ("health", "hotspots", "bus_factor", "test_reach", "dead_code"):
         assert facts[key]["basis"] == "unavailable", key
+
+
+def _owned(path: str, owner: str) -> dict:
+    return {
+        "file_path": path,
+        "is_hotspot": False,
+        "bus_factor": 1,
+        "primary_owner_name": owner,
+        "primary_owner_email": f"{owner.lower()}@x.io",
+        "top_authors_json": "[]",
+    }
+
+
+def test_bus_factor_is_measured_from_five_owned_files():
+    files = [f"f{i}.py" for i in range(6)]
+    git_rows = {p: _owned(p, "Ann" if i < 4 else "Ben") for i, p in enumerate(files)}
+    facts = rollup_component(
+        files, test_files=set(), git_rows=git_rows, health_rows={}, dead_rows=[],
+        dead_code_ran=True,
+    )
+    bus = facts["bus_factor"]
+    assert (bus["value"], bus["owned_files"], bus["coverage"], bus["basis"]) == (1, 6, 1.0, "measured")
+    assert "note" not in bus
+
+
+def test_dead_code_that_never_ran_is_unavailable_not_zero():
+    facts = rollup_component(
+        ["a.py"], test_files=set(), git_rows={}, health_rows={"a.py": {"score": 8.0, "nloc": 10}},
+        dead_rows=[], dead_code_ran=False,
+    )
+    assert facts["dead_code"] == {
+        "basis": "unavailable",
+        "reason": "dead-code analysis has not run for this repository",
+    }
+    ran = rollup_component(
+        ["a.py"], test_files=set(), git_rows={}, health_rows={"a.py": {"score": 8.0, "nloc": 10}},
+        dead_rows=[], dead_code_ran=True,
+    )
+    assert (ran["dead_code"]["findings"], ran["dead_code"]["basis"]) == (0, "inferred")
+
+
+def test_gated_languages_are_left_out_of_health_and_dead_code():
+    health_rows = {
+        "A.java": {"score": 2.0, "nloc": 100},
+        "b.py": {"score": 8.0, "nloc": 100},
+    }
+    facts = rollup_component(
+        ["A.java", "b.py"], test_files=set(), git_rows={}, health_rows=health_rows,
+        dead_rows=[("A.java", 50), ("b.py", 10)], dead_code_ran=True,
+    )
+    health, dead = facts["health"], facts["dead_code"]
+    assert (health["average"], health["scored_files"], health["gated_files"]) == (8.0, 1, 1)
+    assert health["method"].endswith("; 1 file(s) in gated languages excluded")
+    assert (dead["findings"], dead["lines"], dead["gated_files"]) == (1, 10, 1)
+    assert dead["share_of_nloc"] == 0.1
+    assert dead["method"].endswith("; 1 file(s) in gated languages excluded")
+
+
+def test_only_gated_files_make_health_and_dead_code_unavailable():
+    facts = rollup_component(
+        ["A.java", "B.cs"], test_files=set(), git_rows={},
+        health_rows={"A.java": {"score": 2.0, "nloc": 10}, "B.cs": {"score": 3.0, "nloc": 10}},
+        dead_rows=[("A.java", 5)], dead_code_ran=True,
+    )
+    assert facts["health"]["basis"] == "unavailable" and facts["health"]["gated_files"] == 2
+    assert facts["dead_code"]["basis"] == "unavailable" and facts["dead_code"]["gated_files"] == 2

@@ -56,7 +56,7 @@ async def test_overview_lists_derived_components_only_when_asked(setup_mcp):
     assert block["total"] == 2
     assert block["unassigned_files"] == 1  # tests/test_service.py sits under no module
     assert "catalog_errors" not in block
-    assert "component:<name>" in block["hint"]
+    assert "hint" not in block
 
 
 @pytest.mark.asyncio
@@ -122,9 +122,12 @@ async def test_component_target_rolls_up_existing_facts(setup_mcp, session, tmp_
     assert facts["hotspots"]["count"] == 1
     assert facts["hotspots"]["top"] == ["src/auth/service.py"]
     assert facts["bus_factor"]["value"] == 1
+    assert facts["bus_factor"]["owned_files"] == 1  # middleware.py has no git row
+    assert facts["bus_factor"]["basis"] == "inferred"
     assert facts["test_reach"]["share"] == 0.5
     assert facts["dead_code"]["findings"] == 1 and facts["dead_code"]["lines"] == 20
     assert all(figure["basis"] for figure in facts.values())
+    assert facts["dead_code"]["basis"] == "inferred"  # the fixture has findings, so it ran
     assert "Alice" not in json.dumps(card)
     # A file target in the same batch still resolves the ordinary way.
     assert "src/db/models.py" in result["targets"]
@@ -151,3 +154,38 @@ async def test_default_responses_are_byte_identical_with_a_catalog(setup_mcp, tm
 
     assert _without_meta(await get_overview()) == overview_before
     assert _without_meta(await get_context(targets=["src/auth/service.py"])) == context_before
+
+
+@pytest.mark.asyncio
+async def test_a_declared_component_that_claims_nothing_says_why(setup_mcp, tmp_path):
+    from repowise.server.mcp_server import get_context
+
+    (tmp_path / "catalog-info.yaml").write_text(
+        "apiVersion: backstage.io/v1alpha1\nkind: Component\nmetadata: {name: ghost}\n"
+        "spec: {type: service, lifecycle: production, owner: platform}\n",
+        encoding="utf-8",
+    )
+    card = (await get_context(targets=["component:ghost"]))["targets"]["component:ghost"]
+    assert card["file_count"] == 0
+    assert "claims no files" in card["note"]
+    assert {f["basis"] for f in card["facts"].values()} == {"unavailable"}
+    assert "sample_files" not in card
+
+
+@pytest.mark.asyncio
+async def test_several_component_targets_resolve_components_once(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import _components, get_context
+
+    calls = []
+    real = _components.load_repo_components
+
+    async def counting(*args, **kwargs):
+        calls.append(1)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(_components, "load_repo_components", counting)
+    result = await get_context(targets=["component:auth", "component:db", "src/db/models.py"])
+    assert set(result["targets"]) == {"component:auth", "component:db", "src/db/models.py"}
+    assert len(calls) == 1
+    await get_context(targets=["component:auth"])
+    assert len(calls) == 1  # cached for the same index and catalog state

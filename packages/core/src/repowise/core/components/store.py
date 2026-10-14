@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,13 +21,14 @@ from repowise.core.components.resolve import (
 )
 from repowise.core.components.rollup import rollup_component
 from repowise.core.persistence.crud import code_file_rows
-from repowise.core.persistence.crud.analysis.shown import ungated
+from repowise.core.persistence.crud.repository import ANALYSIS_RAN_KEY
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
     GraphNode,
     HealthFileMetric,
     Page,
+    Repository,
 )
 
 
@@ -120,32 +122,69 @@ _GIT_COLUMNS = (
 )
 
 
+#: Bound parameters per ``IN`` list, well under SQLite's variable limit.
+_CHUNK = 500
+
+
+async def _rows_for(session: Any, query: Any, path_col: Any, files: list[str]) -> list[Any]:
+    """*query* narrowed to *files* in SQL, one chunked ``IN`` at a time."""
+    out: list[Any] = []
+    for i in range(0, len(files), _CHUNK):
+        out.extend((await session.execute(query.where(path_col.in_(files[i : i + _CHUNK])))).all())
+    return out
+
+
+async def dead_code_ran(session: Any, repository_id: str) -> bool:
+    """Whether dead-code analysis ever persisted a result for the repository.
+
+    The stage stamp proves a run that found nothing; finding rows cover indexes
+    written before stamps existed (the rule ``analysis_ran_at`` serves by).
+    """
+    raw = await session.scalar(
+        select(Repository.settings_json).where(Repository.id == repository_id)
+    )
+    try:
+        stamps = json.loads(raw or "{}").get(ANALYSIS_RAN_KEY) or {}
+        if isinstance(stamps, dict) and stamps.get("dead_code"):
+            return True
+    except (TypeError, ValueError, AttributeError):
+        pass
+    found = await session.scalar(
+        select(DeadCodeFinding.id).where(DeadCodeFinding.repository_id == repository_id).limit(1)
+    )
+    return found is not None
+
+
 async def component_rollup(
     session: Any, repository_id: str, files: list[str], test_files: set[str]
 ) -> dict[str, Any]:
-    """The rollup figures for one component's *files*."""
-    wanted = set(files)
-    git = (await session.execute(select(*_GIT_COLUMNS).where(code_file_rows(repository_id)))).all()
-    git_rows = {r.file_path: dict(r._mapping) for r in git if r.file_path in wanted}
-    health = (
-        await session.execute(
-            select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
-        )
-    ).scalars()
-    health_rows = {r.file_path: r for r in health if r.file_path in wanted}
-    dead = (
-        await session.execute(
-            select(DeadCodeFinding.file_path, DeadCodeFinding.lines).where(
-                DeadCodeFinding.repository_id == repository_id,
-                DeadCodeFinding.kind.not_in(excluded_types()),
-                ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
-            )
-        )
-    ).all()
+    """The rollup figures for one component's *files*, read only for those files."""
+    git = await _rows_for(
+        session,
+        select(*_GIT_COLUMNS).where(code_file_rows(repository_id)),
+        GitMetadata.file_path,
+        files,
+    )
+    health = await _rows_for(
+        session,
+        select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id),
+        HealthFileMetric.file_path,
+        files,
+    )
+    dead = await _rows_for(
+        session,
+        select(DeadCodeFinding.file_path, DeadCodeFinding.lines).where(
+            DeadCodeFinding.repository_id == repository_id,
+            DeadCodeFinding.kind.not_in(excluded_types()),
+        ),
+        DeadCodeFinding.file_path,
+        files,
+    )
     return rollup_component(
         files,
         test_files=test_files,
-        git_rows=git_rows,
-        health_rows=health_rows,
-        dead_rows=[(r[0], r[1]) for r in dead if r[0] in wanted],
+        git_rows={r.file_path: dict(r._mapping) for r in git},
+        health_rows={r[0].file_path: r[0] for r in health},
+        dead_rows=[(r[0], r[1]) for r in dead],
+        dead_code_ran=await dead_code_ran(session, repository_id),
     )

@@ -1,14 +1,17 @@
 """Component targets for get_context and the component list for get_overview.
 
 Both are opt-in: a ``component:<name>`` target, or ``include=["components"]``.
-Neither runs on a default call.
+Neither runs on a default call. The resolved components are cached per repo,
+index state, catalog file times, workspace graph and exclusion rules, so a
+batch of component targets and a later overview resolve them once.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
-from repowise.core.components.catalog import Component
+from repowise.core.components.catalog import CATALOG_FILES, Component
 from repowise.core.components.store import (
     RepoComponents,
     component_rollup,
@@ -18,36 +21,66 @@ from repowise.core.components.store import (
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import _is_workspace_mode, is_excluded
+from repowise.server.mcp_server._index_state import index_state_key
 
 COMPONENT_PREFIX = "component:"
 _LIST_CAP = 25
 _SAMPLE_FILES = 10
-_HINT = (
-    'get_context(targets=["component:<name>"]) rolls one up: health, hotspots, '
-    "bus factor, test reach, dead code. Declare components in "
-    ".repowise/components.yaml or catalog-info.yaml; `repowise components check` "
-    "validates them."
-)
+_FACTS = ("health", "hotspots", "bus_factor", "test_reach", "dead_code")
+
+_CACHE: dict[tuple, RepoComponents] = {}
+_CACHE_LIMIT = 16
+
+
+def reset_cache() -> None:
+    """Drop every cached resolution. For tests and an in-process re-index."""
+    _CACHE.clear()
 
 
 def is_component_target(target: str) -> bool:
     return target.startswith(COMPONENT_PREFIX)
 
 
+def _catalog_times(repo_root: Any) -> tuple[int, ...]:
+    times = []
+    for rel in CATALOG_FILES:
+        try:
+            times.append(os.stat(os.path.join(str(repo_root), rel)).st_mtime_ns)
+        except OSError:
+            times.append(0)
+    return tuple(times)
+
+
 async def _load(
     session: Any, repository: Any, repo_root: Any, alias: str | None, exclude_spec: Any
 ) -> RepoComponents:
-    services: list[tuple[str, str]] = []
+    graph = None
     enricher = _state._cross_repo_enricher
     if enricher is not None and _is_workspace_mode() and enricher.has_system_graph:
-        services = services_from_system_graph(enricher.get_system_graph(), alias)
-    return await load_repo_components(
+        graph = enricher.get_system_graph()
+    key = (
+        repository.id,
+        index_state_key(repository),
+        str(repo_root),
+        _catalog_times(repo_root),
+        alias,
+        id(graph),
+        id(exclude_spec),
+    )
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
+    found = await load_repo_components(
         session,
         repository.id,
         repo_root,
-        services=services,
+        services=services_from_system_graph(graph, alias),
         is_excluded=(lambda p: is_excluded(p, exclude_spec)) if exclude_spec else None,
     )
+    if len(_CACHE) >= _CACHE_LIMIT:
+        _CACHE.clear()
+    _CACHE[key] = found
+    return found
 
 
 def _describe(comp: Component) -> dict[str, Any]:
@@ -75,32 +108,54 @@ def _describe(comp: Component) -> dict[str, Any]:
     return out
 
 
-async def component_card(
+def _empty_note(comp: Component) -> str:
+    if not comp.paths and not comp.root:
+        return (
+            "Declares no repowise.dev/paths and no derived component has this name, "
+            "so it claims no files."
+        )
+    return "Its paths match no indexed file that an earlier component has not claimed."
+
+
+async def component_cards(
     session: Any,
     repository: Any,
-    target: str,
+    targets: list[str],
     *,
     repo_root: Any,
     alias: str | None,
     exclude_spec: Any,
-) -> dict[str, Any]:
-    """The get_context card for a ``component:<name>`` target."""
-    name = target[len(COMPONENT_PREFIX) :].strip()
+) -> dict[str, dict[str, Any]]:
+    """get_context cards for ``component:<name>`` *targets*, read one after another
+    on *session*, with the components resolved once for the whole batch."""
     found = await _load(session, repository, repo_root, alias, exclude_spec)
-    comp = found.resolved.get(name)
-    if comp is None:
-        return {
-            "target": target,
-            "error": f"No component named {name!r}.",
-            "available": [c.name for c in found.resolved.components[:_LIST_CAP]],
-        }
-    files = found.resolved.files[comp.name]
-    facts = await component_rollup(session, repository.id, files, found.test_files)
-    card: dict[str, Any] = {"target": target, "type": "component", **_describe(comp)}
-    card["file_count"] = facts.pop("file_count")
-    card["sample_files"] = files[:_SAMPLE_FILES]
-    card["facts"] = facts
-    return card
+    cards: dict[str, dict[str, Any]] = {}
+    for target in targets:
+        name = target[len(COMPONENT_PREFIX) :].strip()
+        comp = found.resolved.get(name)
+        if comp is None:
+            cards[target] = {
+                "target": target,
+                "error": f"No component named {name!r}.",
+                "available": [c.name for c in found.resolved.components[:_LIST_CAP]],
+            }
+            continue
+        files = found.resolved.files[comp.name]
+        card: dict[str, Any] = {"target": target, "type": "component", **_describe(comp)}
+        card["file_count"] = len(files)
+        if not files:
+            card["note"] = _empty_note(comp)
+            card["facts"] = {
+                k: {"basis": "unavailable", "reason": "the component claims no files"}
+                for k in _FACTS
+            }
+        else:
+            facts = await component_rollup(session, repository.id, files, found.test_files)
+            facts.pop("file_count")
+            card["sample_files"] = files[:_SAMPLE_FILES]
+            card["facts"] = facts
+        cards[target] = card
+    return cards
 
 
 async def component_list(
@@ -138,5 +193,4 @@ async def component_list(
     errors = len(found.catalog.errors)
     if errors:
         block["catalog_errors"] = errors
-    block["hint"] = _HINT
     return block

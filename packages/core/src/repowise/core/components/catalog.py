@@ -30,6 +30,9 @@ COMPONENTS_FILE = ".repowise/components.yaml"
 CATALOG_INFO_FILE = "catalog-info.yaml"
 #: Read in this order; on a duplicate kind and name the earlier file wins.
 CATALOG_FILES: tuple[str, ...] = (COMPONENTS_FILE, CATALOG_INFO_FILE)
+#: A catalog file above this is refused unparsed: it is hand-written config,
+#: and the tool path re-reads it.
+MAX_CATALOG_BYTES = 1_000_000
 
 API_VERSION = "backstage.io/v1alpha1"
 READ_KINDS = frozenset({"Component", "System", "Group"})
@@ -86,7 +89,8 @@ class Component:
     lifecycle: str | None = None
     owner: str | None = None
     system: str | None = None
-    #: gitignore-style globs, relative to the repository root.
+    #: gitignore-style globs relative to the repository root, written with
+    #: ``/`` and matched case-sensitively on every platform.
     paths: tuple[str, ...] = ()
     criticality: str | None = None
     tags: tuple[str, ...] = ()
@@ -147,6 +151,11 @@ def read_catalog(repo_root: Path | str) -> Catalog:
         if not path.is_file():
             continue
         try:
+            if path.stat().st_size > MAX_CATALOG_BYTES:
+                catalog.issues.append(
+                    CatalogIssue("error", f"larger than {MAX_CATALOG_BYTES} bytes; not read", rel)
+                )
+                continue
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             catalog.issues.append(CatalogIssue("error", f"cannot read: {exc}", rel))

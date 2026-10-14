@@ -201,8 +201,12 @@ spec: {type: team, children: []}
     by_message = {i.message: i for i in issues}
 
     assert by_message["glob 'src/ghost/**' matches no files"].severity == "error"
-    overlap = by_message["2 file(s) claimed by both 'api' and 'everything'; 'api' is declared first and wins"]
-    assert overlap.severity == "error"
+    # "api" nests wholly inside "everything": a deliberate carve-out, so a warning.
+    nested = by_message[
+        "2 file(s) claimed by both 'api' and 'everything' (one nests inside the other); "
+        "'api' is declared first and wins"
+    ]
+    assert nested.severity == "warning"
     warnings = {i.message for i in issues if i.severity == "warning"}
     assert "spec.system 'nowhere' is not a declared System" in warnings
     assert "spec.owner 'group:default/ghosts' is not a declared Group" in warnings
@@ -222,3 +226,41 @@ def test_the_documented_example_parses_cleanly(tmp_path):
     catalog = read_catalog(tmp_path)
     assert catalog.issues == []
     assert [c.name for c in catalog.components] == ["payments-api", "web"]
+
+
+def _component(name: str, globs: str) -> str:
+    return (
+        "apiVersion: backstage.io/v1alpha1\nkind: Component\n"
+        f"metadata:\n  name: {name}\n  annotations: {{repowise.dev/paths: \"{globs}\"}}\n"
+        "spec: {type: service, lifecycle: production, owner: platform}\n"
+    )
+
+
+def test_a_partial_overlap_is_an_error(tmp_path):
+    _write(
+        tmp_path,
+        "catalog-info.yaml",
+        _component("left", "src/a/**, src/shared/**") + "---\n" + _component("right", "src/b/**, src/shared/**"),
+    )
+    files = ["src/a/x.py", "src/b/y.py", "src/shared/z.py"]
+    (issue,) = [i for i in check_catalog(read_catalog(tmp_path), files) if "claimed" in i.message]
+    assert issue.severity == "error"
+    assert issue.message == "1 file(s) claimed by both 'left' and 'right'; 'left' is declared first and wins"
+
+
+def test_globs_are_case_sensitive(tmp_path):
+    _write(tmp_path, "catalog-info.yaml", _component("api", "SRC/**"))
+    messages = [i.message for i in check_catalog(read_catalog(tmp_path), ["src/a.py"])]
+    assert "glob 'SRC/**' matches no files" in messages
+
+
+def test_an_oversized_catalog_is_refused_unparsed(tmp_path, monkeypatch):
+    from repowise.core.components import catalog as catalog_mod
+
+    monkeypatch.setattr(catalog_mod, "MAX_CATALOG_BYTES", 100)
+    _write(tmp_path, "catalog-info.yaml", _component("api", "src/**") + "# pad\n" * 40)
+    catalog = read_catalog(tmp_path)
+    assert catalog.components == []
+    (issue,) = catalog.issues
+    assert issue.severity == "error" and issue.message == "larger than 100 bytes; not read"
+    assert issue.source == "catalog-info.yaml"
