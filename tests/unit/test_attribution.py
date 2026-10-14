@@ -404,3 +404,172 @@ def test_trace_file_is_not_read_when_disabled(tmp_path: Path, home: Path) -> Non
     repo = MagicMock()
     repo.working_tree_dir = str(repo_dir)
     assert not AgentTraceIndex.load(repo)
+
+
+# ---------------------------------------------------------------------------
+# Human attestation must cover every changed path
+# ---------------------------------------------------------------------------
+
+
+def test_trace_human_needs_every_changed_path(tmp_path: Path, home: Path) -> None:
+    repo_dir = _repo(tmp_path)
+    _write(repo_dir / ".agent-trace" / "traces.jsonl", _trace("aaa", "human"))
+    repo = MagicMock()
+    repo.working_tree_dir = str(repo_dir)
+    index = AgentTraceIndex.load(repo)
+    assert index.resolve_human("aaa", (), {"src/a.py"}) is True
+    # Partial overlap stays unknown: a false human is the worse error.
+    assert index.resolve_human("aaa", (), {"src/a.py", "src/b.py"}) is False
+    assert index.resolve_human("aaa", (), set()) is False
+
+
+def _header(sha: str = "sha1") -> dict:
+    return {
+        "sha": sha,
+        "parents": (),
+        "author_name": "Dev",
+        "author_email": "dev@x.com",
+        "committer_name": "Dev",
+        "committer_email": "dev@x.com",
+        "subject": "feat: x",
+        "body": "",
+    }
+
+
+def test_git_ai_human_note_needs_every_changed_path() -> None:
+    from repowise.core.ingestion.git_indexer.agent_provenance import classify_commit
+
+    notes = {"sha1": parse_git_ai_note(_HUMAN_ONLY_NOTE)}
+    assert notes["sha1"].paths == frozenset({"src/app.py"})
+    full, _ = classify_commit(CLF, _header(), {"src/app.py"}, notes, None)
+    partial, _ = classify_commit(CLF, _header(), {"src/app.py", "src/other.py"}, notes, None)
+    assert full.attribution == "human_attested"
+    assert partial.attribution == "unknown"
+
+
+def test_git_ai_divider_is_the_first_column_zero_rule() -> None:
+    # A later "---" line after the metadata must not move the split.
+    note = _HUMAN_ONLY_NOTE + "\n---\nnot json"
+    assert parse_git_ai_note(note).human is True
+
+
+def test_oversized_git_ai_note_is_ignored() -> None:
+    padding = "".join(f"\n  h_{i:014x} 1" for i in range(60_000))
+    note = "src/app.py" + padding + "\n---\n" + '{"prompts": {}}'
+    assert len(note) > 1_000_000
+    assert parse_git_ai_note(note) == parse_git_ai_note("")
+
+
+# ---------------------------------------------------------------------------
+# attribution.enabled: false clears what an earlier index stored
+# ---------------------------------------------------------------------------
+
+
+async def _seed_labelled_index(repo_dir: Path):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from repowise.core.persistence import crud
+    from repowise.core.persistence.database import init_db
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        repo = await crud.upsert_repository(session, name="r", local_path=str(repo_dir))
+        await crud.upsert_git_commits_bulk(
+            session,
+            repo.id,
+            [
+                {
+                    "sha": "a" * 10,
+                    "author_name": "A",
+                    "author_email": "a@x.com",
+                    "subject": "x",
+                    "agent_name": "claude",
+                    "agent_autonomy_tier": 2,
+                    "attribution": "agent",
+                }
+            ],
+        )
+        await crud.upsert_git_metadata(
+            session,
+            repository_id=repo.id,
+            file_path="a.py",
+            commit_count_total=1,
+            agent_commit_count=1,
+            attribution_known_count=1,
+            agent_authored_pct=1.0,
+            agent_line_count=7,
+        )
+        await session.commit()
+    return engine, factory, repo.id
+
+
+async def _ai_rows(factory, repo_id: str) -> tuple[list, list]:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import GitCommit, GitMetadata
+
+    async with factory() as session:
+        commits = (
+            await session.execute(
+                select(GitCommit.agent_name, GitCommit.attribution).where(
+                    GitCommit.repository_id == repo_id
+                )
+            )
+        ).all()
+        meta = (
+            await session.execute(
+                select(
+                    GitMetadata.agent_commit_count,
+                    GitMetadata.agent_authored_pct,
+                    GitMetadata.agent_line_count,
+                ).where(GitMetadata.repository_id == repo_id)
+            )
+        ).all()
+    return [tuple(r) for r in commits], [tuple(r) for r in meta]
+
+
+@pytest.mark.asyncio
+async def test_update_after_switching_off_leaves_no_ai_rows(tmp_path: Path, home: Path) -> None:
+    from repowise.core.pipeline.persist import persist_git_refresh
+
+    repo_dir = _repo(tmp_path)
+    engine, factory, repo_id = await _seed_labelled_index(repo_dir)
+    try:
+        # Still enabled: an update keeps what was derived.
+        async with factory() as session:
+            await persist_git_refresh(session, repo_id, {}, None, None)
+            await session.commit()
+        assert (await _ai_rows(factory, repo_id))[0] == [("claude", "agent")]
+
+        _write(repo_dir / ".repowise" / "config.yaml", "attribution:\n  enabled: false\n")
+        async with factory() as session:
+            await persist_git_refresh(session, repo_id, {}, None, None)
+            await session.commit()
+        commits, meta = await _ai_rows(factory, repo_id)
+        assert commits == [(None, None)]
+        assert meta == [(0, None, 0)]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_full_index_with_attribution_off_stores_nothing(tmp_path: Path, home: Path) -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.pipeline.persist import persist_git
+
+    repo_dir = _repo(tmp_path, "attribution:\n  enabled: false\n")
+    engine, factory, repo_id = await _seed_labelled_index(repo_dir)
+    try:
+        async with factory() as session:
+            await persist_git(
+                SimpleNamespace(git_metadata_list=[], git_summary=None), session, repo_id
+            )
+            await session.commit()
+        commits, meta = await _ai_rows(factory, repo_id)
+        assert commits == [(None, None)]
+        assert meta == [(0, None, 0)]
+    finally:
+        await engine.dispose()

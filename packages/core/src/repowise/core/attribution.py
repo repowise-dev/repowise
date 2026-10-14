@@ -41,6 +41,9 @@ SUPPRESSED_LOW_COVERAGE = "coverage_below_floor"
 
 _SECTION = "attribution"
 
+# Each config problem is logged once per process, not on every request.
+_warned: set[str] = set()
+
 
 @dataclass(frozen=True)
 class AttributionLayer:
@@ -165,6 +168,14 @@ def load_attribution_settings(
     capture = min((layer.capture or "off" for layer in layers), key=CAPTURE_LEVELS.index)
     agent_sets = [layer.agents or () for layer in layers]
     agents = tuple(a for a in agent_sets[0] if a in agent_sets[1])
+    for error in errors:
+        if error not in _warned:
+            _warned.add(error)
+            import structlog
+
+            structlog.get_logger(__name__).warning(
+                "attribution_config_invalid", detail=error, treated_as="strictest value"
+            )
     dnt = _do_not_track()
     if dnt or not enabled:
         capture = "off"
@@ -179,16 +190,21 @@ def load_attribution_settings(
     )
 
 
-def _mtime(path: Path) -> float:
+def _stamp(path: Path) -> tuple[int, int]:
+    """``(mtime_ns, size)``: changes on any rewrite, even one inside a second."""
     try:
-        return path.stat().st_mtime
+        st = path.stat()
+        return st.st_mtime_ns, st.st_size
     except OSError:
-        return 0.0
+        return 0, -1
 
 
 @functools.lru_cache(maxsize=64)
 def _enabled_cached(
-    repo_path: str | None, _repo_mtime: float, _user_file: str, _user_mtime: float
+    repo_path: str | None,
+    _repo_stamp: tuple[int, int],
+    _user_file: str,
+    _user_stamp: tuple[int, int],
 ) -> bool:
     return load_attribution_settings(repo_path).enabled
 
@@ -196,17 +212,18 @@ def _enabled_cached(
 def attribution_enabled(repo_path: Path | str | None) -> bool:
     """Whether AI attribution may be stored or shown for *repo_path*.
 
-    Cached on both files' mtimes, so per-request callers pay a stat, not a parse.
+    Cached on both files' (mtime_ns, size), so per-request callers pay a stat,
+    not a parse.
     A value that is not a path (no checkout) reads the user file only.
     """
     if not isinstance(repo_path, (str, Path)) or not str(repo_path):
         repo_path = None
-    repo_mtime = (
-        _mtime(Path(repo_path) / ".repowise" / "config.yaml") if repo_path is not None else 0.0
+    repo_stamp = (
+        _stamp(Path(repo_path) / ".repowise" / "config.yaml") if repo_path is not None else (0, -1)
     )
     key = str(repo_path) if repo_path is not None else None
     user_file = user_config_path()
-    return _enabled_cached(key, repo_mtime, str(user_file), _mtime(user_file))
+    return _enabled_cached(key, repo_stamp, str(user_file), _stamp(user_file))
 
 
 def commit_label(attribution: str | None, agent_name: str | None) -> str:

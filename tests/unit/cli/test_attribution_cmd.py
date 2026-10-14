@@ -129,3 +129,36 @@ def test_purge_asks_first_and_clears_derived_rows(indexed_repo: Path) -> None:
     commits, meta = run_async(_labels(indexed_repo))
     assert set(commits) == {(None, None)}
     assert meta == [(0, None, 0)]
+
+
+def test_purge_leaves_third_party_git_ai_notes(indexed_repo: Path) -> None:
+    import subprocess
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=indexed_repo, check=True, capture_output=True, text=True
+        ).stdout
+
+    git("init", "-q")
+    git("config", "user.email", "a@example.com")
+    git("config", "user.name", "A")
+    (indexed_repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", "a.py")
+    git("commit", "-q", "-m", "init")
+    note = 'a.py\n  h_0123456789abcd 1\n---\n{"schema_version": "authorship/3.0.0", "prompts": {}}'
+    git("notes", "--ref=ai", "add", "-m", note, "HEAD")
+
+    result = CliRunner().invoke(attribution_group, ["purge", str(indexed_repo), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "h_0123456789abcd" in git("notes", "--ref=ai", "show", "HEAD")
+
+
+def test_status_explains_a_value_the_other_layer_overrides(indexed_repo: Path) -> None:
+    (indexed_repo / ".repowise" / "config.yaml").write_text(
+        "attribution:\n  capture: notes\n", encoding="utf-8"
+    )
+    result = CliRunner().invoke(attribution_group, ["status", str(indexed_repo), "--format", "json"])
+    assert result.exit_code == 0, result.output
+    (reason,) = json.loads(result.output)["explanations"]
+    assert reason.startswith("capture: the repo config sets notes, but off applies")
+    assert "the user config does not set it" in reason

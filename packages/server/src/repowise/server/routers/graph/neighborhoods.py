@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.attribution import attribution_enabled
 from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
@@ -13,9 +14,9 @@ from repowise.core.persistence.models import (
     GitMetadata,
     GraphEdge,
     GraphNode,
+    Repository,
 )
 from repowise.server.deps import get_db_session
-from repowise.server.routers._local_git import repo_attribution_on
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import (
     DeadCodeGraphNodeResponse,
@@ -44,7 +45,7 @@ async def ego_graph(
     node_id: str = Query(..., description="Center node ID"),
     hops: int = Query(2, ge=1, le=3),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> EgoGraphResponse:
     """Return the N-hop neighborhood of a given node."""
     try:
@@ -112,7 +113,7 @@ async def ego_graph(
     git_row = git_result.scalar_one_or_none()
     git_meta = (
         GitMetadataResponse.from_orm(
-            git_row, attribution_on=await repo_attribution_on(session, repo_id)
+            git_row, attribution_on=attribution_enabled(repo.local_path)
         )
         if git_row
         else None

@@ -47,6 +47,52 @@ async def _label_counts(repo_path: Path) -> dict[str, int] | None:
         return counts
 
 
+_DEFAULTS: dict[str, Any] = {"enabled": True, "capture": "off", "agents": ()}
+
+
+def _fmt(value: Any) -> str:
+    if isinstance(value, (tuple, list)):
+        return ", ".join(value) or "none"
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def _explanations(settings: Any) -> list[str]:
+    """Plain-words reasons wherever a value a config file sets is not the effective one."""
+    reasons: list[str] = []
+    layers = (
+        ("repo", settings.repo, "user", settings.user),
+        ("user", settings.user, "repo", settings.repo),
+    )
+    for key in ("enabled", "capture", "agents"):
+        effective = getattr(settings, key)
+        for name, layer, other_name, other in layers:
+            value = getattr(layer, key)
+            if value is None or (tuple(value) if key == "agents" else value) == effective:
+                continue
+            other_value = getattr(other, key)
+            if key != "enabled" and not settings.enabled:
+                why = "attribution is switched off"
+            elif key != "enabled" and settings.do_not_track:
+                why = "DO_NOT_TRACK is set"
+            elif key == "agents" and settings.capture == "off":
+                why = "capture is off, so no agent is captured"
+            elif other_value is None:
+                why = (
+                    f"the {other_name} config does not set it, so the default"
+                    f" ({_fmt(_DEFAULTS[key])}) applies there and the stricter value wins"
+                )
+            else:
+                why = (
+                    f"the {other_name} config sets {_fmt(other_value)}"
+                    " and the stricter value wins"
+                )
+            reasons.append(
+                f"{key}: the {name} config sets {_fmt(value)}, but {_fmt(effective)} applies"
+                f" because {why}."
+            )
+    return reasons
+
+
 def _layer(layer: Any) -> dict[str, Any]:
     return {
         "enabled": layer.enabled,
@@ -87,6 +133,7 @@ def attribution_status(path: str | None, fmt: str) -> None:
                 "user": _layer(settings.user),
                 "do_not_track": settings.do_not_track,
                 "errors": list(settings.errors),
+                "explanations": _explanations(settings),
                 "commits": counts,
                 "coverage": share.coverage if share else None,
                 "agent_share_of_covered": share.agent_share if share else None,
@@ -96,11 +143,7 @@ def attribution_status(path: str | None, fmt: str) -> None:
         return
 
     def _show(value: Any) -> str:
-        if value is None:
-            return "[dim]unset[/dim]"
-        if isinstance(value, (tuple, list)):
-            return ", ".join(value) or "none"
-        return str(value).lower() if isinstance(value, bool) else str(value)
+        return "[dim]unset[/dim]" if value is None else _fmt(value)
 
     console.print("[bold]AI attribution[/bold]")
     for key in ("enabled", "capture", "agents"):
@@ -112,7 +155,9 @@ def attribution_status(path: str | None, fmt: str) -> None:
     if settings.do_not_track:
         console.print("  DO_NOT_TRACK is set: capture stays off.")
     for error in settings.errors:
-        console.print(f"  [yellow]![/yellow] {error}")
+        console.print(f"  [yellow]![/yellow] {error} (treated as the strictest value)")
+    for reason in _explanations(settings):
+        console.print(f"  [dim]{reason}[/dim]")
     if not settings.enabled:
         console.print("  Nothing about AI is stored or shown for this repository.")
     elif counts is None:
@@ -127,38 +172,13 @@ def attribution_status(path: str | None, fmt: str) -> None:
 
 
 async def _purge(repo_path: Path) -> bool:
-    from sqlalchemy import update
-
-    from repowise.core.persistence.models import GitCommit, GitMetadata
+    from repowise.core.persistence.crud import clear_attribution
 
     async with repo_index_session(repo_path) as opened:
         if opened is None:
             return False
         session, repo_id = opened
-        await session.execute(
-            update(GitCommit)
-            .where(GitCommit.repository_id == repo_id)
-            .values(
-                agent_name=None,
-                agent_autonomy_tier=None,
-                agent_channel=None,
-                agent_confidence=None,
-                agent_model_id=None,
-                attribution=None,
-            )
-        )
-        await session.execute(
-            update(GitMetadata)
-            .where(GitMetadata.repository_id == repo_id)
-            .values(
-                agent_commit_count=0,
-                attribution_known_count=0,
-                agent_authored_pct=None,
-                agent_tier_counts_json="{}",
-                agent_line_count=0,
-                agent_line_model_json="{}",
-            )
-        )
+        await clear_attribution(session, repo_id)
         return True
 
 
@@ -183,7 +203,8 @@ def attribution_purge(path: str | None, yes: bool) -> None:
     console.print("[green]✓[/green] AI attribution deleted from the local index.")
     if _settings(repo_path).enabled:
         console.print(
-            "  Attribution is still enabled, so the next index reads public markers again."
-            " Set `attribution.enabled: false` in .repowise/config.yaml to keep it off."
+            "  Attribution is still enabled: `repowise update` labels new commits, and a"
+            " full re-index labels past ones again. Set `attribution.enabled: false` in"
+            " .repowise/config.yaml to keep it off."
         )
 

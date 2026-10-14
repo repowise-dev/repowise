@@ -1491,6 +1491,7 @@ async def persist_incremental_commits(
     """
     from repowise.core.ingestion.git_indexer import GitIndexer
     from repowise.core.persistence.crud import (
+        clear_attribution_if_disabled,
         get_latest_commit_committed_at,
         get_repository,
         update_repo_git_totals,
@@ -1534,6 +1535,7 @@ async def persist_incremental_commits(
             await upsert_git_commits_bulk(session, repo_id, rows)
         if file_rows:
             await upsert_git_commit_files_bulk(session, repo_id, file_rows)
+    await clear_attribution_if_disabled(session, repo_id)
 
     # What the new commits did to health is scanned by the caller once this
     # transaction commits (commit_health.refresh_commit_health_after_update):

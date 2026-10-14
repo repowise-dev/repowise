@@ -229,7 +229,14 @@ class GitAiNote:
 
     agent: str | None = None
     human: bool = False
+    # Files the attestation names; a human attestation counts only when it
+    # covers every path the commit changed.
+    paths: frozenset[str] = frozenset()
 
+
+# A note is a few KB; past this it is not read (a hostile or broken ref must
+# not stall the walk).
+_GIT_AI_NOTE_MAX_CHARS = 1_000_000
 
 # Attestation keys (git-ai standard v3.0.0): ``s_<hex>::t_<hex>`` is an AI
 # session and trace, ``h_<hex>`` a known human, a bare 16-hex key a legacy AI
@@ -248,16 +255,18 @@ def parse_git_ai_note(note: str) -> GitAiNote:
     ambiguous and yields no agent (precision first). ``human`` is set only when
     the attestation carries ``h_`` keys and no AI key, and the metadata names no
     agent. Identities in ``humans`` / ``human_author`` are never read. A
-    malformed note yields the empty result: it is never a signal.
+    malformed or oversized note yields the empty result: it is never a signal.
+    The divider is the first column-0 ``---`` line, which ends the attestation.
     """
-    if not note:
+    if not note or len(note) > _GIT_AI_NOTE_MAX_CHARS:
         return GitAiNote()
     try:
         lines = note.splitlines()
-        div = max((i for i, ln in enumerate(lines) if ln.strip() == "---"), default=-1)
+        div = next((i for i, ln in enumerate(lines) if ln.rstrip() == "---"), -1)
         if div < 0:
             return GitAiNote()
-        data = json.loads("\n".join(lines[div + 1 :]))
+        # raw_decode: the metadata object ends the note; anything after it is ignored.
+        data, _ = json.JSONDecoder().raw_decode("\n".join(lines[div + 1 :]).lstrip())
         if not isinstance(data, dict):
             return GitAiNote()
         entries = data.get("sessions") or data.get("prompts") or {}
@@ -272,15 +281,19 @@ def parse_git_ai_note(note: str) -> GitAiNote:
             leaders = [a for a, c in counts.items() if c == top]
             return GitAiNote(agent=leaders[0] if len(leaders) == 1 else None)
         human_keys = ai_keys = 0
+        paths: set[str] = set()
         for line in lines[:div]:
-            if not line[:1].isspace() or not line.strip():
-                continue  # a file path line, or blank
+            if not line.strip():
+                continue
+            if not line[:1].isspace():
+                paths.add(line.strip().strip('"').lstrip("/"))
+                continue
             key = line.split()[0].lower()
             if _GIT_AI_HUMAN_KEY.fullmatch(key):
                 human_keys += 1
             elif _GIT_AI_AI_KEY.fullmatch(key):
                 ai_keys += 1
-        return GitAiNote(human=human_keys > 0 and ai_keys == 0)
+        return GitAiNote(human=human_keys > 0 and ai_keys == 0, paths=frozenset(paths))
     except Exception:
         return GitAiNote()
 
@@ -590,10 +603,13 @@ class AgentTraceIndex:
         return None
 
     def resolve_human(self, sha: str, parents: tuple[str, ...], changed_paths: set[str]) -> bool:
-        """Whether a human-only record covers this commit, by the same revision
-        and path-overlap rule as :meth:`resolve`."""
+        """Whether human-only records cover this commit: the same revision rule
+        as :meth:`resolve`, but every changed path must be attested human.
+        Partial overlap stays unknown; a false human is the worse error."""
+        if not changed_paths:
+            return False
         return any(
-            self._human_by_revision.get((rev or "").lower(), set()) & changed_paths
+            changed_paths <= self._human_by_revision.get((rev or "").lower(), set())
             for rev in (sha, *parents)
         )
 
@@ -812,7 +828,7 @@ def classify_commit(
         note_agent=note.agent,
         trace_agent=trace_hit[0] if trace_hit else None,
         trace_confidence=trace_hit[1] if trace_hit else "high",
-        note_human=note.human,
+        note_human=note.human and bool(changed_paths) and changed_paths <= note.paths,
         trace_human=bool(trace_index) and trace_index.resolve_human(sha, parents, changed_paths),
     )
     return prov, trace_hit

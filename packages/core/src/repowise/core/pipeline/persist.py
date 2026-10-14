@@ -1822,6 +1822,7 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     ``(repo_id, sha)`` — safe to call incrementally and on resume.
     """
     from repowise.core.persistence.crud import (
+        clear_attribution_if_disabled,
         prune_fix_events_before,
         update_repo_git_totals,
         upsert_fix_events_bulk,
@@ -1843,6 +1844,7 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     commit_file_rows = getattr(summary, "commit_file_rows", None)
     if commit_file_rows:
         await upsert_git_commit_files_bulk(session, repo_id, commit_file_rows)
+    await clear_attribution_if_disabled(session, repo_id)
 
     # Per fix-commit x file rows (with their SZZ candidates). The prune keeps a
     # re-index of an already-indexed repo from leaving behind events that have
@@ -1955,6 +1957,7 @@ async def persist_git_refresh(
     from sqlalchemy import select
 
     from repowise.core.persistence.crud import (
+        clear_attribution_if_disabled,
         recompute_git_percentiles,
         upsert_git_metadata_bulk,
     )
@@ -1978,6 +1981,7 @@ async def persist_git_refresh(
         ]
     await upsert_git_metadata_bulk(session, repo_id, [*git_meta_map.values(), *decay_rows])
     await recompute_git_percentiles(session, repo_id)
+    await clear_attribution_if_disabled(session, repo_id)
 
 
 async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
