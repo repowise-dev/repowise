@@ -40,7 +40,7 @@ from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
-from .hashing import split_lines
+from .hashing import normalize_line, split_lines
 
 
 class FileEdit:
@@ -107,7 +107,7 @@ def _patch_added(structured_patch: Any) -> list[str] | None:
         lines = hunk.get("lines") if isinstance(hunk, dict) else None
         for line in lines if isinstance(lines, list) else []:
             if isinstance(line, str) and line.startswith("+"):
-                added.extend(split_lines(line[1:]) or [""])
+                added.append(normalize_line(line[1:]))
     return added
 
 
@@ -128,7 +128,14 @@ def claude_code_edits(tool_name: str, tool_input: Any, tool_response: Any) -> li
         return []
     patched = _patch_added(response.get("structuredPatch"))
     if tool_name == "Write":
-        added = patched if patched is not None else split_lines(_str(tool_input.get("content")))
+        # Without a patch only a new file is all the agent's; an overwrite
+        # (``update``, or no response) may keep lines it did not write.
+        if patched is not None:
+            added = patched
+        elif response.get("type") == "create":
+            added = split_lines(_str(tool_input.get("content")))
+        else:
+            added = []
     elif tool_name == "Edit":
         added = (
             patched
@@ -155,7 +162,7 @@ def parse_apply_patch(patch: str) -> list[FileEdit]:
     """
     edits: list[FileEdit] = []
     current: FileEdit | None = None
-    for raw in patch.splitlines():
+    for raw in patch.split("\n"):
         line = raw.rstrip("\r")
         if line.startswith("*** Add File: ") or line.startswith("*** Update File: "):
             current = FileEdit(line.split(": ", 1)[1].strip(), [])
@@ -165,7 +172,7 @@ def parse_apply_patch(patch: str) -> list[FileEdit]:
         elif line.startswith("*** "):
             current = None
         elif current is not None and line.startswith("+"):
-            current.added.append(split_lines(line[1:])[0] if line[1:] else "")
+            current.added.append(normalize_line(line[1:]))
     return [edit for edit in edits if edit.added]
 
 

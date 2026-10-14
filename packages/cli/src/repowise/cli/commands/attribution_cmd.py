@@ -183,6 +183,14 @@ def attribution_status(path: str | None, fmt: str) -> None:
         console.print(f"  [dim]{reason}[/dim]")
     for target_id, level in capture.items():
         console.print(f"  capture  {target_id:<12} {level}")
+    if capture.get("cursor") in ("local", "notes"):
+        from repowise.cli.agent_adapters.cursor import cursor_capture_hook_installed
+
+        if not cursor_capture_hook_installed():
+            console.print(
+                "  [yellow]![/yellow] Cursor capture needs its afterFileEdit hook: run"
+                " 'repowise agents add --target=cursor --scope=user'"
+            )
     if any(sidecar.values()):
         console.print(
             f"  sidecar  {sidecar['pending_events']} pending edit events,"

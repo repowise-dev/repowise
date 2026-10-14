@@ -86,7 +86,12 @@ def _merge_capture_bindings(repo: object, notes: dict[str, GitAiNote]) -> None:
     root = getattr(repo, "working_tree_dir", None)
     if not root:
         return
+    from repowise.core.attribution import load_attribution_settings
     from repowise.core.edit_capture.store import bound_commits
+
+    # Bindings are consent-gated at read time too: turning capture off stops them.
+    if load_attribution_settings(root).capture == "off":
+        return
 
     from .git_indexer.agent_provenance import GitAiNote, _normalize_agent_token
 

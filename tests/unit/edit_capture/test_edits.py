@@ -158,3 +158,17 @@ def test_codex_rollout_apply_patch_goes_through_the_same_extractor() -> None:
     edits = adapter.file_edits(use)
     assert {e.path for e in edits} == {"src/billing.py", "src/report.py"}
     assert "codex" in registered_adapters()
+
+
+def test_write_overwrite_without_patch_is_a_miss() -> None:
+    from repowise.core.edit_capture.edits import claude_code_edits
+
+    same = {"file_path": "a.py", "content": "keep this line\nand this one\n"}
+    assert claude_code_edits("Write", same, {"type": "update", "structuredPatch": []}) == []
+    assert claude_code_edits("Write", same, None) == []
+
+
+def test_form_feed_stays_inside_one_line() -> None:
+    from repowise.core.edit_capture.hashing import split_lines
+
+    assert split_lines("a\x0cb\r\nc\n") == ["a\x0cb", "c"]

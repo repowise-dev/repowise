@@ -23,8 +23,15 @@ def normalize_line(line: str) -> str:
 
 
 def split_lines(text: str) -> list[str]:
-    """*text* as normalised lines; CRLF, CR and LF all end a line."""
-    return [normalize_line(line) for line in text.splitlines()]
+    """*text* as normalised lines, split on ``\\n`` only, as git does.
+
+    ``str.splitlines`` would also split on form feed and U+2028, lines git
+    keeps whole, so the hashes would never meet the diff's.
+    """
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [normalize_line(line) for line in lines]
 
 
 def line_hash(line: str) -> str:

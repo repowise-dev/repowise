@@ -121,7 +121,7 @@ def commit_diff(repo: Path, sha: str) -> tuple[int, list[tuple[str, str | None, 
         repo, "diff-tree", "-p", "-M", "--unified=0", "--no-color", "--no-ext-diff",
         "--root", "--format=%ct", sha,
     )
-    lines = out.splitlines()
+    lines = out.split("\n")
     try:
         ct = int(lines[0].strip())
     except (IndexError, ValueError):

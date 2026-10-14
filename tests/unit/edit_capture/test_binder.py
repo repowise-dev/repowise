@@ -38,7 +38,7 @@ def test_agent_lines_bind_to_the_commit(repo) -> None:
     assert read_jsonl(sidecar_dir(repo.root) / EVENTS) == []
 
 
-def test_bound_commit_feeds_three_state_provenance(repo) -> None:
+def test_bound_commit_feeds_three_state_provenance(repo, user_config) -> None:
     import git as gitpython
 
     from repowise.core.ingestion.git_commit_index import load_git_ai_note_agents
@@ -47,8 +47,15 @@ def test_bound_commit_feeds_three_state_provenance(repo) -> None:
     repo.write("src/settle.py", "\n".join(BODY) + "\n")
     sha = repo.commit("settle")
     bind_pending(repo.root, capture="local")
+    on = "attribution:\n  capture: local\n  agents: [claude-code]\n"
+    repo.configure(on)
+    user_config.write_text(on, encoding="utf-8")
     notes = load_git_ai_note_agents(gitpython.Repo(repo.root), None)
     assert notes[sha].agent == "claude" and notes[sha].source == "edit_capture"
+    # Withdrawing consent stops the stored bindings from labelling anything.
+    user_config.write_text("attribution:\n  capture: off\n", encoding="utf-8")
+    assert load_git_ai_note_agents(gitpython.Repo(repo.root), None) == {}
+    user_config.write_text(on, encoding="utf-8")
     # The init commit had no capture: absent, i.e. unknown, never human.
     assert all(not n.human for n in notes.values()) and len(notes) == 1
 

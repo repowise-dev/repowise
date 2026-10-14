@@ -93,10 +93,7 @@ def record_call(repo_root: Path, agent_slug: str, call: CapturedCall) -> int:
         lines.append(json.dumps(event, separators=(",", ":")) + "\n")
     if not lines:
         return 0
-    directory = sidecar_dir(repo_root)
-    directory.mkdir(parents=True, exist_ok=True)
-    with open(directory / EVENTS, "a", encoding="utf-8") as handle:
-        handle.write("".join(lines))
+    append_lines(sidecar_dir(repo_root) / EVENTS, lines)
     return len(lines)
 
 
@@ -115,12 +112,23 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        return
+def append_lines(path: Path, lines: list[str]) -> None:
+    """Append *lines* in one ``write`` on an ``O_APPEND`` fd.
+
+    A buffered text write splits past 8 KB, so two hooks finishing together
+    could interleave inside a line; one syscall keeps each batch whole.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as handle:
-        handle.write("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+    try:
+        os.write(fd, "".join(lines).encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    if rows:
+        append_lines(path, [json.dumps(row, separators=(",", ":")) + "\n" for row in rows])
 
 
 def load_state(repo_root: Path | str) -> dict[str, Any]:
