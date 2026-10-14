@@ -278,6 +278,10 @@ def test_every_request_filter_is_part_of_the_cache_key(make_repo):
             continue
         narrowed = dataclasses.replace(plain, **{field.name: ("vendor/",)})
         assert service._cache_key(narrowed, pair) != service._cache_key(plain, pair), field.name
+        # A comma is legal inside a pattern, so one "a,b" pattern is not "a" and "b".
+        joined = dataclasses.replace(plain, **{field.name: ("a,b",)})
+        split = dataclasses.replace(plain, **{field.name: ("a", "b")})
+        assert service._cache_key(joined, pair) != service._cache_key(split, pair), field.name
 
 
 async def test_include_paths_as_a_string_filters_like_the_list(tool, make_repo):

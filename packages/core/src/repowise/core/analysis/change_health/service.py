@@ -163,9 +163,10 @@ class ChangeHealthDeltaService:
             str(HEALTH_ANALYZER_VERSION),
             self.rules_fingerprint,
             str(PERFORMANCE_MODEL_VERSION),
-            ",".join(request.extensions),
-            ",".join(request.exclude_patterns),
-            ",".join(request.include_paths),
+            # repr, not a join: a comma is legal inside a pattern.
+            repr(tuple(request.extensions)),
+            repr(tuple(request.exclude_patterns)),
+            repr(tuple(request.include_paths)),
         )
         return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
