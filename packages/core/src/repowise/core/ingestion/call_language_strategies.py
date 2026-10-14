@@ -7,6 +7,7 @@ targets and crate roots that no import statement names.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -20,7 +21,7 @@ from .lang_helpers.kotlin_lambdas import in_lambda
 from .languages.receiver_types import dart_named_constructors
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
-from .resolvers.jvm_gradle import declaration_rank
+from .resolvers.jvm_gradle import declaration_rank, source_set_dir
 from .symbol_identity import outer_scope
 from .type_names import bare_type_name, kotlin_extension_receiver
 
@@ -57,6 +58,11 @@ _NO_LANGUAGE_STRATEGIES = _LanguageCallStrategies()
 _BUILD_ROOT_LANGUAGES = frozenset({"dart", "java", "kotlin", "scala", "swift"})
 
 _TYPED_RECEIVER = ("_resolve_typed_receiver",)
+
+# Kotlin Multiplatform's common declaration, and a rank worse than any
+# ``declaration_rank`` returns.
+_EXPECT = "expect"
+_NO_RANK = 3
 
 
 def _gradle_script_receiver(path: str) -> str | None:
@@ -142,6 +148,9 @@ class LanguageStrategiesMixin:
         # built" from "built but unavailable" (no repo_path / no go files).
         self._go_index: Any = None
         self._go_index_built = False
+
+        # Whether any symbol is a Kotlin Multiplatform ``expect``; None until asked.
+        self._has_expect: bool | None = None
 
         # {(Kotlin function id, line): the type it extends, or None}
         self._kotlin_receivers: dict[tuple[str, int], str | None] = {}
@@ -425,32 +434,56 @@ class LanguageStrategiesMixin:
         index = self._get_jvm_index()
         if index is None:
             return None
-        found = [
+        found = (
             (sibling, sym_id)
             for sibling in self._same_package_siblings(index, file_path)
             if (sym_id := self._package_symbol(sibling, call.target_name, caller_id)) is not None
-        ]
-        # Two siblings declare it and, for Java, nothing here can tell them apart.
-        if not found or (unique_only and len(found) > 1):
+        )
+        if unique_only:
+            # Two siblings declare it and, for Java, nothing here can tell them apart.
+            first, second = next(found, None), next(found, None)
+            sym_id = first[1] if first is not None and second is None else None
+        else:
+            sym_id = self._most_visible(file_path, found)
+        if sym_id is None:
             return None
-        sym_id = self._most_visible(file_path, found)
         return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
 
-    def _most_visible(self, file_path: str, found: list[tuple[str, str]]) -> str:
+    def _most_visible(self, file_path: str, found: Iterator[tuple[str, str]]) -> str | None:
         """The first of *found*'s ``(file, symbol id)`` declarations *file_path* sees most directly.
 
         A Kotlin Multiplatform name has one declaration per source set; see
-        ``declaration_rank``. A member counts as ``expect`` when its type is.
+        ``declaration_rank``. *found* is read lazily: the first declaration
+        answers when no rank can tell them apart, and one in the caller's own
+        source set ends the search.
         """
+        if source_set_dir(file_path) is None and not self._repo_declares_expect():
+            return next(found, (None, None))[1]
+        best: str | None = None
+        best_rank = _NO_RANK
+        for path, sym_id in found:
+            rank = declaration_rank(file_path, path, self._is_expect(sym_id))
+            if rank == 0:
+                return sym_id
+            if rank < best_rank:
+                best, best_rank = sym_id, rank
+        return best
 
-        def rank(entry: tuple[str, str]) -> int:
-            path, sym_id = entry
-            symbol = self._symbols_by_id[sym_id]
-            owner = self._symbols_by_id.get(self._caller_class_id(sym_id)) if symbol.parent_name else None
-            expect = "expect" in symbol.modifiers or (owner is not None and "expect" in owner.modifiers)
-            return declaration_rank(file_path, path, expect)
+    def _is_expect(self, sym_id: str) -> bool:
+        """Is *sym_id* an ``expect`` declaration, or a member of an ``expect`` type?"""
+        symbol = self._symbols_by_id[sym_id]
+        if _EXPECT in symbol.modifiers:
+            return True
+        if symbol.parent_name is None:
+            return False
+        owner = self._symbols_by_id.get(self._caller_class_id(sym_id))
+        return owner is not None and _EXPECT in owner.modifiers
 
-        return min(found, key=rank)[1]
+    def _repo_declares_expect(self) -> bool:
+        """Does any repository symbol carry ``expect``? Asked once."""
+        if self._has_expect is None:
+            self._has_expect = any(_EXPECT in s.modifiers for s in self._symbols_by_id.values())
+        return self._has_expect
 
     def _package_symbol(self, sibling: str, name: str, caller_id: str) -> str | None:
         """What *name* means in *sibling* to a bare call from another package file.
@@ -487,14 +520,14 @@ class LanguageStrategiesMixin:
         index = self._get_jvm_index()
         if index is None:
             return None
-        found = [
+        found = (
             (sibling, sym_id)
             for sibling in self._same_package_siblings(index, file_path)
             if (sym_id := self._file_methods.get(sibling, {}).get(key)) is not None
-        ]
-        if not found:
-            return None
+        )
         sym_id = self._most_visible(file_path, found)
+        if sym_id is None:
+            return None
         return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
 
     def _resolve_go_package_call(

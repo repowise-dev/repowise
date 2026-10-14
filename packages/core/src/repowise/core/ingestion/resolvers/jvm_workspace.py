@@ -115,7 +115,7 @@ _KOTLIN_STDLIB_PREFIXES = ("kotlin.",)
 # ``Filter.java``. Unlike stdlib these only apply AFTER exact workspace
 # lookup fails — a repo can legitimately contain these namespaces (the
 # library's own source tree).
-_JAVA_EXTERNAL_PREFIXES = ("jakarta.",)
+_JAVA_EXTERNAL_PREFIXES = ("jakarta.", "android.", "androidx.")
 _KOTLIN_EXTERNAL_PREFIXES = ("kotlinx.",)
 
 

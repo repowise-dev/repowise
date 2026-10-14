@@ -199,9 +199,11 @@ def declaration_rank(importer: str, candidate: str, is_expect: bool) -> int:
 
     Kotlin Multiplatform declares a name once per source set: ``expect`` in
     common code and ``actual`` in each platform's. A file binds its own source
-    set's declaration (0), else the ``expect`` its set depends on (1); another
-    platform's ``actual`` (2) is not visible to it. Elsewhere only a
-    declaration in the file's own source set moves ahead.
+    set's declaration (0), else the ``expect`` its set depends on (1); any
+    other declaration (2) is a guess, since source-set dependencies are not
+    read: an intermediate set's ``actual`` may be visible, another platform's
+    is not. Ties keep their order. Outside multiplatform only a declaration in
+    the file's own source set (``src/main`` over ``src/test``) moves ahead.
     """
     own = source_set_dir(importer)
     if own is not None and source_set_dir(candidate) == own:
