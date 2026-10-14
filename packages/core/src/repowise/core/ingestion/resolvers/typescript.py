@@ -3,12 +3,31 @@
 from __future__ import annotations
 
 import posixpath
+from collections.abc import Iterable
 from pathlib import Path
 
 from .context import ResolverContext
 from .subpath_imports import resolve_subpath_import
 from .svelte_kit import resolve_lib_alias
 from .ts_workspace import resolve_via_workspaces
+
+# Metro (React Native) platform extensions, in sorted order so the candidates
+# generated from them are deterministic.
+PLATFORM_SEGMENTS: tuple[str, ...] = ("android", "ios", "native", "web")
+_PLATFORM_FILE_EXTS: tuple[str, ...] = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx")
+_PLATFORM_SUFFIXES: tuple[str, ...] = tuple(
+    f".{platform}{ext}" for platform in PLATFORM_SEGMENTS for ext in _PLATFORM_FILE_EXTS
+)
+
+
+def detect_platform_files(paths: Iterable[str]) -> bool:
+    """True when any path is a Metro platform file (``Button.ios.tsx``).
+
+    Computed once where the :class:`ResolverContext` is built, like
+    ``has_sfc_files``, so a repository without platform files never pays for
+    (or is changed by) the platform probing in :func:`resolve_ts_js_import_all`.
+    """
+    return any(p.endswith(_PLATFORM_SUFFIXES) for p in paths)
 
 
 def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
@@ -101,3 +120,39 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
 
     # Fallback: external npm package.
     return ctx.add_external_node(module_path)
+
+
+def resolve_ts_js_import_all(
+    module_path: str, importer_path: str, ctx: ResolverContext
+) -> tuple[str, ...]:
+    """Resolve a TS/JS import to every file it can mean, plain file first.
+
+    Metro resolves ``./Button`` to ``Button.ios.tsx`` on iOS and
+    ``Button.android.tsx`` on Android, and ``./haptics`` to ``haptics.native.ts``
+    ahead of ``haptics.ts``. The importer depends on all of them, so each gets
+    an edge. The result is the single-target resolution (if any) followed by the
+    platform files in sorted order, which keeps ``imp.resolved_file`` the plain
+    file whenever there is one.
+
+    Only relative specifiers in a repository that has platform files are
+    expanded (``ctx.has_platform_files``); everything else is exactly
+    :func:`resolve_ts_js_import`.
+    """
+    single = resolve_ts_js_import(module_path, importer_path, ctx)
+    targets: list[str] = [single] if single else []
+    if not ctx.has_platform_files or not module_path.startswith("."):
+        return tuple(targets)
+
+    base_posix = posixpath.normpath(
+        posixpath.join(Path(importer_path).parent.as_posix(), module_path)
+    )
+    platform_targets: set[str] = set()
+    for platform in PLATFORM_SEGMENTS:
+        for ext in _PLATFORM_FILE_EXTS:
+            for stem in (base_posix, f"{base_posix}/index"):
+                candidate = f"{stem}.{platform}{ext}"
+                if candidate in ctx.path_set:
+                    platform_targets.add(candidate)
+    platform_targets.discard(single or "")
+    targets.extend(sorted(platform_targets))
+    return tuple(targets)

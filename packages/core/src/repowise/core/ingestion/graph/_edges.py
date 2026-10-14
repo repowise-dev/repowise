@@ -20,6 +20,7 @@ from ...co_change import (
 from ..models import FILE_DEPENDENCY_EDGE_TYPES, is_dynamic_edge
 from ..resolvers import ResolverContext
 from ..resolvers.go import read_go_module_path, read_go_modules
+from ..resolvers.typescript import detect_platform_files
 from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
@@ -220,6 +221,7 @@ class EdgesMixin:
             go_module_path=(go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)),
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+            has_platform_files=detect_platform_files(path_set),
             parsed_files=self._parsed_files,
             # Same reason ``build()`` passes it: a handler that scans file text
             # (the Godot ``class_name`` one covers every ``.gd`` in the repo)

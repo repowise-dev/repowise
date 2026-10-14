@@ -25,6 +25,7 @@ from ..languages.python_modules import dotted_module_for
 from ..models import Import, ParsedFile, combine_load_kinds
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
+from ..resolvers.typescript import detect_platform_files
 from ..symbol_identity import has_overload_identity
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
@@ -415,6 +416,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             ),
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+            has_platform_files=detect_platform_files(path_set),
             parsed_files=self._parsed_files,
             source_map=self._source_map,
         )
@@ -496,6 +498,13 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     from ..resolvers.python import resolve_python_import_all
 
                     targets = resolve_python_import_all(imp, path, ctx)
+                elif _lang in ("typescript", "javascript"):
+                    # React Native: ``./Button`` also means ``Button.ios.tsx`` /
+                    # ``Button.android.tsx`` (Metro platform extensions). A repo
+                    # with no such files resolves exactly as before (#3603).
+                    from ..resolvers.typescript import resolve_ts_js_import_all
+
+                    targets = resolve_ts_js_import_all(imp.module_path, path, ctx)
                 else:
                     single = resolve_import(imp.module_path, path, _lang, ctx)
                     targets = (single,) if single else ()
