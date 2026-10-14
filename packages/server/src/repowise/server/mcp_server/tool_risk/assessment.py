@@ -13,6 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.pr_blast import untested_files
+from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS
 from repowise.core.co_change import confidence_ratio, parse_partners
 from repowise.core.git_refs import find_path_removal
 from repowise.core.persistence.models import (
@@ -243,7 +244,11 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
 
 
 async def _get_security_signals(session: AsyncSession, repo_id: str, target: str) -> list[dict]:
-    """Fetch stored security findings for *target* from security_findings table."""
+    """Fetch stored security findings for *target* from security_findings table.
+
+    Symbol-name rows stay stored for the dashboard; next to real findings they
+    only read as alarms, so an agent never sees them.
+    """
     try:
         rows = await session.execute(
             text(
@@ -254,7 +259,11 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             ),
             {"repo_id": repo_id, "fp": target},
         )
-        return [{"kind": r[0], "severity": r[1], "snippet": r[2]} for r in rows.all()]
+        return [
+            {"kind": r[0], "severity": r[1], "snippet": r[2]}
+            for r in rows.all()
+            if r[0] not in SYMBOL_NAME_KINDS
+        ]
     except Exception:
         return []
 

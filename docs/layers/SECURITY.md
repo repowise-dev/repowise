@@ -33,7 +33,7 @@ repowise security check origin/main...HEAD     # CI gate on what a change adds
 ```
 
 From an agent, `get_risk(targets=["src/api/"])` includes a `security_signals`
-block. In the dashboard, findings are on the Security tab of the Code Health
+block, without the informational `security_sensitive_symbol` rows. In the dashboard, findings are on the Security tab of the Code Health
 page, and over REST at `GET /api/repos/{repo_id}/security`.
 
 ## Reading the results
@@ -44,7 +44,9 @@ page, and over REST at `GET /api/repos/{repo_id}/security`.
 severities. Severity is fixed per kind, with one exception: a finding in test
 material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 `fixtures`, `__fixtures__`, `spec`, `specs`, `mock`, `mocks`, `__mocks__`,
-`example` or `examples`, is recorded at `low`. Nothing is scored or ranked.
+`example` or `examples`, is recorded at `low`. A non-secret finding in a
+script, tool, benchmark, migration or docs example is `low` too; a secret there
+keeps its severity. Nothing is scored or ranked.
 
 | Kind | Severity | Matches |
 |------|----------|---------|
@@ -94,7 +96,8 @@ and the in-change commit scan report only these by default.
 - **Vendor key shapes match anywhere**, comments included: a real key in a
   comment is still a leak.
 - **Prose files** (`.md`, `.mdx`, `.rst`, `.txt`, `.adoc`) are scanned for the
-  secret kinds only.
+  secret kinds only. So are generated and vendored files (a minified or webpack
+  bundle included) and `.d.ts` declarations: nobody here wrote their calls.
 - **JavaScript kinds stay in JavaScript.** `unsafe_inner_html`,
   `template_literal_sql`, `new_function_call`, `reject_unauthorized_false` and
   `public_env_secret` do not fire in Python files, where such a line can only be
@@ -200,9 +203,11 @@ stores leaves it out, so it does not reach the dashboard, `get_risk` or REST.
 Exact rules are in the
 [CLI reference](../reference/CLI_REFERENCE.md#repowise-security-check-revspec).
 
-The scanner also honours detect-secrets comments: `# pragma: allowlist secret`
+The scanner also honours other scanners' comments: `# pragma: allowlist secret`
 on the finding's line, or `# pragma: allowlist nextline secret` on the line
-above it (`//` and `/*` comments work too). Unlike the Repowise gate-only
+above it (detect-secrets), and `gitleaks:allow`, `trufflehog:ignore`, `nosec`
+(Bandit, gosec) and `noqa: S105`/`S106`/`S107` (Ruff) on the finding's line
+(`//` and `/*` comments work too). Unlike the Repowise gate-only
 marker, allowlisted secret findings are excluded from the stored scan and
 the gate; they do not appear in the gate's suppressed count. Non-secret
 findings on the same line still report. A marker inside a string does not

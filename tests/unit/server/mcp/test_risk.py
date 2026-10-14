@@ -1100,7 +1100,13 @@ async def test_security_signals_are_ranked_high_first(setup_mcp, session):
     from repowise.server.mcp_server.tool_risk.assessment import _get_security_signals
 
     for line, (kind, severity) in enumerate(
-        [("weak_hash", "low"), ("tls_verify_false", "med"), ("pickle_loads", "high")], start=1
+        [
+            ("weak_hash", "low"),
+            ("tls_verify_false", "med"),
+            ("pickle_loads", "high"),
+            ("security_sensitive_symbol", "low"),
+        ],
+        start=1,
     ):
         session.add(
             SecurityFinding(
@@ -1117,7 +1123,12 @@ async def test_security_signals_are_ranked_high_first(setup_mcp, session):
     await session.flush()
 
     signals = await _get_security_signals(session, "repo1", "src/auth/service.py")
-    assert [s["severity"] for s in signals] == ["high", "med", "low"]
+    # A symbol-name row is stored for the dashboard but never served to an agent.
+    assert [(s["kind"], s["severity"]) for s in signals] == [
+        ("pickle_loads", "high"),
+        ("tls_verify_false", "med"),
+        ("weak_hash", "low"),
+    ]
 
 
 @pytest.mark.asyncio

@@ -43,9 +43,8 @@ from .change_risk.features import GIT_TIMEOUT_SECONDS, _git, revspec_head, split
 from .changed_lines import DIFF_ARGS, parse_unified_diff
 from .security_scan import (
     SECRET_KINDS,
-    _detect_secrets_allowlisted,
+    _allowlisted_lines,
     marker_silences,
-    mask_comments_and_strings,
     masked_snippet,
     scan_source,
     source_lines,
@@ -431,16 +430,12 @@ def _scoped(
         if (entry := _builtin_entry(text, f, lines, secrets_only)) is not None
     ]
     custom, long_lines = _custom_entries(text, lines)
-    uncommented = (
-        source_lines(mask_comments_and_strings(source, strings=False))
-        if "pragma: allowlist" in source
-        else text.lines
-    )
+    allowed = _allowlisted_lines(path, source)
     return [
         _row(text, entry)
         for entry in [*found, *custom]
         if (entry[1] not in SECRET_KINDS and not entry[1].startswith("custom:"))
-        or not _detect_secrets_allowlisted(text.lines, uncommented, entry[0])
+        or entry[0] not in allowed
     ], long_lines
 
 

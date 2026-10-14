@@ -291,6 +291,11 @@ def test_other_jvm_tests_have_no_reason(text) -> None:
     assert _reason("src/test/java/org/x/SomeTests.java", text) is None
 
 
+def test_a_kotlin_nested_comment_hides_the_annotation() -> None:
+    text = "/* outer /* inner */\n@SpringBootTest\n*/\nclass ApiTest {}\n"
+    assert _reason("src/test/kotlin/org/x/ApiTest.kt", text) is None
+
+
 def test_jvm_tests_are_judged() -> None:
     assert is_judged_test("src/test/java/org/x/OwnerTests.java")
     assert is_judged_test("src/test/kotlin/org/x/ApiTest.kt")

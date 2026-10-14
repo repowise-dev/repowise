@@ -29,6 +29,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.code_origin import code_origin
 from repowise.core.support_paths import DOC_EXTENSIONS
 from repowise.core.test_paths import is_test_related_path
 
@@ -41,30 +42,40 @@ logger = logging.getLogger(__name__)
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
-SECURITY_SCANNER_VERSION = 2
+SECURITY_SCANNER_VERSION = 3
 
-# detect-secrets allows a marker on the finding's line or the line above.
-_ALLOWLIST_SAME_RE = re.compile(r"(?:#|//|/\*)\s*pragma:\s*allowlist\s+secret\b")
-_ALLOWLIST_NEXT_RE = re.compile(
-    r"(?:#|//|/\*)\s*pragma:\s*allowlist\s+nextline\s+secret\b"
+# The inline markers other secret scanners honour, in a comment on the
+# finding's line: detect-secrets, gitleaks, TruffleHog, Bandit and gosec
+# ``nosec``, and Ruff's hard-coded-password codes. detect-secrets also has a
+# marker for the line below.
+_ALLOWLIST_SAME_RE = re.compile(
+    r"(?:#|//|/\*)[ \t]*(?:pragma:[ \t]*allowlist[ \t]+secret|gitleaks:allow|trufflehog:ignore"
+    r"|nosec|noqa:[ \t\w,]*\bS10[5-7])\b"
 )
+_ALLOWLIST_NEXT_RE = re.compile(
+    r"(?:#|//|/\*)[ \t]*pragma:[ \t]*allowlist[ \t]+nextline[ \t]+secret\b"
+)
+_ALLOWLIST_TOKENS = ("allowlist", "gitleaks:allow", "trufflehog:ignore", "nosec", "noqa:")
 
 
-def _detect_secrets_allowlisted(
-    lines: list[str], uncommented: list[str], lineno: int
-) -> bool:
-    """Whether a pragma in a comment (not a string) allowlists this line."""
+def _allowlisted_lines(file_path: str, source: str) -> set[int]:
+    """Line numbers an allow marker in a comment (not a string) covers.
 
-    def marked(index: int, pattern: re.Pattern[str]) -> bool:
-        return any(
-            uncommented[index][m.start() : m.end()] != m.group()
-            for m in pattern.finditer(lines[index])
-        )
-
-    return 0 < lineno <= len(lines) and (
-        marked(lineno - 1, _ALLOWLIST_SAME_RE)
-        or (lineno > 1 and marked(lineno - 2, _ALLOWLIST_NEXT_RE))
+    Prose has no comments to set apart, so a marker anywhere on its line counts.
+    """
+    if not any(token in source for token in _ALLOWLIST_TOKENS):
+        return set()
+    uncommented = (
+        None
+        if file_path.lower().endswith(_PROSE_EXTENSIONS)
+        else mask_comments_and_strings(source, strings=False, **mask_dialect(file_path))
     )
+    allowed: set[int] = set()
+    for pattern, below in ((_ALLOWLIST_SAME_RE, 0), (_ALLOWLIST_NEXT_RE, 1)):
+        for m in pattern.finditer(source):
+            if uncommented is None or uncommented[m.start() : m.end()] != m.group():
+                allowed.add(source.count("\n", 0, m.start()) + 1 + below)
+    return allowed
 
 
 IGNORE_TOKEN = "repowise-security-ignore"
@@ -149,6 +160,28 @@ def _is_low_severity_path(file_path: str) -> bool:
     posix_path = file_path.replace("\\", "/")
     parts = [p.lower() for p in PurePosixPath(posix_path).parts]
     return any(p in _LOW_SEVERITY_PATH_TOKENS for p in parts) or is_test_related_path(posix_path)
+
+
+# Code that runs at build or release time, or only in docs: a sink there is not
+# a shipped one.
+_NON_SHIPPING_ORIGINS = frozenset({"tooling", "docs_example"})
+# A bundler's or generator's output, or a copied library: nobody here wrote its
+# calls, so only a secret it carries is news.
+_MACHINE_ORIGINS = frozenset({"generated", "vendored"})
+_DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
+
+
+def _holds_no_written_code(file_path: str, origin: str) -> bool:
+    """Whether only secret kinds apply: machine output, or a TS declaration file, which never runs."""
+    return origin in _MACHINE_ORIGINS or file_path.lower().endswith(_DECLARATION_SUFFIXES)
+
+
+def _is_low_for_path(kind: str, is_low_sev_file: bool, origin: str) -> bool:
+    """Test and fixture material never carries a shipped sink, whatever the kind.
+
+    Nor do scripts, tools or docs examples, though a secret there still leaks.
+    """
+    return is_low_sev_file or (origin in _NON_SHIPPING_ORIGINS and kind not in SECRET_KINDS)
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +293,9 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "github_token",
         "high",
     ),
-    (re.compile(r"(?i:(xox[baprs]-[0-9a-zA-Z-]{10,72}))"), "slack_token", "high"),
+    # Slack writes the prefix in lowercase, at a token's start: ``xOxP-`` inside
+    # a document id is not one.
+    (re.compile(r"(?<![A-Za-z0-9])(xox[baprs]-[0-9a-zA-Z-]{10,72})"), "slack_token", "high"),
     # Bounded by lookarounds, not ``\b``: a key can end in ``-``, and a base64 run
     # (a lockfile ``sha512-`` integrity hash) must not yield one from its middle.
     (
@@ -357,8 +392,16 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # constant (a stylesheet string assigned to a module-level name), which
     # this test cannot distinguish from a genuinely dynamic value without
     # dataflow, so the pattern is a places-to-read signal rather than a
-    # confirmed sink.
-    (re.compile(r"__html\s*:\s*(?=[A-Za-z_$(])"), "unsafe_inner_html", "med"),
+    # confirmed sink. A type keyword there (``__html: string``) is a TS
+    # annotation, not a value.
+    (
+        re.compile(
+            r"__html\s*:\s*(?=[A-Za-z_$(])"
+            r"(?!(?:string|number|boolean|any|unknown|never|undefined|null|TrustedHTML)\b)"
+        ),
+        "unsafe_inner_html",
+        "med",
+    ),
     # Analogue of ``fstring_sql`` for a JS/TS template literal. The bare verb
     # `SELECT` or `UPDATE` is an ordinary English word and fires on prose
     # (`` `Order update failed: ${status}` ``) and even on class names
@@ -920,13 +963,51 @@ _STRING_STOP = {
     marker: re.compile(re.escape(marker) + r"|\\") for marker in ("'", '"', "'''", '"""')
 }
 _NOT_NEWLINE = re.compile(r"[^\n]")
+_BLOCK_STOP = re.compile(r"/\*|\*/")
+_RAW_BACKTICK_STOP = re.compile("`")
+# Languages whose block comments nest, and Go, whose backtick string is raw: a
+# backslash there is a character, not an escape.
+_NESTED_COMMENT_SUFFIXES = (".kt", ".kts", ".scala", ".sc", ".swift", ".rs", ".dart")
+_RAW_BACKTICK_SUFFIXES = (".go",)
 
 
-def mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
+def mask_dialect(file_path: str) -> dict[str, bool]:
+    """The :func:`mask_comments_and_strings` options *file_path*'s language needs."""
+    lowered = file_path.lower()
+    return {
+        "nested_comments": lowered.endswith(_NESTED_COMMENT_SUFFIXES),
+        "raw_backticks": lowered.endswith(_RAW_BACKTICK_SUFFIXES),
+    }
+
+
+def _block_comment_end(source: str, start: int, nested: bool) -> int:
+    """Offset just past the ``*/`` closing the block comment opened before *start*."""
+    if not nested:
+        stop = source.find("*/", start)
+        return len(source) if stop == -1 else stop + 2
+    stop, depth = start, 1
+    while depth and (m := _BLOCK_STOP.search(source, stop)):
+        depth += 1 if m.group() == "/*" else -1
+        stop = m.end()
+    return len(source) if depth else stop
+
+
+def _template_stop(raw_backticks: bool) -> re.Pattern[str]:
+    return _RAW_BACKTICK_STOP if raw_backticks else _TEMPLATE_STOP
+
+
+def mask_comments_and_strings(
+    source: str,
+    *,
+    strings: bool = True,
+    nested_comments: bool = False,
+    raw_backticks: bool = False,
+) -> str:
     """Blank common comments (and strings, unless *strings* is false), keeping offsets.
 
     Strings are still tracked when they are kept, so a ``#`` or ``//`` inside
-    one does not open a comment. Newlines are never blanked.
+    one does not open a comment. Newlines are never blanked. *nested_comments*
+    and *raw_backticks* come from :func:`mask_dialect`.
     """
     out: list[str] = []
     copied = 0
@@ -952,15 +1033,16 @@ def mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
             state = "code"
             continue
         if state == "block_comment":
-            stop = source.find("*/", i)
-            stop = size if stop == -1 else stop + 2
+            stop = _block_comment_end(source, i, nested_comments)
             blank(i, stop)
             i = stop
             state = "code"
             continue
         if state in {"string", "template"}:
             pattern = (
-                _TEMPLATE_STOP if state == "template" else _STRING_STOP[quote * (3 if triple else 1)]
+                _STRING_STOP[quote * (3 if triple else 1)]
+                if state == "string"
+                else _template_stop(raw_backticks)
             )
             match = pattern.search(source, i)
             # A backslash escapes the character after it, whatever it is.
@@ -1119,6 +1201,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     findings: list[dict] = []
     lines = source_lines(source)
     is_prose = file_path.lower().endswith(_PROSE_EXTENSIONS)
+    origin = code_origin(file_path, source)
+    secrets_only = is_prose or _holds_no_written_code(file_path, origin)
 
     # Masking is the costly step and most files match no pattern at all, so
     # each form is built once, on first use. Prose has no comments or strings
@@ -1127,7 +1211,13 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
 
     def mask(strings: bool = True) -> tuple[str, list[str]]:
         if strings not in masks:
-            text = source if is_prose else mask_comments_and_strings(source, strings=strings)
+            text = (
+                source
+                if is_prose
+                else mask_comments_and_strings(
+                    source, strings=strings, **mask_dialect(file_path)
+                )
+            )
             masks[strings] = (text, lines if is_prose else source_lines(text))
         return masks[strings]
 
@@ -1135,7 +1225,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         masked_lines = mask(strings)[1]
         return masked_lines[lineno - 1] if lineno <= len(masked_lines) else line
 
-    if not is_prose:
+    if not secrets_only:
         findings.extend(_call_findings(file_path, source, lambda: mask()[0]))
 
     # Line-by-line pattern scan. A line's edges and the newline around it read
@@ -1153,7 +1243,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         for pattern, kind, severity in _PATTERNS:
             if kind in _CALL_KINDS:
                 continue
-            if is_prose and kind not in SECRET_KINDS:
+            if secrets_only and kind not in SECRET_KINDS:
                 continue
             if is_python and kind in _JS_ONLY_KINDS:
                 continue
@@ -1218,7 +1308,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     # on the opening line, unless the per-line pass already did.
     pem_body_lines: set[int] = set()
     for pattern, kind, severity in _SPANNING_PATTERNS:
-        if is_prose and kind not in SECRET_KINDS:
+        if secrets_only and kind not in SECRET_KINDS:
             continue
         if kind in _MASKED_KINDS:
             # The masked pattern opens with this literal, which masking keeps
@@ -1277,9 +1367,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         if finding["line"] in pem_body_lines:
             finding["snippet"] = _redaction(lines[finding["line"] - 1].strip())
 
-    # Test and fixture material never carries a shipped sink, whatever the kind.
-    if is_low_sev_file:
-        for finding in findings:
+    for finding in findings:
+        if _is_low_for_path(finding["kind"], is_low_sev_file, origin):
             finding["severity"] = "low"
 
     # Symbol-name scan (informational / low)
@@ -1295,16 +1384,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 }
             )
 
-    uncommented = (
-        source_lines(mask_comments_and_strings(source, strings=False))
-        if "pragma: allowlist" in source
-        else lines
-    )
-    return [
-        f for f in findings
-        if f["kind"] not in SECRET_KINDS
-        or not _detect_secrets_allowlisted(lines, uncommented, f["line"])
-    ]
+    allowed = _allowlisted_lines(file_path, source)
+    return [f for f in findings if f["kind"] not in SECRET_KINDS or f["line"] not in allowed]
 
 
 def scan_source_map(

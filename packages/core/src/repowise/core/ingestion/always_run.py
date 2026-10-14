@@ -245,7 +245,7 @@ def _beside_code(path: str) -> bool:
 def always_run_reason(path: str, text: str, own: OwnCode) -> str | None:
     """Why the test at *path* must run with every subset, or ``None``."""
     if path.endswith(_JVM):
-        return _loads_spring_context(text)
+        return _loads_spring_context(path, text)
     if path.endswith(_PY):
         lang = _PY_LANG
     elif path.endswith(_JS):
@@ -259,15 +259,15 @@ def always_run_reason(path: str, text: str, own: OwnCode) -> str | None:
     return None
 
 
-def _loads_spring_context(text: str) -> str | None:
+def _loads_spring_context(path: str, text: str) -> str | None:
     # Ceiling: per file, so ``@SpringBootTest`` inherited from a base class or
     # carried by a custom meta-annotation is not seen; resolving annotations
     # through the class graph is the upgrade path.
     if "SpringBootTest" not in text:
         return None
-    from ..analysis.security_scan import mask_comments_and_strings
+    from ..analysis.security_scan import mask_comments_and_strings, mask_dialect
 
-    if _SPRING_BOOT_TEST.search(mask_comments_and_strings(text)):
+    if _SPRING_BOOT_TEST.search(mask_comments_and_strings(text, **mask_dialect(path))):
         return "it loads the whole Spring application context (@SpringBootTest)"
     return None
 

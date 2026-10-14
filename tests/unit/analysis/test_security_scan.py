@@ -1479,3 +1479,113 @@ class TestSecretPrecision:
     def test_vendor_key_in_a_comment_still_fires(self) -> None:
         kinds = {f["kind"] for f in scan_source("src/app.py", "# AKIAQZXNRTVYWMPKLBHG\n")}  # pragma: allowlist secret
         assert kinds == {"aws_access_key"}
+
+
+class TestNoAlarmOnCodeThatDoesNotShip:
+    """Type annotations, release scripts, bundles and marked fixtures raise nothing high."""
+
+    KEY: ClassVar[str] = "AKIA" + "QZXNRTVYWMPKLBHG"
+
+    @staticmethod
+    def _found(path: str, source: str) -> list[tuple[str, str]]:
+        return [(f["kind"], f["severity"]) for f in scan_source(path, source)]
+
+    @pytest.mark.parametrize("annotation", ["string", "TrustedHTML", "string | TrustedHTML"])
+    def test_inner_html_type_annotation_is_not_a_sink(self, annotation: str) -> None:
+        source = f"interface Props {{\n  dangerouslySetInnerHTML: {{ __html: {annotation} }};\n}}\n"
+        assert self._found("src/props.ts", source) == []
+
+    def test_declaration_file_holds_no_sink(self) -> None:
+        assert self._found("types/react.d.ts", "type T = { __html: SafeHtml };\n") == []
+
+    def test_inner_html_from_a_value_is_still_medium(self) -> None:
+        source = "<div dangerouslySetInnerHTML={{__html: foo}} />\n"
+        assert self._found("src/view.tsx", source) == [("unsafe_inner_html", "med")]
+
+    def test_inner_html_from_a_name_starting_with_a_type_word_is_still_medium(self) -> None:
+        source = "<div dangerouslySetInnerHTML={{__html: stringValue}} />\n"
+        assert self._found("src/view.tsx", source) == [("unsafe_inner_html", "med")]
+
+    def test_a_release_script_sink_is_low(self) -> None:
+        source = 'import { execSync } from "child_process";\nexecSync(cmd);\n'
+        assert self._found("scripts/release.ts", source) == [("exec_call", "low")]
+        assert self._found("src/run.ts", source) == [("exec_call", "high")]
+
+    def test_a_secret_in_a_script_stays_high(self) -> None:
+        source = f'import os\nos.system(cmd)\nAWS = "{self.KEY}"\n'
+        assert self._found("scripts/deploy.py", source) == [
+            ("os_system", "low"),
+            ("aws_access_key", "high"),
+        ]
+
+    def test_a_minified_bundle_has_no_call_sink_but_keeps_its_secrets(self) -> None:
+        bundle = "var a=1;" * 400 + 'var f=new Function("x",y);'
+        assert self._found("static/app.3f2a.js", bundle) == []
+        assert self._found("static/app.3f2a.js", bundle + f'var k="{self.KEY}";') == [
+            ("aws_access_key", "high")
+        ]
+
+    def test_new_function_in_written_source_is_still_high(self) -> None:
+        source = 'const f = new Function("x", y);\n'
+        assert self._found("src/app.js", source) == [("new_function_call", "high")]
+
+    @pytest.mark.parametrize(
+        ("path", "marker"),
+        [
+            ("cfg.go", "// gitleaks:allow"),
+            ("README.md", "#gitleaks:allow"),
+            ("cfg.go", "// #nosec G101"),
+            ("cfg.py", "# nosec"),
+            ("cfg.py", "# trufflehog:ignore"),
+            ("cfg.py", "# noqa: E501, S105"),
+        ],
+    )
+    def test_other_scanners_allow_markers_silence_a_secret(self, path: str, marker: str) -> None:
+        source = f'key = "{self.KEY}"  {marker}\n'
+        assert self._found(path, source) == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'key = "{key}"  # noqa: E501\n',
+            'key = "{key} // gitleaks:allow"\n',
+            'key = "{key}"\n',
+        ],
+    )
+    def test_a_secret_without_a_marker_comment_still_fires(self, source: str) -> None:
+        source = source.format(key=self.KEY)
+        assert self._found("src/settings.py", source) == [("aws_access_key", "high")]
+
+    def test_an_allow_marker_does_not_hide_a_call(self) -> None:
+        source = "eval(payload)  # nosec\n"
+        assert self._found("src/app.py", source) == [("eval_call", "high")]
+
+    def test_a_secret_in_testdata_is_low(self) -> None:
+        source = f'var k = "{self.KEY}"\n'
+        assert self._found("pkg/testdata/creds.go", source) == [("aws_access_key", "low")]
+
+    def test_slack_prefix_inside_a_document_id_is_not_a_token(self) -> None:
+        url = "https://docs.google.com/document/d/1W7KCxOxP-1Fy5EyF2lbJGE2WuKmu5v0suYqoHas1jRM"
+        assert self._found("src/links.py", f'URL = "{url}"\n') == []
+
+    def test_kotlin_nested_block_comment_is_comment_to_its_end(self) -> None:
+        source = '/* outer /* inner */ password = "Tr0ub4dor&3x" */\nval x = 1\n'
+        assert self._found("src/App.kt", source) == []
+
+    def test_go_raw_string_ends_at_a_backslash(self) -> None:
+        source = r"s := `C:\dir\`" + '\nt := `password = "Tr0ub4dor&3x"`\n'
+        assert self._found("cmd/paths.go", source) == []
+
+    @pytest.mark.parametrize(
+        ("options", "masked"),
+        [
+            ({}, "a " + " " * 12 + " d */ e"),
+            ({"nested_comments": True}, "a " + " " * 17 + " e"),
+        ],
+    )
+    def test_masking_nests_block_comments_only_when_asked(
+        self, options: dict[str, bool], masked: str
+    ) -> None:
+        from repowise.core.analysis.security_scan import mask_comments_and_strings
+
+        assert mask_comments_and_strings("a /* b /* c */ d */ e", **options) == masked
