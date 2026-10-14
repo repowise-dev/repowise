@@ -312,6 +312,43 @@ def test_detail_rows_keep_the_policy_contract():
         assert set(row["reasons"]) <= {"owns path", "recent change", "co-change"}
 
 
+def test_the_policy_evaluator_reads_the_built_record():
+    """A record from the builder drives ``repowise check`` rules end to end."""
+    from repowise.core.policy import evaluate, parse_policy
+
+    policy = parse_policy(
+        """\
+rules:
+  - name: agent-pci-needs-owner
+    match:
+      components: {tags: [pci]}
+    when:
+      attribution: agent
+      reaching_tests: missing
+    action: require_owner_review
+  - name: no-contract-break
+    when:
+      contract_break: true
+    action: warn
+  - name: decision
+    when:
+      decision_crossed: true
+    action: warn
+"""
+    )
+    inputs = _full_inputs()
+    bundle = _bundle(
+        ["src/a.py"], tests=_tests({"src/a.py": "unknown"}, map_current=True)
+    )
+    record = build_change_evidence(bundle, inputs, change_id="c", revspec="r").to_dict()
+    results = {r.rule.name: r for r in evaluate(policy, json.loads(json.dumps(record)))}
+    owner = results["agent-pci-needs-owner"]
+    assert owner.outcome == "triggered" and owner.owners == ["team-core"]
+    # The contract row is a touched contract, not a break.
+    assert results["no-contract-break"].outcome == "passed"
+    assert results["decision"].outcome == "triggered"
+
+
 @pytest.mark.asyncio
 async def test_an_older_store_gains_evidence_json_on_init_db(tmp_path):
     """A local SQLite index from before the column gets it from the startup reconcile."""
