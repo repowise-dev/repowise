@@ -227,8 +227,28 @@ def _print_commits(settings: Any, counts: dict[str, int] | None, share: Any) -> 
             console.print(f"  share    {share.summary()}")
 
 
-#: Re-reads the whole git history, which is what labels past commits in the index.
-RELABEL_COMMAND = "repowise init --force"
+def _request_history_rewalk(repo_path: Path) -> bool:
+    """Make the next ``repowise update`` re-read git history once, which labels
+    the newly bound commits in the index; False when there is no index.
+
+    Drops the git-history stamp in ``.repowise/state.json``, the same signal a
+    history-rules change raises. No update flag re-walks git history alone.
+    """
+    import json
+
+    from repowise.core.fsutils import atomic_write_text
+    from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION_KEY
+
+    state_path = repo_path / ".repowise" / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    state.pop(GIT_HISTORY_VERSION_KEY, None)
+    atomic_write_text(state_path, json.dumps(state, indent=2))
+    return True
 
 
 def _last_backfill(repo_path: Path) -> dict[str, Any] | None:
@@ -295,7 +315,9 @@ def attribution_backfill(path: str | None, agents: str, fmt: str) -> None:
     notes and the agent listed in attribution.agents, in both the repo and the
     user config. Runs only when you ask. The first run reads every transcript
     these agents keep on this machine (about 4 minutes for 7 GB on a laptop);
-    a later run reads only what the agents wrote since.
+    a later run reads only what the agents wrote since. When it binds new
+    commits in an indexed repo, the next `repowise update` re-reads git history
+    once to label these commits.
     """
     from repowise.core.edit_capture.backfill import backfill, consent
 
@@ -319,6 +341,7 @@ def attribution_backfill(path: str | None, agents: str, fmt: str) -> None:
         capture=_settings(repo_path).capture,
         known=run_async(_known_shas(repo_path)),
     )
+    rewalk = bool(result.bindings) and _request_history_rewalk(repo_path)
     commits = len(result.commits)
     if fmt == "json":
         emit_json(
@@ -334,7 +357,7 @@ def attribution_backfill(path: str | None, agents: str, fmt: str) -> None:
                 "covered_before": result.covered_before,
                 "covered_after": result.covered_after,
                 "handed_to_capture": result.handed_over,
-                "relabel_command": RELABEL_COMMAND if result.bindings else None,
+                "history_rewalk_on_next_update": rewalk,
             }
         )
         return
@@ -350,10 +373,9 @@ def attribution_backfill(path: str | None, agents: str, fmt: str) -> None:
         " scanned commits have a known source"
         f" ({_pct(result.covered_before, commits)} -> {_pct(result.covered_after, commits)})"
     )
-    if result.bindings:
+    if rewalk:
         console.print(
-            "  `repowise update` labels new commits as they come; past commits take these"
-            f" labels when the index re-reads its history (`{RELABEL_COMMAND}`)."
+            "  The next `repowise update` re-reads git history once to label these commits."
         )
 
 

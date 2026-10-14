@@ -204,6 +204,8 @@ def test_backfill_reports_and_status_shows_the_run(
     (repo / "src" / "values.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "values")
+    state = repo / ".repowise" / "state.json"
+    state.write_text(json.dumps({"git_history_version": 3, "last_sync_commit": "abc"}), encoding="utf-8")
 
     result = CliRunner().invoke(
         attribution_group, ["backfill", str(repo), "--agent", "claude-code,codex", "--format", "json"]
@@ -212,7 +214,9 @@ def test_backfill_reports_and_status_shows_the_run(
     report = json.loads(result.output)
     assert report["bound"] == 1 and report["commits_scanned"] >= 1
     assert report["covered_after"] == report["covered_before"] + 1
-    assert report["relabel_command"] == "repowise init --force"
+    # The next update re-reads git history once; nothing else in the state moves.
+    assert report["history_rewalk_on_next_update"] is True
+    assert json.loads(state.read_text(encoding="utf-8")) == {"last_sync_commit": "abc"}
 
     status = CliRunner().invoke(attribution_group, ["status", str(repo), "--format", "json"])
     assert json.loads(status.output)["backfill"]["bound"] == 1
