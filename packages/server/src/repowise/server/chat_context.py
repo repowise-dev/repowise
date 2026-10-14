@@ -23,7 +23,7 @@ from typing import Any
 #: One tool result as the model sees it.
 RESULT_CHAR_BUDGET = 48_000
 #: Earlier turns replayed into a new turn, tool results included.
-HISTORY_CHAR_BUDGET = 96_000
+HISTORY_CHAR_BUDGET = 240_000
 #: The whole message list of one provider call (system prompt and schemas excluded).
 REQUEST_CHAR_BUDGET = 400_000
 

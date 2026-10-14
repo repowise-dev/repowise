@@ -67,9 +67,10 @@ logger = logging.getLogger(__name__)
 
 #: A headless session: read-only tools, 20 model calls a turn.
 DEFAULT_POLICY = SessionPolicy()
-#: The web chat keeps the surface it always had: every configured tool, a
-#: mutating one still refused at execution without a confirmation grant.
-WEB_POLICY = SessionPolicy(safety_ceiling="mutating")
+#: The web chat keeps the surface it always had: every configured tool (a
+#: mutating one still refused at execution without a confirmation grant) and
+#: its 10-call loop cap.
+WEB_POLICY = SessionPolicy(safety_ceiling="mutating", max_tool_loops=10)
 
 StopReason = Literal[
     "answered", "loop_cap", "token_budget", "turn_budget", "refused", "cancelled", "error"
