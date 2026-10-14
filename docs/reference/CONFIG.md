@@ -15,6 +15,7 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
 [The `security:` block](#the-security-block) ·
+[The `attribution:` block](#the-attribution-block) ·
 [The `refactoring:` block](#the-refactoring-block) ·
 [The `assertions:` block](#the-assertions-block)
 
@@ -586,6 +587,17 @@ security:
 - A finding is keyed on file, kind and masked line, so two matches with the same visible prefix on one line share a baseline entry.
 - Exit 2 (`config_invalid`, every problem listed) on an unknown key, a missing name or regex, a duplicate or badly shaped name, a bad severity, or a regex that does not compile, can match zero characters, or nests repetition like `(a+)+` or `(a|aa)+` (best effort).
 - At most 50 patterns of 500 characters. Lines over 4096 characters are not matched and are counted (`long_lines_skipped` in JSON); a slow regex that passes the checks stays slow.
+
+### The `attribution:` block
+
+```yaml
+attribution:
+  enabled: true      # read public AI markers: bot authors, trailers, footers, git-ai notes, Agent Trace files
+  capture: off       # off, local or notes
+  agents: []         # agent target ids, e.g. claude-code, codex
+```
+
+The same block in `~/.repowise/config.yaml` applies to every repository, and the stricter value wins per key: `enabled: false` in either file, the lower capture level, and the agents both files list. With `enabled: false` nothing about AI is stored or shown in the API, CLI, MCP, web or wiki, and `DO_NOT_TRACK=1` keeps capture off. `repowise attribution status` shows the effective, repo and user values with the coverage of the indexed history.
 
 ### The `refactoring:` block
 

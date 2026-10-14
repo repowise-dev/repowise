@@ -2217,6 +2217,20 @@ does not know or list the commands. See [pluggable storage and capability seams]
 
 ---
 
+### `repowise attribution`
+
+Inspect and clear AI attribution for a repository.
+
+```bash
+repowise attribution status [PATH] [--format json]   # what is on, for which agents, coverage
+repowise attribution purge [PATH] [--yes]            # delete attribution derived into the local index
+```
+
+`purge` leaves git history, trailers and notes in the repository as they are.
+Settings live in the `attribution:` block of [CONFIG.md](CONFIG.md#the-attribution-block).
+
+---
+
 ### `repowise config hints on|off`
 
 Now and then, at a moment where it would help (a finished `init`, a slow

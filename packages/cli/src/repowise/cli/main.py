@@ -87,6 +87,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("export", "export_cmd:export_command"),
     ("hook", "hook_cmd:hook_group"),
     ("agents", "agents_cmd:agents_group"),
+    ("attribution", "attribution_cmd:attribution_group"),
     ("uninstall", "uninstall_cmd:uninstall_command"),
     ("status", "status_cmd:status_command"),
     ("next", "next_cmd:next_command"),
