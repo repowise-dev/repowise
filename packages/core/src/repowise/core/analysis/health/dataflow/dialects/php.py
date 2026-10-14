@@ -131,12 +131,18 @@ class PhpDefUseDialect(BaseDefUseDialect):
                 out.append(self._occ(node))
             return
         if t in self.member_access_kinds:
-            # $obj->prop or $obj->method(): only receiver is a variable read
+            # $obj->prop or $obj->method(): receiver is a variable read
             receiver = node.child_by_field_name("object") or (
                 node.named_children[0] if node.named_children else None
             )
             if receiver is not None and not self._is_this(receiver):
                 self.collect_reads(receiver, out)
+            if t in (_MEMBER_CALL, _NULLSAFE_MEMBER_CALL):
+                args = node.child_by_field_name("arguments") or (
+                    node.named_children[-1] if len(node.named_children) > 1 else None
+                )
+                if args is not None:
+                    self.collect_reads(args, out)
             return
         if t in _SCOPED_CALL:
             # Foo::bar($x): Foo and bar are class/method names, not local variables
@@ -408,7 +414,17 @@ class PhpDefUseDialect(BaseDefUseDialect):
                     self._process(args, defs, uses)
             return
         if t in self.member_access_kinds:
-            self.collect_reads(node, uses)
+            receiver = node.child_by_field_name("object") or (
+                node.named_children[0] if node.named_children else None
+            )
+            if receiver is not None and not self._is_this(receiver):
+                self.collect_reads(receiver, uses)
+            if t in (_MEMBER_CALL, _NULLSAFE_MEMBER_CALL):
+                args = node.child_by_field_name("arguments") or (
+                    node.named_children[-1] if len(node.named_children) > 1 else None
+                )
+                if args is not None:
+                    self._process(args, defs, uses)
             return
         if t in self.identifier_kinds:
             if not self._is_this(node):

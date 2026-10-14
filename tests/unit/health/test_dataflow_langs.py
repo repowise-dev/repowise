@@ -1758,6 +1758,27 @@ def test_php_reads_a_member_callee_receiver_but_not_the_method():
     assert "helper" not in uses  # global function name is not a variable read
 
 
+def test_php_reads_member_call_and_nullsafe_call_arguments_without_method_names():
+    fn = _first(
+        "php",
+        """<?php
+        function run($db, $id, $item) {
+            $n = 0;
+            $n += $db->execute($id);
+            $n += $db?->executeOther($item);
+            return $n;
+        }
+        """,
+    )
+    uses = _use_names(fn)
+    assert "db" in uses
+    assert "id" in uses
+    assert "item" in uses
+    assert "execute" not in uses
+    assert "executeOther" not in uses
+
+
+
 def test_php_delegate_call_is_a_variable_read():
     fn = _first(
         "php",
