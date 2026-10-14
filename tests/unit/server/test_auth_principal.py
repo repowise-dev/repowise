@@ -652,3 +652,42 @@ async def test_job_stream_refuses_tool_scoped_bearer(client, session_factory, to
     refused = await client.get(url, headers={"Authorization": f"Bearer {SCOPED}"})
     assert refused.status_code == 401
     assert (await client.get(url, headers={"Authorization": "Bearer ops-token"})).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Seam registry
+# ---------------------------------------------------------------------------
+
+
+def test_default_authenticator_and_authorizer_are_local(monkeypatch) -> None:
+    monkeypatch.delenv("REPOWISE_SEAM_AUTHENTICATOR", raising=False)
+    monkeypatch.delenv("REPOWISE_SEAM_AUTHORIZER", raising=False)
+    assert auth.authenticators.default == "local"
+    assert type(auth.get_authenticator()) is auth.LocalAuthenticator
+    assert type(auth.get_authorizer()) is ScopeAuthorizer
+
+
+def test_plugin_authenticator_selected_by_env_var(tmp_path, monkeypatch) -> None:
+    from repowise.core.registry import plugins
+
+    (tmp_path / "acme_auth_plugin.py").write_text(
+        "from repowise.server import auth\n"
+        "class Acme(auth.LocalAuthenticator):\n"
+        "    authorization_servers = ('https://idp.acme.test',)\n"
+        "def register():\n"
+        "    auth.authenticators.register('acme', Acme())\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("REPOWISE_PLUGINS", "acme_auth_plugin:register")
+    plugins.reset()
+    try:
+        assert type(auth.get_authenticator()) is auth.LocalAuthenticator
+        monkeypatch.setenv("REPOWISE_SEAM_AUTHENTICATOR", "acme")
+        assert type(auth.get_authenticator()).__name__ == "Acme"
+        monkeypatch.setenv("REPOWISE_SEAM_AUTHENTICATOR", "nope")
+        with pytest.raises(KeyError, match="nope"):
+            auth.get_authenticator()
+    finally:
+        monkeypatch.delenv("REPOWISE_SEAM_AUTHENTICATOR")
+        plugins.reset()

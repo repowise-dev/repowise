@@ -9,9 +9,10 @@ plus an optional local scoped-tokens file (``~/.repowise/tokens.yaml``, or the
 path in ``REPOWISE_TOKENS_FILE``). With neither configured, loopback callers are
 served without a credential and everyone else is refused, as before.
 
-Replacing either seam is one call (``set_authenticator`` / ``set_authorizer``);
-the module-level default-plus-override shape is meant to register into the
-generic plugin registry once that exists, without changing callers.
+Both are named seams (``authenticator``, ``authorizer``) with ``local`` as the
+default. A plugin registers its own implementation from the ``repowise.plugins``
+entry point and selects it with ``default=True`` or
+``REPOWISE_SEAM_AUTHENTICATOR`` / ``REPOWISE_SEAM_AUTHORIZER``.
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from fastapi import HTTPException, Request
+
+from repowise.core.registry.plugins import SeamRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -287,27 +290,34 @@ class ScopeAuthorizer:
         return principal.tool_scope is None or tool in principal.tool_scope
 
 
+authenticators: SeamRegistry[Authenticator] = SeamRegistry("authenticator")
+authorizers: SeamRegistry[Authorizer] = SeamRegistry("authorizer")
 _DEFAULT_AUTHENTICATOR = LocalAuthenticator()
 _DEFAULT_AUTHORIZER = ScopeAuthorizer()
-_authenticator: Authenticator | None = None
-_authorizer: Authorizer | None = None
+authenticators.register("local", _DEFAULT_AUTHENTICATOR, default=True)
+authorizers.register("local", _DEFAULT_AUTHORIZER, default=True)
 
 
 def get_authenticator() -> Authenticator:
-    return _authenticator or _DEFAULT_AUTHENTICATOR
-
-
-def set_authenticator(authenticator: Authenticator | None) -> None:
-    """Install a replacement; ``None`` restores the default."""
-    global _authenticator
-    _authenticator = authenticator
+    return authenticators.get()
 
 
 def get_authorizer() -> Authorizer:
-    return _authorizer or _DEFAULT_AUTHORIZER
+    return authorizers.get()
+
+
+def set_authenticator(authenticator: Authenticator | None) -> None:
+    """Select ``authenticator`` in-process (tests, embedders); ``None`` restores
+    the local default."""
+    if authenticator is None:
+        authenticators.register("local", _DEFAULT_AUTHENTICATOR, default=True)
+    else:
+        authenticators.register("override", authenticator, default=True)
 
 
 def set_authorizer(authorizer: Authorizer | None) -> None:
-    """Install a replacement; ``None`` restores the default."""
-    global _authorizer
-    _authorizer = authorizer
+    """Select ``authorizer`` in-process; ``None`` restores the local default."""
+    if authorizer is None:
+        authorizers.register("local", _DEFAULT_AUTHORIZER, default=True)
+    else:
+        authorizers.register("override", authorizer, default=True)
