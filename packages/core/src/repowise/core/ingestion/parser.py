@@ -113,6 +113,7 @@ from .parser_helpers import (
     _has_callable_ancestor,
     _head_type_identifier,
     _is_async_node,
+    _kotlin_function_receiver,
     _objc_call_is_block_variable,
     _objc_container_node,
     _objc_container_parent,
@@ -1889,6 +1890,7 @@ class ASTParser:
             type_parameter_count=(
                 _csharp_type_parameter_count(def_node) if language == "csharp" else None
             ),
+            extension_receiver=_kotlin_function_receiver(def_node, language, name, src),
             modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
         )
         return symbol, def_node

@@ -1518,10 +1518,8 @@ class ReceiverTypingMixin:
         is called one argument short of its parameters.
         """
         counts = {argument_count, signature_parameter_count(symbol.signature or "")}
-        return any(
-            len(self._overload_return_types.get((path, symbol.parent_name, symbol.name, n), ())) > 1
-            for n in counts
-        )
+        scope = (path, symbol.parent_name, symbol.extension_receiver, symbol.name)
+        return any(len(self._overload_return_types.get((*scope, n), ())) > 1 for n in counts)
 
     def _python_call_returns(self, symbol: Symbol, path: str, awaited: bool) -> str | None:
         """``_returned_type_id`` for a Python function.

@@ -23,7 +23,7 @@ from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
 from .resolvers.jvm_gradle import declaration_rank, source_set_dir
 from .symbol_identity import outer_scope
-from .type_names import bare_type_name, kotlin_extension_receiver
+from .type_names import bare_type_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,8 +152,6 @@ class LanguageStrategiesMixin:
         # Whether any symbol is a Kotlin Multiplatform ``expect``; None until asked.
         self._has_expect: bool | None = None
 
-        # {(Kotlin function id, line): the type it extends, or None}
-        self._kotlin_receivers: dict[tuple[str, int], str | None] = {}
         # {Dart class id: the named constructors its body declares}
         self._dart_constructors: dict[str, frozenset[str]] = {}
 
@@ -667,16 +665,8 @@ class LanguageStrategiesMixin:
         return in_lambda(source, caller is not None and caller.kind in _FUNCTION_KINDS)
 
     def _kotlin_receiver(self, symbol: Symbol) -> str | None:
-        """The type a Kotlin function extends, read off its header (annotations included).
-
-        Kept per declaration: same-named functions of one file share an id.
-        """
-        key = (symbol.id, symbol.start_line)
-        if key not in self._kotlin_receivers:
-            path = self._symbol_paths_by_id.get(symbol.id, "")
-            lines = self._lines_of(path)[symbol.start_line - 1 : symbol.start_line + 7]
-            self._kotlin_receivers[key] = kotlin_extension_receiver(" ".join(lines), symbol.name)
-        return self._kotlin_receivers[key]
+        """The type a Kotlin function extends, as the parser read it off its header."""
+        return symbol.extension_receiver
 
     def _implicit_receivers(self, caller: Symbol) -> set[str]:
         """The bare type names ``this`` may be inside *caller*."""

@@ -226,6 +226,10 @@ class Symbol:
     # C# type declarations only: how many type parameters it declares, which is
     # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
     type_parameter_count: int | None = None
+    # Kotlin functions only: the bare type an extension extends (``Byte`` for
+    # ``fun Byte.toHexString()``), which tells it from a same-named extension
+    # of another type. None for a receiver that is its own type parameter.
+    extension_receiver: str | None = None
     # Keyword modifiers the declaration writes, lowercased (``override``,
     # ``static``, ``abstract``...), for languages whose ``LanguageConfig``
     # names its modifier nodes. Access keywords land here too; ``visibility``

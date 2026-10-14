@@ -52,6 +52,7 @@ from .lang_helpers.type_heads import (
     _rust_head_type_identifier,
     _rust_shadowed_by_type_param,
 )
+from .type_names import kotlin_extension_receiver
 
 log = structlog.get_logger(__name__)
 
@@ -320,6 +321,13 @@ def _csharp_type_parameter_count(def_node: Node) -> int | None:
     return 0
 
 
+def _kotlin_function_receiver(def_node: Node, language: str, name: str, src: str) -> str | None:
+    """The type a Kotlin function declaration extends; None for anything else."""
+    if language != "kotlin" or def_node.type != "function_declaration":
+        return None
+    return kotlin_extension_receiver(node_text(def_node, src), name)
+
+
 def _count_arguments(arg_node: Node) -> int:
     """Count the number of arguments in an argument/argument_list node.
 
@@ -329,11 +337,25 @@ def _count_arguments(arg_node: Node) -> int:
     substring test rather than a fixed set.
     """
     skip_types = frozenset({"(", ")", ",", "[", "]"})
-    return sum(
+    listed = sum(
         1
         for child in arg_node.children
         if child.type not in skip_types and "comment" not in child.type
     )
+    return listed + _kotlin_trailing_lambda(arg_node)
+
+
+def _kotlin_trailing_lambda(arg_node: Node) -> int:
+    """1 when a Kotlin call passes a trailing lambda, ``f(a) { .. }``, else 0.
+
+    The grammar hangs the lambda off an outer ``call_expression`` wrapping the
+    call, outside the argument list.
+    """
+    call = arg_node.parent
+    outer = call.parent if call is not None else None
+    if outer is None or outer.type != "call_expression" or outer.child(0) != call:
+        return 0
+    return int(any(child.type == "annotated_lambda" for child in outer.children))
 
 
 # Java literal nodes and the type each one has, for the overload tie-break.

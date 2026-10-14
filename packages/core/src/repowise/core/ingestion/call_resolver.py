@@ -195,9 +195,11 @@ _BOUND_CHAIN_LANGUAGES = frozenset({"java", "csharp", "typescript", "go"})
 
 def _overload_return_types(
     parsed_files: dict[str, ParsedFile],
-) -> dict[tuple[str, str | None, str, int | None], set[str]]:
-    """``{(path, parent, name, parameter count): normalised return types}``."""
-    found: dict[tuple[str, str | None, str, int | None], set[str]] = defaultdict(set)
+) -> dict[tuple[str, str | None, str | None, str, int | None], set[str]]:
+    """``{(path, parent, extension receiver, name, parameter count): normalised return types}``."""
+    found: dict[tuple[str, str | None, str | None, str, int | None], set[str]] = defaultdict(
+        set
+    )
     for path, parsed in parsed_files.items():
         for symbol in parsed.symbols:
             raw_return = declared_return_type(symbol.signature or "")
@@ -209,6 +211,7 @@ def _overload_return_types(
             key = (
                 path,
                 symbol.parent_name,
+                symbol.extension_receiver,
                 symbol.name,
                 signature_parameter_count(symbol.signature or ""),
             )
@@ -874,13 +877,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """Record *parsed*'s overload sets; ``{member id: representative}``.
 
         Only parameter-count members are narrowed: a build-variant member
-        (``#cfg(...)``) is not chosen by its arguments.
+        (``#cfg(...)``) is not chosen by its arguments. Kotlin extensions of
+        different receivers are separate sets: the receiver chooses among them.
         """
-        members: dict[str, list[Symbol]] = defaultdict(list)
+        members: dict[tuple[str, str | None], list[Symbol]] = defaultdict(list)
         for sym in parsed.symbols:
             base, payload = split_symbol_id(sym.id)
             if payload is not None and payload[0].isdigit():
-                members[base].append(sym)
+                members[(base, sym.extension_receiver)].append(sym)
         representatives: dict[str, str] = {}
         for overloads in members.values():
             overloads.sort(key=lambda sym: sym.start_line)

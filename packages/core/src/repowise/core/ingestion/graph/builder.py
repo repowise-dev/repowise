@@ -22,7 +22,7 @@ from ..cohesion import (
     withdraw_declaration_hint,
 )
 from ..languages.python_modules import dotted_module_for
-from ..models import Import, ParsedFile, combine_load_kinds
+from ..models import Import, ParsedFile, Symbol, combine_load_kinds
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..symbol_identity import has_overload_identity
@@ -35,6 +35,23 @@ from ._serialize import SerializeMixin
 from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
+
+_CALLABLE_KINDS = frozenset({"function", "method"})
+
+
+def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -> bool:
+    """Does the definition already holding *sym*'s id keep its node?
+
+    Where overloads get their own ids, two definitions still sharing one erase
+    to one signature: the first declared keeps the node, so its span does not
+    depend on how many follow it. A function sharing its id with a Kotlin
+    property takes the node: calls name it.
+    """
+    if existing is None or existing.get("is_declaration") is not False:
+        return False
+    if not has_overload_identity(sym.language):
+        return False
+    return not (sym.kind in _CALLABLE_KINDS and existing.get("kind") not in _CALLABLE_KINDS)
 
 
 def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
@@ -289,14 +306,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 if existing is not None and existing.get("is_declaration") is False:
                     self._graph.add_edge(path, sym.id, edge_type="defines")
                     continue
-            # Where overloads get their own ids, two definitions still sharing
-            # one erase to one signature: the first declared keeps the node,
-            # so its span does not depend on how many follow it.
-            elif (
-                existing is not None
-                and existing.get("is_declaration") is False
-                and has_overload_identity(sym.language)
-            ):
+            elif _first_definition_keeps_node(existing, sym):
                 self._graph.add_edge(path, sym.id, edge_type="defines")
                 continue
 

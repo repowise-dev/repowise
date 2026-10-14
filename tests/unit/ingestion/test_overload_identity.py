@@ -33,6 +33,7 @@ from repowise.core.ingestion.symbol_identity import (
     base_symbol_id,
     erased_type,
     id_segment_name,
+    kotlin_erased_type,
     overload_sets,
     split_symbol_id,
     symbol_id_arity,
@@ -612,12 +613,108 @@ class TestOtherLanguagesAreUntouched:
         [
             ("m.py", "python", "def f(a):\n    pass\n\ndef f(a, b):\n    pass\n"),
             ("m.c", "c", "int f(int a) { return a; }\nint f(int a, int b) { return a; }\n"),
-            ("m.kt", "kotlin", "class K {\n  fun f(a: Int) {}\n  fun f(a: Int, b: Int) {}\n}\n"),
         ],
     )
     def test_same_named_definitions_keep_one_plain_id(self, rel: str, language: str, text: str) -> None:
         ids = _ids(_parse(rel, language, text))
         assert all(base_symbol_id(i) == i for i in ids), ids
+
+
+class TestKotlinOverloads:
+    """Kotlin overloads and same-named extensions of one scope, ``Main.kt::main``."""
+
+    _MAIN = (
+        "package app\n"
+        "fun main(args: Array<String>) { }\n"
+        "fun Application.main() { main(JwkProvider()) }\n"
+        "fun Application.main(jwkProvider: JwkProvider) { }\n"
+        'fun Byte.toHexString(): String = ""\n'
+        'fun Int.toHexString(): String = ""\n'
+        "fun once() { }\n"
+        "class Application\nclass JwkProvider\n"
+    )
+
+    def test_each_member_gets_its_own_id_and_a_receiver_leads_its_types(self) -> None:
+        ids = _ids(_parse("app/Main.kt", "kotlin", self._MAIN))
+        assert ids[:6] == [
+            "app/Main.kt::main#1(Array)",
+            "app/Main.kt::main#0",
+            "app/Main.kt::main#1(Application,JwkProvider)",
+            "app/Main.kt::toHexString#0(Byte)",
+            "app/Main.kt::toHexString#0(Int)",
+            "app/Main.kt::once",
+        ]
+        assert untyped_symbol_id(ids[2]) == "app/Main.kt::main#1"
+
+    def test_a_property_beside_a_same_named_function_keeps_one_id(self) -> None:
+        text = "class K {\n  val x: Int = 1\n  fun x() = 2\n}\n"
+        assert _ids(_parse("K.kt", "kotlin", text)) == ["K.kt::K", "K.kt::K::x", "K.kt::K::x"]
+        # The function holds the shared node, whichever is declared first.
+        for source in (text, "class K {\n  fun x() = 2\n  val x: Int = 1\n}\n"):
+            node = _graph({"K.kt": ("kotlin", source)}).nodes["K.kt::K::x"]
+            assert node["kind"] == "method"
+
+    @pytest.mark.parametrize(
+        ("parameter", "erased"),
+        [
+            ("args: Array<String>", "Array"),
+            ("sink: java.nio.ByteBuffer", "ByteBuffer"),
+            ("name: String? = null", "String?"),
+            ("vararg more: Int", "Int[]"),
+            ("@StringRes id: Int", "Int"),
+            ("block: (Int, String) -> Unit", "Function2"),
+            ("block: suspend Builder.() -> Unit = {}", "Function1"),
+        ],
+    )
+    def test_a_parameter_erases_to_its_written_type(self, parameter: str, erased: str) -> None:
+        assert kotlin_erased_type(parameter) == erased
+
+    def test_calls_bind_by_receiver_then_by_argument_count(self, tmp_path: Path) -> None:
+        io = (
+            "package app\n\ninterface Source\n\ninterface Sink\n\n"
+            'class BufferedSource {\n  fun readUtf8(): String = ""\n}\n\n'
+            "class BufferedSink\n\n"
+            "fun Source.buffer(): BufferedSource = BufferedSource()\n\n"
+            "fun Sink.buffer(): BufferedSink = BufferedSink()\n"
+        )
+        use = (
+            "package app\n"
+            "fun read(s: Source) {\n  val b = s.buffer()\n  b.readUtf8()\n}\n"
+            "fun write(k: Sink) { k.buffer() }\n"
+        )
+        files = {
+            "app/Io.kt": ("kotlin", io),
+            "app/Use.kt": ("kotlin", use),
+            "app/Main.kt": ("kotlin", self._MAIN),
+        }
+        edges = _edges(tmp_path, files)
+        assert ("app/Use.kt::read", "app/Io.kt::buffer#0(Source)") in edges
+        assert ("app/Use.kt::write", "app/Io.kt::buffer#0(Sink)") in edges
+        # Each extension's own return type types the local it assigns.
+        assert ("app/Use.kt::read", "app/Io.kt::BufferedSource::readUtf8") in edges
+        assert ("app/Main.kt::main#0", "app/Main.kt::main#1(Application,JwkProvider)") in edges
+
+    def test_a_trailing_lambda_is_an_argument_and_a_default_lowers_the_floor(
+        self, tmp_path: Path
+    ) -> None:
+        text = (
+            "package app\nclass R {\n"
+            "  fun exec(a: Int) { }\n"
+            "  fun exec(a: Int, block: () -> Unit) { }\n"
+            "  fun put(a: Int, b: Int, c: Int = 0) { }\n"
+            "  fun put(a: Int) { }\n"
+            "  fun go() {\n    exec(1) { }\n    put(1, 2)\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/R.kt": ("kotlin", text)})
+        assert edges == {
+            ("app/R.kt::R::go", "app/R.kt::R::exec#2"),
+            ("app/R.kt::R::go", "app/R.kt::R::put#3"),
+        }
+
+    def test_a_trailing_comma_closes_no_parameter(self) -> None:
+        """Compose style, ``modifier: Modifier = Modifier,`` before ``)``."""
+        signature = "function Screen(\n    onClick: () -> Unit,\n    modifier: Modifier = Modifier,\n)"
+        assert signature_parameter_range(signature, "kotlin") == (1, 2)
 
 
 def test_fixture_ids_carry_a_discriminator_only_on_collision() -> None:
@@ -636,7 +733,7 @@ def test_fixture_ids_carry_a_discriminator_only_on_collision() -> None:
                 checked += 1
                 if symbol.id == base and "`" not in symbol.id:
                     continue
-                assert symbol.language in ("java", "csharp", "cpp"), symbol.id
+                assert symbol.language in ("java", "csharp", "cpp", "kotlin"), symbol.id
                 assert bases.count(base) > 1 or "`" in symbol.id, symbol.id
     assert checked > 500
 

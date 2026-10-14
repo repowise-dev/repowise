@@ -89,6 +89,9 @@ STORE_FORMAT_VERSION: int = 2
 #: A Dart call chained on a call (``a.b().c()``) carries that inner call too,
 #: and a Dart function's signature carries its declared return type.
 #: A Kotlin function's signature carries its declared return type.
+#: Kotlin overloads and same-named extensions in one scope get their own ids
+#: the Java way, an extension's receiver leading its types
+#: (``toHexString#0(Byte)``), and a Kotlin trailing lambda counts as an argument.
 PARSER_SCHEMA_VERSION: int = 8
 
 #: state.json key holding the store format version that wrote the store.

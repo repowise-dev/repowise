@@ -38,7 +38,8 @@ def signature_parameters(signature: str) -> list[str] | None:
     """The top-level parameter texts of a stored callable signature.
 
     ``[]`` for an empty list, None when the signature has no closed list. A
-    C/C++ ``(void)`` list is empty, and ``operator()(int)`` lists ``int``.
+    C/C++ ``(void)`` list is empty, ``operator()(int)`` lists ``int``, and a
+    trailing comma (Kotlin, Swift, Dart, TypeScript) closes no parameter.
     """
     operator = signature.find("operator()")
     start = signature.find("(", 0 if operator < 0 else operator + len("operator()"))
@@ -50,7 +51,8 @@ def signature_parameters(signature: str) -> list[str] | None:
     closers: list[str] = []
     for char in signature[start + 1 :]:
         if char == ")" and not closers:
-            pieces.append("".join(current))
+            if not pieces or "".join(current).strip():
+                pieces.append("".join(current))
             return pieces if content and [p.strip() for p in pieces] != ["void"] else []
         if char in _PAIRS:
             closers.append(_PAIRS[char])
@@ -75,9 +77,10 @@ def signature_parameter_count(signature: str) -> int | None:
 def signature_parameter_range(signature: str, language: str) -> tuple[int, int | None] | None:
     """``(fewest, most)`` arguments a call may pass; ``most`` is None when open.
 
-    Java ``T...``, C# ``params``, C ``...`` and a C++ parameter pack leave the
-    top open, a C# or C++ default lowers the floor, and a C# extension method
-    is also called on its receiver, one argument short of its declared list.
+    Java ``T...``, C# ``params``, C ``...``, Kotlin ``vararg`` and a C++
+    parameter pack leave the top open, a C#, C++ or Kotlin default lowers the
+    floor, and a C# extension method is also called on its receiver, one
+    argument short of its declared list.
     """
     parameters = signature_parameters(signature)
     if parameters is None:
@@ -88,7 +91,9 @@ def signature_parameter_range(signature: str, language: str) -> tuple[int, int |
         return 0, 0
     if language in ("java", "cpp") and "..." in texts[-1]:
         fewest, most = fewest - 1, None
-    if language in ("csharp", "cpp"):
+    if language == "kotlin" and any("vararg" in text.split() for text in texts):
+        fewest, most = fewest - 1, None
+    if language in ("csharp", "cpp", "kotlin"):
         fewest -= sum(1 for text in texts if "=" in text)
     if language == "csharp":
         if texts[-1].startswith("params "):

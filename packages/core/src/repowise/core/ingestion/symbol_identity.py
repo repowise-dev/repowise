@@ -10,7 +10,9 @@ gains a discriminator:
   narrows to the member whose parameters admit its argument count. Members
   that share a count also carry their erased parameter types,
   ``StringUtil.java::StringUtil::append#1(String)``, so an inserted overload
-  never renames its siblings.
+  never renames its siblings. A Kotlin extension's receiver leads its types,
+  as it leads the JVM signature it compiles to: ``Byte.toHexString()`` is
+  ``Util.kt::toHexString#0(Byte)``, beside ``toHexString#0(Int)``.
 - ``#<tag>(<predicate>)`` on the last segment: one build variant of a symbol
   declared once per configuration, ``lib.rs::f#cfg(not(unix))``. A call may
   mean any variant.
@@ -151,14 +153,50 @@ def erased_type(parameter: str) -> str:
     return "_".join(re.split(r"\.|::", w)[-1] for w in words) + marks
 
 
+# Kotlin writes ``name: Type``; what precedes the colon is never the type.
+_KOTLIN_ANNOTATION = re.compile(r"@[\w.:]+(?:\([^)]*\))?")
+_KOTLIN_FUNCTION_TYPE = re.compile(r"\((?P<params>[^()]*)\)\s*->")
+
+
+def kotlin_erased_type(parameter: str) -> str:
+    """``vararg xs: List<Int>`` -> ``List[]``, ``f: (Int) -> Unit`` -> ``Function1``.
+
+    A function type erases to the ``FunctionN`` class it compiles to, its
+    receiver counted, and a nullable mark stays, as ``erased_type`` keeps it.
+    """
+    text = _KOTLIN_ANNOTATION.sub(" ", parameter)
+    head, _, written = text.partition(":")
+    written = written.partition("=")[0].strip()
+    # Read before type arguments go: their stripping drops the ``>`` of ``->``.
+    function = _KOTLIN_FUNCTION_TYPE.search(written)
+    if function is not None:
+        params = strip_type_arguments(function.group("params")).split(",")
+        arity = len([p for p in params if p.strip()])
+        if written[: function.start()].rstrip().endswith("."):
+            arity += 1  # ``Int.() -> Unit`` takes its receiver too
+        erased = f"Function{arity}"
+    else:
+        written = strip_type_arguments(written)
+        words = _WORD.findall(written)
+        erased = words[-1].rpartition(".")[2] if words else ""
+        erased += "?" if written.endswith("?") else ""
+    return erased + ("[]" if "vararg" in head.split() else "")
+
+
 def erased_parameter_types(symbol: Symbol) -> list[str]:
     """``["String", "int[]"]``: each parameter's erased type, as an id spells it."""
-    return [erased_type(p) for p in signature_parameters(symbol.signature or "") or []]
+    erase = kotlin_erased_type if symbol.language == "kotlin" else erased_type
+    return [erase(p) for p in signature_parameters(symbol.signature or "") or []]
 
 
 def _parameter_types(symbol: Symbol) -> str:
-    """``(String,int[])``: the erased types that split a same-count overload."""
-    return "(" + ",".join(erased_parameter_types(symbol)) + ")"
+    """``(String,int[])``: the erased types that split a same-count overload.
+
+    A Kotlin extension's receiver comes first, which is what tells
+    ``Byte.toHexString()`` from ``Int.toHexString()``.
+    """
+    receiver = [symbol.extension_receiver] if symbol.extension_receiver else []
+    return "(" + ",".join(receiver + erased_parameter_types(symbol)) + ")"
 
 
 # Which discriminator tells colliding members apart, per language. A build
@@ -167,6 +205,7 @@ _DISCRIMINATORS: dict[str, Callable[[Symbol], str | None]] = {
     "java": _parameter_count,
     "csharp": _parameter_count,
     "cpp": _parameter_count,
+    "kotlin": _parameter_count,
 }
 
 # Languages where a type may share its name with a sibling of another arity.
@@ -301,6 +340,7 @@ __all__ = [
     "disambiguate_colliding_ids",
     "has_overload_identity",
     "id_segment_name",
+    "kotlin_erased_type",
     "outer_scope",
     "overload_sets",
     "pair_overloads",
