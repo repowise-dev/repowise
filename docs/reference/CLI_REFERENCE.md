@@ -1584,11 +1584,12 @@ repowise coverage suggest-gates --format json
 
 ### `repowise components`
 
-`check` validates `.repowise/components.yaml` and a repo-root `catalog-info.yaml` (Backstage entities, see [CONFIG.md](CONFIG.md#repowisecomponentsyaml)) against the files git tracks, and exits 1 on any error, so it fits a CI step. `list` shows declared and derived components with their file counts.
+`check` validates `.repowise/components.yaml` and a repo-root `catalog-info.yaml` (Backstage entities, see [CONFIG.md](CONFIG.md#repowisecomponentsyaml)) against the files git tracks, and exits 1 on any error, so it fits a CI step. `list` shows declared and derived components with their file counts. `ownership` compares each component's declared owners (catalog `spec.owner`, CODEOWNERS, [`.repowise/teams.yaml`](CONFIG.md#repowiseteamsyaml)) with indexed commits in the last 90 days and lists findings: a high or critical component with no active declared owner or a bus factor of 1, a declared owner with no recent changes, and a catalog entry that claims no files. Findings name components and teams; individual owners are counted, never named.
 
 ```bash
 repowise components check [--path PATH] [--format table|json]
 repowise components list [--path PATH] [--format table|json]
+repowise components ownership [--path PATH] [--format table|json]
 ```
 
 ---

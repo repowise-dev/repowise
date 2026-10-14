@@ -594,6 +594,23 @@ rules:
 
 Conditions are `attribution`, `agent_tier` (1, 2 or 3), `reaching_tests` (`missing` or `present`), `contract_break`, `decision_crossed` and `bus_factor_below`; there is no risk-score condition. A condition whose evidence is not available (no index, attribution off) leaves the rule not evaluated, and it never fires. Exit 2 (`policy_invalid`, every problem listed) on an unknown key, condition or gate option, a bad action, or a duplicate rule name.
 
+### `.repowise/teams.yaml`
+
+Declared teams with the members who count as the team's activity, for `repowise components ownership` and `get_context(include=["ownership"])` on a component. Each team is a Backstage `Group` whose `spec.members` lists forge logins and whose `repowise.dev/member-emails` annotation lists git author emails; members are used only for matching commits and never appear in output. A CODEOWNERS `@org/team` (GitHub or GitLab, sections included) and a catalog `spec.owner` of `group:default/team` both resolve to the Group named `team`. Group entities in the catalog files add team names; their `spec.members` is not read.
+
+```yaml
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: payments
+  annotations:
+    repowise.dev/member-emails: "ana@acme.com, li@acme.com"
+spec:
+  type: team
+  children: []
+  members: [ana-acme, li-acme]
+```
+
 ### The `security:` block
 
 Secret shapes of your own for `repowise security check`.
