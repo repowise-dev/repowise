@@ -20,7 +20,7 @@ import {
   basis,
   constant,
   isRec,
-  list as listOf,
+  list,
   none,
   obj,
   oneOf,
@@ -43,27 +43,29 @@ export const MAX_CARDS_PER_MESSAGE = 50;
 /** Most facts, evidence rows, links or refs one list in a card may hold. */
 export const MAX_CARD_LIST_LENGTH = 100;
 
-/**
- * One check per field of `T`, split by whether `T` requires it. A field added
- * to a card type without a check here fails to compile.
- */
+/** Public name of the shared `Spec<T>`, kept for existing imports. */
 export type CardSpec<T> = Spec<T>;
-
-const list = (item: Check): Check => listOf(item, MAX_CARD_LIST_LENGTH);
 
 type CardOf<K extends EvidenceCardKind> = Extract<EvidenceCard, { kind: K }>;
 type CardBase = Omit<CardOf<"answer">, "question" | "kind"> & { kind: EvidenceCardKind };
 
-const BASE: CardSpec<CardBase> = {
+const BASE: Spec<CardBase> = {
   required: {
     schema_version: constant(EVIDENCE_CARD_SCHEMA_VERSION),
     kind: oneOf(EVIDENCE_CARD_KINDS),
     title: str,
-    facts: list(obj<CardFact>({ required: { label: str, value, basis }, optional: { ref } })),
-    evidence: list(
-      obj<CardEvidenceRow>({ required: { statement: str, basis }, optional: { refs: list(ref) } }),
+    facts: list(
+      obj<CardFact>({ required: { label: str, value, basis }, optional: { ref } }),
+      MAX_CARD_LIST_LENGTH,
     ),
-    links: list(obj<CardLink>({ required: { label: str, ref }, optional: none })),
+    evidence: list(
+      obj<CardEvidenceRow>({
+        required: { statement: str, basis },
+        optional: { refs: list(ref, MAX_CARD_LIST_LENGTH) },
+      }),
+      MAX_CARD_LIST_LENGTH,
+    ),
+    links: list(obj<CardLink>({ required: { label: str, ref }, optional: none }), MAX_CARD_LIST_LENGTH),
     generated_at: timestamp,
   },
   optional: {
@@ -75,13 +77,13 @@ const BASE: CardSpec<CardBase> = {
 
 /** A kind's spec: the base checks plus the kind's own, typed against the card. */
 function kindSpec<T extends CardBase>(
-  required: Omit<CardSpec<T>["required"], keyof CardBase>,
-  optional: Omit<CardSpec<T>["optional"], keyof CardBase>,
+  required: Omit<Spec<T>["required"], keyof CardBase>,
+  optional: Omit<Spec<T>["optional"], keyof CardBase>,
 ): Check {
   return obj<T>({
     required: { ...BASE.required, ...required },
     optional: { ...BASE.optional, ...optional },
-  } as CardSpec<T>);
+  } as Spec<T>);
 }
 
 const CARD_CHECKS: { [K in EvidenceCardKind]: Check } = {

@@ -9,12 +9,13 @@
  * read at (`as_of`). Like cards, parts are layout-free data that describe
  * changes and components, never people, and entities are refs, not URLs.
  *
- * Kinds are registered in `ViewPartsByKind`. The validator in
- * `@repowise-dev/api-client/views` and any renderer key a map off it, so a
- * new kind that lacks a check or a renderer fails to compile. The server's
- * twin is `repowise.server.schemas.views`; a shared conformance fixture keeps
- * the two in step. `schema_version` changes whenever a field is added or
- * removed, because both validators reject unknown fields.
+ * A new kind is: its interface plus one `ViewPartsByKind` line here; its
+ * module under `api-client/src/views/` plus one `VIEW_REGISTRY` line; its
+ * model plus one `ViewPart` union line in `repowise.server.schemas.views`;
+ * and its cases in `packages/types/fixtures/views.conformance.json`. Maps
+ * keyed by `ViewKind` (validator, renderers) fail to compile until filled.
+ * `schema_version` changes whenever a field is added or removed, because both
+ * validators reject unknown fields.
  */
 
 import type { CardBasis, CardRef } from "./evidence.js";
@@ -32,7 +33,10 @@ export type ViewCoverageMetric = (typeof VIEW_COVERAGE_METRICS)[number];
 export const CHART_SORT_ORDERS = ["asc", "desc"] as const;
 export type ChartSortOrder = (typeof CHART_SORT_ORDERS)[number];
 
-/** Size caps; a payload over any of them is rejected, not cut. */
+/**
+ * Size caps; a payload over any of them is rejected, not cut. Strings have no
+ * length cap beyond being non-empty; ids and column keys are ASCII patterns.
+ */
 export const VIEW_LIMITS = {
   /** Parts one turn or report may hold. */
   parts: 50,
@@ -95,7 +99,11 @@ export interface ViewColumn {
   basis?: CardBasis;
 }
 
-/** One cell. A ref renders as a link to the entity; a number stays unformatted. */
+/**
+ * One cell. A ref renders as a link to the entity; a number stays unformatted.
+ * Every number on the wire is finite and within +/-(2^53 - 1), and integer
+ * fields (`total_rows`, line numbers) are sent as JSON integers, never `5.0`.
+ */
 export type ViewCell = string | number | null | CardRef;
 
 /** Rows keyed by column key; every row has exactly the columns' keys. */
@@ -147,10 +155,3 @@ export interface ViewPartsByKind {
 }
 export type ViewKind = keyof ViewPartsByKind;
 export type ViewPart = ViewPartsByKind[ViewKind];
-
-const KINDS: { [K in ViewKind]: ViewPartsByKind[K] extends { kind: K } ? K : never } = {
-  table: "table",
-  chart: "chart",
-  section: "section",
-};
-export const VIEW_KINDS = Object.values(KINDS) as readonly ViewKind[];

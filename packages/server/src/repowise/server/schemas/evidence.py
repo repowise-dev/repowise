@@ -5,13 +5,22 @@ entity it points at), validated as strictly as the TypeScript validator in
 ``@repowise-dev/api-client``: unknown fields, coerced types, non-finite
 numbers and an optional field sent as null are all rejected, so a payload
 either side accepts the other accepts too.
+
+Numbers are bounded by ``MAX_WIRE_NUMBER`` (2^53 - 1), the largest integer a
+JavaScript reader keeps exact. Integer fields are sent as JSON integers: strict
+mode rejects ``5.0`` and ``1e3`` there, which a JavaScript reader cannot tell
+apart from ``5`` and ``1000``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, get_args
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+MAX_WIRE_NUMBER = 2**53 - 1
+WireInt = Annotated[int, Field(ge=-MAX_WIRE_NUMBER, le=MAX_WIRE_NUMBER)]
+WireFloat = Annotated[float, Field(ge=-MAX_WIRE_NUMBER, le=MAX_WIRE_NUMBER)]
 
 
 class StrictContract(BaseModel):
@@ -49,8 +58,8 @@ class CardRef(StrictContract):
 
     type: CardRefType
     id: str = Field(min_length=1)
-    start_line: int | None = Field(default=None, ge=1)
-    end_line: int | None = Field(default=None, ge=1)
+    start_line: int | None = Field(default=None, ge=1, le=MAX_WIRE_NUMBER)
+    end_line: int | None = Field(default=None, ge=1, le=MAX_WIRE_NUMBER)
 
     @model_validator(mode="after")
     def _line_rules(self) -> CardRef:

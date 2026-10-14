@@ -11,6 +11,7 @@ import {
   basis,
   bool,
   count,
+  duplicates,
   isFiniteNumber,
   isRec,
   list,
@@ -22,7 +23,7 @@ import {
   type Rec,
   type Spec,
 } from "../validation";
-import { PROVENANCE_SPEC, baseSpec, duplicates } from "./base";
+import { PROVENANCE_SPEC, baseSpec, type ViewKindEntry } from "./base";
 
 export const COLUMN_SPEC: Spec<ViewColumn> = {
   required: { key: matches(/^[a-z][a-z0-9_]{0,63}$/, "a lowercase column key"), label: str },
@@ -63,7 +64,7 @@ export const TABLE_DATA_SPEC: Spec<ViewTableData> = {
 export function tableDataRules(v: Rec, p: string, e: string[]): void {
   const keys = columnKeys(v) ?? [];
   if (Array.isArray(v.columns) && v.columns.length === 0) e.push(`${p}.columns: at least one column`);
-  for (const key of new Set(duplicates(keys))) e.push(`${p}.columns: duplicate key ${String(key)}`);
+  for (const key of duplicates(keys)) e.push(`${p}.columns: duplicate key ${String(key)}`);
   if (!Array.isArray(v.rows)) return;
   const known = new Set(keys);
   v.rows.forEach((r, i) => {
@@ -90,4 +91,7 @@ export const TABLE_SPEC: Spec<TableView> = {
   optional: { ...base.optional, ...PROVENANCE_SPEC.optional },
 };
 
-export const table = obj(TABLE_SPEC, tableDataRules);
+export const TABLE_KIND: ViewKindEntry<"table"> = {
+  check: obj(TABLE_SPEC, tableDataRules),
+  isData: true,
+};

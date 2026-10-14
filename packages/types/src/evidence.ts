@@ -1,8 +1,8 @@
 /**
  * Evidence primitives shared by every renderer-neutral contract (evidence
  * cards, chat view parts): how a value is known, and which entity it points
- * at. Published through `@repowise-dev/types/cards`, whose public names these
- * are; `views.ts` imports them from here so neither contract redefines them.
+ * at. Not a published subpath: reached through `@repowise-dev/types/cards`
+ * (which re-exports them) and imported by `views.ts`.
  */
 
 /**

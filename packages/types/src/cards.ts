@@ -12,6 +12,17 @@
  * validator in `@repowise-dev/api-client/cards` rejects unknown fields.
  */
 
+import type { CardBasis, CardRef } from "./evidence.js";
+
+export {
+  CARD_BASIS_KINDS,
+  CARD_REF_TYPES,
+  type CardBasis,
+  type CardBasisKind,
+  type CardRef,
+  type CardRefType,
+} from "./evidence.js";
+
 export const EVIDENCE_CARD_SCHEMA_VERSION = 1 as const;
 
 export const EVIDENCE_CARD_KINDS = [
@@ -23,17 +34,6 @@ export const EVIDENCE_CARD_KINDS = [
   "event",
 ] as const;
 export type EvidenceCardKind = (typeof EVIDENCE_CARD_KINDS)[number];
-
-import type { CardBasis, CardRef } from "./evidence.js";
-
-export {
-  CARD_BASIS_KINDS,
-  CARD_REF_TYPES,
-  type CardBasis,
-  type CardBasisKind,
-  type CardRef,
-  type CardRefType,
-} from "./evidence.js";
 
 export const CARD_CONFIDENCE_LEVELS = ["high", "medium", "low"] as const;
 export type CardConfidence = (typeof CARD_CONFIDENCE_LEVELS)[number];

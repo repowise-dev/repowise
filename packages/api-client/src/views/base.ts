@@ -1,10 +1,15 @@
-/** Checks every view part shares: identity, and for data parts, provenance. */
+/**
+ * What every view kind shares: identity and provenance checks, and the shape
+ * of a kind's registry entry.
+ */
 
 import {
   VIEW_COVERAGE_METRICS,
   VIEW_SCHEMA_VERSION,
   type ViewCoverage,
+  type ViewKind,
   type ViewPartBase,
+  type ViewPartsByKind,
   type ViewProvenance,
   type ViewSource,
 } from "@repowise-dev/types/views";
@@ -20,6 +25,7 @@ import {
   oneOf,
   ratio,
   str,
+  type Check,
   type Spec,
 } from "../validation";
 
@@ -63,7 +69,18 @@ export const PROVENANCE_SPEC: Spec<ViewProvenance> = {
   optional: { coverage: obj(COVERAGE_SPEC) },
 };
 
-/** Ids listed more than once, for a uniqueness error. */
-export function duplicates(ids: unknown[]): unknown[] {
-  return ids.filter((id, i) => ids.indexOf(id) !== i);
+/** An id another part names, and the path (relative to the part) it is named at. */
+export type PartReference = readonly [id: string, path: string];
+
+/** One view kind's entry in `VIEW_REGISTRY`. */
+export interface ViewKindEntry<K extends ViewKind> {
+  /** Checks one part of this kind on its own. */
+  check: Check;
+  /**
+   * A data part carries provenance and is what other parts may name. Typed
+   * from the part, so it cannot disagree with whether the kind has `source`.
+   */
+  isData: ViewPartsByKind[K] extends ViewProvenance ? true : false;
+  /** Ids of data parts this part names; each must be in the same list. */
+  references?: (part: ViewPartsByKind[K]) => PartReference[];
 }

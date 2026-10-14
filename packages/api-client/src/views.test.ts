@@ -3,11 +3,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { CARD_BASIS_KINDS, CARD_REF_TYPES } from "./cards";
-import { BASIS_SPEC, REF_SPEC, type Spec } from "./validation";
+import { BASIS_SPEC, MAX_WIRE_NUMBER, REF_SPEC, type Spec } from "./validation";
 import {
   CHART_SORT_ORDERS,
   CHART_TYPES,
-  VIEW_CHECKS,
+  VIEW_REGISTRY,
   VIEW_COVERAGE_METRICS,
   VIEW_KINDS,
   VIEW_LIMITS,
@@ -35,6 +35,7 @@ interface Fixture {
   fields: Record<string, string[]>;
   valid: Record<string, ViewPart>;
   invalid: Array<Derived & { name: string; error: string }>;
+  valid_variants: Array<Derived & { name: string }>;
   valid_lists: Array<{ name: string; items: Derived[] }>;
   invalid_lists: Array<{ name: string; items: Derived[]; repeat?: number; error: string }>;
 }
@@ -86,6 +87,7 @@ describe("view part contract shared with the server", () => {
   it("uses the shared vocabulary and limits", () => {
     expect({
       schema_version: VIEW_SCHEMA_VERSION,
+      max_wire_number: MAX_WIRE_NUMBER,
       view_kinds: VIEW_KINDS,
       chart_types: CHART_TYPES,
       coverage_metrics: VIEW_COVERAGE_METRICS,
@@ -114,6 +116,11 @@ describe("view part contract shared with the server", () => {
     const wire = JSON.parse(JSON.stringify(view)) as unknown;
     expect(wire).toEqual(view);
     expect(validateViewPart(wire)).toEqual({ ok: true, view });
+  });
+
+  it.each(fixture.valid_variants.map((c) => [c.name, c] as const))("accepts the variant: %s", (_name, c) => {
+    const view = derive(c);
+    expect(validateViewPart(view)).toEqual({ ok: true, view });
   });
 
   it.each(fixture.invalid.map((c) => [c.name, c] as const))("rejects %s", (_name, c) => {
@@ -156,10 +163,17 @@ describe("view part validator", () => {
     expect(validateViewPart(view).ok).toBe(false);
   });
 
-  it("needs a check for every view kind", () => {
-    // @ts-expect-error a kind without a check fails to compile
-    const missing: typeof VIEW_CHECKS = { table: VIEW_CHECKS.table, chart: VIEW_CHECKS.chart };
-    expect(missing).toBeDefined();
+  it("needs a registry entry for every view kind", () => {
+    // @ts-expect-error a kind without an entry fails to compile
+    const missing: typeof VIEW_REGISTRY = { table: VIEW_REGISTRY.table, chart: VIEW_REGISTRY.chart };
+    // @ts-expect-error isData is typed from the part, so a data kind cannot say false
+    const wrong: typeof VIEW_REGISTRY.table = { ...VIEW_REGISTRY.table, isData: false };
+    expect([missing, wrong]).toHaveLength(2);
+  });
+
+  it("marks exactly the kinds with provenance as data", () => {
+    const data = Object.entries(VIEW_REGISTRY).filter(([, entry]) => entry.isData);
+    expect(data.map(([kind]) => kind)).toEqual(["table", "chart"]);
   });
 
   it("keeps what a renderer can show from an untrusted list", () => {

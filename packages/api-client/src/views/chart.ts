@@ -2,7 +2,9 @@
  * The `chart` view kind. Charts plot their own table, so these rules only
  * check that the chart reads that table honestly: axes name real columns,
  * plotted values are numbers in one unit, a donut is a whole of two to five
- * non-negative parts, and a stated sort order is the order the rows are in.
+ * non-negative parts with a positive total, a stacked bar is not all zeros,
+ * and a stated sort order is the order the rows are in (a sorted chart may
+ * not hold nulls in its series, since a null has no place in the order).
  */
 
 import {
@@ -14,6 +16,7 @@ import {
 } from "@repowise-dev/types/views";
 
 import {
+  duplicates,
   isFiniteNumber,
   isRec,
   list,
@@ -23,7 +26,7 @@ import {
   type Rec,
   type Spec,
 } from "../validation";
-import { PROVENANCE_SPEC, baseSpec, duplicates } from "./base";
+import { PROVENANCE_SPEC, baseSpec, type ViewKindEntry } from "./base";
 import { columnKeys, tableData } from "./table";
 
 /** Fewest and most series each chart type plots. */
@@ -51,19 +54,21 @@ export const CHART_SPEC: Spec<ChartView> = {
 };
 
 function chartRules(v: Rec, p: string, e: string[]): void {
-  const keys = columnKeys(v.data);
+  const keyList = columnKeys(v.data);
   const data = v.data as Rec;
-  if (keys === null || !Array.isArray(data.rows) || !Array.isArray(v.series)) return;
+  if (keyList === null || !Array.isArray(data.rows) || !Array.isArray(v.series)) return;
+  const keys = new Set(keyList);
   const rows = data.rows.filter(isRec);
   const series = v.series.filter((s): s is string => typeof s === "string");
+  const plotted = series.filter((s) => keys.has(s) && s !== v.x);
   const type = v.chart_type as ChartType;
 
-  if (typeof v.x === "string" && !keys.includes(v.x)) e.push(`${p}.x: not a column of data`);
+  if (typeof v.x === "string" && !keys.has(v.x)) e.push(`${p}.x: not a column of data`);
   series.forEach((s, i) => {
-    if (!keys.includes(s)) e.push(`${p}.series[${i}]: not a column of data`);
+    if (!keys.has(s)) e.push(`${p}.series[${i}]: not a column of data`);
     else if (s === v.x) e.push(`${p}.series[${i}]: is the x column`);
   });
-  for (const s of new Set(duplicates(series))) e.push(`${p}.series: duplicate ${String(s)}`);
+  for (const s of duplicates(series)) e.push(`${p}.series: duplicate ${s}`);
 
   const bounds = SERIES_BOUNDS[type];
   if (bounds && (series.length < bounds[0] || series.length > bounds[1])) {
@@ -74,26 +79,35 @@ function chartRules(v: Rec, p: string, e: string[]): void {
     e.push(`${p}.data.rows: a chart plots at most ${VIEW_LIMITS.chart_points} rows`);
   }
 
-  const columns = (data.columns as unknown[]).filter(isRec);
-  const units = new Set(
-    series.map((s) => columns.find((c) => c.key === s)).map((c) => (c ? (c.unit ?? null) : null)),
+  const columns = new Map(
+    (data.columns as unknown[]).filter(isRec).map((c) => [c.key, c] as const),
   );
+  const units = new Set(plotted.map((s) => columns.get(s)?.unit ?? null));
   if (units.size > 1) e.push(`${p}.series: plotted columns must share one unit`);
 
+  const sorted = v.sort === "asc" || v.sort === "desc";
+  let total = 0;
   rows.forEach((r, i) => {
     if (typeof v.x === "string" && r[v.x] === null) e.push(`${p}.data.rows[${i}].${v.x}: x is null`);
-    for (const s of series) {
+    for (const s of plotted) {
       const cell = r[s];
-      if (cell === null || cell === undefined) {
-        if (type === "donut" && cell === null) e.push(`${p}.data.rows[${i}].${s}: a donut part is null`);
+      if (cell === undefined) continue;
+      if (cell === null) {
+        if (type === "donut") e.push(`${p}.data.rows[${i}].${s}: a donut part is null`);
+        else if (sorted) e.push(`${p}.data.rows[${i}].${s}: a sorted chart has no nulls`);
       } else if (!isFiniteNumber(cell)) {
         e.push(`${p}.data.rows[${i}].${s}: plotted values must be numbers`);
       } else if (cell < 0 && PARTS_OF_A_WHOLE.has(type)) {
         e.push(`${p}.data.rows[${i}].${s}: a ${type} value cannot be negative`);
+      } else {
+        total += cell;
       }
     }
   });
 
+  if (PARTS_OF_A_WHOLE.has(type) && rows.length > 0 && total <= 0) {
+    e.push(`${p}.data.rows: a ${type} needs a positive total`);
+  }
   if (type === "donut") {
     const { donut_min_parts: min, donut_max_parts: max } = VIEW_LIMITS;
     if (rows.length < min || rows.length > max) {
@@ -102,9 +116,9 @@ function chartRules(v: Rec, p: string, e: string[]): void {
     if (data.truncated === true) e.push(`${p}.data.truncated: a donut must show the whole`);
   }
 
-  if (v.sort === "asc" || v.sort === "desc") {
+  if (sorted) {
     const totals = rows.map((r) =>
-      series.reduce((sum, s) => sum + (isFiniteNumber(r[s]) ? (r[s] as number) : 0), 0),
+      plotted.reduce((sum, s) => sum + (isFiniteNumber(r[s]) ? (r[s] as number) : 0), 0),
     );
     const sign = v.sort === "asc" ? 1 : -1;
     if (totals.some((t, i) => i > 0 && sign * (t - totals[i - 1]!) < 0)) {
@@ -113,4 +127,7 @@ function chartRules(v: Rec, p: string, e: string[]): void {
   }
 }
 
-export const chart = obj(CHART_SPEC, chartRules);
+export const CHART_KIND: ViewKindEntry<"chart"> = {
+  check: obj(CHART_SPEC, chartRules),
+  isData: true,
+};

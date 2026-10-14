@@ -6,7 +6,11 @@
  * never carry data its schema does not name (a person field, a renderer hint)
  * and a valid payload round-trips through JSON unchanged. Only own keys count,
  * so a prototype can neither supply a required field nor smuggle in an
- * inherited one. Checks collect every error rather than stopping at the first.
+ * inherited one. A check reports every problem it reaches; a value of the
+ * wrong shape (not an object, a list over its cap) stops the checks beneath it.
+ *
+ * Numbers are finite and within +/-MAX_WIRE_NUMBER, so every accepted number
+ * survives a JSON round trip in both TypeScript and Python unchanged.
  */
 
 import {
@@ -39,11 +43,15 @@ export const str: Check = (v, p, e) => {
 export const bool: Check = (v, p, e) => {
   if (typeof v !== "boolean") e.push(`${p}: expected a boolean`);
 };
-export const line: Check = (v, p, e) => {
-  if (!Number.isInteger(v) || (v as number) < 1) e.push(`${p}: expected a positive integer`);
-};
+/** 2^53 - 1: the largest integer both JSON readers keep exact. */
+export const MAX_WIRE_NUMBER = Number.MAX_SAFE_INTEGER;
+/** A finite number within +/-MAX_WIRE_NUMBER. */
 export const isFiniteNumber = (v: unknown): v is number =>
-  typeof v === "number" && Number.isFinite(v);
+  typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= MAX_WIRE_NUMBER;
+const isWireInteger = (v: unknown): v is number => Number.isInteger(v) && isFiniteNumber(v);
+export const line: Check = (v, p, e) => {
+  if (!isWireInteger(v) || v < 1) e.push(`${p}: expected a positive integer`);
+};
 export const oneOf =
   (values: readonly string[]): Check =>
   (v, p, e) => {
@@ -67,7 +75,7 @@ export const nullable =
     if (v !== null) check(v, p, e);
   };
 export const count: Check = (v, p, e) => {
-  if (!Number.isInteger(v) || (v as number) < 0) e.push(`${p}: expected a non-negative integer`);
+  if (!isWireInteger(v) || v < 0) e.push(`${p}: expected a non-negative integer`);
 };
 export const ratio: Check = (v, p, e) => {
   if (!isFiniteNumber(v) || v < 0 || v > 1) e.push(`${p}: expected a number from 0 to 1`);
@@ -140,6 +148,14 @@ export const list =
   };
 
 export const none = {} as const;
+
+/** Values listed more than once, each reported once. */
+export function duplicates<T>(items: readonly T[]): T[] {
+  const seen = new Set<T>();
+  const repeated = new Set<T>();
+  for (const item of items) (seen.has(item) ? repeated : seen).add(item);
+  return [...repeated];
+}
 
 export const BASIS_SPEC: Spec<CardBasis> = {
   required: { kind: oneOf(CARD_BASIS_KINDS), source: str },

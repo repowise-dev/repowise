@@ -2,29 +2,35 @@
  * Chat view parts: the schema re-exported, plus a dependency-free validator a
  * renderer runs on a payload before trusting it.
  *
- * `VIEW_CHECKS` is the kind registry: one check per `ViewKind`, each in its
- * own module under `./views/`. Adding a kind to `ViewPartsByKind` without a
- * check here fails to compile. Single parts are checked on their own; the
- * references sections make to other parts are checked over the whole list.
+ * `VIEW_REGISTRY` is the kind registry: one entry per `ViewKind`, each from its
+ * own module under `./views/`, declaring the kind's check, whether it is a
+ * data part, and which other parts it names. The list-level rules below only
+ * iterate the registry, so a new kind never edits them. A kind in
+ * `ViewPartsByKind` without an entry here fails to compile.
  */
 
 import {
-  VIEW_KINDS,
   VIEW_LIMITS,
-  type SectionView,
   type ViewKind,
   type ViewPart,
+  type ViewPartsByKind,
 } from "@repowise-dev/types/views";
 
-import { isRec, type Check } from "./validation";
-import { duplicates } from "./views/base";
-import { chart } from "./views/chart";
-import { section } from "./views/section";
-import { table } from "./views/table";
+import { duplicates, isRec } from "./validation";
+import type { PartReference, ViewKindEntry } from "./views/base";
+import { CHART_KIND } from "./views/chart";
+import { SECTION_KIND } from "./views/section";
+import { TABLE_KIND } from "./views/table";
 
 export * from "@repowise-dev/types/views";
+export type { PartReference, ViewKindEntry } from "./views/base";
 
-export const VIEW_CHECKS: { [K in ViewKind]: Check } = { table, chart, section };
+export const VIEW_REGISTRY: { [K in ViewKind]: ViewKindEntry<K> } = {
+  table: TABLE_KIND,
+  chart: CHART_KIND,
+  section: SECTION_KIND,
+};
+export const VIEW_KINDS = Object.keys(VIEW_REGISTRY) as ViewKind[];
 
 export type ViewValidation =
   | { ok: true; view: ViewPart }
@@ -34,32 +40,33 @@ export type ViewListValidation =
   | { ok: true; views: ViewPart[] }
   | { ok: false; errors: string[] };
 
+const entryOf = <K extends ViewKind>(part: ViewPartsByKind[K]): ViewKindEntry<K> =>
+  VIEW_REGISTRY[part.kind as K];
+
 function checkPart(input: unknown, path: string, errors: string[]): void {
   const kind = isRec(input) && Object.hasOwn(input, "kind") ? input.kind : undefined;
-  if (typeof kind !== "string" || !(VIEW_KINDS as readonly string[]).includes(kind)) {
+  if (typeof kind !== "string" || !Object.hasOwn(VIEW_REGISTRY, kind)) {
     errors.push(`${path}.kind: expected one of ${VIEW_KINDS.join(", ")}`);
     return;
   }
-  VIEW_CHECKS[kind as ViewKind](input, path, errors);
-}
-
-/** Ids a section names that are not data parts in `dataIds`, with their paths. */
-function unresolved(view: SectionView, dataIds: ReadonlySet<string>, path: string): string[] {
-  const named = [
-    ...view.view_ids.map((id, j) => [id, `${path}.view_ids[${j}]`] as const),
-    ...view.narrative.flatMap((block, j) =>
-      block.cites.map((id, k) => [id, `${path}.narrative[${j}].cites[${k}]`] as const),
-    ),
-  ];
-  return named
-    .filter(([id]) => !dataIds.has(id))
-    .map(([id, at]) => `${at}: no table or chart part with id ${id}`);
+  VIEW_REGISTRY[kind as ViewKind].check(input, path, errors);
 }
 
 const dataIdsOf = (views: ViewPart[]): Set<string> =>
-  new Set(views.filter((v) => v.kind !== "section").map((v) => v.id));
+  new Set(views.filter((v) => entryOf(v).isData).map((v) => v.id));
 
-/** Validates one part, returning every problem found rather than the first. */
+/** References a part makes that are not data parts in `dataIds`, as errors. */
+function unresolved(part: ViewPart, dataIds: ReadonlySet<string>, path: string): string[] {
+  const refs: PartReference[] = entryOf(part).references?.(part as never) ?? [];
+  return refs
+    .filter(([id]) => !dataIds.has(id))
+    .map(([id, at]) => `${path}${at}: no data part with id ${id}`);
+}
+
+/**
+ * Validates one part. Errors name every problem the checks reach; a value of
+ * the wrong shape stops the checks beneath it.
+ */
 export function validateViewPart(input: unknown): ViewValidation {
   const errors: string[] = [];
   checkPart(input, "view", errors);
@@ -68,7 +75,7 @@ export function validateViewPart(input: unknown): ViewValidation {
 
 /**
  * Validates the parts of one turn or report together: each part, unique ids,
- * and that every id a section names is a table or chart in the same list.
+ * and that every id a part names is a data part in the same list.
  */
 export function validateViewParts(input: unknown): ViewListValidation {
   if (!Array.isArray(input)) return { ok: false, errors: ["views: expected an array"] };
@@ -80,20 +87,16 @@ export function validateViewParts(input: unknown): ViewListValidation {
   if (errors.length) return { ok: false, errors };
 
   const views = input as ViewPart[];
-  for (const id of new Set(duplicates(views.map((v) => v.id)))) {
-    errors.push(`views: duplicate id ${String(id)}`);
-  }
+  for (const id of duplicates(views.map((v) => v.id))) errors.push(`views: duplicate id ${id}`);
   const dataIds = dataIdsOf(views);
-  views.forEach((v, i) => {
-    if (v.kind === "section") errors.push(...unresolved(v, dataIds, `views[${i}]`));
-  });
+  views.forEach((v, i) => errors.push(...unresolved(v, dataIds, `views[${i}]`)));
   return errors.length ? { ok: false, errors } : { ok: true, views };
 }
 
 /**
  * Keeps what a renderer can show from an untrusted list: the valid parts among
  * the first `VIEW_LIMITS.parts`, the first part for each id, and only the
- * sections whose references all resolve to a kept table or chart.
+ * parts whose references all resolve to a kept data part.
  */
 export function parseViewParts(input: unknown): ViewPart[] {
   if (!Array.isArray(input)) return [];
@@ -105,5 +108,5 @@ export function parseViewParts(input: unknown): ViewPart[] {
     return [result.view];
   });
   const dataIds = dataIdsOf(kept);
-  return kept.filter((v) => v.kind !== "section" || unresolved(v, dataIds, "").length === 0);
+  return kept.filter((v) => unresolved(v, dataIds, "").length === 0);
 }

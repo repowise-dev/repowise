@@ -51,6 +51,7 @@ def _derive(case: dict[str, Any]) -> dict[str, Any]:
 def test_the_vocabulary_and_limits_are_shared() -> None:
     assert {
         "schema_version": views.VIEW_SCHEMA_VERSION,
+        "max_wire_number": evidence.MAX_WIRE_NUMBER,
         "view_kinds": list(views.VIEW_KINDS),
         "chart_types": list(views.CHART_TYPES),
         "coverage_metrics": list(views.VIEW_COVERAGE_METRICS),
@@ -77,6 +78,12 @@ def test_a_valid_part_is_accepted_and_round_trips(part_id: str) -> None:
     model = PART.validate_python(wire)
     assert PART.dump_python(model, mode="json", exclude_unset=True) == wire
     assert PART.validate_json(json.dumps(wire)) == model
+
+
+@pytest.mark.parametrize("case", FIXTURE["valid_variants"], ids=lambda c: c["name"])
+def test_a_valid_variant_is_accepted(case: dict[str, Any]) -> None:
+    PART.validate_python(_derive(case))
+    PART.validate_json(json.dumps(_derive(case)))
 
 
 @pytest.mark.parametrize("case", FIXTURE["invalid"], ids=lambda c: c["name"])
@@ -113,9 +120,24 @@ def test_non_finite_numbers_are_rejected(bad: float) -> None:
         PART.validate_python(table)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("total_rows", 3.0), ("total_rows", 1e3), ("total_rows", 10**400), ("cell", 10**400)],
+)
+def test_integers_arrive_as_bounded_json_integers(field: str, value: object) -> None:
+    """Python-only: a JavaScript reader sees 3.0 as 3, so the wire sends ints."""
+    table = copy.deepcopy(FIXTURE["valid"]["t1"])
+    if field == "cell":
+        table["rows"][0]["churn"] = value
+    else:
+        table[field] = value
+    with pytest.raises(ValidationError):
+        PART.validate_python(table)
+
+
 def test_the_registry_is_the_discriminated_union() -> None:
-    assert [model.__name__ for model in views.VIEW_MODELS] == [
-        "TableView",
-        "ChartView",
-        "SectionView",
+    assert [(model.__name__, model.is_data) for model in views.VIEW_MODELS] == [
+        ("TableView", True),
+        ("ChartView", True),
+        ("SectionView", False),
     ]
