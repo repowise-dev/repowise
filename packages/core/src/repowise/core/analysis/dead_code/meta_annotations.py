@@ -10,6 +10,7 @@ class never reaches the graph and its own annotations are read from source.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping
 from typing import NamedTuple
 
@@ -61,29 +62,10 @@ class MetaAnnotations:
         self._source_map = source_map
         self._scopes: dict[str, _Scope] = {}
         self._visible: dict[str, frozenset[str]] = {}
-        self._name_count: dict[str, int] = {}
-        declared: list[_Declared] = []
-        for path, source in source_map.items():
-            if not path.endswith(".kt") or b"annotation class" not in source:
-                continue
-            package = self._scope(path).package
-            for match in _ANNOTATION_CLASS.finditer(source):
-                blob = match.group(1).decode("utf-8", "replace")
-                declared.append(_Declared(package, match.group(2).decode("ascii"), path, blob))
-            # Every annotation class counts toward a name's ambiguity, annotated or not.
-            for name in _ANY_ANNOTATION_CLASS.findall(source):
-                key = name.decode("ascii")
-                self._name_count[key] = self._name_count.get(key, 0) + 1
+        self._name_count: Counter[str] = Counter()
         self._registering: set[_Declared] = set()
-        while True:
-            found = {
-                d
-                for d in declared
-                if d not in self._registering and registers([d.blob], self._names_seen_by(d.path))
-            }
-            if not found:
-                break
-            self._registering |= found
+        declared = [decl for path, source in source_map.items() for decl in self._scan(path, source)]
+        self._resolve(declared, registers)
 
     def visible_in(self, path: str) -> frozenset[str]:
         """Local and qualified names of the registering annotation classes *path* can mean."""
@@ -91,6 +73,31 @@ class MetaAnnotations:
         if names is None:
             names = self._visible[path] = self._names_seen_by(path)
         return names
+
+    def _scan(self, path: str, source: bytes) -> list[_Declared]:
+        """The annotated annotation classes *path* declares; counts every one's name."""
+        if not path.endswith(".kt") or b"annotation class" not in source:
+            return []
+        # Every annotation class counts toward a name's ambiguity, annotated or not.
+        self._name_count.update(name.decode("ascii") for name in _ANY_ANNOTATION_CLASS.findall(source))
+        package = self._scope(path).package
+        return [
+            _Declared(
+                package, match.group(2).decode("ascii"), path, match.group(1).decode("utf-8", "replace")
+            )
+            for match in _ANNOTATION_CLASS.finditer(source)
+        ]
+
+    def _resolve(self, declared: list[_Declared], registers: Registers) -> None:
+        while True:
+            found = {
+                d
+                for d in declared
+                if d not in self._registering and registers([d.blob], self._names_seen_by(d.path))
+            }
+            if not found:
+                return
+            self._registering |= found
 
     def _names_seen_by(self, path: str) -> frozenset[str]:
         if not self._registering:
@@ -101,31 +108,35 @@ class MetaAnnotations:
             fqn = f"{decl.package}.{decl.name}" if decl.package else decl.name
             if decl.package:
                 names.add(fqn)
-            if fqn in scope.named:
-                names.add(scope.named[fqn])
-            elif (
-                self._name_count[decl.name] == 1
-                or decl.package == scope.package
-                or decl.package in scope.stars
-            ):
-                names.add(decl.name)
+            local = self._local_name(decl, fqn, scope)
+            if local:
+                names.add(local)
         return frozenset(names)
+
+    def _local_name(self, decl: _Declared, fqn: str, scope: _Scope) -> str | None:
+        """The bare name a file in *scope* uses for *decl*, if it can mean it."""
+        if fqn in scope.named:
+            return scope.named[fqn]
+        in_scope = decl.package == scope.package or decl.package in scope.stars
+        return decl.name if in_scope or self._name_count[decl.name] == 1 else None
 
     def _scope(self, path: str) -> _Scope:
         scope = self._scopes.get(path)
         if scope is None:
             source = self._source_map.get(path, b"") if path.endswith(".kt") else b""
-            package = _PACKAGE.search(source)
-            named: dict[str, str] = {}
-            stars: set[str] = set()
-            for match in _IMPORT.finditer(source):
-                fqn = match.group(1).decode("ascii", "replace")
-                if match.group(2):
-                    stars.add(fqn)
-                else:
-                    alias = match.group(3)
-                    named[fqn] = alias.decode("ascii") if alias else fqn.rsplit(".", 1)[-1]
-            scope = self._scopes[path] = _Scope(
-                package.group(1).decode("ascii") if package else "", named, frozenset(stars)
-            )
+            scope = self._scopes[path] = _parse_scope(source)
         return scope
+
+
+def _parse_scope(source: bytes) -> _Scope:
+    package = _PACKAGE.search(source)
+    named: dict[str, str] = {}
+    stars: set[str] = set()
+    for match in _IMPORT.finditer(source):
+        fqn = match.group(1).decode("ascii", "replace")
+        if match.group(2):
+            stars.add(fqn)
+            continue
+        alias = match.group(3)
+        named[fqn] = alias.decode("ascii") if alias else fqn.rsplit(".", 1)[-1]
+    return _Scope(package.group(1).decode("ascii") if package else "", named, frozenset(stars))

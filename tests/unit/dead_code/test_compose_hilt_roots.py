@@ -52,17 +52,15 @@ _FILES = {
 
 
 def _report(root: Path):
-    for rel, text in _FILES.items():
+    source_map = {rel: text.encode() for rel, text in _FILES.items()}
+    for rel, source in source_map.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(source)
     parser = ASTParser()
     builder = GraphBuilder(repo_path=root)
-    source_map: dict[str, bytes] = {}
     for fi in FileTraverser(root).traverse():
-        source = Path(fi.abs_path).read_bytes()
-        source_map[fi.path] = source
-        builder.add_file(parser.parse_file(fi, source))
+        builder.add_file(parser.parse_file(fi, source_map[fi.path]))
     builder.set_source_map(source_map)
     graph = builder.build()
     builder.add_framework_edges([])
