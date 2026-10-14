@@ -647,10 +647,10 @@ rows we lose beside the rows we win.
   precision, with recall up in all 7 cells since August. In all seven, no tool that
   recovers as much of the graph gets more of it right. The tool with the highest
   recall in most Go cells is still not us, and the page says so.
-- **Accuracy by language.** Graded against each language's own toolchain: Dart 0.99,
-  C 0.95 to 0.98, Python 0.96 to 0.98 on three of four repositories, Java 0.86 to
-  0.94, Rust 0.85 to 0.90, C# 0.72 to 0.92, C++ 0.78, Kotlin 0.65 to 0.92, each
-  with its recall and its weak spots.
+- **Accuracy by language.** Graded against each language's own toolchain: Go 0.996,
+  TypeScript 0.98 to 0.995, Dart 0.99, Python 0.96 to 0.99 on three of four
+  repositories, C 0.95 to 0.98, Java 0.87 to 0.95, Kotlin applications 0.94, each
+  with its recall.
 - **Scale.** dotnet/runtime, 58,924 files, indexed in 120 minutes at 11.7 GiB peak
   memory on one laptop. Building just the call graph uses 75 MB at the median, the
   lowest of five tools on 35 of 35 repositories.
@@ -787,9 +787,9 @@ checked it, is in [LINEAGE.md](docs/LINEAGE.md).
 
 Call-graph accuracy is graded against each language's own compiler toolchain, and we
 publish precision and recall per language, with the misses, in the
-[accuracy table](docs/BENCHMARKS.md#accuracy-by-language). On current main, precision
-runs 0.95 to 0.99 for Go, TypeScript, C and most Python, 0.85 to 0.90 for Rust, and
-0.73 to 0.92 for Java and C#, where overloaded methods are the main gap.
+[accuracy table](docs/BENCHMARKS.md#accuracy-by-language). Precision runs 0.95 to
+0.996 for Go, TypeScript, Dart, C and most Python, 0.87 to 0.95 for Java, 0.94 for
+Kotlin applications, 0.85 to 0.90 for Rust and 0.72 to 0.92 for C#.
 
 The largest repository indexed so far is dotnet/runtime: 58,924 files in 120 minutes
 at 11.7 GiB peak memory, on one 31 GB laptop with no API key. Time and memory by
