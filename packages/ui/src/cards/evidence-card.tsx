@@ -153,7 +153,7 @@ export function EvidenceCardView({ card, buildRefHref }: EvidenceCardViewProps) 
       )}
 
       {card.evidence.length > 0 && (
-        <ul aria-label="Evidence" className={card.kind === "suspects" ? "list-decimal space-y-1.5 pl-5" : "space-y-1.5"}>
+        <ul role="list" aria-label="Evidence" className={card.kind === "suspects" ? "list-decimal space-y-1.5 pl-5" : "space-y-1.5"}>
           {card.evidence.map((row, i) => (
             <li key={i} className="min-w-0">
               <p className="[overflow-wrap:anywhere]">{row.statement}</p>
@@ -169,7 +169,7 @@ export function EvidenceCardView({ card, buildRefHref }: EvidenceCardViewProps) 
       )}
 
       {card.links.length > 0 && (
-        <ul aria-label="Links" className="flex flex-wrap gap-x-3 gap-y-1">
+        <ul role="list" aria-label="Links" className="flex flex-wrap gap-x-3 gap-y-1">
           {card.links.map((link, i) => {
             const href = buildRefHref?.(link.ref);
             return (

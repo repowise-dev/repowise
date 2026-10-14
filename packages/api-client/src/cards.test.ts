@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   EVIDENCE_CARD_KINDS,
+  MAX_CARD_LIST_LENGTH,
+  MAX_CARDS_PER_MESSAGE,
   parseEvidenceCards,
   validateEvidenceCard,
+  type CardBasis,
+  type CardSpec,
   type EvidenceCard,
 } from "./cards";
 
@@ -112,6 +116,44 @@ const INVALID: Array<[string, unknown, string]> = [
   ["bad timestamp", { ...VALID.event, occurred_at: "yesterday" }, "card.occurred_at"],
   ["field of another kind", { ...VALID.answer, window: VALID.suspects }, "card.window: unknown field"],
   ["empty title", { ...VALID.answer, title: "" }, "card.title"],
+  ["inherited name as a field", { ...VALID.answer, constructor: "x" }, "card.constructor: unknown field"],
+  ["toString as a field", { ...VALID.answer, toString: "x" }, "card.toString: unknown field"],
+  [
+    "own __proto__",
+    JSON.parse(`{"__proto__": {"x": 1}, ${JSON.stringify(VALID.answer).slice(1)}`),
+    "card.__proto__: unknown field",
+  ],
+  [
+    "required field only on the prototype",
+    Object.assign(Object.create({ title: "From the prototype" }), (({ title: _t, ...rest }) => rest)(VALID.answer)),
+    "card.title: required",
+  ],
+  ["optional key set to undefined", { ...VALID.answer, summary: undefined }, "card.summary"],
+  ["date without time", { ...VALID.answer, generated_at: "2026-10-14" }, "card.generated_at"],
+  ["bare number as a date", { ...VALID.answer, generated_at: "1" }, "card.generated_at"],
+  ["prose date", { ...VALID.answer, generated_at: "March 5" }, "card.generated_at"],
+  ["timestamp without a zone", { ...VALID.answer, generated_at: "2026-10-14T09:30:00" }, "card.generated_at"],
+  ["impossible month", { ...VALID.answer, generated_at: "2026-13-14T09:30:00Z" }, "card.generated_at"],
+  [
+    "end before start",
+    { ...VALID.change, links: [{ label: "x", ref: { type: "file", id: "a", start_line: 9, end_line: 3 } }] },
+    "end_line: before start_line",
+  ],
+  [
+    "end without start",
+    { ...VALID.change, links: [{ label: "x", ref: { type: "file", id: "a", end_line: 3 } }] },
+    "end_line: requires start_line",
+  ],
+  [
+    "lines on a commit ref",
+    { ...VALID.change, change: { type: "commit", id: "abc", start_line: 1 } },
+    "line numbers only apply to file and symbol refs",
+  ],
+  [
+    "too many facts",
+    { ...VALID.change, facts: Array.from({ length: MAX_CARD_LIST_LENGTH + 1 }, () => base.facts[0]) },
+    `card.facts: more than ${MAX_CARD_LIST_LENGTH} items`,
+  ],
 ];
 
 describe("evidence card conformance", () => {
@@ -133,6 +175,26 @@ describe("evidence card conformance", () => {
     const wire = JSON.parse(JSON.stringify(card)) as unknown;
     expect(wire).toEqual(card);
     expect(validateEvidenceCard(wire)).toEqual({ ok: true, card });
+  });
+
+  it("accepts a timestamp with an offset and fractional seconds", () => {
+    expect(
+      validateEvidenceCard({ ...VALID.answer, generated_at: "2026-10-14T09:30:00.123+05:30" }).ok,
+    ).toBe(true);
+  });
+
+  it("reads at most the per-message cap of cards", () => {
+    const many = Array.from({ length: MAX_CARDS_PER_MESSAGE + 10 }, () => VALID.answer);
+    expect(parseEvidenceCards(many)).toHaveLength(MAX_CARDS_PER_MESSAGE);
+  });
+
+  it("needs a check for every field of a card type", () => {
+    const check = () => {};
+    // @ts-expect-error a field without a check fails to compile
+    const missing: CardSpec<CardBasis> = { required: { kind: check }, optional: {} };
+    // @ts-expect-error a check for a field the type lacks fails to compile
+    const extra: CardSpec<CardBasis> = { required: { kind: check, source: check, owner: check }, optional: {} };
+    expect([missing, extra]).toHaveLength(2);
   });
 
   it("keeps the valid cards of a mixed list", () => {

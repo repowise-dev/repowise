@@ -105,6 +105,7 @@ function ChatMessageImpl({
           <Markdown content={message.text} density={dock ? "narrow" : "reading"} streaming={message.isStreaming} fill />
         )}
 
+        {/* Only stored messages carry cards for now; the stream sends none. */}
         {!message.isStreaming && message.cards && (
           <EvidenceCardList
             cards={message.cards}

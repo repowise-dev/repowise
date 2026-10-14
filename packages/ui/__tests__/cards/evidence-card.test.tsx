@@ -89,6 +89,12 @@ describe("EvidenceCardView", () => {
     expect(screen.getByText("Checkout errors")).toBeInTheDocument();
   });
 
+  it("keeps list semantics on the styled lists", () => {
+    render(<EvidenceCardView card={CHANGE} />);
+    expect(screen.getByRole("list", { name: "Evidence" })).toHaveAttribute("role", "list");
+    expect(screen.getByRole("list", { name: "Links" })).toHaveAttribute("role", "list");
+  });
+
   it("uses theme tokens only", () => {
     const { container } = render(<EvidenceCardView card={CHANGE} buildRefHref={href} />);
     expect(container.innerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgb\(/);
