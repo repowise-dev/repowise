@@ -167,6 +167,24 @@ def test_an_asset_runs_what_names_it_or_its_package() -> None:
     assert _scopes(["README.md"], {"README.md": ["pytest.ini"]}) == {}
 
 
+def test_prose_no_code_names_and_no_package_holds_needs_no_tests() -> None:
+    prose = ["site/content/guide.md", "UserGuide.md", ".github/CONTRIBUTING.md", "a/b.rst"]
+    sel = _select([*prose, "src/banner.txt", "site/error.html"])
+    assert sel.skipped_files == tuple(sorted(prose))
+    assert all(sel.basis[p] == "no-tests-needed" for p in prose)
+    # Data and templates still fail closed: they are read by convention or a glob.
+    assert sel.run_all
+    assert sel.reasons[0].startswith("site/error.html: no coverage")
+    assert sel.reasons[1].startswith("src/banner.txt: no coverage")
+    # Prose beside code in a single-package layout may be loaded by a directory
+    # walk (a prompt), so it fails closed too.
+    prompt = _select(["src/pkg/prompts/review.md"])
+    assert prompt.run_all and not prompt.skipped_files
+    # Named prose, and prose inside a package, keep their scope.
+    assert _scopes(["site/a.md"], {"site/a.md": ["src/other.py"]})["site/a.md"].basis == "named-by"
+    assert _scopes(["web/notes.md"])["web/notes.md"].basis == "owner-package"
+
+
 def test_a_query_file_runs_the_tests_of_the_spec_naming_it() -> None:
     query = "src/pkg/queries/python.scm"
     scope = _scopes([query], {query: ["src/pkg/specs/python.py"]})[query]
@@ -216,11 +234,27 @@ def test_file_namers_lists_every_file_naming_one() -> None:
     ]
     # A manifest is named only where a written directory can lead to it.
     manifests = ["web/package.json", "other/package.json"]
-    code = [("web/src/app.ts", "open('./web/package.json')"), ("x.py", '"package.json"')]
+    code = [("web/src/app.ts", "open('./web/package.json')"), ("x.py", 'P = "package.json"')]
     exact = file_namers(manifests, code, lambda f: f.endswith("package.json"))
     assert exact == {
         "web/package.json": ["web/src/app.ts", "x.py"],
         "other/package.json": ["x.py"],
+    }
+
+
+def test_a_mention_in_a_comment_or_docstring_names_nothing() -> None:
+    sources = [
+        ("src/hub.py", '"""Reasoning in docs/support.md."""\n# see rules.scm\nX = 1\n'),
+        ("src/hub.go", "// see docs/support.md\n/* and rules.scm */\nvar x = 1\n"),
+        ("src/spec.py", 'def f():\n    """Loads a query."""\n    return "rules.scm"\n'),
+        ("src/read.ts", 'readFileSync("docs/support.md") // the guide\n'),
+        # A "/*" in a string opens no comment, and a "#" line is code outside Python.
+        ("src/glob.ts", "const a = '/*'\nimport('./rules.scm')\nconst b = '**/*.ts'\n"),
+        ("src/lib.rs", '#![doc = include_str!("../docs/support.md")]\n'),
+    ]
+    assert file_namers(["docs/support.md", "q/rules.scm"], sources) == {
+        "docs/support.md": ["src/lib.rs", "src/read.ts"],
+        "q/rules.scm": ["src/glob.ts", "src/spec.py"],
     }
 
 

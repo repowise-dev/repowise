@@ -47,14 +47,15 @@ _TIER_WHY = {
     "changed-test": "the change edits it",
     "line": "the per-test map runs a changed line",
     "file": "the per-test map runs a changed file",
-    "direct": "its calls, a fixture or a direct import reach a changed file",
+    "direct": "its calls or a direct import reach a changed file",
     "transitive": "reaches a changed file through other files",
     "every-subset": "runs with every subset",
     "rest": "not selected",
 }
-# Vias where the test's own calls or fixtures reach the changed file (the call
-# walk takes a few hops; still nearer than an import closure).
-_DIRECT_VIAS = frozenset({"call-graph", "conftest-fixture"})
+# The via where the test's own calls reach the changed file (the call walk takes
+# a few hops; still nearer than an import closure). A conftest fixture reaches
+# it through the fixture module's imports, at module granularity: transitive.
+_DIRECT_VIA = "call-graph"
 
 #: Where pytest records the node ids that failed in its last run. Its ids are
 #: relative to pytest's rootdir, so a rootdir other than the repository root
@@ -159,7 +160,7 @@ def _graph_tier(row: Mapping[str, str], changed: set[str], hops: Mapping[str, in
         return "transitive"  # a route to the change, not a changed file
     if row["via"] == "changed-test":
         return "changed-test"
-    if row["via"] in _DIRECT_VIAS or hops.get(row["test_file"]) == 1:
+    if row["via"] == _DIRECT_VIA or hops.get(row["test_file"]) == 1:
         return "direct"
     return "transitive"
 

@@ -999,12 +999,14 @@ def mask_comments_and_strings(
     strings: bool = True,
     nested_comments: bool = False,
     raw_backticks: bool = False,
+    hash_comments: bool = True,
 ) -> str:
     """Blank common comments (and strings, unless *strings* is false), keeping offsets.
 
     Strings are still tracked when they are kept, so a ``#`` or ``//`` inside
     one does not open a comment. Newlines are never blanked. *nested_comments*
-    and *raw_backticks* come from :func:`mask_dialect`.
+    and *raw_backticks* come from :func:`mask_dialect`; *hash_comments* false
+    keeps a ``#`` line, which is code in C, Rust, C# or Swift (``#include``).
     """
     out: list[str] = []
     copied = 0
@@ -1067,7 +1069,7 @@ def mask_comments_and_strings(
             i += 1
             if template_depth == 0:
                 state = "template"
-        elif char == "#" or source.startswith("//", i):
+        elif (hash_comments and char == "#") or source.startswith("//", i):
             width = 1 if char == "#" else 2
             blank(i, i + width)
             i += width

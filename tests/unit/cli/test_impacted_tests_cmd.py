@@ -450,7 +450,7 @@ def test_explain_names_the_changed_file_and_the_route(repo) -> None:
         "Selected: src/a.py changed (import-graph).",
         "Route: tests/test_a.py -> src/a.py",
         # tests/test_a.py imports src/a.py: one hop, a direct edge.
-        "Order: 1 of 1 (its calls, a fixture or a direct import reach a changed file; "
+        "Order: 1 of 1 (its calls or a direct import reach a changed file; "
         "1 hop(s)).",
     ]
     missed = _run(repo, "main...feat", "--explain", "./tests/test_b.py")
@@ -466,7 +466,7 @@ def test_explain_joins_the_json_report(repo) -> None:
         "lines": [
             "Selected: src/a.py changed (import-graph).",
             "Route: tests/test_a.py -> src/a.py",
-            "Order: 1 of 1 (its calls, a fixture or a direct import reach a changed file; "
+            "Order: 1 of 1 (its calls or a direct import reach a changed file; "
             "1 hop(s)).",
         ],
         "route": ["tests/test_a.py", "src/a.py"],
@@ -478,7 +478,7 @@ def test_explain_joins_the_json_report(repo) -> None:
             "hops": 1,
             "co_change": 0,
             "failed_last_run": False,
-            "reason": "its calls, a fixture or a direct import reach a changed file; 1 hop(s)",
+            "reason": "its calls or a direct import reach a changed file; 1 hop(s)",
         },
     }
     assert data["selected"]["why"] == {"tests/test_a.py": "src/a.py changed (import-graph)"}
@@ -562,7 +562,7 @@ def test_selected_tests_run_in_order_and_a_last_failure_breaks_a_tie(repo) -> No
     assert result.stdout == "tests/test_z.py tests/test_a.py\n"
     explained = _run(repo, "main...feat", "--explain", "tests/test_z.py")
     assert explained.stdout.splitlines()[-1] == (
-        "Order: 1 of 2 (its calls, a fixture or a direct import reach a changed file; "
+        "Order: 1 of 2 (its calls or a direct import reach a changed file; "
         "1 hop(s); failed in the last run)."
     )
 
