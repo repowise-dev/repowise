@@ -724,3 +724,35 @@ async def test_get_change_risk_keeps_is_fix_when_true(tmp_path, monkeypatch) -> 
     result = await module.get_change_risk("HEAD", baseline=0)
 
     assert result["is_fix"] is True
+
+
+@pytest.mark.asyncio
+async def test_evidence_include_adds_the_checklist_and_nothing_else(tmp_path, monkeypatch) -> None:
+    from repowise.core.changes.evidence import KINDS
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "def value():\n    return 1\n"}, "feat: app")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    default = await module.get_change_risk("HEAD", baseline=0)
+    assert "evidence" not in default
+    asked = await module.get_change_risk("HEAD", baseline=0, include=["evidence"])
+    assert set(asked) - set(default) == {"evidence"}
+
+    evidence = asked["evidence"]
+    assert evidence["schema_version"] == 1 and evidence["revspec"] == "HEAD"
+    by = {i["kind"]: i for i in evidence["items"]}
+    assert list(by) == list(KINDS)
+    # No index here: the index-backed items say so instead of reading as clear.
+    assert by["owners"]["details"] == [{"reason": "the repository has no index"}]
+    assert by["health_delta"]["basis"] == "measured"
+    # baseline=0 ranks nothing, so the one risk row is unknown, never a verdict.
+    assert by["risk_score"]["status"] == "unknown"

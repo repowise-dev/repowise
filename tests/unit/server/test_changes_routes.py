@@ -110,3 +110,41 @@ async def test_attribution_off_hides_provenance(client: AsyncClient, app) -> Non
     assert page["attribution"] is False
     assert all(c["provenance"] is None for c in page["items"])
     assert (await client.get(f"/api/repos/{repo['id']}/changes/pr-1")).json()["provenance"] is None
+
+
+@pytest.mark.asyncio
+async def test_detail_carries_evidence_only_when_asked(client: AsyncClient, app, monkeypatch) -> None:
+    from repowise.core.changes.evidence import ChangeEvidence, EvidenceItem
+    from repowise.server.routers import changes as route
+
+    seen: list[tuple[str, bool]] = []
+
+    async def _evidence(session, repo_id, root, row, *, refresh=False):
+        seen.append((row.change_id, refresh))
+        return ChangeEvidence(
+            change_id=row.change_id,
+            revspec=row.head_sha,
+            generated_at="2026-10-14T00:00:00+00:00",
+            items=[EvidenceItem("health_delta", "Health delta", "ok", "measured", {"introduced": 0}, [], "change health")],
+        )
+
+    monkeypatch.setattr(route, "change_evidence", _evidence)
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    base = f"/api/repos/{repo['id']}/changes/pr-1"
+
+    assert (await client.get(base)).json()["evidence"] is None and seen == []
+    record = (await client.get(base, params={"evidence": "true"})).json()
+    evidence = record["evidence"]
+    assert evidence["schema_version"] == 1 and evidence["change_id"] == "pr-1"
+    assert evidence["items"][0] == {
+        "kind": "health_delta",
+        "label": "Health delta",
+        "status": "ok",
+        "basis": "measured",
+        "value": {"introduced": 0},
+        "details": [],
+        "source": "change health",
+    }
+    await client.get(base, params={"evidence": "true", "refresh": "true"})
+    assert seen == [("pr-1", False), ("pr-1", True)]

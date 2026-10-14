@@ -119,7 +119,9 @@ _SHED_ORDER = response_budget_shed_order("get_change_risk")
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
 #: ``diagnostics`` carries the raw model mechanics; ``findings`` lifts the
 #: top-findings cap. Both are projections, recoverable by an exact call.
-_INCLUDE_BLOCKS = frozenset({"scales", "diagnostics", "findings"})
+#: ``evidence`` adds the change's evidence checklist, the record ``repowise
+#: changes show`` and the REST change detail serve.
+_INCLUDE_BLOCKS = frozenset({"scales", "diagnostics", "findings", "evidence"})
 
 #: Score mechanics that are identical or near-identical on every call. Moved
 #: behind ``include=["diagnostics"]`` so the action-first blocks lead.
@@ -351,8 +353,8 @@ async def get_change_risk(
         include_paths: Gitignore-style paths to keep, as a list or one
             comma-separated string, e.g. ``"src/api/,src/db/"``. Omit for all.
         baseline: Recent commits sampled for percentile ranking; 0 disables it.
-        include: ``"findings"``, ``"diagnostics"`` (raw mechanics) or
-            ``"scales"`` (units, size tercile).
+        include: ``"findings"``, ``"diagnostics"`` (raw mechanics),
+            ``"scales"`` (units, tercile) or ``"evidence"`` (checklist).
         finding_id: Expand one ``health_delta`` finding by its id.
     """
     if repo == "all":
@@ -425,6 +427,15 @@ async def get_change_risk(
         expand="findings" in include_set,
         diagnostics="diagnostics" in include_set,
     )
+    if "evidence" in include_set:
+        payload["evidence"] = await _evidence_block(
+            ctx,
+            revspec,
+            result,
+            delta,
+            tuple(extensions or ()),
+            tuple(result.riskignore_excludes + result.request_excludes),
+        )
     # source: live_git marks that the *score* is computed from the working
     # checkout's git. The two blocks above are index-backed, so the freshness
     # fields do apply to them, scoped to the change's files. None (not []) when
@@ -439,6 +450,54 @@ async def get_change_risk(
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
     return payload
+
+
+async def _evidence_block(
+    ctx: Any,
+    revspec: str | None,
+    result: Any,
+    delta: Any,
+    extensions: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+) -> dict[str, Any]:
+    """The change's evidence checklist, reusing the score and delta already computed.
+
+    A revspec naming a stored change's head commit carries that change's id
+    and stored provenance, so this is the same record ``changes show`` serves.
+    """
+    from repowise.core.changes.collect import (
+        evidence_for_revspec,
+        stored_change_at,
+        stored_provenance,
+    )
+    from repowise.core.persistence.database import get_session
+
+    kwargs: dict[str, Any] = {
+        "risk": result,
+        "health": delta,
+        "extensions": extensions,
+        "exclude_patterns": exclude_patterns,
+    }
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is not None:
+        try:
+            async with get_session(session_factory) as session:
+                repo = await _get_repo(session)
+                row = await stored_change_at(session, repo.id, ctx.path, revspec)
+                if row is not None:
+                    kwargs.update(
+                        change_id=row.change_id,
+                        author_email=row.author_email,
+                        provenance=stored_provenance(row, ctx.path),
+                    )
+                evidence = await evidence_for_revspec(
+                    session, repo.id, ctx.path, revspec, **kwargs
+                )
+                return evidence.to_dict()
+        except (LookupError, SQLAlchemyError):
+            pass
+    evidence = await evidence_for_revspec(None, "", ctx.path, revspec, **kwargs)
+    return evidence.to_dict()
 
 
 #: One service per repository, so its comparison cache and stampede guard

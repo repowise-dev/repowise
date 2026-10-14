@@ -273,7 +273,14 @@
       "coverage": "coverage {pct}%",
       "back": "All changes",
       "shape": "Shape",
-      "head": "Head"
+      "head": "Head",
+      "detailEvidence": "Evidence checklist",
+      "evidenceLoading": "Building the evidence checklist. The first view of a change takes a few seconds.",
+      "evidenceUnavailable": "The evidence checklist could not be built for this change.",
+      "evidenceGenerated": "Generated {date}",
+      "statusOk": "ok",
+      "statusAttention": "attention",
+      "statusUnknown": "unknown"
     },
     "architecture": {
       "tabs": {

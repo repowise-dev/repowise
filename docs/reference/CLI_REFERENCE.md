@@ -1598,9 +1598,12 @@ repowise components ownership [--path PATH] [--format table|json]
 
 Merged changes read back from git at each index and update: one per first-parent commit, identified by the PR or MR number its message names, then a Gerrit `Change-Id`, then the merge or commit sha. A merge lands the commits its branch brought in, and rebase merges read as one change per commit. `show` takes an id (`pr-123`) or any commit sha the change landed, and prints the versioned JSON record or, with `--format in-toto`, an in-toto Statement v1 whose subjects are the commits.
 
+`show` also prints the change's evidence checklist: components touched, declared owners, suggested reviewers, reaching tests, contracts, consumers in other repos, decisions crossed, health delta, AI provenance and the diff size rank, each with a status (`ok`, `attention`, `unknown`) and the basis it rests on. The checklist is built on first read and kept on the change; `--refresh` rebuilds it. `export` writes every change merged in a `--since`/`--until` window (UTC, `--until` exclusive) with its checklist, as JSON records or CSV rows (one row per change and item).
+
 ```bash
 repowise changes list [--path PATH] [--category C] [--shape merge|squash|commit] [--grep TEXT] [--limit N] [--offset N] [--format table|json]
-repowise changes show REF [--path PATH] [--format table|json|in-toto]
+repowise changes show REF [--path PATH] [--format table|json|in-toto] [--no-evidence] [--refresh]
+repowise changes export [--path PATH] [--since DATE] [--until DATE] [--format json|csv] [--refresh]
 ```
 
 ---

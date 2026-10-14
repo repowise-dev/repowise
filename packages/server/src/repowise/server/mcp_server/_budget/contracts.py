@@ -151,6 +151,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "impacted_tests",
             "health_delta.skipped",
             "health_delta.top_findings[]",
+            "evidence",
         ),
         protected=(
             "directive",
@@ -158,6 +159,8 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "classification",
             "risk_percentile",
         ),
+        # Present only when asked for, and then it is the answer.
+        requested_projections=(("evidence", ("evidence",)),),
     ),
     "get_answer": ResponseBudgetContract(
         "blocks",

@@ -1,0 +1,318 @@
+"""The evidence checklist on a Change Record: the builder, the gather and the cache."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from repowise.core import attribution
+from repowise.core.analysis.change_health.models import ChangeFinding, ChangeHealthDelta
+from repowise.core.analysis.change_review import (
+    LANES,
+    ChangeManifestEntry,
+    ChangeReviewBundle,
+    ChangeReviewRequest,
+    LaneState,
+)
+from repowise.core.analysis.review_directive import ReviewDirective
+from repowise.core.changes.evidence import (
+    EVIDENCE_SCHEMA_VERSION,
+    KINDS,
+    ChangeEvidence,
+    EvidenceInputs,
+    Unavailable,
+    build_change_evidence,
+)
+
+
+def _entry(path: str) -> ChangeManifestEntry:
+    return ChangeManifestEntry(
+        path=path, base_path=path, head_path=path, status="modified", diff_reliability="parsed"
+    )
+
+
+def _finding(kind: str = "introduced") -> ChangeFinding:
+    return ChangeFinding(
+        change_finding_id="cf1",
+        change_kind=kind,
+        dimension="maintainability",
+        biomarker_type="long_function",
+        severity="medium",
+        path="src/a.py",
+        symbol="run",
+        line_start=1,
+        line_end=40,
+        reason="run grew to 40 lines",
+        attribution_basis="changed_lines",
+        attribution_confidence="high",
+        attribution_detail="",
+        suggestion="",
+        follow_up="",
+    )
+
+
+def _tests(files: dict[str, str], measured: int = 0, inferred: int = 0) -> dict:
+    return {
+        "recommendations_by_primary_basis": {"measured": measured, "inferred": inferred},
+        "files": [
+            {
+                "source_file": p,
+                "status": s,
+                "measured_tests_total": 0,
+                "inferred_tests_total": 1 if s == "inferred" else 0,
+            }
+            for p, s in files.items()
+        ],
+        "coverage": {"map_present": measured > 0},
+    }
+
+
+def _bundle(paths: list[str], *, health=None, tests=None, risk=None) -> ChangeReviewBundle:
+    lanes = {name: LaneState("unsupported", "not gathered") for name in LANES}
+    return ChangeReviewBundle(
+        request=ChangeReviewRequest(revspec="abc"),
+        base=None,
+        head=None,
+        manifest=tuple(_entry(p) for p in paths),
+        directive=ReviewDirective(status="unknown", headline="x", evidence_state="unavailable"),
+        lanes=lanes,
+        risk=risk,
+        health=health,
+        tests=tests,
+    )
+
+
+def _delta(findings: list[ChangeFinding]) -> ChangeHealthDelta:
+    return ChangeHealthDelta(
+        status="available",
+        explanation="",
+        base=None,
+        head=None,
+        comparison_basis="commit",
+        fingerprint=None,
+        findings=findings,
+    )
+
+
+def test_every_kind_is_present_in_order_and_round_trips():
+    evidence = build_change_evidence(_bundle(["src/a.py"]), change_id="pr-1", revspec="abc")
+    assert [i.kind for i in evidence.items] == list(KINDS)
+    data = evidence.to_dict()
+    assert data["schema_version"] == EVIDENCE_SCHEMA_VERSION == 1
+    assert set(data) >= {"schema_version", "change_id", "revspec", "generated_at", "items"}
+    assert set(data["items"][0]) == {
+        "kind",
+        "label",
+        "status",
+        "basis",
+        "value",
+        "details",
+        "source",
+    }
+    assert ChangeEvidence.from_dict(json.loads(json.dumps(data))).to_dict() == data
+    # Nothing gathered: every item says so rather than reading as clear.
+    assert all(i.status == "unknown" and i.basis == "unresolved" for i in evidence.items)
+
+
+def test_statuses_follow_the_facts():
+    paths = ["src/a.py", "src/b.py", "tests/test_a.py"]
+    bundle = _bundle(
+        paths,
+        health=_delta([_finding()]),
+        tests=_tests({"src/a.py": "inferred", "src/b.py": "unknown", "tests/test_a.py": "unknown"}, inferred=1),
+        risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200),
+    )
+    inputs = EvidenceInputs(
+        code_paths=["src/a.py", "src/b.py"],
+        components=[{"name": "core", "source": "declared", "files": ["src/a.py"]}],
+        owners={"src/a.py": ["@team-core"]},
+        owner_sources=["CODEOWNERS"],
+        reviewers=[{"name": "Bob", "paths": ["src/a.py"], "reasons": ["touched"]}],
+        contracts=[],
+        consumers=[{"repo": "web", "file": "x.ts", "contract_id": "http::GET::/a", "provider_file": "src/a.py"}],
+        decisions=[{"id": "d1", "title": "Keep a pure", "authority": "accepted", "paths": ["src/a.py"]}],
+        provenance={"label": "agent", "coverage": 1.0, "agent_commits": 1},
+    )
+    evidence = build_change_evidence(bundle, inputs, change_id="pr-1", revspec="abc")
+    by = {i.kind: i for i in evidence.items}
+
+    assert by["components_touched"].basis == "declared" and by["components_touched"].value == ["core"]
+    # src/b.py is code with no declared owner; the test file does not count.
+    assert by["owners"].status == "attention"
+    assert by["owners"].details[-1] == {"owner": None, "paths": ["src/b.py"]}
+    assert by["suggested_reviewers"].value == ["Bob"] and "score" not in by["suggested_reviewers"].details[0]
+    tests = by["reaching_tests"]
+    assert tests.status == "attention" and tests.basis == "inferred"
+    assert tests.value == {"measured": 0, "inferred": 1, "files_without_tests": 1}
+    assert by["cross_repo_consumers"].status == "attention"
+    assert by["cross_repo_consumers"].value == {"repos": ["web"], "links": 1}
+    assert by["decisions_crossed"].status == "attention"
+    assert by["health_delta"].status == "attention" and by["health_delta"].value["introduced"] == 1
+    assert by["provenance"].status == "ok" and by["provenance"].value["label"] == "agent"
+    # A high diff-size rank is one row and never a verdict.
+    assert by["risk_score"].status == "ok" and by["risk_score"].value == {"percentile": 97.5}
+
+
+def test_unknown_provenance_stays_unknown_and_unavailable_inputs_name_why():
+    inputs = EvidenceInputs(
+        owners=Unavailable("could not be read: OSError"),
+        provenance={"label": "unknown", "coverage": 0.0},
+        decisions=[{"id": "d", "title": "t", "authority": "candidate", "paths": ["a.py"]}],
+    )
+    evidence = build_change_evidence(_bundle(["a.py"]), inputs, change_id=None, revspec=None)
+    by = {i.kind: i for i in evidence.items}
+    assert by["provenance"].status == "unknown"
+    assert by["owners"].details == [{"reason": "could not be read: OSError"}]
+    # Only a candidate: listed, but nothing anyone has signed.
+    assert by["decisions_crossed"].status == "ok" and by["decisions_crossed"].basis == "inferred"
+
+
+# ---------------------------------------------------------------------------
+# Gather and cache over a real repository and index
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _private_user_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    user_file = tmp_path / "home" / ".repowise" / "config.yaml"
+    monkeypatch.setattr(attribution, "user_config_path", lambda: user_file)
+
+
+def _git(root: Path, *args: str) -> str:
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Ann",
+        "GIT_AUTHOR_EMAIL": "ann@example.com",
+        "GIT_COMMITTER_NAME": "Ann",
+        "GIT_COMMITTER_EMAIL": "ann@example.com",
+    }
+    return subprocess.run(
+        ["git", *args], cwd=root, env=env, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> tuple[Path, str]:
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "commit.gpgsign", "false")
+    (root / "CODEOWNERS").write_text("src/core/ @team-core\n", encoding="utf-8")
+    (root / "src" / "core").mkdir(parents=True)
+    (root / "src" / "core" / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-q", "-m", "chore: seed")
+    (root / "src" / "core" / "a.py").write_text("def a():\n    return 2\n", encoding="utf-8")
+    (root / "src" / "web.py").write_text("def w():\n    return 3\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-q", "-m", "feat: a and web (#7)")
+    return root, _git(root, "rev-parse", "HEAD")
+
+
+async def _index(tmp_path: Path, root: Path, head: str):
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.crud import upsert_changes, upsert_decision
+    from repowise.core.persistence.database import get_session
+
+    engine = create_engine(f"sqlite+aiosqlite:///{(tmp_path / 'wiki.db').as_posix()}")
+    await init_db(engine)
+    factory = create_session_factory(engine)
+    async with get_session(factory) as session:
+        repo = await upsert_repository(session, name="repo", local_path=str(root))
+        await upsert_changes(
+            session,
+            repo.id,
+            [
+                {
+                    "change_id": "pr-7",
+                    "identity_kind": "pr",
+                    "identity_value": "7",
+                    "shape": "squash",
+                    "forge": "github",
+                    "forge_ref": "#7",
+                    "title": "feat: a and web (#7)",
+                    "merged_at": datetime(2026, 3, 1, tzinfo=UTC),
+                    "head_sha": head,
+                    "author_name": "Ann",
+                    "author_email": "ann@example.com",
+                    "commit_shas_json": json.dumps([head]),
+                    "files_json": "[]",
+                    "category": "feature",
+                    "provenance": "unknown",
+                    "provenance_agent": 0,
+                    "provenance_known": 0,
+                    "metadata_source": "git",
+                }
+            ],
+        )
+        await upsert_decision(
+            session,
+            repository_id=repo.id,
+            title="Keep a pure",
+            decision="a has no side effects",
+            affected_files=["src/core/a.py"],
+        )
+        repo_id = repo.id
+    return engine, factory, repo_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_stored_change_evidence_is_gathered_then_kept(tmp_path, repo):
+    from repowise.core.changes.collect import change_evidence
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+
+    root, head = repo
+    engine, factory, repo_id = await _index(tmp_path, root, head)
+    try:
+        async with get_session(factory) as session:
+            row = await get_change(session, repo_id, "pr-7")
+            first = await change_evidence(session, repo_id, root, row)
+        by = {i.kind: i for i in first.items}
+        assert first.change_id == "pr-7" and first.revspec == head
+        owners = by["owners"]
+        assert owners.basis == "declared" and owners.value == ["@team-core"]
+        assert owners.status == "attention"  # src/web.py has no declared owner
+        assert {"owner": None, "paths": ["src/web.py"]} in owners.details
+        decisions = by["decisions_crossed"]
+        assert decisions.value == {"accepted": 0, "candidate": 1}
+        assert decisions.details[0]["paths"] == ["src/core/a.py"]
+        assert by["provenance"].value == {"label": "unknown", "coverage": 0.0}
+        assert by["health_delta"].basis == "measured"
+        # The only author is the change's own: no one else to suggest.
+        assert by["suggested_reviewers"].status == "unknown"
+        assert by["cross_repo_consumers"].basis == "unresolved"
+
+        async with get_session(factory) as session:
+            row = await get_change(session, repo_id, "pr-7")
+            assert json.loads(row.evidence_json)["generated_at"] == first.generated_at
+            again = await change_evidence(session, repo_id, root, row)
+            assert again.to_dict() == first.to_dict()
+            rebuilt = await change_evidence(session, repo_id, root, row, refresh=True)
+            assert [i.kind for i in rebuilt.items] == list(KINDS)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_without_an_index_only_git_items_are_filled(repo):
+    from repowise.core.changes.collect import evidence_for_revspec
+
+    root, head = repo
+    evidence = await evidence_for_revspec(None, "", root, head)
+    by = {i.kind: i for i in evidence.items}
+    assert by["owners"].details == [{"reason": "the repository has no index"}]
+    assert by["health_delta"].status in {"ok", "attention"}
+    assert evidence.index_commit is None

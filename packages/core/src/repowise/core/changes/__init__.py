@@ -3,11 +3,19 @@
 :mod:`.reconstruct` reads changes off the main line, :mod:`.source` is the
 seam forge metadata comes through (git only by default), :mod:`.record` is the
 versioned JSON shape and its in-toto export, and :mod:`.store` keeps the
-``changes`` table in step with each index and update.
+``changes`` table in step with each index and update. :mod:`.evidence` is the
+checklist attached to a record, and :mod:`.collect` gathers and caches it.
 """
 
 from __future__ import annotations
 
+from repowise.core.changes.evidence import (
+    EVIDENCE_SCHEMA_VERSION,
+    ChangeEvidence,
+    EvidenceInputs,
+    EvidenceItem,
+    build_change_evidence,
+)
 from repowise.core.changes.reconstruct import ReconstructedChange, reconstruct_changes
 from repowise.core.changes.record import (
     PREDICATE_TYPE,
@@ -22,11 +30,16 @@ from repowise.core.changes.source import (
 )
 
 __all__ = [
+    "EVIDENCE_SCHEMA_VERSION",
     "PREDICATE_TYPE",
     "SCHEMA_VERSION",
+    "ChangeEvidence",
     "ChangeMetadata",
     "ChangeMetadataSource",
+    "EvidenceInputs",
+    "EvidenceItem",
     "ReconstructedChange",
+    "build_change_evidence",
     "change_metadata_sources",
     "change_record",
     "in_toto_statement",

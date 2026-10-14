@@ -380,6 +380,16 @@ export interface ChangeAuthor {
   email: string;
 }
 
+/** The evidence checklist (``repowise.core.changes.evidence``), versioned. */
+export interface ChangeEvidence {
+  schema_version: number;
+  change_id?: string | null;
+  revspec?: string | null;
+  generated_at: string;
+  index_commit?: string | null;
+  items: EvidenceItem[];
+}
+
 /** The Kamei change-shape features the risk model scores. */
 export interface ChangeFeaturesResponse {
   la: number;
@@ -449,6 +459,7 @@ export interface ChangeRecord {
   commits: string[];
   files: ChangeFile[];
   metadata: ChangeForgeMetadata;
+  evidence?: ChangeEvidence | null;
 }
 
 export interface ChangeSummary {
@@ -1555,6 +1566,17 @@ export interface EpisodeSummary {
   birth_at: string | null;
   last_seen_at: string | null;
   still_true?: string | null;
+}
+
+/** One checklist row: what was found, whether it needs a look, how it is known. */
+export interface EvidenceItem {
+  kind: string;
+  label: string;
+  status: "ok" | "attention" | "unknown";
+  basis: "measured" | "inferred" | "declared" | "unresolved";
+  value?: unknown;
+  details: Record<string, unknown>[];
+  source: string;
 }
 
 /** The top-ranked evidence row, slimmed for list rows. */

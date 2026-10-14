@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.attribution import attribution_enabled
+from repowise.core.changes.collect import change_evidence
 from repowise.core.changes.record import change_record
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
@@ -59,6 +60,10 @@ async def list_changes(
 async def get_change(
     repo_id: str,
     change_id: str,
+    evidence: bool = Query(
+        False, description="Include the evidence checklist (built on first read, then kept)"
+    ),
+    refresh: bool = Query(False, description="Rebuild the evidence checklist"),
     session: AsyncSession = Depends(get_db_session),
 ) -> ChangeRecord:
     """One change by id (``pr-123``), or the change that landed a commit sha."""
@@ -67,4 +72,8 @@ async def get_change(
     if row is None:
         raise HTTPException(status_code=404, detail="Change not found")
     record = change_record(row, attribution=attribution)
+    if evidence:
+        repo = await crud.get_repository(session, repo_id)
+        got = await change_evidence(session, repo_id, repo.local_path, row, refresh=refresh)
+        record["evidence"] = got.to_dict()
     return ChangeRecord(**record, commit_count=len(record["commits"]))

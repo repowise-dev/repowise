@@ -866,6 +866,8 @@ class Change(Base):
     approvals: Mapped[int | None] = mapped_column(Integer, nullable=True)
     labels_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     linked_issues_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Evidence checklist JSON, built on first read and kept until a refresh.
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
