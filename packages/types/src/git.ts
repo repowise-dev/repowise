@@ -121,8 +121,8 @@ export interface Hotspot {
   original_path?: string | null;
 }
 
-/** Repo-relative review priority derived from the score's percentile within
- * its own repo (terciles) — portable, unlike the absolute calibration band. */
+/** Repo-relative tercile of the diff-size percentile within its own repo;
+ * size, not danger. */
 export type ReviewPriority = "low" | "moderate" | "high";
 
 export interface Commit {
@@ -146,7 +146,7 @@ export interface Commit {
   change_risk_level: ReviewPriority | null;
   /** Where this commit's score sits within its repo's distribution, 0–100. */
   risk_percentile: number;
-  /** Repo-relative review priority (the portable ranking signal). */
+  /** Repo-relative tercile of the diff-size percentile; size, not danger. */
   review_priority: ReviewPriority;
   /** Label of the dominant risk driver, so rows explain themselves without
    * opening the detail sheet. Null when the commit was never risk-scored. */
