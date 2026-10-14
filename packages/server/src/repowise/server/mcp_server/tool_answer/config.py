@@ -270,6 +270,14 @@ _DOMAIN_PENALTY = 0.5
 # weak retrieval, so it grades "medium". Useful wiki hits routinely score >1.5.
 _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 
+# Share of the question's words, weighted by rarity across the retrieved hits,
+# the answering hit must mention before confidence may rest on it. Dominance
+# only compares hits with each other, so an off-topic page beating a worse one
+# still dominates. Chosen on one repo's questions, where it kept every top hit
+# that answered and dropped most off-topic and wrong-file ones, then checked on
+# repos in other languages.
+_ANSWER_COVERAGE_FLOOR = 0.5
+
 # Schema version stamped on every cached payload. Bump whenever the synthesised
 # response shape or the meaning of a field (including `confidence` and `note`)
 # changes: a cached row at a lower version is a miss and re-synthesises, since
@@ -281,7 +289,8 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # 19: rows carry ``_candidate_file_facts``; low answers serve slim best_guesses rows.
 # 20: caller questions carry ``graph_callers`` and synthesise with them.
 # 21: impact questions carry ``graph_neighbors``, the users of the lead file.
-_ANSWER_SCHEMA_VERSION = 21
+# 22: ``confidence`` also asks whether the top hit covers the question's words.
+_ANSWER_SCHEMA_VERSION = 22
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.

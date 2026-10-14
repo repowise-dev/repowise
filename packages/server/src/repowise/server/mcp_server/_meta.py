@@ -938,7 +938,7 @@ def answer_hint(
     doubt its files on every question is what made a keyless agent call
     search_codebase after every get_answer: one question, two calls, measured on
     11 of 26 questions whose rank-1 file was right. So say which half is missing
-    and let `retrieval_quality` rate the other half.
+    and let `confidence` rate the other half.
     """
     if degraded:
         if retrieval_quality == "weak":
@@ -953,11 +953,11 @@ def answer_hint(
         if has_bodies:
             return (
                 "Synthesis is what is missing here, not retrieval. Answer from "
-                "symbol_bodies; retrieval_quality rates what was served."
+                "symbol_bodies."
             )
         return (
-            "Synthesis is what is missing here, not retrieval. retrieval_quality "
-            "rates the ranked hits; start from the first one."
+            "Synthesis is what is missing here, not retrieval. Start from the "
+            "first ranked hit."
         )
     if confidence == "low":
         return (

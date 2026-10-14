@@ -133,7 +133,7 @@ def test_keyless_index_gets_keyless_steering(any_gen):
     assert "repowise update --full" not in result
     assert "[fts]` only has no semantic agreement" not in result
     assert 'Cite `confidence: "high"`' not in result
-    assert "`degraded` means judge by `retrieval_quality`" in result
+    assert "`degraded` means no prose; `confidence` rates the evidence" in result
 
 
 def test_keyed_index_keeps_model_guidance(any_gen):

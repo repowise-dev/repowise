@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 
+from repowise.server.mcp_server._code_rationale import can_lead_answer
 from repowise.server.mcp_server._meta import _normalize_target_path
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
@@ -119,7 +120,7 @@ async def _degraded_payload(
     signals. ``confidence`` is graded by :func:`_degraded_confidence` from
     ``retrieval_quality`` and whether retrieval backs the file ``answer`` leads with.
     """
-    retrieval_quality = _retrieval_quality(hits, agreement_dominant)
+    retrieval_quality = _retrieval_quality(hits, agreement_dominant, question)
     repo_root = _repo_root(ctx)
     symbol_bodies, _served_named_body = _build_symbol_bodies(
         _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
@@ -158,7 +159,7 @@ async def _degraded_payload(
     elif best_guesses:
         lead = best_guesses[0]["file"]
     else:
-        lead = code_rationale[0].get("path") if code_rationale else None
+        lead = next((r.get("path") for r in code_rationale[:1] if can_lead_answer(r)), None)
     confidence = _degraded_confidence(
         reason,
         retrieval_quality,

@@ -124,15 +124,15 @@ Every suggested follow-up (`get_health`'s `fix_first.lead.next_call`, the refact
 | Field | Meaning |
 |-------|---------|
 | `answer` | The synthesised answer, with file and symbol citations |
-| `confidence` | `high`, `medium` or `low`: rates the prose. `high` is content-grounded and can be cited directly. A why-answer whose named mechanism is absent from the retrieved source is downgraded to `medium` |
-| `retrieval_quality` | `high`, `partial` or `weak`: rates the evidence under the prose |
+| `confidence` | `high`, `medium` or `low`: the one trust signal. `high` is content-grounded, on a top hit that covers what the question asks, and can be cited directly. A why-answer whose named mechanism is absent from the retrieved source is downgraded to `medium` |
+| `retrieval_quality` | Only under `include=["diagnostics"]`. `high`, `partial` or `weak`: rates the retrieval alone, and is `weak` when the top hit leaves out most of what the question asks |
 | `symbol_bodies` | Live bodies of the symbols the answer names. Read these before calling `get_symbol` |
 | `retrieval` | Evidence rows (summary, snippet, key symbols). Shrinks as confidence rises |
 | `candidate_files` | Ranked file paths retrieval resolved, minus those already in `citations`: up to 3 at `high`, 5 at `medium`, `low` or `degraded`. Navigation, not evidence. Served at every confidence; absent when retrieval resolved no file |
 | `candidates` | The top 5 of those files as `{path, lines?, defines?}` rows. Only with `include=["evidence"]` |
 | `best_guesses`, `fallback_targets` | On low confidence: where to look, each with a one-line reason. At `low` or `degraded` a `best_guesses` row drops its page `excerpt` and carries `functions` (up to 3 `{name, line}` symbols relevant to the question) and the live file's `lines` and `size_bytes`; `include=["evidence"]` brings the excerpt back |
 | `episodes` | A dated fact recorded about this checkout that bears on the question; `still_true` says how current it is |
-| `degraded` | Synthesis could not run (no provider, or the call failed). The answer is assembled from retrieval and mined rationale with no LLM, and `confidence` is graded from the retrieval: `medium` unless `retrieval_quality` is `weak`, never `high` |
+| `degraded` | Synthesis could not run (no provider, or the call failed). The answer is assembled from retrieval and mined rationale with no LLM, and `confidence` is graded from the retrieval: `medium` on a dominant top hit that covers the question, else `low`, never `high` |
 
 How much evidence rides along depends on the grade. `high` keeps one quote, and one symbol body when the answer is not already grounded. `medium` keeps one body, two quotes and the top two evidence rows. `low` keeps two bodies and the top three rows. `include=["evidence"]` skips this trimming.
 

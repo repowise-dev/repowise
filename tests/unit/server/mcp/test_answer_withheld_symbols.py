@@ -252,7 +252,7 @@ def _patch_pipeline(monkeypatch, answer_mod, *, symbol: dict):
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Store summary."
+            h["summary"] = "Store keeps todos."
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if i == 0:

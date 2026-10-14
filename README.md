@@ -598,7 +598,7 @@ knows how much to trust what it just read.
 | Tool | What only this tool answers |
 |---|---|
 | `get_overview()` | Architecture summary, module map, entry points, git health. The first call on an unfamiliar codebase. |
-| `get_answer(question)` | Hybrid retrieval (full-text plus vector), graph expansion and one cited answer with a calibrated `retrieval_quality`. Search, read and reason in a single round-trip. |
+| `get_answer(question)` | Hybrid retrieval (full-text plus vector), graph expansion and one cited answer with a single calibrated `confidence`. Search, read and reason in a single round-trip. |
 | `get_context(targets, include?)` | Triage card for files, modules or symbols: summary, signatures, hotspot flag, governing decisions, symbol ids. `include` opens callers, callees, ownership and metrics. Batch many targets in one call. |
 | `get_symbol("file.py::Name")` | One indexed symbol's source with exact line bounds. |
 | `search_codebase(query)` | Hybrid search over code and docs, by symbol, path or concept. |

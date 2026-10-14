@@ -206,6 +206,17 @@ def _keep(
     return len(matched) >= 2
 
 
+# A mined row may stand in for the answer only on this many distinct matches
+# (question terms or numbers). A marker plus one shared word clears `_keep`
+# ("FIXME ... unused by cobra" for a question naming cobra) but answers nothing.
+_LEAD_MIN_MATCHES = 2
+
+
+def can_lead_answer(row: dict) -> bool:
+    """Whether a mined rationale row matches enough of the question to be the answer."""
+    return len(set(row.get("matched_terms") or ())) >= _LEAD_MIN_MATCHES
+
+
 def _read_text(repo_root: Path, file_path: str) -> str | None:
     """Read a repo file's live text, refusing paths outside the root."""
     try:

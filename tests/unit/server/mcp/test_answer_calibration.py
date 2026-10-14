@@ -309,7 +309,7 @@ def _patch_pipeline(monkeypatch, answer_mod, *, with_symbols: bool, symbol: dict
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Auth service summary."
+            h["summary"] = "Auth service summary. Callers get a bounded, limited list."
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if with_symbols and i == 0:

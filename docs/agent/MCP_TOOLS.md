@@ -94,7 +94,7 @@ Every tool returns a JSON object with a `_meta` envelope. Most fields appear onl
 | `omitted` | Refs to content cut for size. Restore with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. |
 | `response_budget` | The character ceiling that applied and the size delivered. Present when the budget cut something. |
 
-`get_answer` adds a top-level `confidence` (rates the prose) and `retrieval_quality` (rates the evidence). Diagnostics such as `timing_ms` and `contract_version` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere. Full envelope: [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope).
+`get_answer` adds a top-level `confidence`, its one trust signal, graded from the retrieval and from whether the top hit covers what the question asks; `include=["diagnostics"]` adds `retrieval_quality`, the rating of the retrieval alone. Diagnostics such as `timing_ms` and `contract_version` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere. Full envelope: [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope).
 
 ### Reversible truncation: `_meta.omitted`
 
@@ -147,7 +147,7 @@ Answers a how, where or why question in one call: it runs hybrid retrieval over 
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 | `include` | list[string] | none | `["evidence"]` returns the full evidence projection with a larger budget |
 
-**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`, rates the prose), `retrieval_quality` (`high` / `partial` / `weak`, rates the evidence), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence; a low `best_guesses` row carries `functions`, `lines` and `size_bytes` instead of a page excerpt), `candidate_files` (ranked file paths the citations do not already name: up to 3 at `high`, 5 otherwise), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
+**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence; a low `best_guesses` row carries `functions`, `lines` and `size_bytes` instead of a page excerpt), `candidate_files` (ranked file paths the citations do not already name: up to 3 at `high`, 5 otherwise), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
 
 A `high` answer can be cited directly. On `low`, read the rows the reply names, then `candidate_files`, before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`. When retrieval is also `weak`, the reply serves `best_guesses` and `candidate_files` with one guidance line in `answer`, and no `citations`.
 

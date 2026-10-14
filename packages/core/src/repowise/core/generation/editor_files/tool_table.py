@@ -65,11 +65,10 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         # question with `confidence: "low"`, since confidence rates prose that
         # was never synthesised, and this row told the agent to distrust the
         # payload on the strength of it, so it re-searched after every call.
-        # `retrieval_quality` is the field that rates what such a payload does
-        # carry. Reworded, not lengthened: 186 chars against the 179 it replaced.
+        # `confidence` there is graded from the evidence such a payload does carry.
         "First call for any how/where/why question. "
         + _KEYED_ONLY["get_answer"]
-        + "`degraded` means judge by `retrieval_quality`. `symbol_bodies` has live bodies.",
+        + "`degraded` means no prose; `confidence` rates the evidence. `symbol_bodies` has live bodies.",
     ),
     "get_context": (
         "get_context(targets=[...])",
