@@ -310,6 +310,7 @@ def test_base_includes_all_models():
         "dead_code_findings",
         "doc_drift_findings",
         "doc_drift_references",
+        "changes",
         "decision_records",
         "decision_evidence",
         "decision_edges",
