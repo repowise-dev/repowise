@@ -7,8 +7,8 @@ a path from another repo silently answers about the default repo.
 Rules, exact matches only:
 
 - ``<alias>:<target>`` names the repo outright (``backend:src/app.py``,
-  ``backend:src/app.py::App``). ``component:``, ``change:`` and ``module:``
-  stay target kinds, never repo prefixes.
+  ``backend:src/app.py::App``). ``component:``, ``change:``, ``module:`` and
+  ``package:`` stay target kinds, never repo prefixes.
 - A path, or the file part of ``path::Name`` / ``path:120-140``, is served by
   the default repo when it exists there, as before. Otherwise it is routed to
   the one other repo whose checkout has it; when several do, the candidates
@@ -47,7 +47,7 @@ from repowise.server.mcp_server._query_shape import _LINE_SUFFIX_RE, _is_path
 
 _log = logging.getLogger("repowise.mcp")
 
-_TARGET_KINDS = frozenset({"component", "change", "module"})
+_TARGET_KINDS = frozenset({"component", "change", "module", "package"})
 # A dotted identifier: the only bare targets the symbol locator routes.
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*")
 

@@ -150,3 +150,57 @@ class ExternalSystemImportingFilesResponse(BaseModel):
     offset: int
     truncated: bool
     scope: ExternalSystemsSummaryScope
+
+
+class PackageUsageDeclaration(BaseModel):
+    package_key: str
+    version: str | None = None
+    declared_in: str
+    dev: bool = False
+
+
+class PackageUsageReachability(BaseModel):
+    #: reachable | unreachable | test | unknown
+    state: str
+    #: import_graph | dead_code | is_test | no_import_path | no_entry_points | not_in_graph
+    basis: str
+
+
+class PackageUsageSite(BaseModel):
+    """One file importing the package."""
+
+    path: str
+    modules: list[str]
+    symbols: list[str]
+    mapping: Literal["declared", "inferred"]
+    line: int | None = None
+    statement: str | None = None
+    component: str | None = None
+    owners: list[str]
+    reachability: PackageUsageReachability
+
+
+class PackageUsageComponent(BaseModel):
+    name: str
+    files: int
+    owners: list[str]
+
+
+class PackageUsageSummary(BaseModel):
+    files: int
+    components: int
+    reachability: dict[str, int]
+    inferred_files: int
+
+
+class PackageUsageResponse(BaseModel):
+    """Where one package is imported: sites, components, owner teams, reachability."""
+
+    package: str
+    ecosystem: str | None = None
+    declared: list[PackageUsageDeclaration]
+    summary: PackageUsageSummary
+    sites: list[PackageUsageSite]
+    components: list[PackageUsageComponent]
+    method: dict[str, str]
+    note: str | None = None

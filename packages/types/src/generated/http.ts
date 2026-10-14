@@ -2642,6 +2642,56 @@ export interface OwnershipEntry {
   is_silo: boolean;
 }
 
+export interface PackageUsageComponent {
+  name: string;
+  files: number;
+  owners: string[];
+}
+
+export interface PackageUsageDeclaration {
+  package_key: string;
+  version?: string | null;
+  declared_in: string;
+  dev?: boolean;
+}
+
+export interface PackageUsageReachability {
+  state: string;
+  basis: string;
+}
+
+/** Where one package is imported: sites, components, owner teams, reachability. */
+export interface PackageUsageResponse {
+  package: string;
+  ecosystem?: string | null;
+  declared: PackageUsageDeclaration[];
+  summary: PackageUsageSummary;
+  sites: PackageUsageSite[];
+  components: PackageUsageComponent[];
+  method: Record<string, string>;
+  note?: string | null;
+}
+
+/** One file importing the package. */
+export interface PackageUsageSite {
+  path: string;
+  modules: string[];
+  symbols: string[];
+  mapping: "declared" | "inferred";
+  line?: number | null;
+  statement?: string | null;
+  component?: string | null;
+  owners: string[];
+  reachability: PackageUsageReachability;
+}
+
+export interface PackageUsageSummary {
+  files: number;
+  components: number;
+  reachability: Record<string, number>;
+  inferred_files: number;
+}
+
 /** PATCH body for /lookup/notes. ``None`` clears the note. */
 export interface PageNotesUpdate {
   human_notes?: string | null;
