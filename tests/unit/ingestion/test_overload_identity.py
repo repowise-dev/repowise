@@ -752,31 +752,19 @@ class TestKotlinOverloads:
             ("app/R.kt::R::go", "app/R.kt::R::put#3"),
         }
 
-    def test_a_call_passing_only_a_trailing_lambda_is_a_one_argument_call(
-        self, tmp_path: Path
-    ) -> None:
-        text = (
-            "package app\nclass Q {\n"
-            "  fun each(block: () -> Unit) { }\n"
-            "  fun each(n: Int, block: () -> Unit) { }\n"
-            "  fun go() {\n    each { }\n  }\n}\n"
-        )
-        edges = _edges(tmp_path, {"app/Q.kt": ("kotlin", text)})
-        assert edges == {("app/Q.kt::Q::go", "app/Q.kt::Q::each#1")}
-
     def test_a_function_that_cannot_take_the_count_draws_no_edge(self, tmp_path: Path) -> None:
-        """``item { }`` is a library call, not the repo's ``item(selected, onClick)``.
+        """``item(key) { }`` is a library call, not the repo's ``item(a, b, onClick)``.
 
         An ``override`` is exempt: it inherits the defaults its interface writes.
         """
         text = (
             "package app\n\n"
-            "fun item(selected: Boolean, onClick: () -> Unit) { }\n\n"
+            "fun item(selected: Boolean, label: String, onClick: () -> Unit) { }\n\n"
             "interface Source {\n  fun topics(ids: List<String>? = null): List<String>\n}\n\n"
             "class Remote : Source {\n"
             "  override fun topics(ids: List<String>?): List<String> = emptyList()\n"
             "  fun sync() {\n    topics()\n  }\n}\n\n"
-            "fun screen() {\n  item { }\n}\n"
+            'fun screen() {\n  item("k") { }\n}\n'
         )
         edges = _edges(tmp_path, {"app/U.kt": ("kotlin", text)})
         assert ("app/U.kt::screen", "app/U.kt::item") not in edges

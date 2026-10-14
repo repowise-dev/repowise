@@ -57,11 +57,10 @@
 ; Calls
 ; ---------------------------------------------------------------------------
 
-; Simple call: foo(args), and foo { .. } with a trailing lambda alone, which
-; the grammar gives no value_arguments.
+; Simple call: foo(args)
 (call_expression
   (identifier) @call.target
-  [(value_arguments) (annotated_lambda)] @call.arguments
+  (value_arguments) @call.arguments
 ) @call.site
 
 ; Member call: obj.method(args) — and self-dispatch: this.method(args).
@@ -77,7 +76,7 @@
     ]
     (identifier) @call.target
   )
-  [(value_arguments) (annotated_lambda)] @call.arguments
+  (value_arguments) @call.arguments
 ) @call.site
 
 ; ---------------------------------------------------------------------------

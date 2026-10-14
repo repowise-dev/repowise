@@ -1206,7 +1206,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         ancestor overload that takes the count, the edge goes: its callee
         cannot be what the call means, and a constructor inherits none. Java
         only, where arity is binding. Kotlin binds arity too: a function that
-        cannot take the count (``item { }`` against ``item(selected, onClick)``)
+        cannot take the count (``item(key) { }`` against ``item(a, b, onClick)``)
         names a library one, so the edge goes.
         """
         callee = self._symbols_by_id.get(resolved.callee_id)
