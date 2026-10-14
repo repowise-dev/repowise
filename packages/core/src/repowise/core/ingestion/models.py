@@ -341,6 +341,9 @@ class CallSite:
     # Java: each argument's type where it is a literal (``"String"``, ``"int"``,
     # ``"null"``), else None; None overall when no argument is one.
     argument_types: tuple[str | None, ...] | None = None
+    # Java: each argument that is a bare name (``start``), else None; None overall
+    # when no argument is one. The resolver reads its declared type.
+    argument_names: tuple[str | None, ...] | None = None
 
 
 # Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);

@@ -92,6 +92,7 @@ from .models import (
 from .parser_helpers import (
     TYPE_HEAD_EXTRACTORS,
     _argument_literal_types,
+    _argument_names,
     _build_qualified_name,
     _classify_param_origin,
     _collect_error_nodes,
@@ -118,6 +119,7 @@ from .parser_helpers import (
     _objc_is_macro_enum,
     _objc_message_selector,
     _objc_symbol_name,
+    _overload_arguments,
     _qualified_cpp_parent,
     _qualified_pascal_parent,
     _run_query,
@@ -2138,6 +2140,7 @@ class ASTParser:
 
             arg_count = _count_arguments(arg_nodes[0]) if arg_nodes else None
             caller_id = _find_enclosing_symbol(line, symbol_ranges)
+            arguments = _overload_arguments(file_info.language, arg_nodes)
 
             calls.append(
                 (
@@ -2149,7 +2152,8 @@ class ASTParser:
                         line=line,
                         argument_count=arg_count,
                         receiver_call=receiver_call,
-                        argument_types=_argument_literal_types(file_info.language, arg_nodes, src),
+                        argument_types=_argument_literal_types(arguments, src),
+                        argument_names=_argument_names(arguments, src),
                         scope_name=scope_name,
                         edge_type=(
                             "references"

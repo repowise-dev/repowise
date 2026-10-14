@@ -1010,3 +1010,73 @@ class TestJavaLiteralArguments:
         edges = _edges(tmp_path, {"app/V.java": ("java", text)})
         assert edges == {("app/V.java::V::use", f"app/V.java::V::{member}")}
 
+
+
+class TestJavaNamedArguments:
+    """A named argument's declared type breaks a tie the way a literal's does."""
+
+    _MATH = (
+        "package app;\npublic class M {\n"
+        "  public static int mul(int a, int b) { return a; }\n"
+        "  public static long mul(long a, int b) { return a; }\n"
+        "  public static long mul(long a, long b) { return a; }\n"
+        "BODY}\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("body", "member"),
+        [
+            # A parameter and a local.
+            ("  long use(long total) {\n    int n = 2;\n    return mul(total, n);\n  }\n",
+             "mul#2(long,int)"),
+            # A field, read where the body declares no such name.
+            ("  private long base;\n  long use(int n) {\n    return mul(base, n);\n  }\n",
+             "mul#2(long,int)"),
+            # A local of a primitive type stands over a field of the same name.
+            ("  private long n;\n  long use(int a) {\n    int n = 1;\n    return mul(a, n);\n  }\n",
+             "mul#2(int,int)"),
+        ],
+        ids=["parameter-and-local", "field", "local-over-field"],
+    )
+    def test_declared_types_choose_the_member(
+        self, tmp_path: Path, body: str, member: str
+    ) -> None:
+        text = self._MATH.replace("BODY", body)
+        edges = _edges(tmp_path, {"app/M.java": ("java", text)})
+        assert edges == {("app/M.java::M::use", f"app/M.java::M::{member}")}
+
+    def test_a_local_the_scan_cannot_type_hides_the_field(self, tmp_path: Path) -> None:
+        """``var n = ...`` shadows the field ``n``: its type is unknown, so the tie stands."""
+        body = "  private long n;\n  long use(int a) {\n    var n = a;\n    return mul(n, a);\n  }\n"
+        edges = _edges(tmp_path, {"app/M.java": ("java", self._MATH.replace("BODY", body))})
+        assert edges == {("app/M.java::M::use", "app/M.java::M::mul#2(int,int)")}
+
+    def test_a_constructor_takes_its_arguments_declared_types(self, tmp_path: Path) -> None:
+        """``new Span(start, end, kind, zone)`` beside ``Span(int, int, int, int)``."""
+        text = (
+            "package app;\npublic class Span {\n"
+            "  public Span(int a, int b, int c, int d) { }\n"
+            "  public Span(long start, long end, Kind kind, Zone zone) { }\n"
+            "  static Span of(long start, long end, Kind kind, Zone zone) {\n"
+            "    return new Span(start, end, kind, zone);\n  }\n}\n"
+            "class Kind { }\nclass Zone { }\n"
+        )
+        edges = _edges(tmp_path, {"app/Span.java": ("java", text)})
+        base = "app/Span.java::Span::"
+        assert (base + "of", base + "Span#4(long,long,Kind,Zone)") in edges
+        assert (base + "of", base + "Span#4(int,int,int,int)") not in edges
+
+    def test_an_array_takes_the_array_member(self, tmp_path: Path) -> None:
+        text = (
+            "package app;\npublic class A {\n"
+            "  public void f(String s) { }\n  public void f(String[] xs) { }\n"
+            "  void use(String[] names) {\n    f(names);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/A.java": ("java", text)})
+        assert edges == {("app/A.java::A::use", "app/A.java::A::f#1(String[])")}
+
+    def test_argument_names_are_read_per_argument(self) -> None:
+        text = 'class A {\n  void go(int x) {\n    f(x, 1, this.y, "s", z);\n  }\n}\n'
+        (call,) = _parse("A.java", "java", text).calls
+        assert call.argument_names == ("x", None, None, None, "z")
+        assert call.argument_types == (None, "int", None, "String", None)

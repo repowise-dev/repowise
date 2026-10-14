@@ -49,7 +49,7 @@ from .language_data import (
     get_external_receiver_types,
     get_external_return_types,
 )
-from .languages.receiver_types import holds_function
+from .languages.receiver_types import external_type_name, holds_function
 from .models import (
     CallReceiver,
     CallSite,
@@ -69,6 +69,7 @@ from .return_types import (
 )
 from .symbol_identity import (
     erased_parameter_types,
+    erased_type,
     id_segment_name,
     outer_scope,
     pair_overloads,
@@ -210,9 +211,11 @@ def _overload_phase(admitted: tuple[int, int | None], argument_count: int) -> in
 
 _ArgumentTypes = tuple[str | None, ...] | None
 
-# The Java primitives a literal of each type widens to, nearest first.
+# The Java primitives a value of each type widens to, nearest first.
 _JAVA_WIDENING: dict[str, tuple[str, ...]] = {
     "boolean": ("boolean",),
+    "byte": ("byte", "short", "int", "long", "float", "double"),
+    "short": ("short", "int", "long", "float", "double"),
     "char": ("char", "int", "long", "float", "double"),
     "int": ("int", "long", "float", "double"),
     "long": ("long", "float", "double"),
@@ -220,15 +223,18 @@ _JAVA_WIDENING: dict[str, tuple[str, ...]] = {
     "double": ("double",),
 }
 _JAVA_BOXES = {
-    "boolean": "Boolean", "char": "Character", "int": "Integer",
-    "long": "Long", "float": "Float", "double": "Double",
+    "boolean": "Boolean", "byte": "Byte", "short": "Short", "char": "Character",
+    "int": "Integer", "long": "Long", "float": "Float", "double": "Double",
 }
-_JAVA_PRIMITIVES = frozenset({"byte", "short", *_JAVA_WIDENING})
+_JAVA_UNBOXED = {box: primitive for primitive, box in _JAVA_BOXES.items()}
+_JAVA_PRIMITIVES = frozenset(_JAVA_WIDENING)
 # Parameter types a literal is judged against; any other (``Object``, a type
 # variable, a class) takes a literal by boxing, or as a ``String``'s supertype.
 _JAVA_JUDGED_PARAMETERS = _JAVA_PRIMITIVES | frozenset(
-    {*_JAVA_BOXES.values(), "Byte", "Short", "String", "CharSequence"}
+    {*_JAVA_BOXES.values(), "String", "CharSequence"}
 )
+# Final classes: a parameter of one takes no other class.
+_JAVA_FINAL_PARAMETERS = frozenset({*_JAVA_BOXES.values(), "String"})
 # {literal: {judged parameter: how it is reached}}: 0 exactly, 1 widened, 2 boxed.
 _JAVA_LITERAL_LEVELS: dict[str, dict[str, int]] = {
     **{
@@ -241,34 +247,56 @@ _JAVA_LITERAL_LEVELS: dict[str, dict[str, int]] = {
 _UNJUDGED_LEVEL = {**dict.fromkeys(_JAVA_WIDENING, 2), "String": 1, "null": 1}
 
 
-def _literal_fit(parameter: str, literal: str) -> int | None:
-    """How a Java literal reaches *parameter*: 0 exactly, 1 widened, 2 boxed; None never.
+def _argument_fit(parameter: str, argument: str) -> int | None:
+    """How a Java argument reaches *parameter*: 0 exactly, 1 widened, 2 boxed; None never.
 
-    A coarse form of the most-specific rule: a call ``f(true)`` takes
+    *argument* is a literal's type or a named argument's declared one. A
+    coarse form of the most-specific rule: a call ``f(true)`` takes
     ``f(boolean)`` over ``f(Object)``, and ``f('c')`` takes ``f(int)`` over it.
     """
+    levels = _JAVA_LITERAL_LEVELS.get(argument)
+    if levels is None:
+        return _reference_fit(parameter, argument)
     if parameter not in _JAVA_JUDGED_PARAMETERS:
-        return _UNJUDGED_LEVEL[literal]
-    return _JAVA_LITERAL_LEVELS[literal].get(parameter)
+        return _UNJUDGED_LEVEL[argument]
+    return levels.get(parameter)
 
 
-def _closest_literal_fit(
+def _reference_fit(parameter: str, argument: str) -> int | None:
+    """How a value of class or array type *argument* reaches *parameter*.
+
+    0 as itself, 2 unboxed to a primitive, None where it never can (a
+    primitive, another final class, an array it is not). Any other
+    parameter may be a supertype or a type variable: 1, which an exact
+    match beats and nothing else tells apart.
+    """
+    if parameter == argument:
+        return 0
+    if parameter in _JAVA_PRIMITIVES:
+        unboxed = _JAVA_UNBOXED.get(argument)
+        return 2 if unboxed is not None and parameter in _JAVA_WIDENING[unboxed] else None
+    if parameter in _JAVA_FINAL_PARAMETERS or parameter.endswith("[]"):
+        return None
+    return 1
+
+
+def _closest_fit(
     members: list[tuple[str, list[str]]], argument_types: tuple[str | None, ...], expanded: bool
 ) -> str | None:
-    """The one member the literal arguments fit most closely, or None on a tie.
+    """The one member the typed arguments fit most closely, or None on a tie.
 
-    Only where the members agree on every non-literal argument's parameter:
-    there the literals are all that tells them apart. *expanded* says the
+    Only where the members agree on every untyped argument's parameter:
+    there the typed ones are all that tells them apart. *expanded* says the
     members take the call through their varargs.
     """
-    if not _non_literals_agree(members, argument_types, expanded):
+    if not _untyped_agree(members, argument_types, expanded):
         return None
     ranked: dict[int, list[str]] = defaultdict(list)
     for member, parameters in members:
         fits = [
-            _literal_fit(_parameter_at(parameters, index, expanded) or "", literal)
-            for index, literal in enumerate(argument_types)
-            if literal is not None
+            _argument_fit(_parameter_at(parameters, index, expanded) or "", argument)
+            for index, argument in enumerate(argument_types)
+            if argument is not None
         ]
         if all(fit is not None for fit in fits):
             ranked[max(fits, default=0)].append(member)
@@ -276,14 +304,14 @@ def _closest_literal_fit(
     return best[0] if len(best) == 1 else None
 
 
-def _non_literals_agree(
+def _untyped_agree(
     members: list[tuple[str, list[str]]], argument_types: tuple[str | None, ...], expanded: bool
 ) -> bool:
-    """Whether every member takes each non-literal argument as the same parameter type."""
+    """Whether every member takes each untyped argument as the same parameter type."""
     return all(
         len({_parameter_at(parameters, index, expanded) for _, parameters in members}) == 1
-        for index, literal in enumerate(argument_types)
-        if literal is None
+        for index, argument in enumerate(argument_types)
+        if argument is None
     )
 
 
@@ -521,6 +549,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
+        # Only a call to one of these has its named arguments typed.
+        self._overloaded_names = frozenset(self._symbols_by_id[m].name for m in self._overload_rep)
 
     def _follow_barrel_exports(self) -> None:
         """Detect barrel/re-export files and record origin mappings.
@@ -1030,6 +1060,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             if not call.caller_symbol_id:
                 # Module-level call — assign to synthetic __module__ symbol
                 call = replace(call, caller_symbol_id=f"{file_path}::__module__")
+            call = self._typed_arguments(file_path, call)
 
             resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)
             if resolved:
@@ -1154,7 +1185,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> list[str]:
         """The members of the first phase with any candidate for *argument_count*.
 
-        A tie there is broken by *argument_types* when the literal arguments
+        A tie there is broken by *argument_types* when the typed arguments
         fit exactly one member's parameters (``value(true)`` over ``value(String)``).
         """
         if argument_count is None or rep in self._unranged_overload_sets:
@@ -1166,17 +1197,54 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 phases[phase].append(member)
         phase = min(phases, default=None)
         found = phases[phase] if phases else []
-        return self._literal_tie_break(found, argument_types, expanded=phase == 2)
+        return self._typed_tie_break(found, argument_types, expanded=phase == 2)
 
-    def _literal_tie_break(
+    def _typed_tie_break(
         self, found: list[str], argument_types: _ArgumentTypes, *, expanded: bool
     ) -> list[str]:
-        """*found* narrowed to the one member its literal arguments fit closest, if one does."""
+        """*found* narrowed to the one member its typed arguments fit closest, if one does."""
         if len(found) < 2 or not argument_types:
             return found
         typed = [(m, erased_parameter_types(self._symbols_by_id[m])) for m in found]
-        closest = _closest_literal_fit(typed, argument_types, expanded)
+        closest = _closest_fit(typed, argument_types, expanded)
         return found if closest is None else [closest]
+
+    def _typed_arguments(self, file_path: str, call: CallSite) -> CallSite:
+        """*call* with each named argument's declared type beside its literals' types.
+
+        So ``f(start, n)`` is judged as ``f(1L, 2)`` is. Asked only of a call
+        to a name an overload set carries.
+        """
+        names = call.argument_names
+        if not names or call.target_name not in self._overloaded_names:
+            return call
+        caller_id = call.caller_symbol_id or ""
+        literals = call.argument_types or (None,) * len(names)
+        types = tuple(
+            literal or (self._argument_type(file_path, caller_id, name) if name else None)
+            for literal, name in zip(literals, names, strict=True)
+        )
+        return replace(call, argument_types=types if any(types) else None)
+
+    def _argument_type(self, file_path: str, caller_id: str, name: str) -> str | None:
+        """Argument *name*'s declared type, spelled as an overload id spells a parameter.
+
+        Read as a receiver's is, except that a local of a builtin type stands
+        (a receiver yields it to a field) and a field stands only where the
+        body declares *name* with no type the scan reads: a wrong type here
+        picks a wrong member, and nothing later checks it.
+        """
+        language = self._language_of(file_path) or ""
+        _, body_types = self._typing_scope(file_path, caller_id, language, name)
+        if name in body_types:
+            type_name = body_types[name]
+        else:
+            type_name, scope, _ = self._receiver_type_and_scope(file_path, caller_id, language, name)
+            if scope == "field" and self._declares_name(file_path, caller_id, name):
+                return None
+        if type_name is None or "::" in type_name:
+            return None
+        return erased_type(external_type_name(type_name) or type_name)
 
     def _overload_sibling_call(self, call: CallSite) -> ResolvedCall | None:
         """An overload calling another member of its own set, ``f(a)`` inside ``f(a, b)``.

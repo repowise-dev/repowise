@@ -151,6 +151,11 @@ def _erased_parameter_type(parameter: str) -> str:
     return "_".join(re.split(r"\.|::", w)[-1] for w in words) + marks
 
 
+def erased_type(spelled: str) -> str:
+    """``Token.Tag[]`` -> ``Tag[]``: a type as an overload id spells a parameter of it."""
+    return _erased_parameter_type(spelled)
+
+
 def erased_parameter_types(symbol: Symbol) -> list[str]:
     """``["String", "int[]"]``: each parameter's erased type, as an id spells it."""
     return [_erased_parameter_type(p) for p in signature_parameters(symbol.signature or "") or []]

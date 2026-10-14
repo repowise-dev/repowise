@@ -350,28 +350,34 @@ _JAVA_INTEGER_LITERALS = frozenset(
 _JAVA_FLOATING_LITERALS = frozenset({"decimal_floating_point_literal", "hex_floating_point_literal"})
 
 
-def _argument_literal_types(
-    language: str, arg_nodes: list[Node], src: str
-) -> tuple[str | None, ...] | None:
-    """Each argument's literal type, for a language whose overloads read them (Java)."""
+def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
+    """A call's argument expressions, for a language whose overloads read them (Java).
+
+    Read from the argument list already in hand, the way ``_count_arguments``
+    counts it.
+    """
     if language != "java" or not arg_nodes:
-        return None
-    return _java_literal_types(arg_nodes[0], src)
+        return []
+    skip_types = frozenset({"(", ")", ","})
+    return [c for c in arg_nodes[0].children if c.type not in skip_types and "comment" not in c.type]
 
 
-def _java_literal_types(arg_node: Node, src: str) -> tuple[str | None, ...] | None:
+def _argument_literal_types(arguments: list[Node], src: str) -> tuple[str | None, ...] | None:
     """The type of each literal argument, None where an argument is no literal.
 
-    None overall when no argument is a literal. Read from the argument list
-    already in hand, the way ``_count_arguments`` counts it.
+    None overall when no argument is a literal.
     """
-    skip_types = frozenset({"(", ")", ","})
-    types = tuple(
-        _java_literal_type(child, src)
-        for child in arg_node.children
-        if child.type not in skip_types and "comment" not in child.type
-    )
+    types = tuple(_java_literal_type(argument, src) for argument in arguments)
     return types if any(types) else None
+
+
+def _argument_names(arguments: list[Node], src: str) -> tuple[str | None, ...] | None:
+    """Each argument that is a bare name (a local, parameter or field), else None.
+
+    None overall when no argument is one. The resolver reads their declared types.
+    """
+    names = tuple(node_text(a, src) if a.type == "identifier" else None for a in arguments)
+    return names if any(names) else None
 
 
 # A unary operator on a literal, by operand type: ``-'a'`` promotes to int.
