@@ -44,7 +44,7 @@ def _series(values: list[float]) -> list[_S]:
 
 def test_diff_empty_history_neutral():
     summary = diff_snapshots([])
-    assert summary.current_hotspot_health == 10.0
+    assert summary.current_hotspot_health is None
     assert summary.hotspot_delta is None
     assert summary.alerts == []
 

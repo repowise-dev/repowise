@@ -198,11 +198,11 @@ def diff_snapshots(history: list[Any]) -> TrendSummary:
 
     *history* is expected oldest-first (the natural insertion order in
     ``HealthSnapshot``). Empty history yields a summary with neutral
-    fields and no alerts.
+    fields (null hotspot figure) and no alerts.
     """
     if not history:
         return TrendSummary(
-            current_hotspot_health=10.0,
+            current_hotspot_health=None,
             current_average_health=10.0,
             previous_hotspot_health=None,
             previous_average_health=None,
