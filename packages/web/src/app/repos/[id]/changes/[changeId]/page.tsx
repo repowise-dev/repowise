@@ -46,8 +46,72 @@ function valueText(item: EvidenceItem): string {
   return String(value);
 }
 
-/** The evidence checklist, streamed in: the first read of a change builds it. */
-async function EvidenceChecklist({ repoId, changeId }: { repoId: string; changeId: string }) {
+type Row = Record<string, unknown>;
+
+/** What later history says about the change, in the later commits' own words. */
+async function Outcomes({ item, repoId }: { item: EvidenceItem; repoId: string }) {
+  const t = await getTranslations("views.changes");
+  if (item.status === "unknown") {
+    return <p className="text-xs text-[var(--color-text-tertiary)]">{valueText(item)}</p>;
+  }
+  const rows = item.details as Row[];
+  const links = rows.filter((r) => r.kind === "revert" || r.kind === "fix_reference");
+  const rate = rows.find((r) => r.kind === "file_fix_rate");
+  const later = (r: Row) => {
+    const sha = String(r.sha ?? "").slice(0, 12);
+    const id = typeof r.change_id === "string" ? r.change_id : null;
+    if (!id) return <span className="font-mono">{sha}</span>;
+    return (
+      <Link href={`/repos/${repoId}/changes/${encodeURIComponent(id)}`} className="hover:underline">
+        {id} <span className="font-mono">{sha}</span>
+      </Link>
+    );
+  };
+  return (
+    <>
+      <ul className="space-y-2 text-xs">
+        {links.length === 0 && (
+          <li className="text-[var(--color-text-secondary)]">{t("outcomesNone")}</li>
+        )}
+        {links.map((r) => (
+          <li key={`${String(r.kind)}-${String(r.sha)}`} className="space-y-0.5">
+            <div className="text-[var(--color-text-primary)]">
+              {r.kind === "revert" ? t("outcomesRevertedBy") : t("outcomesCause")} {later(r)}
+              {r.kind === "revert" && r.in_force === false && (
+                <span className="text-[var(--color-text-tertiary)]">
+                  {" "}
+                  ({t("outcomesNoLongerInForce")})
+                </span>
+              )}
+            </div>
+            <blockquote className="border-l-2 border-[var(--color-border-default)] pl-2 text-[var(--color-text-secondary)]">
+              {String(r.evidence ?? "")}
+            </blockquote>
+          </li>
+        ))}
+        {rate && (
+          <li className="text-[var(--color-text-primary)]">
+            {t("outcomesFileRate", {
+              fixed: Number(rate.files_fixed),
+              total: Number(rate.files),
+              days: Number(rate.days),
+            })}
+            {rate.window_complete === false && (
+              <span className="text-[var(--color-text-tertiary)]">
+                {" "}
+                ({t("outcomesWindowOpen")})
+              </span>
+            )}
+          </li>
+        )}
+      </ul>
+      <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">{t("outcomesNote")}</p>
+    </>
+  );
+}
+
+/** The evidence checklist and the outcomes, streamed in: the first read of a change builds them. */
+async function EvidenceSections({ repoId, changeId }: { repoId: string; changeId: string }) {
   const t = await getTranslations("views.changes");
   let evidence;
   let building = false;
@@ -60,30 +124,42 @@ async function EvidenceChecklist({ repoId, changeId }: { repoId: string; changeI
   }
   if (!evidence) {
     return (
-      <p className="text-xs text-[var(--color-text-tertiary)]">
-        {t(building ? "evidenceBuilding" : "evidenceUnavailable")}
-      </p>
+      <OverviewSection title={t("detailEvidence")}>
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          {t(building ? "evidenceBuilding" : "evidenceUnavailable")}
+        </p>
+      </OverviewSection>
     );
   }
+  const outcomes = evidence.items.find((i) => i.kind === "outcomes");
   return (
     <>
-      <ul className="divide-y divide-[var(--color-border-default)] text-xs">
-        {evidence.items.map((item) => (
-          <li key={item.kind} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
-            <span className="w-full shrink-0 font-medium text-[var(--color-text-primary)] sm:w-48">
-              {item.label}
-            </span>
-            <Badge variant={STATUS_VARIANT[item.status]}>{t(STATUS_KEY[item.status])}</Badge>
-            <span className="text-[var(--color-text-tertiary)]">{item.basis}</span>
-            <span className="min-w-[10rem] flex-1 break-words text-[var(--color-text-secondary)]">
-              {valueText(item)}
-            </span>
-          </li>
-        ))}
-      </ul>
-      <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-        {t("evidenceGenerated", { date: formatDate(evidence.generated_at) })}
-      </p>
+      <OverviewSection title={t("detailEvidence")}>
+        <ul className="divide-y divide-[var(--color-border-default)] text-xs">
+          {evidence.items
+            .filter((item) => item !== outcomes)
+            .map((item) => (
+              <li key={item.kind} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
+                <span className="w-full shrink-0 font-medium text-[var(--color-text-primary)] sm:w-48">
+                  {item.label}
+                </span>
+                <Badge variant={STATUS_VARIANT[item.status]}>{t(STATUS_KEY[item.status])}</Badge>
+                <span className="text-[var(--color-text-tertiary)]">{item.basis}</span>
+                <span className="min-w-[10rem] flex-1 break-words text-[var(--color-text-secondary)]">
+                  {valueText(item)}
+                </span>
+              </li>
+            ))}
+        </ul>
+        <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+          {t("evidenceGenerated", { date: formatDate(evidence.generated_at) })}
+        </p>
+      </OverviewSection>
+      {outcomes && (
+        <OverviewSection title={t("detailOutcomes")}>
+          <Outcomes item={outcomes} repoId={repoId} />
+        </OverviewSection>
+      )}
     </>
   );
 }
@@ -136,15 +212,15 @@ export default async function ChangeDetailPage({ params }: Props) {
         ))}
       </dl>
 
-      <OverviewSection title={t("detailEvidence")}>
-        <Suspense
-          fallback={
+      <Suspense
+        fallback={
+          <OverviewSection title={t("detailEvidence")}>
             <p className="text-xs text-[var(--color-text-tertiary)]">{t("evidenceLoading")}</p>
-          }
-        >
-          <EvidenceChecklist repoId={id} changeId={decodeURIComponent(changeId)} />
-        </Suspense>
-      </OverviewSection>
+          </OverviewSection>
+        }
+      >
+        <EvidenceSections repoId={id} changeId={decodeURIComponent(changeId)} />
+      </Suspense>
 
       <OverviewSection title={`${t("detailFiles")} (${change.files_changed})`}>
         <ul className="space-y-1 font-mono text-xs">
