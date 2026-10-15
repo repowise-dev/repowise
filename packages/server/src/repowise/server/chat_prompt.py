@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from repowise.server.chat_artifacts import normalize_message_artifacts
+from repowise.server.chat_references import replayed_result
 from repowise.server.chat_tools import ChatToolContract
 from repowise.server.schemas.chat import ChatPageContext
 
@@ -15,7 +16,7 @@ _SYSTEM_PROMPT_TEMPLATE = """You are a codebase intelligence assistant for the r
 The repository has configured these callable tools: {tool_names}. Use only this advertised surface, and use a tool when it provides stronger evidence than memory.
 {routing}
 {recipes}
-{page}
+{page}{views}
 Guidelines:
 - Cite specific file paths, function names, and line numbers from tool results; be concrete, not general
 - Format responses in markdown. File paths in backticks. Code in fenced blocks.
@@ -70,11 +71,18 @@ def _page_advisory(page_context: ChatPageContext | None) -> str:
     return line + "."
 
 
+_VIEWS_GUIDANCE = """
+Charts and tables: call the analysis tool first, then show_view with that result's artifact_id or latest:<tool_name>. The show_view schema lists the views. A view carries its numbers, so explain what they mean and do not repeat them.
+"""
+
+
 def _build_system_prompt(
     repo_name: str,
     repo_path: str,
     tools: list[ChatToolContract],
     page_context: ChatPageContext | None = None,
+    *,
+    shows_views: bool = False,
 ) -> str:
     recipes = [recipe.call for tool in tools for recipe in tool.entry.recipes]
     recipe_text = (
@@ -89,6 +97,7 @@ def _build_system_prompt(
         routing=_routing_guidance(tools),
         recipes=recipe_text,
         page=_page_advisory(page_context),
+        views=_VIEWS_GUIDANCE if shows_views else "",
     )
 
 
@@ -167,7 +176,8 @@ def tool_result_message(tool_id: str, name: str, result: Any) -> dict[str, Any]:
         "role": "tool",
         "tool_call_id": tool_id,
         "name": name,
-        "content": json.dumps(result),
+        # default=str: a backend value JSON has no type for (a datetime) is text, not a crash.
+        "content": json.dumps(result, default=str),
     }
 
 
@@ -179,9 +189,8 @@ def _assistant_history(content: dict[str, Any]) -> list[dict[str, Any]]:
         return [{"role": "assistant", "content": text}]
     messages = [assistant_tool_call_message(text, tool_calls)]
     for tc in tool_calls:
-        artifact = tc.get("artifact")
-        result = artifact.get("data", {}) if isinstance(artifact, dict) else {}
-        messages.append(tool_result_message(tc["id"], tc["name"], result))
+        # Stamped with the stored id, so a view in a later turn can cite it.
+        messages.append(tool_result_message(tc["id"], tc["name"], replayed_result(tc)))
     return messages
 
 

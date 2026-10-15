@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Iterable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any
 
 import pytest
@@ -815,3 +815,131 @@ async def test_find_suspects_is_offered_on_the_local_backend_and_runs(store, mon
         await _open(store, narrow, tools=FakeLocal(), policy=SessionPolicy(tool_allowlist=frozenset({"get_risk"})))
     ).send("q")
     assert SUSPECTS_TOOL not in narrow.calls[0]["tools"]
+
+
+# ---------------------------------------------------------------------------
+# show_view references across the conversation
+# ---------------------------------------------------------------------------
+
+
+def _table(reference: str) -> dict:
+    return {"artifact_id": reference, "view": "table", "options": {"path": "files"}}
+
+
+async def test_a_view_cites_a_result_from_an_earlier_turn_by_its_replayed_id(store):
+    first = ScriptedProvider([[_tool("t1", "get_risk")], [_text("read it")]])
+    session = await _open(store, first)
+    await session.send("risk?")
+
+    def turns(index: int) -> list:
+        if index == 0:
+            replayed = next(m for m in second.calls[0]["messages"] if m["role"] == "tool")
+            # The id is the first key, so an excerpt of a long result still shows it.
+            assert replayed["content"].startswith('{"artifact_id": "')
+            artifact_id = json.loads(replayed["content"])["artifact_id"]
+            return [_tool("t2", SHOW_VIEW_TOOL, _table(artifact_id))]
+        return [_text("charted")]
+
+    second = ScriptedProvider(turns)
+    tools = FakeTools()
+    result = await (await _open(store, second, tools=tools, conversation_id=session.id)).send(
+        "now as a table"
+    )
+
+    assert tools.executed == []
+    assert [view["kind"] for view in result.views] == ["table"]
+    stored = (await store.messages(session.id))[1].content["tool_calls"][0]["artifact"]
+    assert result.views[0]["source"]["artifact_id"] == stored["id"]
+
+
+async def test_latest_reference_resolves_a_call_made_earlier_in_the_same_round(store):
+    provider = ScriptedProvider(
+        [
+            [_tool("t1", "get_risk"), _tool("t2", SHOW_VIEW_TOOL, _table("latest:get_risk"))],
+            [_text("done")],
+        ]
+    )
+    result = await (await _open(store, provider)).send("table of risk")
+    assert [view["kind"] for view in result.views] == ["table"]
+
+
+async def test_an_unknown_reference_lists_the_valid_ones_for_one_retry(store):
+    first = ScriptedProvider([[_tool("t1", "get_risk")], [_text("ok")]])
+    session = await _open(store, first)
+    await session.send("risk?")
+
+    second = ScriptedProvider(
+        [[_tool("t2", SHOW_VIEW_TOOL, _table("placeholder"))], [_text("sorry")]]
+    )
+    await (await _open(store, second, conversation_id=session.id)).send("table")
+
+    error = json.loads(second.calls[1]["messages"][-1]["content"])
+    assert error["error_code"] == "unknown_artifact"
+    assert "latest:<tool_name>" in error["error"]
+    assert [(ref["tool"], ref["age"]) for ref in error["available"]] == [("get_risk", "1 turn ago")]
+
+
+# ---------------------------------------------------------------------------
+# Failures a person can fix end the turn with a plain message, not a crash
+# ---------------------------------------------------------------------------
+
+
+async def test_a_tool_result_holding_a_datetime_is_sent_streamed_and_stored(store):
+    from datetime import UTC, datetime
+
+    class DatedTools(FakeTools):
+        async def execute(self, name, arguments):
+            return {"files": [{"path": "src/a.py", "changed": datetime(2026, 10, 1, tzinfo=UTC)}]}
+
+    provider = ScriptedProvider([[_tool("t1", "get_risk")], [_text("ok")]])
+    session = await _open(store, provider, tools=DatedTools())
+    events = await _collect(session.stream("when?"))
+
+    assert events[-1]["type"] == "done"
+    json.dumps(events)
+    stored = (await store.messages(session.id))[-1].content["tool_calls"][0]["artifact"]["data"]
+    assert stored["files"][0]["changed"].startswith("2026-10-01")
+
+
+async def test_an_sdk_auth_error_says_to_check_the_api_key(store):
+    class AuthenticationError(Exception):
+        status_code = 401
+
+    AuthenticationError.__module__ = "anthropic._exceptions"
+    provider = ScriptedProvider([AuthenticationError("invalid x-api-key")])
+    result = await (await _open(store, provider)).send("hi")
+
+    assert result.stop_reason == "error"
+    assert "rejected its API key" in result.error
+    assert "Settings" in result.error
+
+
+async def test_a_bug_outside_the_provider_stays_an_internal_error(store):
+    provider = ScriptedProvider([KeyError("boom")])
+    result = await (await _open(store, provider)).send("hi")
+    assert result.error.startswith("Internal error: KeyError")
+
+
+async def test_a_session_without_a_provider_ends_with_a_setup_message(store):
+    from repowise.server.chat_errors import NO_PROVIDER_MESSAGE
+
+    session = await _open(store, None)
+    events = await _collect(session.stream("hi"))
+    assert events == [{"type": "error", "message": NO_PROVIDER_MESSAGE}]
+    assert (await session.send("hi")).error == NO_PROVIDER_MESSAGE
+
+
+async def test_a_citation_line_that_is_not_a_number_is_dropped_not_fatal(store):
+    from repowise.server.schemas.chat import ChatTurnResultResponse
+
+    class RangeTools(FakeTools):
+        async def execute(self, name, arguments):
+            return {"citations": [{"file_path": "src/a.py", "start_line": "10-20", "end_line": 20}]}
+
+    provider = ScriptedProvider([[_tool("t1", "get_risk")], [_text("ok")]])
+    result = await (await _open(store, provider, tools=RangeTools())).send("where?")
+
+    assert [(c["file_path"], c.get("start_line"), c["end_line"]) for c in result.citations] == [
+        ("src/a.py", None, 20)
+    ]
+    ChatTurnResultResponse.model_validate(asdict(result))

@@ -23,6 +23,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.providers.llm.base import ChatProvider
 from repowise.server.auth import PER_CALL_TOOL_SCOPE, Principal, get_authorizer
 from repowise.server.chat_artifacts import find_artifact, set_artifact_pinned
+from repowise.server.chat_errors import NO_PROVIDER_MESSAGE
 from repowise.server.chat_grounding import plan_grounding, run_grounding
 from repowise.server.chat_seams import (
     SessionPolicy,
@@ -131,10 +132,12 @@ def _chat_provider(
             model_override=model,
         )
     except ValueError as exc:
-        # Unknown provider override, or no provider resolvable at all.
-        raise HTTPException(400, str(exc)) from exc
+        # Unknown provider override, or (with no override) no provider resolvable at all.
+        raise HTTPException(400, str(exc) if provider else NO_PROVIDER_MESSAGE) from exc
     except Exception as exc:
-        raise HTTPException(422, f"No chat provider available: {exc}") from exc
+        raise HTTPException(
+            422, f"Could not start the chat provider: {exc}. Check its settings in Settings."
+        ) from exc
     if not isinstance(instance, ChatProvider):
         raise HTTPException(
             422,
@@ -167,6 +170,10 @@ async def _session_sse(open_session: Any, run: Any) -> AsyncIterator[str]:
     except SessionNotFoundError as exc:
         yield _sse_event("data", {"type": "error", "message": str(exc)})
         return
+    except HTTPException as exc:
+        # A setup failure the person can fix (no provider, unknown model).
+        yield _sse_event("data", {"type": "error", "message": str(exc.detail)})
+        return
     except Exception as exc:
         logger.exception("Chat session open error")
         yield _sse_event(
@@ -193,22 +200,23 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     # this request opens must come from the factory resolved by ``repo_id``.
     factory = resolve_request_session_factory(request)
     repo_name, repo_path = await _get_repo_info(factory, repo_id)
-    provider = _chat_provider(repo_path, repo_id, body.provider, body.model)
-    scope = SessionScope(
-        kind="repo",
-        repo_id=repo_id,
-        repo_name=repo_name,
-        repo_path=repo_path,
-        # In workspace mode the MCP tools address repos by alias, not by the
-        # id in this URL, so every tool call is scoped to it.
-        repo_alias=_workspace_alias(request, repo_path, repo_name),
-        storage=factory,
-    )
 
+    # Inside the stream, so a missing provider or any other setup failure
+    # reaches the chat as an error event instead of a bare HTTP error.
     async def open_session() -> ChatSession:
+        scope = SessionScope(
+            kind="repo",
+            repo_id=repo_id,
+            repo_name=repo_name,
+            repo_path=repo_path,
+            # In workspace mode the MCP tools address repos by alias, not by the
+            # id in this URL, so every tool call is scoped to it.
+            repo_alias=_workspace_alias(request, repo_path, repo_name),
+            storage=factory,
+        )
         return await ChatSession.open(
             scope=scope,
-            provider=provider,
+            provider=_chat_provider(repo_path, repo_id, body.provider, body.model),
             principal=request_principal(request),
             fallback_policy=WEB_POLICY,
             conversation_id=body.conversation_id,
@@ -651,4 +659,5 @@ async def fork_conversation(
 
 def _sse_event(event: str, data: dict[str, Any]) -> str:
     """Format a single SSE event."""
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    # default=str: one value JSON has no type for must not end the stream.
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"

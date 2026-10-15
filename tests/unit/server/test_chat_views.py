@@ -601,3 +601,62 @@ async def test_a_turn_without_show_view_stores_no_views():
     assert "view" not in [event["type"] for event in events]
     stored = await _stored_messages(app, events[-1]["conversation_id"])
     assert "views" not in stored[-1]["content"]
+
+
+# ---------------------------------------------------------------------------
+# References and empty charts
+# ---------------------------------------------------------------------------
+
+
+def test_a_chart_whose_series_are_all_zero_is_no_data():
+    empty = {"tiers": {tier: {"count": 0, "findings": []} for tier in ("high", "medium", "low")}}
+    with pytest.raises(ViewError) as err:
+        _build(empty, "dead_code", "get_dead_code", "dead_code.by_tier")
+    assert err.value.code == "no_data"
+
+
+def test_the_stamp_is_the_first_key_and_survives_truncation():
+    from repowise.server.chat_context import bound_tool_messages
+    from repowise.server.chat_prompt import tool_result_message
+
+    stamped = TurnViews().record("get_risk", {}, {"rows": ["x" * 200_000]}, artifact_type="risk")
+    assert next(iter(stamped)) == ARTIFACT_ID_FIELD
+    [bounded] = bound_tool_messages([tool_result_message("t1", "get_risk", stamped)])
+    assert stamped[ARTIFACT_ID_FIELD] in json.loads(bounded["content"])["excerpt"][:100]
+
+
+def test_latest_skips_a_failed_result_and_an_unknown_tool_resolves_to_nothing():
+    turn = TurnViews()
+    good = turn.record("get_risk", {}, RISK, artifact_type="risk")
+    turn.record("get_risk", {}, {"error": "boom"}, artifact_type="risk")
+    assert turn.artifacts.resolve("latest:get_risk").artifact_id == good[ARTIFACT_ID_FIELD]
+    assert turn.artifacts.resolve("latest:get_health") is None
+    assert [ref["artifact_id"] for ref in turn.artifacts.available()] == [good[ARTIFACT_ID_FIELD]]
+
+
+def test_a_legacy_row_is_indexed_under_the_id_its_replay_shows():
+    from repowise.server.chat_prompt import stored_messages_to_llm_format
+    from repowise.server.chat_references import ArtifactIndex
+    from repowise.server.chat_seams import StoredMessage
+
+    legacy = StoredMessage(
+        id="m2",
+        role="assistant",
+        content={"text": "", "tool_calls": [{"id": "t1", "name": "get_risk", "result": RISK}]},
+    )
+    history = [StoredMessage(id="m1", role="user", content={"text": "q"}), legacy]
+    index = ArtifactIndex.from_history(history)
+    replayed = json.loads(stored_messages_to_llm_format(history)[-1]["content"])
+
+    artifact = index.resolve(replayed[ARTIFACT_ID_FIELD])
+    assert artifact is not None and artifact.artifact_type == "risk"
+    assert index.available()[0]["age"] == "1 turn ago"
+    assert build_view(artifact, "risk.hotspots", {}, part_id="v1")["kind"] == "chart"
+
+
+def test_the_prompt_explains_views_only_when_show_view_is_offered():
+    from repowise.server.chat_prompt import _build_system_prompt
+
+    tools = get_tool_catalog(None)
+    assert "latest:<tool_name>" in _build_system_prompt("demo", "/tmp", tools, shows_views=True)
+    assert "show_view" not in _build_system_prompt("demo", "/tmp", tools)

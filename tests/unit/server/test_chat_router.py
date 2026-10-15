@@ -570,3 +570,14 @@ async def test_a_chip_without_a_tool_hint_omits_the_field_rather_than_nulling_it
     assert response.status_code == 200, response.text
     assert "toolHint" not in response.text
     assert response.json()["suggestions"] == hintless
+
+
+@pytest.mark.asyncio
+async def test_no_configured_provider_is_a_chat_error_event_not_an_http_error():
+    from repowise.server.chat_errors import NO_PROVIDER_MESSAGE
+
+    app = await _make_app()
+    failure = ValueError("No active provider configured. Set an API key first.")
+    with patch(_PROVIDER, side_effect=failure):
+        events = _data_events(await _post(app, {"message": "hi"}))
+    assert events == [{"type": "error", "message": NO_PROVIDER_MESSAGE}]

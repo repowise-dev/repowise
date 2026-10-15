@@ -273,6 +273,12 @@ for each iteration:
 After the loop, the assistant message (text + all tool calls with results) is
 saved to the database and a `done` event is emitted.
 
+**Charts in chat:** the model calls an analysis tool, then the chat-only
+`show_view` tool, which the server turns into a table or chart from that
+result. Every result the model sees starts with its `artifact_id`, and
+`show_view` takes any id from the conversation or `latest:<tool_name>` for
+that tool's newest result. A chart whose values are all zero is not drawn.
+
 ---
 
 ## 8. REST API Endpoints

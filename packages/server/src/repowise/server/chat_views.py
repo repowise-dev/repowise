@@ -1,8 +1,9 @@
 """Deterministic chat views: tables and charts built from a turn's tool results.
 
 The model never writes a number into a view. It calls the chat-only
-``show_view`` tool naming a tool result already in the turn (by the
-``artifact_id`` stamped on it) and a view; a registered builder makes the part
+``show_view`` tool naming a tool result of the conversation (by the
+``artifact_id`` stamped on it, or ``latest:<tool_name>``; see
+:mod:`repowise.server.chat_references`) and a view; a registered builder makes the part
 from that result, and ``build_view`` adds provenance, applies the guards and
 validates it as a ``ViewPart``. Builders are pure functions registered on the
 ``chat-view`` seam, so a plugin adds one without editing this module.
@@ -28,6 +29,13 @@ from pydantic import TypeAdapter, ValidationError
 
 from repowise.core.registry.plugins import SeamRegistry, load_plugins
 from repowise.server.chat_artifacts import ARTIFACT_ID_FIELD
+from repowise.server.chat_references import (
+    LATEST_PREFIX,
+    SHOW_VIEW_TOOL,
+    ArtifactIndex,
+    ViewArtifact,
+    stamp,
+)
 from repowise.server.schemas.evidence import MAX_WIRE_NUMBER
 from repowise.server.schemas.views import (
     VIEW_LIMITS,
@@ -38,7 +46,6 @@ from repowise.server.schemas.views import (
 
 logger = logging.getLogger(__name__)
 
-SHOW_VIEW_TOOL = "show_view"
 ATTRIBUTION_COVERAGE_FLOOR = 0.30
 
 _PART = TypeAdapter(ViewPart)
@@ -61,18 +68,6 @@ class ViewError(ValueError):
 
     def payload(self) -> dict[str, Any]:
         return {"error": str(self), "error_code": self.code, **self.extra}
-
-
-@dataclass(frozen=True)
-class ViewArtifact:
-    """One tool result of this turn, as builders read it."""
-
-    artifact_id: str
-    tool_name: str
-    artifact_type: str
-    evidence_basis: str
-    arguments: dict[str, Any]
-    data: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -172,6 +167,19 @@ def _guard(part: dict[str, Any], spec: ViewBuilder) -> None:
             )
 
 
+def _all_zero(part: Mapping[str, Any]) -> bool:
+    """True when no series of a chart holds a value other than zero or empty."""
+    data = part.get("data")
+    rows = data.get("rows") if isinstance(data, Mapping) else None
+    series = part.get("series") or []
+    return all(
+        row.get(key) in (0, None)
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, Mapping)
+        for key in series
+    )
+
+
 def build_view(
     artifact: ViewArtifact,
     view: str,
@@ -212,6 +220,12 @@ def build_view(
         stale=bool(meta.get("stale_warning")),
         as_of=commit if isinstance(commit, str) and _SHA.match(commit) else None,
     )
+    if part.get("kind") == "chart" and _all_zero(part):
+        raise ViewError(
+            "every value in this chart is zero, so there is nothing to draw; "
+            "say so in a sentence instead",
+            code="no_data",
+        )
     _guard(part, spec)
     try:
         model = _PART.validate_python(part)
@@ -228,15 +242,16 @@ class TurnViews:
 
     ``record`` stamps each tool result with its artifact id before the model
     sees it; ``unstamp`` gives the stored side the server's id and the tool's
-    own data back. ``show`` is the ``show_view`` tool. ``parts`` holds the
-    validated views in order.
+    own data back. ``show`` is the ``show_view`` tool; it resolves its source
+    in *artifacts*, the conversation's results indexed once for the turn.
+    ``parts`` holds the validated views in order.
     """
 
-    def __init__(self) -> None:
-        self._artifacts: dict[str, ViewArtifact] = {}
-        # The exact stamped dicts handed out, so a tool's own ``artifact_id``
-        # field is never mistaken for a stamp.
-        self._stamped: dict[str, dict[str, Any]] = {}
+    def __init__(self, artifacts: ArtifactIndex | None = None) -> None:
+        self.artifacts = artifacts if artifacts is not None else ArtifactIndex()
+        # The exact stamped dicts handed out and the data each came from, so a
+        # tool's own ``artifact_id`` field is never mistaken for a stamp.
+        self._stamped: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
         self.parts: list[dict[str, Any]] = []
 
     def record(
@@ -252,23 +267,26 @@ class TurnViews:
         if not isinstance(result, dict):
             return result
         artifact_id = uuid4().hex
-        self._artifacts[artifact_id] = ViewArtifact(
-            artifact_id=artifact_id,
-            tool_name=tool_name,
-            artifact_type=artifact_type,
-            evidence_basis=evidence_basis,
-            arguments=dict(arguments),
-            data=result,
+        self.artifacts.add(
+            ViewArtifact(
+                artifact_id=artifact_id,
+                tool_name=tool_name,
+                artifact_type=artifact_type,
+                evidence_basis=evidence_basis,
+                arguments=dict(arguments),
+                data=result,
+            )
         )
-        stamped = {**result, ARTIFACT_ID_FIELD: artifact_id}
-        self._stamped[artifact_id] = stamped
+        stamped = stamp(result, artifact_id)
+        self._stamped[artifact_id] = (stamped, result)
         return stamped
 
     def unstamp(self, result: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
         """The server's id and unstamped data for a ``record`` result; else ``(None, result)``."""
         artifact_id = result.get(ARTIFACT_ID_FIELD)
-        if isinstance(artifact_id, str) and self._stamped.get(artifact_id) is result:
-            return artifact_id, self._artifacts[artifact_id].data
+        handed = self._stamped.get(artifact_id) if isinstance(artifact_id, str) else None
+        if handed is not None and handed[0] is result:
+            return artifact_id, handed[1]
         return None, result
 
     def show(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -288,15 +306,17 @@ class TurnViews:
         return receipt
 
     def _build(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        artifact_id = arguments.get("artifact_id")
+        reference = arguments.get("artifact_id")
         view = arguments.get("view")
         options = arguments.get("options") or {}
-        artifact = self._artifacts.get(artifact_id) if isinstance(artifact_id, str) else None
+        artifact = self.artifacts.resolve(reference)
         if artifact is None:
             raise ViewError(
-                f"no tool result with artifact_id {artifact_id!r} in this turn; "
-                "call the tool again and use the artifact_id on its result",
+                f"no tool result matches artifact_id {reference!r}. Pass an artifact_id "
+                f"from `available` or {LATEST_PREFIX}<tool_name>; if the result you need "
+                "is not listed, call its tool first",
                 code="unknown_artifact",
+                available=self.artifacts.available(),
             )
         if not isinstance(view, str) or not isinstance(options, Mapping):
             raise ViewError("view must be a string and options an object", code="bad_arguments")
@@ -326,16 +346,21 @@ def show_view_schema(artifact_types: list[str] | None = None) -> dict[str, Any]:
         "function": {
             "name": SHOW_VIEW_TOOL,
             "description": (
-                "Show a table or chart built by the server from a tool result already "
-                "returned in this turn. Pass that result's artifact_id. Never restate the "
-                "numbers yourself; the view carries them. Views: " + ", ".join(names) + ". "
+                "Show a table or chart built by the server from a tool result of this "
+                "conversation. Call the tool first (an earlier call in the same round "
+                "counts), then pass its artifact_id, or latest:<tool_name> for that "
+                "tool's newest result. Never restate the numbers yourself; the view "
+                "carries them. Views: " + ", ".join(names) + ". "
                 "`table` takes options path (dotted path to a list or map in the result), "
                 "columns and limit."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "artifact_id": {"type": "string"},
+                    "artifact_id": {
+                        "type": "string",
+                        "description": "A tool result's artifact_id, or latest:<tool_name>.",
+                    },
                     "view": {"type": "string", "enum": names},
                     "options": {"type": "object"},
                 },
