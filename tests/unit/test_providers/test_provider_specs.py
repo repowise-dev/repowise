@@ -91,6 +91,8 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "core/src/repowise/core/ingestion/external_systems/classifier.py": frozenset(
         {"anthropic", "openai"}
     ),
+    # SDK module names whose error base classes chat matches.
+    "server/src/repowise/server/chat_errors.py": frozenset({"anthropic", "openai", "ollama"}),
     # Behaviour only the OpenAI adapter has: the custom-gateway row and base-url
     # prompt, and its reasoning budget. Ollama's readiness is a TCP probe.
     "cli/src/repowise/cli/helpers.py": frozenset({"openai"}),
