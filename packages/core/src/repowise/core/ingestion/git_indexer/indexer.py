@@ -638,6 +638,9 @@ class GitIndexer:
         )
         history_changed = history_files.intersection(changed_file_paths)
         changed_file_paths = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
+        # The co-change walk reads the same tracked-file set the full index
+        # hands it, so a template or stylesheet stays a partner after an update.
+        co_change_files = set(tier_paths) if tier_paths else None
         if all_files:
             all_files = {fp for fp in all_files if not _should_skip_index(fp)}
 
@@ -825,7 +828,7 @@ class GitIndexer:
                         executor,
                         compute_co_changes_and_entropy,
                         repo,
-                        set(all_files),
+                        co_change_files or set(all_files),
                         max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
                         _MAX_PARTNERS_PER_FILE,
                         None,
