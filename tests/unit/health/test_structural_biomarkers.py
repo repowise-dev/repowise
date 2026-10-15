@@ -8,7 +8,7 @@ from repowise.core.analysis.health.biomarkers.large_method import LargeMethodDet
 from repowise.core.analysis.health.biomarkers.primitive_obsession import (
     PrimitiveObsessionDetector,
 )
-from repowise.core.analysis.health.complexity import FunctionComplexity
+from repowise.core.analysis.health.complexity import FunctionComplexity, walk_file
 
 
 def _ctx(fns: list[FunctionComplexity]) -> FileContext:
@@ -121,6 +121,41 @@ def test_primitive_obsession_skips_fixed_signatures():
         signature_fixed=True,
     )
     assert PrimitiveObsessionDetector().detect(_ctx([fn, _FILLER])) == []
+
+
+_ROLE_CONTROLLER = """@RestController
+class RoleController {
+  @DeleteMapping("/apps/{appId}/envs/{env}/clusters/{clusterName}/ns_roles/{roleType}")
+  public ResponseEntity<Void> removeClusterRoleFromUser(@PathVariable String appId,
+      @PathVariable String env, @PathVariable String clusterName, @PathVariable String roleType,
+      @RequestParam String user) {
+    roleService.remove(appId, env, clusterName, roleType, user);
+    return ResponseEntity.ok().build();
+  }
+
+  void removeInternal(String appId, String env, String clusterName, String roleType, String user) {
+    roleService.remove(appId, env, clusterName, roleType, user);
+  }
+
+  @GetMapping("/wide")
+  public void wide(@PathVariable String a, @PathVariable String b, @PathVariable String c,
+      @PathVariable String d, @PathVariable String e, @PathVariable String f,
+      String g, String h, String i, String j, String k, String l) {}
+}
+"""
+
+
+def test_primitive_obsession_counts_only_parameters_the_caller_chooses():
+    fns = walk_file("RoleController.java", "java", _ROLE_CONTROLLER.encode()).functions
+    out = {r.function_name: r for r in PrimitiveObsessionDetector().detect(_ctx([*fns, _FILLER]))}
+    # Four route segments and a query parameter: nothing left to group.
+    assert "removeClusterRoleFromUser" not in out
+    # The same five strings chosen by a caller still fire.
+    assert "removeInternal" in out
+    # Six bound and six free scalars: the free six still fire, and say so.
+    wide = out["wide"]
+    assert wide.details["bound_param_count"] == 6
+    assert "takes 12 parameters, 6 bound by the framework, 6 of 6 typed" in wide.reason
 
 
 def test_primitive_obsession_needs_mostly_primitive_params_when_typed():

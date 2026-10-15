@@ -108,6 +108,39 @@ def test_typescript_override_modifier_and_name():
     assert not fns["override"].signature_fixed
 
 
+def test_java_framework_bound_parameters():
+    fns = _fns(
+        "C.java",
+        "java",
+        """class C {
+            void route(@PathVariable String a, @PathVariable String b, @PathVariable("c") String c,
+                @org.springframework.web.bind.annotation.PathVariable String d, String e) {}
+            void query(@RequestParam(value = "x", required = false) String x, @RequestBody Form f) {}
+            C(@MaxMindDbParameter(name = "ip") String ip, @JsonProperty("asn") long asn) {}
+        }""",
+    )
+    route = fns["route"]
+    assert (route.param_count, route.bound_param_count) == (5, 4)
+    # Bound parameters leave the typed and scalar counts.
+    assert (route.typed_param_count, route.primitive_param_count) == (1, 1)
+    # An argument does not hide the binder; an object binder is not one.
+    assert fns["query"].bound_param_count == 1
+    assert fns["query"].typed_param_count == 1
+    assert fns["C"].bound_param_count == 2
+
+
+def test_kotlin_bound_parameter_annotations_sit_beside_the_parameter():
+    from tree_sitter_language_pack import get_parser
+
+    from repowise.core.analysis.health.complexity.languages import get_language_map
+    from repowise.core.analysis.health.complexity.signature import bound_param_count
+
+    src = b'fun f(@PathVariable a: String, @RequestParam("x") b: String, c: String) {}'
+    root = get_parser("kotlin").parse(src).root_node
+    params = next(c for c in root.children[0].children if c.type == "function_value_parameters")
+    assert bound_param_count(params, get_language_map("kotlin")) == 2
+
+
 def test_kotlin_override_modifier():
     source = "class A : B() {\n    override fun run(a: Int) {}\n    fun own(a: Int) {}\n}\n"
     fns = _fns("A.kt", "kotlin", source)

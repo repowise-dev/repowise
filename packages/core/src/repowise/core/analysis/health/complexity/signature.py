@@ -16,6 +16,9 @@ reads the tree with it.
 - **typed / scalar parameters**: how many parameters declare a type, and how
   many of those are a scalar or a string. An untyped parameter is in neither
   count.
+- **bound parameters**: parameters whose own annotation says a framework fills
+  them (``@PathVariable``), read the same way as a declaration's markers. They
+  stay in the declared count and leave the typed and scalar ones.
 """
 
 from __future__ import annotations
@@ -74,6 +77,10 @@ def _marker_words(node: Node) -> set[str]:
     declarator = node.child_by_field_name("declarator")
     if declarator is not None:
         stack += [c for c in declarator.children if c.type in _MARKER_CONTAINERS]
+    return _leaf_words(stack)
+
+
+def _leaf_words(stack: list[Node]) -> set[str]:
     words: set[str] = set()
     while stack:
         cur = stack.pop()
@@ -195,8 +202,30 @@ def typed_param_counts(params: Node | None, lmap: LanguageNodeMap) -> tuple[int,
     for param in params.named_children:
         if param.type in _NON_PARAMS or (type_node := _param_type(param)) is None:
             continue
+        if _is_bound(param, lmap):
+            continue
         arity = _arity(param)
         typed += arity
         if _is_scalar(type_node, lmap.scalar_type_names):
             scalar += arity
     return typed, scalar
+
+
+def _is_bound(param: Node, lmap: LanguageNodeMap) -> bool:
+    if not lmap.bound_param_markers:
+        return False
+    words = _marker_words(param)
+    # Kotlin keeps a parameter's annotations on the sibling before it.
+    prev = param.prev_named_sibling
+    if prev is not None and prev.type == "parameter_modifiers":
+        words |= _leaf_words([prev])
+    return bool(words & lmap.bound_param_markers)
+
+
+def bound_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
+    """Parameters of *params* a framework binds by annotation."""
+    if not lmap.bound_param_markers or params is None:
+        return 0
+    return sum(
+        _arity(p) for p in params.named_children if p.type not in _NON_PARAMS and _is_bound(p, lmap)
+    )

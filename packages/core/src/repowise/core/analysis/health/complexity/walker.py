@@ -82,7 +82,7 @@ from .models import (
 # which imports it directly from this module.
 from .nloc import _count_file_nloc
 from .perf_walk import _collect_perf_hits, perf_pass_runs
-from .signature import is_constructor, is_signature_fixed, typed_param_counts
+from .signature import bound_param_count, is_constructor, is_signature_fixed, typed_param_counts
 from .test_case import is_test_case
 
 if TYPE_CHECKING:
@@ -203,7 +203,8 @@ def walk_file(
             terminal,
         ) = _collect_assertion_facts(body, lmap, asserts)
         name = _find_function_entry_name(fn_node, lmap)
-        typed, scalar = typed_param_counts(_parameter_list(fn_node), lmap)
+        params = _parameter_list(fn_node)
+        typed, scalar = typed_param_counts(params, lmap)
         dispatch = dispatch_points(body, lmap)
         fc = FunctionComplexity(
             name=name,
@@ -217,6 +218,7 @@ def walk_file(
             param_count=_count_parameters(fn_node),
             typed_param_count=typed,
             primitive_param_count=scalar,
+            bound_param_count=bound_param_count(params, lmap),
             is_constructor=is_constructor(fn_node, name, lmap),
             signature_fixed=is_signature_fixed(fn_node, lmap),
             complex_conditions=conditions,
