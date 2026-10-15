@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from repowise.core.analysis.finding_registry import verification_label
+from repowise.core.analysis.finding_registry import preview_label, verification_label
 from repowise.core.analysis.health.aggregation import (
     primary_and_magnitude,
     primary_and_magnitude_by_file,
@@ -40,6 +40,8 @@ def _finding_to_dict(f: Any, lower_priority: str | None = None) -> dict:
         # "unverified" for a provisional type a caller asked for by name.
         "verification": verification_label(f.biomarker_type),
         "lower_priority": LOW_PRIORITY_LABEL.get(lower_priority or ""),
+        # The measurement label on a language the layer serves as a preview.
+        "preview": preview_label("health", f.file_path, f.biomarker_type),
     }
 
 

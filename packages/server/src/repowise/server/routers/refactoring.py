@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.agent_prompts import Flavor, render_opportunity, render_plan
+from repowise.core.analysis.finding_registry import label_previews
 from repowise.core.analysis.health.refactoring.recipe import build_recipe
 from repowise.core.analysis.health.refactoring.serving import (
     CANONICAL_ORDERS,
@@ -105,6 +106,7 @@ async def get_refactoring_targets(
             view=view,
         )
     )
+    body["plans"] = label_previews("refactoring", body["plans"], kind="refactoring_type")
     return RefactoringTargetsResponse(
         **body,
         gated=await gated_plan_counts(session, repo_id, include_unverified=include_unverified),
@@ -194,7 +196,7 @@ async def get_refactoring_opportunities(
         with_summary=True,
     )
     body: dict[str, Any] = {
-        "items": page.items,
+        "items": label_previews("refactoring", page.items, kind="lead_refactoring_type"),
         "total": page.total,
         "offset": page.offset,
         "has_more": page.next_offset is not None,

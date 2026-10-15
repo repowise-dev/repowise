@@ -146,6 +146,8 @@ class RefactoringPlanResponse(BaseModel):
     file_nloc: int = 0
     file_weighted_deficit: int = 0
     validation: dict[str, Any] = Field(default_factory=dict)
+    #: The measurement note on a language refactoring is served as a preview on.
+    preview: str | None = None
 
 
 class PlanRiskResponse(BaseModel):

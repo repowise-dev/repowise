@@ -34,6 +34,9 @@ class HealthFindingResponse(BaseModel):
     verification: str | None = None
     #: Why the finding can wait, on a lower-priority finding; else ``None``.
     lower_priority: str | None = None
+    #: The measurement note on a language health is served as a preview on
+    #: (``finding_registry.preview_note``); else ``None``.
+    preview: str | None = None
 
 
 class HealthFindingWithSymbolResponse(HealthFindingResponse):

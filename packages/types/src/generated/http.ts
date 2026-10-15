@@ -1133,6 +1133,7 @@ export interface DeadCodeFindingResponse {
   last_commit_at: string | null;
   commit_count_90d: number;
   verification?: string | null;
+  preview?: string | null;
 }
 
 export interface DeadCodeGraphNodeResponse {
@@ -2184,6 +2185,7 @@ export interface HealthFindingResponse {
   dimension?: string;
   verification?: string | null;
   lower_priority?: string | null;
+  preview?: string | null;
 }
 
 /**
@@ -2207,6 +2209,7 @@ export interface HealthFindingWithSymbolResponse {
   dimension?: string;
   verification?: string | null;
   lower_priority?: string | null;
+  preview?: string | null;
   symbol_id?: string | null;
 }
 
@@ -3166,6 +3169,7 @@ export interface RefactoringPlanDetailResponse {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: Record<string, unknown>;
+  preview?: string | null;
   governed_by?: string[] | null;
   risks?: PlanRiskResponse[] | null;
   recipe?: Record<string, unknown> | null;
@@ -3199,6 +3203,7 @@ export interface RefactoringPlanResponse {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: Record<string, unknown>;
+  preview?: string | null;
 }
 
 /** What one plan-level triage decision wrote. */

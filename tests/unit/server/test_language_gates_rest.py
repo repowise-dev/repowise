@@ -2,7 +2,9 @@
 
 Each route hides rows on a gated language (Java here) by default, returns
 them with ``include_unverified=true``, counts what it held back in ``gated``,
-and leaves the Python rows beside them alone.
+and leaves the Python rows beside them alone. The gate table is patched, so
+these pin the mechanism, not which cells today's table holds back; a preview
+row is served with its ``preview`` note instead.
 """
 
 from __future__ import annotations
@@ -10,8 +12,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
 from httpx import AsyncClient
 
+from repowise.core.analysis import finding_registry
+from repowise.core.analysis.finding_registry import LanguageGate, preview_note
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 from repowise.core.analysis.health.perf.opportunities import link_performance_findings
 from repowise.core.persistence import crud
@@ -20,6 +25,19 @@ from tests.unit.server.conftest import create_test_repo
 
 JAVA = "src/Billing.java"
 PY = "src/billing.py"
+_LAYERS = ("health", "refactoring", "performance", "dead_code")
+
+
+def _java_table(state: str) -> tuple[LanguageGate, ...]:
+    return tuple(
+        LanguageGate(layer, "java", 0.2, "test sample", "2026-10-15", "test", state=state)
+        for layer in _LAYERS
+    )
+
+
+@pytest.fixture(autouse=True)
+def _java_gated(monkeypatch):
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", _java_table("gated"))
 
 
 def _finding(path: str, function_name: str) -> dict[str, Any]:
@@ -212,3 +230,38 @@ async def test_performance_queue(client: AsyncClient, app) -> None:
     assert page["summary"]["total"] == page["total"]
     opted = await _get(client, url, **every, include_unverified=True)
     assert opted["total"] == page["total"] + 1 and opted["gated"] == {}
+
+
+async def test_preview_rows_are_served_labelled_and_not_counted(
+    client: AsyncClient, app, monkeypatch
+) -> None:
+    repo_id = await _seed(client, app)
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", _java_table("preview"))
+    note = preview_note(_java_table("preview")[0])
+
+    def by_path(rows: list[dict]) -> dict[str, Any]:
+        return {row["file_path"]: row.get("preview") for row in rows}
+
+    findings = await _get(client, f"/api/repos/{repo_id}/health/findings")
+    assert by_path(findings) == {JAVA: note, PY: None}
+
+    page = await _get(client, f"/api/repos/{repo_id}/files/{JAVA}")
+    assert {f["preview"] for f in page["health"]["findings"]} == {note}
+    assert page["health"]["gated"] == {}
+
+    targets = await _get(client, f"/api/repos/{repo_id}/refactoring/targets")
+    assert by_path(targets["plans"])[JAVA] == note and by_path(targets["plans"])[PY] is None
+    assert targets["gated"] == {}
+
+    queue = await _get(client, f"/api/repos/{repo_id}/refactoring/opportunities", scope="all")
+    assert by_path(queue["items"]) == {JAVA: note, PY: None}
+    assert queue["gated"] == {}
+
+    every = {"context": "all", "proof": "unproven", "role": "all"}
+    perf = await _get(client, f"/api/repos/{repo_id}/health/performance-opportunities", **every)
+    assert by_path(perf["items"]) == {JAVA: note, PY: None} and perf["gated"] == {}
+
+    dead = await _get(client, f"/api/repos/{repo_id}/dead-code")
+    assert by_path(dead) == {JAVA: note, PY: None}
+    summary = await _get(client, f"/api/repos/{repo_id}/dead-code/summary")
+    assert summary["total_findings"] == 2 and summary["gated"] == {}

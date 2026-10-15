@@ -13,7 +13,12 @@ from collections import Counter
 from time import perf_counter
 from typing import Any
 
-from repowise.core.analysis.finding_registry import FILE_HOLDS, withheld_summary
+from repowise.core.analysis.finding_registry import (
+    FILE_HOLDS,
+    GateLayer,
+    served_previews,
+    withheld_summary,
+)
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.refactoring.serving import (
     DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT,
@@ -268,6 +273,7 @@ async def get_health(
         else:
             _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
         _attach_gated(result["_meta"], data)
+        _attach_preview(result)
         _attach_withheld(result, data)
         pager.report_omissions(result, omission_collector)
         omission_collector.attach(result)
@@ -297,6 +303,37 @@ def _attach_gated(meta: dict[str, Any], data: HealthData) -> None:
     if held and not data.findings.emitted:
         gated["reasons"] = {k: FILE_HOLDS[k] for k in held}
     meta["gated"] = {**gated, "opt_in": {"include": ["unverified"]}}
+
+
+#: The lists that carry rows of a gated layer: ``(layer, the row's kind field)``.
+_LAYER_LISTS: dict[str, tuple[GateLayer, str]] = {
+    "findings": ("health", "biomarker_type"),
+    "top_findings": ("health", "biomarker_type"),
+    "test_findings": ("health", "biomarker_type"),
+    "refactoring_plans": ("refactoring", "refactoring_type"),
+    "refactoring_opportunities": ("refactoring", "lead_refactoring_type"),
+    "performance_opportunities": ("performance", "biomarker_type"),
+}
+
+
+def _attach_preview(result: dict[str, Any]) -> None:
+    """``_meta.preview``: ``{layer: {language: note}}`` for the preview cells
+    this response lists rows from, read after projection so only what was
+    sent is labelled. Absent when none, so a default response does not grow."""
+    preview: dict[str, dict[str, str]] = {}
+    for key, (layer, kind) in _LAYER_LISTS.items():
+        rows = result.get(key)
+        if isinstance(rows, list):
+            served = served_previews(
+                layer,
+                (r for r in rows if isinstance(r, dict)),
+                kind=kind,
+                get=lambda r, k: r.get(k),
+            )
+            if served:
+                preview.setdefault(layer, {}).update(served)
+    if preview:
+        result["_meta"]["preview"] = preview
 
 
 def _attach_withheld(result: dict[str, Any], data: HealthData) -> None:

@@ -24,15 +24,37 @@ from repowise.core.analysis.finding_registry import (
 )
 from repowise.core.persistence.models import DeadCodeFinding
 
+_LAYERS = ("health", "refactoring", "performance", "dead_code")
 
-def test_audited_languages_are_gated_on_every_layer():
-    for layer in ("health", "refactoring", "performance", "dead_code"):
+
+def _java_on_every_layer(monkeypatch, state: str = "gated") -> None:
+    monkeypatch.setattr(
+        finding_registry,
+        "LANGUAGE_GATES",
+        tuple(
+            LanguageGate(layer, "java", 0.1, "test", "2026-10-15", "test", state=state)
+            for layer in _LAYERS
+        ),
+    )
+
+
+def test_a_gated_row_holds_its_layer_back_on_every_extension(monkeypatch):
+    _java_on_every_layer(monkeypatch)
+    for layer in _LAYERS:
+        assert gate_for(layer, "src/Foo.java") is not None, layer
+        assert gate_for(layer, "src/foo.py") is None, layer
+
+
+def test_audited_languages_are_held_back_or_previewed_on_every_layer():
+    # Every audited cell is in the table in one state or the other.
+    for layer in _LAYERS:
         for path in ("src/Foo.java", "src/Foo.cs", "src/foo.c", "src/foo.cpp", "inc/foo.h"):
-            assert gate_for(layer, path) is not None, (layer, path)
+            served = finding_registry.preview_for(layer, path)
+            assert (gate_for(layer, path) is None) == (served is not None), (layer, path)
 
 
 def test_unaudited_languages_are_never_gated():
-    for layer in ("health", "refactoring", "performance", "dead_code"):
+    for layer in _LAYERS:
         for path in ("a.py", "a.ts", "a.tsx", "a.js", "a.go", "a.rs", "pom.xml", ""):
             assert gate_for(layer, path) is None, (layer, path)
 

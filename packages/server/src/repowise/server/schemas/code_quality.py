@@ -11,7 +11,7 @@ from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_del
 from repowise.core.analysis.dead_code.risk_factors import (
     path_risk_factors,
 )
-from repowise.core.analysis.finding_registry import verification_label
+from repowise.core.analysis.finding_registry import preview_label, verification_label
 
 
 class DeadCodeFindingResponse(BaseModel):
@@ -48,6 +48,8 @@ class DeadCodeFindingResponse(BaseModel):
     commit_count_90d: int
     # ``"unverified"`` for a provisional kind a caller asked for by name.
     verification: str | None = None
+    #: The measurement note on a language dead code is served as a preview on.
+    preview: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DeadCodeFindingResponse:
@@ -85,6 +87,7 @@ class DeadCodeFindingResponse(BaseModel):
             last_commit_at=obj.last_commit_at,  # type: ignore[attr-defined]
             commit_count_90d=obj.commit_count_90d,  # type: ignore[attr-defined]
             verification=verification_label(obj.kind),  # type: ignore[attr-defined]
+            preview=preview_label("dead_code", file_path, obj.kind),  # type: ignore[attr-defined]
         )
 
 
