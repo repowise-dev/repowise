@@ -159,6 +159,19 @@ export function ReleaseNumbers({ stats }: { stats: ReleaseStats }) {
   const format = useFormatter();
   const n = (v: number | null | undefined) => format.number(v ?? 0);
   const first = stats.first_time_contributors ?? 0;
+  // Kinds with no commits are left out; "0 performance changes" says nothing.
+  const kt = stats.types;
+  const kinds = (
+    [
+      ["statFeatures", kt.features],
+      ["statPerf", kt.perf],
+      ["statRefactors", kt.refactors],
+      ["statDocs", kt.docs],
+    ] as const
+  )
+    .filter(([, count]) => !!count)
+    .map(([key, count]) => t(key, { count: n(count) }));
+  const kindsSub = kinds.length ? format.list(kinds, { type: "conjunction" }) : undefined;
 
   const cells: RibbonStat[] = [
     { label: t("statPrs"), value: n(stats.prs), sub: t("statPrsSub", { count: n(stats.issues_closed) }) },
@@ -172,11 +185,7 @@ export function ReleaseNumbers({ stats }: { stats: ReleaseStats }) {
       value: n(stats.files_changed),
       sub: t("statFilesSub", { added: n(stats.lines_added), removed: n(stats.lines_removed) }),
     },
-    {
-      label: t("statFixes"),
-      value: n(stats.types.fixes),
-      sub: t("statFixesSub", { features: n(stats.types.features), refactors: n(stats.types.refactors) }),
-    },
+    ...(kt.fixes ? [{ label: t("statFixes"), value: n(kt.fixes), sub: kindsSub }] : []),
     {
       label: t("statTests"),
       value: n(stats.test_files_touched),

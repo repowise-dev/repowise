@@ -28,7 +28,7 @@ In the 3 days since 0.56.0:
 
 - **205 pull requests** merged, from **24 contributors**, **11 of them first-time contributors**
 - **1,226 files** changed, **+103,206 / -11,127** lines
-- **147 fixes, 45 features, 0 performance changes**, 4 refactors and 6 documentation changes
+- **147 fixes, 45 features**, 4 refactors and 6 documentation changes
 - **437 test files** touched, **144** of them new
 - **25 issues** closed
 

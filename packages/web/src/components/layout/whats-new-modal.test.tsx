@@ -59,6 +59,9 @@ describe("WhatsNewModal", () => {
     expect(within(dialog).getByText("+103,206 / -11,127 lines")).toBeTruthy();
     expect(within(dialog).getByText(/welcome to the 11 who made their first contribution/)).toBeTruthy();
     expect(dialog.textContent).not.toContain("@");
+    // Kinds with no commits are left out of the strip.
+    expect(within(dialog).getByText(/^45 features, 4 refactors,? and 6 documentation changes$/)).toBeTruthy();
+    expect(dialog.textContent).not.toContain("performance");
     // Repo-scoped routes resolve to the repository being read.
     expect(within(dialog).getByRole("link", { name: /Open.*Charts in chat/ }).getAttribute("href")).toBe(
       "/repos/r1/chat",

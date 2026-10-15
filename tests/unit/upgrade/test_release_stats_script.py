@@ -148,3 +148,14 @@ def test_write_json_merges_by_version(tmp_path):
         "0.56.0": {"prs": 1},
         "0.57.0": {"prs": 3},
     }
+
+
+def test_render_markdown_omits_zero_kinds():
+    types = {"fixes": 147, "features": 45, "perf": 0, "refactors": 4, "docs": 0}
+    md = rs.render_markdown({**_STATS, "types": types})
+    assert "- **147 fixes, 45 features**, 4 refactors\n" in md
+    assert "performance" not in md and "documentation" not in md
+    none = {"fixes": 0, "features": 0, "perf": 0, "refactors": 0, "docs": 0}
+    assert "fixes" not in rs.render_markdown({**_STATS, "types": none})
+    only = {"fixes": 3, "features": 0, "perf": 1, "refactors": 0, "docs": 0}
+    assert "- **3 fixes and 1 performance changes**\n" in rs.render_markdown({**_STATS, "types": only})

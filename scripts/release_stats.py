@@ -118,6 +118,32 @@ def split_first_time(
     return returning, first
 
 
+def _kinds_line(t: dict) -> str:
+    """``**165 fixes, 89 features**, 28 refactors and 6 documentation changes``,
+    leaving out kinds with no commits (the JSON keeps the zeros)."""
+
+    def _join(parts: list[str]) -> str:
+        if len(parts) < 2:
+            return "".join(parts)
+        return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+    lead = [
+        f"{t[k]:,} {name}"
+        for k, name in (("fixes", "fixes"), ("features", "features"), ("perf", "performance changes"))
+        if t.get(k)
+    ]
+    rest = [
+        f"{t[k]:,} {name}"
+        for k, name in (("refactors", "refactors"), ("docs", "documentation changes"))
+        if t.get(k)
+    ]
+    if lead and rest:
+        return f"**{', '.join(lead)}**, {_join(rest)}"
+    if lead:
+        return f"**{_join(lead)}**"
+    return _join(rest)
+
+
 def render_markdown(stats: dict) -> str:
     """The ``### By the numbers`` block for the CHANGELOG."""
     t = stats["types"]
@@ -135,8 +161,7 @@ def render_markdown(stats: dict) -> str:
         f"- **{stats['prs']:,} pull requests** merged, from {people}",
         f"- **{stats['files_changed']:,} files** changed, "
         f"**+{stats['lines_added']:,} / -{stats['lines_removed']:,}** lines",
-        f"- **{t['fixes']:,} fixes, {t['features']:,} features, {t['perf']:,} performance changes**, "
-        f"{t['refactors']:,} refactors and {t['docs']:,} documentation changes",
+        *([f"- {kinds}"] if (kinds := _kinds_line(t)) else []),
         f"- **{stats['test_files_touched']:,} test files** touched, "
         f"**{stats['test_files_new']:,}** of them new",
         f"- **{stats['issues_closed']:,} issues** closed",
