@@ -87,6 +87,9 @@ class ActiveProviderSelection(BaseModel):
     #: Where each value came from, per field: ``request``, ``config.yaml``,
     #: ``global``, ``env:<VAR>``, ``default`` or ``autodetect``; ``None`` if unset.
     provenance: SelectionProvenance = SelectionProvenance()
+    #: The repo's config.yaml base URL is refused until the user confirms it
+    #: here, so a cloned repo cannot send stored keys to its own host.
+    base_url_unconfirmed: bool = False
     #: USD per 1K tokens for ``model``; ``None`` when no model resolves.
     input_cost_per_1k: float | None = None
     output_cost_per_1k: float | None = None

@@ -360,6 +360,7 @@ def list_provider_status(
             "model": model,
             "base_url": selection.display_base_url,
             "provenance": selection.provenance,
+            "base_url_unconfirmed": _base_url_unconfirmed(selection, repo_path),
             "input_cost_per_1k": input_rate,
             "output_cost_per_1k": output_rate,
             "embedder": os.environ.get("REPOWISE_EMBEDDER", DEFAULT_EMBEDDER).lower(),
@@ -368,6 +369,22 @@ def list_provider_status(
         "flag_only_providers": FLAG_ONLY_PROVIDERS,
         "embedders": _embedder_catalog(),
     }
+
+
+def _base_url_unconfirmed(selection: LLMSelection, repo_path: str | Path | None) -> bool:
+    """Whether chat refuses the repo's config.yaml base URL until the user
+    confirms it (re-saving it from Settings does). No network."""
+    if not selection.base_url or selection.base_url_source != "config.yaml":
+        return False
+    from repowise.core.providers.llm.resolve import UntrustedBaseUrlError, llm_provider_kwargs
+
+    try:
+        llm_provider_kwargs(selection, repo_path)
+    except UntrustedBaseUrlError:
+        return True
+    except ValueError:
+        return False
+    return False
 
 
 def get_active_provider(

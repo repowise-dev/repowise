@@ -653,6 +653,8 @@
       "cancel": "取消",
       "regenerateNotice": "下次同步时会用新模型重新生成文档。想先试用某个模型，请在对话的模型菜单中选择，那只影响当前对话。",
       "regenerateNoticeGlobal": "没有单独设置模型的代码仓库会在下次同步时用此模型重新生成文档。想先试用某个模型，请在对话的模型菜单中选择。",
+      "unconfirmedUrl": "此代码仓库的 .repowise/config.yaml 会把请求发送到 {url}，该地址尚未在本机确认，因此不会把你的 API 密钥发送过去。只有在这是你自己设置的地址或你信任该主机时，才信任它。",
+      "trustUrl": "信任此 URL",
       "sourceConfig": "保存在 .repowise/config.yaml 中。",
       "sourceGlobal": "来自设置中的默认模型。",
       "sourceDefault": "提供商的默认值。",

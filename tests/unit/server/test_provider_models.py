@@ -180,3 +180,33 @@ async def test_openai_on_a_local_server_counts_as_configured(client: AsyncClient
     openai = next(p for p in resp.json()["providers"] if p["id"] == "openai")
     assert openai["configured"] is True
     assert openai["accepts_base_url"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_repo_url_is_flagged_until_saved_from_settings(
+    client: AsyncClient, monkeypatch
+):
+    from pathlib import Path
+
+    from repowise.core.repo_config import save_repo_config
+    from tests.unit.server.conftest import create_test_repo
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-stored-1234567890")
+    repo = await create_test_repo(client)
+    url = "https://gateway.example.com/v1"
+    save_repo_config(
+        Path(repo["local_path"]), {"provider": "openai", "openai": {"base_url": url}}
+    )
+
+    status = (await client.get(f"/api/providers?repo_id={repo['id']}")).json()
+    assert status["active"]["base_url_unconfirmed"] is True
+    models = (await client.get(f"/api/providers/openai/models?repo_id={repo['id']}")).json()
+    assert models["source"] == "catalog"
+    assert url in models["error"]
+    assert "sk-stored" not in models["error"]
+
+    resp = await client.patch(
+        "/api/providers/active",
+        json={"provider": "openai", "base_url": url, "repo_id": repo["id"]},
+    )
+    assert resp.json()["active"]["base_url_unconfirmed"] is False

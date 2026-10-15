@@ -138,4 +138,24 @@ describe("ProviderSettings form", () => {
     });
     expect(screen.getByRole("button", { name: "Use OpenAI" })).toBeEnabled();
   });
+
+  it("offers to trust an unconfirmed config.yaml URL by saving it again", async () => {
+    const props = renderSettings({
+      active: {
+        provider: "openai",
+        model: "gpt-5.6-luna",
+        base_url: "https://gateway.example.com/v1",
+        base_url_unconfirmed: true,
+        provenance: { provider: "config.yaml", model: "default", base_url: "config.yaml" },
+      },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("https://gateway.example.com/v1");
+    fireEvent.click(screen.getByRole("button", { name: "Trust this URL" }));
+    await waitFor(() =>
+      expect(props.onSetActive).toHaveBeenCalledWith("openai", undefined, {
+        baseUrl: "https://gateway.example.com/v1",
+      }),
+    );
+  });
 });

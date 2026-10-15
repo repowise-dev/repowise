@@ -97,6 +97,7 @@ export interface ActiveProviderSelection {
   model?: string | null;
   base_url?: string | null;
   provenance?: SelectionProvenance;
+  base_url_unconfirmed?: boolean;
   input_cost_per_1k?: number | null;
   output_cost_per_1k?: number | null;
   embedder?: string | null;

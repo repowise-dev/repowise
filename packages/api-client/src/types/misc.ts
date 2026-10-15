@@ -62,6 +62,9 @@ export interface ProvidersResponse {
     /** Endpoint requests go to; null means the provider's own default. */
     base_url?: string | null;
     provenance?: SelectionProvenance;
+    /** The repo's config.yaml base URL is refused until confirmed in Settings
+     *  (re-saving it there confirms it). */
+    base_url_unconfirmed?: boolean;
     /** USD per 1K tokens for `model`; null when no model resolves. */
     input_cost_per_1k?: number | null;
     output_cost_per_1k?: number | null;

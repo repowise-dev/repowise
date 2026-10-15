@@ -55,6 +55,8 @@ export function ProviderSettingsPanel({ repoId }: { repoId?: string }) {
     useProvider: (name) => f("useProvider", { name }),
     cancel: f("cancel"),
     regenerateNotice: repoId ? f("regenerateNotice") : f("regenerateNoticeGlobal"),
+    unconfirmedUrl: (url) => f("unconfirmedUrl", { url }),
+    trustUrl: f("trustUrl"),
     provenance: (source) => {
       if (source === "config.yaml") return f("sourceConfig");
       if (source === "global") return f("sourceGlobal");

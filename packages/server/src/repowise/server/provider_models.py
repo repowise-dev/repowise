@@ -13,14 +13,18 @@ import asyncio
 import hashlib
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from repowise.core.providers.llm.openai import LOCAL_SERVER_API_KEY
 from repowise.core.providers.llm.registry import get_provider
-from repowise.core.providers.llm.resolve import llm_provider_kwargs, resolve_llm
+from repowise.core.providers.llm.resolve import (
+    UntrustedBaseUrlError,
+    llm_provider_kwargs,
+    resolve_llm,
+)
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.server.provider_config import _redact_key
 
@@ -66,8 +70,16 @@ async def list_provider_models(
     spec = PROVIDER_SPECS[provider_id]
     selection = resolve_llm(repo_path, provider=provider_id, override_source="request")
     default_model = selection.model or spec.default_model
-    kwargs = llm_provider_kwargs(selection, repo_path)
-    if base_url and base_url != selection.base_url:
+    probing = bool(base_url) and base_url != selection.base_url
+    try:
+        # A probe replaces the saved URL, so that URL's trust does not matter.
+        kwargs = llm_provider_kwargs(
+            replace(selection, base_url=None) if probing else selection, repo_path
+        )
+    except UntrustedBaseUrlError as exc:
+        # The message names the URL without credentials, never the key.
+        return _catalog_only(spec, default_model, str(exc))
+    if probing:
         kwargs["base_url"] = base_url
         if spec.api_key_envs:
             kwargs["api_key"] = LOCAL_SERVER_API_KEY
@@ -90,6 +102,15 @@ async def list_provider_models(
         "source": "live" if fetched.live else "catalog",
         "default_model": default_model,
         "error": fetched.error,
+    }
+
+
+def _catalog_only(spec: Any, default_model: str, error: str) -> dict[str, Any]:
+    return {
+        "models": [{"id": m} for m in sort_models([*spec.models, default_model], default_model)],
+        "source": "catalog",
+        "default_model": default_model,
+        "error": error,
     }
 
 

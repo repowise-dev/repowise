@@ -64,6 +64,9 @@ export interface ProviderSettingsLabels {
   cancel: string;
   /** Shown before a save that changes the model. */
   regenerateNotice: string;
+  /** The repo's config.yaml URL is not confirmed on this machine. */
+  unconfirmedUrl: (url: string) => string;
+  trustUrl: string;
   /** One muted line naming where a value came from, or null to show none. */
   provenance: (source: string) => string | null;
 }
@@ -94,6 +97,9 @@ export const DEFAULT_PROVIDER_SETTINGS_LABELS: ProviderSettingsLabels = {
   cancel: "Cancel",
   regenerateNotice:
     "Documentation is regenerated with the new model on the next sync. To try a model first, pick it in the chat model menu; that changes one conversation only.",
+  unconfirmedUrl: (url) =>
+    `This repository's .repowise/config.yaml sends requests to ${url}, which has not been confirmed on this machine, so your API key is not sent there. Trust it only if you set it or know the host.`,
+  trustUrl: "Trust this URL",
   provenance: describeSource,
 };
 
@@ -119,6 +125,8 @@ export interface ProviderSettingsProps {
     model: string | null;
     base_url?: string | null;
     provenance?: ProviderProvenance;
+    /** The saved config.yaml URL is refused until the user confirms it. */
+    base_url_unconfirmed?: boolean;
   };
   onAddKey: (providerId: string, apiKey: string) => Promise<void> | void;
   onRemoveKey: (providerId: string) => Promise<void> | void;
@@ -485,13 +493,17 @@ function ProviderForm({
     }
   }
 
-  async function save() {
+  async function save(trust = false) {
     setSaving(true);
     try {
       await onSetActive(
         provider.id,
-        model.trim() || undefined,
-        url !== savedUrl ? { baseUrl: url } : undefined,
+        // Trusting re-saves the URL only; a model that came from elsewhere
+        // must not get pinned into config.yaml on the way.
+        trust && active.provenance?.model !== "config.yaml"
+          ? undefined
+          : model.trim() || undefined,
+        url !== savedUrl || trust ? { baseUrl: url } : undefined,
       );
       onDone();
     } catch {
@@ -585,6 +597,23 @@ function ProviderForm({
               ))}
             </p>
           )}
+          {isActive && active.base_url_unconfirmed && url === savedUrl && (
+            <div role="alert" className="space-y-1.5">
+              <p className="text-xs text-[var(--color-error)]">
+                {labels.unconfirmedUrl(savedUrl)}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                disabled={saving}
+                onClick={() => void save(true)}
+              >
+                {labels.trustUrl}
+              </Button>
+            </div>
+          )}
           <Muted id={`${formId}-url-hint`}>
             {!urlValid ? labels.baseUrlInvalid : (urlSource ?? labels.baseUrlHint)}
           </Muted>
@@ -611,7 +640,7 @@ function ProviderForm({
           size="sm"
           className="h-8 text-xs"
           disabled={!dirty || !urlValid || saving}
-          onClick={save}
+          onClick={() => void save()}
         >
           {saving ? <Spinner size="sm" /> : isActive ? labels.save : labels.useProvider(provider.name)}
         </Button>
