@@ -44,7 +44,7 @@ used", which a mention answers; this asks "is this run".
 The **import graph** is the weaker tier: importing a module pulls in every
 symbol it defines while the test may touch one function.
 
-Measured against a real `coverage run --contexts=test` on this repository, over
+Measured against real per-test coverage on this repository, over
 the slice where per-test attribution is complete, both sides seeing the same
 37 test files and 159 provably executed production files.
 

@@ -120,7 +120,7 @@ def test_sqlite_without_contexts_degrades_loudly(tmp_path: Path) -> None:
     _write_coverage_db(
         db,
         files={1: "src/foo.py"},
-        contexts={1: ""},  # ran without --contexts
+        contexts={1: ""},  # recorded without contexts
         line_bits=[(1, 1, [1, 2, 3])],
     )
     report = parse_coverage_sqlite(db)
