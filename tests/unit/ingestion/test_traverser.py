@@ -16,6 +16,7 @@ from repowise.core.ingestion.traverser import (
     _detect_language,
     _is_generated,
     _scan_package_dir,
+    in_blocked_dir,
 )
 
 
@@ -179,6 +180,10 @@ class TestFileTraverser:
         assert not any("__pycache__" in p for p in paths)
 
     def test_skips_unity_generated_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / "ProjectSettings").mkdir()
+        (tmp_path / "ProjectSettings" / "ProjectVersion.txt").write_text(
+            "m_EditorVersion: 6000.0.0f1\n"
+        )
         (tmp_path / "Assets" / "Scripts").mkdir(parents=True)
         (tmp_path / "Assets" / "Scripts" / "Game.cs").write_text("class Game {}")
         (tmp_path / "Library" / "PackageCache").mkdir(parents=True)
@@ -190,6 +195,39 @@ class TestFileTraverser:
         assert "Assets/Scripts/Game.cs" in paths
         assert not any(p.startswith("Library/") for p in paths)
         assert not any(p.startswith("Temp/") for p in paths)
+
+    def test_unity_dir_names_outside_unity_projects_are_indexed(self, tmp_path: Path) -> None:
+        files = {
+            "MediaBrowser.Controller/Library/ILibraryManager.cs": "interface ILibraryManager {}",
+            "MediaBrowser.Controller/Entities/Folder.cs": "class Folder {}",
+            "Tools/Builds/BuildInfo.cs": "class BuildInfo {}",
+            "Server/Logs/LogFileTask.cs": "class LogFileTask {}",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert paths == set(files)
+        assert not in_blocked_dir("Tools/Builds/BuildInfo.cs", tmp_path)
+
+    def test_skips_unity_generated_dirs_in_a_nested_unity_project(self, tmp_path: Path) -> None:
+        files = {
+            "game/ProjectSettings/ProjectVersion.txt": "m_EditorVersion: 6000.0.0f1\n",
+            "game/Assets/Player.cs": "class Player {}",
+            "game/Library/x.cs": "class X {}",
+            "src/Library/y.cs": "class Y {}",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "game/Assets/Player.cs" in paths
+        assert "src/Library/y.cs" in paths
+        assert "game/Library/x.cs" not in paths
+        assert in_blocked_dir("game/Library/x.cs", tmp_path)
+        assert not in_blocked_dir("src/Library/y.cs", tmp_path)
 
     def test_source_packages_named_like_output_dirs_are_indexed(self, tmp_path: Path) -> None:
         files = {
