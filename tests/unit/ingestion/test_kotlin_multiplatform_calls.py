@@ -148,3 +148,60 @@ def test_a_plain_gradle_source_set_calls_its_own_declaration(
     plain_calls: dict[str, set[str]], caller: str, source_set: str
 ) -> None:
     assert plain_calls[caller] == {_APP.format(source_set) + "Helper.kt::Helper"}
+
+
+_ALIASED = "app/src/main/kotlin/{}"
+ALIAS_OF_A_REPO_CLASS = {
+    _ALIASED.format("app/Repository.kt"): (
+        "package app\n\nclass DefaultRepository\n\ntypealias Repo = DefaultRepository\n"
+        "\nclass Holder<T>\n\ntypealias Repos = Holder<String>\n"
+    ),
+    _ALIASED.format("app/Use.kt"): (
+        "package app\n\nfun throughAlias() = Repo()\n\nfun generic() = Repos()\n"
+        "\nfun direct() = DefaultRepository()\n"
+    ),
+    _ALIASED.format("lib/Names.kt"): "package lib\n\nclass Real\n\ntypealias Short = Real\n",
+    _ALIASED.format("app/Imports.kt"): (
+        "package app2\n\nimport lib.Short\n\nfun imported() = Short()\n"
+    ),
+    # The alias and the call share a file.
+    _ALIASED.format("solo/Solo.kt"): (
+        "package solo\n\nclass Thing\n\ntypealias T = Thing\n\nfun same() = T()\n"
+    ),
+    # Targets that are not a repo class draw nothing.
+    _ALIASED.format("odd/Odd.kt"): (
+        "package odd\n\ntypealias Handler = (String) -> Unit\n\ntypealias fd = Int\n"
+        "\ntypealias Self = Self\n\ntypealias Q = java.io.IOException\n"
+        "\nfun handler() = Handler()\n\nfun prim() = fd()\n\nfun self() = Self()\n"
+        "\nfun qualified() = Q()\n"
+    ),
+    # A qualified external target is never read by its last segment.
+    _ALIASED.format("odd/IOException.kt"): "package odd\n\nclass IOException\n",
+}
+
+
+@pytest.fixture(scope="module")
+def alias_calls(tmp_path_factory: pytest.TempPathFactory) -> dict[str, set[str]]:
+    return _calls(tmp_path_factory.mktemp("alias"), ALIAS_OF_A_REPO_CLASS)
+
+
+@pytest.mark.parametrize(
+    ("caller", "target"),
+    [
+        ("throughAlias", "app/Repository.kt::DefaultRepository"),  # another file, same package
+        ("generic", "app/Repository.kt::Holder"),  # a generic alias reads its head
+        ("imported", "lib/Names.kt::Real"),  # imported from another package
+        ("same", "solo/Solo.kt::Thing"),  # the alias in the caller's file
+    ],
+)
+def test_a_call_through_an_alias_of_a_repo_class_reaches_the_class(
+    alias_calls: dict[str, set[str]], caller: str, target: str
+) -> None:
+    assert alias_calls[caller] == {_ALIASED.format(target)}
+
+
+@pytest.mark.parametrize("caller", ["handler", "prim", "self", "qualified"])
+def test_an_alias_that_names_no_repo_class_still_has_no_callee(
+    alias_calls: dict[str, set[str]], caller: str
+) -> None:
+    assert caller not in alias_calls

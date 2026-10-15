@@ -24,6 +24,7 @@ per strategy, and it is what the edge carries.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import replace
@@ -31,6 +32,8 @@ from pathlib import PurePosixPath
 from typing import Any
 
 import structlog
+
+from repowise.core.ids import file_path_of
 
 # Re-exported: the strategy table is asserted on through this module.
 from .call_language_strategies import _LANGUAGE_CALL_STRATEGIES as _LANGUAGE_CALL_STRATEGIES
@@ -164,6 +167,21 @@ def _imports_a_library(imp: Import) -> bool:
 
 def _is_kotlin_alias(sym: Symbol | None) -> bool:
     return sym is not None and sym.kind == "type_alias" and sym.language == "kotlin"
+
+
+# The head of a Kotlin alias target that names one plain type: ``Repo``,
+# ``Holder<String>``, ``Repo?``. A qualified name (``java.io.IOException``), a
+# function type (``(String) -> Unit``, ``suspend () -> Unit``) matches nothing.
+_ALIAS_TARGET_HEAD = re.compile(r"(?P<head>[A-Za-z_]\w*)\s*(?:<.*>)?\s*\??")
+
+
+def _kotlin_alias_head(sym: Symbol) -> str | None:
+    """The type name a Kotlin ``typealias`` symbol aliases, from its signature."""
+    _, sep, target = (sym.signature or "").partition(" = ")
+    if not sep:
+        return None
+    match = _ALIAS_TARGET_HEAD.fullmatch(target.strip())
+    return match.group("head") if match else None
 
 
 def _is_data_member(sym: Symbol) -> bool:
@@ -1418,20 +1436,50 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> ResolvedCall | None:
         """A receiver-less call, refused where it lands on an extension it has no receiver for.
 
-        Also refused on a Kotlin ``typealias``: ``IOException(..)`` through
-        ``actual typealias IOException = java.io.IOException`` constructs the
-        aliased type, which the alias is not. Ceiling: an alias of a repo class
-        draws no edge to that class.
+        On a Kotlin ``typealias`` the call constructs the aliased type, which the
+        alias is not: it draws an edge to that type only when the alias's own
+        file resolves it to a repo class, and none otherwise (``IOException(..)``
+        through ``actual typealias IOException = java.io.IOException``).
         """
         invoked = self._operator_invoke_call(file_path, call, caller_id)
         if invoked is not None:
             return invoked
         hit = self._resolve_free_call(file_path, call, caller_id)
         if hit is not None and _is_kotlin_alias(self._symbols_by_id.get(hit.callee_id)):
-            return None
+            return self._through_kotlin_alias(hit, call, caller_id)
         if hit is None or call.receiver_call is not None:
             return hit
         return None if self._lacks_extension_receiver(file_path, call, hit.callee_id) else hit
+
+    def _through_kotlin_alias(
+        self,
+        hit: ResolvedCall,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``Repo()`` through ``typealias Repo = DefaultRepository``: the class, or nothing.
+
+        The aliased name is looked up as a constructor call written in the
+        alias's own file would be. Refused unless that lands on a repo class: a
+        qualified, function-type or primitive target resolves to none, and a
+        name that comes back to the alias's own name (or to another alias) is
+        no class.
+        """
+        alias = self._symbols_by_id[hit.callee_id]
+        head = _kotlin_alias_head(alias)
+        if head is None or head == alias.name:
+            return None
+        alias_call = replace(call, target_name=head, receiver_name=None, receiver_call=None)
+        alias_file = file_path_of(alias.id)
+        if alias_file is None:
+            return None
+        found = self._resolve_free_call(alias_file, alias_call, alias.id)
+        target = self._symbols_by_id.get(found.callee_id) if found else None
+        if target is None or target.kind != "class" or target.language != "kotlin":
+            return None
+        if target.name != head:
+            return None
+        return replace(found, caller_id=caller_id, line=call.line)
 
     def _operator_invoke_call(
         self,

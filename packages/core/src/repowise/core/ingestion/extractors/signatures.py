@@ -68,6 +68,13 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}(){_ret(('type',))}"
     if node_type == "type_alias_declaration":
         return f"type {name}"
+    if node_type == "type_alias":
+        # Kotlin ``typealias``: keep the aliased type, so a call through the
+        # alias can be followed to it. Dart's same-named node has no such keyword.
+        aliased = _kotlin_alias_target(def_node, src)
+        if aliased:
+            return f"typealias {name} = {aliased}"
+        return f"{name}{params_text}"
     if node_type == "enum_declaration":
         return f"enum {name}"
     if node_type in ("method_definition", "method_signature"):
@@ -114,6 +121,17 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}{params_text}"
     # Fallback
     return f"{name}{params_text}"
+
+
+def _kotlin_alias_target(def_node: Node, src: str) -> str:
+    """The aliased type of a Kotlin ``typealias`` (``Holder<String>``), else ``""``."""
+    if not any(c.type == "typealias" for c in def_node.children):
+        return ""
+    children = def_node.children
+    for i, child in enumerate(children):
+        if child.type == "=" and i + 1 < len(children):
+            return " ".join(node_text(children[i + 1], src).split())
+    return ""
 
 
 def _kotlin_return(def_node: Node, src: str) -> str:

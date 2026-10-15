@@ -93,7 +93,9 @@ STORE_FORMAT_VERSION: int = 2
 #: the Java way, an extension's receiver leading its types
 #: (``toHexString#0(Byte)``, ``g#0(Int?)``), and a Kotlin trailing lambda counts as an
 #: argument.
-PARSER_SCHEMA_VERSION: int = 8
+#: A Kotlin ``typealias`` signature carries the aliased type
+#: (``typealias Repo = DefaultRepository``).
+PARSER_SCHEMA_VERSION: int = 9
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"

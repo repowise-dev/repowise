@@ -890,6 +890,22 @@ def test_kotlin_signature_carries_the_declared_return_type(tmp_path: Path) -> No
     assert signatures["none"] == "function none()"
 
 
+def test_kotlin_alias_signature_carries_its_target(tmp_path: Path) -> None:
+    source = (
+        "typealias Repo = DefaultRepository\n"
+        "typealias Repos = Holder<String>\n"
+        "typealias Handler = (String) -> Unit\n"
+        "actual typealias IOException = java.io.IOException\n"
+    )
+    parsed = _parse(tmp_path, "a.kt", "kotlin", source)
+    signatures = {s.name: s.signature for s in parsed["a.kt"].symbols}
+
+    assert signatures["Repo"] == "typealias Repo = DefaultRepository"
+    assert signatures["Repos"] == "typealias Repos = Holder<String>"
+    assert signatures["Handler"] == "typealias Handler = (String) -> Unit"
+    assert signatures["IOException"] == "typealias IOException = java.io.IOException"
+
+
 _KOTLIN_LOCALS = (
     "class Repo {\n    fun load() {}\n}\n"
     "class Other {\n    fun load() {}\n}\n"
