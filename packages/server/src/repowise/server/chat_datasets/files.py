@@ -44,7 +44,9 @@ FILES_FIELDS = {
         "number",
         "maintainability health, 0 (worst) to 10; null when unscored",
         AVERAGES,
+        # As nloc_weighted_score averages it, so the repo figure is get_health's.
         weight="nloc",
+        weight_floor=1,
         unit="score",
     ),
     "health_band": DatasetField(
@@ -217,7 +219,8 @@ async def load_files(ctx: LoadContext) -> list[dict[str, Any]]:
     for m in metrics:
         g = git.get(m.file_path)
         c = coverage.get(m.file_path)
-        score = round(m.score, 2) if m.score is not None else None
+        # Unrounded, so an average here is exactly the engine's; views round for display.
+        score = m.score
         rows.append(
             {
                 "path": m.file_path,

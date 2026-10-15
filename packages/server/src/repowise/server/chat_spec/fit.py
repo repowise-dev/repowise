@@ -217,6 +217,9 @@ def fit(
     x_types = [types.get(p) for p in (spec.x_parts or (spec.x,))]
     x_type = "text" if spec.x_parts else x_types[0]
 
+    step = None if spec.x_parts else getattr(meta.get(spec.x), "step", None)
+    if step:
+        spec = replace(spec, x_step=step)
     if spec.kind == "scatter" and x_type != "number":
         spec = replace(
             spec,
@@ -282,15 +285,22 @@ def _declared_weight(
 ) -> ChartSpec:
     """An average of a field that declares a weight is weighted by it, as its own surface
     averages it (health by lines of code, coverage by coverable lines), unless asked not to."""
-    if spec.weight is not None or spec.unweighted:
+    if spec.unweighted:
         return spec
     declared = getattr(meta.get(spec.y[0]), "weight", None)
+    if spec.weight is not None:
+        # The declared weight asked for by name takes its declared floor too.
+        if spec.weight == declared:
+            return replace(spec, weight_floor=getattr(meta.get(spec.y[0]), "weight_floor", None))
+        return spec
     if not declared or declared not in types:
         return spec
     # One row per x averages nothing, so only the overall figure is weighted.
     what = f"{spec.y[0]} is averaged" if grouped else f"the overall {spec.y[0]} is"
     return spec.noted(
-        f"{what} weighted by {declared}; pass weight: none for a plain mean", weight=declared
+        f"{what} weighted by {declared}; pass weight: none for a plain mean",
+        weight=declared,
+        weight_floor=getattr(meta.get(spec.y[0]), "weight_floor", None),
     )
 
 

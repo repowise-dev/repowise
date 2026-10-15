@@ -773,8 +773,27 @@ def test_chart_errors_list_the_fields_without_people():
     assert result["error_code"] == "bad_spec"
     assert "'max_ccn'" in result["error"]
     assert result["fields"] == {"file_path": "text", "score": "number", "max_ccn": "number"}
-    # The fix comes back as a spec that draws, to resend as is.
-    assert result["suggested_spec"] == {"rows": "high_leverage_files", "x": "max_ccn"}
+    # No near miss and no example: guessing a field would chart another measure.
+    assert "suggested_spec" not in result
+
+
+def test_a_suggestion_says_what_it_gave_up():
+    _, result = _show_chart(
+        HEALTH,
+        rows="high_leverage_files",
+        x="file_path",
+        y="score",
+        filter=[{"field": "max_ccn", "op": "gt", "value": 1000}],
+    )
+    assert result["error_code"] == "no_data"
+    assert result["suggested_spec"] == {"rows": "high_leverage_files", "x": "file_path", "y": "score"}
+    assert result["adjustments"] == ["filter dropped, so every row is charted"]
+
+
+def test_a_risk_score_is_refused_before_any_suggestion():
+    _, result = _show_chart(RISK, rows="global_hotspots", x="file_path", y="hotspot_scroe")
+    assert result["error_code"] == "risk_score_series"
+    assert "suggested_spec" not in result
 
 
 def test_a_near_miss_field_name_is_read_as_the_field_and_said():

@@ -157,6 +157,8 @@ def _collect(
             continue
         found.matched += 1
         weight = row.get(spec.weight) if spec.weight else None
+        if spec.weight_floor is not None and spec.weight:
+            weight = max(weight if _number(weight) else 0, spec.weight_floor)
         for acc, measure in zip(found.overall, spec.measures, strict=True):
             acc.add(None if measure == "count" else row.get(measure), weight)
         x_value = _x_value(spec, row)
@@ -408,6 +410,8 @@ def transform(
             color_label = f"Average {color_label.lower()}"
         columns.append((_color_key(spec, keys), color_label))
     out = _chart_rows(spec, found, keys, label_key)
+    if spec.x_step == "week" and spec.aggregate:
+        out = _fill_weeks(spec, out, keys)
     sort, claim = _sort(spec, out, keys, x_type, scatter)
 
     top, other = spec.top, spec.other
@@ -480,6 +484,28 @@ def transform(
     )
 
 
+def _fill_weeks(spec: ChartSpec, out: list[dict[str, Any]], keys: list[str]) -> list[dict[str, Any]]:
+    """Weeks between the first and last with no row, as rows of zero (or null for an average)."""
+    from datetime import date, timedelta
+
+    try:
+        present = {date.fromisoformat(str(r[spec.x])[:10]): r for r in out}
+    except ValueError:
+        return out
+    if len(present) < 2:
+        return out
+    empty = 0 if spec.aggregate in _ADDITIVE else None
+    day, last = min(present), max(present)
+    filled = []
+    while day <= last:
+        row = present.get(day)
+        filled.append(row if row is not None else {spec.x: day.isoformat(), **dict.fromkeys(keys, empty)})
+        day += timedelta(days=7)
+    # Rows off the Monday grid (none from the changes dataset) stay as they were.
+    on_grid = {id(r) for r in filled}
+    return filled + [r for r in out if id(r) not in on_grid]
+
+
 def _x_label(spec: ChartSpec) -> str:
     if spec.x_parts:
         return f" {ARROW} ".join(label(p) for p in spec.x_parts)
@@ -544,4 +570,6 @@ def _figures(
 
 
 def _preview(value: Any) -> Any:
-    return _value_label(value) if isinstance(value, bool) else value
+    if isinstance(value, bool):
+        return _value_label(value)
+    return round(value, 2) if isinstance(value, float) else value

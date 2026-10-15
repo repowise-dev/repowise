@@ -41,6 +41,15 @@ OPTIONS = frozenset(
 
 
 OTHER_LABEL = "Other"
+#: The spec in one paragraph, for every tool that takes one (chart, show_view's chart view).
+SPEC_HELP = (
+    "Spec: x is a field (a list joins them, e.g. [from_package, to_package]). Omit y to "
+    "count rows (the usual case: changes by week is x week, no y); y names a numeric field "
+    "to sum or average (aggregate count|sum|avg|min|max). series splits by a field; filter "
+    "[{field, op, value}]; sort {field, order}; top; other adds up the rest; color colours "
+    "treemap cells; kind, title. The receipt says the kind drawn and why; on an error, "
+    "resend its suggested_spec and tell the user its adjustments."
+)
 
 
 #: Joins the fields of a composite x, as in "packages/server → packages/core".
@@ -141,6 +150,10 @@ class ChartSpec:
     #: A numeric field an ``avg`` is weighted by; ``unweighted`` turns off a declared one.
     weight: str | None = None
     unweighted: bool = False
+    #: The calendar step of a date x ("week"), so a grouped series shows empty steps as zero.
+    x_step: str | None = None
+    #: Each row weighs at least this much (``nloc_weighted_score`` floors lines at 1).
+    weight_floor: float | None = None
     #: A treemap's nesting fields (outermost first) and the field colouring its cells.
     groups: tuple[str, ...] = ()
     color: str | None = None

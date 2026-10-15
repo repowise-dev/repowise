@@ -11,6 +11,7 @@ import pytest
 from repowise.core.persistence.models import (
     Change,
     CoverageFile,
+    HealthFileMetric,
     HealthSnapshot,
     KnowledgeGraphLayer,
 )
@@ -226,3 +227,127 @@ def test_the_schema_lists_every_dataset_and_its_fields():
     schema = chart_schema()["function"]
     assert schema["parameters"]["properties"]["dataset"]["enum"] == chat_datasets.dataset_names()
     assert "files: path, file, package" in schema["description"]
+
+
+# ---------------------------------------------------------------------------
+# Parity, weeks, freshness and the cache
+# ---------------------------------------------------------------------------
+
+
+async def test_the_repo_average_health_is_get_healths(chart_index, session):
+    from repowise.core.analysis.health.scoring import nloc_weighted_score
+    from repowise.core.persistence.crud import get_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    # A file with no lines still weighs 1, as nloc_weighted_score floors it.
+    await session.execute(
+        HealthFileMetric.__table__.update()
+        .where(HealthFileMetric.file_path == "src/db/models.py")
+        .values(nloc=0)
+    )
+    await session.commit()
+    receipt = await run_chart(
+        {"dataset": "files", "x": "package", "y": "health_score", "aggregate": "avg"},
+        None,
+        TurnViews(),
+    )
+    overall = receipt["figures"]["overall"]["Average health score"]
+    metrics = await get_health_metrics(session, chart_index)
+    assert overall == round(nloc_weighted_score(metrics), 2)
+    assert overall == (await get_health(only=["kpis"]))["kpis"]["average_health"]
+
+
+async def test_empty_weeks_count_zero(chart_index, session):
+    session.add(
+        Change(
+            repository_id=chart_index,
+            change_id="late",
+            identity_kind="sha",
+            identity_value="9" * 40,
+            shape="commit",
+            head_sha="9" * 40,
+            merged_at=datetime(2026, 10, 27, 12, tzinfo=UTC),
+            category="fix",
+        )
+    )
+    await session.commit()
+    views = TurnViews()
+    await run_chart({"dataset": "changes", "x": "week"}, None, views)
+    rows = views.parts[0]["data"]["rows"]
+    assert [(r["week"], r["count"]) for r in rows] == [
+        ("2026-10-05", 2),
+        ("2026-10-12", 1),
+        ("2026-10-19", 0),
+        ("2026-10-26", 1),
+    ]
+
+
+async def test_freshness_is_read_on_every_call(chart_index, monkeypatch):
+    import repowise.server.mcp_server._meta as meta_mod
+
+    await chat_datasets.load_rows("files", None)
+    monkeypatch.setattr(
+        meta_mod, "build_meta", lambda **_: {"indexed_commit": "abc1234", "stale_warning": "behind"}
+    )
+    again = await chat_datasets.load_rows("files", None)
+    assert again.cached and again.stale and again.as_of == "abc1234"
+
+
+def test_the_cache_drops_a_repos_older_state_and_evicts_the_oldest(monkeypatch):
+    from repowise.server.chat_datasets import _cache, _store
+
+    monkeypatch.setattr(chat_datasets, "_CACHE_LIMIT", 3)
+    _store(("r1", "s1", "files"), [])
+    _store(("r2", "s1", "files"), [])
+    _store(("r1", "s2", "files"), [])
+    # r1's first state is gone; r2 keeps its own.
+    assert list(_cache) == [("r2", "s1", "files"), ("r1", "s2", "files")]
+    _store(("r3", "s1", "files"), [])
+    _store(("r4", "s1", "files"), [])
+    assert list(_cache) == [("r1", "s2", "files"), ("r3", "s1", "files"), ("r4", "s1", "files")]
+
+
+@pytest.fixture
+def probe_dataset():
+    calls: list[int] = []
+    state = {"fail": False}
+
+    async def load(ctx):
+        import asyncio
+
+        calls.append(1)
+        await asyncio.sleep(0.01)
+        if state["fail"]:
+            raise RuntimeError("index unreadable")
+        return [{"k": "a"}]
+
+    chat_datasets.register_dataset(
+        "probe",
+        description="test",
+        fields={"k": chat_datasets.DatasetField("text", "a key")},
+        basis=("inferred", "test"),
+        example={"x": "k"},
+    )(load)
+    yield calls, state
+    chat_datasets.datasets._impls.pop("probe")
+
+
+async def test_concurrent_loads_read_once(chart_index, probe_dataset):
+    import asyncio
+
+    calls, _ = probe_dataset
+    results = await asyncio.gather(*(chat_datasets.load_rows("probe", None) for _ in range(5)))
+    assert len(calls) == 1
+    assert all(r.rows == [{"k": "a"}] for r in results)
+    assert chat_datasets._locks == {}
+
+
+async def test_a_failed_load_is_not_cached_and_the_tool_says_so(chart_index, probe_dataset):
+    calls, state = probe_dataset
+    state["fail"] = True
+    result = await run_chart({"dataset": "probe", "x": "k"}, None, TurnViews())
+    assert result["error_code"] == "tool_failed" and "index unreadable" in result["error"]
+    assert chat_datasets._locks == {}
+    state["fail"] = False
+    assert "error" not in await run_chart({"dataset": "probe", "x": "k"}, None, TurnViews())
+    assert len(calls) == 2

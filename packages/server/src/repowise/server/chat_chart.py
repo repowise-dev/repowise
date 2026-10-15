@@ -52,11 +52,7 @@ def chart_schema() -> dict[str, Any]:
                 "exact totals, shares and averages to quote. Datasets and fields:\n"
                 + "\n".join(lines)
                 + "\nCall with only `dataset` for what each field means and an example. "
-                "x: a field (a list joins them, e.g. [from_package, to_package]). Omit y to "
-                "count rows (the usual case: changes by week is x week, no y); y names a "
-                "numeric field to sum or average. series splits by a field; color colours "
-                "treemap cells. The receipt says the kind drawn and why; on an error, "
-                "resend its suggested_spec."
+                + chat_spec.SPEC_HELP
             ),
             "parameters": {
                 "type": "object",

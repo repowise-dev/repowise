@@ -32,6 +32,7 @@ from uuid import uuid4
 from pydantic import TypeAdapter, ValidationError
 
 from repowise.core.registry.plugins import SeamRegistry, load_plugins
+from repowise.server import chat_spec
 from repowise.server.chat_artifacts import ARTIFACT_ID_FIELD
 from repowise.server.chat_references import (
     LATEST_PREFIX,
@@ -442,9 +443,8 @@ def show_view_schema(artifact_types: list[str] | None = None) -> dict[str, Any]:
                 "with options.kind to redraw it. Views: " + ", ".join(names) + "; "
                 "named views take options.kind (e.g. donut, bar, table). `table` takes "
                 "options path (a list or map in the result), columns, limit. `chart` plots "
-                "any list or map in the result with the chart tool's spec (rows: the path, "
-                "x, y, series, filter, aggregate, sort, top, other, kind, title). Quote "
-                "numbers from the receipt; on an error resend its suggested_spec."
+                "any list or map in the result: options rows is its path. "
+                + chat_spec.SPEC_HELP
             ),
             "parameters": {
                 "type": "object",

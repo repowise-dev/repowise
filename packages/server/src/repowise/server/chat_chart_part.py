@@ -7,7 +7,6 @@ model can resend it as is.
 
 from __future__ import annotations
 
-import difflib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -15,6 +14,7 @@ from typing import Any
 from repowise.server import chat_spec
 from repowise.server.chat_spec import SpecError
 from repowise.server.chat_spec import label as _label
+from repowise.server.chat_spec.fit import _repair_name
 from repowise.server.chat_views import (
     _ATTRIBUTION,
     _PERSON,
@@ -29,10 +29,12 @@ from repowise.server.schemas.views import (
 )
 
 
-def _spec_error(exc: SpecError, suggested: Mapping[str, Any] | None = None) -> ViewError:
+def _spec_error(
+    exc: SpecError, suggested: tuple[dict[str, Any], list[str]] | None = None
+) -> ViewError:
     extra: dict[str, Any] = {"fields": exc.fields} if exc.fields else {}
     if suggested is not None:
-        extra["suggested_spec"] = dict(suggested)
+        extra["suggested_spec"], extra["adjustments"] = dict(suggested[0]), suggested[1]
     return ViewError(str(exc), code=exc.code, **extra)
 
 
@@ -95,70 +97,114 @@ def _plan(
     return spec, chat_spec.transform(spec, source.rows, types)
 
 
-def _closest(name: Any, fields: list[str]) -> str | None:
-    if not isinstance(name, str):
-        return None
-    if name in fields:
-        return name
-    close = difflib.get_close_matches(name, fields, n=1, cutoff=0.5)
-    return close[0] if close else None
+def _closest(name: Any, types: Mapping[str, str]) -> str | None:
+    """*name* as a field: the same near-miss rule ``fit`` reads names by, nothing looser."""
+    return _repair_name(name, types) if isinstance(name, str) else None
 
 
-def _repaired(options: Mapping[str, Any], fields: list[str]) -> dict[str, Any]:
-    """*options* with each field name it gets wrong swapped for the closest real one, or dropped."""
-    fixed = dict(options)
+def _repaired(
+    options: Mapping[str, Any], types: Mapping[str, str]
+) -> tuple[dict[str, Any], list[str]] | None:
+    """*options* with near-miss field names swapped for the field, and what was changed.
+
+    None when a name has no near miss: a guessed field would chart another
+    measure, so the error stands with the fields listed instead.
+    """
+    fixed, changed = dict(options), []
+
+    def swap(name: Any, role: str) -> str | None:
+        found = _closest(name, types)
+        if found is not None and found != name:
+            changed.append(f"{role} {name!r} read as {found!r}")
+        return found
+
     for key in ("x", "y", "groups"):
         value = fixed.get(key)
-        names = value if isinstance(value, list) else [value] if value is not None else []
-        kept = [c for n in names if (c := _closest(n, fields))]
-        if key == "x" and not kept:
+        if value is None:
             continue
-        if not kept:
-            fixed.pop(key, None)
-        else:
-            fixed[key] = kept if isinstance(value, list) and len(kept) > 1 else kept[0]
+        names = value if isinstance(value, list) else [value]
+        kept = [swap(n, key) for n in names]
+        if None in kept:
+            return None
+        fixed[key] = kept if isinstance(value, list) else kept[0]
     for key in ("series", "weight", "color"):
-        if key in fixed:
-            name = _closest(fixed[key], fields)
+        if key in fixed and not (key == "weight" and str(fixed[key]).lower() == "none"):
+            name = swap(fixed[key], key)
             if name is None:
-                fixed.pop(key)
-            else:
-                fixed[key] = name
-    if "y" not in fixed and fixed.get("aggregate") not in (None, "count"):
-        fixed["aggregate"] = "count"
+                return None
+            fixed[key] = name
     filters = fixed.get("filter")
     if isinstance(filters, (list, Mapping)):
-        filters = [filters] if isinstance(filters, Mapping) else filters
-        fixed["filter"] = [
-            {**f, "field": name}
-            for f in filters
-            if isinstance(f, Mapping) and (name := _closest(f.get("field"), fields))
-        ]
-    return fixed
+        kept_filters = []
+        for f in [filters] if isinstance(filters, Mapping) else filters:
+            name = swap(f.get("field"), "filter field") if isinstance(f, Mapping) else None
+            if name is None:
+                return None
+            kept_filters.append({**f, "field": name})
+        fixed["filter"] = kept_filters
+    return fixed, changed
 
 
-def _suggest(source: ChartSource, options: Mapping[str, Any]) -> dict[str, Any] | None:
-    """A spec that draws, close to *options*, which the model can resend as is.
+#: What each fallback gives up, in the order they are tried.
+_DROPS: tuple[tuple[tuple[str, ...], str], ...] = (
+    ((), ""),
+    (("kind",), "kind dropped, so the kind is picked from the data"),
+    (("sort", "top", "other"), "sort, top and other dropped"),
+    (("filter",), "filter dropped, so every row is charted"),
+    (("series",), "series dropped, so the chart is not split"),
+)
 
-    Each candidate is run, so a suggestion is never itself an error: the
-    names repaired, then without kind, filters, sort and top, or series, and
-    last the source's own example.
+
+def _suggest(
+    source: ChartSource, options: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]] | None:
+    """A spec that draws, close to *options*, and every way it differs from them.
+
+    Each candidate is run, so a suggestion is never itself an error. Names are
+    repaired only by the near-miss rule; a dropped filter, series or kind is
+    always listed in the adjustments, so the model can tell the user. Last
+    comes the source's own example, said to be one.
     """
-    fields = sorted(chat_spec.field_types(source.rows))
-    base = _repaired(options, fields)
-    drops = ((), ("kind",), ("filter",), ("sort", "top", "other"), ("series",))
-    candidates = [{k: v for k, v in base.items() if k not in keys} for keys in drops]
+    types = chat_spec.field_types(source.rows)
+    repaired = _repaired(options, types)
+    candidates: list[tuple[dict[str, Any], list[str]]] = []
+    if repaired is not None:
+        base, changed = repaired
+        for keys, why in _DROPS:
+            if keys and not any(k in base for k in keys):
+                continue
+            candidate = {k: v for k, v in base.items() if k not in keys}
+            candidates.append((candidate, [*changed, *([why] if why else [])]))
     if source.example is not None:
-        candidates.append({**dict(source.example), **({"rows": options["rows"]} if "rows" in options else {})})
-    for candidate in candidates:
+        example = {**dict(source.example), **({"rows": options["rows"]} if "rows" in options else {})}
+        candidates.append((example, ["the dataset's example in place of this spec"]))
+    for candidate, changed in candidates:
         if candidate == dict(options):
             continue
         try:
             _plan(source, candidate)
         except (SpecError, ViewError):
             continue
-        return candidate
+        return candidate, changed
     return None
+
+
+def _refuse_risk(source: ChartSource, options: Mapping[str, Any]) -> None:
+    """A risk score asked for as a plotted value is refused before anything is suggested."""
+    types = chat_spec.field_types(source.rows)
+    asked: list[Any] = []
+    for key in ("y", "series", "color"):
+        value = options.get(key)
+        asked.extend(value if isinstance(value, list) else [value])
+    x = options.get("x")
+    if isinstance(x, str) and types.get(x) == "number":
+        asked.append(x)
+    for name in asked:
+        if isinstance(name, str) and _RISK_SCORE.search(name):
+            raise ViewError(
+                f"a risk score is never a chart series ({name!r}); show it in a table",
+                code="risk_score_series",
+            )
 
 
 def _units(spec: chat_spec.ChartSpec, meta: Mapping[str, Any]) -> str | None:
@@ -184,6 +230,7 @@ def chart_part(source: ChartSource, options: Mapping[str, Any]) -> dict[str, Any
     Shared by ``show_view``'s ``chart`` view and the ``chart`` tool. Raises
     ``ViewError``; a spec error carries a ``suggested_spec`` when one draws.
     """
+    _refuse_risk(source, options)
     try:
         spec, result = _plan(source, options)
     except SpecError as exc:
@@ -191,6 +238,9 @@ def chart_part(source: ChartSource, options: Mapping[str, Any]) -> dict[str, Any
 
     def cell(key: str, value: Any) -> Any:
         value = _cell(key, value) if key not in result.series else _wire(value)
+        if isinstance(value, float) and not value.is_integer():
+            # Rows keep full precision for exact averages; a cell reads at two places.
+            return round(value, 2)
         return None if value is ... else value
 
     figures = result.figures

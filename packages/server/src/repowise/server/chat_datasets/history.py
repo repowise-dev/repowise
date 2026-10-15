@@ -26,7 +26,7 @@ from repowise.server.chat_datasets import (
     description="One row per merged change in the indexed history (get_overview's change records).",
     fields={
         "date": DatasetField("time", "the day it merged"),
-        "week": DatasetField("time", "the Monday of the week it merged"),
+        "week": DatasetField("time", "the Monday of the week it merged", step="week"),
         "month": DatasetField("time", "the month it merged"),
         "category": DatasetField(
             "text", "feature, fix, refactor, docs, test, deps, chore or other"

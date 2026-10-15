@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -44,6 +45,10 @@ class DatasetField:
     aggregates: tuple[str, ...] = TEXT
     #: A numeric field whose ``avg`` is weighted by this field (coverage by coverable lines).
     weight: str | None = None
+    #: A date field's calendar step ("week"): a grouped chart fills empty steps with zero.
+    step: str | None = None
+    #: The least weight one row carries, as the field's own surface floors it.
+    weight_floor: float | None = None
     unit: str | None = None
 
 
@@ -161,13 +166,28 @@ class DatasetRows:
     cached: bool = False
 
 
-_cache: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-_freshness: dict[tuple[str, str], tuple[str | None, bool]] = {}
+#: Rows by ``(repository id, index state, dataset)``, oldest first, so the
+#: oldest is the one evicted at the cap.
+_cache: OrderedDict[tuple[str, str, str], list[dict[str, Any]]] = OrderedDict()
 _locks: dict[tuple[str, str, str], asyncio.Lock] = {}
 
 
+def _store(key: tuple[str, str, str], rows: list[dict[str, Any]]) -> None:
+    """Keep *rows*: a repository's older index states go, then the oldest past the cap."""
+    repo_id, state, _ = key
+    for old in [k for k in _cache if k[0] == repo_id and k[1] != state]:
+        del _cache[old]
+    _cache[key] = rows
+    while len(_cache) > _CACHE_LIMIT:
+        _cache.popitem(last=False)
+
+
 async def load_rows(name: str, repo: str | None) -> DatasetRows:
-    """Every row of dataset *name* for the repository *repo* names (None: the served one)."""
+    """Every row of dataset *name* for the repository *repo* names (None: the served one).
+
+    Rows are cached per index state; the freshness (``as_of``, ``stale``) is
+    read on every call, since the checkout can move while the index stays put.
+    """
     from repowise.core.persistence.database import get_session
     from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
     from repowise.server.mcp_server._index_state import index_state_key
@@ -184,43 +204,34 @@ async def load_rows(name: str, repo: str | None) -> DatasetRows:
             if key in _cache:
                 return _cache[key]
             lock = _locks.setdefault(key, asyncio.Lock())
-            async with lock:
-                if key not in _cache:
-                    ds = get_dataset(dataset)
-                    if ds is None:
-                        raise KeyError(dataset)
-                    loaded = await ds.load(LoadContext(session, repository, repo_path, rows))
-                    if len(_cache) >= _CACHE_LIMIT:
-                        _cache.clear()
-                    _cache[key] = loaded
-            _locks.pop(key, None)
+            try:
+                async with lock:
+                    if key not in _cache:
+                        ds = get_dataset(dataset)
+                        if ds is None:
+                            raise KeyError(dataset)
+                        _store(key, await ds.load(LoadContext(session, repository, repo_path, rows)))
+            finally:
+                # A failed load leaves no lock behind, so the next call reads again.
+                _locks.pop(key, None)
             return _cache[key]
 
         loaded = await rows(name)
-        as_of, stale = _fresh(repository, state)
+        as_of, stale = _fresh(repository)
     return DatasetRows(rows=loaded, as_of=as_of, stale=stale, cached=hit)
 
 
-def _fresh(repository: Any, state: str) -> tuple[str | None, bool]:
-    """The indexed commit and the stale flag ``_meta`` reports, once per index state."""
-    key = (repository.id, state)
-    if key not in _freshness:
-        from repowise.server.mcp_server._meta import build_meta
+def _fresh(repository: Any) -> tuple[str | None, bool]:
+    """The indexed commit and the stale flag ``_meta`` reports for *repository* now."""
+    from repowise.server.mcp_server._meta import build_meta
 
-        meta = build_meta(repository=repository)
-        commit = meta.get("indexed_commit")
-        if len(_freshness) >= _CACHE_LIMIT:
-            _freshness.clear()
-        _freshness[key] = (
-            commit if isinstance(commit, str) else None,
-            bool(meta.get("stale_warning")),
-        )
-    return _freshness[key]
+    meta = build_meta(repository=repository)
+    commit = meta.get("indexed_commit")
+    return commit if isinstance(commit, str) else None, bool(meta.get("stale_warning"))
 
 
 def clear_cache() -> None:
     _cache.clear()
-    _freshness.clear()
 
 
 __all__ = [
