@@ -166,7 +166,11 @@ export function OwnerTable({
                   markerTitle="Sole-owned files held by someone inactive for 90 days"
                 />
                 <Num value={o.dead_code_lines_owned} />
-                <Num value={o.commit_count_90d} />
+                <Num
+                  value={o.commit_count_90d}
+                  atLeast={o.commit_count_90d_at_least}
+                  atLeastTitle="At least this many: the indexed commits stop inside the 90 days"
+                />
                 <td className="whitespace-nowrap py-2.5 pl-3 align-top text-[var(--color-text-tertiary)]">
                   {formatRelativeTimeOrNull(o.last_commit_at) ?? "—"}
                 </td>
@@ -184,11 +188,16 @@ function Num({
   emphasis,
   marker,
   markerTitle,
+  atLeast,
+  atLeastTitle,
 }: {
   value: number | null;
   emphasis?: boolean;
   marker?: boolean;
   markerTitle?: string;
+  /** A floor shown as "≥N" when `value` is unknown. */
+  atLeast?: number | null | undefined;
+  atLeastTitle?: string;
 }) {
   return (
     <td
@@ -196,7 +205,13 @@ function Num({
         emphasis ? "font-semibold text-[var(--color-text-primary)]" : ""
       }`}
     >
-      {value != null && value > 0 ? value.toLocaleString() : <span className="text-[var(--color-text-tertiary)]">—</span>}
+      {value != null && value > 0 ? (
+        value.toLocaleString()
+      ) : value == null && atLeast ? (
+        <span title={atLeastTitle}>≥{atLeast.toLocaleString()}</span>
+      ) : (
+        <span className="text-[var(--color-text-tertiary)]">—</span>
+      )}
       {marker && (
         <span
           title={markerTitle}

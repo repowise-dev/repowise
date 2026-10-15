@@ -46,6 +46,8 @@ class OwnerListEntry(BaseModel):
     # Distinct commits by this person in the 90 days before HEAD; None when the
     # indexed commits do not cover the window.
     commit_count_90d: int | None
+    # A floor of that count when the indexed commits stop inside the window.
+    commit_count_90d_at_least: int | None = None
     last_commit_at: datetime | None
     bus_factor_risk_files: int  # files they own where bus_factor <= 1
 
@@ -86,6 +88,7 @@ class OwnerProfileResponse(BaseModel):
     dead_code_files_owned: int
     dead_code_lines_owned: int
     commit_count_90d: int | None
+    commit_count_90d_at_least: int | None = None
     last_commit_at: datetime | None
     first_commit_at: datetime | None
     bus_factor_risk_files: int

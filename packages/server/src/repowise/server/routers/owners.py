@@ -51,6 +51,7 @@ def _to_list_entry(acc: _OwnerAccumulator, module_totals: dict[str, int]) -> Own
         dead_code_files_owned=len(acc.dead_code_files),
         dead_code_lines_owned=acc.dead_code_lines,
         commit_count_90d=acc.commit_count_90d,
+        commit_count_90d_at_least=acc.commit_count_90d_at_least,
         last_commit_at=acc.last_commit_at,
         bus_factor_risk_files=acc.bus_factor_risk_files,
     )
@@ -120,6 +121,7 @@ def _to_profile(acc: _OwnerAccumulator, module_totals: dict[str, int]) -> OwnerP
         dead_code_files_owned=len(acc.dead_code_files),
         dead_code_lines_owned=acc.dead_code_lines,
         commit_count_90d=acc.commit_count_90d,
+        commit_count_90d_at_least=acc.commit_count_90d_at_least,
         last_commit_at=acc.last_commit_at,
         first_commit_at=acc.first_commit_at,
         bus_factor_risk_files=acc.bus_factor_risk_files,

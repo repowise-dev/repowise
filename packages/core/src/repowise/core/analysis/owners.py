@@ -77,6 +77,9 @@ class OwnerAccumulator:
     # Distinct commits in the 90 days before HEAD; None when the commit rows
     # are missing or do not reach back across the whole window.
     commit_count_90d: int | None = None
+    # When the commit rows stop inside the window: this person's commits in
+    # the part they cover, a floor of the 90-day count. None otherwise.
+    commit_count_90d_at_least: int | None = None
     lines_added_90d_est: float = 0.0
     lines_deleted_90d_est: float = 0.0
 
@@ -274,7 +277,8 @@ def _apply_commit_activity(
     Each owner's ``last_commit_at`` is the newest of their own commits; an
     owner with no row keeps the per-file value. The count stays ``None`` when
     there are no rows, or when the rows stop short of the window start and
-    are not the whole history (a capped sample would undercount).
+    are not the whole history (a capped sample would undercount); an owner
+    with commits in such a sample gets that count as a floor instead.
     """
     stamped: list[tuple[str, str, datetime]] = []
     for c in commits:
@@ -302,6 +306,8 @@ def _apply_commit_activity(
     for key, acc in accs.items():
         if covers_window:
             acc.commit_count_90d = len(recent.get(key, ()))
+        elif recent.get(key):
+            acc.commit_count_90d_at_least = len(recent[key])
         if key in last:
             acc.last_commit_at = last[key]
 

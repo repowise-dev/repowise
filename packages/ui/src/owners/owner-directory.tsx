@@ -106,11 +106,17 @@ export function OwnerDirectory({
       ? sorted.filter((o) => (o.commit_count_90d ?? 0) > 0).length
       : null;
     const hotspots = sorted.reduce((s, o) => s + o.hotspots_owned, 0);
-    const commits90d = sorted.reduce((s, o) => s + (o.commit_count_90d ?? 0), 0);
+    const commits90d = sorted.reduce(
+      (s, o) => s + (o.commit_count_90d ?? o.commit_count_90d_at_least ?? 0),
+      0,
+    );
+    // Any floor makes the total a floor too.
+    const commits90dFloor = sorted.some((o) => o.commit_count_90d == null && o.commit_count_90d_at_least);
     return {
       deadFiles,
       hotspots,
       commits90d,
+      commits90dFloor,
       topName: sorted[0]?.name ?? null,
       topFiles: sorted[0]?.files_owned ?? 0,
       totalFiles,
@@ -198,7 +204,10 @@ export function OwnerDirectory({
     },
     {
       label: "Commits 90d",
-      value: summary.commits90d > 0 ? summary.commits90d.toLocaleString() : "",
+      value:
+        summary.commits90d > 0
+          ? `${summary.commits90dFloor ? "≥" : ""}${summary.commits90d.toLocaleString()}`
+          : "",
     },
     {
       label: "Dead-code files",

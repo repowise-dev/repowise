@@ -15,6 +15,8 @@ export interface OwnerListEntry {
   dead_code_lines_owned: number;
   /** Distinct commits in the 90 days before HEAD; null when the indexed commits do not cover the window. */
   commit_count_90d: number | null;
+  /** A floor of that count when the indexed commits stop inside the window; null otherwise. */
+  commit_count_90d_at_least?: number | null;
   last_commit_at: string | null;
   bus_factor_risk_files: number;
 }
@@ -57,6 +59,8 @@ export interface OwnerProfile {
   dead_code_lines_owned: number;
   /** Distinct commits in the 90 days before HEAD; null when the indexed commits do not cover the window. */
   commit_count_90d: number | null;
+  /** A floor of that count when the indexed commits stop inside the window; null otherwise. */
+  commit_count_90d_at_least?: number | null;
   last_commit_at: string | null;
   first_commit_at: string | null;
   bus_factor_risk_files: number;

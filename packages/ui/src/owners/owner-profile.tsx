@@ -143,7 +143,13 @@ export function OwnerProfileView({
   // exact six-digit figure would claim a precision the number does not have.
   const ribbon: RibbonStat[] = [
     // Null when the indexed commits do not reach back 90 days: not a zero.
-    { label: "Commits, 90d", value: owner.commit_count_90d?.toLocaleString() ?? "—" },
+    {
+      label: "Commits, 90d",
+      // A floor when the indexed commits stop inside the window.
+      value:
+        owner.commit_count_90d?.toLocaleString() ??
+        (owner.commit_count_90d_at_least ? `≥${owner.commit_count_90d_at_least.toLocaleString()}` : "—"),
+    },
     {
       label: "Lines added",
       value: formatCompact(owner.lines_added_90d_est),
