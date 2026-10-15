@@ -1,0 +1,39 @@
+name: Repowise coverage
+on:
+  pull_request:
+permissions:
+  contents: read
+  id-token: write   # lets the upload prove it comes from this repository
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e . pytest pytest-cov   # adjust to your install
+      - run: pytest --cov --cov-report=xml
+      - name: Upload coverage to Repowise
+        if: always()
+        continue-on-error: true
+        env:
+          REPORTS: "coverage.xml"   # space-separated paths or globs
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          shopt -s globstar nullglob
+          files=()
+          for pattern in $REPORTS; do for f in $pattern; do [ -f "$f" ] && files+=(-F "report=@$f"); done; done
+          if [ ${#files[@]} -eq 0 ]; then echo "::warning::Repowise: no coverage report found at: $REPORTS"; exit 0; fi
+          auth=()
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=repowise" | jq -r '.value // empty' || true)
+            [ -n "$token" ] && auth=(-H "Authorization: Bearer $token")
+          fi
+          curl -sS --fail-with-body --max-time 60 "${auth[@]}" "${files[@]}" \
+            -F "repository=$GITHUB_REPOSITORY" -F "head_sha=$HEAD_SHA" -F "pr_number=$PR_NUMBER" \
+            -F "event=$GITHUB_EVENT_NAME" -F "run_url=$RUN_URL" -F "workspace=$GITHUB_WORKSPACE" \
+            https://api.repowise.dev/ci/coverage \
+            || echo "::warning::Repowise: coverage upload failed; see the message above."
