@@ -339,12 +339,12 @@ async def load_file_facts(
     return facts
 
 
-async def _reachability(
-    session: Any, repository_id: str, files: set[str], test_files: set[str]
-) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
-    from repowise.core.analysis.dead_code.models import DeadCodeKind
-    from repowise.core.persistence.crud import get_dead_code_findings
-    from repowise.core.persistence.models import GraphEdge, GraphNode
+async def _file_nodes(
+    session: Any, repository_id: str, files: set[str]
+) -> tuple[list[str], dict[str, str]]:
+    """The reachability roots (entry points and other roots), and each of
+    *files*' language."""
+    from repowise.core.persistence.models import GraphNode
 
     nodes = (
         await session.execute(
@@ -358,30 +358,43 @@ async def _reachability(
     ).all()
     language = {n: lang for n, lang, _e, _r in nodes if n in files and lang}
     roots = [n for n, _l, entry, root in nodes if entry or root]
-    reached: set[str] = set()
-    if roots and files:
-        # Ceiling: every file-to-file import edge is read to walk from the roots;
-        # one read per call, a few MB on the largest indexes measured so far.
-        edges = (
-            await session.execute(
-                select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
-                    GraphEdge.repository_id == repository_id,
-                    GraphEdge.edge_type.in_(_LOAD_EDGE_TYPES),
-                )
+    return roots, language
+
+
+async def _reached_from(session: Any, repository_id: str, roots: list[str]) -> set[str]:
+    """Every file the stored load edges reach from *roots*, the roots included."""
+    from repowise.core.persistence.models import GraphEdge
+
+    # Ceiling: every file-to-file load edge is read to walk from the roots;
+    # one read per call, a few MB on the largest indexes measured so far.
+    edges = (
+        await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.edge_type.in_(_LOAD_EDGE_TYPES),
             )
-        ).all()
-        adjacency: dict[str, list[str]] = {}
-        for src, dst in edges:
-            if _is_file(src) and _is_file(dst):
-                adjacency.setdefault(src, []).append(dst)
-        reached = set(roots)
-        queue = deque(roots)
-        while queue:
-            for nxt in adjacency.get(queue.popleft(), ()):
-                if nxt not in reached:
-                    reached.add(nxt)
-                    queue.append(nxt)
-    # What the dead-code surface serves: open findings of a shown kind, no gated language.
+        )
+    ).all()
+    adjacency: dict[str, list[str]] = {}
+    for src, dst in edges:
+        if _is_file(src) and _is_file(dst):
+            adjacency.setdefault(src, []).append(dst)
+    reached = set(roots)
+    queue = deque(roots)
+    while queue:
+        for nxt in adjacency.get(queue.popleft(), ()):
+            if nxt not in reached:
+                reached.add(nxt)
+                queue.append(nxt)
+    return reached
+
+
+async def _unreachable_findings(session: Any, repository_id: str, files: set[str]) -> set[str]:
+    """*files* with an unreachable_file finding the dead-code surface serves:
+    open, of a shown kind, in no gated language."""
+    from repowise.core.analysis.dead_code.models import DeadCodeKind
+    from repowise.core.persistence.crud import get_dead_code_findings
+
     unreachable: set[str] = set()
     ordered = sorted(files)
     for i in range(0, len(ordered), _CHUNK):
@@ -392,18 +405,45 @@ async def _reachability(
             file_paths=ordered[i : i + _CHUNK],
         )
         unreachable.update(f.file_path for f in found)
-    out: dict[str, dict[str, str]] = {}
-    for path in files:
-        if path in test_files:
-            out[path] = {"state": "test", "basis": "is_test"}
-        elif path in reached:
-            out[path] = {"state": "reachable", "basis": "import_graph"}
-        elif path in unreachable:
-            out[path] = {"state": "unreachable", "basis": "dead_code"}
-        elif not roots:
-            out[path] = {"state": "unknown", "basis": "no_entry_points"}
-        else:
-            out[path] = {"state": "unknown", "basis": "no_import_path"}
+    return unreachable
+
+
+def _file_reachability(
+    path: str,
+    *,
+    test_files: set[str],
+    reached: set[str],
+    unreachable: set[str],
+    has_roots: bool,
+) -> dict[str, str]:
+    """One file's state and the basis it rests on, in order of precedence."""
+    if path in test_files:
+        return {"state": "test", "basis": "is_test"}
+    if path in reached:
+        return {"state": "reachable", "basis": "import_graph"}
+    if path in unreachable:
+        return {"state": "unreachable", "basis": "dead_code"}
+    if not has_roots:
+        return {"state": "unknown", "basis": "no_entry_points"}
+    return {"state": "unknown", "basis": "no_import_path"}
+
+
+async def _reachability(
+    session: Any, repository_id: str, files: set[str], test_files: set[str]
+) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+    roots, language = await _file_nodes(session, repository_id, files)
+    reached = await _reached_from(session, repository_id, roots) if roots and files else set()
+    unreachable = await _unreachable_findings(session, repository_id, files)
+    out = {
+        path: _file_reachability(
+            path,
+            test_files=test_files,
+            reached=reached,
+            unreachable=unreachable,
+            has_roots=bool(roots),
+        )
+        for path in files
+    }
     return out, language
 
 
