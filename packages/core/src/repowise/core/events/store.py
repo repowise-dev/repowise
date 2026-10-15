@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 
 #: Stamp prefix of a gap marker: an index run with no snapshot.
 GAP_STAMP = "gap:"
+#: Kinds read from the contracts the workspace's cross-repo pass extracts.
+CONTRACT_KINDS = frozenset({"contract_added", "contract_broken"})
 
 
 @dataclass(frozen=True)
@@ -179,7 +181,7 @@ async def record_snapshot(
     if previous is not None and previous.stamp == stamp:
         before = await run_facts(session, previous.id)
         events = await _store_events(
-            session, repo, run, previous, before, facts, settings, taken_at
+            session, repo, run, previous, before, facts, settings.kinds, taken_at
         )
     await compact(session, repository_id, settings, now=taken_at)
     await session.flush()
@@ -188,13 +190,68 @@ async def record_snapshot(
     return events
 
 
-async def _newest_run(session: Any, repository_id: str) -> Any:
+async def refresh_contract_facts(session: Any, repository_id: str) -> list[EngineEvent]:
+    """Measure the newest run's contracts once the workspace has extracted them.
+
+    :func:`record_snapshot` runs before the cross-repo pass extracts contracts
+    at the new commit, so that run stored them as unavailable. Called after
+    extraction, this rewrites the same run's contract facts and stores the
+    contract events against the run before it, as the snapshot would have.
+    Idempotent: event ids are keyed on the two runs. A run whose commit or
+    stamp is no longer current, or contracts still unavailable, is left alone.
+    """
+    from repowise.core.persistence.models import ComponentSnapshot, Repository
+
+    from .snapshot import contract_facts, current_stamp
+
+    repo = await session.get(Repository, repository_id)
+    if repo is None or not repo.local_path:
+        return []
+    root = Path(repo.local_path)
+    settings = load_event_settings(root)
+    if not settings.enabled:
+        return []
+    run = await _newest_run(session, repository_id)
+    if run is None or not run.commit_sha or run.commit_sha != repo.head_commit:
+        return []
+    if run.stamp != current_stamp():
+        return []
+    measured = await contract_facts(session, repository_id, root, head_commit=run.commit_sha)
+    if measured is None:
+        return []
+    after: dict[str, dict[str, Any]] = {}
+    for row in await session.scalars(
+        select(ComponentSnapshot).where(ComponentSnapshot.run_id == run.id)
+    ):
+        facts = json.loads(row.facts_json)
+        definition, contracts = measured.get(row.component, (None, None))
+        # A component re-drawn since the snapshot keeps what it stored.
+        if definition == facts.get("definition") and facts.get("contracts") != contracts:
+            facts["contracts"] = contracts
+            row.facts_json = json.dumps(facts, sort_keys=True)
+        after[row.component] = facts
+    events: list[EngineEvent] = []
+    previous = await _newest_run(session, repository_id, skip=1)
+    if previous is not None and previous.stamp == run.stamp:
+        before = await run_facts(session, previous.id)
+        kinds = settings.kinds & CONTRACT_KINDS
+        events = await _store_events(
+            session, repo, run, previous, before, after, kinds, _aware(run.taken_at)
+        )
+    await session.flush()
+    if events:
+        await _deliver(events, settings, root)
+    return events
+
+
+async def _newest_run(session: Any, repository_id: str, *, skip: int = 0) -> Any:
     from repowise.core.persistence.models import SnapshotRun
 
     return await session.scalar(
         select(SnapshotRun)
         .where(SnapshotRun.repository_id == repository_id)
         .order_by(SnapshotRun.taken_at.desc(), SnapshotRun.id.desc())
+        .offset(skip)
         .limit(1)
     )
 
@@ -238,12 +295,12 @@ async def _store_events(
     previous: Any,
     before: dict[str, dict[str, Any]],
     after: dict[str, dict[str, Any]],
-    settings: EventSettings,
+    kinds: frozenset[str],
     taken_at: datetime,
 ) -> list[EngineEvent]:
     from repowise.core.persistence.models import Change, EngineEventRecord
 
-    occurrences = [o for o in diff_snapshots(before, after) if o[0] in settings.kinds]
+    occurrences = [o for o in diff_snapshots(before, after) if o[0] in kinds]
     if not occurrences:
         return []
     url = _public_url(repo.url)

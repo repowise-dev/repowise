@@ -208,6 +208,31 @@ def _finish_outcome(
         _refresh_editor_stamp(repo_path, agents_md, degraded)
 
 
+def _run_member_cross_repo_hooks(repo_path: Any, degraded: list[str]) -> None:
+    """The cross-repo hooks for this repo, when it is a member of a workspace
+    of two or more repos."""
+    try:
+        ws_root = find_workspace_root(repo_path)
+        if ws_root is None:
+            return
+        from repowise.core.workspace import WorkspaceConfig
+        from repowise.core.workspace.update import run_cross_repo_hooks
+
+        ws_config = WorkspaceConfig.load(ws_root)
+        repo_abs = repo_path.resolve()
+        alias = next(
+            (e.alias for e in ws_config.repos if (ws_root / e.path).resolve() == repo_abs), None
+        )
+        if alias and len(ws_config.repos) >= 2:
+            console.print("Running cross-repo analysis...")
+            run_async(run_cross_repo_hooks(ws_config, ws_root, [alias]))
+            console.print("[green]Cross-repo analysis updated.[/green]")
+    except Exception as exc:
+        # Cross-repo hooks must never fail the update, but a stale cross-repo
+        # layer should not masquerade as a fully clean run.
+        degraded.append(f"Cross-repo analysis: {exc}")
+
+
 def _refresh_editor_stamp(
     repo_path: Any, agents_md: bool | None, degraded: list[str] | None = None
 ) -> None:
@@ -2003,6 +2028,11 @@ def run_update(
         # Index-only is the post-commit hook's hot path; clear any stale pending
         # marker here too, not just on the full-docs path.
         consume_update_pending(repo_path, head)
+        # A member's own commit moves the contracts it provides: without this
+        # the workspace's contracts (and the contract events) lag every
+        # index-only update until a full or workspace update runs.
+        if not skip_cross_repo_hooks:
+            _run_member_cross_repo_hooks(repo_path, degraded)
         _record_update_outcome(
             index_only=True,
             changed_count=len(file_diffs),
@@ -2707,33 +2737,11 @@ def run_update(
     # newer than the one we just indexed.
     consume_update_pending(repo_path, head)
 
-    # Trigger cross-repo hooks if this repo is part of a workspace. The
-    # workspace docs flow suppresses this per-repo and runs the hooks once
+    # The workspace docs flow suppresses the hooks per repo and runs them once
     # over every updated repo, so the cross-repo layer isn't rebuilt from a
     # half-updated set on every member.
-    try:
-        ws_root = find_workspace_root(repo_path) if not skip_cross_repo_hooks else None
-        if ws_root is not None:
-            from repowise.core.workspace import WorkspaceConfig
-            from repowise.core.workspace.update import run_cross_repo_hooks
-
-            ws_config = WorkspaceConfig.load(ws_root)
-            # Find this repo's alias in the workspace config
-
-            repo_abs = repo_path.resolve()
-            alias = None
-            for entry in ws_config.repos:
-                if (ws_root / entry.path).resolve() == repo_abs:
-                    alias = entry.alias
-                    break
-            if alias and len(ws_config.repos) >= 2:
-                console.print("Running cross-repo analysis...")
-                run_async(run_cross_repo_hooks(ws_config, ws_root, [alias]))
-                console.print("[green]Cross-repo analysis updated.[/green]")
-    except Exception as exc:
-        # Cross-repo hooks must never fail the update, but a stale cross-repo
-        # layer should not masquerade as a fully clean run.
-        degraded.append(f"Cross-repo analysis: {exc}")
+    if not skip_cross_repo_hooks:
+        _run_member_cross_repo_hooks(repo_path, degraded)
 
     elapsed = time.monotonic() - start
     _record_update_outcome(

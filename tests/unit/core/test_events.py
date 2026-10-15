@@ -580,3 +580,87 @@ async def test_a_stored_event_of_a_kind_no_longer_known_still_reads(repo_db):
         (event,) = await list_events(session, repo_id)
     assert to_cloudevent(event)["type"] == "dev.repowise.retired_kind.0.1.0"
 
+
+# ---------------------------------------------------------------------------
+# Contract facts measured after the workspace extracts contracts
+# ---------------------------------------------------------------------------
+
+
+async def _refresh(factory, repo_id, monkeypatch, measured, stamp="s1"):
+    from repowise.core.events.store import refresh_contract_facts
+    from repowise.core.persistence.database import get_session
+
+    async def _contracts(*_a, **_k):
+        return measured
+
+    monkeypatch.setattr(snapshot_mod, "contract_facts", _contracts)
+    monkeypatch.setattr(snapshot_mod, "current_stamp", lambda: stamp)
+    async with get_session(factory) as session:
+        return await refresh_contract_facts(session, repo_id)
+
+
+async def _stored_contracts(factory, repo_id):
+    from sqlalchemy import select
+
+    from repowise.core.events.store import run_facts
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import SnapshotRun
+
+    async with get_session(factory) as session:
+        runs = await session.scalars(
+            select(SnapshotRun.id).where(SnapshotRun.repository_id == repo_id)
+            .order_by(SnapshotRun.taken_at, SnapshotRun.id)
+        )
+        return [(await run_facts(session, r))["c"]["contracts"] for r in runs]
+
+
+@pytest.mark.asyncio
+async def test_contracts_extracted_after_the_snapshot_fill_the_same_run(repo_db, monkeypatch):
+    from repowise.core.events.store import list_events
+    from repowise.core.persistence.database import get_session
+
+    factory, repo_id, _root = repo_db
+    unavailable = {"basis": "unavailable"}
+    t0 = datetime(2026, 5, 1, tzinfo=UTC)
+    await _run(factory, repo_id, head="a" * 40, facts={"c": _facts()}, monkeypatch=monkeypatch, now=t0)
+    # The update's snapshot runs before extraction reaches the new commit.
+    later = {"c": {**_facts(), "contracts": unavailable}}
+    t1 = t0 + timedelta(hours=1)
+    assert await _run(factory, repo_id, head="b" * 40, facts=later, monkeypatch=monkeypatch, now=t1) == []
+
+    # Still unavailable after the pass (no workspace): nothing is written.
+    assert await _refresh(factory, repo_id, monkeypatch, None) == []
+    assert (await _stored_contracts(factory, repo_id))[1] == unavailable
+
+    now = {"basis": "measured", "provided": {"http::GET::/b": 0}}
+    events = await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", now)})
+    assert sorted((e.kind, e.evidence["contract_id"]) for e in events) == [
+        ("contract_added", "http::GET::/b"),
+        ("contract_broken", "http::GET::/a"),
+    ]
+    assert {e.commit_sha for e in events} == {"b" * 40}
+    assert (await _stored_contracts(factory, repo_id))[1] == now
+    # Idempotent: a second pass over the same run stores nothing new.
+    assert await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", now)}) == []
+    async with get_session(factory) as session:
+        assert len(await list_events(session, repo_id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_contract_refresh_leaves_a_redrawn_component_or_an_old_run_alone(
+    repo_db, monkeypatch
+):
+    factory, repo_id, _root = repo_db
+    unavailable = {"basis": "unavailable"}
+    await _run(factory, repo_id, head="a" * 40, facts={"c": {**_facts(), "contracts": unavailable}}, monkeypatch=monkeypatch)
+    measured = {"basis": "measured", "provided": {}}
+    assert await _refresh(factory, repo_id, monkeypatch, {"c": ("d2", measured)}) == []
+    assert await _stored_contracts(factory, repo_id) == [unavailable]
+    # Under another stamp the run is not this analyzer's to fill.
+    assert await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", measured)}, stamp="s2") == []
+    assert await _stored_contracts(factory, repo_id) == [unavailable]
+
+
+@pytest.mark.asyncio
+async def test_contract_facts_are_unavailable_outside_a_workspace(tmp_path):
+    assert await snapshot_mod.contract_facts(None, "r", tmp_path, head_commit="a" * 40) is None

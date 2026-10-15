@@ -93,16 +93,9 @@ async def collect_facts(
     head_commit: str | None,
 ) -> dict[str, dict[str, Any]]:
     """Facts per component name for the repository's current index."""
-    from repowise.core.components.store import (
-        component_rollups,
-        load_repo_components,
-        workspace_services,
-    )
+    from repowise.core.components.store import component_rollups
 
-    found = await load_repo_components(
-        session, repository_id, repo_root, services=workspace_services(repo_root)
-    )
-    files = {name: paths for name, paths in found.resolved.files.items() if paths}
+    found, files = await _components(session, repository_id, repo_root)
     if not files:
         return {}
     rollups = await component_rollups(session, repository_id, files, found.test_files)
@@ -130,7 +123,7 @@ async def collect_facts(
         rolled = rollups.get(comp.name, {})
         commits = {r["sha"]: r for p in paths for r in recent_by_file.get(p, ())}
         facts: dict[str, Any] = {
-            "definition": _digest(json.dumps([sorted(comp.paths), comp.root, comp.source])),
+            "definition": _definition(comp),
             "criticality": comp.criticality,
             "tags": sorted(comp.tags),
             # Named only as a group; any other owner ref is compared by digest.
@@ -149,6 +142,35 @@ async def collect_facts(
         }
         out[comp.name] = facts
     return out
+
+
+async def contract_facts(
+    session: Any, repository_id: str, repo_root: Path, *, head_commit: str | None
+) -> dict[str, tuple[str, dict[str, Any]]] | None:
+    """``{component: (definition, contracts fact)}`` measured now; ``None``
+    while the contracts at *head_commit* are unavailable."""
+    contracts = provided_contracts(repo_root, head_commit)
+    if contracts is None:
+        return None
+    found, files = await _components(session, repository_id, repo_root)
+    return {
+        comp.name: (_definition(comp), _component_contracts(files[comp.name], contracts))
+        for comp in found.resolved.components
+        if files.get(comp.name)
+    }
+
+
+async def _components(session: Any, repository_id: str, repo_root: Path) -> tuple[Any, dict]:
+    from repowise.core.components.store import load_repo_components, workspace_services
+
+    found = await load_repo_components(
+        session, repository_id, repo_root, services=workspace_services(repo_root)
+    )
+    return found, {name: paths for name, paths in found.resolved.files.items() if paths}
+
+
+def _definition(comp: Any) -> str:
+    return _digest(json.dumps([sorted(comp.paths), comp.root, comp.source]))
 
 
 async def _git_rows(session: Any, repository_id: str) -> dict[str, dict[str, Any]]:
@@ -318,4 +340,3 @@ def _component_contracts(
         for cid, n in contracts.get(p, {}).items():
             provided[cid] = provided.get(cid, 0) + n
     return {"basis": "measured", "provided": dict(sorted(provided.items()))}
-

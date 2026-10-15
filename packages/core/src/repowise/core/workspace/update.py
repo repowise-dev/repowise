@@ -1316,6 +1316,34 @@ async def run_cross_repo_hooks(
     timings.on_phase_done("workspace_store")
     _log_phase(timings, "workspace_store")
 
+    # Each updated repo snapshotted its components before contracts were
+    # extracted at its new commit; measure them now.
+    for alias in changed_repos:
+        entry = ws_config.get_repo(alias)
+        if entry is not None:
+            await _refresh_contract_facts((workspace_root / entry.path).resolve())
+
+
+async def _refresh_contract_facts(repo_path: Path) -> None:
+    """Best-effort: a failure leaves the run's contracts unavailable."""
+    from ..events.store import refresh_contract_facts
+    from ..persistence import create_engine, create_session_factory, get_session
+    from ..persistence.crud import get_repository_by_path
+    from ..persistence.database import has_db_store, resolve_db_url
+
+    if not has_db_store(repo_path):
+        return
+    engine = create_engine(resolve_db_url(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is not None:
+                await refresh_contract_facts(session, repo.id)
+    except Exception:
+        _log.warning("Contract facts not refreshed for %s", repo_path, exc_info=True)
+    finally:
+        await engine.dispose()
+
 
 async def _run_phases(
     ws_config: WorkspaceConfig,
