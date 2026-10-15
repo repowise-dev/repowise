@@ -351,6 +351,16 @@ def test_local_constants_are_names_bound_once_at_top_level_to_immutable_literals
     assert local_names("def broken(:\n") == frozenset()
 
 
+def test_local_names_reads_each_text_once() -> None:
+    """A long-lived server asks about the same unchanged entries on every selection."""
+    source = "SIZE = 3\n\ndef f():\n    return SIZE\n"
+    local_names.cache_clear()
+    first = local_names(source)
+    assert local_names(source) is first
+    assert local_names(source + "\nEXTRA = 1\n") == {"SIZE", "f", "EXTRA"}
+    assert local_names.cache_info().hits == 1
+
+
 def test_local_functions_use_nothing_the_module_imports_from_elsewhere() -> None:
     source = dedent(
         """
