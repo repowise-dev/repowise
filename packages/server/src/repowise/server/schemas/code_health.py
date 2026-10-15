@@ -284,6 +284,9 @@ class RelatedWorkLens(BaseModel):
     items: list[RelatedWorkItem] = []
     #: Every row the lens holds for the file; ``items`` stops at the limit.
     total: int = 0
+    #: The measurement note when the lens's layer is a preview on the file's
+    #: language; the file's rows share it.
+    preview: str | None = None
 
 
 class RelatedWorkFile(BaseModel):

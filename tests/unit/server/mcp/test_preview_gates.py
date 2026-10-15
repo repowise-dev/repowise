@@ -257,3 +257,54 @@ async def test_get_health_labels_refactoring_preview_cells(
     }
     assert "src/Billing.java" in listed
     assert result["_meta"]["preview"] == {"refactoring": {"java": _NOTE}}
+
+
+@pytest.mark.asyncio
+async def test_get_health_labels_file_rows_and_fix_first_in_one_map(
+    monkeypatch, setup_mcp, session, health_data
+):
+    from repowise.server.mcp_server import get_health
+
+    await _seed_java_health(session, health_data)
+    _table(monkeypatch, _row("health", "preview"))
+    note = preview_note(_row("health", "x"))
+
+    # File rows alone label the cell.
+    rows = await get_health(only=["worst_files"], limit=50)
+    assert "src/Billing.java" in {r["file_path"] for r in rows["worst_files"]}
+    assert rows["_meta"]["preview"] == {"health": {"java": note}}
+
+    # Fix first items are labelled by the layer their kind was built from.
+    queue = await get_health(only=["fix_first"])
+    items = [*(queue.get("fix_first") or {}).get("items", [])]
+    on_java = [i for i in items if i["target"]["file_path"] == "src/Billing.java"]
+    if on_java:
+        assert queue["_meta"]["preview"]["health"] == {"java": note}
+
+    # The whole dashboard: one map, nothing per row.
+    dashboard = await get_health()
+    assert dashboard["_meta"]["preview"] == {"health": {"java": note}}
+    assert len(json.dumps(dashboard["_meta"]["preview"])) < 160
+    for value in dashboard.values():
+        if isinstance(value, list):
+            assert all("preview" not in r for r in value if isinstance(r, dict))
+
+
+def test_fix_first_items_label_the_layer_their_kind_came_from(monkeypatch):
+    from repowise.server.mcp_server.tool_health.tool import _attach_preview
+
+    _table(monkeypatch, _row("refactoring", "preview"), _row("health", "preview"))
+    result = {
+        "fix_first": {
+            "lead": {"kind": "refactor", "target": {"file_path": "src/A.java"}},
+            "items": [
+                {"kind": "refactor", "target": {"file_path": "src/A.java"}},
+                {"kind": "perf_fix", "target": {"file_path": "src/B.java"}},
+                {"kind": "finding", "target": {"file_path": "src/c.py"}},
+            ],
+        },
+        "_meta": {},
+    }
+    _attach_preview(result)
+    assert result["_meta"]["preview"] == {"refactoring": {"java": _NOTE}}
+    assert "preview" not in result["fix_first"]["items"][0]

@@ -251,7 +251,7 @@ async def get_refactoring_opportunity_detail(
     )
     if not detail.get("found"):
         raise HTTPException(status_code=404, detail="Unknown opportunity id")
-    return detail
+    return label_previews("refactoring", [detail], kind="lead_refactoring_type")[0]
 
 
 @router.get(
@@ -367,6 +367,7 @@ async def get_refactoring_plan(
     detail, public_id = await _plan_detail(session, repo_id, suggestion_id)
     if include == "recipe":
         detail["recipe"] = build_recipe({**detail, "id": public_id})
+    (detail,) = label_previews("refactoring", [detail], kind="refactoring_type")
     return RefactoringPlanDetailResponse(**detail)
 
 

@@ -102,6 +102,8 @@ class RefactoringOpportunityDetailResponse(BaseModel):
     plans: list[dict[str, Any]] | None = None
     #: Present when a step names a symbol an earlier step moves.
     ordering_note: str | None = None
+    #: The measurement note on a language refactoring is served as a preview on.
+    preview: str | None = None
 
 
 # Plan-level shapes: the plan lists, one plan, triage bodies and code generation.

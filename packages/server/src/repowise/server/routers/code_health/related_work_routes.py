@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import GateLayer, preview_label
 from repowise.core.analysis.related_work import related_work
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
@@ -100,7 +101,7 @@ async def get_related_work(
     dead_code = await crud.get_dead_code_findings(
         session, repo_id, file_paths=paths, limit=_ROWS_CEILING
     )
-    return related_work(
+    body = related_work(
         paths,
         findings=findings,
         fix_first=queue.items,
@@ -108,6 +109,22 @@ async def get_related_work(
         performance=performance,
         dead_code=dead_code,
     ).as_dict()
+    # One file's rows share its language, so a lens carries one label. Fix
+    # first mixes layers, so it carries none.
+    for entry in body["files"]:
+        for lens, block in entry["lenses"].items():
+            layer = _LENS_LAYER.get(lens)
+            if layer and (note := preview_label(layer, entry["file_path"])):
+                block["preview"] = note
+    return body
+
+
+_LENS_LAYER: dict[str, GateLayer] = {
+    "findings": "health",
+    "refactoring": "refactoring",
+    "performance": "performance",
+    "dead_code": "dead_code",
+}
 
 
 __all__ = ["get_related_work"]

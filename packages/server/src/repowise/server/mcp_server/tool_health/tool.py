@@ -306,32 +306,62 @@ def _attach_gated(meta: dict[str, Any], data: HealthData) -> None:
 
 
 #: The lists that carry rows of a gated layer: ``(layer, the row's kind field)``.
+#: A file row (its score and lead) is health's.
 _LAYER_LISTS: dict[str, tuple[GateLayer, str]] = {
     "findings": ("health", "biomarker_type"),
     "top_findings": ("health", "biomarker_type"),
     "test_findings": ("health", "biomarker_type"),
+    "metrics": ("health", "primary_biomarker"),
+    "worst_files": ("health", "primary_biomarker"),
+    "test_worst_files": ("health", "primary_biomarker"),
+    "high_leverage_files": ("health", "primary_biomarker"),
     "refactoring_plans": ("refactoring", "refactoring_type"),
     "refactoring_opportunities": ("refactoring", "lead_refactoring_type"),
     "performance_opportunities": ("performance", "biomarker_type"),
 }
+
+#: A Fix-first item's kind, as the layer it was built from.
+_FIX_KIND_LAYER: dict[str, GateLayer] = {
+    "finding": "health",
+    "refactor": "refactoring",
+    "perf_fix": "performance",
+}
+
+
+def _fix_first_rows(result: dict[str, Any]) -> dict[GateLayer, list[dict[str, Any]]]:
+    """The listed Fix-first items (lead included) as ``file_path`` rows by layer."""
+    block = result.get("fix_first")
+    if not isinstance(block, dict):
+        return {}
+    items = [*(block.get("items") or []), block.get("lead")]
+    out: dict[GateLayer, list[dict[str, Any]]] = {}
+    for item in items:
+        if isinstance(item, dict) and (layer := _FIX_KIND_LAYER.get(item.get("kind") or "")):
+            path = (item.get("target") or {}).get("file_path")
+            out.setdefault(layer, []).append({"file_path": path})
+    return out
 
 
 def _attach_preview(result: dict[str, Any]) -> None:
     """``_meta.preview``: ``{layer: {language: note}}`` for the preview cells
     this response lists rows from, read after projection so only what was
     sent is labelled. Absent when none, so a default response does not grow."""
+    sources: list[tuple[GateLayer, str, list[Any]]] = [
+        (layer, kind, rows)
+        for key, (layer, kind) in _LAYER_LISTS.items()
+        if isinstance(rows := result.get(key), list)
+    ]
+    sources += [(layer, "kind", rows) for layer, rows in _fix_first_rows(result).items()]
     preview: dict[str, dict[str, str]] = {}
-    for key, (layer, kind) in _LAYER_LISTS.items():
-        rows = result.get(key)
-        if isinstance(rows, list):
-            served = served_previews(
-                layer,
-                (r for r in rows if isinstance(r, dict)),
-                kind=kind,
-                get=lambda r, k: r.get(k),
-            )
-            if served:
-                preview.setdefault(layer, {}).update(served)
+    for layer, kind, rows in sources:
+        served = served_previews(
+            layer,
+            (r for r in rows if isinstance(r, dict)),
+            kind=kind,
+            get=lambda r, k: r.get(k),
+        )
+        if served:
+            preview.setdefault(layer, {}).update(served)
     if preview:
         result["_meta"]["preview"] = preview
 

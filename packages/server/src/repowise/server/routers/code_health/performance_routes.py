@@ -151,7 +151,7 @@ async def get_performance_opportunity_detail(
     detail = await _service(session, repo_id).detail(
         opportunity_id, evidence_limit=evidence_limit, evidence_offset=evidence_offset
     )
-    return _item(detail)
+    return label_previews("performance", [_item(detail)], kind="biomarker_type")[0]
 
 
 @router.get("/api/repos/{repo_id}/health/performance-opportunities/{opportunity_id}/findings")

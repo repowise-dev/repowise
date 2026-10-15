@@ -268,3 +268,41 @@ async def test_preview_rows_are_served_labelled_and_not_counted(
     assert by_path(dead) == {JAVA: note, PY: None}
     summary = await _get(client, f"/api/repos/{repo_id}/dead-code/summary")
     assert summary["total_findings"] == 2 and summary["gated"] == {}
+
+
+async def test_preview_rows_are_labelled_on_detail_routes(
+    client: AsyncClient, app, monkeypatch
+) -> None:
+    repo_id = await _seed(client, app)
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", _java_table("preview"))
+    note = preview_note(_java_table("preview")[0])
+    base = f"/api/repos/{repo_id}"
+
+    every = {"context": "all", "proof": "unproven", "role": "all"}
+    perf = await _get(client, f"{base}/health/performance-opportunities", **every)
+    for item in perf["items"]:
+        detail = await _get(
+            client, f"{base}/health/performance-opportunities/{item['opportunity_id']}"
+        )
+        assert detail.get("preview") == (note if item["file_path"] == JAVA else None)
+
+    queue = await _get(client, f"{base}/refactoring/opportunities", scope="all")
+    for item in queue["items"]:
+        detail = await _get(client, f"{base}/refactoring/opportunities/{item['opportunity_id']}")
+        assert detail.get("preview") == (note if item["file_path"] == JAVA else None)
+
+    plans = (await _get(client, f"{base}/refactoring/targets"))["plans"]
+    for plan in plans:
+        detail = await _get(client, f"{base}/refactoring/{plan['id']}")
+        assert detail.get("preview") == (note if plan["file_path"] == JAVA else None)
+
+    resp = await client.post(
+        f"{base}/health/related-work", json={"file_paths": [JAVA, PY]}
+    )
+    assert resp.status_code == 200, resp.text
+    lenses = {f["file_path"]: f["lenses"] for f in resp.json()["files"]}
+    assert lenses[JAVA] and all(
+        block.get("preview") == (None if lens == "fix_first" else note)
+        for lens, block in lenses[JAVA].items()
+    )
+    assert all("preview" not in block for block in lenses[PY].values())
