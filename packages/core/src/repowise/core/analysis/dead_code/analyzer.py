@@ -1162,7 +1162,7 @@ class DeadCodeAnalyzer:
                 continue
 
             node_data = self.graph.nodes[node]
-            # The three skips left here are *scoping*, not reachability: a test
+            # The skips left here are *scoping*, not reachability: a test
             # file is perfectly reachable, it is just not something this pass
             # reports. Everything that answers "can anything get to this file"
             # â€” entry points, API contracts, never-flag globs, the whitelist,
@@ -1173,6 +1173,8 @@ class DeadCodeAnalyzer:
             if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
                 continue
             if node_data.get("is_test", False):
+                continue
+            if code_origin(str(node), repo_root=self._repo_root) == "docs_example":
                 continue
             if _is_fixture_path(str(node)):
                 continue
@@ -1488,6 +1490,8 @@ class DeadCodeAnalyzer:
         if is_reachability_root(node_data) or defines_main(self.graph, str(node)):
             return None
         if node_data.get("is_test", False):
+            return None
+        if code_origin(str(node), repo_root=self._repo_root) == "docs_example":
             return None
         if _is_fixture_path(str(node)):
             return None

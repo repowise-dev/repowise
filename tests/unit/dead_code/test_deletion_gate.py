@@ -175,7 +175,7 @@ def test_read_time_check_shares_the_path_reasons():
 def test_analyzer_runs_the_gate():
     sym = {"kind": "function", "visibility": "public", "decorators": [], "language": "python"}
     nodes = {
-        "docs/snippets/util.py": {
+        "lib/util.py": {
             "language": "python",
             "symbols": [
                 {**sym, "name": "used_one", "start_line": 1, "end_line": 3},
@@ -186,7 +186,7 @@ def test_analyzer_runs_the_gate():
     }
     imports = {"edge_type": "imports", "imported_names": ["used_one"]}
     report = DeadCodeAnalyzer(
-        _build_graph(nodes, [("app/main.py", "docs/snippets/util.py", imports)])
+        _build_graph(nodes, [("app/main.py", "lib/util.py", imports)])
     ).analyze(
         {
             "detect_unreachable_files": False,
@@ -198,4 +198,4 @@ def test_analyzer_runs_the_gate():
     [finding] = [f for f in report.findings if f.symbol_name == "lonely"]
     assert finding.confidence == pytest.approx(1.0)
     assert not finding.safe_to_delete
-    assert _says(finding, "Documentation or example code")
+    assert _says(finding, "No python call edge in this repository has a recorded resolution")
