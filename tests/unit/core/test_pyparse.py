@@ -7,7 +7,7 @@ import warnings
 from repowise.core.ingestion.framework_edges.test_path_strings import python_ancestor_targets
 from repowise.core.pyparse import parse_python, symtable_python
 
-SOURCE = 'import re\nPATTERN = re.compile("\s+")\n'
+SOURCE = 'import re\nPATTERN = re.compile("\\s+")\n'
 
 
 def test_helpers_stay_quiet() -> None:
