@@ -6,7 +6,9 @@ just before this one and carries the same stamp, it stores the typed
 occurrences between the two and hands them to the configured sinks. A stamp
 change (a new analyzer, parser, git-history or contract-extraction version)
 starts a fresh baseline instead: figures computed under different rules are
-not comparable, so their difference is not an event.
+not comparable, so their difference is not an event. The contract kinds
+compare against the last run that measured contracts instead, since a run
+between them may have had none available (:func:`_contract_pairs`).
 
 An index run that takes no snapshot (events switched off, or the snapshot
 failed) leaves a gap marker, so the next snapshot is a baseline rather than a
@@ -34,7 +36,7 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from .diff import diff_snapshots
+from .diff import contract_occurrences, diff_snapshots
 from .model import EVENT_SCHEMA_VERSION, KINDS, EngineEvent, event_id, severity_for
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,10 @@ logger = logging.getLogger(__name__)
 GAP_STAMP = "gap:"
 #: Kinds read from the contracts the workspace's cross-repo pass extracts.
 CONTRACT_KINDS = frozenset({"contract_added", "contract_broken"})
+#: Earlier runs read when looking for a component's last measured contracts.
+#: Ceiling: past it a contract change waits for the next measured pair.
+#: Upgrade path: a column on the run saying its contracts were measured.
+CONTRACT_LOOKBACK_RUNS = 100
 
 
 @dataclass(frozen=True)
@@ -176,13 +182,14 @@ async def record_snapshot(
         for name, f in facts.items()
     )
 
-    events: list[EngineEvent] = []
+    pairs: list[tuple[Any, Any]] = []
     # A gap marker's stamp never equals a real one, so a run after it is a baseline.
     if previous is not None and previous.stamp == stamp:
         before = await run_facts(session, previous.id)
-        events = await _store_events(
-            session, repo, run, previous, before, facts, settings.kinds, taken_at
-        )
+        kinds = settings.kinds - CONTRACT_KINDS
+        pairs = [(previous, o) for o in diff_snapshots(before, facts) if o[0] in kinds]
+    pairs += await _contract_pairs(session, run, facts, settings.kinds & CONTRACT_KINDS)
+    events = await _store_events(session, repo, run, pairs, facts, taken_at)
     await compact(session, repository_id, settings, now=taken_at)
     await session.flush()
     if events:
@@ -195,9 +202,9 @@ async def refresh_contract_facts(session: Any, repository_id: str) -> list[Engin
 
     :func:`record_snapshot` runs before the cross-repo pass extracts contracts
     at the new commit, so that run stored them as unavailable. Called after
-    extraction, this rewrites the same run's contract facts and stores the
-    contract events against the run before it, as the snapshot would have.
-    Idempotent: event ids are keyed on the two runs. A run whose commit or
+    extraction, this rewrites the same run's contract facts and stores its
+    contract events (:func:`_contract_pairs`). Idempotent: event ids are keyed
+    on the two runs compared. A run whose commit or
     stamp is no longer current, or contracts still unavailable, is left alone.
     """
     from repowise.core.persistence.models import ComponentSnapshot, Repository
@@ -230,28 +237,66 @@ async def refresh_contract_facts(session: Any, repository_id: str) -> list[Engin
             facts["contracts"] = contracts
             row.facts_json = json.dumps(facts, sort_keys=True)
         after[row.component] = facts
-    events: list[EngineEvent] = []
-    previous = await _newest_run(session, repository_id, skip=1)
-    if previous is not None and previous.stamp == run.stamp:
-        before = await run_facts(session, previous.id)
-        kinds = settings.kinds & CONTRACT_KINDS
-        events = await _store_events(
-            session, repo, run, previous, before, after, kinds, _aware(run.taken_at)
-        )
+    pairs = await _contract_pairs(session, run, after, settings.kinds & CONTRACT_KINDS)
+    events = await _store_events(session, repo, run, pairs, after, _aware(run.taken_at))
     await session.flush()
     if events:
         await _deliver(events, settings, root)
     return events
 
 
-async def _newest_run(session: Any, repository_id: str, *, skip: int = 0) -> Any:
+def _measured(facts: dict[str, Any]) -> bool:
+    contracts = facts.get("contracts")
+    return isinstance(contracts, dict) and contracts.get("basis") == "measured"
+
+
+async def _contract_pairs(
+    session: Any, run: Any, after: dict[str, dict[str, Any]], kinds: frozenset[str]
+) -> list[tuple[Any, Any]]:
+    """``(compared run, occurrence)`` for the contract kinds of *run*.
+
+    Each component with measured contracts is compared with the most recent
+    earlier run of the same stamp that measured them under the same
+    definition. Runs whose contracts were unavailable (an index-only update
+    skips the cross-repo pass) are passed over, never read as every contract
+    removed; a stamp change, a gap marker, or the component missing or
+    re-drawn ends the search.
+    """
+    from repowise.core.persistence.models import SnapshotRun
+
+    pending = {name: f for name, f in after.items() if _measured(f)}
+    if not kinds or not pending:
+        return []
+    earlier = await session.scalars(
+        select(SnapshotRun)
+        .where(SnapshotRun.repository_id == run.repository_id, SnapshotRun.id != run.id)
+        .order_by(SnapshotRun.taken_at.desc(), SnapshotRun.id.desc())
+        .limit(CONTRACT_LOOKBACK_RUNS)
+    )
+    out: list[tuple[Any, Any]] = []
+    for prev in earlier:
+        if prev.stamp != run.stamp:
+            break
+        before = await run_facts(session, prev.id)
+        for name in list(pending):
+            facts = before.get(name)
+            if facts is None or facts.get("definition") != pending[name].get("definition"):
+                del pending[name]
+            elif _measured(facts):
+                found = contract_occurrences(name, facts, pending.pop(name))
+                out.extend((prev, o) for o in found if o[0] in kinds)
+        if not pending:
+            break
+    return out
+
+
+async def _newest_run(session: Any, repository_id: str) -> Any:
     from repowise.core.persistence.models import SnapshotRun
 
     return await session.scalar(
         select(SnapshotRun)
         .where(SnapshotRun.repository_id == repository_id)
         .order_by(SnapshotRun.taken_at.desc(), SnapshotRun.id.desc())
-        .offset(skip)
         .limit(1)
     )
 
@@ -292,16 +337,14 @@ async def _store_events(
     session: Any,
     repo: Any,
     run: Any,
-    previous: Any,
-    before: dict[str, dict[str, Any]],
+    pairs: list[tuple[Any, Any]],
     after: dict[str, dict[str, Any]],
-    kinds: frozenset[str],
     taken_at: datetime,
 ) -> list[EngineEvent]:
+    """Store ``(compared run, occurrence)`` pairs of *run* as events."""
     from repowise.core.persistence.models import Change, EngineEventRecord
 
-    occurrences = [o for o in diff_snapshots(before, after) if o[0] in kinds]
-    if not occurrences:
+    if not pairs:
         return []
     url = _public_url(repo.url)
     vcs: dict[str, Any] = {}
@@ -317,7 +360,7 @@ async def _store_events(
             vcs["vcs.change.id"] = change_id
     events = [
         EngineEvent(
-            # Keyed on the previous run, not only the commits: a pair seen
+            # Keyed on the compared run, not only the commits: a pair seen
             # again (A to B, back to A, to B) or a run with no commit is a new
             # occurrence, while a retry of the same run keeps its id.
             id=event_id(
@@ -335,7 +378,7 @@ async def _store_events(
             source=url,
             vcs=vcs,
         )
-        for kind, component, subject, evidence in occurrences
+        for previous, (kind, component, subject, evidence) in pairs
     ]
     seen = set(
         await session.scalars(

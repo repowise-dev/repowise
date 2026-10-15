@@ -664,3 +664,47 @@ async def test_contract_refresh_leaves_a_redrawn_component_or_an_old_run_alone(
 @pytest.mark.asyncio
 async def test_contract_facts_are_unavailable_outside_a_workspace(tmp_path):
     assert await snapshot_mod.contract_facts(None, "r", tmp_path, head_commit="a" * 40) is None
+
+
+@pytest.mark.asyncio
+async def test_contract_kinds_skip_runs_whose_contracts_were_unavailable(repo_db, monkeypatch):
+    factory, repo_id, _root = repo_db
+    t0 = datetime(2026, 5, 1, tzinfo=UTC)
+    gone = {"basis": "measured", "provided": {}}
+    unavailable = {"basis": "unavailable"}
+
+    async def run(head, contracts, hours, **over):
+        facts = {"c": {**_facts(**over), "contracts": contracts}}
+        now = t0 + timedelta(hours=hours)
+        return await _run(factory, repo_id, head=head * 40, facts=facts, monkeypatch=monkeypatch, now=now)
+
+    await run("a", _facts()["contracts"], 0)
+    # An index-only run in between: never read as every contract removed.
+    assert await run("b", unavailable, 1) == []
+    events = await run("c", gone, 2)
+    assert [(e.kind, e.base_commit_sha) for e in events] == [("contract_broken", "a" * 40)]
+    # A component re-drawn in between ends the search.
+    await run("d", unavailable, 3, definition="d2")
+    assert await run("e", _facts()["contracts"], 4) == []
+
+
+@pytest.mark.asyncio
+async def test_contract_refresh_compares_with_the_last_measured_run(repo_db, monkeypatch):
+    from repowise.core.events.store import list_events
+    from repowise.core.persistence.database import get_session
+
+    factory, repo_id, _root = repo_db
+    t0 = datetime(2026, 5, 1, tzinfo=UTC)
+    unavailable = {"c": {**_facts(), "contracts": {"basis": "unavailable"}}}
+    await _run(factory, repo_id, head="a" * 40, facts={"c": _facts()}, monkeypatch=monkeypatch, now=t0)
+    for i, head in enumerate("bc", start=1):
+        await _run(factory, repo_id, head=head * 40, facts=unavailable, monkeypatch=monkeypatch,
+                   now=t0 + timedelta(hours=i))
+    now = {"basis": "measured", "provided": {"http::GET::/a": 2, "http::GET::/b": 0}}
+    events = await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", now)})
+    assert [(e.kind, e.base_commit_sha, e.commit_sha) for e in events] == [
+        ("contract_added", "a" * 40, "c" * 40)
+    ]
+    assert await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", now)}) == []
+    async with get_session(factory) as session:
+        assert len(await list_events(session, repo_id)) == 1

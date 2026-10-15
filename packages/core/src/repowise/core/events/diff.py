@@ -45,6 +45,13 @@ def diff_snapshots(
     return out
 
 
+def contract_occurrences(
+    component: str, before: Mapping[str, Any], after: Mapping[str, Any]
+) -> list[Occurrence]:
+    """The contract rule alone, for one component's facts at two runs."""
+    return [(kind, component, subject, ev) for kind, subject, ev in _contracts(before, after)]
+
+
 def _get(facts: Mapping[str, Any], key: str) -> dict[str, Any]:
     value = facts.get(key)
     return value if isinstance(value, dict) else {}
