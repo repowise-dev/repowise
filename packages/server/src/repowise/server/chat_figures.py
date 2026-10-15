@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import bisect
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -493,67 +493,100 @@ def _derived_spans(answer: str, held: _Held) -> set[int]:
     out: set[int] = set()
     for lo, hi in _clauses(answer):
         clause = answer[lo:hi]
-        pairs = [
-            (_value(m.group(1))[0], _value(m.group(2))[0])
-            for m in _PAIR.finditer(clause)
-            if held(m.group(1)) and held(m.group(2))
-        ]
-        if pairs:
-            for m in _NUMBER.finditer(clause):
-                end = m.end()
-                if not clause.startswith("%", end) and not clause.startswith(" %", end):
-                    continue
-                shown, decimals = _value(m.group())
-                if any(0 < a <= b and _close(100.0 * a / b, shown, decimals) for a, b in pairs):
-                    out.add(lo + m.start())
-        for m in _SUM.finditer(clause):
-            parts = re.findall(_NUM_TEXT, m.group(1))
-            group = 2 if m.group(2) else 3
-            total, _ = _value(m.group(group))
-            if all(held(p) for p in parts) and sum(_value(p)[0] for p in parts) == total:
-                out.add(lo + m.start(group))
-    out |= _table_shares(answer, held)
-    return out
+        out.update(lo + at for at in _ratio_spans(clause, held))
+        out.update(lo + at for at in _sum_spans(clause, held))
+    return out | _table_shares(answer, held)
 
 
-def _table_shares(answer: str, held: _Held) -> set[int]:
-    """Share cells of markdown tables that are their row's count over a named total."""
-    totals = {
+def _ratio_spans(clause: str, held: _Held) -> Iterator[int]:
+    """Percentages in *clause* that one of its written-out ratios gives."""
+    pairs = [
+        (_value(m.group(1))[0], _value(m.group(2))[0])
+        for m in _PAIR.finditer(clause)
+        if held(m.group(1)) and held(m.group(2))
+    ]
+    if not pairs:
+        return
+    for m in _NUMBER.finditer(clause):
+        if not clause.startswith(("%", " %"), m.end()):
+            continue
+        shown, decimals = _value(m.group())
+        if any(0 < a <= b and _close(100.0 * a / b, shown, decimals) for a, b in pairs):
+            yield m.start()
+
+
+def _sum_spans(clause: str, held: _Held) -> Iterator[int]:
+    """Totals in *clause* whose written-out parts are held and add up to them."""
+    for m in _SUM.finditer(clause):
+        parts = re.findall(_NUM_TEXT, m.group(1))
+        group = 2 if m.group(2) else 3
+        total, _ = _value(m.group(group))
+        if all(held(p) for p in parts) and sum(_value(p)[0] for p in parts) == total:
+            yield m.start(group)
+
+
+def _named_totals(answer: str, held: _Held) -> set[float]:
+    """Held figures the answer names as a total."""
+    return {
         _value(t)[0]
         for m in _TOTAL.finditer(answer)
         if (t := m.group(1) or m.group(2)) and held(t)
     }
-    if not totals:
-        return set()
-    out: set[int] = set()
-    table: list[list[tuple[int, str]]] = []
+
+
+_Row = list[tuple[int, str]]
+
+
+def _markdown_tables(answer: str) -> Iterator[list[_Row]]:
+    """Each markdown table's rows as ``(offset, text)`` cells, separator rows left out."""
+    table: list[_Row] = []
     offset = 0
-    for line in [*answer.split("\n"), ""]:
+    for line in answer.split("\n"):
         start, offset = offset, offset + len(line) + 1
         stripped = line.strip()
-        if stripped.startswith("|"):
-            if not set(stripped) <= set("|-: "):
-                cells, pos = [], start + line.index("|") + 1
-                for cell in stripped.strip("|").split("|"):
-                    cells.append((pos + len(cell) - len(cell.lstrip()), cell.strip()))
-                    pos += len(cell) + 1
-                table.append(cells)
+        if not stripped.startswith("|"):
+            if table:
+                yield table
+            table = []
             continue
+        if not set(stripped) <= set("|-: "):
+            table.append(_cells(line, start))
+    if table:
+        yield table
+
+
+def _cells(line: str, start: int) -> _Row:
+    cells, pos = [], start + line.index("|") + 1
+    for cell in line.strip().strip("|").split("|"):
+        cells.append((pos + len(cell) - len(cell.lstrip()), cell.strip()))
+        pos += len(cell) + 1
+    return cells
+
+
+def _column_hits(table: list[_Row], total: float, held: _Held) -> dict[int, list[int]]:
+    """Per column, the share cells that are their row's count over *total*."""
+    hits: dict[int, list[int]] = {}
+    for row in table:
+        counts = [_value(m.group(1))[0] for _, c in row if (m := _COUNT_CELL.match(c)) and held(c)]
+        for col, (at, cell) in enumerate(row):
+            if (pm := _PERCENT_CELL.match(cell)) is None:
+                continue
+            shown, decimals = _value(pm.group(1))
+            if any(0 < c <= total and _close(100.0 * c / total, shown, decimals) for c in counts):
+                hits.setdefault(col, []).append(at)
+    return hits
+
+
+def _table_shares(answer: str, held: _Held) -> set[int]:
+    """Share cells of markdown tables that are their row's count over a named total."""
+    totals = _named_totals(answer, held)
+    out: set[int] = set()
+    for table in _markdown_tables(answer) if totals else ():
         for total in totals:
-            hits: dict[int, list[int]] = {}
-            for row in table:
-                counts = [_value(m.group(1))[0] for _, c in row if (m := _COUNT_CELL.match(c)) and held(c)]
-                for col, (at, cell) in enumerate(row):
-                    if (pm := _PERCENT_CELL.match(cell)) is None:
-                        continue
-                    shown, decimals = _value(pm.group(1))
-                    if any(0 < c <= total and _close(100.0 * c / total, shown, decimals) for c in counts):
-                        hits.setdefault(col, []).append(at)
             # One row agreeing with a total is a coincidence a small table makes easily.
-            for starts in hits.values():
+            for starts in _column_hits(table, total, held).values():
                 if len(starts) >= 2:
                     out.update(starts)
-        table = []
     return out
 
 
@@ -567,6 +600,50 @@ def _utf16_offsets(text: str) -> list[int] | None:
         total += 2 if ord(ch) >= 0x10000 else 1
     offsets.append(total)
     return offsets
+
+
+def _candidates(answer: str, question: str) -> list[tuple[int, _Reading]]:
+    """The answer's figures: numbers that are not labels, code or the question's own."""
+    asked = {abs(_read(question, m).value) for m in _NUMBER.finditer(question)}
+    masks = _masked(answer)
+    out: list[tuple[int, _Reading]] = []
+    skipped_end = -1
+    for match in _NUMBER.finditer(answer):
+        start = match.start()
+        reading = _read(answer, match)
+        if _inside(masks, start, match.end()) or _not_a_figure(answer, start, reading, skipped_end):
+            skipped_end = match.end()
+            continue
+        if abs(reading.value) not in asked:
+            out.append((start, reading))
+    return out
+
+
+class _Lookup:
+    """This turn's evidence, then earlier turns' read only on first need."""
+
+    def __init__(self, sources: Iterable[Any], earlier: Iterable[Any], expand: bool) -> None:
+        self._budget = _Budget()
+        self._expand = expand
+        self._earlier_sources = list(earlier)
+        self.pools = [_pool(sources, self._budget, expand)]
+
+    def earlier(self) -> _Pool | None:
+        if not self._earlier_sources:
+            return None
+        if len(self.pools) == 1:
+            self.pools.append(_pool(self._earlier_sources, self._budget, self._expand))
+        return self.pools[1]
+
+    def find(self, reading: _Reading, tolerance: float) -> str | None | bool:
+        found = _find(self.pools[0], reading, tolerance)
+        if found is False and (extra := self.earlier()) is not None:
+            found = _find(extra, reading, tolerance)
+        return found
+
+    @property
+    def truncated(self) -> bool:
+        return any(pool.truncated for pool in self.pools)
 
 
 def check_figures(
@@ -585,51 +662,22 @@ def check_figures(
     check = FigureCheck()
     if not answer or not any(ch.isdigit() for ch in answer):
         return check
-    asked = {abs(_read(question, m).value) for m in _NUMBER.finditer(question)}
-    masks = _masked(answer)
-
-    candidates: list[tuple[int, _Reading]] = []
-    skipped_end = -1
-    for match in _NUMBER.finditer(answer):
-        start = match.start()
-        reading = _read(answer, match)
-        if _inside(masks, start, match.end()) or _not_a_figure(
-            answer, start, reading, skipped_end
-        ):
-            skipped_end = match.end()
-            continue
-        if abs(reading.value) not in asked:
-            candidates.append((start, reading))
+    candidates = _candidates(answer, question)
     if not candidates:
         return check
 
-    budget = _Budget()
-    expand = any(reading.unit is None for _, reading in candidates)
-    pools = [_pool(sources, budget, expand)]
-    earlier_sources = list(earlier)
+    lookup = _Lookup(sources, earlier, expand=any(r.unit is None for _, r in candidates))
+    looked = [
+        (start, reading, lookup.find(reading, _tolerance(answer, start, reading)))
+        for start, reading in candidates
+    ]
+    derivable: set[int] = set()
+    if any(found is False for _, _, found in looked):
+        derivable = _derived_spans(answer, _Held(lookup.pools[:1], lookup.earlier))
     utf16 = _utf16_offsets(answer)
-    looked: list[tuple[int, _Reading, str | None | bool]] = []
-    for start, reading in candidates:
-        tolerance = _tolerance(answer, start, reading)
-        found = _find(pools[0], reading, tolerance)
-        if found is False and earlier_sources:
-            if len(pools) == 1:
-                pools.append(_pool(earlier_sources, budget, expand))
-            found = _find(pools[1], reading, tolerance)
-        looked.append((start, reading, found))
-
-    def _earlier() -> _Pool | None:
-        if not earlier_sources:
-            return None
-        if len(pools) == 1:
-            pools.append(_pool(earlier_sources, budget, expand))
-        return pools[1]
-
-    unmatched = any(found is False for _, _, found in looked)
-    derivable = _derived_spans(answer, _Held(pools[:1], _earlier)) if unmatched else set()
     for start, reading, found in looked:
         derived = found is False and not reading.signed and start in derivable
-        if found is False and not derived and any(pool.truncated for pool in pools):
+        if found is False and not derived and lookup.truncated:
             check.not_checked += 1
             continue
         end = reading.text_end
