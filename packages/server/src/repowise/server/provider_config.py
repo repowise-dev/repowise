@@ -70,6 +70,8 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": bool(spec.api_key_envs),
         # Takes an endpoint (``<provider>: {base_url}`` in config.yaml).
         "accepts_base_url": bool(spec.base_url_envs),
+        # Can point at a local OpenAI-compatible server and run with no key.
+        "local_server": spec.keyless_on_loopback,
         # What a user sets to make it usable, and how to install it.
         "env_vars": list(spec.required_envs),
         "setup_hint": spec.setup_hint,
@@ -336,6 +338,7 @@ def list_provider_status(
                 "configured": _provider_configured(p["id"], repo_path),
                 "requires_key": p["requires_key"],
                 "accepts_base_url": p["accepts_base_url"],
+                "local_server": p["local_server"],
                 "env_vars": p["env_vars"],
                 "setup_hint": p["setup_hint"],
             }

@@ -53,6 +53,8 @@ class ProviderEntry(BaseModel):
     requires_key: bool = True
     #: Takes a custom endpoint (an OpenAI-compatible local server, a proxy).
     accepts_base_url: bool = False
+    #: Can point at a local OpenAI-compatible server (LM Studio) with no key.
+    local_server: bool = False
     #: Env vars a user sets to make the provider usable.
     env_vars: list[str] = []
     #: One line on how to install or set it up.

@@ -3012,6 +3012,7 @@ export interface ProviderEntry {
   configured?: boolean;
   requires_key?: boolean;
   accepts_base_url?: boolean;
+  local_server?: boolean;
   env_vars?: string[];
   setup_hint?: string;
 }

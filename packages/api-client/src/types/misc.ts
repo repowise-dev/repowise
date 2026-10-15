@@ -31,6 +31,8 @@ export interface ProviderInfo {
   requires_key?: boolean;
   /** Takes a custom endpoint (an OpenAI-compatible local server, a proxy). */
   accepts_base_url?: boolean;
+  /** Can point at a local OpenAI-compatible server (LM Studio) with no key. */
+  local_server?: boolean;
   /** Env vars a user sets to make the provider usable. */
   env_vars?: string[];
   /** One line on how to install or set it up. */
@@ -70,6 +72,15 @@ export interface ProvidersResponse {
   /** Registerable providers the catalog leaves out. */
   flag_only_providers?: string[];
   embedders?: EmbedderInfo[];
+}
+
+/** Models a provider offers. `source: "catalog"` means the live list could
+ *  not be fetched and `error` says why; the built-in list stands in. */
+export interface ProviderModels {
+  models: { id: string; label?: string | null }[];
+  source: "live" | "catalog";
+  default_model: string;
+  error?: string | null;
 }
 
 /** Result of a live provider smoke test. `ok: false` carries the reason in
