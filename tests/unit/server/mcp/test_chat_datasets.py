@@ -114,6 +114,13 @@ async def test_rows_are_cached_per_index_state(chart_index):
     assert second.rows is first.rows
 
 
+async def test_cached_rows_returns_only_what_a_chart_already_read(chart_index):
+    assert await chat_datasets.cached_rows(["files", "changes"], None) == {}
+    files = await _rows("files")
+    cached = await chat_datasets.cached_rows(["files", "changes"], None)
+    assert cached == {"files": files}
+
+
 async def test_findings_dead_code_coverage_history_and_layers(chart_index):
     findings = await _rows("findings")
     assert {f["kind"] for f in findings} >= {"complex_method", "io_in_loop"}

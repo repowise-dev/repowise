@@ -911,6 +911,14 @@
     "noProviderShort": "No chat provider is configured. Add an API key in <link>settings</link>.",
     "unverifiedFigure": "Not found in this turn's tool results",
     "unverifiedFiguresNote": "Figures with a dotted underline were not found in this turn's tool results.",
+    "emptySuggestions": {
+      "treemap": "Chart code health by package as a treemap",
+      "riskiest": "Which files are riskiest to change, and why?",
+      "weeklyChanges": "Show what kinds of changes we made each week",
+      "coverageGaps": "Where are the biggest test coverage gaps?",
+      "deadCode": "What dead code can be safely removed?",
+      "healthSlide": "Give me a one-slide health summary with charts"
+    },
     "modelMenu": {
       "dialog": "Choose conversation model",
       "provider": "Provider",

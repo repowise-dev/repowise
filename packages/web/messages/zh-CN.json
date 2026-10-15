@@ -911,6 +911,14 @@
     "noProviderShort": "尚未配置对话提供商。请先在<link>设置</link>中添加 API 密钥。",
     "unverifiedFigure": "未在本轮工具结果中找到",
     "unverifiedFiguresNote": "带点状下划线的数字未在本轮工具结果中找到。",
+    "emptySuggestions": {
+      "treemap": "用树状图按包展示代码健康度",
+      "riskiest": "哪些文件改动风险最高？为什么？",
+      "weeklyChanges": "展示我们每周做了哪些类型的变更",
+      "coverageGaps": "测试覆盖率最大的缺口在哪里？",
+      "deadCode": "哪些死代码可以安全删除？",
+      "healthSlide": "用图表做一页代码健康摘要"
+    },
     "modelMenu": {
       "dialog": "选择对话模型",
       "provider": "提供商",

@@ -221,6 +221,28 @@ async def load_rows(name: str, repo: str | None) -> DatasetRows:
     return DatasetRows(rows=loaded, as_of=as_of, stale=stale, cached=hit)
 
 
+async def cached_rows(names: Iterable[str], repo: str | None) -> dict[str, list[dict[str, Any]]]:
+    """The rows of each dataset in *names* already cached for the current index state.
+
+    Nothing is loaded: a page chip quoting a figure is not worth a cold read
+    (``files`` takes about 2s on a 5,000-file index), so a dataset no chart has
+    read yet is simply absent. Warming the cache at index time would lift that.
+    """
+    from repowise.core.persistence.database import get_session
+    from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+    from repowise.server.mcp_server._index_state import index_state_key
+
+    wanted = list(names)
+    if not wanted or not _cache:
+        return {}
+    ctx = await _resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        state = index_state_key(repository)
+        keys = {name: (repository.id, state, name) for name in wanted}
+    return {name: _cache[key] for name, key in keys.items() if key in _cache}
+
+
 def _fresh(repository: Any) -> tuple[str | None, bool]:
     """The indexed commit and the stale flag ``_meta`` reports for *repository* now."""
     from repowise.server.mcp_server._meta import build_meta
@@ -243,6 +265,7 @@ __all__ = [
     "DatasetField",
     "DatasetRows",
     "LoadContext",
+    "cached_rows",
     "catalog",
     "clear_cache",
     "dataset_names",

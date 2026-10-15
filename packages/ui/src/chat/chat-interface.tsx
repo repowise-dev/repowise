@@ -36,6 +36,7 @@ import { ChatMessage, type UnverifiedFigureCopy } from "./chat-message";
 import { ArtifactPanel } from "./artifact-panel";
 import { ChatContextIndicator } from "./chat-context-indicator";
 import {
+  EMPTY_CHAT_SUGGESTIONS,
   getChatContextPresentation,
   type ChatContext,
 } from "./chat-context";
@@ -49,14 +50,9 @@ import { ChatComposer } from "./chat-composer";
 import { ChatSuggestions } from "./chat-suggestions";
 import { useChatScroll } from "./use-chat-scroll";
 
-const DEFAULT_SUGGESTIONS: readonly ChatSuggestion[] = [
-  "Give me an overview of this codebase",
-  "Which files have the worst code health?",
-  "Score the change risk of HEAD",
-  "What dead code can be safely removed?",
-  "What architectural decisions have been made?",
-  "Search for authentication-related code",
-].map((text) => ({ text, source: "static" as const }));
+const DEFAULT_SUGGESTIONS: readonly ChatSuggestion[] = EMPTY_CHAT_SUGGESTIONS.map(
+  (text) => ({ text, source: "static" as const }),
+);
 
 // Radix wraps viewport content in an inline `display: table` div that grows
 // to its widest child, so one wide table or code line widened the whole

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ChatInterface } from "../../src/chat/chat-interface.js";
+import { EMPTY_CHAT_SUGGESTIONS } from "../../src/chat/chat-context.js";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
 
 const ASSISTANT_MSG: ChatUIMessage = {
@@ -84,9 +85,9 @@ describe("ChatInterface shell", () => {
       />,
     );
     expect(screen.getByText(/Ask anything about acme/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Give me an overview of this codebase/i),
-    ).toBeInTheDocument();
+    for (const suggestion of EMPTY_CHAT_SUGGESTIONS.slice(0, 4)) {
+      expect(screen.getByRole("button", { name: suggestion })).toBeInTheDocument();
+    }
   });
 
   it("renders messages and hides empty-state when transcript is non-empty", () => {

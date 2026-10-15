@@ -90,7 +90,8 @@ disable the model calls themselves.
   it and price with the right model) and calls the pricing table only. It is a
   read-only preflight, not a model call.
 - `GET /api/repos/{repo_id}/chat/suggestions` goes through the same grounding
-  reads as chat but makes no model call.
+  reads as chat but makes no model call. With no `target` it only quotes chart
+  datasets already cached for the current index and reads nothing cold.
 - `POST /api/repos/{repo_id}/claude-md/generate` renders `CLAUDE.md` from
   indexed data synchronously, with no LLM call (`routers/claude_md.py`).
 - `POST /api/repos/{repo_id}/blast-radius` is a deterministic graph analysis
