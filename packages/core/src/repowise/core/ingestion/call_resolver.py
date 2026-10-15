@@ -181,12 +181,12 @@ _EXTENSION_KINDS = frozenset({"impl"})
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
 PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset(
-    {"cpp", "csharp", "dart", "go", "java", "python"}
+    {"cpp", "csharp", "dart", "go", "java", "kotlin", "python"}
 )
 
 # Chain languages that type the inner call by the identity of the type it
 # returns (``_returned_type_id``); the rest read its type name.
-_RETURNED_TYPE_ID_LANGUAGES = frozenset({"dart", "go", "python"})
+_RETURNED_TYPE_ID_LANGUAGES = frozenset({"dart", "go", "kotlin", "python"})
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
@@ -1397,14 +1397,15 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             if handled:
                 return resolved
 
-        bare_fallback = self._strategies_for(file_path).member_bare_fallback
+        strategies = self._strategies_for(file_path)
+        bare_fallback = strategies.member_bare_fallback
         # --- Method call with receiver: receiver.method() ---
         if call.receiver_name:
             handled, hit = self._resolve_member_call(file_path, call, caller_id)
             if not handled and call.bare_name_fallback and bare_fallback:
                 hit = self._resolve_free_call(file_path, call, caller_id)
             return self._with_props(hit, call)
-        if receiver_call is not None and not bare_fallback:
+        if receiver_call is not None and not (bare_fallback and strategies.chain_bare_fallback):
             return None
 
         # --- Free function call: function() ---
@@ -1565,10 +1566,18 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             if hit is not None:
                 tier = hit.origin.removeprefix("receiver_typed_")
                 return True, self._return_typed_call(caller_id, hit.callee_id, tier, call.line)
-        if language in ("python", "dart"):
+            if language == "kotlin" and type_id is not None:
+                # A Kotlin extension function can add the method to the type the
+                # inner call returns; a member of the type still wins over it.
+                _, extension = self._extension_call(
+                    file_path, call, caller_id, self._symbols_by_id[type_id].name
+                )
+                if extension is not None:
+                    return True, extension
+        if language in ("python", "dart", "kotlin"):
             # A type name read in the caller's file is not evidence, and an
-            # inherited method is not a refusal: the bare name keeps the site
-            # where the language allows one.
+            # inherited method or an extension is not a refusal: the bare name
+            # keeps the site where the language allows one.
             return False, None
         type_name = (
             tabled
@@ -1774,11 +1783,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         A receiver records one hop, but the parser keeps every link of a chain
         as its own site on the chain's first line, so the hop below is read
-        off the site *inner* names. C#, Go and Java read it, so a builder chain
+        off the site *inner* names. C#, Go, Java and Kotlin read it, so a builder chain
         types each link from the one before; elsewhere an inner call is still
         typed as if nothing were chained under it.
         """
-        if language not in ("csharp", "go", "java"):
+        if language not in ("csharp", "go", "java", "kotlin"):
             return None
         sites = self._chained_sites.get(file_path)
         if sites is None:

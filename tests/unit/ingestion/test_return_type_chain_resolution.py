@@ -216,7 +216,7 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
     assert (
-        frozenset({"cpp", "csharp", "dart", "go", "java", "python"})
+        frozenset({"cpp", "csharp", "dart", "go", "java", "kotlin", "python"})
         == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
     )
 
@@ -982,3 +982,128 @@ def test_kotlin_return_type_an_external_import_names_is_not_the_repo_class(
 
     assert ("Use.kt::Socket::source" in callees) == (not imported)
 
+
+
+_KOTLIN_CHAINS = (
+    "class Request {\n    fun send(): Int = 0\n}\n"
+    "class Other {\n    fun send(): Int = 0\n}\n"
+    "class Client {\n"
+    "    fun request(): Request = Request()\n"
+    "    fun mk(a: Int): Request = Request()\n"
+    "    fun mk(a: String): Other = Other()\n"
+    "    fun <T> gen(): T = TODO()\n"
+    "}\n"
+    "class Response {\n"
+    "    class Builder {\n"
+    "        fun setHeaders(h: String): Builder = this\n"
+    "        fun makeUnsafe(): Builder = this\n"
+    "        fun build(): Response = Response()\n"
+    "    }\n"
+    "}\n"
+    "fun Request.extra(): Int = 0\n"
+    "class Use {\n    fun go(client: Client) {\n{body}\n    }\n}\n"
+)
+
+
+def _kotlin_chain_callees(tmp_path: Path, body: str) -> set[str]:
+    """Callees of every call in *body*, held in ``Use.go``."""
+    text = _KOTLIN_CHAINS.replace("{body}", body)
+    parsed = _parse(tmp_path, "a.kt", "kotlin", text)
+    resolver = CallResolver(parsed, {"a.kt": set()})
+    return {
+        rc.callee_id
+        for rc in resolver.resolve_file("a.kt", parsed["a.kt"].calls)
+        if rc.caller_id.endswith("::go")
+    }
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("client.request().send()", {"a.kt::Client::request", "a.kt::Request::send"}),
+        ("client.request()?.send()", {"a.kt::Client::request", "a.kt::Request::send"}),
+        (
+            "Response.Builder()\n        .setHeaders(\"a\")\n        .makeUnsafe()\n        .build()",
+            {
+                "a.kt::Response::Builder",
+                "a.kt::Builder::setHeaders",
+                "a.kt::Builder::makeUnsafe",
+                "a.kt::Builder::build",
+            },
+        ),
+        ("Response.Builder().build()", {"a.kt::Response::Builder", "a.kt::Builder::build"}),
+    ],
+)
+def test_kotlin_call_chained_on_a_call_takes_the_type_the_inner_call_returns(
+    tmp_path: Path, body: str, expected: set[str]
+) -> None:
+    assert _kotlin_chain_callees(tmp_path, body) == expected
+
+
+def test_kotlin_chained_call_reaches_an_extension_on_the_returned_type(tmp_path: Path) -> None:
+    callees = _kotlin_chain_callees(tmp_path, "client.request().extra()")
+
+    assert any(callee.endswith("::extra") for callee in callees)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "client.mk(1).send()",  # overloads of one arity that return different types
+        "client.gen().send()",  # a type parameter is no class
+        "client.request().let { it }.send()",  # a scope function is external
+        "client.request().apply { }.send()",
+        "remote.fetch().send()",  # the head is not declared in the repo
+        "remote.fetch()?.send()",
+    ],
+)
+def test_kotlin_chained_call_without_a_typed_inner_call_binds_nothing(
+    tmp_path: Path, body: str
+) -> None:
+    callees = _kotlin_chain_callees(tmp_path, body)
+
+    assert not {callee for callee in callees if callee.endswith("::send")}
+
+
+@pytest.mark.parametrize(
+    ("body", "inner"),
+    [
+        ("client.request().send()", ("request", "client", 0)),
+        ("client.request()?.send()", ("request", "client", 0)),
+        ("client.mk(1).send()", ("mk", "client", 1)),
+        ("Response.Builder().build()", ("Builder", "Response", 0)),
+        ("this.request().send()", ("request", "this", 0)),
+        ("make().send()", ("make", None, 0)),
+    ],
+)
+def test_kotlin_outer_call_of_a_chain_is_a_site_carrying_its_inner_call(
+    tmp_path: Path, body: str, inner: tuple[str, str | None, int]
+) -> None:
+    text = _KOTLIN_CHAINS.replace("{body}", body)
+    parsed = _parse(tmp_path, "a.kt", "kotlin", text)
+    outer = next(c for c in parsed["a.kt"].calls if c.receiver_call and c.target_name != "extra")
+
+    assert (
+        outer.receiver_name,
+        outer.receiver_call.target_name,
+        outer.receiver_call.receiver_name,
+        outer.receiver_call.argument_count,
+    ) == (None, *inner)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "a.b.request().send()",  # a dotted path is not a receiver the resolver can type
+        "client.request()!!.send()",
+        "client.request().let { it }.send()",
+        "client.request() { }.send()",
+    ],
+)
+def test_kotlin_chain_whose_inner_call_cannot_be_described_is_not_a_site(
+    tmp_path: Path, body: str
+) -> None:
+    text = _KOTLIN_CHAINS.replace("{body}", body)
+    parsed = _parse(tmp_path, "a.kt", "kotlin", text)
+
+    assert not [c for c in parsed["a.kt"].calls if c.target_name == "send"]

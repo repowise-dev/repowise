@@ -199,6 +199,12 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
 
     if node.type == "identifier":
         return _dart_call_receiver(node, src)
+    if (
+        node.type == "call_expression"
+        and node.child_by_field_name("function") is None
+        and node.child_by_field_name("arguments") is None
+    ):
+        return _kotlin_call_receiver(node, src)
     arguments = node.child_by_field_name("arguments")
     argument_count = _count_arguments(arguments) if arguments is not None else None
 
@@ -252,6 +258,50 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
     if receiver is not None and receiver.type in ("identifier", "this"):
         receiver_name = _node_text(receiver, src).strip() or None
     return CallReceiver(target_name, receiver_name, argument_count)
+
+
+def _kotlin_call_receiver(call: Node, src: str) -> CallReceiver | None:
+    """The Kotlin call captured as another call's receiver: ``a.b(..)``, ``B(..)``.
+
+    tree-sitter-kotlin names no fields on ``call_expression`` or
+    ``navigation_expression``, so the callee and its arguments are read by
+    position and type. Only a call the resolver can type is described:
+
+    * ``f(..)`` and ``recv.f(..)``, where ``recv`` is a name, ``this``,
+      ``this.field`` or another call. A call receiver is left unnamed, as for
+      Java: the call below it is its own site, joined at resolution.
+    * Anything else returns None (a dotted path such as ``a.b.f()``, a safe-call
+      or ``!!`` hop, a trailing-lambda call such as ``x.let { }``), so the
+      chained site is dropped rather than read as a receiver-less call.
+    """
+    named = call.named_children
+    callee = named[0] if named else None
+    arguments = next((child for child in named if child.type == "value_arguments"), None)
+    if callee is None or arguments is None:
+        return None
+    count = _count_arguments(arguments)
+
+    if callee.type == "identifier":
+        return CallReceiver(_node_text(callee, src).strip(), None, count)
+    if callee.type != "navigation_expression" or len(callee.named_children) != 2:
+        return None
+    receiver, target = callee.named_children
+    if target.type != "identifier":
+        return None
+
+    receiver_name: str | None
+    if receiver.type == "call_expression":
+        receiver_name = None
+    elif receiver.type in ("identifier", "this_expression") or (
+        receiver.type == "navigation_expression"
+        and [child.type for child in receiver.named_children] == ["this_expression", "identifier"]
+    ):
+        receiver_name = _receiver_text("kotlin", receiver, src)
+    else:
+        return None
+    if receiver.type != "call_expression" and receiver_name is None:
+        return None
+    return CallReceiver(_node_text(target, src).strip(), receiver_name, count)
 
 
 def _dart_call_receiver(name: Node, src: str) -> CallReceiver | None:
@@ -2164,6 +2214,10 @@ class ASTParser:
                 if receiver_call_nodes
                 else None
             )
+            if receiver_call_nodes and receiver_call is None and file_info.language == "kotlin":
+                # An inner call that cannot be described leaves a site with no
+                # receiver at all, which would resolve by its bare name.
+                continue
             scope_name = _node_text(scope_nodes[0], src).strip() if scope_nodes else None
 
             arg_count = _count_arguments(arg_nodes[0]) if arg_nodes else None
