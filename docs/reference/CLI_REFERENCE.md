@@ -1626,7 +1626,7 @@ repowise changes export [--path PATH] [--since DATE] [--until DATE] [--format js
 
 ### `repowise suspects`
 
-Ranks the indexed changes merged in a window (default the 14 days before `--until`, which defaults to now) against a symptom: free text, files, a stack trace file. Each row lists the signals that fired (text match, import distance, co-change, recency, trace hits) with their evidence; the order is where to start reading, never a cause, and `git bisect run` confirms one. Measured results and the bisect recipe are in [CHANGES.md](../layers/CHANGES.md#suspects).
+Ranks the indexed changes merged in a window (default the 14 days before `--until`, which defaults to now) against a symptom: free text, files, a stack trace file. Each row lists the signals that fired (text match, import distance, co-change, recency, trace hits) with their evidence; the order is where to start reading, never a cause, and `git bisect run` confirms one. Text match carries most of the ranking, and most regressions surface later than 14 days, so a change outside the list is not cleared; widen `--since`. `--symptom` is read up to 20,000 characters and `--files` up to 50. Measured results and the bisect recipe are in [CHANGES.md](../layers/CHANGES.md#suspects).
 
 ```bash
 repowise suspects [--symptom TEXT] [--files PATH]... [--trace FILE] [--since DATE] [--until DATE] [--limit N] [--path PATH] [--format table|json]

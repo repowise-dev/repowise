@@ -87,9 +87,9 @@ Full flags: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-changes).
 
 ## Suspects
 
-`repowise suspects --symptom TEXT [--files F] [--trace FILE] [--since D] [--until D]` ranks the changes merged in the 14 days before `--until` against what was seen. Five signals rank the candidates (text match, import distance from the files the symptom names, co-change, recency, stack-trace hits) and are fused by reciprocal rank; each row lists the signals that fired and their evidence. Measured on 43 real regressions in django and node, the change a later revert or fix named was in the top 5 for 67% of issues, against 28% for ranking by shared files; the method is in [bug-history.md](../architecture/bug-history.md#suspects-ranking-measured). The same ranking is at `POST /api/repos/{id}/suspects`, in `get_context(include=["suspects"])` and as the chat tool `find_suspects`.
+`repowise suspects --symptom TEXT [--files F] [--trace FILE] [--since D] [--until D]` ranks the changes merged in the 14 days before `--until` against what was seen. Five signals rank the candidates (text match, import distance from the files the symptom names, co-change, recency, stack-trace hits) and are fused by reciprocal rank; each row lists the signals that fired and their evidence. Measured on 43 real regressions in django and node, the change a later revert or fix named was in the top 5 for 67% of issues, against 28% for ranking by shared files, and text match carries most of that ranking; the method is in [bug-history.md](../architecture/bug-history.md#suspects-ranking-measured). The same ranking is at `POST /api/repos/{id}/suspects`, in `get_context(include=["suspects"])` and as the chat tool `find_suspects`.
 
-The order says where to start reading, not what caused it. To confirm a suspect, let git find the first bad commit with a check that fails on the bug:
+Most regressions surface later than 14 days after the change, so a change missing from the list is not cleared; widen `--since`. Files are mapped onto those tracked at HEAD, so a file renamed or deleted in the window may not match. The order says where to start reading, not what caused it. To confirm a suspect, let git find the first bad commit with a check that fails on the bug:
 
 ```bash
 git bisect start <bad-sha> <good-sha>
