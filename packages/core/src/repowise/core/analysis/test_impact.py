@@ -116,7 +116,7 @@ async def _read_coverage(
     session: AsyncSession, repository_id: str, changed: list[str]
 ) -> tuple[Mapping[str, Any], dict[str, list[Mapping[str, Any]]], str | None]:
     """The coverage summary, each changed path's measured rows, and the last read error."""
-    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
+    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering_many
 
     try:
         summary = await get_test_coverage_summary(session, repository_id)
@@ -127,14 +127,36 @@ async def _read_coverage(
 
     measured: dict[str, list[Mapping[str, Any]]] = {}
     if summary.get("pair_count", 0) > 0:
-        for path in changed:
-            try:
-                measured[path] = await tests_covering(
-                    session, repository_id, path, lines=None
-                )
-            except Exception as exc:
-                coverage_error = type(exc).__name__
+        try:
+            # One query for the whole changed set; every file asks for every test
+            # that touches it, so no line filter applies here.
+            measured = await tests_covering_many(
+                session, repository_id, dict.fromkeys(changed)
+            )
+        except Exception as exc:
+            # The batched read replaced a per-file loop that lost only the file whose
+            # read failed. Losing the whole set instead would drop coverage evidence for
+            # every path in the change, which reads as "no tests touch this" rather than
+            # "the read failed". Fall back to the per-file reads the batch replaced, so a
+            # single bad read costs that one file and the rest still arrive measured.
+            coverage_error = type(exc).__name__
+            measured = await _measured_per_file(session, repository_id, changed)
     return summary, measured, coverage_error
+
+
+async def _measured_per_file(
+    session: AsyncSession, repository_id: str, changed: list[str]
+) -> dict[str, list[Mapping[str, Any]]]:
+    """Each changed path's rows, one read at a time; a failing path is left out."""
+    from repowise.core.persistence.crud import tests_covering
+
+    measured: dict[str, list[Mapping[str, Any]]] = {}
+    for path in changed:
+        try:
+            measured[path] = await tests_covering(session, repository_id, path, lines=None)
+        except Exception:  # the batch failed; keep the paths that still read
+            continue
+    return measured
 
 
 async def _read_indexed_commit(
@@ -495,3 +517,27 @@ def assemble_test_impact(
             ),
         },
     }
+
+
+async def _measured_per_file(
+    session: Any, repository_id: str, changed: dict[str, set[int] | None]
+) -> dict[str, list[Mapping[str, Any]]]:
+    """The per-file reads the batched call replaced, for a batch that failed.
+
+    Each file is attempted on its own, so one failed read costs that file alone and the rest
+    still arrive measured. That is what the callers had before the batch existed; without it a
+    single failure drops coverage evidence for every path in the change, which a reader cannot
+    tell from "no test touches this".
+
+    The error is not reported from here: the caller already has the one that sent it down this
+    path, and reporting a second would suggest two faults where there is one.
+    """
+    from repowise.core.persistence.crud import tests_covering
+
+    measured: dict[str, list[Mapping[str, Any]]] = {}
+    for path in changed:
+        try:
+            measured[path] = await tests_covering(session, repository_id, path, lines=None)
+        except Exception:
+            continue
+    return measured
