@@ -127,6 +127,9 @@ def detect_php_framework(manifest: ComposerManifest) -> FrameworkFacts | None:
 #: The runtime that starts the components an ``AndroidManifest.xml`` registers.
 ANDROID = FrameworkFacts(name="Android", anchor="framework:android")
 
+#: Apple instantiates classes registered by plist and Interface Builder XML.
+APPLE = FrameworkFacts(name="Apple", anchor="framework:apple")
+
 ANGULAR = FrameworkFacts(name="Angular", anchor="framework:angular")
 
 #: Workspace config naming what an Angular build loads: Angular CLI's
