@@ -132,6 +132,8 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
 
     import yaml  # type: ignore[import-untyped]
 
+    from repowise.core.fsutils import replace_with_retry
+
     cfg_dir = get_repowise_dir(repo_path)
     cfg_dir.mkdir(parents=True, exist_ok=True)
     target = cfg_dir / CONFIG_FILENAME
@@ -146,7 +148,7 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_name, target)
+        replace_with_retry(tmp_name, target)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)

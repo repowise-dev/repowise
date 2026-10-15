@@ -330,3 +330,30 @@ def test_credentials_in_a_base_url_are_refused_and_never_shown(tmp_path):
     with pytest.raises(ValueError, match=r"config\.yaml") as info:
         llm_provider_kwargs(sel, repo)
     assert "hunter2" not in str(info.value)
+
+
+@pytest.mark.parametrize("writer", ["config.yaml", "provider_config.json"])
+def test_writers_retry_while_a_reader_holds_the_file(tmp_path, monkeypatch, writer):
+    """Windows refuses a replace while another thread has the file open."""
+    from repowise.core import fsutils
+    from repowise.core.repo_config import save_repo_config
+
+    real_replace = os.replace
+    refusals = []
+
+    def busy_then_free(src, dst):
+        if len(refusals) < 3:
+            refusals.append(dst)
+            raise PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(fsutils.os, "replace", busy_then_free)
+    monkeypatch.setattr(fsutils.time, "sleep", lambda _s: None)
+    repo = _repo(tmp_path)
+    if writer == "config.yaml":
+        save_repo_config(repo, {"provider": "openai"})
+        assert load_repo_config(repo) == {"provider": "openai"}
+    else:
+        resolve.update_global_config(lambda config: config.update(active_provider="kimi"))
+        assert resolve.read_global_config()["active_provider"] == "kimi"
+    assert len(refusals) == 3

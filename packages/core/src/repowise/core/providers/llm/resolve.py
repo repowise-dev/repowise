@@ -30,13 +30,13 @@ import json
 import logging
 import os
 import threading
-import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from repowise.core.fsutils import replace_with_retry
 from repowise.core.providers.llm.registry import (
     PROVIDER_API_KEY_ENVS,
     PROVIDER_AUTODETECT_ORDER,
@@ -162,23 +162,8 @@ def update_global_config(change: Callable[[dict[str, Any]], Any]) -> None:
         # Keys are sensitive: owner read/write only where the OS honours it.
         with contextlib.suppress(OSError):
             os.chmod(tmp, 0o600)
-        _replace(tmp, path)
+        replace_with_retry(tmp, path)
         forget_cached(path)
-
-
-def _replace(tmp: Path, path: Path) -> None:
-    """``os.replace``, retried while a reader briefly holds *path* open.
-
-    Windows refuses to replace a file another thread or process has open, and
-    every resolution reads this one, so a write can land mid-read.
-    """
-    for _attempt in range(50):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            time.sleep(0.01)
-    os.replace(tmp, path)
 
 
 def _repo_key(repo_path: Path | str) -> str:

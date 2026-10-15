@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,22 @@ def atomic_write_text(
     except Exception:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def replace_with_retry(src: Path | str, dst: Path | str) -> None:
+    """``os.replace``, retried while a reader briefly holds *dst* open.
+
+    Windows refuses to replace a file another thread or process has open, and
+    the config files written through this are read on every request, so a
+    write can land mid-read. Gives up after about half a second.
+    """
+    for _attempt in range(50):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            time.sleep(0.01)
+    os.replace(src, dst)
 
 
 def relative_files(files: Iterable[str], repo_root: Any) -> list[str]:
