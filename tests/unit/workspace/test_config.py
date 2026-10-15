@@ -12,6 +12,7 @@ from repowise.core.workspace.config import (
     RepoEntry,
     WorkspaceConfig,
     find_workspace_root,
+    workspace_root_for_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -306,6 +307,40 @@ class TestFindWorkspaceRoot:
         deep = ws / "repo" / "src" / "pkg"
         deep.mkdir(parents=True)
         assert find_workspace_root(deep) == ws.resolve()
+
+
+class TestWorkspaceRootForPath:
+    @pytest.fixture
+    def ws(self, tmp_path: Path) -> Path:
+        """A workspace declaring only ``brag``, with an indexed non-member beside it."""
+        WorkspaceConfig(
+            repos=[RepoEntry(path="brag", alias="brag", is_primary=True)],
+            default_repo="brag",
+        ).save(tmp_path)
+        for name in ("brag", "microdot"):
+            (tmp_path / name / ".repowise").mkdir(parents=True)
+            (tmp_path / name / ".repowise" / "state.json").write_text("{}")
+        return tmp_path
+
+    def test_indexed_non_member_is_its_own_repo(self, ws: Path) -> None:
+        assert find_workspace_root(ws / "microdot") == ws.resolve()
+        assert workspace_root_for_path(ws / "microdot") is None
+
+    def test_workspace_root(self, ws: Path) -> None:
+        assert workspace_root_for_path(ws) == ws.resolve()
+
+    def test_indexed_member(self, ws: Path) -> None:
+        assert workspace_root_for_path(ws / "brag") == ws.resolve()
+
+    def test_unindexed_directory_inside_workspace(self, ws: Path) -> None:
+        plain = ws / "notes"
+        plain.mkdir()
+        assert workspace_root_for_path(plain) == ws.resolve()
+
+    def test_indexed_repo_without_workspace(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowise").mkdir()
+        (tmp_path / ".repowise" / "state.json").write_text("{}")
+        assert workspace_root_for_path(tmp_path) is None
 
 
 # ---------------------------------------------------------------------------

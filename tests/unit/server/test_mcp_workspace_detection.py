@@ -77,3 +77,21 @@ def test_detect_workspace_non_member_indexed_repo_drops_to_single_repo(
     assert ws_root is None
     assert ws_config is None
     assert repo_alias is None
+
+
+def test_detect_workspace_indexed_repo_outside_every_member_drops_to_single_repo(
+    tmp_path: Path,
+) -> None:
+    """A workspace whose members do not contain the path must not hand it the
+    primary when the path is an indexed repo of its own."""
+    (tmp_path / ".repowise-workspace.yaml").write_text(
+        "version: 1\ndefault_repo: brag\nrepos:\n- path: brag\n  alias: brag\n"
+        "  is_primary: true\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "brag").mkdir()
+    microdot = tmp_path / "microdot"
+    (microdot / ".repowise").mkdir(parents=True)
+    (microdot / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+    assert _detect_workspace(str(microdot)) == (None, None, None)

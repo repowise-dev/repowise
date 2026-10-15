@@ -523,3 +523,23 @@ def test_a_client_hanging_up_is_not_an_error_exit(monkeypatch, tmp_path: Path) -
 
     assert result.exit_code == 0
     assert "Traceback" not in result.output
+
+
+def test_mcp_cli_indexed_repo_under_a_workspace_it_is_not_part_of(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    WorkspaceConfig(
+        repos=[RepoEntry(path="brag", alias="brag", is_primary=True)],
+        default_repo="brag",
+    ).save(tmp_path)
+    repo = tmp_path / "microdot"
+    (repo / ".repowise").mkdir(parents=True)
+    (repo / ".repowise" / "state.json").write_text("{}")
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **_kw: None)
+
+    result = CliRunner().invoke(cli, ["mcp", str(repo), "--transport", "streamable-http"])
+
+    assert result.exit_code == 0
+    assert "Workspace:" not in result.output
+    assert "Default repo: brag" not in result.output

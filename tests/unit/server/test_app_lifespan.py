@@ -376,6 +376,24 @@ async def test_member_job_reset_and_fts_failures_are_contained(env, stubs, caplo
 
 
 @pytest.mark.asyncio
+async def test_indexed_repo_outside_the_parent_workspace_stays_single_repo(
+    env, stubs, monkeypatch
+):
+    _write_workspace(env, [("brag", True)])
+    await _make_db(env / "brag" / ".repowise" / "wiki.db", "brag-id", env / "brag")
+    repo = env / "microdot"
+    (repo / ".repowise").mkdir(parents=True)
+    (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    app = FastAPI()
+    async with lifespan(app):
+        assert app.state.workspace_config is None
+        assert app.state.repo_registry is None
+        assert "brag" not in app.state.db_url
+
+
+@pytest.mark.asyncio
 async def test_malformed_workspace_file_falls_back_to_single_repo(env, stubs, caplog, monkeypatch):
     (env / ".repowise-workspace.yaml").write_text("repos: [unclosed\n", encoding="utf-8")
     db = env / "primary.db"
