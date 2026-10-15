@@ -59,6 +59,9 @@ def refresh_replayed(replayed: BiomarkerResult, functions) -> bool:
     for fc in functions:
         if fc.name == replayed.function_name and meets_structural_floor(fc):
             replayed.details = {**replayed.details, "ccn": fc.ccn, "max_nesting": fc.max_nesting}
+            mods, p80 = replayed.details.get("modification_count"), replayed.details.get("repo_p80")
+            if isinstance(mods, int) and isinstance(p80, int):
+                replayed.severity = _severity_for(mods, max(p80, _MIN_CHANGES), fc.ccn)
             return True
     return False
 
