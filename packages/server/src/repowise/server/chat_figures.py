@@ -22,6 +22,15 @@ Reading evidence is bounded: past ``MAX_NODES_PER_ARTIFACT`` or
 ``MAX_CHARS_TOTAL`` overall, the rest is not read, and a figure that matched
 nothing read counts as not checked rather than flagged.
 
+A figure no result holds may still be worked out from figures that are
+there: a percentage that is the ratio of two matched figures of the answer
+(``320`` of ``505`` read as ``63.4%``), or a count that is the sum of the
+matched figures on its own line. Such a figure is ``derived``, not flagged.
+The numerator sits on the percentage's line; a whole-number percentage also
+needs its denominator there, since a whole percent is wide enough for an
+unrelated ratio to land in it. Matches use the precision shown, never the
+hedge allowance, and a derived figure is never an input to another.
+
 A figure with no match is flagged, never removed. A matched one carries the
 ``artifact_id`` of the tool result it came from, which is its citation.
 Offsets are UTF-16 code units so a browser can slice the text with them.
@@ -161,6 +170,8 @@ class Figure:
     end: int
     verified: bool
     artifact_id: str | None = None
+    #: Worked out from matched figures of the answer rather than read in a result.
+    derived: bool = False
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -171,6 +182,8 @@ class Figure:
         }
         if self.artifact_id:
             out["artifact_id"] = self.artifact_id
+        if self.derived:
+            out["derived"] = True
         return out
 
 
@@ -189,6 +202,8 @@ class FigureCheck:
             "figures_checked": len(self.figures),
             "figures_unverified": sum(not f.verified for f in self.figures),
         }
+        if derived := sum(f.derived for f in self.figures):
+            out["figures_derived"] = derived
         if self.not_checked:
             out["figures_not_checked"] = self.not_checked
         return out
@@ -408,6 +423,27 @@ def _find(pool: _Pool, reading: _Reading, tolerance: float) -> str | None | bool
     return False
 
 
+#: Matched figures one answer offers as inputs to a derived figure.
+MAX_DERIVE_INPUTS = 200
+
+
+def _derivable(reading: _Reading, line: int, inputs: list[tuple[int, int, float]], me: int) -> bool:
+    """Whether *reading* is a ratio or a line sum of matched figures (``inputs``:
+    ``(index, line, value)``, positive unitless ones only)."""
+    tolerance = 0.5 * 10.0**-reading.decimals + 1e-9
+    same_line = [(i, v) for i, ln, v in inputs if ln == line and i != me]
+    if reading.unit == "%" and not reading.signed:
+        pool = same_line if reading.decimals == 0 else [(i, v) for i, _, v in inputs if i != me]
+        return any(
+            i != j and a <= b and abs(100.0 * a / b - reading.value) <= tolerance
+            for i, a in same_line
+            for j, b in pool
+        )
+    if reading.unit is None and reading.decimals == 0 and not reading.signed:
+        return len(same_line) >= 2 and sum(v for _, v in same_line) == reading.value
+    return False
+
+
 def _utf16_offsets(text: str) -> list[int] | None:
     """Code-point index -> UTF-16 offset, or None when every character is in the BMP."""
     if all(ord(ch) < 0x10000 for ch in text):
@@ -459,6 +495,8 @@ def check_figures(
     pools = [_pool(sources, budget, expand)]
     earlier_sources = list(earlier)
     utf16 = _utf16_offsets(answer)
+    newlines = [i for i, ch in enumerate(answer) if ch == "\n"]
+    looked: list[tuple[int, _Reading, int, str | None | bool]] = []
     for start, reading in candidates:
         tolerance = _tolerance(answer, start, reading)
         found = _find(pools[0], reading, tolerance)
@@ -466,7 +504,16 @@ def check_figures(
             if len(pools) == 1:
                 pools.append(_pool(earlier_sources, budget, expand))
             found = _find(pools[1], reading, tolerance)
-        if found is False and any(pool.truncated for pool in pools):
+        looked.append((start, reading, bisect.bisect_left(newlines, start), found))
+
+    inputs = [
+        (i, line, reading.value)
+        for i, (_, reading, line, found) in enumerate(looked)
+        if found is not False and reading.unit is None and not reading.signed and reading.value > 0
+    ][:MAX_DERIVE_INPUTS]
+    for i, (start, reading, line, found) in enumerate(looked):
+        derived = found is False and bool(inputs) and _derivable(reading, line, inputs, i)
+        if found is False and not derived and any(pool.truncated for pool in pools):
             check.not_checked += 1
             continue
         end = reading.text_end
@@ -475,8 +522,9 @@ def check_figures(
                 text=answer[start:end],
                 start=utf16[start] if utf16 else start,
                 end=utf16[end] if utf16 else end,
-                verified=found is not False,
+                verified=found is not False or derived,
                 artifact_id=found if isinstance(found, str) else None,
+                derived=derived,
             )
         )
     return check

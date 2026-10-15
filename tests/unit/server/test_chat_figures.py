@@ -151,3 +151,43 @@ def test_evidence_past_the_read_cap_leaves_unmatched_figures_not_checked(monkeyp
         "figures_unverified": 0,
         "figures_not_checked": 1,
     }
+
+
+_COUNTS = [("a1", {"total": 505, "fix": 320, "feature": 115, "agent": 254, "unknown": 251})]
+
+
+def _derived(answer: str) -> list[tuple[str, bool, bool]]:
+    return [(f.text, f.verified, f.derived) for f in check_figures(answer, _COUNTS).figures]
+
+
+def test_a_percentage_of_two_matched_figures_is_derived_not_flagged():
+    answer = "Total: 505 changes.\n\n| Fix | 320 | 63.4% |\n| Feature | 115 | 22.8% |"
+
+    assert _derived(answer) == [
+        ("505", True, False),
+        ("320", True, False),
+        ("63.4%", True, True),
+        ("115", True, False),
+        ("22.8%", True, True),
+    ]
+    assert check_figures(answer, _COUNTS).diagnostics()["figures_derived"] == 2
+
+
+def test_a_whole_percentage_needs_both_figures_on_its_line():
+    assert _derived("254 of 505 changes (50%) carry provenance.")[-1] == ("50%", True, True)
+    # The denominator elsewhere is not enough for a whole percent.
+    assert _derived("Total 505.\nFix: 320, or 63%.")[-1] == ("63%", False, False)
+
+
+def test_a_sum_of_the_figures_on_its_line_is_derived():
+    assert _derived("Fix and feature: 320 + 115 = 435.")[-1] == ("435", True, True)
+    # Every other matched figure on the line counts, so a partial sum is not one.
+    assert _derived("Of 505, fix and feature: 320 + 115 = 435.")[-1] == ("435", False, False)
+
+
+def test_a_figure_that_is_no_ratio_or_sum_of_matched_figures_is_still_flagged():
+    answer = "Total: 505 changes.\n| Fix | 320 | 41.0% |\n| Feature | 115 | 9 |"
+
+    assert _derived(answer)[2:] == [("41.0%", False, False), ("115", True, False), ("9", False, False)]
+    # An unmatched figure is never an input: 77 is not in the results, so 15.2% is not derived.
+    assert _derived("Total: 505.\nOther: 77, 15.2%.")[-1] == ("15.2%", False, False)

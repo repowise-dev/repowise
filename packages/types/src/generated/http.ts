@@ -547,6 +547,7 @@ export interface ChatFigure {
   end: number;
   verified: boolean;
   artifact_id?: string | null;
+  derived?: boolean;
 }
 
 export interface ChatMessageResponse {
