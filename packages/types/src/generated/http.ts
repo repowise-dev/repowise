@@ -499,7 +499,17 @@ export interface ChangeRecord {
 export interface ChangelogEntryModel {
   version: string;
   label?: string | null;
+  summary?: string;
+  highlights?: ChangelogHighlightModel[];
+  stats?: ReleaseStatsModel | null;
   sections: ChangelogSectionModel[];
+}
+
+export interface ChangelogHighlightModel {
+  id: string;
+  title: string;
+  blurb: string;
+  href?: string | null;
 }
 
 export interface ChangelogResponse {
@@ -3308,6 +3318,30 @@ export interface RelatedWorkResponse {
   per_lens_limit?: number;
 }
 
+/** A release's "By the numbers", from ``scripts/release_stats.py``. */
+export interface ReleaseStatsModel {
+  since: string;
+  days: number;
+  prs: number;
+  contributors: number;
+  first_time_contributors?: number | null;
+  files_changed: number;
+  lines_added: number;
+  lines_removed: number;
+  types: ReleaseTypeCountsModel;
+  test_files_touched: number;
+  test_files_new: number;
+  issues_closed: number;
+}
+
+export interface ReleaseTypeCountsModel {
+  fixes?: number;
+  features?: number;
+  perf?: number;
+  refactors?: number;
+  docs?: number;
+}
+
 export interface RepoCreate {
   name: string;
   local_path: string;
@@ -3873,6 +3907,8 @@ export interface VersionResponse {
   store_compatible?: boolean | null;
   reindex_recommended?: boolean;
   reindex_command?: string | null;
+  highlights?: ChangelogHighlightModel[];
+  latest_highlights?: string[];
 }
 
 export interface WebhookResponse {

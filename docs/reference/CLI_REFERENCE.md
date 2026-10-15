@@ -2281,7 +2281,7 @@ version as seen. Works offline from the changelog bundled with the install.
 | `--all` | Show the full changelog history |
 | `--format` | `table` (default) or `json` |
 
-JSON carries every selected release; the panel caps at 5 releases and 8 bullets each.
+Each release leads with its highlights and a one-line "By the numbers" (pull requests, contributors, files and lines changed). JSON carries every selected release with its `summary`, `highlights` and `stats`; the panel caps at 5 releases and 8 bullets each.
 
 ```bash
 repowise whats-new                       # what changed since you last looked

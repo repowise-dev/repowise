@@ -17,14 +17,16 @@ import os
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from repowise.core.upgrade.changelog import (
+    UNRELEASED,
     ChangelogEntry,
     entries_between,
     parse_changelog,
 )
-from repowise.core.upgrade.release import BUNDLED_CHANGELOG_PATH
+from repowise.core.upgrade.release import BUNDLED_CHANGELOG_PATH, load_release_stats
 
 from .helpers import user_global_dir
 from .update_check import windows_upgrade_caveat
@@ -95,8 +97,36 @@ def write_last_seen_version(version: str) -> None:
 # --- rendering ------------------------------------------------------------
 
 
-def _format_entry(entry: ChangelogEntry, *, max_items: int) -> str:
+def numbers_line(stats: dict | None) -> str | None:
+    """One line of a release's "By the numbers", or ``None`` without figures."""
+    if not stats:
+        return None
+    try:
+        first = stats.get("first_time_contributors")
+        people = f"{stats['contributors']:,} contributors"
+        if first:
+            people += f" ({first:,} first-time)"
+        return (
+            f"{stats['prs']:,} pull requests from {people}, {stats['files_changed']:,} files, "
+            f"+{stats['lines_added']:,} / -{stats['lines_removed']:,} lines, "
+            f"{stats['days']:,} days since {stats['since']}"
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _format_entry(entry: ChangelogEntry, *, max_items: int, stats: dict | None = None) -> str:
+    # Highlights and the numbers lead and do not count toward the bullet cap:
+    # they are the part of the release a reader should not miss.
     lines: list[str] = []
+    if entry.highlights:
+        lines.append("[bold]Highlights[/bold]")
+        for h in entry.highlights:
+            blurb = f": {escape(h.blurb)}" if h.blurb else ""
+            lines.append(f"  - [bold]{escape(h.title)}[/bold]{blurb}")
+    numbers = numbers_line(stats)
+    if numbers:
+        lines.append(f"[dim]By the numbers: {numbers}[/dim]")
     shown = 0
     truncated = False
     for section in entry.sections:
@@ -146,11 +176,15 @@ def render_whats_new(
     if not selected:
         return False
 
+    stats = load_release_stats()
     blocks: list[str] = []
     for entry in selected[:max_versions]:
         label = f" [dim]({entry.label})[/dim]" if entry.label else ""
-        body = _format_entry(entry, max_items=max_items_per_version)
-        blocks.append(f"[bold cyan]v{entry.version}[/bold cyan]{label}\n{body}")
+        body = _format_entry(
+            entry, max_items=max_items_per_version, stats=stats.get(entry.version)
+        )
+        name = "Unreleased" if entry.version == UNRELEASED else f"v{entry.version}"
+        blocks.append(f"[bold cyan]{name}[/bold cyan]{label}\n{body}")
 
     extra = len(selected) - max_versions
     if extra > 0:
@@ -189,6 +223,7 @@ __all__ = [
     "RELEASES_URL",
     "find_changelog_path",
     "load_changelog_entries",
+    "numbers_line",
     "read_last_seen_version",
     "render_update_advisory",
     "render_whats_new",

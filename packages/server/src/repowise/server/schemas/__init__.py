@@ -197,8 +197,11 @@ if TYPE_CHECKING:
     )
     from .meta import (
         ChangelogEntryModel,
+        ChangelogHighlightModel,
         ChangelogResponse,
         ChangelogSectionModel,
+        ReleaseStatsModel,
+        ReleaseTypeCountsModel,
         VersionResponse,
     )
     from .ownership import (
@@ -507,8 +510,11 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
     "mcp": ("McpToolInfo", "McpToolSurfaceResponse", "UpdateMcpToolsRequest"),
     "meta": (
         "ChangelogEntryModel",
+        "ChangelogHighlightModel",
         "ChangelogResponse",
         "ChangelogSectionModel",
+        "ReleaseStatsModel",
+        "ReleaseTypeCountsModel",
         "VersionResponse",
     ),
     "ownership": (
@@ -681,6 +687,7 @@ __all__ = [
     "CardRef",
     "ChangeFeaturesResponse",
     "ChangelogEntryModel",
+    "ChangelogHighlightModel",
     "ChangelogResponse",
     "ChangelogSectionModel",
     "ChartView",
@@ -852,6 +859,8 @@ __all__ = [
     "RelatedWorkLens",
     "RelatedWorkRequest",
     "RelatedWorkResponse",
+    "ReleaseStatsModel",
+    "ReleaseTypeCountsModel",
     "RepoCreate",
     "RepoDeletedResponse",
     "RepoResponse",
