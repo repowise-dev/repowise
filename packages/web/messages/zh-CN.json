@@ -353,7 +353,8 @@
         "decisions_none": "未涉及决策",
         "health_delta": "发现：新增 {introduced}，恶化 {worsened}，解决 {resolved}",
         "health_delta_partial": "发现：新增 {introduced}，恶化 {worsened}，解决 {resolved}（部分比较）",
-        "provenance": "{label, select, agent {智能体} human_attested {人工确认} other {未知}}；{commits} 个提交中已知 {known} 个",
+        "provenance": "来源：{label}，{commits} 个提交中已知 {known} 个",
+        "provenance_named": "来源：{label}，{commits} 个提交中已知 {known} 个（{names}）",
         "risk_score": "大于 {percentile}% 的近期提交",
         "outcomes": "{reverts} 次回滚，{references} 次被引为原因",
         "outcomes_rate": "{reverts} 次回滚，{references} 次被引为原因；{files} 个文件中有 {fixed} 个在 {days} 天内被修复"

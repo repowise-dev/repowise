@@ -245,6 +245,15 @@ def test_every_item_reads_as_a_plain_line():
     assert lines["cross_repo_consumers"] == "No consumer in another repo"
     assert lines["risk_score"] == "Larger than 97.5% of recent commits"
     assert lines["outcomes"].startswith("Not known: ")
+    assert lines["provenance"] == "provenance: agent, known for 0 of 0 commits"
+    named = item_line(
+        {
+            "kind": "provenance",
+            "value": {"label": "agent", "agent_commits": 1, "human_attested_commits": 0, "unknown_commits": 0},
+            "details": [{"sha": "s", "label": "agent", "tier": 2, "agent": "claude-code", "model": "opus"}],
+        }
+    )
+    assert line_text(named) == "provenance: agent, known for 1 of 1 commit (claude-code, opus)"
     for text in lines.values():
         assert text and not any(w in text for w in ("True", "False", "None", "_", "{"))
 

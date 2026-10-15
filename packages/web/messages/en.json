@@ -353,7 +353,8 @@
         "decisions_none": "No decision crossed",
         "health_delta": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved",
         "health_delta_partial": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved (partial comparison)",
-        "provenance": "{label, select, agent {Agent} human_attested {Human attested} other {Unknown}}; known for {known} of {commits, plural, one {# commit} other {# commits}}",
+        "provenance": "provenance: {label}, known for {known} of {commits, plural, one {# commit} other {# commits}}",
+        "provenance_named": "provenance: {label}, known for {known} of {commits, plural, one {# commit} other {# commits}} ({names})",
         "risk_score": "Larger than {percentile}% of recent commits",
         "outcomes": "{reverts, plural, one {# revert} other {# reverts}}, {references, plural, one {# cause reference} other {# cause references}}",
         "outcomes_rate": "{reverts, plural, one {# revert} other {# reverts}}, {references, plural, one {# cause reference} other {# cause references}}; {fixed} of {files, plural, one {# file} other {# files}} fixed within {days} days"

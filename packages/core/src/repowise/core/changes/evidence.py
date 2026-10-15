@@ -22,7 +22,8 @@ Detail rows a policy reads have fixed keys (the local change policy in
   ``tests`` lists test ids, ``[]`` only for a measured absence, ``None`` when
   nothing knows;
 * ``contracts``: ``{path, breaking, ...}``;
-* ``provenance``: one row per commit, ``{sha, label, tier}``;
+* ``provenance``: one row per commit, ``{sha, label, tier}``, plus ``agent`` and
+  ``model`` on an agent's commit when stored;
 * ``decisions_crossed``: ``{id, title, authority, status, paths}``;
 * ``outcomes``: one row per later link, ``{kind, sha, change_id, target_sha,
   rule, evidence, basis}`` (``kind`` is ``revert`` or ``fix_reference``; a
@@ -596,7 +597,14 @@ def item_line(item: Mapping[str, Any]) -> dict[str, Any]:
     if kind == "provenance":
         known = int(value.get("agent_commits") or 0) + int(value.get("human_attested_commits") or 0)
         commits = known + int(value.get("unknown_commits") or 0)
-        return {"key": kind, "params": {"label": value.get("label"), "known": known, "commits": commits}}
+        # The label in the same plain words the change's facts use; agents and
+        # models are named as provenance, never set against anything.
+        label = str(value.get("label") or "unknown").replace("_", " ")
+        named = sorted({str(r[k]) for r in rows for k in ("agent", "model") if r.get(k)})
+        params = {"label": label, "known": known, "commits": commits}
+        if named:
+            return {"key": "provenance_named", "params": {**params, "names": ", ".join(named)}}
+        return {"key": kind, "params": params}
     if kind == "risk_score":
         return {"key": kind, "params": {"percentile": value.get("percentile")}}
     if kind == "outcomes":
@@ -653,9 +661,9 @@ def line_text(line: Mapping[str, Any]) -> str:
     if key in ("health_delta", "health_delta_partial"):
         text = f"Findings: {p['introduced']} introduced, {p['worsened']} worsened, {p['resolved']} resolved"
         return text + (" (partial comparison)" if key == "health_delta_partial" else "")
-    if key == "provenance":
-        label = {"agent": "Agent", "human_attested": "Human attested"}.get(p["label"], "Unknown")
-        return f"{label}; known for {p['known']} of {_n(p['commits'], 'commit')}"
+    if key in ("provenance", "provenance_named"):
+        text = f"provenance: {p['label']}, known for {p['known']} of {_n(p['commits'], 'commit')}"
+        return text + (f" ({p['names']})" if key == "provenance_named" else "")
     if key == "risk_score":
         return f"Larger than {p['percentile']}% of recent commits"
     if key in ("outcomes", "outcomes_rate"):
