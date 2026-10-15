@@ -49,16 +49,18 @@ def meets_structural_floor(fc) -> bool:
     return fc.ccn >= _CCN_FLOOR or fc.max_nesting >= _NESTING_FLOOR
 
 
-def still_hot(replayed: BiomarkerResult, functions) -> bool:
-    """Whether a stored hotspot's function still clears the structural floor.
+def refresh_replayed(replayed: BiomarkerResult, functions) -> bool:
+    """Bring a replayed hotspot's complexity up to date; False if it no longer qualifies.
 
     A re-score with no blame index replays the stored row, whose complexity
     figures an older walker wrote. Churn cannot be re-measured there, but
-    complexity can, so a function that no longer qualifies is dropped.
+    complexity can, so a function that no longer clears the floor is dropped.
     """
-    return any(
-        fc.name == replayed.function_name and meets_structural_floor(fc) for fc in functions
-    )
+    for fc in functions:
+        if fc.name == replayed.function_name and meets_structural_floor(fc):
+            replayed.details = {**replayed.details, "ccn": fc.ccn, "max_nesting": fc.max_nesting}
+            return True
+    return False
 
 
 def _severity_for(mod_count: int, bar: int, ccn: int) -> Severity:
