@@ -45,6 +45,22 @@ _CCN_HIGH = 15
 _CCN_CRITICAL = 20
 
 
+def meets_structural_floor(fc) -> bool:
+    return fc.ccn >= _CCN_FLOOR or fc.max_nesting >= _NESTING_FLOOR
+
+
+def still_hot(replayed: BiomarkerResult, functions) -> bool:
+    """Whether a stored hotspot's function still clears the structural floor.
+
+    A re-score with no blame index replays the stored row, whose complexity
+    figures an older walker wrote. Churn cannot be re-measured there, but
+    complexity can, so a function that no longer qualifies is dropped.
+    """
+    return any(
+        fc.name == replayed.function_name and meets_structural_floor(fc) for fc in functions
+    )
+
+
 def _severity_for(mod_count: int, bar: int, ccn: int) -> Severity:
     if mod_count >= 3 * bar and ccn >= _CCN_CRITICAL:
         return Severity.CRITICAL
@@ -71,7 +87,7 @@ class FunctionHotspotDetector:
             mod_count = len(distinct_commits_in_range(idx, fc.start_line, fc.end_line))
             if mod_count < bar:
                 continue
-            if fc.ccn < _CCN_FLOOR and fc.max_nesting < _NESTING_FLOOR:
+            if not meets_structural_floor(fc):
                 continue
             severity = _severity_for(mod_count, bar, fc.ccn)
             findings.append(
