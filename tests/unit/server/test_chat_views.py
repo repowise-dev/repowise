@@ -733,3 +733,74 @@ def test_query_keys_and_bearer_tokens_are_redacted(text, expected):
     from repowise.core.redaction import redact_secrets
 
     assert redact_secrets(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# chart: a spec over any list
+# ---------------------------------------------------------------------------
+
+
+def _show_chart(data: dict, **options: Any) -> tuple[TurnViews, dict]:
+    turn = TurnViews()
+    stamped = turn.record("get_health", {}, data, artifact_type="health")
+    return turn, turn.show(
+        {"artifact_id": stamped[ARTIFACT_ID_FIELD], "view": "chart", "options": options}
+    )
+
+
+def test_chart_draws_a_spec_and_its_receipt_names_the_kind_and_why():
+    turn, receipt = _show_chart(DEAD_CODE, rows="tiers.medium.findings", x="file_path", y="lines")
+    assert receipt["chart_type"] == "bar" and receipt["reason"]
+    part = turn.parts[0]
+    assert "receipt" not in part
+    ViewPartList.model_validate(turn.parts)
+    assert part["data"]["rows"] == [{"file_path": {"type": "file", "id": "x.py"}, "lines": 307}]
+    assert part["title"] == "Lines by file path"
+    assert part["as_of"] == "4c1e31fe3a9b"
+
+
+def test_chart_summary_says_when_the_tool_returned_only_part_of_a_list():
+    data = {"files": [{"kind": "py", "n": 1}, {"kind": "ts", "n": 2}], "files_total": 9}
+    _, receipt = _show_chart(data, x="kind", subtitle="Files by language.")
+    assert receipt["chart_type"] == "donut"
+    assert receipt["summary"].startswith("Files by language. 2 rows of files")
+    assert "returned 2 of 9 rows" in receipt["summary"]
+
+
+def test_chart_errors_list_the_fields_without_people():
+    _, result = _show_chart(HEALTH, rows="high_leverage_files", x="max_cnn")
+    assert result["error_code"] == "bad_spec"
+    assert "'max_ccn'" in result["error"]
+    assert result["fields"] == {"file_path": "text", "score": "number", "max_ccn": "number"}
+
+
+@pytest.mark.parametrize(
+    ("options", "code"),
+    [
+        ({"rows": "high_leverage_files", "x": "primary_owner"}, "person_grouping"),
+        (
+            {"rows": "high_leverage_files", "x": "file_path", "filter": [{"field": "primary_owner", "value": "S"}]},
+            "person_grouping",
+        ),
+        ({"rows": "global_hotspots", "x": "file_path", "y": "hotspot_score"}, "risk_score_series"),
+        ({"rows": "global_hotspots", "x": "hotspot_score", "y": "fix_count"}, "risk_score_series"),
+        ({"rows": "changes", "x": "category", "series": "agent_label"}, "attribution_figure"),
+        ({"rows": "nope", "x": "a"}, "bad_path"),
+        ({"x": "a", "colour": "red"}, "view_unavailable"),
+    ],
+)
+def test_chart_keeps_every_view_guard(options, code):
+    data = {
+        **HEALTH,
+        **RISK,
+        "changes": [{"category": "fix", "agent_label": "agent"}],
+    }
+    turn, result = _show_chart(data, **options)
+    assert result["error_code"] == code
+    assert turn.parts == []
+
+
+def test_chart_series_split_is_still_risk_guarded_by_its_measure():
+    data = {"rows": [{"file_path": "a", "tier": "x", "risk_score": 1}]}
+    _, result = _show_chart(data, x="file_path", y="risk_score", series="tier", aggregate="sum")
+    assert result["error_code"] == "risk_score_series"

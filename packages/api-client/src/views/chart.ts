@@ -3,8 +3,9 @@
  * check that the chart reads that table honestly: axes name real columns,
  * plotted values are numbers in one unit, a donut is a whole of two to five
  * non-negative parts with a positive total, a stacked bar is not all zeros,
- * and a stated sort order is the order the rows are in (a sorted chart may
- * not hold nulls in its series, since a null has no place in the order).
+ * a scatter's x is a number, and a stated sort order is the order the rows
+ * are in (a sorted chart may not hold nulls in its series, since a null has
+ * no place in the order).
  */
 
 import {
@@ -35,6 +36,7 @@ const SERIES_BOUNDS: { [T in ChartType]: [number, number] } = {
   line: [1, VIEW_LIMITS.chart_series],
   stacked_bar: [2, VIEW_LIMITS.chart_series],
   donut: [1, 1],
+  scatter: [1, VIEW_LIMITS.chart_series],
 };
 /** Chart types whose values are parts of a whole, so never negative. */
 const PARTS_OF_A_WHOLE: ReadonlySet<ChartType> = new Set(["stacked_bar", "donut"]);
@@ -89,6 +91,9 @@ function chartRules(v: Rec, p: string, e: string[]): void {
   let total = 0;
   rows.forEach((r, i) => {
     if (typeof v.x === "string" && r[v.x] === null) e.push(`${p}.data.rows[${i}].${v.x}: x is null`);
+    else if (type === "scatter" && typeof v.x === "string" && !isFiniteNumber(r[v.x])) {
+      e.push(`${p}.data.rows[${i}].${v.x}: a scatter x is a number`);
+    }
     for (const s of plotted) {
       const cell = r[s];
       if (cell === undefined) continue;

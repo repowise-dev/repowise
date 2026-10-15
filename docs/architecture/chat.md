@@ -278,6 +278,11 @@ saved to the database and a `done` event is emitted.
 result. Every result the model sees starts with its `artifact_id`, and
 `show_view` takes any id from the conversation or `latest:<tool_name>` for
 that tool's newest result. A chart whose values are all zero is not drawn.
+When no named view fits, the `chart` view takes a small spec (rows, x, y,
+series, filter, aggregate, sort, top with an Other bucket, kind) and the server
+filters, groups and draws it, picking the chart type from the data's shape
+unless one is asked for. The same guards apply: no person fields, no risk score
+as a plotted value, and attribution figures only through `changes.provenance`.
 
 ---
 

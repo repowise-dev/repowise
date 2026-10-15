@@ -24,6 +24,7 @@ const BAR = valid.c1 as ChartView;
 const STACKED = valid.c2 as ChartView;
 const LINE = valid.c3 as ChartView;
 const DONUT = valid.c4 as ChartView;
+const SCATTER = valid.c5 as ChartView;
 const SECTION = valid.s1 as SectionView;
 
 const href = (ref: { type: string; id: string }) => `/repos/r1/${ref.type}/${ref.id}`;
@@ -151,6 +152,50 @@ describe("ViewPartList", () => {
     );
     expect(dashes).toHaveLength(2);
     expect(new Set(dashes).size).toBe(2);
+  });
+
+  it("stacks a stacked bar's segments end to end on one row", () => {
+    render(<ViewPartList views={[STACKED]} />);
+
+    const [first, second] = [...part("c2").querySelectorAll(".recharts-bar")].map(
+      (bar) => bar.querySelector(".recharts-bar-rectangle path") as SVGPathElement,
+    );
+    const start = (el: SVGPathElement) => Number(/^M\s*([\d.]+)/.exec(el.getAttribute("d") ?? "")?.[1]);
+    const width = (el: SVGPathElement) => Number(el.getAttribute("width"));
+    expect(start(second!)).toBeCloseTo(start(first!) + width(first!), 1);
+  });
+
+  it("plots a scatter's numeric points, skipping nulls, with the table one toggle away", () => {
+    render(<ViewPartList views={[SCATTER]} />);
+    const figure = part("c5");
+
+    expect(figure).toHaveAttribute("data-chart-type", "scatter");
+    // Two rows, one with a null y: one point drawn.
+    expect(figure.querySelectorAll(".recharts-scatter-symbol")).toHaveLength(1);
+    fireEvent.click(within(figure).getByRole("button", { name: "Data" }));
+    expect(within(figure).getAllByRole("row")).toHaveLength(3);
+  });
+
+  it("gives each scatter series its own marker shape in the plot and legend", () => {
+    const split: ChartView = {
+      ...SCATTER,
+      id: "sc2",
+      data: {
+        ...SCATTER.data,
+        columns: [...SCATTER.data.columns, { key: "fixes", label: "Fixes" }],
+        rows: SCATTER.data.rows.map((row, i) => ({ ...row, commits: i === 0 ? 41 : null, fixes: i === 1 ? 6 : null })),
+      },
+      series: ["commits", "fixes"],
+    };
+    render(<ViewPartList views={[split]} />);
+    const figure = part("sc2");
+
+    const shapes = [...figure.querySelectorAll(".recharts-scatter-symbol path")].map((el) => el.getAttribute("d"));
+    expect(shapes).toHaveLength(2);
+    expect(new Set(shapes).size).toBe(2);
+    const legend = within(figure).getByRole("list");
+    expect(within(legend).getAllByRole("listitem")).toHaveLength(2);
+    expect(legend.querySelectorAll("svg path")).toHaveLength(2);
   });
 
   it("draws nothing for a donut with no series instead of failing", () => {

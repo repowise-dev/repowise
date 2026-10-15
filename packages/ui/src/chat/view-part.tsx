@@ -19,9 +19,13 @@ import {
   Pie,
   PieChart,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Symbols,
   Tooltip,
   XAxis,
   YAxis,
+  type SymbolType,
 } from "recharts";
 import type { CardRef } from "@repowise-dev/types/cards";
 import type {
@@ -52,9 +56,12 @@ const SERIES_FILLS = [
 ] as const;
 /** Lines differ by dash as well as lightness, one pattern per fill. */
 const LINE_DASHES = ["", "6 3", "2 3", "8 3 2 3", "1 2"] as const;
+/** Scatter series differ by marker shape the same way. */
+const POINT_SHAPES: readonly SymbolType[] = ["circle", "square", "triangle", "diamond", "cross"];
 
 const seriesFill = (i: number): string => SERIES_FILLS[Math.min(i, SERIES_FILLS.length - 1)]!;
 const lineDash = (i: number): string => LINE_DASHES[Math.min(i, LINE_DASHES.length - 1)]!;
+const pointShape = (i: number): SymbolType => POINT_SHAPES[Math.min(i, POINT_SHAPES.length - 1)]!;
 /** The series a chart draws; the rest stay in its data table. */
 const drawnSeries = (view: ChartView): string[] => view.series.slice(0, SERIES_FILLS.length);
 
@@ -221,6 +228,10 @@ function ChartLegend({ view }: { view: ChartView }) {
             <svg aria-hidden width="16" height="6" className="shrink-0">
               <line x1="0" y1="3" x2="16" y2="3" stroke={item.fill} strokeWidth="2" strokeDasharray={lineDash(i)} />
             </svg>
+          ) : view.chart_type === "scatter" ? (
+            <svg aria-hidden width="10" height="10" className="shrink-0">
+              <Symbols cx={5} cy={5} size={48} type={pointShape(i)} fill={item.fill} />
+            </svg>
           ) : (
             <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: item.fill }} />
           )}
@@ -280,6 +291,40 @@ function ChartPlot({ view }: { view: ChartView }) {
             </Pie>
             {tooltip}
           </PieChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  if (view.chart_type === "scatter") {
+    // Both axes are numbers; each series plots the rows it has a value in.
+    const plotted = series.map((key) => ({
+      key,
+      points: view.data.rows.flatMap((row) => {
+        const x = row[view.x];
+        const y = row[key];
+        return typeof x === "number" && typeof y === "number" ? [{ x, y }] : [];
+      }),
+    }));
+    return (
+      <div style={{ height: PLOT_PX }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ScatterChart margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>
+            <CartesianGrid stroke="var(--color-border-default)" />
+            <XAxis type="number" dataKey="x" name={labels.get(view.x) ?? view.x} tick={AXIS_TICK} axisLine={false} tickLine={false} />
+            <YAxis type="number" dataKey="y" tick={AXIS_TICK} axisLine={false} tickLine={false} />
+            <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={TOOLTIP_STYLE} />
+            {plotted.map(({ key, points }, i) => (
+              <Scatter
+                key={key}
+                name={labels.get(key) ?? key}
+                data={points}
+                fill={seriesFill(i)}
+                shape={pointShape(i)}
+                isAnimationActive={false}
+              />
+            ))}
+          </ScatterChart>
         </ResponsiveContainer>
       </div>
     );

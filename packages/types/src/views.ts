@@ -26,7 +26,7 @@ export const VIEW_SCHEMA_VERSION = 1 as const;
 export const SHOW_VIEW_TOOL = "show_view";
 
 /** Chart forms. A new form is added with its builder, never as a general grammar. */
-export const CHART_TYPES = ["bar", "stacked_bar", "line", "donut"] as const;
+export const CHART_TYPES = ["bar", "stacked_bar", "line", "donut", "scatter"] as const;
 export type ChartType = (typeof CHART_TYPES)[number];
 
 /** What a coverage ratio measures. */
@@ -124,7 +124,8 @@ export interface TableView extends ViewPartBase<"table">, ViewProvenance, ViewTa
  * A chart over its own table, which renderers also show as the data view.
  * `x` and every `series` entry are column keys; series values are numbers in
  * one shared unit. `sort` states the rows' order by the sum of their series
- * values (absent means source order) and is checked, not trusted.
+ * values (absent means source order) and is checked, not trusted. A scatter's
+ * `x` is numeric too: each row is one point per series it has a value in.
  */
 export interface ChartView extends ViewPartBase<"chart">, ViewProvenance {
   chart_type: ChartType;

@@ -32,7 +32,7 @@ from repowise.server.schemas.evidence import (
 
 VIEW_SCHEMA_VERSION = 1
 
-ChartType = Literal["bar", "stacked_bar", "line", "donut"]
+ChartType = Literal["bar", "stacked_bar", "line", "donut", "scatter"]
 CHART_TYPES: tuple[str, ...] = get_args(ChartType)
 
 ViewCoverageMetric = Literal["attribution", "test_reach"]
@@ -146,6 +146,7 @@ _SERIES_BOUNDS: dict[str, tuple[int, int]] = {
     "line": (1, VIEW_LIMITS["chart_series"]),
     "stacked_bar": (2, VIEW_LIMITS["chart_series"]),
     "donut": (1, 1),
+    "scatter": (1, VIEW_LIMITS["chart_series"]),
 }
 _PARTS_OF_A_WHOLE = frozenset({"stacked_bar", "donut"})
 
@@ -186,6 +187,8 @@ class ChartView(ViewProvenance, ViewPartBase):
         for i, row in enumerate(rows):
             if row[self.x] is None:
                 raise ValueError(f"rows[{i}]: x is null")
+            if kind == "scatter" and not isinstance(row[self.x], (int, float)):
+                raise ValueError(f"rows[{i}]: a scatter x is a number")
             for s in self.series:
                 cell = row[s]
                 if cell is None:
