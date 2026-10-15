@@ -225,6 +225,11 @@ class ClassComplexity:
     # Every method is fixed by a contract the class implements (a Rust
     # ``impl Trait for T``): none can move out, and cohesion is not scored.
     contract_impl: bool = False
+    # Names of the methods that read or write an instance field of this class,
+    # explicitly or by bare name. ``components`` drops single-field groups on
+    # implicit-receiver languages, so a service method using its one injected
+    # repository is only visible here; Move Method reads it.
+    field_readers: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

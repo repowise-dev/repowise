@@ -399,6 +399,49 @@ def test_method_calling_an_inherited_member_or_in_a_trait_impl_does_not_move():
     assert _detect_java(_java_envy_graph(), classes=[cls]) == []
 
 
+_JAVA_SERVICE = b"""
+@Service
+public class C {
+  private final ServerConfigRepository repository;
+
+  public C(ServerConfigRepository repository) {
+    this.repository = repository;
+  }
+
+  public T envious(T config) {
+    if (config.alpha() == null) {
+      config.beta("default");
+    }
+    config.gamma();
+    return repository.save(config);
+  }
+
+  public T stateless(T config) {
+    config.alpha();
+    config.beta("x");
+    return config.gamma();
+  }
+}
+"""
+
+
+def test_service_method_using_its_injected_field_does_not_move():
+    # A service method reading the repository its constructor injected, by bare
+    # name, stays: moving it onto the entity would carry persistence into it.
+    from repowise.core.analysis.health.complexity.walker import walk_file
+
+    classes = walk_file("C.java", "java", _JAVA_SERVICE).classes
+    assert "envious" in classes[0].field_readers
+    assert "stateless" not in classes[0].field_readers
+    g = _java_envy_graph()
+    g.nodes["C.java::C.envious"]["start_line"] = 10
+    assert _detect_java(g, classes=classes) == []
+    # Control: the same envy from a method that touches no field still fires.
+    g = _java_envy_graph(method="stateless")
+    g.nodes["C.java::C.stateless"]["start_line"] = 18
+    assert len(_detect_java(g, classes=classes)) == 1
+
+
 # ---- keyword modifiers and partial classes (C#, Kotlin, VB.NET) ------------
 
 

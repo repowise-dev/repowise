@@ -680,10 +680,10 @@ def _collect_classes(
         # A partial class's other parts live in files this pass does not see;
         # a trait impl's methods are the trait's, so none can move out.
         contract_impl = is_trait_impl(class_node, lmap)
+        refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
         if "partial" in _decl_words(class_node) or contract_impl:
             lcom4, field_count, components, tcc = 1, 0, [], 1.0
         else:
-            refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
             lcom4, field_count, components, tcc = _compute_lcom4(
                 body.methods, method_fcs, lmap, refs
             )
@@ -701,6 +701,18 @@ def _collect_classes(
                 components=components,
                 tcc=tcc,
                 contract_impl=contract_impl,
+                # A partial fragment's own fields still bind the methods that use them.
+                field_readers=_field_readers(method_fcs, refs),
             )
         )
     return classes
+
+
+def _field_readers(method_fcs: list[FunctionComplexity], refs: _MemberRefs) -> frozenset[str]:
+    """Names of the methods whose references include a field, not a method."""
+    methods = {fc.name for fc in method_fcs} | refs.call_targets
+    return frozenset(
+        fc.name
+        for fc, members in zip(method_fcs, refs.per_method, strict=True)
+        if members - methods
+    )
