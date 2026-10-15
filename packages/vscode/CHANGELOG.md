@@ -10,7 +10,7 @@ release history.
 ## 0.12.0
 
 Every dashboard now shares one set of states, palette and controls, Code Health
-gets a clearer map with a file drawer and trend, refactoring plans are richer,
+gets a clearer map with a file drawer and trend, refactoring plans carry their tests, decisions and consumers,
 and the extension follows your VS Code theme more closely.
 
 **Requires repowise 0.47.0 or newer.** The minimum has not moved. The "No dead
@@ -55,7 +55,7 @@ the server on 0.56.0 and are built locally on older ones.
 
 ### Theme and accessibility
 
-- Views use native theme grounds, consistent names and accessible controls.
+- Views follow your VS Code theme, with consistent names and accessible controls.
 
 ## 0.11.0
 
