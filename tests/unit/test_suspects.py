@@ -135,3 +135,24 @@ def test_person_trailers_never_reach_the_text(tmp_path):
     got = read_change_texts(tmp_path, [(head, 1), ("f" * 40, 1), ("", 1)])
     assert list(got) == [head]
     assert "Ann" not in got[head][0] and "Bob" not in got[head][0]
+
+
+def test_text_evidence_skips_filler_and_the_repo_name_but_is_never_empty():
+    cands = [
+        Candidate("a", "repowise shows the invoice total", NOW, ("billing/invoice.py",)),
+        Candidate("b", "repowise shows the readme", NOW, ("docs/readme.md",)),
+    ]
+    ctx = SuspectContext(repo_terms=frozenset({"repowise"}))
+    out = {
+        s.change_id: s.signals["text"].evidence
+        for s in rank_suspects(Symptom(text="repowise shows invoice", at=NOW), cands, ctx, signals=["text"])
+    }
+    assert out["a"] == ("term invoice",)
+    assert out["b"] == ("term repowise",)  # nothing else matched: the top term stays
+
+
+def test_one_import_hop_reads_singular():
+    ctx = SuspectContext(imports={QUERY: [COMPILER], COMPILER: [QUERY]})
+    out = rank_suspects(Symptom(files=(QUERY,), at=NOW), _candidates(), ctx, signals=["graph"])
+    hop = next(s for s in out if s.change_id == "c").signals["graph"].evidence
+    assert hop == (f"1 import hop from {QUERY} to {COMPILER}",)

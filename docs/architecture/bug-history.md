@@ -150,5 +150,7 @@ Known limits: symptom files map onto the files tracked at HEAD, so a file
 renamed or deleted inside the window may name nothing; and the trace signal
 matches frame function names by their last segment only, so a generic name
 (`run`, `get`, `handle`) can match unrelated changes. Changing that matching
-changes the ranking and needs a new freeze.
+changes the ranking and needs a new freeze. Frame function names are matched against
+the names in diff hunk headers only, so a change that adds a whole file gets
+file-level but not function-level trace evidence.
 

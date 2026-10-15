@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import unicodedata
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from datetime import UTC
 
@@ -32,6 +32,20 @@ _SPLIT = re.compile(r"[/\\._\-\s]+")
 #: A path-like token with an extension; URLs and absolute paths keep their tail.
 _PATH_TOKEN = re.compile(r"[\w@~.\-/\\]*[\w\-]\.[A-Za-z][\w]{0,7}\b")
 _MAX_EVIDENCE = 5
+#: Words that match nearly every change, so they say nothing as evidence.
+_EVIDENCE_STOPWORDS = frozenset(
+    {
+        "after", "again", "already", "always", "any", "because", "before", "between",
+        "both", "cannot", "come", "could", "does", "done", "during", "even", "every",
+        "first", "from", "get", "gets", "getting", "got", "here", "into", "like", "make",
+        "makes", "many", "more", "most", "much", "need", "needs", "new", "next", "now",
+        "off", "once", "one", "only", "other", "out", "over", "same", "see", "seems",
+        "shows", "show", "since", "some", "still", "such", "sure", "take", "than", "then",
+        "there", "these", "thing", "things", "through", "under", "until", "use", "used",
+        "uses", "using", "very", "want", "way", "well", "what", "when", "where", "which",
+        "while", "will", "with", "within", "without", "work", "works", "would", "yet"
+    }
+)
 
 
 def path_mentions(text: str) -> list[str]:
@@ -74,11 +88,16 @@ class TextSignal:
         finally:
             db.close()
         wanted = list(dict.fromkeys(terms))
+        matched = {cid: [t for t in wanted if _fts_matches(t, _fts_words(body))] for cid, _, body in rows}
+        # Evidence only (the score is BM25's): the rarest matched terms first,
+        # without the repo's own name or filler words that match every row.
+        df = Counter(t for ts in matched.values() for t in ts)
+        quiet = _EVIDENCE_STOPWORDS | ctx.repo_terms
         out: dict[str, Hit] = {}
-        for cid, score, body in rows:
-            words = _fts_words(body)
-            matched = [t for t in wanted if _fts_matches(t, words)][:_MAX_EVIDENCE]
-            out[cid] = Hit(-score, tuple(f"term {t}" for t in matched))
+        for cid, score, _body in rows:
+            ranked = sorted(matched[cid], key=lambda t: (df[t], wanted.index(t)))
+            shown = [t for t in ranked if t not in quiet][:_MAX_EVIDENCE] or ranked[:1]
+            out[cid] = Hit(-score, tuple(f"term {t}" for t in shown))
         return out
 
 
@@ -141,7 +160,7 @@ class GraphSignal:
                 why = (
                     f"changes {changed}, a symptom file"
                     if hops == 0
-                    else f"{hops} import hops from {origin} to {changed}"
+                    else f"{hops} import hop{'s' if hops != 1 else ''} from {origin} to {changed}"
                 )
                 out[c.change_id] = Hit(-hops, (why,))
         return out

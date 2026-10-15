@@ -61,6 +61,8 @@ class SuspectContext:
     #: File to the files it imports or is imported by.
     imports: Mapping[str, Iterable[str]] = field(default_factory=dict)
     co_change: Mapping[str, Sequence[CoChangePartner]] = field(default_factory=dict)
+    #: The repo's own name words: matched everywhere, so never shown as evidence.
+    repo_terms: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

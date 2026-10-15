@@ -19,6 +19,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from repowise.core.fts_query import meaningful_terms
+
 from .git_text import read_change_texts
 from .rank import Candidate, SuspectContext, Symptom, prepare, rank_suspects
 
@@ -130,6 +132,7 @@ async def find_suspects(
     named = prepared.files
     ctx = SuspectContext(
         repo_files=repo_files,
+        repo_terms=frozenset(meaningful_terms(repo_path.resolve().name.replace("-", " "))),
         imports=await _imports(session, repo_id) if named else {},
         co_change=await get_co_change_partners(session, repo_id, list(named)) if named else {},
     )
