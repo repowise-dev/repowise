@@ -38,7 +38,6 @@ def _facts(**over):
         },
         "decisions": {"governing": 1, "stale": []},
         "contracts": {"basis": "measured", "provided": {"http::GET::/a": 2}},
-        "attribution": {"commits": 20, "agent_share": 0.1, "coverage": 0.5, "window_days": 90},
     }
     for key, value in over.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
@@ -91,10 +90,7 @@ def test_owner_digests_under_another_key_are_not_compared():
     assert _kinds(_facts(declared_owner_key="x1"), renamed) == []
 
 
-def test_a_capped_recent_window_does_not_drive_activity_or_attribution():
-    reg = {"tags": ["pci"]}
-    capped = {"agent_share": 0.5, "recent_capped": True}
-    assert _kinds(_facts(**reg), _facts(**reg, attribution=capped)) == []
+def test_a_capped_recent_window_does_not_drive_activity():
     gone = {"active_main_owners": 0, "recent_capped": True}
     assert _kinds(_facts(), _facts(ownership=gone)) == []
 
@@ -162,17 +158,6 @@ def test_test_reach_drop_by_share_or_measured_coverage():
     fell = {"line_coverage": {"pct": 70.0}}
     found = diff_snapshots({"c": _facts(test_reach=cov)}, {"c": _facts(test_reach=fell)})
     assert found[0][3] == {"line_coverage": {"basis": "measured", "previous_pct": 80.0, "pct": 70.0}}
-
-
-def test_attribution_jump_only_on_regulated_components_with_coverage():
-    up = {"agent_share": 0.5}
-    assert _kinds(_facts(), _facts(attribution=up)) == []
-    reg = {"tags": ["pci"]}
-    assert _kinds(_facts(**reg), _facts(**reg, attribution=up)) == [("attribution_jump", "")]
-    withheld = {"agent_share": None}
-    assert _kinds(_facts(**reg), _facts(**reg, attribution=withheld)) == []
-    few = {"commits": 3, "agent_share": 0.9}
-    assert _kinds(_facts(**reg), _facts(**reg, attribution=few)) == []
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +262,17 @@ def test_settings_name_every_wrong_value(tmp_path):
         "events.retention_days",
         "events.sinks",
     ]
+
+
+def test_a_config_naming_a_kind_that_no_longer_exists_warns_and_keeps_defaults(tmp_path):
+    assert "attribution_jump" not in KINDS
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "events:\n  kinds: {attribution_jump: true, new_hotspot: true}\n", encoding="utf-8"
+    )
+    s = load_event_settings(tmp_path)
+    assert [e.split(":")[0] for e in s.errors] == ["events.kinds.attribution_jump"]
+    assert s.kinds == EventSettings().kinds | {"new_hotspot"}
 
 
 def test_doctor_reports_a_wrong_events_block(tmp_path):
@@ -557,3 +553,30 @@ async def test_a_failing_sink_leaves_the_event_stored(repo_db, monkeypatch):
     events = await _run(factory, repo_id, head="b" * 40, facts=after, monkeypatch=monkeypatch)
     async with get_session(factory) as session:
         assert [e.id for e in await list_events(session, repo_id)] == [events[0].id]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_event_of_a_kind_no_longer_known_still_reads(repo_db):
+    from repowise.core.events.store import list_events
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import EngineEventRecord
+
+    factory, repo_id, _root = repo_db
+    async with get_session(factory) as session:
+        session.add(
+            EngineEventRecord(
+                id="x" * 32,
+                repository_id=repo_id,
+                kind="retired_kind",
+                component="c",
+                severity="info",
+                occurred_at=datetime(2026, 1, 1, tzinfo=UTC),
+                stamp="s1",
+                payload_json=json.dumps({"evidence": {"basis": "measured"}}),
+                schema_version=1,
+            )
+        )
+    async with get_session(factory) as session:
+        (event,) = await list_events(session, repo_id)
+    assert to_cloudevent(event)["type"] == "dev.repowise.retired_kind.0.1.0"
+

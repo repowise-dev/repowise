@@ -578,7 +578,7 @@
     },
     "events": {
       "title": "Events",
-      "description": "What moved between two index runs in a row: owners, bus factor, hotspots, contracts, decisions, dead code, test reach and attribution, per component.",
+      "description": "What moved between two index runs in a row: owners, bus factor, hotspots, contracts, decisions, dead code and test reach, per component.",
       "repository": "Whole repository",
       "count": "{count, plural, one {# event} other {# events}}, newest first.",
       "emptyTitle": "No events yet",
@@ -596,8 +596,7 @@
         "contract_broken": "Contract with consumers disappeared",
         "decision_stale": "Governing decision went stale",
         "dead_code_growth": "Dead-code findings grew",
-        "test_reach_drop": "Test reach fell",
-        "attribution_jump": "Agent share moved sharply"
+        "test_reach_drop": "Test reach fell"
       },
       "severities": {
         "critical": "critical",

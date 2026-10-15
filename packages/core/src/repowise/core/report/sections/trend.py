@@ -3,7 +3,7 @@ snapshot and the newest one at least 90 days older under the same stamp.
 
 Reuses the event diff rules, so a move counts here exactly when it would
 count as an event. Snapshots under different analyzer or parser stamps are
-never compared. Agent-share moves are left out: the report shows no share.
+never compared.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from sqlalchemy import select
 from repowise.core.report.model import ReportContext, Section, capped, check, report_sections
 
 QUARTER_DAYS = 90
-_LEFT_OUT = frozenset({"attribution_jump"})
 _METHOD = (
     "the event diff rules, for the event kinds the repository has on, applied to two "
     f"stored component snapshots with the same analyzer and parser stamp, at least "
@@ -64,7 +63,7 @@ async def collect(ctx: ReportContext) -> list[dict[str, Any]]:
     after = await run_facts(ctx.session, newest.id)
     # The kinds this repository's events config turns on, so a move counts here
     # exactly when it would fire as an event (new_hotspot is off by default).
-    kinds = load_event_settings(ctx.repo_root).kinds - _LEFT_OUT
+    kinds = load_event_settings(ctx.repo_root).kinds
     moved: dict[str, list[str]] = defaultdict(list)
     for kind, component, subject, _evidence in diff_snapshots(before, after):
         if kind in kinds:

@@ -578,7 +578,7 @@
     },
     "events": {
       "title": "事件",
-      "description": "相邻两次索引之间发生的变化：按组件列出负责人、巴士系数、热点、契约、决策、死代码、测试覆盖与来源归属。",
+      "description": "相邻两次索引之间发生的变化：按组件列出负责人、巴士系数、热点、契约、决策、死代码与测试覆盖。",
       "repository": "整个仓库",
       "count": "共 {count} 个事件，按时间从新到旧。",
       "emptyTitle": "暂无事件",
@@ -596,8 +596,7 @@
         "contract_broken": "有使用方的契约消失",
         "decision_stale": "治理决策已过时",
         "dead_code_growth": "死代码发现增多",
-        "test_reach_drop": "测试覆盖下降",
-        "attribution_jump": "智能体占比大幅变化"
+        "test_reach_drop": "测试覆盖下降"
       },
       "severities": {
         "critical": "严重",

@@ -1648,13 +1648,13 @@ Teams that already run OPA can use the `evidence` object of `repowise check --fo
 
 ### `repowise events`
 
-Typed events between consecutive index runs. Each `init` and `update` stores a snapshot of every component (ownership counts, bus factor, hotspots, dead code, governing decisions, provided contracts, test reach, attribution with coverage) under the analyzer and parser stamp it ran with. When an index run and the run right before it share a stamp, what moved is stored as an event. A stamp change starts a new baseline, and so does the first run after one that took no snapshot (events switched off, or the snapshot failed); a run on the commit already snapshotted, including `--working-tree` on it, is skipped. Events are written as CloudEvents JSON lines to `.repowise/events.jsonl` and read back here, oldest first.
+Typed events between consecutive index runs. Each `init` and `update` stores a snapshot of every component (ownership counts, bus factor, hotspots, dead code, governing decisions, provided contracts, test reach) under the analyzer and parser stamp it ran with. When an index run and the run right before it share a stamp, what moved is stored as an event. A stamp change starts a new baseline, and so does the first run after one that took no snapshot (events switched off, or the snapshot failed); a run on the commit already snapshotted, including `--working-tree` on it, is skipped. Events are written as CloudEvents JSON lines to `.repowise/events.jsonl` and read back here, oldest first.
 
 ```bash
 repowise events [--path PATH] [--since 7d|12h|ISO-DATE] [--kind KIND]... [--limit N] [--format table|json|jsonl]
 ```
 
-Kinds: `ownership_shift`, `owner_inactive`, `bus_factor_drop` (critical components), `new_hotspot` (off by default), `contract_added`, `contract_broken`, `decision_stale`, `dead_code_growth`, `test_reach_drop`, `attribution_jump` (regulated components). The `events:` block in `.repowise/config.yaml` sets `enabled`, `retention_days` (365), `compact_after_days` (30; older runs keep one per week), per-kind switches under `kinds`, and the `sinks` to deliver to (`jsonl` by default, `stdout` for CI).
+Kinds: `ownership_shift`, `owner_inactive`, `bus_factor_drop` (critical components), `new_hotspot` (off by default), `contract_added`, `contract_broken`, `decision_stale`, `dead_code_growth`, `test_reach_drop`. The `events:` block in `.repowise/config.yaml` sets `enabled`, `retention_days` (365), `compact_after_days` (30; older runs keep one per week), per-kind switches under `kinds`, and the `sinks` to deliver to (`jsonl` by default, `stdout` for CI).
 
 The web UI lists the same events on the repository's Events page, newest first. An empty list says why: `GET /api/repos/{id}/events` returns `snapshot_runs` and `empty_reason` (`baseline_only` until two snapshots exist, `nothing_moved`, or `no_match` under filters), and the same sentence this command prints as `empty_note`.
 

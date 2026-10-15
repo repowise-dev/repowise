@@ -47,7 +47,6 @@ KINDS: dict[str, EventKind] = {
         _kind("decision_stale", "decision", "stale", True, "a governing decision went stale"),
         _kind("dead_code_growth", "deadcode", "grew", True, "dead-code findings grew"),
         _kind("test_reach_drop", "testreach", "dropped", True, "test reach fell"),
-        _kind("attribution_jump", "attribution", "jumped", True, "agent share moved sharply"),
     )
 }
 

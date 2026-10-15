@@ -144,7 +144,6 @@ async def record_snapshot(
     so a retry after a failed commit re-delivers the same id and a consumer
     dedupes on it. Upgrade path: a per-sink cursor read after commit.
     """
-    from repowise.core.attribution import attribution_enabled
     from repowise.core.persistence.models import ComponentSnapshot, Repository, SnapshotRun
 
     from .snapshot import collect_facts, current_stamp
@@ -165,9 +164,7 @@ async def record_snapshot(
     if previous is not None and head and previous.commit_sha == head and previous.stamp == stamp:
         return []
 
-    facts = await collect_facts(
-        session, repository_id, root, head_commit=head, attribution=attribution_enabled(root)
-    )
+    facts = await collect_facts(session, repository_id, root, head_commit=head)
     taken_at = now or datetime.now(UTC)
     run = SnapshotRun(repository_id=repository_id, taken_at=taken_at, commit_sha=head, stamp=stamp)
     session.add(run)

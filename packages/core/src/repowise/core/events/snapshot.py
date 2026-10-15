@@ -2,8 +2,8 @@
 
 The figures reuse the component rollups (:func:`component_rollups`) and add
 what a diff needs on top: the full hotspot set, observed ownership as opaque
-digests, governing decisions with their staleness, the provided contract set,
-and the agent share of recent commits with its coverage. Nothing here names a
+digests, governing decisions with their staleness, and the provided contract
+set. Nothing here names a
 person: owners are counted, and the main-owner set is kept only as HMAC digests
 under a per-repository random key (``.repowise/events.key``), which is all a
 set comparison between two runs needs. A digest cannot be checked against a
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 #: Bumped when a fact's definition changes; part of the stamp.
 SNAPSHOT_FACTS_VERSION = 1
-#: Window for "recent" activity and attribution, back from the newest indexed commit.
+#: Window for "recent" activity, back from the newest indexed commit.
 RECENT_DAYS = 90
 #: A governing decision at or above this staleness counts as stale
 #: (the threshold ``get_stale_decisions`` uses).
@@ -91,7 +91,6 @@ async def collect_facts(
     repo_root: Path,
     *,
     head_commit: str | None,
-    attribution: bool,
 ) -> dict[str, dict[str, Any]]:
     """Facts per component name for the repository's current index."""
     from repowise.core.components.store import (
@@ -148,8 +147,6 @@ async def collect_facts(
             "decisions": _component_decisions(paths, governing, stale),
             "contracts": _component_contracts(paths, contracts),
         }
-        if attribution:
-            facts["attribution"] = _attribution(commits.values(), capped)
         out[comp.name] = facts
     return out
 
@@ -189,8 +186,6 @@ async def _recent_commit_files(session: Any, repository_id: str) -> list[dict[st
             GitCommit.sha,
             GitCommit.author_name,
             GitCommit.author_email,
-            GitCommit.attribution,
-            GitCommit.agent_name,
         )
         .join(
             GitCommit,
@@ -324,19 +319,3 @@ def _component_contracts(
             provided[cid] = provided.get(cid, 0) + n
     return {"basis": "measured", "provided": dict(sorted(provided.items()))}
 
-
-def _attribution(commits: Any, capped: bool) -> dict[str, Any]:
-    from repowise.core.attribution import AGENT, HUMAN_ATTESTED, attribution_share, commit_label
-
-    labels = Counter(commit_label(c["attribution"], c["agent_name"]) for c in commits)
-    share = attribution_share(labels[AGENT], labels[HUMAN_ATTESTED], sum(labels.values()))
-    return {
-        "window_days": RECENT_DAYS,
-        "commits": share.total,
-        "agent": share.agent,
-        "human_attested": share.human_attested,
-        "coverage": None if share.coverage is None else round(share.coverage, 3),
-        "agent_share": None if share.agent_share is None else round(share.agent_share, 3),
-        "suppressed_reason": share.suppressed_reason,
-        "recent_capped": capped,
-    }
