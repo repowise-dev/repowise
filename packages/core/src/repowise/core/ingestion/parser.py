@@ -906,15 +906,19 @@ def _kotlin_detached_annotation(def_node: Node, src: str) -> list[str]:
     sib = def_node.prev_sibling
     while sib is not None and sib.type in ("line_comment", "block_comment"):
         sib = sib.prev_sibling
-    node = sib
+    return [_node_text(sib, src).strip()] if _is_split_annotation_chain(sib) else []
+
+
+def _is_split_annotation_chain(node: Node | None) -> bool:
+    """Nested ``annotated_expression`` nodes of annotations, the last one's argument at the tail."""
     while node is not None and node.type == "annotated_expression":
         kinds = [c.type for c in node.named_children]
         if len(kinds) != 2 or kinds[0] != "annotation":
-            return []
+            return False
         if kinds[1] == "parenthesized_expression":
-            return [_node_text(sib, src).strip()]
+            return True
         node = node.named_children[1]
-    return []
+    return False
 
 
 def _declared_modifiers(def_node: Node, node_types: frozenset[str], src: str) -> tuple[str, ...]:
