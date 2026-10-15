@@ -708,3 +708,70 @@ async def test_contract_refresh_compares_with_the_last_measured_run(repo_db, mon
     assert await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", now)}) == []
     async with get_session(factory) as session:
         assert len(await list_events(session, repo_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_events_reach_the_sinks_only_after_the_commit(repo_db, monkeypatch):
+    from repowise.core.events.store import list_events, record_snapshot
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Repository
+
+    factory, repo_id, root = repo_db
+    sink = root / ".repowise" / "events.jsonl"
+    await _run(factory, repo_id, head="a" * 40, facts={"c": _facts()}, monkeypatch=monkeypatch)
+    hot = {"c": _facts(hotspots=["a.py", "b.py"])}
+
+    async def _collect(*_a, **_k):
+        return hot
+
+    monkeypatch.setattr(snapshot_mod, "collect_facts", _collect)
+    with pytest.raises(RuntimeError):
+        async with get_session(factory) as session:
+            (await session.get(Repository, repo_id)).head_commit = "b" * 40
+            assert [e.kind for e in await record_snapshot(session, repo_id)] == ["new_hotspot"]
+            assert not sink.exists()
+            raise RuntimeError("the caller's commit fails")
+    assert not sink.exists()
+    async with get_session(factory) as session:
+        assert await list_events(session, repo_id) == []
+    # The retry stores and delivers the same event once.
+    (event,) = await _run(factory, repo_id, head="b" * 40, facts=hot, monkeypatch=monkeypatch)
+    assert [json.loads(line)["id"] for line in sink.read_text(encoding="utf-8").splitlines()] == [
+        event.id
+    ]
+
+
+@pytest.mark.asyncio
+async def test_contract_refresh_skips_a_run_superseded_during_extraction(repo_db, monkeypatch):
+    from sqlalchemy import update
+
+    from repowise.core.events.store import refresh_contract_facts
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Repository
+
+    factory, repo_id, _root = repo_db
+    unavailable = {"basis": "unavailable"}
+    await _run(factory, repo_id, head="a" * 40, facts={"c": _facts()}, monkeypatch=monkeypatch)
+    await _run(factory, repo_id, head="b" * 40, facts={"c": {**_facts(), "contracts": unavailable}},
+               monkeypatch=monkeypatch)
+
+    async def _moved(session, *_a, **_k):
+        await session.execute(update(Repository).values(head_commit="c" * 40))
+        return {"c": ("d1", {"basis": "measured", "provided": {}})}
+
+    monkeypatch.setattr(snapshot_mod, "contract_facts", _moved)
+    async with get_session(factory) as session:
+        assert await refresh_contract_facts(session, repo_id) == []
+    assert (await _stored_contracts(factory, repo_id))[1] == unavailable
+
+
+@pytest.mark.asyncio
+async def test_a_config_error_is_logged_once_per_process(repo_db, monkeypatch, caplog):
+    factory, repo_id, root = repo_db
+    (root / ".repowise" / "config.yaml").write_text(
+        "events:\n  kinds: {once_only_retired_kind: true}\n", encoding="utf-8"
+    )
+    for head in "ab":
+        await _run(factory, repo_id, head=head * 40, facts={"c": _facts()}, monkeypatch=monkeypatch)
+    named = [r for r in caplog.records if "once_only_retired_kind" in r.getMessage()]
+    assert len(named) == 1

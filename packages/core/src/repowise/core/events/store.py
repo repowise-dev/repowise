@@ -49,6 +49,11 @@ CONTRACT_KINDS = frozenset({"contract_added", "contract_broken"})
 #: Ceiling: past it a contract change waits for the next measured pair.
 #: Upgrade path: a column on the run saying its contracts were measured.
 CONTRACT_LOOKBACK_RUNS = 100
+#: ``session.info`` keys of the events waiting for the caller's commit.
+_PENDING = "repowise.events.pending"
+_LISTENING = "repowise.events.listening"
+#: Config errors already logged by this process; each is named once.
+_WARNED: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -147,10 +152,9 @@ async def record_snapshot(
     found nothing to do, or ``--working-tree`` on the same commit: uncommitted
     work is not history).
 
-    Ceiling: sinks are called before the caller commits, because this runs
-    inside the index run's session. An event id is keyed on the previous run,
-    so a retry after a failed commit re-delivers the same id and a consumer
-    dedupes on it. Upgrade path: a per-sink cursor read after commit.
+    The events reach the sinks once the caller's session commits
+    (:func:`_deliver_after_commit`); a transaction that rolls back delivers
+    nothing.
     """
     from repowise.core.persistence.models import ComponentSnapshot, Repository, SnapshotRun
 
@@ -162,7 +166,9 @@ async def record_snapshot(
     root = Path(repo.local_path)
     settings = load_event_settings(root)
     for error in settings.errors:
-        logger.warning("%s (kept the default)", error)
+        if error not in _WARNED:
+            _WARNED.add(error)
+            logger.warning("%s (kept the default)", error)
     if not settings.enabled:
         await record_gap(session, repository_id, "disabled", now=now)
         return []
@@ -192,8 +198,7 @@ async def record_snapshot(
     events = await _store_events(session, repo, run, pairs, facts, taken_at)
     await compact(session, repository_id, settings, now=taken_at)
     await session.flush()
-    if events:
-        await _deliver(events, settings, root)
+    _deliver_after_commit(session, events, settings, root)
     return events
 
 
@@ -226,6 +231,13 @@ async def refresh_contract_facts(session: Any, repository_id: str) -> list[Engin
     measured = await contract_facts(session, repository_id, root, head_commit=run.commit_sha)
     if measured is None:
         return []
+    # Another update may have moved the repo or stored a newer run meanwhile.
+    head = await session.scalar(
+        select(Repository.head_commit).where(Repository.id == repository_id)
+    )
+    newest = await _newest_run(session, repository_id)
+    if head != run.commit_sha or newest is None or newest.id != run.id:
+        return []
     after: dict[str, dict[str, Any]] = {}
     for row in await session.scalars(
         select(ComponentSnapshot).where(ComponentSnapshot.run_id == run.id)
@@ -240,8 +252,7 @@ async def refresh_contract_facts(session: Any, repository_id: str) -> list[Engin
     pairs = await _contract_pairs(session, run, after, settings.kinds & CONTRACT_KINDS)
     events = await _store_events(session, repo, run, pairs, after, _aware(run.taken_at))
     await session.flush()
-    if events:
-        await _deliver(events, settings, root)
+    _deliver_after_commit(session, events, settings, root)
     return events
 
 
@@ -277,7 +288,7 @@ async def _contract_pairs(
     for prev in earlier:
         if prev.stamp != run.stamp:
             break
-        before = await run_facts(session, prev.id)
+        before = await run_facts(session, prev.id, components=pending)
         for name in list(pending):
             facts = before.get(name)
             if facts is None or facts.get("definition") != pending[name].get("definition"):
@@ -321,15 +332,19 @@ async def record_gap(
     await session.flush()
 
 
-async def run_facts(session: Any, run_id: str) -> dict[str, dict[str, Any]]:
-    """The component facts one snapshot run stored, by component name."""
+async def run_facts(
+    session: Any, run_id: str, *, components: Iterable[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    """The component facts one snapshot run stored, by component name; only
+    *components* when given."""
     from repowise.core.persistence.models import ComponentSnapshot
 
-    rows = await session.execute(
-        select(ComponentSnapshot.component, ComponentSnapshot.facts_json).where(
-            ComponentSnapshot.run_id == run_id
-        )
+    query = select(ComponentSnapshot.component, ComponentSnapshot.facts_json).where(
+        ComponentSnapshot.run_id == run_id
     )
+    if components is not None:
+        query = query.where(ComponentSnapshot.component.in_(sorted(components)))
+    rows = await session.execute(query)
     return {name: json.loads(raw) for name, raw in rows}
 
 
@@ -380,32 +395,66 @@ async def _store_events(
         )
         for previous, (kind, component, subject, evidence) in pairs
     ]
-    seen = set(
-        await session.scalars(
-            select(EngineEventRecord.id).where(EngineEventRecord.id.in_([e.id for e in events]))
-        )
-    )
-    events = [e for e in events if e.id not in seen]
-    session.add_all(
-        EngineEventRecord(
-            id=e.id,
-            repository_id=e.repo_id,
-            kind=e.kind,
-            component=e.component,
-            severity=e.severity,
-            occurred_at=e.occurred_at,
-            commit_sha=e.commit_sha,
-            base_commit_sha=e.base_commit_sha,
-            stamp=e.stamp,
-            payload_json=json.dumps(
+    table = EngineEventRecord.__table__
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    # Insert-or-ignore on the id: an event another run or process already
+    # stored is neither stored nor delivered twice.
+    stmt = insert(table).on_conflict_do_nothing(index_elements=[table.c.id]).returning(table.c.id)
+    stored: list[EngineEvent] = []
+    for e in events:
+        row = {
+            "id": e.id,
+            "repository_id": e.repo_id,
+            "kind": e.kind,
+            "component": e.component,
+            "severity": e.severity,
+            "occurred_at": e.occurred_at,
+            "commit_sha": e.commit_sha,
+            "base_commit_sha": e.base_commit_sha,
+            "stamp": e.stamp,
+            "payload_json": json.dumps(
                 {"evidence": dict(e.evidence), "vcs": dict(e.vcs), "source": e.source},
                 sort_keys=True,
             ),
-            schema_version=e.schema,
-        )
-        for e in events
-    )
-    return events
+            "schema_version": e.schema,
+        }
+        if (await session.execute(stmt.values(**row))).scalar() is not None:
+            stored.append(e)
+    return stored
+
+
+def _deliver_after_commit(
+    session: Any, events: Sequence[EngineEvent], settings: EventSettings, root: Path
+) -> None:
+    """Hand *events* to the sinks once the session's transaction commits.
+
+    A rollback drops them; the retry stores and delivers the same ids. The
+    commit hook runs in the async session's greenlet, so the sinks are
+    awaited there.
+    """
+    from sqlalchemy import event
+
+    if not events:
+        return
+    sync = session.sync_session
+    sync.info.setdefault(_PENDING, []).append((list(events), settings, root))
+    if not sync.info.get(_LISTENING):
+        sync.info[_LISTENING] = True
+        event.listen(sync, "after_commit", _on_commit)
+        event.listen(sync, "after_rollback", lambda s: s.info.pop(_PENDING, None))
+
+
+def _on_commit(sync_session: Any) -> None:
+    from sqlalchemy.util import await_only
+
+    for events, settings, root in sync_session.info.pop(_PENDING, []):
+        try:
+            await_only(_deliver(events, settings, root))
+        except Exception as exc:  # the store keeps them; `repowise events` replays
+            logger.warning("events not delivered: %s", exc)
 
 
 async def _deliver(events: Sequence[EngineEvent], settings: EventSettings, root: Path) -> None:
