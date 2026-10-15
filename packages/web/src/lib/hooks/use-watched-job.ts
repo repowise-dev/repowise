@@ -17,9 +17,15 @@ export interface WatchedJob<K extends string> {
 export function useWatchedJob<K extends string>() {
   const [watched, setWatched] = useState<WatchedJob<K> | null>(null);
   const watch = useCallback((id: string, action: K | null) => setWatched({ id, action }), []);
+  /** Watch a job found by a background lookup, unless the user started one
+   *  meanwhile: a late lookup must not replace the job they just launched. */
+  const watchIfIdle = useCallback(
+    (id: string) => setWatched((current) => current ?? { id, action: null }),
+    [],
+  );
   const dismiss = useCallback(() => setWatched(null), []);
   const settle = useCallback((outcome: JobOutcome) => {
     if (outcome === "completed" || outcome === "cancelled") setWatched(null);
   }, []);
-  return { watched, watch, settle, dismiss };
+  return { watched, watch, watchIfIdle, settle, dismiss };
 }

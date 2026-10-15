@@ -80,7 +80,7 @@ describe("ActiveJobBanner", () => {
         onDismiss={onDismiss}
       />,
     );
-    expect(screen.getByText("Sync finished with problems")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Sync finished with problems");
     expect(screen.queryByText("Sync complete")).not.toBeInTheDocument();
     expect(screen.getByText(/API key rejected by openai/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Provider settings/ })).toHaveAttribute(
@@ -98,6 +98,7 @@ describe("ActiveJobBanner", () => {
         settingsHref="/s"
       />,
     );
+    expect(screen.getByRole("alert")).toHaveTextContent("Repository not found");
     expect(screen.queryByRole("link", { name: /Provider settings/ })).not.toBeInTheDocument();
     rerender(
       <ActiveJobBanner

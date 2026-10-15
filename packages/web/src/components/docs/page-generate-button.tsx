@@ -10,6 +10,7 @@ import {
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
+import { useWatchedJob } from "@/lib/hooks/use-watched-job";
 import { regeneratePage } from "@/lib/api/pages";
 import { generateEstimate } from "@/lib/api/repos";
 import { formatEstimateCost } from "@/lib/generate-format";
@@ -48,7 +49,8 @@ export function PageGenerateButton({
   const [estimateLoading, setEstimateLoading] = useState(false);
   const [estimateError, setEstimateError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
-  const [jobId, setJobId] = useState<string | null>(null);
+  const { watched, watch, settle, dismiss } = useWatchedJob<"page">();
+  const jobId = watched?.id ?? null;
 
   // Cache estimates per cascade so toggling the choice back doesn't refetch the
   // heavy /generate/estimate endpoint.
@@ -104,7 +106,7 @@ export function PageGenerateButton({
     setLaunching(true);
     try {
       const res = await regeneratePage(page.id, { cascade, repoId });
-      setJobId(res.job_id);
+      watch(res.job_id, "page");
       setConfirmOpen(false);
     } catch (e) {
       toast.error(t("pageGenerate.failed"), {
@@ -125,12 +127,21 @@ export function PageGenerateButton({
         onRegenerate={openConfirm}
         isLoading={launching && !jobId}
         isInProgress={jobId != null}
-        onDialogClose={() => setJobId(null)}
+        onDialogClose={dismiss}
         jobSlot={
           jobId != null ? (
             <GenerationProgressWrapper
+              key={jobId}
               jobId={jobId}
-              onDone={() => onGenerated?.()}
+              onDone={(outcome) => {
+                settle(outcome);
+                onGenerated?.();
+              }}
+              onRetry={() => {
+                dismiss();
+                openConfirm();
+              }}
+              onDismiss={dismiss}
             />
           ) : null
         }

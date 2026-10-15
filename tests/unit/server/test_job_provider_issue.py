@@ -26,7 +26,11 @@ from repowise.core.persistence.crud import (
 from repowise.core.providers.llm.base import ProviderError
 from repowise.server.job_executor import execute_job
 
-_AUTH = {"kind": "auth", "message": "API key rejected by openai. Update it in Settings."}
+_AUTH = {
+    "kind": "auth",
+    "message": "API key rejected by openai. Update it in Settings.",
+    "provider": "openai",
+}
 
 
 def _page(target: str, hint: dict | None = None) -> GeneratedPage:
@@ -118,16 +122,36 @@ async def test_a_clean_run_records_no_issue(session_factory, tmp_path):
     assert config["provider_issue"] is None
 
 
+@pytest.mark.parametrize("mode", ["sync", "full_resync"])
 @pytest.mark.asyncio
-async def test_skipped_docs_on_a_resync_are_reported(session_factory, tmp_path):
-    job_id = await _seed(session_factory, tmp_path, "full_resync")
+async def test_a_configured_provider_that_will_not_load_is_reported(
+    session_factory, tmp_path, mode
+):
+    job_id = await _seed(session_factory, tmp_path, mode)
 
-    _, config = await _run(
-        session_factory, job_id, pipeline=AsyncMock(return_value=_result([])), provider=None
-    )
+    with patch(
+        "repowise.server.provider_config.get_active_provider", return_value=("openai", None)
+    ):
+        _, config = await _run(
+            session_factory, job_id, pipeline=AsyncMock(return_value=_result([])), provider=None
+        )
 
     assert config["provider_issue"]["kind"] == "docs_skipped"
-    assert "No active provider configured." in config["provider_issue"]["message"]
+    # Fixed copy, never the raw load error.
+    assert "No active provider" not in config["provider_issue"]["message"]
+
+
+@pytest.mark.parametrize("mode", ["sync", "full_resync"])
+@pytest.mark.asyncio
+async def test_a_deliberately_keyless_repo_is_not_a_problem(session_factory, tmp_path, mode):
+    job_id = await _seed(session_factory, tmp_path, mode)
+
+    with patch("repowise.server.provider_config.get_active_provider", return_value=(None, None)):
+        _, config = await _run(
+            session_factory, job_id, pipeline=AsyncMock(return_value=_result([])), provider=None
+        )
+
+    assert config["provider_issue"] is None
 
 
 @pytest.mark.asyncio

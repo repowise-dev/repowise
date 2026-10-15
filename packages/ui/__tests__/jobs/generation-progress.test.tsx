@@ -230,6 +230,36 @@ describe("GenerationProgress", () => {
     expect(screen.queryByRole("link", { name: /Provider settings/ })).toBeNull();
   });
 
+  it("offers settings, not a retry, when docs were skipped, worded by the host", () => {
+    render(
+      <GenerationProgress
+        job={{
+          id: "j1",
+          status: "completed",
+          total_pages: 0,
+          completed_pages: 0,
+          failed_pages: 0,
+          config: { provider_issue: { kind: "docs_skipped", message: "English text" } },
+        }}
+        log={[]}
+        elapsed={10_000}
+        actualCost={null}
+        stuckPending={false}
+        cancelling={false}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onDismiss={vi.fn()}
+        settingsHref="/s"
+        formatIssue={(issue) => `localized ${issue.kind}`}
+      />,
+    );
+    expect(screen.getByText("Documentation was not updated.")).toBeTruthy();
+    expect(screen.getByText("localized docs_skipped")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Dismiss/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Provider settings/ })).toBeTruthy();
+  });
+
   it("keeps a clean run quiet", () => {
     render(
       <GenerationProgress

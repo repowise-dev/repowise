@@ -887,6 +887,14 @@
       "providerSettings": "模型提供方设置",
       "dismiss": "关闭"
     },
+    "issue": {
+      "auth": "{provider} 拒绝了 API 密钥。请在设置中更新。",
+      "rate_limit": "{provider} 正在限制请求频率。请等待几分钟后再运行。",
+      "model_not_found": "在 {provider} 上找不到模型 {model}。请在设置中选择其他模型。",
+      "not_found": "在 {provider} 上找不到模型 {model} 或基础 URL 路径。请在设置中检查这两项。",
+      "unreachable": "无法连接到 {target}。请确认服务器正在运行且基础 URL 正确。",
+      "docs_skipped": "已配置模型提供方，但无法加载，因此文档未更新。请在设置中检查。"
+    },
     "banner": {
       "finishedWithProblems": "{action}已完成，但存在问题",
       "pagesFailed": "{count} 个页面未写入",

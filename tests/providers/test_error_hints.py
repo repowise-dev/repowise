@@ -36,8 +36,29 @@ def test_rate_limit():
 def test_missing_model_names_the_model_when_known():
     exc = ProviderError("ollama", "model 'llama9' not found", 404)
 
-    assert describe_provider_error(exc, model="llama9").message.startswith("Model llama9 ")
-    assert describe_provider_error(exc).kind == "model_not_found"
+    hint = describe_provider_error(exc, model="llama9")
+
+    assert hint.kind == "model_not_found"
+    assert hint.message.startswith("Model llama9 was not found at ollama.")
+    assert hint.as_dict()["model"] == "llama9"
+
+
+def test_a_bare_404_also_points_at_the_base_url_path():
+    exc = ProviderError("litellm", "Error code: 404 - Not Found", 404)
+
+    hint = describe_provider_error(exc, model="gpt-x")
+
+    assert hint.kind == "not_found"
+    assert hint.message.startswith("Model gpt-x or the base URL path was not found at litellm.")
+
+
+def test_ipv6_origin_keeps_its_brackets():
+    class ConnectError(Exception):
+        request = SimpleNamespace(url="http://[::1]:8000/v1/chat")
+
+    hint = describe_provider_error(_raised_from(ProviderError("vllm", "x"), ConnectError()))
+
+    assert hint.as_dict()["target"] == "http://[::1]:8000"
 
 
 def test_unreachable_local_server_names_its_origin_without_path_or_credentials():
@@ -64,6 +85,9 @@ def test_connection_refused_without_a_request_falls_back_to_the_provider():
     [
         ValueError("artifact check rejected the page"),
         ProviderError("openai", "server error", 500),
+        # The server was reached; a dropped connection is not "unreachable".
+        _raised_from(ProviderError("openai", "x"), ConnectionResetError()),
+        _raised_from(ProviderError("openai", "x"), BrokenPipeError()),
     ],
 )
 def test_unrecognised_errors_get_no_hint(exc):

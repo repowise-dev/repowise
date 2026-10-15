@@ -887,6 +887,14 @@
       "providerSettings": "Provider settings",
       "dismiss": "Dismiss"
     },
+    "issue": {
+      "auth": "API key rejected by {provider}. Update it in Settings.",
+      "rate_limit": "{provider} is rate limiting requests. Wait a few minutes, then run it again.",
+      "model_not_found": "Model {model} was not found at {provider}. Choose another model in Settings.",
+      "not_found": "Model {model} or the base URL path was not found at {provider}. Check both in Settings.",
+      "unreachable": "Could not reach {target}. Is the server running and the base URL correct?",
+      "docs_skipped": "A model provider is configured but could not be loaded, so documentation was not updated. Check it in Settings."
+    },
     "banner": {
       "finishedWithProblems": "{action} finished with problems",
       "pagesFailed": "{count} pages not written",

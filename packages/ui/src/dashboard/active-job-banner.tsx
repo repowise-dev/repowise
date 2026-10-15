@@ -5,7 +5,7 @@ import { Spinner } from "../ui/spinner";
 import { Progress } from "../ui/progress";
 import { formatNumber, formatRelativeTime } from "../lib/format";
 import type { Job } from "@repowise-dev/types/jobs";
-import { jobOutcome, providerIssue } from "../jobs/job-outcome";
+import { jobOutcome, providerIssue, type ProviderIssue } from "../jobs/job-outcome";
 
 export interface ActiveJobBannerProps {
   /**
@@ -25,6 +25,8 @@ export interface ActiveJobBannerProps {
   settingsHref?: string;
   /** Hides a failed or warning banner; a clean finish fades on its own. */
   onDismiss?: () => void;
+  /** Words a provider issue in the host's language; defaults to its message. */
+  formatIssue?: (issue: ProviderIssue) => string;
   labels?: Partial<ActiveJobBannerLabels>;
 }
 
@@ -53,6 +55,7 @@ export function ActiveJobBanner({
   detailsHref,
   settingsHref,
   onDismiss,
+  formatIssue = (issue) => issue.message,
   labels,
 }: ActiveJobBannerProps) {
   if (!job) return null;
@@ -77,7 +80,11 @@ export function ActiveJobBanner({
   const phaseLabel = PHASE_LABELS[job.current_level ?? 0] ?? "Processing";
 
   return (
-    <div className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 sm:px-[var(--page-pad)]">
+    <div
+      // A failure interrupts; a warning is announced politely.
+      role={isFailed ? "alert" : isWarning ? "status" : undefined}
+      className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 sm:px-[var(--page-pad)]"
+    >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {isRunning && <Spinner size="sm" className="text-[var(--color-text-tertiary)]" />}
         {isDone && <CheckCircle className="h-3.5 w-3.5 text-[var(--color-success)] shrink-0" />}
@@ -108,8 +115,8 @@ export function ActiveJobBanner({
               {job.finished_at && <> · {formatRelativeTime(job.finished_at)}</>}
             </>
           )}
-          {isWarning && (issue?.message ?? l.pagesFailed(job.failed_pages))}
-          {isFailed && (job.error_message ?? "Unknown error")}
+          {isWarning && (issue ? formatIssue(issue) : l.pagesFailed(job.failed_pages))}
+          {isFailed && (issue ? formatIssue(issue) : (job.error_message ?? "Unknown error"))}
         </span>
 
         {showSettings && (

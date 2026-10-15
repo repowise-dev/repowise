@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { useTranslations } from "next-intl";
 import {
@@ -10,6 +10,7 @@ import {
 import { jobOutcome } from "@repowise-dev/ui/jobs";
 import { listJobs } from "@/lib/api/jobs";
 import { providerSetupHref } from "@/lib/utils/page-href";
+import { useIssueText } from "@/lib/jobs/use-issue-text";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type { Job } from "@repowise-dev/types/jobs";
 
@@ -21,9 +22,33 @@ interface Props {
 const DONE_WINDOW_MS = 60_000;
 const PROBLEM_WINDOW_MS = 24 * 60 * 60_000;
 
+/** Per-repo storage key holding the id of the job whose banner was dismissed,
+ *  so a dismissal survives reloads. Storage can be unavailable (private mode,
+ *  blocked site data); dismissal then lasts only for this page. */
+const dismissedKey = (repoId: string) => `repowise:job-banner-dismissed:${repoId}`;
+
+function readDismissed(repoId: string): string | null {
+  try {
+    return window.localStorage.getItem(dismissedKey(repoId));
+  } catch {
+    return null;
+  }
+}
+
+function writeDismissed(repoId: string, jobId: string): void {
+  try {
+    window.localStorage.setItem(dismissedKey(repoId), jobId);
+  } catch {
+    // best-effort
+  }
+}
+
 export function ActiveJobBannerWrapper({ repoId }: Props) {
   const t = useTranslations("jobs.banner");
   const [dismissedId, setDismissedId] = useState<string | null>(null);
+  const issueText = useIssueText();
+  // Read after mount: the server render has no storage to agree with.
+  useEffect(() => setDismissedId(readDismissed(repoId)), [repoId]);
   const { data: jobs } = useSWR<Job[]>(
     `/api/jobs?repo_id=${repoId}&limit=1`,
     () => listJobs({ repo_id: repoId, limit: 1 }),
@@ -61,7 +86,11 @@ export function ActiveJobBannerWrapper({ repoId }: Props) {
       job={job}
       detailsHref={`/repos/${repoId}/overview`}
       settingsHref={providerSetupHref(repoId)}
-      onDismiss={() => setDismissedId(job.id)}
+      onDismiss={() => {
+        writeDismissed(repoId, job.id);
+        setDismissedId(job.id);
+      }}
+      formatIssue={issueText}
       labels={labels}
     />
   );

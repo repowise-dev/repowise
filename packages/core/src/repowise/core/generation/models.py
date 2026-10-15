@@ -623,16 +623,15 @@ def dominant_stub_fallback_hint(pages: Iterable[Any]) -> dict | None:
     One rejected key fails every page the same way, so the most common hint
     is the one worth showing for the whole run.
     """
-    counts: dict[tuple[str, str], int] = {}
+    counts: dict[tuple[tuple[str, str], ...], int] = {}
     for page in pages:
         hint = (getattr(page, "metadata", None) or {}).get(STUB_FALLBACK_HINT)
         if isinstance(hint, dict) and hint.get("message"):
-            key = (str(hint.get("kind", "")), str(hint["message"]))
+            key = tuple(sorted((str(k), str(v)) for k, v in hint.items()))
             counts[key] = counts.get(key, 0) + 1
     if not counts:
         return None
-    kind, message = max(counts, key=counts.__getitem__)
-    return {"kind": kind, "message": message}
+    return dict(max(counts, key=counts.__getitem__))
 
 
 def member_structural_key(members: Iterable[str], *, prefix: str) -> str:

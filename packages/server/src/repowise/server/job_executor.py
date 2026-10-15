@@ -685,6 +685,24 @@ async def _refresh_fts(fts: Any, swept_page_ids: Any, pages: list) -> None:
     await fts.index_pages(pages)
 
 
+def _provider_failed_to_load(run: _JobRun) -> bool:
+    """Docs were skipped although a provider is configured for the repo.
+
+    A repo with no provider at all is keyless on purpose, and a keyless first
+    index writes templates by design; neither skip is a problem to report.
+    """
+    spec = run.spec
+    if run.docs_skip_reason is None or spec.is_initial_index:
+        return False
+    try:
+        from repowise.server.provider_config import get_active_provider
+
+        provider_id, _ = get_active_provider(repo_id=spec.repo_id, repo_path=spec.repo_path)
+    except Exception:
+        return False
+    return provider_id is not None
+
+
 async def _record_index_completion(
     run: _JobRun, result: Any, all_pages: list, elapsed: float
 ) -> int:
@@ -707,10 +725,8 @@ async def _record_index_completion(
                 "file_count": result.file_count,
                 "symbol_count": result.symbol_count,
                 "pages_generated": pages_generated,
-                # A keyless first index writes templates on purpose, so its
-                # skipped model docs are not a problem to report.
                 "provider_issue": _provider_issue(
-                    all_pages, None if run.spec.is_initial_index else run.docs_skip_reason
+                    all_pages, docs_skipped=_provider_failed_to_load(run)
                 ),
             },
             completed_pages=(

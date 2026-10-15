@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -59,7 +59,11 @@ export function QuickActionsWrapper({
           : labelFor(key);
   // The job on screen and which action started it, so its completion is
   // reported in its own terms and a retry re-runs the same action.
-  const { watched, watch: startWatching, settle, dismiss } = useWatchedJob<QuickActionKey>();
+  const { watched, watch: startWatching, watchIfIdle, settle, dismiss } =
+    useWatchedJob<QuickActionKey>();
+  // A retry goes back through the action's own confirm step (the full
+  // re-index cost estimate), which the shell renders once the panel is gone.
+  const [confirmRequest, setConfirmRequest] = useState<QuickActionKey | null>(null);
 
   // Hydrate from any in-flight job so refreshes don't lose progress visibility.
   useEffect(() => {
@@ -72,7 +76,7 @@ export function QuickActionsWrapper({
         ]);
         if (cancelled) return;
         const inflight = running[0] ?? pending[0];
-        if (inflight) startWatching(inflight.id, null);
+        if (inflight) watchIfIdle(inflight.id);
       } catch {
         // best-effort
       }
@@ -80,7 +84,7 @@ export function QuickActionsWrapper({
     return () => {
       cancelled = true;
     };
-  }, [repoId, startWatching]);
+  }, [repoId, watchIfIdle]);
 
   function handleJobDone(outcome: JobOutcome) {
     const key = watched?.action;
@@ -155,7 +159,14 @@ export function QuickActionsWrapper({
       // wrongly. It reports itself below instead.
       quiet={retryAction === "dead-code"}
       onDone={handleJobDone}
-      onRetry={retryAction ? () => void handleAction(retryAction) : undefined}
+      onRetry={
+        retryAction
+          ? () => {
+              dismiss();
+              setConfirmRequest(retryAction);
+            }
+          : undefined
+      }
       onDismiss={dismiss}
     />
   ) : null;
@@ -170,6 +181,8 @@ export function QuickActionsWrapper({
       modelName={modelName}
       costPer1k={costPer1k}
       activeJobSlot={activeSlot}
+      confirmRequest={confirmRequest}
+      onConfirmRequestHandled={() => setConfirmRequest(null)}
       variant={variant}
     />
   );

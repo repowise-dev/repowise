@@ -14,22 +14,29 @@ from urllib.parse import urlsplit
 
 from repowise.core.providers.llm.base import ProviderError, RateLimitError
 
-ProviderIssueKind = Literal["auth", "rate_limit", "unreachable", "model_not_found"]
+ProviderIssueKind = Literal["auth", "rate_limit", "unreachable", "model_not_found", "not_found"]
 
-# Status-less SDK and HTTP-client connection failures, matched by name so the
-# check needs neither SDK installed.
-_CONNECTION_ERROR_NAMES = frozenset(
-    {"APIConnectionError", "APITimeoutError", "ConnectError", "ConnectTimeout"}
-)
+# Status-less SDK and HTTP-client connect failures (openai/anthropic
+# APIConnectionError, httpx ConnectError/ConnectTimeout), matched by name so
+# the check needs no SDK installed. A reset or broken pipe means the server
+# was reached, so it is not "unreachable".
+_CONNECT_ERROR_NAMES = frozenset({"APIConnectionError", "ConnectError", "ConnectTimeout"})
 
 
 @dataclass(frozen=True)
 class ProviderErrorHint:
     kind: ProviderIssueKind
     message: str
+    #: Values the message names, so a client can word it in its own language.
+    provider: str | None = None
+    model: str | None = None
+    target: str | None = None
 
     def as_dict(self) -> dict[str, str]:
-        return {"kind": self.kind, "message": self.message}
+        fields = {"provider": self.provider, "model": self.model, "target": self.target}
+        return {"kind": self.kind, "message": self.message} | {
+            k: v for k, v in fields.items() if v
+        }
 
 
 def describe_provider_error(
@@ -39,30 +46,43 @@ def describe_provider_error(
     failure this recognises (an unknown error keeps its own text)."""
     chain = _exception_chain(exc)
     provider_error = next((e for e in chain if isinstance(e, ProviderError)), None)
-    provider = provider_error.provider if provider_error is not None else "the provider"
+    known = provider_error.provider if provider_error is not None else None
+    provider = known or "the provider"
+    status = _status(provider_error)
 
-    if any(isinstance(e, RateLimitError) for e in chain) or _status(provider_error) == 429:
+    if any(isinstance(e, RateLimitError) for e in chain) or status == 429:
         return ProviderErrorHint(
             "rate_limit",
             f"{provider} is rate limiting requests. Wait a few minutes, then run it again.",
+            provider=known,
         )
-    status = _status(provider_error)
     if status in (401, 403):
         return ProviderErrorHint(
-            "auth", f"API key rejected by {provider}. Update it in Settings."
+            "auth", f"API key rejected by {provider}. Update it in Settings.", provider=known
         )
     if status == 404:
         named = f"Model {model}" if model else "The configured model"
+        # A bare 404 is as often a wrong base URL path as a missing model.
+        if "model" in str(provider_error).lower():
+            return ProviderErrorHint(
+                "model_not_found",
+                f"{named} was not found at {provider}. Choose another model in Settings.",
+                provider=known,
+                model=model,
+            )
         return ProviderErrorHint(
-            "model_not_found",
-            f"{named} was not found at {provider}. Choose another model in Settings.",
+            "not_found",
+            f"{named} or the base URL path was not found at {provider}. Check both in Settings.",
+            provider=known,
+            model=model,
         )
-    if any(_is_connection_error(e) for e in chain):
+    if any(_is_connect_error(e) for e in chain):
         target = next((url for e in chain if (url := _request_origin(e))), None)
-        where = target or provider
         return ProviderErrorHint(
             "unreachable",
-            f"Could not reach {where}. Is the server running and the base URL correct?",
+            f"Could not reach {target or provider}. Is the server running and the base URL correct?",
+            provider=known,
+            target=target,
         )
     return None
 
@@ -80,18 +100,19 @@ def _status(exc: ProviderError | None) -> int | None:
     return exc.status_code if exc is not None else None
 
 
-def _is_connection_error(exc: BaseException) -> bool:
-    return isinstance(exc, ConnectionError) or type(exc).__name__ in _CONNECTION_ERROR_NAMES
+def _is_connect_error(exc: BaseException) -> bool:
+    return isinstance(exc, ConnectionRefusedError) or type(exc).__name__ in _CONNECT_ERROR_NAMES
 
 
 def _request_origin(exc: BaseException) -> str | None:
     """``scheme://host:port`` of the request *exc* failed on, without the
-    path, query or credentials a full URL can carry."""
+    path, query or credentials a full URL can carry. IPv6 hosts keep their
+    brackets."""
     try:
         parts = urlsplit(str(exc.request.url))  # type: ignore[attr-defined]
-        port = f":{parts.port}" if parts.port else ""
     except Exception:
         return None
-    if not parts.scheme or not parts.hostname:
+    host = parts.netloc.rpartition("@")[2]
+    if not parts.scheme or not host:
         return None
-    return f"{parts.scheme}://{parts.hostname}{port}"
+    return f"{parts.scheme}://{host}"

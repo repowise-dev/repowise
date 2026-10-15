@@ -15,6 +15,7 @@ import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { computeElapsedMs } from "@/lib/jobs/progress";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { providerSetupHref } from "@/lib/utils/page-href";
+import { useIssueText } from "@/lib/jobs/use-issue-text";
 import { useTranslations } from "next-intl";
 
 interface Props {
@@ -45,6 +46,7 @@ export function GenerationProgressWrapper({
 }: Props) {
   const t = useTranslations("jobs");
   const { job, sse, messages, phase, isActive } = useJob(jobId);
+  const issueText = useIssueText();
   const [elapsed, setElapsed] = useState(0);
   const [actualCost, setActualCost] = useState<number | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -73,6 +75,7 @@ export function GenerationProgressWrapper({
   useEffect(() => {
     if (notifiedRef.current || !outcome || !job) return;
     notifiedRef.current = true;
+    const issue = providerIssue(job);
     if (!quiet) {
       if (outcome === "completed") {
         toast.success(t("completed", { name: repoName ? ` — ${repoName}` : "" }), {
@@ -80,18 +83,20 @@ export function GenerationProgressWrapper({
         });
       } else if (outcome === "warning") {
         toast.warning(t("completedWithProblems", { name: repoName ? ` (${repoName})` : "" }), {
-          description:
-            providerIssue(job)?.message ??
-            t("pagesFailed", { count: formatNumber(job.failed_pages) }),
+          description: issue
+            ? issueText(issue)
+            : t("pagesFailed", { count: formatNumber(job.failed_pages) }),
         });
       } else if (outcome === "failed") {
-        toast.error(t("failed"), { description: job.error_message ?? t("unknownError") });
+        toast.error(t("failed"), {
+          description: issue ? issueText(issue) : (job.error_message ?? t("unknownError")),
+        });
       } else {
         toast.info(t("cancelled"), { description: t("cancelledDescription") });
       }
     }
     onDone?.(outcome);
-  }, [outcome, job, repoName, onDone, quiet, t]);
+  }, [outcome, job, repoName, onDone, quiet, t, issueText]);
 
   const labels = useMemo<Partial<GenerationProgressLabels>>(
     () => ({
@@ -147,6 +152,7 @@ export function GenerationProgressWrapper({
       onDismiss={onDismiss}
       settingsHref={job ? providerSetupHref(job.repository_id) : undefined}
       labels={labels}
+      formatIssue={issueText}
     />
   );
 }

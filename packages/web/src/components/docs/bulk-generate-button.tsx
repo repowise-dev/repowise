@@ -61,8 +61,17 @@ export function BulkGenerateButton({
           </DialogHeader>
           {bulk.jobId != null && (
             <GenerationProgressWrapper
+              key={bulk.jobId}
               jobId={bulk.jobId}
-              onDone={() => onGenerated?.()}
+              onDone={(outcome) => {
+                bulk.settle(outcome);
+                onGenerated?.();
+              }}
+              onRetry={() => {
+                bulk.clearJob();
+                bulk.open();
+              }}
+              onDismiss={bulk.clearJob}
             />
           )}
         </DialogContent>

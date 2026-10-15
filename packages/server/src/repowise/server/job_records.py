@@ -19,16 +19,24 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-def _provider_issue(pages: list, docs_skip_reason: str | None = None) -> dict | None:
+#: Shown when a provider is configured but could not be loaded. Fixed text:
+#: the load error itself can be long and is in the server log.
+DOCS_SKIPPED_MESSAGE = (
+    "A model provider is configured but could not be loaded, so documentation "
+    "was not updated. Check it in Settings."
+)
+
+
+def _provider_issue(pages: list, *, docs_skipped: bool = False) -> dict | None:
     """What the UI shows when a completed run still went wrong with the provider:
-    the hint its failed pages share, else why docs were skipped."""
+    the hint its failed pages share, else that docs were skipped."""
     from repowise.core.generation.models import dominant_stub_fallback_hint
 
     hint = dominant_stub_fallback_hint(pages)
     if hint is not None:
         return hint
-    if docs_skip_reason:
-        return {"kind": "docs_skipped", "message": docs_skip_reason[:500]}
+    if docs_skipped:
+        return {"kind": "docs_skipped", "message": DOCS_SKIPPED_MESSAGE}
     return None
 
 

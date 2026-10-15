@@ -6,10 +6,16 @@
  */
 
 export interface ProviderIssue {
-  /** "auth" | "rate_limit" | "unreachable" | "model_not_found" | "docs_skipped" */
+  /** "auth" | "rate_limit" | "unreachable" | "model_not_found" | "not_found" |
+   *  "docs_skipped"; a client words known kinds itself and shows `message`
+   *  for any other. */
   kind: string;
-  /** Plain hint saying what went wrong and what to do. */
+  /** Plain English hint saying what went wrong and what to do. */
   message: string;
+  /** Values the message names, for a client that words it itself. */
+  provider?: string | undefined;
+  model?: string | undefined;
+  target?: string | undefined;
 }
 
 interface OutcomeJob {
@@ -23,10 +29,16 @@ export type JobOutcome = "completed" | "warning" | "failed" | "cancelled";
 export function providerIssue(job: OutcomeJob | null | undefined): ProviderIssue | null {
   const raw = job?.config?.provider_issue;
   if (!raw || typeof raw !== "object") return null;
-  const { kind, message } = raw as Record<string, unknown>;
-  return typeof message === "string" && message
-    ? { kind: typeof kind === "string" ? kind : "", message }
-    : null;
+  const { kind, message, provider, model, target } = raw as Record<string, unknown>;
+  if (typeof message !== "string" || !message) return null;
+  const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  return {
+    kind: text(kind) ?? "",
+    message,
+    provider: text(provider),
+    model: text(model),
+    target: text(target),
+  };
 }
 
 /** The terminal outcome, or `null` while the job is still pending or running. */

@@ -76,7 +76,8 @@ export function OperationsPanel({ repoId, repoName }: Props) {
               jobId={watched.id}
               repoName={repoName}
               onDone={settle}
-              onRetry={watched.action === "resync" ? handleResync : handleSync}
+              // A full re-index retry goes back through its confirmation.
+              onRetry={watched.action === "resync" ? () => setConfirmResync(true) : handleSync}
               onDismiss={dismiss}
             />
           )}
