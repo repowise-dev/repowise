@@ -1624,6 +1624,16 @@ repowise changes export [--path PATH] [--since DATE] [--until DATE] [--format js
 
 ---
 
+### `repowise suspects`
+
+Ranks the indexed changes merged in a window (default the 14 days before `--until`, which defaults to now) against a symptom: free text, files, a stack trace file. Each row lists the signals that fired (text match, import distance, co-change, recency, trace hits) with their evidence; the order is where to start reading, never a cause, and `git bisect run` confirms one. Measured results and the bisect recipe are in [CHANGES.md](../layers/CHANGES.md#suspects).
+
+```bash
+repowise suspects [--symptom TEXT] [--files PATH]... [--trace FILE] [--since DATE] [--until DATE] [--limit N] [--path PATH] [--format table|json]
+```
+
+---
+
 ### `repowise check [REVSPEC]`
 
 Evaluates `.repowise/policies.yaml` (see [CONFIG.md](CONFIG.md#repowisepoliciesyaml)) against a change: components touched and their tags, provenance from public git markers, and, with an index, reaching tests, governing decisions crossed and bus factor. Rules that wrap a gate run `security check`, `coverage check` or `doc-drift --check` exactly as those commands run alone, and without a policy file every gate behaves as before while `check` reports nothing to evaluate. Exit 1 when a `fail` rule fires, 2 when the policy is invalid or a `fail` gate cannot be evaluated, else 0; `--sarif-file` writes SARIF 2.1.0 for code scanning or reviewdog and `--junit-file` a JUnit report from the same run.
