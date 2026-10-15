@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, model_serializer
+from pydantic import BaseModel, Field, model_serializer
 
 
 class ChangeIdentity(BaseModel):
@@ -155,3 +155,44 @@ def summary_from_record(record: dict) -> ChangeListItem:
         **{k: v for k, v in record.items() if k in ChangeSummary.model_fields},
         commit_count=len(record["commits"]),
     )
+
+
+class SuspectsRequest(BaseModel):
+    """A symptom and the window to rank the changes merged in."""
+
+    symptom: str = ""
+    files: list[str] = []
+    trace: str = ""
+    #: ISO 8601; default 14 days before ``until``.
+    since: str | None = None
+    #: ISO 8601, when the symptom was seen; default now.
+    until: str | None = None
+    limit: int = Field(10, ge=1, le=200)
+
+
+class SuspectSignal(BaseModel):
+    rank: int
+    evidence: list[str]
+
+
+class Suspect(BaseModel):
+    """One change in reading order; ``signals`` holds each signal that fired."""
+
+    id: str
+    ref: str | None = None
+    title: str
+    merged_at: str | None = None
+    category: str
+    head_sha: str
+    files_changed: int
+    provenance: str | None = None
+    rank: int
+    signals: dict[str, SuspectSignal]
+
+
+class SuspectsResponse(BaseModel):
+    window: dict[str, str]
+    candidates: int
+    symptom_files: list[str] = []
+    suspects: list[Suspect]
+    note: str

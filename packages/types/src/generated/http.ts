@@ -3587,6 +3587,43 @@ export interface SetApiKeyRequest {
   repo_id?: string | null;
 }
 
+/** One change in reading order; ``signals`` holds each signal that fired. */
+export interface Suspect {
+  id: string;
+  ref?: string | null;
+  title: string;
+  merged_at?: string | null;
+  category: string;
+  head_sha: string;
+  files_changed: number;
+  provenance?: string | null;
+  rank: number;
+  signals: Record<string, SuspectSignal>;
+}
+
+export interface SuspectSignal {
+  rank: number;
+  evidence: string[];
+}
+
+/** A symptom and the window to rank the changes merged in. */
+export interface SuspectsRequest {
+  symptom?: string;
+  files?: string[];
+  trace?: string;
+  since?: string | null;
+  until?: string | null;
+  limit?: number;
+}
+
+export interface SuspectsResponse {
+  window: Record<string, string>;
+  candidates: number;
+  symptom_files?: string[];
+  suspects: Suspect[];
+  note: string;
+}
+
 /**
  * Transparent breakdown of the composite importance score so the UI can
  * explain *why* a symbol ranks where it does. All fields are normalized to

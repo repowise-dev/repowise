@@ -772,3 +772,46 @@ async def test_an_answer_without_figures_stores_no_check(store):
     assert "diagnostics" not in [e["type"] for e in events]
     content = (await store.messages(session.id))[-1].content
     assert "figures" not in content and "diagnostics" not in content
+
+
+# ---------------------------------------------------------------------------
+# find_suspects: chat-only, local backend, follows get_context's admission
+# ---------------------------------------------------------------------------
+
+
+async def test_find_suspects_is_offered_on_the_local_backend_and_runs(store, monkeypatch):
+    import repowise.server.chat_session as chat_session_mod
+    from repowise.server.chat_suspects import SUSPECTS_TOOL
+    from repowise.server.chat_tools import LocalToolBackend
+
+    class FakeLocal(LocalToolBackend):
+        def __init__(self) -> None:
+            super().__init__("/tmp/demo", repo_alias="demo")
+            self.inner = FakeTools()
+
+        def catalog_for(self, policy, principal):
+            return self.inner.catalog_for(policy, principal)
+
+        async def execute(self, name, arguments):
+            return await self.inner.execute(name, arguments)
+
+    seen: list = []
+
+    async def fake_run(arguments, repo):
+        seen.append((arguments, repo))
+        return {"suspects": [{"id": "pr-2", "rank": 1, "signals": {"text": {"rank": 1, "evidence": []}}}]}
+
+    monkeypatch.setattr(chat_session_mod, "run_find_suspects", fake_run)
+    provider = ScriptedProvider([[_tool("t1", SUSPECTS_TOOL, {"symptom": "login fails"})], [_text("pr-2")]])
+    session = await _open(store, provider, tools=FakeLocal())
+    result = await session.send("what broke login?")
+
+    assert SUSPECTS_TOOL in provider.calls[0]["tools"]
+    assert seen == [({"symptom": "login fails"}, "demo")]
+    assert [t.ok for t in result.tool_trace] == [True]
+
+    narrow = ScriptedProvider([[_text("x")]])
+    await (
+        await _open(store, narrow, tools=FakeLocal(), policy=SessionPolicy(tool_allowlist=frozenset({"get_risk"})))
+    ).send("q")
+    assert SUSPECTS_TOOL not in narrow.calls[0]["tools"]

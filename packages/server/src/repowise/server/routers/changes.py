@@ -1,8 +1,10 @@
-"""/api/repos/{repo_id}/changes — merged changes reconstructed from git."""
+"""/api/repos/{repo_id}/changes — merged changes reconstructed from git, and
+``/suspects``, the changes in a window ranked against a symptom."""
 
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -25,12 +27,16 @@ from repowise.core.changes.evidence import ChangeEvidence
 from repowise.core.changes.record import change_record
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
+from repowise.core.suspects import Symptom
+from repowise.core.suspects.index import find_suspects
 from repowise.server.deps import get_db_session, resolve_request_session_factory, verify_api_key
 from repowise.server.schemas.changes import (
     ChangeEvidenceSummary,
     ChangeListResponse,
     ChangeRecord,
     ChecklistsBuilt,
+    SuspectsRequest,
+    SuspectsResponse,
     summary_from_record,
 )
 
@@ -188,3 +194,41 @@ async def _outcomes_and_keep(
     async with get_session(factory) as session:
         merged = await keep_outcomes(session, repo_id, change_id, item)
     return merged or with_item(kept, item)
+
+
+def _when(value: str | None, field: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{field} is not an ISO 8601 time") from None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+@router.post("/{repo_id}/suspects", response_model=SuspectsResponse)
+async def rank_suspects(
+    repo_id: str,
+    body: SuspectsRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> SuspectsResponse:
+    """The changes merged in a window, ranked against a symptom, with each row's evidence.
+
+    An order to read changes in, never a cause or a probability.
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    if not (body.symptom.strip() or body.files or body.trace.strip()):
+        raise HTTPException(status_code=422, detail="Give a symptom, files or a trace")
+    until = _when(body.until, "until")
+    got = await find_suspects(
+        session,
+        repo_id,
+        repo.local_path,
+        Symptom(text=body.symptom, files=tuple(body.files), trace=body.trace, at=until),
+        since=_when(body.since, "since"),
+        until=until,
+        limit=body.limit,
+    )
+    return SuspectsResponse(**got)

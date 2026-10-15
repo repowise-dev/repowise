@@ -11,7 +11,8 @@ events as SSE, and an in-process caller uses the class directly.
 The tools a model is shown, and the only ones it can run, are the backend's
 catalog for the principal narrowed by the policy's allowlist and safety
 ceiling, plus the chat-only ``show_view`` tool, which builds tables and
-charts from this turn's results (:mod:`repowise.server.chat_views`).
+charts from this turn's results (:mod:`repowise.server.chat_views`), and
+the chat-only ``find_suspects`` (:mod:`repowise.server.chat_suspects`).
 Everything outside the loop goes through the seams in
 :mod:`repowise.server.chat_seams`.
 """
@@ -63,6 +64,12 @@ from repowise.server.chat_seams import (
 from repowise.server.chat_store import SqlConversationStore
 from repowise.server.chat_suggestions import conversation_title, follow_up_suggestions, tool_names
 from repowise.server.chat_summaries import _build_tool_summary
+from repowise.server.chat_suspects import (
+    SCOPE_TOOL,
+    SUSPECTS_TOOL,
+    find_suspects_schema,
+    run_find_suspects,
+)
 from repowise.server.chat_tools import ChatToolContract, LocalToolBackend, tool_schemas
 from repowise.server.chat_views import SHOW_VIEW_TOOL, TurnViews, show_view_schema
 from repowise.server.schemas.evidence import CardRef
@@ -322,6 +329,7 @@ class _Turn:
         tokens_before: int,
         is_cancelled: IsCancelled,
         shows_views: bool = False,
+        finds_suspects: bool = False,
         question: str = "",
         prior_calls: list[dict[str, Any]] | None = None,
     ) -> None:
@@ -329,6 +337,7 @@ class _Turn:
         self.tools = tools
         self.catalog = {tool.entry.name: tool for tool in catalog}
         self.shows_views = shows_views
+        self.finds_suspects = finds_suspects
         self.views = TurnViews()
         self.policy = policy
         self.base = base
@@ -364,6 +373,9 @@ class _Turn:
         """
         if name == SHOW_VIEW_TOOL and self.shows_views:
             return self.views.show(arguments)
+        if name == SUSPECTS_TOOL and self.finds_suspects:
+            result = await run_find_suspects(arguments, getattr(self.tools, "repo_alias", None))
+            return self.views.record(name, arguments, result, evidence_basis="inferred")
         tool = self.catalog.get(name)
         if tool is None:
             return {
@@ -879,9 +891,18 @@ class ChatSession:
         # show_view is chat-only and read-only: never an MCP tool, offered
         # whenever there is a tool whose result it could be built from.
         shows_views = bool(catalog) and self.policy.admits_name(SHOW_VIEW_TOOL, "read_only")
+        # find_suspects is chat-only too: it reads the index in process, so it
+        # needs the local backend and follows get_context's admission.
+        finds_suspects = (
+            isinstance(self.tools, LocalToolBackend)
+            and any(tool.entry.name == SCOPE_TOOL for tool in catalog)
+            and self.policy.admits_name(SUSPECTS_TOOL, "read_only")
+        )
         schemas = tool_schemas(catalog)
         if shows_views:
             schemas.append(show_view_schema([tool.entry.artifact_type for tool in catalog]))
+        if finds_suspects:
+            schemas.append(find_suspects_schema())
         turn = _Turn(
             provider=self.provider,
             tools=self.tools,
@@ -893,6 +914,7 @@ class ChatSession:
             tokens_before=conversation.tokens_used,
             is_cancelled=is_cancelled,
             shows_views=shows_views,
+            finds_suspects=finds_suspects,
             question=message,
             prior_calls=[
                 call

@@ -41,7 +41,7 @@ _EXPECTED_NAMES = frozenset(
         "impacted-tests", "init", "login", "logout", "mcp", "next", "overlap", "packages", "plugins",
         "publish", "reindex", "report",
         "restyle",
-        "risk", "saved", "savings", "search", "security", "serve", "status", "symbol",
+        "risk", "saved", "savings", "search", "security", "serve", "status", "suspects", "symbol",
         "telemetry", "uninstall", "update", "watch", "whats-new", "whoami", "why",
         "wiki-styles", "workspace",
     }
