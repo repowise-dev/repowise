@@ -385,6 +385,8 @@ Provisional finding types appear only with `include=["unverified"]`, each marked
 
 Health findings, refactoring plans and opportunities, and performance opportunities on Java, C#, C and C++ files are held back pending verification for those languages. They are still stored and a lookup by id still answers; `_meta.gated` counts them per layer and language, and `include=["unverified"]` shows them.
 
+Health findings on files the index stores as vendored or generated are held back the same way, in every language: that code is changed upstream or by its generator. `_meta.gated.health` counts them under `vendored` and `generated`, each with its reason.
+
 ### Opt-in blocks
 
 | `include` | Adds |

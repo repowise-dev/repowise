@@ -171,6 +171,29 @@ LANGUAGE_GATES: tuple[LanguageGate, ...] = (
 )
 
 
+#: Why a health finding is held back by the file it sits on rather than by its
+#: language: vendored and generated code is not the reader's to change. Read
+#: from the file's stored ``code_origin``, so it holds on every language, with
+#: the same opt-in as a language gate.
+FILE_HOLDS: dict[str, str] = {
+    "vendored": "Held back on vendored files: the code is maintained upstream.",
+    "generated": "Held back on generated files: change what generates them instead.",
+}
+
+#: The stored ``code_origin`` values a health finding is never served on.
+HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
+
+
+def file_hold(layer: GateLayer, kind: Any, code_origin: Any, is_test: Any) -> str | None:
+    """The :data:`FILE_HOLDS` key holding back a *layer* row of *kind* on a file
+    with that stored origin and test flag, or ``None``."""
+    if layer != "health":
+        return None
+    if code_origin in HELD_ORIGINS:
+        return str(code_origin)
+    return None
+
+
 def gates_on(layer: GateLayer) -> tuple[LanguageGate, ...]:
     """The gates on *layer*, read from :data:`LANGUAGE_GATES` at call time."""
     return tuple(gate for gate in LANGUAGE_GATES if gate.layer == layer)
@@ -223,12 +246,17 @@ def held_back_note(languages: Iterable[str]) -> str:
 def gated_summary(layer: GateLayer, counts: Mapping[str, int]) -> dict[str, dict]:
     """``{language: {count, reason}}`` for each gated language with rows on
     *layer*, so a surface says what it held back. The reason says only that
-    the layer is held back pending verification there."""
+    the layer is held back pending verification there. A :data:`FILE_HOLDS`
+    key in *counts* is reported under that key with its reason."""
     out: dict[str, dict] = {}
     for gate in gates_on(layer):
         count = counts.get(gate.language, 0)
         if count:
             out[gate.language] = {"count": count, "reason": held_back_note([gate.language])}
+    # File holds ride beside the languages under their own keys, with their reason.
+    for key, reason in FILE_HOLDS.items():
+        if counts.get(key):
+            out[key] = {"count": counts[key], "reason": reason}
     return out
 
 
@@ -239,10 +267,13 @@ def split_gated(
     kind: str,
     get: Callable[[Any, str], Any] = getattr,
     include_unverified: bool = False,
+    files: Mapping[str, Any] | None = None,
 ) -> tuple[list[Any], dict[str, dict]]:
     """``(rows no gate holds back, gated_summary)`` for rows already in memory.
 
     *kind* names the row field holding the finding type; *get* reads a field.
+    *files* maps a path to its health metric row (``code_origin``, ``is_test``)
+    so the :data:`FILE_HOLDS` apply too; a path missing from it is not held.
     ``include_unverified`` keeps every row and reports nothing held back.
     """
     if include_unverified:
@@ -250,11 +281,24 @@ def split_gated(
     shown: list[Any] = []
     counts: dict[str, int] = {}
     for row in rows:
-        gate = gate_for(layer, get(row, "file_path") or "", get(row, kind))
-        if gate is None:
+        path = get(row, "file_path") or ""
+        metric = (files or {}).get(path)
+        held = (
+            file_hold(
+                layer,
+                get(row, kind),
+                getattr(metric, "code_origin", None),
+                getattr(metric, "is_test", None),
+            )
+            if metric is not None
+            else None
+        )
+        gate = None if held else gate_for(layer, path, get(row, kind))
+        key = held or (gate.language if gate is not None else None)
+        if key is None:
             shown.append(row)
         else:
-            counts[gate.language] = counts.get(gate.language, 0) + 1
+            counts[key] = counts.get(key, 0) + 1
     return shown, gated_summary(layer, counts)
 
 
@@ -302,6 +346,8 @@ def withheld_summary(counts: Mapping[str, int], excluded: Iterable[str]) -> dict
 
 
 __all__ = [
+    "FILE_HOLDS",
+    "HELD_ORIGINS",
     "LANGUAGE_GATES",
     "REGISTRY",
     "UNVERIFIED_LABEL",
@@ -310,6 +356,7 @@ __all__ = [
     "GateLayer",
     "LanguageGate",
     "excluded_types",
+    "file_hold",
     "gate_for",
     "gated_extensions",
     "gated_summary",

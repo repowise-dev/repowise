@@ -160,7 +160,11 @@ async def file_score_breakdown(
     # The score counts every finding; a gated one is held back from the list
     # and the breakdown, and ``gated`` says how many.
     findings, gated = split_gated(
-        "health", findings, kind="biomarker_type", include_unverified=include_unverified
+        "health",
+        findings,
+        kind="biomarker_type",
+        include_unverified=include_unverified,
+        files={m.file_path: m for m in metrics},
     )
     # This drawer opens from a row the reader just saw a score on. Reading it
     # under the other counts would answer a click on 8.5 with a 2.0 and list

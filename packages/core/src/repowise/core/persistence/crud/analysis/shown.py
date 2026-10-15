@@ -1,7 +1,8 @@
 """The finding registry as SQL: what a serving read may show.
 
-``finding_registry`` decides by finding type (``excluded_types``) and by layer
-and language (``LANGUAGE_GATES``). Reads that list or count rows for a surface
+``finding_registry`` decides by finding type (``excluded_types``), by layer
+and language (``LANGUAGE_GATES``), and for health findings by the file's stored
+origin (``FILE_HOLDS``). Reads that list or count rows for a surface
 filter here, so every surface agrees on what is held back. Reads by id and the
 writers do not: a held-back row is still stored and addressable.
 """
@@ -15,17 +16,39 @@ from sqlalchemy import and_, case, func, not_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....analysis.finding_registry import (
+    HELD_ORIGINS,
     GateLayer,
     excluded_types,
     gated_extensions,
     gated_summary,
     gates_on,
 )
+from ...models import HealthFileMetric, HealthFinding
+
+
+def _file_holds(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[str, Any]]:
+    """``(FILE_HOLDS key, row matches it)`` for health findings, read from the
+    file's stored metric row; ahead of the language cells, as ``file_hold`` is."""
+    if layer != "health" or getattr(path_col, "class_", None) is not HealthFinding:
+        return []
+
+    def on_file(*where: Any) -> Any:
+        return (
+            select(HealthFileMetric.id)
+            .where(
+                HealthFileMetric.repository_id == HealthFinding.repository_id,
+                HealthFileMetric.file_path == path_col,
+                *where,
+            )
+            .exists()
+        )
+
+    return [(origin, on_file(HealthFileMetric.code_origin == origin)) for origin in HELD_ORIGINS]
 
 
 def _cells(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[str, Any]]:
-    """``(language, row matches that gate)`` for each gate on *layer*."""
-    cells = []
+    """``(key, row matches it)`` for each file hold, then each gate on *layer*."""
+    cells = _file_holds(layer, path_col, kind_col)
     for gate in gates_on(layer):
         match = or_(*(path_col.ilike(f"%{ext}") for ext in gated_extensions(gate.language)))
         if gate.kinds is not None:
@@ -73,7 +96,7 @@ async def gated_counts(
 ) -> dict[str, dict]:
     """What the gates on *layer* hold back among *model* rows matching *where*.
 
-    ``{language: {count, reason}}``, from one grouped count, so a
+    ``{language or file hold: {count, reason}}``, from one grouped count, so a
     surface can say how many rows it left out and why instead of reading empty.
     Empty when ``include_unverified``: nothing was held back.
     """

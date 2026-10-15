@@ -81,7 +81,11 @@ async def health_overview(
     # work the page lists all describing the same thing.
     metrics, scored_findings, unscored = project(counts, metrics, findings)
     findings, gated = split_gated(
-        "health", scored_findings, kind="biomarker_type", include_unverified=include_unverified
+        "health",
+        scored_findings,
+        kind="biomarker_type",
+        include_unverified=include_unverified,
+        files={m.file_path: m for m in metrics},
     )
     summary = await crud.get_health_summary(
         session, repo_id, metrics=metrics, findings=findings

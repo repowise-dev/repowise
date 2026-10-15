@@ -1,0 +1,148 @@
+"""File holds: a health finding on a vendored or generated file is held back
+on every default surface, whatever the language, and each surface says how
+many and why.
+
+Mirrors the runtime audit: findings under ``src/native/external`` were served
+although the index stores ``code_origin = vendored`` for those files.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from repowise.core.analysis.finding_registry import FILE_HOLDS, file_hold, split_gated
+
+_VENDORED = "src/external/brotli/static_dict.py"
+_GENERATED = "src/proto/api_pb2.py"
+_TEST = "tests/test_fuzzy_matcher.py"
+
+
+def test_file_hold_reads_origin_and_test_flag():
+    assert file_hold("health", "large_method", "vendored", False) == "vendored"
+    assert file_hold("health", "complex_method", "generated", None) == "generated"
+    assert file_hold("health", "complex_method", "test", True) is None
+    assert file_hold("health", "ownership_risk", "production", False) is None
+    # Unknown origin (row written before the column) is not held.
+    assert file_hold("health", "ownership_risk", None, None) is None
+    # Other layers are untouched.
+    assert file_hold("dead_code", "unreachable_file", "vendored", False) is None
+
+
+def test_split_gated_applies_file_holds_with_their_reason():
+    rows = [
+        {"file_path": _VENDORED, "biomarker_type": "large_method"},
+        {"file_path": _TEST, "biomarker_type": "ownership_risk"},
+        {"file_path": _TEST, "biomarker_type": "complex_method"},
+        {"file_path": "src/app.py", "biomarker_type": "ownership_risk"},
+    ]
+    files = {
+        _VENDORED: SimpleNamespace(code_origin="vendored", is_test=False),
+        _TEST: SimpleNamespace(code_origin="test", is_test=True),
+        "src/app.py": SimpleNamespace(code_origin="production", is_test=False),
+    }
+    shown, gated = split_gated(
+        "health", rows, kind="biomarker_type", get=lambda r, k: r[k], files=files
+    )
+    assert [(r["file_path"], r["biomarker_type"]) for r in shown] == [
+        (_TEST, "ownership_risk"),
+        (_TEST, "complex_method"),
+        ("src/app.py", "ownership_risk"),
+    ]
+    assert gated == {"vendored": {"count": 1, "reason": FILE_HOLDS["vendored"]}}
+    # Without the metric rows nothing is held by file (unknown is not a hold).
+    assert len(split_gated("health", rows, kind="biomarker_type", get=lambda r, k: r[k])[0]) == 4
+    assert split_gated(
+        "health", rows, kind="biomarker_type", get=lambda r, k: r[k], files=files,
+        include_unverified=True,
+    ) == (rows, {})
+
+
+async def _seed(session, rid: str) -> None:
+    from repowise.core.persistence.crud import upsert_health_findings, upsert_health_metrics
+
+    def metric(path: str, origin: str, is_test: bool) -> dict:
+        return {
+            "file_path": path,
+            "score": 4.0,
+            "max_ccn": 25,
+            "max_nesting": 5,
+            "nloc": 300,
+            "has_test_file": False,
+            "module": "x",
+            "code_origin": origin,
+            "is_test": is_test,
+        }
+
+    def finding(path: str, kind: str, impact: float) -> dict:
+        return {
+            "file_path": path,
+            "biomarker_type": kind,
+            "severity": "high",
+            "function_name": "run",
+            "line_start": 1,
+            "line_end": 90,
+            "details": {},
+            "health_impact": impact,
+            "reason": f"{kind} on {path}",
+        }
+
+    await upsert_health_metrics(
+        session,
+        rid,
+        [
+            metric(_VENDORED, "vendored", False),
+            metric(_GENERATED, "generated", False),
+            metric(_TEST, "test", True),
+        ],
+    )
+    await upsert_health_findings(
+        session,
+        rid,
+        [
+            finding(_VENDORED, "large_method", 2.0),
+            finding(_GENERATED, "complex_method", 2.0),
+            finding(_TEST, "ownership_risk", 1.0),
+            finding(_TEST, "change_entropy", 1.0),
+            finding(_TEST, "complex_method", 1.0),
+        ],
+        file_paths=[_VENDORED, _GENERATED, _TEST],
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_crud_reader_holds_back_by_file(session, health_data):
+    from repowise.core.persistence.crud import get_health_findings
+
+    await _seed(session, health_data)
+    served = {(f.file_path, f.biomarker_type) for f in await get_health_findings(session, health_data)}
+    assert not {p for p, _ in served} & {_VENDORED, _GENERATED}
+    assert {(_TEST, "complex_method"), (_TEST, "ownership_risk")} <= served
+    assert "src/auth/service.py" in {p for p, _ in served}
+
+    opted = {
+        (f.file_path, f.biomarker_type)
+        for f in await get_health_findings(session, health_data, include_unverified=True)
+    }
+    assert {(_VENDORED, "large_method"), (_GENERATED, "complex_method")} <= opted
+
+
+@pytest.mark.asyncio
+async def test_get_health_holds_back_by_file_and_says_so(setup_mcp, session, health_data):
+    from repowise.server.mcp_server import get_health
+
+    await _seed(session, health_data)
+
+    default = await get_health(only=["top_findings"], limit=50)
+    rows = default["top_findings"] + default.get("test_findings", [])
+    files = {f["file_path"] for f in rows}
+    assert not files & {_VENDORED, _GENERATED}
+    held = default["_meta"]["gated"]["health"]
+    assert held["vendored"] == {"count": 1, "reason": FILE_HOLDS["vendored"]}
+    assert held["generated"]["count"] == 1
+
+    targeted = await get_health(targets=[_VENDORED])
+    assert not targeted.get("findings")
+    assert targeted["_meta"]["gated"]["health"]["vendored"]["count"] == 1
