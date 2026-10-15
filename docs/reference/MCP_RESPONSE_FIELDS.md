@@ -387,6 +387,8 @@ Health findings, refactoring plans and opportunities, and performance opportunit
 
 Health findings on files the index stores as vendored or generated are held back the same way, in every language: that code is changed upstream or by its generator. `_meta.gated.health` counts them under `vendored` and `generated`, each with its reason.
 
+On test files, history markers (ownership, churn, change entropy, co-change and the other git-derived kinds) are held back too, counted under `test_history`: they describe how a test changes, not a defect in it. Code-shape findings on tests are still listed.
+
 ### Opt-in blocks
 
 | `include` | Adds |

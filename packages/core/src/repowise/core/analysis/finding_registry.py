@@ -172,16 +172,26 @@ LANGUAGE_GATES: tuple[LanguageGate, ...] = (
 
 
 #: Why a health finding is held back by the file it sits on rather than by its
-#: language: vendored and generated code is not the reader's to change. Read
-#: from the file's stored ``code_origin``, so it holds on every language, with
-#: the same opt-in as a language gate.
+#: language: vendored and generated code is not the reader's to change, and a
+#: history marker on a test file describes how the test changes, not a defect
+#: in it. Read from the file's stored ``code_origin`` and ``is_test``, so it
+#: holds on every language, with the same opt-in as a language gate.
 FILE_HOLDS: dict[str, str] = {
     "vendored": "Held back on vendored files: the code is maintained upstream.",
     "generated": "Held back on generated files: change what generates them instead.",
+    "test_history": "History markers held back on test files: they describe change, not a defect.",
 }
 
 #: The stored ``code_origin`` values a health finding is never served on.
 HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
+
+
+def history_kinds() -> frozenset[str]:
+    """The health markers read from git history alone (the ``test_history`` hold)."""
+    # Deferred: the health package imports this module.
+    from repowise.core.analysis.health.scoring import history_biomarkers
+
+    return history_biomarkers()
 
 
 def file_hold(layer: GateLayer, kind: Any, code_origin: Any, is_test: Any) -> str | None:
@@ -191,6 +201,8 @@ def file_hold(layer: GateLayer, kind: Any, code_origin: Any, is_test: Any) -> st
         return None
     if code_origin in HELD_ORIGINS:
         return str(code_origin)
+    if is_test is True and kind in history_kinds():
+        return "test_history"
     return None
 
 
@@ -361,6 +373,7 @@ __all__ = [
     "gated_extensions",
     "gated_summary",
     "gates_on",
+    "history_kinds",
     "is_served",
     "is_shown",
     "language_of",

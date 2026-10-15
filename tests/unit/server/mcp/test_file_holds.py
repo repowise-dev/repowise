@@ -1,9 +1,10 @@
-"""File holds: a health finding on a vendored or generated file is held back
-on every default surface, whatever the language, and each surface says how
-many and why.
+"""File holds: a health finding on a vendored or generated file, or a history
+marker on a test file, is held back on every default surface, whatever the
+language, and each surface says how many and why.
 
-Mirrors the runtime audit: findings under ``src/native/external`` were served
-although the index stores ``code_origin = vendored`` for those files.
+Mirrors the runtime audit (findings under ``src/native/external`` served
+although the index stores ``code_origin = vendored``) and the PowerToys one
+(``ownership_risk`` and ``change_entropy`` served on unit-test files).
 """
 
 from __future__ import annotations
@@ -22,9 +23,13 @@ _TEST = "tests/test_fuzzy_matcher.py"
 def test_file_hold_reads_origin_and_test_flag():
     assert file_hold("health", "large_method", "vendored", False) == "vendored"
     assert file_hold("health", "complex_method", "generated", None) == "generated"
+    assert file_hold("health", "ownership_risk", "test", True) == "test_history"
+    assert file_hold("health", "change_entropy", "test", True) == "test_history"
+    # A code-shape finding on a test file is still served.
     assert file_hold("health", "complex_method", "test", True) is None
+    # A history marker on production code is still served.
     assert file_hold("health", "ownership_risk", "production", False) is None
-    # Unknown origin (row written before the column) is not held.
+    # Unknown flag (row written before the column) is not held.
     assert file_hold("health", "ownership_risk", None, None) is None
     # Other layers are untouched.
     assert file_hold("dead_code", "unreachable_file", "vendored", False) is None
@@ -46,11 +51,13 @@ def test_split_gated_applies_file_holds_with_their_reason():
         "health", rows, kind="biomarker_type", get=lambda r, k: r[k], files=files
     )
     assert [(r["file_path"], r["biomarker_type"]) for r in shown] == [
-        (_TEST, "ownership_risk"),
         (_TEST, "complex_method"),
         ("src/app.py", "ownership_risk"),
     ]
-    assert gated == {"vendored": {"count": 1, "reason": FILE_HOLDS["vendored"]}}
+    assert gated == {
+        "vendored": {"count": 1, "reason": FILE_HOLDS["vendored"]},
+        "test_history": {"count": 1, "reason": FILE_HOLDS["test_history"]},
+    }
     # Without the metric rows nothing is held by file (unknown is not a hold).
     assert len(split_gated("health", rows, kind="biomarker_type", get=lambda r, k: r[k])[0]) == 4
     assert split_gated(
@@ -119,14 +126,15 @@ async def test_crud_reader_holds_back_by_file(session, health_data):
     await _seed(session, health_data)
     served = {(f.file_path, f.biomarker_type) for f in await get_health_findings(session, health_data)}
     assert not {p for p, _ in served} & {_VENDORED, _GENERATED}
-    assert {(_TEST, "complex_method"), (_TEST, "ownership_risk")} <= served
+    assert (_TEST, "complex_method") in served
+    assert not {(_TEST, "ownership_risk"), (_TEST, "change_entropy")} & served
     assert "src/auth/service.py" in {p for p, _ in served}
 
     opted = {
         (f.file_path, f.biomarker_type)
         for f in await get_health_findings(session, health_data, include_unverified=True)
     }
-    assert {(_VENDORED, "large_method"), (_GENERATED, "complex_method")} <= opted
+    assert {(_VENDORED, "large_method"), (_TEST, "ownership_risk")} <= opted
 
 
 @pytest.mark.asyncio
@@ -142,6 +150,7 @@ async def test_get_health_holds_back_by_file_and_says_so(setup_mcp, session, hea
     held = default["_meta"]["gated"]["health"]
     assert held["vendored"] == {"count": 1, "reason": FILE_HOLDS["vendored"]}
     assert held["generated"]["count"] == 1
+    assert held["test_history"]["count"] == 2
 
     targeted = await get_health(targets=[_VENDORED])
     assert not targeted.get("findings")

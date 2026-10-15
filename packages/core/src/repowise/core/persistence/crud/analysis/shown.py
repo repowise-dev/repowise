@@ -2,7 +2,7 @@
 
 ``finding_registry`` decides by finding type (``excluded_types``), by layer
 and language (``LANGUAGE_GATES``), and for health findings by the file's stored
-origin (``FILE_HOLDS``). Reads that list or count rows for a surface
+origin and test flag (``FILE_HOLDS``). Reads that list or count rows for a surface
 filter here, so every surface agrees on what is held back. Reads by id and the
 writers do not: a held-back row is still stored and addressable.
 """
@@ -22,6 +22,7 @@ from ....analysis.finding_registry import (
     gated_extensions,
     gated_summary,
     gates_on,
+    history_kinds,
 )
 from ...models import HealthFileMetric, HealthFinding
 
@@ -43,7 +44,18 @@ def _file_holds(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[st
             .exists()
         )
 
-    return [(origin, on_file(HealthFileMetric.code_origin == origin)) for origin in HELD_ORIGINS]
+    cells = [(origin, on_file(HealthFileMetric.code_origin == origin)) for origin in HELD_ORIGINS]
+    if kind_col is not None:
+        cells.append(
+            (
+                "test_history",
+                and_(
+                    kind_col.in_(sorted(history_kinds())),
+                    on_file(HealthFileMetric.is_test.is_(True)),
+                ),
+            )
+        )
+    return cells
 
 
 def _cells(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[str, Any]]:
