@@ -53,6 +53,13 @@ export function extractSources(
 
     if (tc.name === "search_codebase") {
       const results = (result.results as Array<Record<string, unknown>>) ?? [];
+      // The tool omits `confidence_score` where it is `relevance_score / top`
+      // (rounded to 2 places), so rebuild it the same way. A row that still
+      // carries one (capped, or from a federated search) keeps the served value.
+      const topRelevance = Math.max(
+        0,
+        ...results.map((r) => (typeof r.relevance_score === "number" ? r.relevance_score : 0)),
+      );
       for (const r of results) {
         // `page_id` is `${page_type}:${symbol_id ?? path}`, and the tool omits
         // it (and a structural `title`) wherever those rebuild it. Derive rather
@@ -80,7 +87,11 @@ export function extractSources(
             pageId,
           pageType: (r.page_type as string) ?? "file_page",
           targetPath: targetPath ?? "",
-          confidence: r.confidence_score as number | undefined,
+          confidence:
+            (r.confidence_score as number | undefined) ??
+            (typeof r.relevance_score === "number" && topRelevance > 0
+              ? Math.round((r.relevance_score / topRelevance) * 100) / 100
+              : undefined),
           toolName: tc.name,
         });
       }

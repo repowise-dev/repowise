@@ -22,7 +22,7 @@
       "cov_all": 0.9306,
       "files": 4.0,
       "precision": 0.5399,
-      "tokens": 531.5
+      "tokens": 505.0
     },
     "search_limit10": {
       "cov@1": 0.8333,
@@ -30,7 +30,7 @@
       "cov_all": 0.9514,
       "files": 4.5,
       "precision": 0.4751,
-      "tokens": 910.5
+      "tokens": 884.5
     }
   }
 }

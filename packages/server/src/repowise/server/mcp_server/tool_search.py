@@ -702,6 +702,27 @@ def _assign_confidence(output: list[dict], score_key: str, target_key: str) -> N
         item[target_key] = round(raw / max_score, 2) if max_score > 0 else 0.0
 
 
+def _drop_derivable_confidence(rows: list[dict]) -> list[dict]:
+    """Drop ``confidence_score`` where the caller can rebuild it (in place).
+
+    ``_assign_confidence`` sets it to ``round(relevance_score / top, 2)``, so on
+    a single-repo reply it restates ``relevance_score`` on a 0-1 scale. A row
+    that carries ``relation`` was capped under that value and keeps its score,
+    as does every row of a reply whose top score is not positive (nothing to
+    divide by). A federated reply never comes through here: its confidence is
+    ranked on the fused RRF score, which the row does not carry.
+    """
+    top = max((row.get("relevance_score") or 0 for row in rows), default=0)
+    if top <= 0:
+        return rows
+    for row in rows:
+        if "relation" in row:
+            continue
+        if row.get("confidence_score") == round((row.get("relevance_score") or 0) / top, 2):
+            row.pop("confidence_score", None)
+    return rows
+
+
 async def _wait_for_vector_store(ctx) -> None:
     """Block (bounded) until the vector store signals readiness, if it tracks it."""
     if ctx.vector_store_ready is not None:
@@ -1448,5 +1469,6 @@ async def search_codebase(
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
     _slim_served_rows(output, {None: _page_language(ctx)})
+    _drop_derivable_confidence(output)
     _serve_snippets(output)
     return response
