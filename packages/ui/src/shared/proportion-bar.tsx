@@ -1,24 +1,13 @@
 import * as React from "react";
 import { cn } from "../lib/cn";
+import { SERIES, SERIES_TAIL } from "./series";
 
-/**
- * The share steps, largest share first. Literal strings so Tailwind's scan
- * keeps the tokens; see `--color-share-*` in globals.css.
- */
-export const SHARE_STEPS = [
-  "var(--color-share-1)",
-  "var(--color-share-2)",
-  "var(--color-share-3)",
-  "var(--color-share-4)",
-  "var(--color-share-5)",
-] as const;
-
-/** The collapsed remainder: present, but not a step. */
-export const SHARE_TAIL = "var(--color-share-tail)";
+/** The share steps, largest share first: the first five series colours. */
+export const SHARE_STEPS = SERIES.slice(0, 5);
 
 /** Fill for the segment at `rank` (0 = largest). Past the last step, the tail. */
 export function shareColor(rank: number): string {
-  return SHARE_STEPS[rank] ?? SHARE_TAIL;
+  return SHARE_STEPS[rank] ?? SERIES_TAIL;
 }
 
 export interface ProportionSegment {
@@ -28,8 +17,9 @@ export interface ProportionSegment {
   /** Legend figure. Defaults to the rounded share ("42%"). */
   detail?: string | undefined;
   /**
-   * Semantic fill, only for segments that are a verdict (health band,
-   * severity, freshness). Everything else takes the share steps.
+   * Fixed fill, for segments that are a verdict (health band, severity,
+   * freshness) or a named category (commit type) that keeps one colour
+   * everywhere. Everything else takes the share steps by rank.
    */
   color?: string | undefined;
   /** An unitemised remainder ("others"): drawn last, in the tail step. */
@@ -109,7 +99,7 @@ function buildRows(
   return {
     rows: [
       ...shown.map((s, i) => toRow(s, s.color ?? shareColor(i))),
-      ...tailSegments.map((s) => toRow(s, s.color ?? SHARE_TAIL)),
+      ...tailSegments.map((s) => toRow(s, s.color ?? SERIES_TAIL)),
     ],
     total,
   };
@@ -119,9 +109,9 @@ function buildRows(
  * A share of a whole, as one bar and a legend.
  *
  * Every proportion in the product goes through this, so they all read the
- * same: ink steps from strongest to faintest, largest share first, hairline
- * gaps between segments, the long tail folded into "N others". Hue is kept
- * for bars whose segments are a verdict, which pass `color`.
+ * same: the series colours in order, largest share first, hairline gaps
+ * between segments, the long tail folded into "N others" in grey. Bars whose
+ * segments are a verdict or a named category pass `color`.
  *
  * With the legend on, the legend is the accessible reading (a labelled list)
  * and the bar is decoration; with it off, the bar carries the summary itself.

@@ -45,48 +45,32 @@ import {
 } from "@repowise-dev/types/views";
 import { BasisNote, RefView, refLabel, type RefHref } from "../cards/evidence-card";
 import { cn } from "../lib/cn";
+import { SERIES, SERIES_TAIL, seriesColor } from "../shared/series";
 
 /**
- * Series fills in fixed order, never cycled: the share steps, ink stepped
- * toward the well, each clearing 3:1 on the page and a card. No hue, so a
- * series never reads as navigation, model work or a health verdict. Only
- * five clear the floor, so a chart plots its first five series and the
- * legend points to the data table for the rest.
+ * Series take the shared series palette in order. Lines also differ by dash
+ * and scatter series by marker, one pattern each, so a chart plots its first
+ * five series and the legend points to the data table for the rest.
  */
-const SERIES_FILLS = [
-  "var(--color-share-1)",
-  "var(--color-share-2)",
-  "var(--color-share-3)",
-  "var(--color-share-4)",
-  "var(--color-share-5)",
-] as const;
-/** Lines differ by dash as well as lightness, one pattern per fill. */
 const LINE_DASHES = ["", "6 3", "2 3", "8 3 2 3", "1 2"] as const;
 /** Scatter series differ by marker shape the same way. */
 const POINT_SHAPES: readonly SymbolType[] = ["circle", "square", "triangle", "diamond", "cross"];
 
-const seriesFill = (i: number): string => SERIES_FILLS[Math.min(i, SERIES_FILLS.length - 1)]!;
 const lineDash = (i: number): string => LINE_DASHES[Math.min(i, LINE_DASHES.length - 1)]!;
 const pointShape = (i: number): SymbolType => POINT_SHAPES[Math.min(i, POINT_SHAPES.length - 1)]!;
 /** The series a chart draws; the rest stay in its data table. */
-const drawnSeries = (view: ChartView): string[] => view.series.slice(0, SERIES_FILLS.length);
+const drawnSeries = (view: ChartView): string[] => view.series.slice(0, LINE_DASHES.length);
 /**
- * A donut's parts: the five share steps, then two neutral steps and the
- * tail, which sit last where an Other part goes. Past five the steps no
- * longer clear 3:1, so every part is also named with its value in the legend.
+ * A donut's parts and a treemap's categories: one series colour each, then
+ * the grey tail past the last colour, so no two named parts share a fill.
+ * Every part is also named in the legend.
  */
-const DONUT_FILLS = [
-  ...SERIES_FILLS,
-  "var(--color-neutral-1)",
-  "var(--color-neutral-2)",
-  "var(--color-share-tail)",
-] as const;
-const donutFill = (i: number): string => DONUT_FILLS[Math.min(i, DONUT_FILLS.length - 1)]!;
+const partFill = (i: number): string => (i < SERIES.length ? seriesColor(i) : SERIES_TAIL);
 
 /**
- * Heatmap steps, light to dark (the heat tokens). The two dark steps carry
- * card-coloured text and the light ones ink, each pair clearing 4.5:1, so a
- * value reads on its cell.
+ * Heatmap steps, light to dark (the heat tokens, an accent ramp). The two
+ * deep steps carry card-coloured text and the light ones ink, each pair
+ * clearing 4.5:1, so a value reads on its cell.
  */
 const HEAT_STEPS = [
   { fill: "var(--color-heat-1)", ink: false },
@@ -220,7 +204,7 @@ export function ViewTable({
         </thead>
         <tbody>
           {data.rows.map((row, i) => (
-            <tr key={i} className="border-b border-[var(--color-border-default)] last:border-0 print:break-inside-avoid">
+            <tr key={i} className="border-b border-[var(--color-table-divider)] last:border-0 print:break-inside-avoid">
               {data.columns.map((column) => {
                 const cell = row[column.key] ?? null;
                 return (
@@ -284,7 +268,7 @@ function legendItems(view: ChartView): Array<{ label: string; fill: string; valu
     const labels = axisLabels(view.data.rows.map((row) => row[view.x] ?? null));
     return view.data.rows.map((row, i) => ({
       label: labels[i]!,
-      fill: donutFill(i),
+      fill: partFill(i),
       value: row[key] ?? null,
     }));
   }
@@ -299,7 +283,7 @@ function legendItems(view: ChartView): Array<{ label: string; fill: string; valu
   }
   if (view.series.length < 2) return [];
   const labels = new Map(view.data.columns.map((c) => [c.key, c.label]));
-  return drawnSeries(view).map((key, i) => ({ label: labels.get(key) ?? key, fill: seriesFill(i) }));
+  return drawnSeries(view).map((key, i) => ({ label: labels.get(key) ?? key, fill: seriesColor(i) }));
 }
 
 function ChartLegend({ view }: { view: ChartView }) {
@@ -372,11 +356,13 @@ function ChartPlot({ view }: { view: ChartView }) {
               nameKey={X_KEY}
               innerRadius="55%"
               outerRadius="85%"
-              stroke="var(--color-bg-root)"
+              // Gaps, not a stroke, so the seams show whatever the chart sits on.
+              stroke="none"
+              paddingAngle={1}
               isAnimationActive={false}
             >
               {rows.map((_, i) => (
-                <Cell key={i} fill={donutFill(i)} />
+                <Cell key={i} fill={partFill(i)} />
               ))}
             </Pie>
             {tooltip}
@@ -417,7 +403,7 @@ function ChartPlot({ view }: { view: ChartView }) {
                 key={key}
                 name={labels.get(key) ?? key}
                 data={points}
-                fill={seriesFill(i)}
+                fill={seriesColor(i)}
                 shape={pointShape(i)}
                 isAnimationActive={false}
               />
@@ -442,10 +428,10 @@ function ChartPlot({ view }: { view: ChartView }) {
                 key={key}
                 type="monotone"
                 dataKey={key}
-                stroke={seriesFill(i)}
+                stroke={seriesColor(i)}
                 strokeDasharray={lineDash(i)}
                 strokeWidth={2}
-                fill={seriesFill(i)}
+                fill={seriesColor(i)}
                 fillOpacity={0.18}
                 connectNulls={false}
                 isAnimationActive={false}
@@ -471,7 +457,7 @@ function ChartPlot({ view }: { view: ChartView }) {
                 key={key}
                 type="monotone"
                 dataKey={key}
-                stroke={seriesFill(i)}
+                stroke={seriesColor(i)}
                 strokeDasharray={lineDash(i)}
                 strokeWidth={2}
                 dot={rows.length <= 24}
@@ -502,8 +488,8 @@ function ChartPlot({ view }: { view: ChartView }) {
               <Bar
                 key={key}
                 dataKey={key}
-                fill={seriesFill(i)}
-                {...(stacked ? { stackId: "parts", stroke: "var(--color-bg-surface)", strokeWidth: 1 } : {})}
+                fill={seriesColor(i)}
+                {...(stacked ? { stackId: "parts" } : {})}
                 maxBarSize={28}
                 isAnimationActive={false}
               />
@@ -534,9 +520,8 @@ function ChartPlot({ view }: { view: ChartView }) {
             <Bar
               key={key}
               dataKey={key}
-              fill={seriesFill(i)}
-              // A surface-coloured seam keeps stacked segments apart beyond their lightness.
-              {...(stacked ? { stackId: "parts", stroke: "var(--color-bg-surface)", strokeWidth: 1 } : {})}
+              fill={seriesColor(i)}
+              {...(stacked ? { stackId: "parts" } : {})}
               maxBarSize={18}
               isAnimationActive={false}
             />
@@ -669,11 +654,11 @@ interface TreemapBranch {
 
 /**
  * Each row's colour and the legend for it: health bands (as names, or a 0 to
- * 10 health score) take the health ramp; other text takes the share steps in
- * order of first appearance; other numbers take the heat steps.
+ * 10 health score) take the health ramp; other text takes the series colours
+ * in order of first appearance; other numbers take the heat steps.
  */
 function treemapColors(view: ChartView): { fills: string[]; legend: Array<{ label: string; fill: string }> } {
-  const plain = "var(--color-share-3)";
+  const plain = seriesColor(0);
   const key = view.color;
   if (!key) return { fills: view.data.rows.map(() => plain), legend: [] };
   const cells = view.data.rows.map((row) => row[key] ?? null);
@@ -702,10 +687,10 @@ function treemapColors(view: ChartView): { fills: string[]; legend: Array<{ labe
     };
   }
   const order = [...new Set(names.filter((n): n is string => n !== null))];
-  const fillOf = (n: string | null) => (n === null ? "var(--color-node-neutral)" : seriesFill(order.indexOf(n)));
+  const fillOf = (n: string | null) => (n === null ? "var(--color-node-neutral)" : partFill(order.indexOf(n)));
   return {
     fills: names.map(fillOf),
-    legend: order.slice(0, SERIES_FILLS.length).map((n) => ({ label: n, fill: fillOf(n) })),
+    legend: order.slice(0, SERIES.length).map((n) => ({ label: n, fill: fillOf(n) })),
   };
 }
 
@@ -759,7 +744,7 @@ function TreemapPlot({ view }: { view: ChartView }) {
             <div
               key={`g${i}`}
               data-treemap-group=""
-              className="absolute truncate border border-[var(--color-border-default)] px-1 text-[10px] leading-3 text-[var(--color-text-tertiary)]"
+              className="absolute truncate px-1 text-[10px] leading-3 text-[var(--color-text-tertiary)]"
               style={box(node)}
               title={`${d.name}: ${node.value}`}
             >
@@ -802,7 +787,8 @@ function PartFrame({
       data-view-kind={part.kind}
       data-view-id={part.id}
       {...(part.kind === "chart" ? { "data-chart-type": part.chart_type } : {})}
-      className="m-0 space-y-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3 print:break-inside-avoid print:border-0 print:p-0"
+      // No card of its own: the part sits on the transcript like the prose around it.
+      className="m-0 space-y-2 py-1 print:break-inside-avoid print:p-0"
     >
       <figcaption className="space-y-0.5">
         <span className="block text-sm font-medium text-[var(--color-text-primary)]">{part.title}</span>

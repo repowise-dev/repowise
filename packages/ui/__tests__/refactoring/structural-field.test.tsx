@@ -128,8 +128,8 @@ describe("salience", () => {
       "var(--color-neutral-1)",
       "var(--color-neutral-2)",
     ]);
-    // globals.css reserves --color-share-* for shares of a whole; these are categories.
-    expect(fills.some((f) => f.includes("share"))).toBe(false);
+    // Hue ranks attention here, so the equal-weight series palette stays out.
+    expect(fills.some((f) => f.includes("series"))).toBe(false);
   });
 
   it("breaks a count tie deterministically", () => {

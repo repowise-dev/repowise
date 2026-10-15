@@ -141,17 +141,25 @@ describe("ViewPartList", () => {
     expect(within(figure).getAllByRole("columnheader")).toHaveLength(8);
   });
 
-  it("separates stacked segments with a seam and lines with dashes", () => {
+  it("separates stacked segments by series colour and lines with dashes", () => {
     const lines: ChartView = { ...STACKED, id: "l2", chart_type: "line" };
     render(<ViewPartList views={[STACKED, lines]} />);
 
-    const segment = part("c2").querySelector(".recharts-bar-rectangle path");
-    expect(segment).toHaveAttribute("stroke", "var(--color-bg-surface)");
+    const segmentFills = [...part("c2").querySelectorAll(".recharts-bar")].map((bar) =>
+      bar.querySelector(".recharts-bar-rectangle path")?.getAttribute("fill"),
+    );
+    expect(segmentFills).toEqual(["var(--color-series-1)", "var(--color-series-2)"]);
     const dashes = [...part("l2").querySelectorAll(".recharts-line-curve")].map((el) =>
       el.getAttribute("stroke-dasharray"),
     );
     expect(dashes).toHaveLength(2);
     expect(new Set(dashes).size).toBe(2);
+  });
+
+  it("sits on the transcript without a card of its own", () => {
+    render(<ViewPartList views={[STACKED]} />);
+    const figure = part("c2");
+    expect(figure.className).not.toMatch(/border|bg-\[/);
   });
 
   it("stacks a stacked bar's segments end to end on one row", () => {

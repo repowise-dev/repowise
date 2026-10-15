@@ -34,8 +34,8 @@
  *   six `--color-refactor-*` accents separating categories where two types were
  *   96% of the data, one of them the same green as the health badge beside it -
  *   was against six hues over the whole plan list, and does not reach a two-hue
- *   pair over the four structural types. The `--color-share-*` steps
- *   stay out of it: globals.css reserves them for shares of a whole.
+ *   pair over the four structural types. The `--color-series-*` palette
+ *   stays out of it: eight equal hues would flatten the attention ranking.
  *
  *   Every mark also carries a separating stroke, which is what actually makes
  *   it visible: the neutral tiers sit under 2.5:1 against the page in both
