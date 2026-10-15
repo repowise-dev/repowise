@@ -811,6 +811,14 @@ _PACKAGES = {
         {"kind": "scatter", "x": "nloc", "y": "score", "series": "nloc"},
         {"kind": "heatmap", "x": "directory", "y": "nloc", "aggregate": "sum",
          "series": "package", "color": "package"},
+        {"kind": "heatmap", "x": "package", "y": "nloc", "aggregate": "sum", "series": "directory",
+         "groups": ["package"]},
+        {"kind": "treemap", "x": "directory", "y": "nloc", "aggregate": "sum", "color": "nloc"},
+        {"kind": "treemap", "x": "directory", "y": "nloc", "aggregate": "sum", "color": "directory"},
+        {"kind": "treemap", "x": "directory", "y": "score", "aggregate": "avg", "weight": "nloc",
+         "color": "nloc"},
+        {"kind": "treemap", "x": "directory", "y": "nloc", "aggregate": "sum", "groups": ["package"],
+         "color": "package", "top": 1, "other": True},
     ],
 )
 def test_one_field_in_two_roles_draws_one_column(options):
@@ -819,6 +827,15 @@ def test_one_field_in_two_roles_draws_one_column(options):
     ViewPartList.model_validate(turn.parts)
     keys = [c["key"] for c in turn.parts[0]["data"]["columns"]]
     assert len(keys) == len(set(keys))
+
+
+def test_a_repeated_person_field_is_refused_not_dropped():
+    data = {"files": [{**row, "owner": "ana"} for row in _PACKAGES["files"]]}
+    _, result = _show_chart(
+        data, rows="files", kind="treemap", x="directory", y="nloc", aggregate="sum",
+        groups=["owner", "directory"],
+    )
+    assert result["error_code"] == "person_grouping"
 
 
 def test_a_risk_score_is_refused_before_any_suggestion():

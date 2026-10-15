@@ -454,7 +454,61 @@ def test_a_treemap_coloured_by_a_group_level_reads_that_levels_column():
     assert keys == ["package", "directory", "nloc"]
     assert result.groups == ["package"] and result.color == "package"
     assert result.rows[0] == {"package": "core", "directory": "core/b", "nloc": 30}
-    assert "groups ['directory'] are already the x or a plotted field" in result.notes[0]
+    assert result.notes[0] == (
+        "groups ['directory'] are already the x or a plotted field, so they were left out; "
+        "the treemap nests by package"
+    )
+
+
+_TREE = [
+    {"package": "core", "directory": "core/a", "file": "x.py", "nloc": 10, "score": 9.0},
+    {"package": "core", "directory": "core/b", "file": "y.py", "nloc": 30, "score": 5.0},
+    {"package": "web", "directory": "web/src", "file": "z.ts", "nloc": 5, "score": 7.0},
+]
+
+
+def _tree(**options: Any):
+    types = field_types(_TREE)
+    spec = fit(parse_spec(options), _TREE, types, hierarchy=("package", "directory", "file"))
+    return transform(spec, _TREE, types)
+
+
+def test_a_treemap_whose_only_group_repeats_x_still_nests_by_the_hierarchy():
+    result = _tree(x="directory", y="nloc", aggregate="sum", kind="treemap", groups=["directory"])
+    assert result.groups == ["package"]
+    assert result.notes[-1] == "the treemap nests by package"
+
+
+def test_a_group_that_is_part_of_a_composite_x_is_left_out():
+    result = _tree(x=["package", "directory"], y="nloc", aggregate="sum", kind="treemap", groups=["package"])
+    assert result.groups == []
+    keys = [k for k, _ in result.columns]
+    assert len(keys) == len(set(keys))
+    assert "groups ['package'] are already the x" in result.notes[0]
+
+
+@pytest.mark.parametrize(
+    ("options", "color_key"),
+    [
+        ({"x": "directory", "y": "nloc", "aggregate": "sum", "color": "nloc"}, "nloc_color"),
+        ({"x": "directory", "y": "nloc", "aggregate": "sum", "color": "directory"}, "directory_color"),
+        ({"x": "directory", "y": "score", "aggregate": "avg", "weight": "nloc", "color": "nloc"}, "nloc_color"),
+    ],
+)
+def test_a_treemap_colour_that_is_another_role_gets_its_own_column(options, color_key):
+    result = _tree(kind="treemap", **options)
+    keys = [k for k, _ in result.columns]
+    assert result.color == color_key and keys.count(color_key) == 1
+    assert len(keys) == len(set(keys))
+
+
+def test_the_other_bucket_of_a_treemap_coloured_by_a_group_keeps_one_column():
+    result = _tree(
+        x="directory", y="nloc", aggregate="sum", kind="treemap", color="package", top=1, other=True
+    )
+    assert result.color == "package" and result.other
+    assert result.rows[-1]["package"] == OTHER_LABEL
+    assert all(set(row) == {k for k, _ in result.columns} for row in result.rows)
 
 
 def test_a_repaired_series_name_that_repeats_x_is_dropped():

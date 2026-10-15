@@ -319,6 +319,7 @@
     { "name": "treemap group naming a missing column", "from": "c6", "set": { "groups": ["nope"] }, "error": "view.groups[0]: not a column of data" },
     { "name": "treemap group that is the x column", "from": "c6", "set": { "groups": ["file"] }, "error": "is the x or a series column" },
     { "name": "treemap coloured by its x", "from": "c6", "set": { "color": "file" }, "error": "view.color: not a column of data other than x" },
+    { "name": "treemap coloured by a missing column", "from": "c6", "set": { "color": "nope" }, "error": "view.color: not a column of data other than x" },
     { "name": "treemap with two series", "from": "c6", "set": { "series": ["nloc", "health_band"] }, "error": "a treemap chart plots 1 series" },
     { "name": "negative treemap cell", "from": "c6", "set": { "data.rows.0.nloc": -1 }, "error": "cannot be negative" },
     { "name": "string in a heatmap cell", "from": "c7", "set": { "data.rows.0.s1": "4" }, "error": "plotted values must be numbers" },
