@@ -26,6 +26,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise-dev/ui/ui/too
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import { VersionFooter } from "./version-footer";
+import { NewMark } from "./new-mark";
+import { useIsNewSurface } from "@/lib/hooks/use-new-surfaces";
 import { FeedbackButton } from "./feedback-button";
 import { LanguageSwitcher } from "./language-switcher";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
@@ -562,8 +564,10 @@ function SidebarNavItem({
   iconOnly?: boolean;
 }) {
   const t = useTranslations("nav");
+  const ts = useTranslations("shell");
   const label = t(item.labelKey);
   const Icon = item.icon;
+  const isNew = useIsNewSurface()(item.href);
 
   if (iconOnly) {
     return (
@@ -571,15 +575,16 @@ function SidebarNavItem({
         <TooltipTrigger asChild>
           <Link
             href={item.href}
-            aria-label={label}
+            aria-label={isNew ? `${label}, ${ts("newMark")}` : label}
             className={cn(
-              "flex items-center justify-center rounded-lg p-2.5 transition-colors",
+              "relative flex items-center justify-center rounded-lg p-2.5 transition-colors",
               isActive
                 ? "bg-[var(--color-bg-elevated)] text-[var(--color-accent-primary)]"
                 : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
             )}
           >
             <Icon className="h-[18px] w-[18px] shrink-0" />
+            {isNew && <NewMark dotOnly />}
           </Link>
         </TooltipTrigger>
         <TooltipContent side="right">{label}</TooltipContent>
@@ -602,6 +607,7 @@ function SidebarNavItem({
         />
       </RowGlyph>
       <span className="truncate">{label}</span>
+      {isNew && <NewMark />}
     </Link>
   );
 }
