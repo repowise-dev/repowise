@@ -13,8 +13,10 @@ from repowise.core.analysis.dead_code.risk_factors import (
 )
 from repowise.core.analysis.finding_registry import preview_label, verification_label
 
+from .preview import PreviewLabelled
 
-class DeadCodeFindingResponse(BaseModel):
+
+class DeadCodeFindingResponse(PreviewLabelled, BaseModel):
     id: str
     kind: str
     file_path: str

@@ -6,8 +6,10 @@ from pydantic import BaseModel
 
 from repowise.core.agent_prompts import Flavor
 
+from .preview import PreviewLabelled
 
-class AgentPromptResponse(BaseModel):
+
+class AgentPromptResponse(PreviewLabelled, BaseModel):
     flavor: Flavor
     text: str
     #: The measurement note when the item sits on a preview language cell

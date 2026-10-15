@@ -86,8 +86,6 @@ async def get_fix_first_item(
 @router.get(
     "/api/repos/{repo_id}/health/fix-first/{fix_id}/prompt",
     response_model=AgentPromptResponse,
-    # ``preview`` is sent only when the item sits on a preview cell.
-    response_model_exclude_none=True,
 )
 async def get_fix_first_item_prompt(
     repo_id: str,

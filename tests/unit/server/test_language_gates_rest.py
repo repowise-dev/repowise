@@ -26,6 +26,8 @@ from tests.unit.server.conftest import create_test_repo
 JAVA = "src/Billing.java"
 PY = "src/billing.py"
 _LAYERS = ("health", "refactoring", "performance", "dead_code")
+#: A row off a preview cell leaves ``preview`` out, not null.
+ABSENT = "absent"
 
 
 def _java_table(state: str) -> tuple[LanguageGate, ...]:
@@ -240,32 +242,32 @@ async def test_preview_rows_are_served_labelled_and_not_counted(
     note = preview_note(_java_table("preview")[0])
 
     def by_path(rows: list[dict]) -> dict[str, Any]:
-        return {row["file_path"]: row.get("preview") for row in rows}
+        return {row["file_path"]: row.get("preview", ABSENT) for row in rows}
 
     findings = await _get(client, f"/api/repos/{repo_id}/health/findings")
-    assert by_path(findings) == {JAVA: note, PY: None}
+    assert by_path(findings) == {JAVA: note, PY: ABSENT}
 
     queue_rows = await _get(client, f"/api/repos/{repo_id}/health/refactoring-targets")
-    assert by_path(queue_rows["targets"]) == {JAVA: note, PY: None}
+    assert by_path(queue_rows["targets"]) == {JAVA: note, PY: ABSENT}
 
     page = await _get(client, f"/api/repos/{repo_id}/files/{JAVA}")
     assert {f["preview"] for f in page["health"]["findings"]} == {note}
     assert page["health"]["gated"] == {}
 
     targets = await _get(client, f"/api/repos/{repo_id}/refactoring/targets")
-    assert by_path(targets["plans"])[JAVA] == note and by_path(targets["plans"])[PY] is None
+    assert by_path(targets["plans"])[JAVA] == note and by_path(targets["plans"])[PY] == ABSENT
     assert targets["gated"] == {}
 
     queue = await _get(client, f"/api/repos/{repo_id}/refactoring/opportunities", scope="all")
-    assert by_path(queue["items"]) == {JAVA: note, PY: None}
+    assert by_path(queue["items"]) == {JAVA: note, PY: ABSENT}
     assert queue["gated"] == {}
 
     every = {"context": "all", "proof": "unproven", "role": "all"}
     perf = await _get(client, f"/api/repos/{repo_id}/health/performance-opportunities", **every)
-    assert by_path(perf["items"]) == {JAVA: note, PY: None} and perf["gated"] == {}
+    assert by_path(perf["items"]) == {JAVA: note, PY: ABSENT} and perf["gated"] == {}
 
     dead = await _get(client, f"/api/repos/{repo_id}/dead-code")
-    assert by_path(dead) == {JAVA: note, PY: None}
+    assert by_path(dead) == {JAVA: note, PY: ABSENT}
     summary = await _get(client, f"/api/repos/{repo_id}/dead-code/summary")
     assert summary["total_findings"] == 2 and summary["gated"] == {}
 
@@ -284,17 +286,17 @@ async def test_preview_rows_are_labelled_on_detail_routes(
         detail = await _get(
             client, f"{base}/health/performance-opportunities/{item['opportunity_id']}"
         )
-        assert detail.get("preview") == (note if item["file_path"] == JAVA else None)
+        assert detail.get("preview", ABSENT) == (note if item["file_path"] == JAVA else ABSENT)
 
     queue = await _get(client, f"{base}/refactoring/opportunities", scope="all")
     for item in queue["items"]:
         detail = await _get(client, f"{base}/refactoring/opportunities/{item['opportunity_id']}")
-        assert detail.get("preview") == (note if item["file_path"] == JAVA else None)
+        assert detail.get("preview", ABSENT) == (note if item["file_path"] == JAVA else ABSENT)
 
     plans = (await _get(client, f"{base}/refactoring/targets"))["plans"]
     for plan in plans:
         detail = await _get(client, f"{base}/refactoring/{plan['id']}")
-        assert detail.get("preview") == (note if plan["file_path"] == JAVA else None)
+        assert detail.get("preview", ABSENT) == (note if plan["file_path"] == JAVA else ABSENT)
 
     resp = await client.post(
         f"{base}/health/related-work", json={"file_paths": [JAVA, PY]}
@@ -302,7 +304,7 @@ async def test_preview_rows_are_labelled_on_detail_routes(
     assert resp.status_code == 200, resp.text
     lenses = {f["file_path"]: f["lenses"] for f in resp.json()["files"]}
     assert lenses[JAVA] and all(
-        block.get("preview") == (None if lens == "fix_first" else note)
+        block.get("preview", ABSENT) == (ABSENT if lens == "fix_first" else note)
         for lens, block in lenses[JAVA].items()
     )
     assert all("preview" not in block for block in lenses[PY].values())
@@ -318,7 +320,7 @@ async def test_preview_rows_are_labelled_on_prompts_and_evidence(
     line = f"This language is served as a {note}."
 
     def check(prompt: dict, on_java: bool) -> None:
-        assert prompt.get("preview") == (note if on_java else None)
+        assert prompt.get("preview", ABSENT) == (note if on_java else ABSENT)
         assert (line in prompt["text"]) is on_java
 
     queue = await _get(client, f"{base}/refactoring/opportunities", scope="all")
@@ -340,7 +342,7 @@ async def test_preview_rows_are_labelled_on_prompts_and_evidence(
         )
         for row in evidence["items"]:
             seen.add(row["file_path"])
-            assert row.get("preview") == (note if row["file_path"] == JAVA else None)
+            assert row.get("preview", ABSENT) == (note if row["file_path"] == JAVA else ABSENT)
     assert JAVA in seen
 
     fix_first = await _get(client, f"{base}/health/fix-first", scope="all", limit=20)
