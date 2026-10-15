@@ -138,22 +138,20 @@ def _discover(repo_root: Path) -> list[Path]:
     # Historical skip list included target/dist/build — preserve it on top
     # of the shared never-source set.
     prune = PRUNED_DIRS | {"target", "dist", "build"}
-    for dirpath, dirnames, filenames in walk_repo(root, prune_dirs=prune):
-        rel_dir = dirpath.relative_to(root).as_posix()
-        rel_dir = "" if rel_dir == "." else rel_dir
+    # Ignored directories match with a trailing slash, as git matches them.
+    for dirpath, dirnames, filenames in walk_repo(
+        root,
+        prune_dirs=prune,
+        prune=lambda d: ignore.match_file(f"{d.relative_to(root).as_posix()}/"),
+    ):
         if len(dirpath.relative_to(root).parts) >= 3:
             dirnames[:] = []
-        # Ignored directories match with a trailing slash, as git matches them.
-        dirnames[:] = [
-            d for d in dirnames if not ignore.match_file(f"{rel_dir}/{d}/" if rel_dir else f"{d}/")
-        ]
-        for fname in filenames:
-            path = dirpath / fname
-            if _parser_for(path) is None:
-                continue
-            if ignore.match_file(f"{rel_dir}/{fname}" if rel_dir else fname):
-                continue
-            seen.append(path)
+        seen.extend(
+            dirpath / fname
+            for fname in filenames
+            if _parser_for(dirpath / fname) is not None
+            and not ignore.match_file((dirpath / fname).relative_to(root).as_posix())
+        )
     return seen
 
 
