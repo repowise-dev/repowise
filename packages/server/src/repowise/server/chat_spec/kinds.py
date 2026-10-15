@@ -46,13 +46,16 @@ def _choose_kind(
     if kind == "donut":
         if donut_ok and additive:
             return "donut", asked, None
-        why = (
-            f"an {spec.aggregate} does not add up to a whole"
-            if not additive
-            else f"{len(keys)} series" if len(keys) > 1 else f"{len(rows)} parts with some cut"
-            if truncated or len(rows) > high
-            else "the values are not parts of a positive whole"
-        )
+        if not additive:
+            why = f"an {spec.aggregate} does not add up to a whole"
+        elif len(keys) > 1:
+            why = f"there are {len(keys)} series"
+        elif len(rows) < low:
+            why = f"there is only {len(rows)} part" if len(rows) == 1 else "there are no parts"
+        elif truncated or len(rows) > high:
+            why = f"{len(rows)} parts with some cut"
+        else:
+            why = "the values are not parts of a positive whole"
         fallback = "stacked_bar" if stack_ok else "bar"
         return fallback, f"kind {fallback} drawn in place of donut", (
             f"a donut shows one measure as {low} to {high} parts of a whole; here {why}, "

@@ -463,3 +463,9 @@ def test_a_time_series_receipt_previews_its_newest_rows_and_its_first():
     assert result.figures["rows"][-1] == {"day": "2026-03-20", "v": 19}
     assert result.figures["first_row"] == {"day": "2026-03-01", "v": 0}
     assert result.figures["rows_note"] == "the newest 15 of 20 drawn rows"
+
+
+def test_a_donut_of_one_part_says_so():
+    result = _run([{"k": "a"}, {"k": "a"}], x="k", kind="donut")
+    assert result.chart_type == "bar"
+    assert "there is only 1 part" in result.kind_note
