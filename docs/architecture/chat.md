@@ -193,19 +193,19 @@ TOOL_REGISTRY: dict[str, ToolDef]  # name -> ToolDef(name, description, paramete
 
 ## 5. Provider Configuration
 
-Defined in `packages/server/src/repowise/server/provider_config.py`.
+Defined in `packages/server/src/repowise/server/provider_config.py`, on top of
+the resolver every entry point shares (`core/providers/llm/resolve.py`).
 
-API keys and active provider/model selection are stored in a server-side
-`provider_config.json` file. Environment variables take precedence over stored
-keys.
+**Provider, model and base URL** (first match wins):
+1. A per-request override from the chat model picker
+2. The repo's `.repowise/config.yaml` (`PATCH /api/providers/active` with `repo_id` writes here)
+3. The global default in `provider_config.json` (`PATCH` without `repo_id`)
+4. `REPOWISE_PROVIDER` / `REPOWISE_MODEL` and the provider's `*_BASE_URL`
+5. The provider's default model, or auto-detection from the keys present
 
-**Resolution order for API keys:**
-1. Environment variable (e.g. `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`)
-2. Stored key in `provider_config.json`
-
-**Active provider resolution:**
-1. Explicitly set via `PATCH /api/providers/active`
-2. Auto-detect from first configured provider
+**API keys:** environment variable, then the repo's `.repowise/.env`, then the
+key stored in `provider_config.json`. `GET /api/providers` reports the resolved
+values with the layer each came from (`active.provenance`).
 
 **Provider catalog:** Gemini, Anthropic, OpenAI, Ollama (local, no key), LiteLLM.
 

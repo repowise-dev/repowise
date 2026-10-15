@@ -1624,17 +1624,14 @@ Full configuration with defaults (`.repowise/config.yaml`):
 ```yaml
 provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | kimi | ollama | litellm | codex_cli | opencode | edenai | mock
 model: claude-sonnet-4-5    # passed through to the provider
-embedding_provider: anthropic
-embedding_model: voyage-3
+embedder: gemini             # gemini | openai | openrouter | ollama | edenai | mock
+embedding_model: gemini-embedding-001
 
 prompt_caching: true
 
-anthropic:
-  api_key: ${ANTHROPIC_API_KEY}
-
+# API keys are read from the environment or .repowise/.env, never from here.
 openai:
-  api_key: ${OPENAI_API_KEY}
-  base_url: https://api.openai.com/v1
+  base_url: https://api.openai.com/v1   # any OpenAI-compatible endpoint
 
 ollama:
   base_url: http://localhost:11434
