@@ -312,7 +312,15 @@ function ChartPlot({ view }: { view: ChartView }) {
           <ScatterChart margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>
             <CartesianGrid stroke="var(--color-border-default)" />
             <XAxis type="number" dataKey="x" name={labels.get(view.x) ?? view.x} tick={AXIS_TICK} axisLine={false} tickLine={false} />
-            <YAxis type="number" dataKey="y" tick={AXIS_TICK} axisLine={false} tickLine={false} />
+            <YAxis
+              type="number"
+              dataKey="y"
+              // A split's series are values of one field, so the tooltip calls them "Value".
+              name={series.length === 1 ? (labels.get(series[0]!) ?? series[0]!) : "Value"}
+              tick={AXIS_TICK}
+              axisLine={false}
+              tickLine={false}
+            />
             <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={TOOLTIP_STYLE} />
             {plotted.map(({ key, points }, i) => (
               <Scatter

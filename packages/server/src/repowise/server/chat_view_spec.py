@@ -326,6 +326,11 @@ def check_fields(spec: ChartSpec, types: Mapping[str, str]) -> None:
             f"numeric fields: {numeric[:_FIELDS_SHOWN]}",
             fields=_shown(types),
         )
+    if spec.other and types[spec.x] != "text":
+        raise SpecError(
+            f"other needs a category x and {spec.x!r} holds {types[spec.x]}; "
+            "drop other, or use top alone"
+        )
     if spec.sort and spec.sort[0] not in (spec.x, *spec.measures):
         choices = [spec.x, *spec.measures]
         raise SpecError(f"sort field {spec.sort[0]!r} must be one of {choices}")
@@ -418,10 +423,16 @@ class _Pass:
 
 
 def _collect(
-    spec: ChartSpec, rows: Sequence[Mapping[str, Any]], keep_points: bool, label_key: str | None
+    spec: ChartSpec,
+    rows: Sequence[Mapping[str, Any]],
+    keep_points: bool,
+    label_key: str | None,
+    scatter: bool,
 ) -> _Pass:
     """Filter, then group (aggregate), pivot (series) or keep each row as a point."""
     found = _Pass()
+    # Outside a scatter, a kept point is a category or a date, which must not repeat.
+    seen_x: set[Any] | None = None if scatter else set()
     for row in rows:
         if not all(_passes(f, row.get(f.field)) for f in spec.filters):
             continue
@@ -434,6 +445,13 @@ def _collect(
         if spec.series:
             found.series_values.setdefault(s_value)
         if keep_points:
+            if seen_x is not None:
+                if x_value in seen_x:
+                    raise SpecError(
+                        f"x {spec.x!r} repeats ({x_value!r}); add aggregate (count or sum) "
+                        "to combine the rows that share it"
+                    )
+                seen_x.add(x_value)
             point = {spec.x: x_value, **{y: row.get(y) for y in spec.y}, "__series": s_value}
             if label_key:
                 point[label_key] = row.get(label_key)
@@ -464,11 +482,19 @@ def _collect(
     return found
 
 
+def _value_label(value: Any) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def _measure_columns(spec: ChartSpec, found: _Pass) -> tuple[list[str], list[str]]:
     """Keys and labels of the plotted columns: one per measure, or one per series value."""
     if spec.series:
         keys = [f"s{i + 1}" for i in range(len(found.series_values))]
-        return keys, ["none" if v is None else str(v) for v in found.series_values]
+        return keys, [_value_label(v) for v in found.series_values]
     keys = ["row_count" if m == "count" and spec.x == "count" else m for m in spec.measures]
     labels = [_AGGREGATE_LABEL["count"] if m == "count" else label(m) for m in spec.measures]
     return keys, labels
@@ -490,8 +516,9 @@ def _chart_rows(
         if label_key:
             row_out[label_key] = p[label_key]
         out.append(row_out)
+    # Without aggregate each cell holds one row's value, read through "sum".
     aggregate = spec.aggregate or "sum"
-    empty = 0 if aggregate in _ADDITIVE else None
+    empty = 0 if spec.aggregate in _ADDITIVE else None
     for x_value, cells in found.groups.items():
         row_out = {spec.x: x_value}
         if spec.series:
@@ -562,7 +589,7 @@ def transform(
             (k for k in _LABEL_FIELDS if k in types and k != spec.x and k not in spec.y), None
         )
     keep_points = spec.aggregate is None and (scatter or not spec.series)
-    found = _collect(spec, rows, keep_points, label_key)
+    found = _collect(spec, rows, keep_points, label_key, scatter)
     keys, labels = _measure_columns(spec, found)
     columns = [(spec.x, label(spec.x)), *zip(keys, labels, strict=True)]
     if label_key:
@@ -576,7 +603,7 @@ def transform(
     if spec.top is not None and len(out) > spec.top:
         rest, out = out[spec.top :], out[: spec.top]
         if spec.other:
-            bucket: dict[str, Any] = {spec.x: OTHER_LABEL}
+            bucket: dict[str, Any] = {spec.x: f"{OTHER_LABEL} ({len(rest)} more)"}
             for k in keys:
                 values = [r[k] for r in rest if isinstance(r.get(k), (int, float))]
                 bucket[k] = _round(sum(values)) if values else None

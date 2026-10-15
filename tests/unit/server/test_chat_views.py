@@ -800,6 +800,17 @@ def test_chart_keeps_every_view_guard(options, code):
     assert turn.parts == []
 
 
+def test_chart_bool_x_values_are_text_cells():
+    turn, _ = _show_chart({"rows": [{"ok": True}, {"ok": False}, {"ok": True}]}, x="ok")
+    assert [row["ok"] for row in turn.parts[0]["data"]["rows"]] == ["true", "false"]
+
+
+def test_chart_never_splits_series_by_a_risk_score():
+    data = {"rows": [{"file_path": "a", "risk_level": "high", "lines": 1}]}
+    _, result = _show_chart(data, x="file_path", series="risk_level")
+    assert result["error_code"] == "risk_score_series"
+
+
 def test_chart_series_split_is_still_risk_guarded_by_its_measure():
     data = {"rows": [{"file_path": "a", "tier": "x", "risk_score": 1}]}
     _, result = _show_chart(data, x="file_path", y="risk_score", series="tier", aggregate="sum")

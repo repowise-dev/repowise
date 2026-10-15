@@ -570,7 +570,8 @@ def chart_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, 
             )
     types = {k: t for k, t in chat_view_spec.field_types(rows).items() if not _PERSON.search(k)}
     numeric_x = types.get(spec.x) == "number"
-    for name in [*spec.y, *([spec.x] if numeric_x else [])]:
+    split = [spec.series] if spec.series else []
+    for name in [*spec.y, *split, *([spec.x] if numeric_x else [])]:
         if _RISK_SCORE.search(name):
             raise ViewError(
                 f"a risk score is never a chart series ({name!r}); show it in a table",

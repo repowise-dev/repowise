@@ -190,6 +190,28 @@ def test_unaggregated_series_with_repeats_asks_for_an_aggregate():
         _run(rows, x="x", y="v", series="s")
 
 
+def test_a_repeated_x_without_aggregate_asks_for_one_outside_a_scatter():
+    with pytest.raises(SpecError, match="x 'kind' repeats"):
+        _run(x="kind", y="lines")
+    # Points of a scatter may share an x.
+    rows = [{"a": 1, "b": 2}, {"a": 1, "b": 3}]
+    assert len(_run(rows, x="a", y="b").rows) == 2
+
+
+def test_an_unaggregated_pivot_leaves_missing_combinations_null():
+    rows = [{"x": "a", "s": "p", "v": 1}, {"x": "b", "s": "q", "v": 2}]
+    result = _run(rows, x="x", y="v", series="s")
+    assert result.rows == [{"x": "a", "s1": 1, "s2": None}, {"x": "b", "s1": None, "s2": 2}]
+
+
+def test_bool_fields_group_and_split_as_text():
+    rows = [{"ok": True, "k": "a"}, {"ok": False, "k": "a"}, {"ok": True, "k": "b"}]
+    by_flag = _run(rows, x="ok")
+    assert _column(by_flag, "ok") == [True, False] and _column(by_flag, "count") == [2, 1]
+    split = _run(rows, x="k", series="ok")
+    assert [label for _, label in split.columns[1:]] == ["true", "false"]
+
+
 def test_rows_without_x_are_counted_and_left_out():
     rows = [{"k": "a"}, {"k": None}, {"k": "a"}]
     result = _run(rows, x="k")
@@ -203,11 +225,24 @@ def test_rows_without_x_are_counted_and_left_out():
 
 def test_top_with_other_adds_up_the_rest():
     result = _run(x="file_path", y="lines", aggregate="sum", top=2, other=True)
-    assert _column(result, "file_path") == ["c.py", "a.py", OTHER_LABEL]
+    assert _column(result, "file_path") == ["c.py", "a.py", f"{OTHER_LABEL} (3 more)"]
     assert _column(result, "lines") == [120, 10, 11]
     # The Other row breaks the order, so no sort is claimed, and nothing is cut.
     assert result.sort is None and result.other
     assert result.total_rows == len(result.rows)
+
+
+def test_the_other_bucket_never_merges_with_a_real_other_category():
+    rows = [{"k": "a"}, {"k": "a"}, {"k": "Other"}, {"k": "b"}, {"k": "c"}]
+    result = _run(rows, x="k", top=2, other=True)
+    assert _column(result, "k") == ["a", "Other", f"{OTHER_LABEL} (2 more)"]
+    assert _column(result, "count") == [2, 1, 2]
+
+
+@pytest.mark.parametrize("x", ["seen", "lines"])
+def test_other_needs_a_category_x(x):
+    with pytest.raises(SpecError, match="other needs a category x"):
+        _run(x=x, top=1, other=True)
 
 
 def test_top_without_other_is_truncated():
