@@ -94,12 +94,14 @@ def test_a_snapshot_not_written_is_named_with_its_error(tmp_path: Path, monkeypa
         yield (object(), "r1")
 
     async def failing(_session, _repo_id):
-        return ["component: TypeError: key must be bytes"]
+        return [("component", TypeError("key must be bytes [red]x[/red]\n  long traceback"))]
 
     monkeypatch.setattr(helpers, "repo_index_session", opened)
     monkeypatch.setattr(actions, "write_read_snapshots", failing)
     refresh_read_snapshots(tmp_path)
-    assert "Snapshot not written, component: TypeError: key must be bytes" in capsys.readouterr().out
+    shown = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("Snapshot not written")]
+    # Escaped, first line only; the full error goes to the debug log.
+    assert shown == ["Snapshot not written: component: TypeError: key must be bytes [red]x[/red]"]
 
     @asynccontextmanager
     async def broken(_root):

@@ -507,17 +507,19 @@ async def write_actions_snapshot(session: AsyncSession, repo_id: str) -> bool:
     )
 
 
-async def write_read_snapshots(session: AsyncSession, repo_id: str) -> list[str]:
+async def write_read_snapshots(
+    session: AsyncSession, repo_id: str
+) -> list[tuple[str, Exception]]:
     """Store the Fix first queue, then the actions view that quotes its head,
     then the run's component snapshot (:mod:`repowise.core.events`).
 
     For a writer whose stores are final for this run, on the session that
     wrote them or a later one. Best-effort, each in its own savepoint: a view
-    that fails to build is built live on read instead. Returns one
-    ``"<snapshot>: <error>"`` line per snapshot not written, for a caller
-    whose output the core log level hides.
+    that fails to build is built live on read instead. Returns
+    ``(snapshot, error)`` per snapshot not written, for a caller whose output
+    the core log level hides.
     """
-    failed: list[str] = []
+    failed: list[tuple[str, Exception]] = []
     for kind, write in (
         ("fix_first", write_fix_first_snapshot),
         (SNAPSHOT_KIND, write_actions_snapshot),
@@ -527,7 +529,7 @@ async def write_read_snapshots(session: AsyncSession, repo_id: str) -> list[str]
                 await write(session, repo_id)
         except Exception as exc:  # a reader builds live instead
             logger.warning("read snapshot %s not written: %s", kind, exc)
-            failed.append(f"{kind}: {type(exc).__name__}: {exc}")
+            failed.append((kind, exc))
     written = not failed
     # Built after this session's own writes, so its commit may keep them; a
     # kind that failed may have left an older row, which the commit drops.
@@ -541,7 +543,7 @@ async def write_read_snapshots(session: AsyncSession, repo_id: str) -> list[str]
             await record_snapshot(session, repo_id)
     except Exception as exc:  # history skips a run; the index is unaffected
         logger.warning("component snapshot not written: %s", exc)
-        failed.append(f"component: {type(exc).__name__}: {exc}")
+        failed.append(("component", exc))
         try:  # so the next snapshot is a baseline, not a diff across the gap
             from repowise.core.events.store import record_gap
 
