@@ -23,7 +23,9 @@ source}]}``, and only these detail fields:
 
 An item whose status is ``unknown`` or whose basis is ``unresolved`` answers
 nothing, so a condition that needs it is unknown and the rule does not fire:
-a missed policy hit is preferred to a false one. There are no risk-score
+a missed policy hit is preferred to a false one. ``reaching_tests`` is the
+exception: it is read per row unless its basis is ``unresolved``, since a
+partly known item still answers for the files it knows. There are no risk-score
 conditions; change risk is not calibrated.
 """
 
@@ -491,7 +493,9 @@ def _agent_tier(want, items, scope, matched) -> Check:
 
 def _reaching_tests(want, items, scope, matched) -> Check:
     item = items.get("reaching_tests")
-    if not _known(item):
+    # Rows carry each file's answer, so a partly known item (``unknown`` with
+    # a real basis) still decides the files in scope it knows about.
+    if item is None or item.get("basis") == "unresolved":
         return None, "reaching tests are not known", [], "reaching_tests"
     rows = [r for r in _rows(item) if r.get("path") and (scope is None or r["path"] in scope)]
     # ``tests: []`` is a known absence; a missing or null list is not known.

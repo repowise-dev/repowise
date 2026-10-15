@@ -174,7 +174,8 @@ def test_statuses_follow_the_facts():
     assert by["owners"].details[-1] == {"owner": None, "paths": ["src/b.py"]}
     assert by["suggested_reviewers"].value == ["Bob"] and "score" not in by["suggested_reviewers"].details[0]
     tests = by["reaching_tests"]
-    assert tests.status == "attention" and tests.basis == "inferred"
+    # One file reached, one nobody knows about: partly known, never a gap.
+    assert tests.status == "unknown" and tests.basis == "inferred"
     assert tests.value == {
         "measured": 0,
         "inferred": 1,

@@ -328,10 +328,12 @@ def _tests(bundle: ChangeReviewBundle, code: list[str]) -> EvidenceItem:
     }
     if rows and unknown == len(rows):
         return EvidenceItem(kind, label, "unknown", "unresolved", value, rows, source)
+    # Only a measured absence asks for a look; a file nothing knows about
+    # leaves the item partly known, with its rows saying which files.
     return EvidenceItem(
         kind,
         label,
-        "attention" if absent or unknown else "ok",
+        "attention" if absent else ("unknown" if unknown else "ok"),
         "measured" if rows and all(r["measured"] for r in rows) else "inferred",
         value,
         rows,
