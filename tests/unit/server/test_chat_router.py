@@ -581,3 +581,24 @@ async def test_no_configured_provider_is_a_chat_error_event_not_an_http_error():
     with patch(_PROVIDER, side_effect=failure):
         events = _data_events(await _post(app, {"message": "hi"}))
     assert events == [{"type": "error", "message": NO_PROVIDER_MESSAGE}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("override", "failure", "expected"),
+    [
+        (None, ValueError("No active provider configured. Set an API key first."), "No LLM provider"),
+        ("nope", ValueError("Unknown provider: nope"), "Unknown provider 'nope'"),
+        (None, ValueError("base_url http://10.0.0.5:9/x?key=AIzaSecret1234 is invalid"), "configuration is invalid"),
+        ("openai", RuntimeError("client init failed for sk-proj-abcdef1234567890"), "Could not start the chat provider"),
+    ],
+)
+async def test_provider_setup_failures_are_plain_chat_errors(override, failure, expected):
+    app = await _make_app()
+    with patch(_PROVIDER, side_effect=failure):
+        events = _data_events(await _post(app, {"message": "hi", "provider": override}))
+    [event] = events
+    assert event["type"] == "error"
+    assert expected in event["message"]
+    assert "AIza" not in event["message"] and "sk-" not in event["message"]
+    assert "10.0.0.5" not in event["message"]

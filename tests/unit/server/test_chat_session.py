@@ -901,17 +901,81 @@ async def test_a_tool_result_holding_a_datetime_is_sent_streamed_and_stored(stor
     assert stored["files"][0]["changed"].startswith("2026-10-01")
 
 
-async def test_an_sdk_auth_error_says_to_check_the_api_key(store):
-    class AuthenticationError(Exception):
-        status_code = 401
+_KEY = "sk-ant-" + "a1b2c3d4e5f6g7h8"  # pragma: allowlist secret
+_GOOGLE_URL = "https://generativelanguage.googleapis.com/v1/models?key=AIza" + "SyA1b2c3d4e5f6"
 
-    AuthenticationError.__module__ = "anthropic._exceptions"
-    provider = ScriptedProvider([AuthenticationError("invalid x-api-key")])
+
+def _sdk_status_error(status: int, message: str):
+    import anthropic
+    import httpx
+
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(status, request=request)
+    error = anthropic.AuthenticationError if status == 401 else anthropic.APIStatusError
+    return error(message, response=response, body=None)
+
+
+async def test_an_sdk_auth_error_says_to_check_the_api_key(store):
+    provider = ScriptedProvider([_sdk_status_error(401, f"invalid x-api-key {_KEY}")])
     result = await (await _open(store, provider)).send("hi")
 
     assert result.stop_reason == "error"
     assert "rejected its API key" in result.error
     assert "Settings" in result.error
+    assert _KEY not in result.error
+
+
+async def test_an_sdk_error_body_is_not_echoed_to_the_person(store):
+    provider = ScriptedProvider([_sdk_status_error(400, f"bad request, echoed key {_KEY}")])
+    result = await (await _open(store, provider)).send("hi")
+
+    assert result.error == (
+        "The test provider failed (APIStatusError, HTTP 400). See the server log for details."
+    )
+
+
+async def test_an_httpx_error_is_not_labelled_a_provider_failure_and_its_key_is_redacted(store):
+    import httpx
+
+    request = httpx.Request("GET", _GOOGLE_URL)
+    leaked = httpx.HTTPStatusError(
+        f"Client error for url {_GOOGLE_URL}", request=request, response=httpx.Response(400)
+    )
+    provider = ScriptedProvider([leaked])
+    result = await (await _open(store, provider)).send("hi")
+
+    assert result.error.startswith("Internal error: HTTPStatusError")
+    assert "provider failed" not in result.error
+    assert "AIza" not in result.error and "key=[redacted]" in result.error
+
+
+async def test_a_provider_that_runs_tools_itself_gets_stamped_json_safe_results(store):
+    from datetime import UTC, datetime
+
+    class DatedTools(FakeTools):
+        async def execute(self, name, arguments):
+            return {"files": [{"path": "src/a.py", "changed": datetime(2026, 10, 1, tzinfo=UTC)}]}
+
+    seen: list = []
+
+    class LoopingProvider(ScriptedProvider):
+        """Runs its tool calls through ``tool_executor``, the way Gemini does."""
+
+        async def stream_chat(self, **kwargs):
+            self.calls.append({"tools": [t["function"]["name"] for t in kwargs["tools"]]})
+            call = ChatToolCall(id="g1", name="get_risk", arguments={})
+            yield ChatStreamEvent(type="tool_start", tool_call=call)
+            result = await kwargs["tool_executor"]("get_risk", {})
+            seen.append(result)
+            yield ChatStreamEvent(type="tool_result", tool_call=call, tool_result_data=result)
+            yield _text("done")
+
+    session = await _open(store, LoopingProvider([]), tools=DatedTools())
+    result = await session.send("when?")
+
+    assert next(iter(seen[0])) == "artifact_id"
+    json.dumps(seen[0])
+    assert [t.ok for t in result.tool_trace] == [True]
 
 
 async def test_a_bug_outside_the_provider_stays_an_internal_error(store):

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import re
 from collections.abc import Callable
 from typing import Any
 
@@ -12,6 +11,7 @@ from rich.progress import ProgressColumn, Task
 from rich.text import Text
 
 from repowise.cli.ui.brand import ERR, WARN, print_phase_header
+from repowise.core.redaction import redact_secrets
 
 # Message levels that mean "this run degraded". ``notice`` is deliberately not
 # here: it is visible (warning-styled) but informational, e.g. a file skipped on
@@ -36,37 +36,6 @@ _STAGE_HEADERS: dict[str, tuple[int, str, str]] = {
     ),
     "analysis": (2, "Analysis", "Dead code, code health, architectural decisions"),
 }
-
-
-# Credential shapes that turn up inside provider exception text. OpenAI and
-# Anthropic auth errors quote the offending key back ("Incorrect API key
-# provided: sk-abc…"), and several pipeline warnings interpolate ``str(exc)``
-# verbatim. That was transient terminal output; once the warnings are also
-# written to ``.repowise/state.json`` it becomes a secret at rest, in the one
-# file agents and MCP tools read back.
-_SECRET_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"),  # OpenAI / Anthropic
-    re.compile(r"\bAIza[A-Za-z0-9_-]{10,}"),  # Google
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{10,}"),  # GitHub
-    re.compile(r"\bgl(?:pat|dt|rt|ptt|oas|imt|cbt)-[\w.-]{10,}"),  # GitLab
-    re.compile(r"\bGR1348941[\w-]{10,}"),  # GitLab runner registration
-    re.compile(r"\b[0-9A-Za-z]{76}AZDO[0-9A-Za-z]{4}\b"),  # Azure DevOps
-)
-# A git remote quoted in a clone or fetch error carries its credentials.
-_URL_USERINFO = re.compile(r"://[^\s/@:]+:[^\s/@]+@")
-
-
-def redact_secrets(text: str) -> str:
-    """Blank anything key-shaped in *text*.
-
-    Deliberately conservative: it matches issuer-prefixed shapes rather than
-    "any long token", because over-matching would eat the file paths and hashes
-    that make these messages useful. A key in an unrecognised format still gets
-    through, so this reduces exposure rather than guaranteeing its absence.
-    """
-    for pattern in _SECRET_PATTERNS:
-        text = pattern.sub("[redacted]", text)
-    return _URL_USERINFO.sub("://***@", text)
 
 
 class MaybeCountColumn(ProgressColumn):

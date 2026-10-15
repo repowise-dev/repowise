@@ -21,9 +21,15 @@ from starlette.responses import StreamingResponse
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.providers.llm.base import ChatProvider
+from repowise.core.redaction import redact_secrets
 from repowise.server.auth import PER_CALL_TOOL_SCOPE, Principal, get_authorizer
 from repowise.server.chat_artifacts import find_artifact, set_artifact_pinned
-from repowise.server.chat_errors import NO_PROVIDER_MESSAGE
+from repowise.server.chat_errors import (
+    INVALID_PROVIDER_MESSAGE,
+    NO_PROVIDER_MESSAGE,
+    PROVIDER_START_MESSAGE,
+    internal_error,
+)
 from repowise.server.chat_grounding import plan_grounding, run_grounding
 from repowise.server.chat_seams import (
     SessionPolicy,
@@ -132,12 +138,23 @@ def _chat_provider(
             model_override=model,
         )
     except ValueError as exc:
-        # Unknown provider override, or (with no override) no provider resolvable at all.
-        raise HTTPException(400, str(exc) if provider else NO_PROVIDER_MESSAGE) from exc
+        # Every detail here is shown to the person, so none echoes the config.
+        # The two texts matched are get_chat_provider_instance's own; another
+        # ValueError (a bad base URL, say) is an invalid configuration.
+        reason = str(exc)
+        logger.warning("chat_provider_unavailable: %s", redact_secrets(reason))
+        if reason.startswith("No active provider configured"):
+            raise HTTPException(400, NO_PROVIDER_MESSAGE) from exc
+        if provider and reason.startswith("Unknown provider"):
+            raise HTTPException(
+                400, f"Unknown provider {provider!r}. Pick a provider in Settings."
+            ) from exc
+        raise HTTPException(400, INVALID_PROVIDER_MESSAGE) from exc
     except Exception as exc:
-        raise HTTPException(
-            422, f"Could not start the chat provider: {exc}. Check its settings in Settings."
-        ) from exc
+        logger.warning(
+            "chat_provider_start_failed: %s: %s", type(exc).__name__, redact_secrets(str(exc))
+        )
+        raise HTTPException(422, PROVIDER_START_MESSAGE) from exc
     if not isinstance(instance, ChatProvider):
         raise HTTPException(
             422,
@@ -171,14 +188,13 @@ async def _session_sse(open_session: Any, run: Any) -> AsyncIterator[str]:
         yield _sse_event("data", {"type": "error", "message": str(exc)})
         return
     except HTTPException as exc:
-        # A setup failure the person can fix (no provider, unknown model).
+        # A setup failure the person can fix; ``_chat_provider`` writes these
+        # details for the person, without the config or exception text.
         yield _sse_event("data", {"type": "error", "message": str(exc.detail)})
         return
     except Exception as exc:
         logger.exception("Chat session open error")
-        yield _sse_event(
-            "data", {"type": "error", "message": f"Internal error: {type(exc).__name__}: {exc}"}
-        )
+        yield _sse_event("data", {"type": "error", "message": internal_error(exc)})
         return
     try:
         async for event in run(session):

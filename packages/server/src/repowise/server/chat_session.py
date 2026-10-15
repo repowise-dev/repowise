@@ -37,7 +37,7 @@ from repowise.server.chat_context import (
     compose_request,
     is_context_overflow,
 )
-from repowise.server.chat_errors import NO_PROVIDER_MESSAGE, provider_failure
+from repowise.server.chat_errors import NO_PROVIDER_MESSAGE, internal_error, provider_failure
 from repowise.server.chat_figures import check_figures
 from repowise.server.chat_grounding import plan_grounding, run_grounding
 from repowise.server.chat_prompt import (
@@ -75,7 +75,7 @@ from repowise.server.chat_suspects import (
 from repowise.server.chat_tools import (
     ChatToolContract,
     LocalToolBackend,
-    _make_json_serializable,
+    make_json_serializable,
     tool_schemas,
 )
 from repowise.server.chat_views import SHOW_VIEW_TOOL, TurnViews, show_view_schema
@@ -387,27 +387,30 @@ class _Turn:
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Run one tool the session admits; also handed to providers that loop internally.
 
-        Each result is stamped with the artifact id ``show_view`` takes, and
-        made JSON-safe here, the one door every result comes through, so a
-        backend's datetime never fails the request, the stream or the store.
+        Each result is stamped with the artifact id ``show_view`` takes. A
+        result is JSON-safe from here on, so a backend's datetime never fails
+        the request, the stream or the store: the local backend and
+        ``find_suspects`` already serialize theirs, any other backend's is
+        serialized here, once.
         """
         if name == SHOW_VIEW_TOOL and self.shows_views:
             return self.views.show(arguments)
         if name == SUSPECTS_TOOL and self.finds_suspects:
             result = await run_find_suspects(arguments, getattr(self.tools, "repo_alias", None))
-            return self.views.record(
-                name, arguments, _make_json_serializable(result), evidence_basis="inferred"
-            )
+            return self.views.record(name, arguments, result, evidence_basis="inferred")
         tool = self.catalog.get(name)
         if tool is None:
             return {
                 "error": f"Tool is not available in this session: {name}",
                 "error_code": "tool_not_enabled",
             }
+        result = await self.tools.execute(name, arguments)
+        if not isinstance(self.tools, LocalToolBackend):
+            result = make_json_serializable(result)
         return self.views.record(
             name,
             arguments,
-            _make_json_serializable(await self.tools.execute(name, arguments)),
+            result,
             artifact_type=tool.entry.artifact_type,
             evidence_basis=tool.entry.evidence_basis,
         )
@@ -509,7 +512,6 @@ class _Turn:
                     logger.warning("chat_context_overflow_retry")
                     pending.clear()
                     continue
-                logger.warning("chat_provider_failed", extra={"error": type(exc).__name__})
                 self.stop_reason = "error"
                 self.error = OVERFLOW_MESSAGE if overflow else message
                 yield {"type": "error", "message": self.error}
@@ -839,7 +841,7 @@ class ChatSession:
                 raise
             except Exception as exc:
                 logger.exception("Chat turn error")
-                text = f"Internal error: {type(exc).__name__}: {exc}"
+                text = internal_error(exc)
                 outcome.result = self._unstored("error", error=text)
                 yield {"type": "error", "message": text}
 

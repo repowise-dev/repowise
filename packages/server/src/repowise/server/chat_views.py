@@ -171,12 +171,14 @@ def _all_zero(part: Mapping[str, Any]) -> bool:
     """True when no series of a chart holds a value other than zero or empty."""
     data = part.get("data")
     rows = data.get("rows") if isinstance(data, Mapping) else None
-    series = part.get("series") or []
+    series = part.get("series")
+    if not (isinstance(rows, list) and rows and isinstance(series, list) and series):
+        # No rows is its own refusal; a malformed part is left to validation.
+        return False
+    if not all(isinstance(key, str) for key in series):
+        return False
     return all(
-        row.get(key) in (0, None)
-        for row in (rows if isinstance(rows, list) else [])
-        if isinstance(row, Mapping)
-        for key in series
+        row.get(key) in (0, None) for row in rows if isinstance(row, Mapping) for key in series
     )
 
 
@@ -301,6 +303,11 @@ class TurnViews:
             return ViewError("the view builder failed", code="builder_failed").payload()
         self.parts.append(part)
         receipt = {"view_id": part["id"], "kind": part["kind"], "title": part["title"]}
+        reference = arguments.get("artifact_id")
+        if isinstance(reference, str) and reference.startswith(LATEST_PREFIX):
+            # Say which result a symbolic reference picked.
+            receipt["resolved_artifact_id"] = part["source"]["artifact_id"]
+            receipt["source_tool"] = part["source"]["tool_name"]
         if "summary" in part:
             receipt["summary"] = part["summary"]
         return receipt
