@@ -250,6 +250,12 @@ def find_extractions(
                 e = span[-1].end_point[0] + 1
                 if any(import_line < s <= use_line <= e for import_line, use_line in import_reads):
                     continue
+                byref_alias_lines = def_lines.get("__byref_alias__")
+                if byref_alias_lines:
+                    b_lo = bisect_left(byref_alias_lines, s)
+                    b_hi = bisect_right(byref_alias_lines, e)
+                    if b_lo < b_hi:
+                        continue
                 if reads is None:
                     reads = _reads_observing(analysis, def_lines)
                 params, returns = _infer_in_out(
@@ -1369,6 +1375,11 @@ def _identifiers(node: Node) -> set[str]:
             text = cur.text
             if text:
                 out.add(text.decode("utf-8", "replace"))
+        elif not cur.children and cur.type == "name":
+            text = cur.text
+            if text:
+                s = text.decode("utf-8", "replace")
+                out.add(s[1:] if s.startswith("$") else s)
         stack.extend(cur.children)
     return out
 
