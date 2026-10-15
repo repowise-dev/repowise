@@ -164,6 +164,41 @@ async def count_checklists_built(
     return int(built), int(changes)
 
 
+async def list_change_keys(
+    session: AsyncSession, repository_id: str, where: ChangeFilter | None = None
+) -> list[tuple[str, bool]]:
+    """``(change_id, checklist kept)`` of every change matching *where*, newest
+    merged first. Ids only, so a long period is fixed up front for little."""
+    rows = await session.execute(
+        select(Change.change_id, Change.evidence_json.is_not(None))
+        .where(*_filters(repository_id, where or ChangeFilter()))
+        .order_by(Change.merged_at.desc().nulls_last(), Change.change_id)
+    )
+    return [(cid, bool(kept)) for cid, kept in rows.tuples()]
+
+
+async def keep_evidence_if_unchanged(
+    session: AsyncSession,
+    repository_id: str,
+    change_id: str,
+    evidence_json: str,
+    *,
+    expected: str | None,
+) -> bool:
+    """Store *evidence_json* only while the kept checklist is still *expected*
+    (``None``: none kept); whether it was written. Another writer's checklist,
+    kept meanwhile, is never overwritten."""
+    from sqlalchemy import update
+
+    still = Change.evidence_json.is_(None) if expected is None else Change.evidence_json == expected
+    result = await session.execute(
+        update(Change)
+        .where(Change.repository_id == repository_id, Change.change_id == change_id, still)
+        .values(evidence_json=evidence_json)
+    )
+    return result.rowcount == 1
+
+
 async def get_change(session: AsyncSession, repository_id: str, ref: str) -> Change | None:
     """A change by its id, or the newest change that landed a commit (a sha of 7+ hex)."""
     found = await find_changes(session, repository_id, ref, limit=1)

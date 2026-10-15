@@ -133,6 +133,10 @@ class ReportContext:
     until: datetime | None = None
     #: Rebuild every kept checklist in the period.
     refresh: bool = False
+    #: Build and keep missing checklists; ``False`` reads kept ones only.
+    build: bool = True
+    #: Told once how many checklists will be built: ``(to build, total)``.
+    plan: Callable[[int, int], None] | None = None
     #: Told about each checklist built: ``(position, total, change id)``.
     progress: Callable[[int, int, str], None] | None = None
     _cache: dict[str, Any] = field(default_factory=dict)

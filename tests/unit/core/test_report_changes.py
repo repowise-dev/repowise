@@ -413,3 +413,178 @@ def test_cli_writes_the_pack_and_reports_progress(root: Path, builds, tmp_path: 
               "--until", "2026-02-01"],
     )
     assert bad.exit_code != 0 and "--since must be before --until" in bad.output + bad.stderr
+
+
+# -- the pass under load, failure and other writers ---------------------------
+
+
+async def _add_changes(root: Path, changes: list[dict]) -> None:
+    """Write *changes* through an engine of their own, as another process would."""
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path, upsert_changes
+
+    engine = create_engine(f"sqlite+aiosqlite:///{(root / '.repowise' / 'wiki.db').as_posix()}")
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(root))
+            await upsert_changes(session, repo.id, changes)
+    finally:
+        await engine.dispose()
+
+
+async def _keep_elsewhere(root: Path, change_id: str, evidence: ChangeEvidence) -> None:
+    from repowise.core.changes.collect import save_evidence
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+
+    engine = create_engine(f"sqlite+aiosqlite:///{(root / '.repowise' / 'wiki.db').as_posix()}")
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(root))
+            await save_evidence(session, repo.id, change_id, evidence)
+    finally:
+        await engine.dispose()
+
+
+def _many(n: int) -> list[dict]:
+    return [
+        _change(f"pr-{100 + i}", str(100 + i), f"{100 + i:040x}", f"fix: {i}",
+                datetime(2026, 3, 10, i % 24, tzinfo=UTC), "fix")
+        for i in range(n)
+    ]
+
+
+async def test_many_concurrent_builds_on_disk_are_all_kept(ctx, monkeypatch):
+    import asyncio
+
+    from sqlalchemy import func, select
+
+    from repowise.core.changes import collect
+    from repowise.core.changes.period import period_evidence
+    from repowise.core.persistence.models import Change
+
+    await _add_changes(ctx.repo_root, _many(20))
+    running = peak = 0
+
+    async def build(session, repo_id, root, row, **_k):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        # Each build reads the store on its own session while others write.
+        await session.execute(select(func.count()).select_from(Change))
+        await asyncio.sleep(0.01)
+        running -= 1
+        return _evidence(row.change_id)
+
+    monkeypatch.setattr(collect, "build_stored_evidence", build)
+    seen = []
+    got = [
+        r.change_id
+        async for r, e in period_evidence(
+            ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL,
+            concurrency=6, progress=lambda *a: seen.append(a),
+        )
+        if e is not None
+    ]
+    assert len(got) == 22 and len(set(got)) == 22 and len(seen) == 22 and peak == 6
+    kept = await ctx.session.scalar(
+        select(func.count()).where(Change.evidence_json.is_not(None))
+    )
+    assert kept == 22
+
+
+async def test_a_failed_build_keeps_the_rest_of_its_page(ctx, monkeypatch):
+    from repowise.core.changes import collect
+    from repowise.core.changes.period import period_evidence
+    from repowise.core.persistence.crud import list_changes
+
+    async def build(session, repo_id, root, row, **_k):
+        if row.change_id == "pr-1":
+            raise RuntimeError("parse blew up")
+        return _evidence(row.change_id)
+
+    monkeypatch.setattr(collect, "build_stored_evidence", build)
+    with pytest.raises(RuntimeError, match="parse blew up"):
+        _ = [p async for p in period_evidence(
+            ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL)]
+    rows, _ = await list_changes(ctx.session, ctx.repository_id, limit=None)
+    kept = {r.change_id for r in rows if r.evidence_json}
+    assert kept == {"pr-2"}
+
+
+async def test_a_checklist_another_writer_kept_is_never_overwritten(ctx, monkeypatch):
+    from repowise.core.changes import collect
+    from repowise.core.changes.period import period_evidence
+    from repowise.core.persistence.crud import get_change
+
+    theirs = ChangeEvidence("pr-2", None, "2026-01-01T00:00:00+00:00",
+                            [EvidenceItem("owners", "Declared owners", "ok", "declared", [], [], "server")])
+
+    async def build(session, repo_id, root, row, **_k):
+        if row.change_id == "pr-2":  # the server kept one while this build ran
+            await _keep_elsewhere(root, "pr-2", theirs)
+        return _evidence(row.change_id)
+
+    monkeypatch.setattr(collect, "build_stored_evidence", build)
+    got = {r.change_id: e async for r, e in period_evidence(
+        ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL)}
+    assert got["pr-2"].generated_at == "2026-01-01T00:00:00+00:00"
+    ctx.session.expunge_all()
+    stored = collect.cached_evidence(await get_change(ctx.session, ctx.repository_id, "pr-2"))
+    assert stored.generated_at == "2026-01-01T00:00:00+00:00"
+
+
+async def test_the_period_is_fixed_before_the_first_build(ctx, monkeypatch):
+    from repowise.core.changes import collect, period
+    from repowise.core.changes.period import period_evidence
+
+    added: list[str] = []
+
+    async def build(session, repo_id, root, row, **_k):
+        # A newer change indexed mid-run must not shift the pages or repeat one.
+        if not added:
+            added.append(row.change_id)
+            await _add_changes(root, _many(1))
+        return _evidence(row.change_id)
+
+    monkeypatch.setattr(collect, "build_stored_evidence", build)
+    monkeypatch.setattr(period, "PAGE", 1)  # a page per change, so a shift would show
+    got = [r.change_id async for r, _e in period_evidence(
+        ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL)]
+    assert got == ["pr-2", "pr-1"]
+
+
+def test_no_build_reports_kept_checklists_only(root: Path, builds, tmp_path: Path) -> None:
+    from repowise.cli.main import cli
+
+    out = tmp_path / "pack.json"
+    runner = CliRunner(mix_stderr=False)
+    result = runner.invoke(
+        cli,
+        ["report", "changes", str(root), "--no-workspace", "--since", "2026-02-01",
+         "--until", "2026-04-01", "--format", "json", "--out", str(out), "--no-build"],
+    )
+    assert result.exit_code == 0, result.output
+    assert builds == [] and "building" not in result.stderr
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    summary = _section(doc, "change-summary")
+    assert summary["checklists"]["data"]["not_kept"] == 2
+    change = _section(doc, "changes")["#1"]["data"]["change"]
+    assert change["tests"]["status"] == "unknown" and "--no-build" in change["tests"]["text"]
+    assert change["checklist"]["kept"] is False
+
+    built = runner.invoke(cli, ["report", "changes", str(root), "--no-workspace",
+                                "--since", "2026-02-01", "--until", "2026-04-01"])
+    assert "building 2 of 2 evidence checklist(s)" in built.stderr
+    assert "--no-build" in runner.invoke(cli, ["report", "changes", "--help"]).output
+
+
+def test_a_newline_in_a_title_survives_the_csv():
+    from repowise.core.report.render import render_csv
+
+    doc = {"sections": [{"id": "changes", "repo": None, "checks": [
+        {"name": "#1", "score": None, "basis": "measured", "reason": "line one\n=line two",
+         "details": ["a"], "data": {"row": {"title": "fix:\nsecond line"}}},
+    ]}]}
+    (row,) = list(csv.DictReader(io.StringIO(render_csv(doc))))
+    assert row["title"] == "fix:\nsecond line" and row["reason"] == "line one\n=line two"

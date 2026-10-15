@@ -189,17 +189,27 @@ class FixHistory:
 
     Scoring many changes walks one deep history per change, each from its own
     parent; :func:`prime_fix_pressure` answers all of them from this one walk,
-    over the same commits :func:`_walk` lists for each. Raises
-    ``subprocess.TimeoutExpired`` when git outruns its timeout.
+    over the same commits :func:`_walk` lists for each. The walk reads at most
+    twice *depth* commits, merges included; a history reaching past them is
+    left to :func:`_walk`. Raises ``subprocess.TimeoutExpired`` when git
+    outruns its timeout.
     """
 
-    def __init__(self, repo_path: str, ref: str = "HEAD") -> None:
+    def __init__(self, repo_path: str, ref: str = "HEAD", *, depth: int = DEEP_WALK_LIMIT) -> None:
+        self.depth = depth
         self.shallow = (
             _git(["rev-parse", "--is-shallow-repository"], repo_path, check=False).strip()
             == "true"
         )
         out = _git(
-            ["log", "--format=%x1e%H%x1f%P%x1f%ct%x1f%s", "--name-only", "--end-of-options", ref],
+            [
+                "log",
+                f"-n{2 * depth}",
+                "--format=%x1e%H%x1f%P%x1f%ct%x1f%s",
+                "--name-only",
+                "--end-of-options",
+                ref,
+            ],
             repo_path,
             check=False,
         )
@@ -209,7 +219,9 @@ class FixHistory:
         self.times: dict[str, float] = {}
         #: Paths of each non-merge fix commit.
         self.fixes: dict[str, list[str]] = {}
-        for block in out.split("\x1e"):
+        blocks = out.split("\x1e")
+        del out  # the raw log is the largest thing held; keep only the parse
+        for block in blocks:
             lines = block.strip("\n").split("\n")
             head = lines[0].split("\x1f", 3)
             if len(head) != 4:
@@ -224,9 +236,16 @@ class FixHistory:
             if len(self.parents[sha]) <= 1 and is_fix_commit(subject):
                 self.fixes[sha] = [p.strip() for p in lines[1:] if p.strip()]
 
-    def _ancestors(self, sha: str) -> set[str] | None:
+    def answers(self, sha: str) -> bool:
+        """Whether *sha* is in this walk at all (its history may still run past it)."""
+        return sha in self.parents
+
+    def _ancestors(self, sha: str, depth: int) -> set[str] | None:
+        """*sha* and every commit it reaches, or ``None`` once the walk cannot
+        hold them or more than *depth* of them are non-merge commits."""
         seen = {sha}
         todo = [sha]
+        listed = len(self.parents[sha]) <= 1
         while todo:
             for parent in self.parents[todo.pop()]:
                 if parent not in self.parents:
@@ -234,20 +253,21 @@ class FixHistory:
                 if parent not in seen:
                     seen.add(parent)
                     todo.append(parent)
+                    listed += len(self.parents[parent]) <= 1
+                    if listed > depth:
+                        return None  # past depth: where _walk cuts is left to _walk
         return seen
 
-    def pressure(self, sha: str, depth: int = DEEP_WALK_LIMIT) -> dict[str, float] | None:
+    def pressure(self, sha: str, depth: int | None = None) -> dict[str, float] | None:
         """:func:`fix_pressure` at *sha*, or ``None`` when this walk cannot say
         (*sha* is not in it, or its history runs past *depth* commits)."""
-        reach = self._ancestors(sha) if sha in self.parents else None
+        depth = self.depth if depth is None else depth
+        reach = self._ancestors(sha, depth) if sha in self.parents else None
         if reach is None:
             return None
-        listed = [c for c in self.order if c in reach and len(self.parents[c]) <= 1]
-        if len(listed) > depth:
-            return None
         history: dict[str, list[float]] = {}
-        for c in listed:
-            if c in self.fixes and not (self.shallow and not self.parents[c]):
+        for c in self.order:
+            if c in reach and c in self.fixes and not (self.shallow and not self.parents[c]):
                 for path in self.fixes[c]:
                     history.setdefault(path, []).append(self.times[c])
         return _decayed(history, self.times[sha])
@@ -265,7 +285,9 @@ def prime_fix_pressure(
     primed = 0
     for sha in shas:
         key = (repo_path, sha, depth)
-        pressure = _PRESSURE_CACHE.get(key) or history.pressure(sha, depth)
+        pressure = _PRESSURE_CACHE.get(key)
+        if pressure is None:
+            pressure = history.pressure(sha, depth)
         if pressure is not None:
             _remember(key, pressure)
             primed += 1

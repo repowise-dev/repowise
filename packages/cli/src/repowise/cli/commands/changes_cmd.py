@@ -86,6 +86,21 @@ def build_progress(position: int, total: int, change_id: str) -> None:
     click.echo(f"evidence {position}/{total}: {change_id}", err=True)
 
 
+def build_plan(to_build: int, total: int) -> None:
+    """Say up front how many checklists a period builds, and roughly how long."""
+    from repowise.core.changes.period import SECONDS_PER_BUILD
+
+    if not to_build:
+        return
+    minutes = to_build * SECONDS_PER_BUILD / 60
+    about = f"about {minutes:.0f} min" if minutes >= 1 else "under a minute"
+    click.echo(
+        f"building {to_build} of {total} evidence checklist(s), {about}; each is kept, "
+        "so a later run reads it back",
+        err=True,
+    )
+
+
 async def _export(
     root: Path,
     since: datetime | None,
@@ -105,7 +120,14 @@ async def _export(
         on = attribution_enabled(root)
         done = 0
         async for row, evidence in period_evidence(
-            session, repo_id, root, since=since, until=until, refresh=refresh, progress=build_progress
+            session,
+            repo_id,
+            root,
+            since=since,
+            until=until,
+            refresh=refresh,
+            progress=build_progress,
+            plan=build_plan,
         ):
             record = change_record(row, attribution=on)
             record["evidence"] = evidence.to_dict()

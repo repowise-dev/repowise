@@ -422,3 +422,56 @@ def test_one_walk_primes_the_same_pressure_every_ref_would_walk(
     # A history past the walk limit answers nothing, and scoring walks git itself.
     assert history.pressure(shas[0], depth=1) is None
     assert history.pressure("f" * 40) is None
+
+
+def _merge_repo(repo: Path) -> list[str]:
+    """main with a merged side branch carrying a fix; first-parent shas, newest first."""
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"a.py": "a = 0\n", "b.py": "b = 0\n"}, "feat: seed")
+    _commit(repo, {"a.py": "a = 1\n"}, "fix: a breaks")
+    _git(["checkout", "-q", "-b", "side"], repo)
+    _commit(repo, {"b.py": "b = 1\n"}, "fix: b breaks on the side")
+    _git(["checkout", "-q", "main"], repo)
+    _commit(repo, {"a.py": "a = 2\n"}, "fix: a breaks again")
+    _git(["-c", "user.name=Dev", "-c", "user.email=d@e.com", "merge", "-q", "--no-ff", "side",
+          "-m", "Merge side"], repo)
+    _commit(repo, {"b.py": "b = 2\n"}, "fix: b breaks on main")
+    return subprocess.run(
+        ["git", "rev-list", "--first-parent", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.split()
+
+
+def test_one_walk_matches_walk_on_a_shallow_clone(tmp_path: Path) -> None:
+    from repowise.core.analysis.change_risk import fix_history
+
+    source = tmp_path / "source"
+    _merge_repo(source)
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth=2", source.resolve().as_uri(), str(shallow)],
+        check=True, capture_output=True, text=True,
+    )
+    history = fix_history.FixHistory(str(shallow))
+    assert history.shallow
+    for sha in history.order:
+        clear_fix_pressure_cache()
+        assert history.pressure(sha) == fix_pressure(str(shallow), sha), sha
+
+
+def test_one_walk_answers_up_to_the_depth_limit_and_not_past_it(tmp_path: Path) -> None:
+    from repowise.core.analysis.change_risk import fix_history
+
+    repo = tmp_path / "limit"
+    head = _merge_repo(repo)[0]
+    listed = int(subprocess.run(
+        ["git", "rev-list", "--no-merges", "--count", head], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout)
+    history = fix_history.FixHistory(str(repo))
+    assert history.pressure(head, listed) == fix_pressure(str(repo), head, depth=listed)
+    assert history.pressure(head, listed - 1) is None
+    # A walk capped below the history leaves older commits to _walk.
+    capped = fix_history.FixHistory(str(repo), depth=1)
+    assert capped.pressure(head) is None and not capped.answers(head + "x")

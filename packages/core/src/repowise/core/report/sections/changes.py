@@ -27,6 +27,9 @@ _CACHE_KEY = "change-period"
 #: since git alone never records it.
 _ANSWERS = ("accountable", "tests", "policy", "outcome")
 
+#: Why every answer reads unknown for a change whose checklist was not built.
+NOT_KEPT = "no checklist kept; run without --no-build to build it"
+
 _METHOD = (
     "Change Records reconstructed from the main line's merge commits and squash refs, "
     "each with its kept evidence checklist"
@@ -67,9 +70,11 @@ async def _read_period(ctx: ReportContext) -> dict[str, Any]:
         since=ctx.since,
         until=ctx.until,
         refresh=ctx.refresh,
+        build=ctx.build,
         progress=ctx.progress,
+        plan=ctx.plan,
     ):
-        pairs.append((change_record(row, attribution=on), evidence.to_dict()))
+        pairs.append((change_record(row, attribution=on), evidence and evidence.to_dict()))
     agents = await _agents(ctx, [s for rec, _ in pairs for s in rec["commits"]]) if on else {}
     entries = [
         entry(
@@ -389,7 +394,7 @@ def _outcome(item: dict[str, Any] | None) -> dict[str, Any]:
 
 def entry(
     record: dict[str, Any],
-    evidence: dict[str, Any],
+    evidence: dict[str, Any] | None,
     *,
     policy: Any,
     policy_error: str | None,
@@ -397,7 +402,11 @@ def entry(
     agents: dict[str, tuple[str, str | None]],
     attribution: bool,
 ) -> dict[str, Any]:
-    """One change's answers, read from its record and checklist. No person is named."""
+    """One change's answers, read from its record and checklist. No person is
+    named. With no checklist kept (*evidence* ``None``) every answer it would
+    give is unknown."""
+    kept = evidence is not None
+    evidence = evidence or {"items": []}
     items = {i["kind"]: i for i in evidence.get("items") or ()}
     comps = items.get("components_touched")
     components = (
@@ -416,6 +425,10 @@ def entry(
         "provenance": _provenance(items.get("provenance"), record["commits"], agents, attribution),
         "outcome": _outcome(items.get("outcomes")),
     }
+    if not kept:
+        for k in ("accountable", "tests", "outcome"):
+            answers[k] = _unknown(NOT_KEPT)
+        answers["provenance"] = {**answers["provenance"], **_unknown(NOT_KEPT)}
     return {
         "id": record["id"],
         "ref": record["forge_ref"] or record["id"],
@@ -430,6 +443,7 @@ def entry(
         **answers,
         "complete": all(answers[k]["status"] == "known" for k in _ANSWERS),
         "checklist": {
+            "kept": kept,
             **counts,
             "generated_at": evidence.get("generated_at"),
             "index_commit": evidence.get("index_commit"),
@@ -457,6 +471,8 @@ def _change_check(e: dict[str, Any]) -> dict[str, Any]:
     checklist = (
         f"{cl['ok']} ok, {cl['attention']} attention, {cl['unknown']} unknown; "
         f"built {cl['generated_at']}"
+        if cl["kept"]
+        else "not built (--no-build)"
     )
     lines = {
         "components": comps or "none known",
@@ -527,6 +543,7 @@ async def _collect_summary(ctx: ReportContext) -> list[dict[str, Any]]:
         ),
     ]
     complete = sum(e["complete"] for e in entries)
+    not_kept = sum(not e["checklist"]["kept"] for e in entries)
     known = {k: sum(e[k]["status"] == "known" for e in entries) for k in (*_ANSWERS, "review")}
     checks.append(
         check(
@@ -535,10 +552,13 @@ async def _collect_summary(ctx: ReportContext) -> list[dict[str, Any]]:
                 f"{complete} of {n} change(s) answer every question; {n - complete} with at "
                 "least one unknown answer, which is missing evidence, not a failure"
             ),
-            details=[f"{k} known: {known[k]} of {n}" for k in _ANSWERS],
+            details=[
+                *(f"{k} known: {known[k]} of {n}" for k in _ANSWERS),
+                *([f"no checklist kept: {not_kept} (built only without --no-build)"] if not_kept else []),
+            ],
             method="accountable team, reaching tests, policy and outcome read from each checklist",
             basis="measured",
-            data={"complete": complete, "changes": n, "known": known},
+            data={"complete": complete, "changes": n, "known": known, "not_kept": not_kept},
         )
     )
     recorded = known["review"]

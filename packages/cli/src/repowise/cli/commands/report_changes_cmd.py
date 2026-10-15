@@ -5,8 +5,9 @@ a review record, which tests reach it, the local change policy's verdict, the
 teams accountable for what it touched, its provenance and its outcomes, plus a
 period summary and a method appendix. Built the way ``report assessment``
 builds its document and rendered by the same renderers (JSON, Markdown, HTML,
-CSV). A change without a kept checklist has one built and kept first, as
-``repowise changes export`` does; progress goes to stderr.
+CSV). A change without a kept checklist has one built and stored first, as
+``repowise changes export`` does, unless ``--no-build``; the count to build,
+an estimate and progress go to stderr.
 """
 
 from __future__ import annotations
@@ -38,6 +39,11 @@ from repowise.cli.helpers import (
 )
 @click.option("--out", "out_path", type=click.Path(dir_okay=False), help="Write to this file.")
 @click.option("--refresh", is_flag=True, help="Rebuild every evidence checklist in the period.")
+@click.option(
+    "--no-build",
+    is_flag=True,
+    help="Build nothing: report kept checklists only and count the rest as unknown.",
+)
 @click.option("--workspace", "workspace_flag", is_flag=True, help="Cover every workspace repo.")
 @click.option("--no-workspace", is_flag=True, help="Force single-repo mode.")
 @click.option("--repo", "repo_alias", default=None, help="Workspace repo alias to cover.")
@@ -48,13 +54,18 @@ def changes_command(
     fmt: str,
     out_path: str | None,
     refresh: bool,
+    no_build: bool,
     workspace_flag: bool,
     no_workspace: bool,
     repo_alias: str | None,
 ) -> None:
     """Change evidence for a period: review record, reaching tests, policy result,
-    owning teams, provenance and outcomes of every change merged in it."""
-    from repowise.cli.commands.changes_cmd import build_progress
+    owning teams, provenance and outcomes of every change merged in it.
+
+    A change with no kept evidence checklist has one built and stored in the
+    index first (a few seconds each), unless --no-build is given.
+    """
+    from repowise.cli.commands.changes_cmd import build_plan, build_progress
     from repowise.cli.commands.report_assessment_cmd import _build, _emit, _scope
     from repowise.core.report.build import available_sections
     from repowise.core.report.render import report_renderers
@@ -89,6 +100,8 @@ def changes_command(
             since=since,
             until=until,
             refresh=refresh,
+            build=not no_build,
+            plan=build_plan,
             progress=build_progress,
         )
     )
