@@ -1594,6 +1594,68 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
     return stale
 
 
+async def sweep_absent_symbol_spotlights(
+    session: Any, repo_id: str, graph_builder: Any
+) -> list[str]:
+    """Delete ``symbol_spotlight`` rows whose symbol left a file that still exists.
+
+    A spotlight targets ``<path>::<name>``. Deleting the file tombstones it
+    (:func:`mark_tombstone_pages`), but moving or removing the symbol while the
+    file stays left the row ``fresh``: nothing regenerates a page for a symbol
+    the parser no longer emits, so it kept serving the old body and the old
+    importer list.
+
+    Same question as :func:`sweep_absent_cycle_pages`, asked of the rebuilt
+    graph: does this file still define a symbol of that name? Only files the
+    graph holds with at least one named symbol are judged, so a file outside
+    the traversal or one that failed to parse keeps its pages.
+
+    Returns the deleted page ids so the caller can drop them from FTS and the
+    vector store after the session closes.
+    """
+    from sqlalchemy import delete, select
+
+    from repowise.core.persistence.models import Page, PageVersion
+
+    if graph_builder is None:
+        return []
+    try:
+        graph = graph_builder.graph()
+    except Exception:  # a released graph cannot speak for any symbol
+        return []
+
+    names_by_file: dict[str, set[str]] = {}
+    for _node, data in graph.nodes(data=True):
+        if data.get("node_type") != "symbol" or data.get("kind") == "module":
+            continue
+        path, name = data.get("file_path"), data.get("name")
+        if path and name:
+            names_by_file.setdefault(path, set()).add(name)
+
+    rows = (
+        await session.execute(
+            select(Page.id, Page.target_path).where(
+                Page.repository_id == repo_id,
+                Page.page_type == "symbol_spotlight",
+                Page.freshness_status != "tombstone",
+            )
+        )
+    ).all()
+    stale: list[str] = []
+    for page_id, target in rows:
+        path, sep, name = (target or "").partition("::")
+        names = names_by_file.get(path)
+        if sep and names is not None and name not in names:
+            stale.append(page_id)
+    for i in range(0, len(stale), _PRUNE_CHUNK):
+        batch = stale[i : i + _PRUNE_CHUNK]
+        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+        await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
+    if stale:
+        logger.info("absent_symbol_spotlights_swept", repo_id=repo_id, count=len(stale))
+    return stale
+
+
 async def sweep_superseded_generated_pages(
     session: Any,
     repo_id: str,

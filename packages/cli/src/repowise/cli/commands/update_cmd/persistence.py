@@ -974,6 +974,7 @@ async def _persist_full_update_async(
             try:
                 from repowise.core.pipeline.persist import (
                     sweep_absent_cycle_pages,
+                    sweep_absent_symbol_spotlights,
                     sweep_retired_pages,
                 )
 
@@ -982,8 +983,12 @@ async def _persist_full_update_async(
                     # Cycle pages are never regenerated on this path (the
                     # ladder stops at file pages), so a cycle that no longer
                     # exists can only be retired by asking the rebuilt graph
-                    # directly.
+                    # directly. A spotlight whose symbol left its file is the
+                    # same case.
                     swept_page_ids += await sweep_absent_cycle_pages(
+                        session, repo_id, graph_builder
+                    )
+                    swept_page_ids += await sweep_absent_symbol_spotlights(
                         session, repo_id, graph_builder
                     )
 
