@@ -273,16 +273,17 @@ for each iteration:
 After the loop, the assistant message (text + all tool calls with results) is
 saved to the database and a `done` event is emitted.
 
-**Charts in chat:** the model calls an analysis tool, then the chat-only
-`show_view` tool, which the server turns into a table or chart from that
-result. Every result the model sees starts with its `artifact_id`, and
-`show_view` takes any id from the conversation or `latest:<tool_name>` for
-that tool's newest result. A chart whose values are all zero is not drawn.
-When no named view fits, the `chart` view takes a small spec (rows, x, y,
-series, filter, aggregate, sort, top with an Other bucket, kind) and the server
-filters, groups and draws it, picking the chart type from the data's shape
-unless one is asked for. The same guards apply: no person fields, no risk score
-as a plotted value, and attribution figures only through `changes.provenance`.
+**Charts in chat:** the chat-only `chart` tool draws a repository dataset
+(files, findings, changes, health_trend, coverage, dead_code, dependencies,
+layers) in one call: the server reads every row from the index (cached per
+index state), filters, aggregates and draws it as a bar, horizontal bar,
+stacked bar, line, area, donut, scatter, treemap, heatmap or table. Its receipt
+carries the exact totals, shares and averages, every repair it made to the spec,
+a `kind_note` when the asked kind did not fit, and a `suggested_spec` on error.
+`show_view` draws a tool result already in the conversation (by `artifact_id`
+or `latest:<tool_name>`), redraws an earlier view by its id, and lets named
+views take `options.kind`. The same guards apply: no person fields, no risk
+score as a plotted value, and attribution figures only through `changes.provenance`.
 
 ---
 

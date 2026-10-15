@@ -113,6 +113,7 @@ def _artifact(data: dict, artifact_type: str, tool: str, basis: str = "inferred"
 
 def _build(data: dict, artifact_type: str, tool: str, view: str, **options: Any) -> dict:
     part = build_view(_artifact(data, artifact_type, tool), view, options, part_id="v1")
+    part.pop("receipt", None)
     ViewPartList.model_validate([part])
     kind = "TableView" if part["kind"] == "table" else "ChartView"
     assert set(part) <= set(FIELDS[kind])
@@ -768,10 +769,18 @@ def test_chart_summary_says_when_the_tool_returned_only_part_of_a_list():
 
 
 def test_chart_errors_list_the_fields_without_people():
-    _, result = _show_chart(HEALTH, rows="high_leverage_files", x="max_cnn")
+    _, result = _show_chart(HEALTH, rows="high_leverage_files", x="max_ccnx_value")
     assert result["error_code"] == "bad_spec"
     assert "'max_ccn'" in result["error"]
     assert result["fields"] == {"file_path": "text", "score": "number", "max_ccn": "number"}
+    # The fix comes back as a spec that draws, to resend as is.
+    assert result["suggested_spec"] == {"rows": "high_leverage_files", "x": "max_ccn"}
+
+
+def test_a_near_miss_field_name_is_read_as_the_field_and_said():
+    _, result = _show_chart(HEALTH, rows="high_leverage_files", x="max_cnn", y="score")
+    assert "error" not in result
+    assert "field 'max_cnn' read as 'max_ccn'" in result["notes"]
 
 
 @pytest.mark.parametrize(
@@ -815,3 +824,65 @@ def test_chart_series_split_is_still_risk_guarded_by_its_measure():
     data = {"rows": [{"file_path": "a", "tier": "x", "risk_score": 1}]}
     _, result = _show_chart(data, x="file_path", y="risk_score", series="tier", aggregate="sum")
     assert result["error_code"] == "risk_score_series"
+
+
+# ---------------------------------------------------------------------------
+# Named views take a kind; maps chart; errors carry a fix
+# ---------------------------------------------------------------------------
+
+
+def _show(data: dict, artifact_type: str, tool: str, view: str, **options: Any) -> tuple[TurnViews, dict]:
+    turn = TurnViews()
+    stamped = turn.record(tool, {}, data, artifact_type=artifact_type)
+    return turn, turn.show({"artifact_id": stamped[ARTIFACT_ID_FIELD], "view": view, "options": options})
+
+
+@pytest.mark.parametrize(
+    ("data", "artifact_type", "tool", "view"),
+    [
+        (HEALTH, "health", "get_health", "health.bands"),
+        (_overview_changes(), "overview", "get_overview", "changes.by_category"),
+    ],
+)
+def test_a_named_view_draws_as_a_donut_and_its_receipt_has_the_shares(data, artifact_type, tool, view):
+    turn, receipt = _show(data, artifact_type, tool, view, kind="donut")
+    assert receipt["chart_type"] == "donut" and turn.parts[0]["chart_type"] == "donut"
+    shares = receipt["figures"]["shares"]
+    assert sum(s["value"] for s in shares) == receipt["figures"]["total"]
+    ViewPartList.model_validate(turn.parts)
+
+
+def test_a_named_view_keeps_its_kind_when_the_asked_one_does_not_fit_and_says_so():
+    turn, receipt = _show(HEALTH, "health", "get_health", "health.bands", kind="scatter")
+    assert turn.parts[0]["chart_type"] == "bar"
+    assert "not scatter" in receipt["kind_note"]
+    _, table = _show(HEALTH, "health", "get_health", "health.trend", kind="table")
+    assert table["kind"] == "table"
+
+
+def test_a_map_of_numbers_charts_as_key_and_value_rows():
+    turn, receipt = _show_chart(
+        _overview_changes(), rows="changes.by_category", x="key", y="value", kind="donut"
+    )
+    assert receipt["chart_type"] == "donut"
+    assert turn.parts[0]["data"]["rows"] == [{"key": "feature", "value": 3}, {"key": "fix", "value": 1}]
+
+
+def test_table_columns_it_cannot_show_come_back_with_options_that_work():
+    _, result = _show(HEALTH, "health", "get_health", "table", path="high_leverage_files", columns=["file_path", "fix_count"])
+    assert result["error_code"] == "bad_arguments"
+    assert result["suggested_options"]["columns"] == ["file_path"]
+
+
+def test_a_view_of_this_conversation_redraws_as_another_kind():
+    turn, _ = _show(HEALTH, "health", "get_health", "health.bands")
+    redrawn = turn.show({"artifact_id": "v1", "view": "chart", "options": {"kind": "donut"}})
+    assert redrawn["chart_type"] == "donut" and redrawn["redrawn_from"] == "v1"
+    refused = turn.show({"artifact_id": "v1", "view": "chart", "options": {"kind": "scatter"}})
+    assert refused["error_code"] == "invalid_view"
+    assert "call chart" in refused["error"]
+
+
+def test_a_tool_with_no_declared_basis_names_itself_not_unresolved():
+    turn, _ = _show_chart({"rows": [{"k": "a"}, {"k": "b"}]}, x="k")
+    assert turn.parts[0]["basis"]["source"] == "get_health"

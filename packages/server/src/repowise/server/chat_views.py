@@ -8,6 +8,9 @@ from that result, and ``build_view`` adds provenance, applies the guards and
 validates it as a ``ViewPart``. Builders are pure functions registered on the
 ``chat-view`` seam, so a plugin adds one without editing this module.
 
+``chart_part`` turns rows and a chart spec into a part; the ``chart`` view
+and the chat-only ``chart`` tool (:mod:`repowise.server.chat_chart`) share it.
+
 Guards every builder passes through: no column or axis keyed by a person, no
 risk score as a chart series, and an attribution figure below
 ``ATTRIBUTION_COVERAGE_FLOOR`` (or without coverage) is refused with its
@@ -16,12 +19,13 @@ coverage value instead of drawn.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import logging
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
@@ -147,7 +151,7 @@ def _meta(data: Mapping[str, Any]) -> Mapping[str, Any]:
     return meta if isinstance(meta, Mapping) else {}
 
 
-def _guard(part: dict[str, Any], spec: ViewBuilder) -> None:
+def _guard(part: dict[str, Any], coverage_metric: str | None = None) -> None:
     data = part.get("data", part)
     for column in data.get("columns", []):
         if _PERSON.search(str(column.get("key", ""))):
@@ -162,7 +166,7 @@ def _guard(part: dict[str, Any], spec: ViewBuilder) -> None:
                     f"a risk score is never a chart series ({key!r}); show it in a table",
                     code="risk_score_series",
                 )
-    if spec.coverage_metric == "attribution":
+    if coverage_metric == "attribution":
         coverage = part.get("coverage")
         ratio = coverage.get("ratio") if isinstance(coverage, Mapping) else None
         if not isinstance(ratio, (int, float)) or ratio < ATTRIBUTION_COVERAGE_FLOOR:
@@ -219,19 +223,44 @@ def build_view(
         raise ViewError(f"unknown options {unknown}; {view!r} takes {sorted(spec.options)}")
 
     part = spec.build(artifact, options)
-    receipt = part.pop("receipt", None)
     meta = _meta(artifact.data)
     commit = meta.get("indexed_commit")
-    part.update(
-        schema_version=VIEW_SCHEMA_VERSION,
-        id=part_id,
+    return finish_part(
+        part,
+        part_id=part_id,
         source={
             "artifact_id": artifact.artifact_id,
             "tool_name": artifact.tool_name,
             "args_hash": args_hash(artifact.arguments),
         },
         stale=bool(meta.get("stale_warning")),
-        as_of=commit if isinstance(commit, str) and _SHA.match(commit) else None,
+        as_of=commit if isinstance(commit, str) else None,
+        coverage_metric=spec.coverage_metric,
+        what=f"view {view!r}",
+    )
+
+
+def finish_part(
+    part: dict[str, Any],
+    *,
+    part_id: str,
+    source: Mapping[str, str],
+    stale: bool,
+    as_of: str | None,
+    coverage_metric: str | None = None,
+    what: str = "the chart",
+) -> dict[str, Any]:
+    """Add provenance to a builder's part, apply the guards and validate it.
+
+    A builder's ``receipt`` comes back under ``"receipt"``; ``TurnViews`` pops it.
+    """
+    receipt = part.pop("receipt", None)
+    part.update(
+        schema_version=VIEW_SCHEMA_VERSION,
+        id=part_id,
+        source=dict(source),
+        stale=stale,
+        as_of=as_of if isinstance(as_of, str) and _SHA.match(as_of) else None,
     )
     if part.get("kind") == "chart" and _all_zero(part):
         raise ViewError(
@@ -239,12 +268,12 @@ def build_view(
             "say so in a sentence instead",
             code="no_data",
         )
-    _guard(part, spec)
+    _guard(part, coverage_metric)
     try:
         model = _PART.validate_python(part)
     except ValidationError as exc:
         raise ViewError(
-            f"view {view!r} could not be built from this result: {exc.errors()[0]['msg']}",
+            f"{what} could not be built from this result: {exc.errors()[0]['msg']}",
             code="invalid_view",
         ) from None
     built = _PART.dump_python(model, mode="json", exclude_unset=True)
@@ -316,39 +345,59 @@ class TurnViews:
             logger.exception("chat_view_builder_failed", extra={"view": arguments.get("view")})
             return ViewError("the view builder failed", code="builder_failed").payload()
         self.parts.append(part)
-        receipt = {"view_id": part["id"], "kind": part["kind"], "title": part["title"]}
+        receipt = part_receipt(part)
         reference = arguments.get("artifact_id")
         if isinstance(reference, str) and reference.startswith(LATEST_PREFIX):
             # Say which result a symbolic reference picked.
             receipt["resolved_artifact_id"] = part["source"]["artifact_id"]
             receipt["source_tool"] = part["source"]["tool_name"]
-        if "summary" in part:
-            receipt["summary"] = part["summary"]
         return {**receipt, **extra}
 
-    def _build(self, arguments: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        reference = arguments.get("artifact_id")
-        view = arguments.get("view")
-        options = arguments.get("options") or {}
-        artifact = self.artifacts.resolve(reference)
-        if artifact is None:
-            raise ViewError(
-                f"no tool result matches artifact_id {reference!r}. Pass an artifact_id "
-                f"from `available` or {LATEST_PREFIX}<tool_name>; if the result you need "
-                "is not listed, call its tool first",
-                code="unknown_artifact",
-                available=self.artifacts.available(),
-            )
-        if not isinstance(view, str) or not isinstance(options, Mapping):
-            raise ViewError("view must be a string and options an object", code="bad_arguments")
-        part = build_view(artifact, view, options, part_id=f"v{len(self.parts) + 1}")
-        extra = part.pop("receipt", None) or {}
+    def next_id(self) -> str:
+        return f"v{len(self.parts) + 1}"
+
+    def keep(self, part: dict[str, Any]) -> None:
+        """Add a finished part to the turn, within the turn's view cap."""
+        self._check_room(part)
+        self.parts.append(part)
+
+    def _check_room(self, part: dict[str, Any]) -> None:
         try:
             ViewPartList.model_validate([*self.parts, part])
         except ValidationError:
             raise ViewError(
                 f"a turn holds at most {VIEW_LIMITS['parts']} views", code="view_limit"
             ) from None
+
+    def _build(self, arguments: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        reference = arguments.get("artifact_id")
+        view = arguments.get("view")
+        options = arguments.get("options") or {}
+        artifact = self.artifacts.resolve(reference)
+        if artifact is None and isinstance(reference, str) and re.fullmatch(r"v\d+", reference):
+            shown = next((p for p in reversed(self.parts) if p["id"] == reference), None)
+            shown = shown or self.artifacts.views.get(reference)
+            if shown is None:
+                raise ViewError(
+                    f"no view {reference!r} in this conversation; call chart to draw one",
+                    code="unknown_artifact",
+                )
+            part = redraw(shown, options, part_id=self.next_id())
+            self._check_room(part)
+            return part, {"redrawn_from": reference}
+        if artifact is None:
+            raise ViewError(
+                f"no tool result matches artifact_id {reference!r}. Pass an artifact_id "
+                f"from `available` or {LATEST_PREFIX}<tool_name>; if the result you need "
+                "is not listed, call its tool first, or draw repository data with chart",
+                code="unknown_artifact",
+                available=self.artifacts.available(),
+            )
+        if not isinstance(view, str) or not isinstance(options, Mapping):
+            raise ViewError("view must be a string and options an object", code="bad_arguments")
+        part = build_view(artifact, view, options, part_id=self.next_id())
+        extra = part.pop("receipt", None) or {}
+        self._check_room(part)
         return part, extra
 
     def event(self, tool_id: str, result: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -356,6 +405,67 @@ class TurnViews:
         view_id = result.get("view_id")
         part = next((p for p in self.parts if p["id"] == view_id), None)
         return None if part is None else {"type": "view", "tool_id": tool_id, "view": part}
+
+
+def redraw(part: Mapping[str, Any], options: Any, *, part_id: str) -> dict[str, Any]:
+    """An earlier chart drawn again as ``options.kind``: another chart type, or its table.
+
+    Its rows and provenance are the earlier part's; only the form changes, and
+    the part is validated again, so a kind the rows cannot take is refused.
+    """
+    asked = options.get("kind") if isinstance(options, Mapping) else None
+    if asked is None:
+        raise ViewError("pass options.kind: the kind to draw this view as", code="bad_arguments")
+    try:
+        kind, _ = chat_view_spec.read_kind(asked)
+    except SpecError as exc:
+        raise ViewError(str(exc), code="bad_arguments") from None
+    if part.get("kind") != "chart":
+        raise ViewError(
+            "only a chart can be redrawn; call chart with kind table or another kind",
+            code="bad_arguments",
+        )
+    copy = {
+        k: v
+        for k, v in part.items()
+        if k not in ("id", "schema_version", "source", "stale", "as_of", "groups", "color", "sort")
+    }
+    if kind == "table":
+        for key in ("chart_type", "x", "series", "data"):
+            copy.pop(key, None)
+        copy.update(kind="table", **part["data"])
+    elif kind != "auto":
+        copy["chart_type"] = kind
+        if kind == "treemap":
+            copy.update({k: part[k] for k in ("groups", "color") if k in part})
+    if isinstance(options.get("title"), str) and options["title"].strip():
+        copy["title"] = options["title"].strip()
+    if kind in ("bar", "horizontal_bar", "stacked_bar", "line", "area") and "sort" in part:
+        copy["sort"] = part["sort"]
+    try:
+        return finish_part(
+            copy,
+            part_id=part_id,
+            source=part["source"],
+            stale=bool(part.get("stale")),
+            as_of=part.get("as_of"),
+            what=f"a {kind}",
+        )
+    except ViewError as exc:
+        raise ViewError(
+            f"{exc}; call chart with the spec and kind {kind} to draw it from the data",
+            code=exc.code,
+        ) from None
+
+
+def part_receipt(part: Mapping[str, Any]) -> dict[str, Any]:
+    """What the model reads back about a part it made: its id, kind, title and summary."""
+    receipt = {"view_id": part["id"], "kind": part["kind"], "title": part["title"]}
+    if part.get("kind") == "chart":
+        receipt["chart_type"] = part["chart_type"]
+    if "summary" in part:
+        receipt["summary"] = part["summary"]
+    return receipt
 
 
 def show_view_schema(artifact_types: list[str] | None = None) -> dict[str, Any]:
@@ -368,18 +478,15 @@ def show_view_schema(artifact_types: list[str] | None = None) -> dict[str, Any]:
         "function": {
             "name": SHOW_VIEW_TOOL,
             "description": (
-                "Show a table or chart built by the server from a tool result of this "
-                "conversation. Call the tool first (an earlier call in the same round "
-                "counts), then pass its artifact_id, or latest:<tool_name> for that "
-                "tool's newest result. Never restate the numbers yourself; the view "
-                "carries them. Views: " + ", ".join(names) + ". "
-                "`table` takes options path (dotted path to a list or map in the result), "
-                "columns and limit. When no named view fits, `chart` plots any list in the "
-                "result from options rows (path), x, y (field or list; omit to count rows), "
-                "series, filter [{field, op: eq|ne|lt|lte|gt|gte|in|contains|prefix, value}], "
-                "aggregate count|sum|avg|min|max, sort {field, order}, top, other (bucket the "
-                "rest), kind auto|bar|stacked_bar|line|donut|scatter, title. Its receipt says "
-                "the kind picked and why; an error lists the fields."
+                "Show a table or chart of a tool result already in this conversation "
+                "(for repository data prefer the chart tool, which needs no prior call). "
+                "Pass its artifact_id, or latest:<tool_name>, or an earlier view's id (v1) "
+                "with options.kind to redraw it. Views: " + ", ".join(names) + "; "
+                "named views take options.kind (e.g. donut, bar, table). `table` takes "
+                "options path (a list or map in the result), columns, limit. `chart` plots "
+                "any list or map in the result with the chart tool's spec (rows: the path, "
+                "x, y, series, filter, aggregate, sort, top, other, kind, title). Quote "
+                "numbers from the receipt; on an error resend its suggested_spec."
             ),
             "parameters": {
                 "type": "object",
@@ -410,7 +517,7 @@ def _tool_basis(artifact: ViewArtifact) -> dict[str, str]:
     declared = artifact.data.get("evidence_kind") or artifact.data.get("basis")
     kind = declared if declared in ("measured", "inferred", "declared") else artifact.evidence_basis
     if kind not in ("measured", "inferred", "declared"):
-        return _basis("unresolved", f"{artifact.tool_name} declares no basis")
+        return _basis("unresolved", artifact.tool_name)
     return _basis(kind, artifact.tool_name)
 
 
@@ -451,12 +558,20 @@ def _node(data: Any, path: str) -> Any:
     return node
 
 
-def _tabular(node: Any) -> list[dict[str, Any]] | None:
-    """Rows from a list of objects, or a map of objects keyed by id."""
+def _tabular(node: Any, scalars: bool = False) -> list[dict[str, Any]] | None:
+    """Rows from a list of objects, a map of objects keyed by id, or (*scalars*)
+    a map of plain values such as ``{"fix": 312, "feature": 120}`` as ``{key, value}``."""
     if isinstance(node, list) and node and all(isinstance(row, Mapping) for row in node):
         return [dict(row) for row in node]
     if isinstance(node, Mapping) and node and all(isinstance(v, Mapping) for v in node.values()):
         return [{"id": key, **value} for key, value in node.items()]
+    if (
+        scalars
+        and isinstance(node, Mapping)
+        and node
+        and all(isinstance(v, (str, int, float, bool)) or v is None for v in node.values())
+    ):
+        return [{"key": str(key), "value": value} for key, value in node.items()]
     return None
 
 
@@ -487,9 +602,12 @@ def _rows_at(
         path = candidates[0]
     if not isinstance(path, str) or any(_PERSON.search(seg) for seg in path.split(".")):
         raise ViewError(f"views never group by person ({path!r})", code="person_grouping")
-    rows = _tabular(_node(data, path))
+    rows = _tabular(_node(data, path), scalars=True)
     if rows is None:
-        raise ViewError(f"{path!r} is not a list or map of objects", code="bad_path")
+        raise ViewError(
+            f"{path!r} is not a list or map; tables in this result: {_table_paths(data)}",
+            code="bad_path",
+        )
     parent_path, _, leaf = path.rpartition(".")
     parent = _node(data, parent_path) if parent_path else data
     total = parent.get(f"{leaf}_total") if isinstance(parent, Mapping) else None
@@ -519,7 +637,11 @@ def table_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, 
     ]
     if wanted is not None:
         if missing := [k for k in wanted if k not in keys]:
-            raise ViewError(f"columns not available as cells: {missing}", code="bad_arguments")
+            raise ViewError(
+                f"columns not available as cells: {missing}; columns of {path!r}: {keys}",
+                code="bad_arguments",
+                suggested_options={**options, "columns": [k for k in wanted if k in keys] or keys},
+            )
         keys = list(dict.fromkeys(wanted))
     keys = keys[: VIEW_LIMITS["columns"]]
     if not keys:
@@ -538,28 +660,39 @@ def table_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, 
     }
 
 
-def _spec_error(exc: SpecError) -> ViewError:
-    extra = {"fields": exc.fields} if exc.fields else {}
+def _spec_error(exc: SpecError, suggested: Mapping[str, Any] | None = None) -> ViewError:
+    extra: dict[str, Any] = {"fields": exc.fields} if exc.fields else {}
+    if suggested is not None:
+        extra["suggested_spec"] = dict(suggested)
     return ViewError(str(exc), code=exc.code, **extra)
 
 
-@register_view_builder(
-    "chart",
-    description="A chart you specify over any list of objects in a result.",
-    options=chat_view_spec.OPTIONS,
-)
-def chart_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    try:
-        spec = chat_view_spec.parse_spec(options)
-    except SpecError as exc:
-        raise _spec_error(exc) from None
-    path, rows, source_total = _rows_at(artifact.data, options.get("rows"), "rows")
-    for name in spec.fields():
+@dataclass(frozen=True)
+class ChartSource:
+    """The rows a chart is drawn over, and what they are."""
+
+    rows: list[dict[str, Any]]
+    #: Names the rows in the summary: "files", "rows of tiers.medium.findings".
+    what: str
+    basis: dict[str, str]
+    #: Rows the source holds when the rows given are fewer (a capped tool list).
+    total: int | None = None
+    #: Declared fields (``aggregates``, ``weight``, ``unit``), when a dataset gives them.
+    meta: Mapping[str, Any] = field(default_factory=dict)
+    hierarchy: tuple[str, ...] = ()
+    #: A spec known to chart these rows, the last resort of a ``suggested_spec``.
+    example: Mapping[str, Any] | None = None
+    #: The result path the rows came from; the guards read its segments too.
+    path: tuple[str, ...] = ()
+
+
+def _check_names(names: list[str], path: tuple[str, ...]) -> None:
+    for name in names:
         if _PERSON.search(name):
             raise ViewError(
                 f"views never group or filter by person ({name!r})", code="person_grouping"
             )
-    for name in [*spec.fields(), *path.split(".")]:
+    for name in [*names, *path]:
         if _ATTRIBUTION.search(name):
             # Deliberate ceiling: no coverage check per row here, so these are
             # refused; changes.provenance draws them with their coverage.
@@ -568,54 +701,236 @@ def chart_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, 
                 "which checks their coverage",
                 code="attribution_figure",
             )
-    types = {k: t for k, t in chat_view_spec.field_types(rows).items() if not _PERSON.search(k)}
-    numeric_x = types.get(spec.x) == "number"
-    split = [spec.series] if spec.series else []
-    for name in [*spec.y, *split, *([spec.x] if numeric_x else [])]:
+
+
+def _plan(
+    source: ChartSource, options: Mapping[str, Any]
+) -> tuple[chat_view_spec.ChartSpec, chat_view_spec.ChartRows]:
+    spec = chat_view_spec.parse_spec(options)
+    _check_names(spec.fields(), source.path)
+    types = {
+        k: t for k, t in chat_view_spec.field_types(source.rows).items() if not _PERSON.search(k)
+    }
+    spec = chat_view_spec.fit(spec, source.rows, types, source.meta, source.hierarchy)
+    _check_names(spec.fields(), ())
+    numeric_x = not spec.x_parts and types.get(spec.x) == "number"
+    plotted = [*spec.y, *([spec.series] if spec.series else []), *([spec.x] if numeric_x else [])]
+    if spec.color and types.get(spec.color) == "number":
+        plotted.append(spec.color)
+    for name in plotted:
         if _RISK_SCORE.search(name):
             raise ViewError(
                 f"a risk score is never a chart series ({name!r}); show it in a table",
                 code="risk_score_series",
             )
+    return spec, chat_view_spec.transform(spec, source.rows, types)
+
+
+def _closest(name: Any, fields: list[str]) -> str | None:
+    if not isinstance(name, str):
+        return None
+    if name in fields:
+        return name
+    close = difflib.get_close_matches(name, fields, n=1, cutoff=0.5)
+    return close[0] if close else None
+
+
+def _repaired(options: Mapping[str, Any], fields: list[str]) -> dict[str, Any]:
+    """*options* with each field name it gets wrong swapped for the closest real one, or dropped."""
+    fixed = dict(options)
+    for key in ("x", "y", "groups"):
+        value = fixed.get(key)
+        names = value if isinstance(value, list) else [value] if value is not None else []
+        kept = [c for n in names if (c := _closest(n, fields))]
+        if key == "x" and not kept:
+            continue
+        if not kept:
+            fixed.pop(key, None)
+        else:
+            fixed[key] = kept if isinstance(value, list) and len(kept) > 1 else kept[0]
+    for key in ("series", "weight", "color"):
+        if key in fixed:
+            name = _closest(fixed[key], fields)
+            if name is None:
+                fixed.pop(key)
+            else:
+                fixed[key] = name
+    if "y" not in fixed and fixed.get("aggregate") not in (None, "count"):
+        fixed["aggregate"] = "count"
+    filters = fixed.get("filter")
+    if isinstance(filters, (list, Mapping)):
+        filters = [filters] if isinstance(filters, Mapping) else filters
+        fixed["filter"] = [
+            {**f, "field": name}
+            for f in filters
+            if isinstance(f, Mapping) and (name := _closest(f.get("field"), fields))
+        ]
+    return fixed
+
+
+def _suggest(source: ChartSource, options: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A spec that draws, close to *options*, which the model can resend as is.
+
+    Each candidate is run, so a suggestion is never itself an error: the
+    names repaired, then without kind, filters, sort and top, or series, and
+    last the source's own example.
+    """
+    fields = sorted(chat_view_spec.field_types(source.rows))
+    base = _repaired(options, fields)
+    drops = ((), ("kind",), ("filter",), ("sort", "top", "other"), ("series",))
+    candidates = [{k: v for k, v in base.items() if k not in keys} for keys in drops]
+    if source.example is not None:
+        candidates.append({**dict(source.example), **({"rows": options["rows"]} if "rows" in options else {})})
+    for candidate in candidates:
+        if candidate == dict(options):
+            continue
+        try:
+            _plan(source, candidate)
+        except (SpecError, ViewError):
+            continue
+        return candidate
+    return None
+
+
+def _units(spec: chat_view_spec.ChartSpec, meta: Mapping[str, Any]) -> str | None:
+    """The plotted columns' one unit, when the fields declare one they share."""
+    if spec.aggregate == "count":
+        return None
+    units = {getattr(meta.get(y), "unit", None) for y in spec.y}
+    return units.pop() if len(units) == 1 else None
+
+
+def _n(value: Any) -> str:
+    """A number as a summary writes it: digits grouped, averages to two places."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, float) and not value.is_integer():
+        return f"{value:,.2f}"
+    return f"{int(value):,}"
+
+
+def chart_part(source: ChartSource, options: Mapping[str, Any]) -> dict[str, Any]:
+    """A chart (or table) part from *source*'s rows by the spec in *options*, with its receipt.
+
+    Shared by ``show_view``'s ``chart`` view and the ``chart`` tool. Raises
+    ``ViewError``; a spec error carries a ``suggested_spec`` when one draws.
+    """
     try:
-        chat_view_spec.check_fields(spec, types)
-        result = chat_view_spec.transform(spec, rows, types)
+        spec, result = _plan(source, options)
     except SpecError as exc:
-        raise _spec_error(exc) from None
+        raise _spec_error(exc, _suggest(source, options)) from None
 
     def cell(key: str, value: Any) -> Any:
         value = _cell(key, value) if key not in result.series else _wire(value)
         return None if value is ... else value
 
-    shown = f"{result.matched} of {result.source_rows}" if spec.filters else f"{result.source_rows}"
-    summary = f"{shown} rows of {path}" + (f", grouped by {spec.x}" if spec.aggregate else "") + "."
+    figures = result.figures
+    x_label = _label(spec.x) if not spec.x_parts else dict(result.columns).get(spec.x, spec.x)
+    drawn = result.matched - result.missing_x
+    grouped = bool(spec.aggregate) and figures.get("groups", drawn) < drawn
+    shown = (
+        f"{_n(result.matched)} of {_n(result.source_rows)}"
+        if spec.filters
+        else _n(result.source_rows)
+    )
+    summary = f"{shown} {source.what}"
+    if grouped:
+        summary += f", grouped by {x_label.lower()} into {_n(figures['groups'])}"
+    summary += "."
+    if grouped and spec.aggregate == "sum" and "total" in figures:
+        measures = " and ".join(_label(y).lower() for y in spec.y)
+        summary += f" Total {measures}: {_n(figures['total'])}."
+    for name, value in (figures.get("overall") or {}).items():
+        if grouped and value is not None:
+            weighted = f", weighted by {_label(spec.weight).lower()}" if spec.weight else ""
+            summary += f" {name} across them: {_n(value)}{weighted}."
+    if result.total_rows > len(result.rows) and not result.other:
+        summary += f" Showing {_n(len(result.rows))} of {_n(result.total_rows)}."
+        figures["drawn"] = len(result.rows)
     if result.missing_x:
-        summary += f" {result.missing_x} rows without {spec.x} are left out."
+        summary += f" {_n(result.missing_x)} without {x_label.lower()} are left out."
     if result.other:
-        summary += f" {chat_view_spec.OTHER_LABEL} adds up the rows past the top {spec.top}."
-    if source_total > len(rows):
+        summary += f" {chat_view_spec.OTHER_LABEL} adds up the rest."
+    if source.total is not None and source.total > len(source.rows):
         summary += (
-            f" The tool returned {len(rows)} of {source_total} rows; the chart covers those only."
+            f" The tool returned {len(source.rows)} of {source.total} rows; "
+            "the chart covers those only."
         )
+    unit = _units(spec, source.meta)
+    columns = [
+        {"key": k, "label": label, **({"unit": unit} if unit and k in result.series else {})}
+        for k, label in result.columns
+    ]
+    rows = [{k: cell(k, v) for k, v in row.items()} for row in result.rows]
+    title = spec.title or chat_view_spec.default_title(spec)
+    summary = f"{spec.subtitle} {summary}" if spec.subtitle else summary
+    receipt: dict[str, Any] = {"reason": result.reason}
+    if result.kind_note:
+        receipt["kind_note"] = result.kind_note
+    if result.notes:
+        receipt["notes"] = result.notes
+    receipt["figures"] = figures
+    if result.chart_type == "table":
+        return {
+            "kind": "table",
+            "title": title,
+            "summary": summary,
+            "basis": source.basis,
+            "columns": columns[: VIEW_LIMITS["columns"]],
+            "rows": [
+                {c["key"]: row.get(c["key"]) for c in columns[: VIEW_LIMITS["columns"]]}
+                for row in rows
+            ],
+            "total_rows": result.total_rows,
+            "truncated": result.total_rows > len(rows),
+            "receipt": receipt,
+        }
     part: dict[str, Any] = {
         "kind": "chart",
         "chart_type": result.chart_type,
-        "title": spec.title or chat_view_spec.default_title(spec),
-        "summary": f"{spec.subtitle} {summary}" if spec.subtitle else summary,
-        "basis": _tool_basis(artifact),
+        "title": title,
+        "summary": summary,
+        "basis": source.basis,
         "x": result.x,
         "series": result.series,
         "data": {
-            "columns": [{"key": k, "label": label} for k, label in result.columns],
-            "rows": [{k: cell(k, v) for k, v in row.items()} for row in result.rows],
+            "columns": columns,
+            "rows": rows,
             "total_rows": result.total_rows,
             "truncated": result.total_rows > len(result.rows),
         },
-        "receipt": {"chart_type": result.chart_type, "reason": result.reason},
+        "receipt": {"chart_type": result.chart_type, **receipt},
     }
     if result.sort:
         part["sort"] = result.sort
+    if result.chart_type == "treemap":
+        if result.groups:
+            part["groups"] = result.groups
+        if result.color:
+            part["color"] = result.color
     return part
+
+
+@register_view_builder(
+    "chart",
+    description="A chart you specify over any list or map in a result.",
+    options=chat_view_spec.OPTIONS,
+)
+def chart_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
+    path, rows, source_total = _rows_at(artifact.data, options.get("rows"), "rows")
+    source = ChartSource(
+        rows=rows,
+        what=f"rows of {path}",
+        basis=_tool_basis(artifact),
+        total=source_total,
+        path=tuple(path.split(".")),
+    )
+    return chart_part(source, options)
+
+
+#: Kinds a named view takes in ``options.kind``: categories, or points in time.
+_CATEGORY_KINDS = ("bar", "horizontal_bar", "donut", "table")
+_TIME_KINDS = ("line", "area", "bar", "table")
 
 
 def _chart(
@@ -629,11 +944,17 @@ def _chart(
     rows: list[dict[str, Any]],
     total_rows: int | None = None,
     chart_type: str = "bar",
+    options: Mapping[str, Any] | None = None,
+    kinds: tuple[str, ...] = _CATEGORY_KINDS,
+    parts: bool = True,
 ) -> dict[str, Any]:
+    """A named view's chart. ``options.kind`` redraws it as another of *kinds*
+    when the rows fit that kind; *parts* says the rows add up to a whole, so
+    the receipt carries their total and shares."""
     if not rows:
         raise ViewError("this result has nothing to chart", code="no_data")
     total = len(rows) if total_rows is None else max(total_rows, len(rows))
-    return {
+    part: dict[str, Any] = {
         "kind": "chart",
         "chart_type": chart_type,
         "title": title,
@@ -651,6 +972,72 @@ def _chart(
             "truncated": total > len(rows),
         },
     }
+    receipt: dict[str, Any] = {}
+    if parts and len(series) == 1:
+        receipt["figures"] = _shares(rows, x[0], series[0][0])
+    asked = (options or {}).get("kind")
+    if asked is not None:
+        _redraw(part, asked, kinds, receipt)
+    if receipt:
+        part["receipt"] = {**({"chart_type": part["chart_type"]} if part["kind"] == "chart" else {}), **receipt}
+    return part
+
+
+def _shares(rows: list[dict[str, Any]], x: str, key: str) -> dict[str, Any]:
+    values = [(_label_of(r[x]), r[key]) for r in rows if isinstance(r.get(key), (int, float))]
+    whole = sum(v for _, v in values)
+    figures: dict[str, Any] = {"total": whole}
+    if whole > 0:
+        figures["shares"] = [
+            {"x": name, "value": v, "pct": round(100 * v / whole, 1)} for name, v in values[:12]
+        ]
+    return figures
+
+
+def _label_of(cell: Any) -> str:
+    return str(cell.get("id")) if isinstance(cell, Mapping) else str(cell)
+
+
+def _redraw(part: dict[str, Any], asked: Any, kinds: tuple[str, ...], receipt: dict[str, Any]) -> None:
+    """Draw *part* as the *asked* kind when its rows fit it; else keep it and say why."""
+    try:
+        kind, note = chat_view_spec.read_kind(asked)
+    except SpecError as exc:
+        raise ViewError(f"{exc}; this view takes {list(kinds)}", code="bad_arguments") from None
+    if note:
+        receipt.setdefault("notes", []).append(note)
+    drawn = part["chart_type"]
+    if kind == drawn or kind == "auto":
+        return
+    if kind not in kinds:
+        receipt["kind_note"] = (
+            f"this view draws as {', '.join(kinds)}, not {kind}, so it stays a {drawn}"
+        )
+        return
+    data = part["data"]
+    if kind == "table":
+        for key in ("chart_type", "x", "series", "sort", "data"):
+            part.pop(key, None)
+        part.update(kind="table", **data)
+        return
+    if kind == "donut":
+        values = [r.get(s) for r in data["rows"] for s in part["series"]]
+        low, high = VIEW_LIMITS["donut_min_parts"], VIEW_LIMITS["donut_max_parts"]
+        fits = (
+            len(part["series"]) == 1
+            and low <= len(data["rows"]) <= high
+            and not data["truncated"]
+            and all(isinstance(v, (int, float)) and v >= 0 for v in values)
+            and sum(values) > 0
+        )
+        if not fits:
+            receipt["kind_note"] = (
+                f"a donut shows {low} to {high} parts of one whole, which these "
+                f"{len(data['rows'])} rows are not, so it stays a {drawn}"
+            )
+            return
+    part["chart_type"] = kind
+    part.pop("sort", None)
 
 
 _HEALTH_BANDS = ("at_risk", "needs_work", "fair", "good", "excellent")
@@ -660,7 +1047,7 @@ _HEALTH_BANDS = ("at_risk", "needs_work", "fair", "good", "excellent")
     "health.bands",
     description="Files per health band.",
     artifact_types={"health", "overview"},
-    options=frozenset(),
+    options=frozenset({"kind"}),
 )
 def health_bands_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     data = artifact.data
@@ -682,6 +1069,7 @@ def health_bands_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dic
         series=[("files", "Files")],
         unit="files",
         rows=rows,
+        options=options,
     )
 
 
@@ -689,7 +1077,7 @@ def health_bands_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dic
     "health.trend",
     description="Average and hotspot health over recent snapshots.",
     artifact_types={"health"},
-    options=frozenset(),
+    options=frozenset({"kind"}),
 )
 def health_trend_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     trend = artifact.data.get("trend")
@@ -719,6 +1107,9 @@ def health_trend_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dic
         unit="score",
         rows=rows,
         total_rows=total if isinstance(total, int) else None,
+        options=options,
+        kinds=_TIME_KINDS,
+        parts=False,
     )
 
 
@@ -726,6 +1117,7 @@ def health_trend_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dic
     "health.test_coverage",
     description="Measured line coverage per file, from the ingested coverage report.",
     artifact_types={"health"},
+    options=frozenset({"limit", "kind"}),
 )
 def health_test_coverage_view(
     artifact: ViewArtifact, options: Mapping[str, Any]
@@ -755,6 +1147,8 @@ def health_test_coverage_view(
         unit="%",
         rows=rows,
         total_rows=total,
+        options=options,
+        parts=False,
     )
     if isinstance(summary_pct, (int, float)) and 0 <= summary_pct <= 100:
         # Rounded so the percentage converts without float noise (88.84 -> 0.8884).
@@ -766,7 +1160,7 @@ def health_test_coverage_view(
     "dead_code.by_tier",
     description="Dead-code findings per confidence tier.",
     artifact_types={"dead_code"},
-    options=frozenset(),
+    options=frozenset({"kind"}),
 )
 def dead_code_by_tier_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     tiers = artifact.data.get("tiers")
@@ -785,6 +1179,7 @@ def dead_code_by_tier_view(artifact: ViewArtifact, options: Mapping[str, Any]) -
         series=[("findings", "Findings")],
         unit="findings",
         rows=rows,
+        options=options,
     )
 
 
@@ -792,7 +1187,7 @@ def dead_code_by_tier_view(artifact: ViewArtifact, options: Mapping[str, Any]) -
     "dead_code.by_kind",
     description="Open dead-code findings per kind.",
     artifact_types={"dead_code"},
-    options=frozenset(),
+    options=frozenset({"kind"}),
 )
 def dead_code_by_kind_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     by_kind = (artifact.data.get("summary") or {}).get("by_kind")
@@ -811,6 +1206,7 @@ def dead_code_by_kind_view(artifact: ViewArtifact, options: Mapping[str, Any]) -
         series=[("findings", "Findings")],
         unit="findings",
         rows=rows,
+        options=options,
     )
 
 
@@ -818,6 +1214,7 @@ def dead_code_by_kind_view(artifact: ViewArtifact, options: Mapping[str, Any]) -
     "risk.hotspots",
     description="Bug-fix commits on the repository's top hotspots.",
     artifact_types={"risk"},
+    options=frozenset({"limit", "kind"}),
 )
 def risk_hotspots_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     hotspots = artifact.data.get("global_hotspots")
@@ -840,6 +1237,8 @@ def risk_hotspots_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> di
         unit="commits",
         rows=rows,
         total_rows=total,
+        options=options,
+        parts=False,
     )
 
 
@@ -865,7 +1264,7 @@ def _window(block: Mapping[str, Any]) -> str:
     "changes.by_category",
     description="Merged changes per category (feature, fix, ...).",
     artifact_types={"overview"},
-    options=frozenset(),
+    options=frozenset({"kind"}),
 )
 def changes_by_category_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     block = _changes_block(artifact)
@@ -883,6 +1282,7 @@ def changes_by_category_view(artifact: ViewArtifact, options: Mapping[str, Any])
         series=[("changes", "Changes")],
         unit="changes",
         rows=rows,
+        options=options,
     )
 
 
@@ -890,7 +1290,7 @@ def changes_by_category_view(artifact: ViewArtifact, options: Mapping[str, Any])
     "changes.by_week",
     description="Merged changes per week.",
     artifact_types={"overview"},
-    options=frozenset(),
+    options=frozenset({"kind"}),
 )
 def changes_by_week_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     block = _changes_block(artifact)
@@ -912,6 +1312,8 @@ def changes_by_week_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> 
         series=[("changes", "Changes")],
         unit="changes",
         rows=rows,
+        options=options,
+        kinds=_TIME_KINDS,
     )
 
 

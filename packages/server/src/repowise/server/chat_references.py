@@ -18,6 +18,10 @@ from typing import Any
 from repowise.server.chat_artifacts import ARTIFACT_ID_FIELD, normalize_message_artifacts
 
 SHOW_VIEW_TOOL = "show_view"
+#: The chat-only tool that charts a dataset in one call (:mod:`repowise.server.chat_chart`).
+CHART_TOOL = "chart"
+#: Tools whose result is a view of data, never data a view may cite.
+VIEW_TOOLS = frozenset({SHOW_VIEW_TOOL, CHART_TOOL})
 LATEST_PREFIX = "latest:"
 #: References an unknown-id error lists, newest first.
 _LISTED = 8
@@ -52,7 +56,7 @@ def replayed_result(call: Mapping[str, Any]) -> Any:
     artifact = call.get("artifact")
     data = artifact.get("data", {}) if isinstance(artifact, Mapping) else {}
     if (
-        call.get("name") != SHOW_VIEW_TOOL
+        call.get("name") not in VIEW_TOOLS
         and isinstance(data, Mapping)
         and "error" not in data
         and isinstance(artifact.get("id"), str)
@@ -72,6 +76,9 @@ class ArtifactIndex:
 
     def __init__(self) -> None:
         self._entries: dict[str, tuple[ViewArtifact, int]] = {}
+        #: Earlier turns' view parts by id, the newest turn's winning: view
+        #: ids restart each turn, and "the chart above" means the latest one.
+        self.views: dict[str, dict[str, Any]] = {}
         #: The current turn's number; earlier turns are 1..turn-1.
         self.turn = 1
 
@@ -86,12 +93,15 @@ class ArtifactIndex:
             for call in content.get("tool_calls") or []:
                 if isinstance(call, dict):
                     index._add_stored(call)
+            for part in content.get("views") or []:
+                if isinstance(part, dict) and isinstance(part.get("id"), str):
+                    index.views[part["id"]] = part
             index.turn += 1
         return index
 
     def _add_stored(self, call: dict[str, Any]) -> None:
         artifact = call.get("artifact")
-        if call.get("name") == SHOW_VIEW_TOOL or not isinstance(artifact, dict):
+        if call.get("name") in VIEW_TOOLS or not isinstance(artifact, dict):
             return
         artifact_id, data = artifact.get("id"), artifact.get("data")
         if not isinstance(artifact_id, str) or not isinstance(data, dict):
