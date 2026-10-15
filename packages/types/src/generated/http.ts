@@ -95,6 +95,8 @@ export interface ActionsResponse {
 export interface ActiveProviderSelection {
   provider?: string | null;
   model?: string | null;
+  base_url?: string | null;
+  provenance?: SelectionProvenance;
   input_cost_per_1k?: number | null;
   output_cost_per_1k?: number | null;
   embedder?: string | null;
@@ -3589,9 +3591,16 @@ export interface SecuritySummaryResponse {
   scanned_at?: string | null;
 }
 
+export interface SelectionProvenance {
+  provider?: string | null;
+  model?: string | null;
+  base_url?: string | null;
+}
+
 export interface SetActiveProviderRequest {
   provider: string;
   model?: string | null;
+  base_url?: string | null;
   repo_id?: string | null;
 }
 

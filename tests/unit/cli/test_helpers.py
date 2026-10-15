@@ -813,13 +813,49 @@ class TestResolveProviderConfigModel:
         assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
         assert captured["kwargs"].get("model") == "anthropic/claude-sonnet-5"
 
-    def test_env_model_overrides_config_model(self, monkeypatch, tmp_path):
+    def test_config_model_overrides_env_model(self, monkeypatch, tmp_path):
+        """config.yaml outranks REPOWISE_MODEL, the order every entry point shares."""
         captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
         monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
         monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
 
         assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
-        assert captured["kwargs"].get("model") == "anthropic/claude-opus-5"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_config_provider_overrides_env_provider(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch, tmp_path, {"provider": "openrouter", "model": "google/gemini-3.1"}
+        )
+        monkeypatch.setenv("REPOWISE_PROVIDER", "anthropic")
+        monkeypatch.setenv("REPOWISE_MODEL", "claude-opus-4-6")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["name"] == "openrouter"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_flag_provider_does_not_inherit_another_providers_model(
+        self, monkeypatch, tmp_path
+    ):
+        captured = self._capture(
+            monkeypatch, tmp_path, {"provider": "gemini", "model": "gemini-3.1-pro-preview"}
+        )
+
+        assert resolve_provider("openrouter", None, repo_path=tmp_path) == "provider"
+        from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+        assert captured["kwargs"].get("model") == PROVIDER_SPECS["openrouter"].default_model
+
+    def test_config_base_url_beats_env_base_url(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "model": "qwen", "openai": {"base_url": "http://lm:1234/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://other:4000/v1")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"]["base_url"] == "http://lm:1234/v1"
 
     def test_explicit_model_flag_overrides_env_model(self, monkeypatch, tmp_path):
         captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})

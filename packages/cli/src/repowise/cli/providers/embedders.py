@@ -8,54 +8,27 @@ from typing import Any
 
 from repowise.cli.providers.keys import (
     embedder_key_env_vars,
-    global_config_embedder,
     resolve_embedder_api_key,
 )
 
 
 def _embedder_kwargs(embedder_name: str, repo_path: Any = None) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {}
-    model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
-    if embedder_name == "ollama":
-        model = os.environ.get("OLLAMA_EMBEDDING_MODEL") or model
-        base_url = os.environ.get("OLLAMA_BASE_URL")
-        dimensions = os.environ.get("OLLAMA_EMBEDDING_DIMS") or os.environ.get(
-            "REPOWISE_EMBEDDING_DIMS"
-        )
-        if base_url:
-            kwargs["base_url"] = base_url
-        if dimensions:
-            kwargs["dimensions"] = int(dimensions)
-    elif embedder_name == "gemini":
-        dimensions = os.environ.get("REPOWISE_EMBEDDING_DIMS")
-        if dimensions:
-            kwargs["output_dimensionality"] = int(dimensions)
-    if model:
-        kwargs["model"] = model
-    # Passed explicitly rather than left to the adapter's own ``os.environ``
-    # read, which is the only route this had and the reason a key persisted to
-    # ``.repowise/.env`` never reached the embedder from a command that had not
-    # called ``load_dotenv``. Absent keys stay absent: the adapter still raises
-    # its own "API key required", which is the message worth showing.
-    lookup = resolve_embedder_api_key(embedder_name, repo_path)
-    if lookup.key:
-        kwargs["api_key"] = lookup.key
-    return kwargs
+    """Constructor kwargs, from the resolver the servers share."""
+    from repowise.core.providers.embedding.resolve import embedder_kwargs
+
+    return embedder_kwargs(embedder_name, repo_path)
 
 
 def resolve_embedding_model(embedder_name: str) -> str | None:
     """Return the configured embedding model for *embedder_name*, if any.
 
-    Mirrors the precedence in :func:`_embedder_kwargs` so the value persisted
-    to ``config.yaml`` at init time is exactly what the embedder would build
-    with. Returns ``None`` when no model is configured (the embedder then uses
-    its own default), which keeps ``config.yaml`` free of empty keys.
+    The same value :func:`_embedder_kwargs` builds with, so what ``init``
+    persists to ``config.yaml`` is what the embedder used. ``None`` when no
+    model is configured (the embedder then uses its own default).
     """
-    if embedder_name == "ollama":
-        return os.environ.get("OLLAMA_EMBEDDING_MODEL") or os.environ.get(
-            "REPOWISE_EMBEDDING_MODEL"
-        )
-    return os.environ.get("REPOWISE_EMBEDDING_MODEL")
+    from repowise.core.providers.embedding.resolve import embedding_model_for
+
+    return embedding_model_for(embedder_name)
 
 
 def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = None) -> str:
@@ -63,33 +36,18 @@ def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = 
 
     *env* layers a repo's persisted ``.repowise/.env`` under the process
     environment for callers that must not merge it into ``os.environ``. The
-    process still wins on every key, so an exported variable keeps overriding
-    the file, exactly as ``load_dotenv``'s non-overwriting merge did.
-
-    ``~/.repowise/config.yaml``'s ``embedder`` is the last tier, below every
-    environment source and above the keyless fallback. See
-    :func:`~repowise.cli.providers.keys.global_config_embedder`.
+    process still wins on every key. The repo's own pin is not consulted:
+    this is the choice ``init`` makes afresh. Order: flag > ``REPOWISE_EMBEDDER``
+    > detection from keys > ``~/.repowise/config.yaml``'s ``embedder`` > mock.
     """
-    if embedder_flag:
-        return embedder_flag
+    from repowise.core.providers.embedding.resolve import resolve_embedder_name
 
-    def _get(name: str) -> str:
-        return os.environ.get(name) or (env or {}).get(name) or ""
+    overlay = env or {}
 
-    configured = _get("REPOWISE_EMBEDDER").strip().lower()
-    if configured:
-        return configured
-    if _get("GEMINI_API_KEY") or _get("GOOGLE_API_KEY"):
-        return "gemini"
-    if _get("OPENAI_API_KEY"):
-        return "openai"
-    if _get("OPENROUTER_API_KEY"):
-        return "openrouter"
-    if _get("OLLAMA_EMBEDDING_MODEL"):
-        return "ollama"
-    if _get("EDENAI_API_KEY"):
-        return "edenai"
-    return global_config_embedder() or "mock"
+    def getenv(name: str) -> str | None:
+        return os.environ.get(name) or overlay.get(name) or None
+
+    return resolve_embedder_name(embedder_flag, getenv=getenv, use_pin=False)[0]
 
 
 def pin_names_an_embedder(pinned_embedder: Any) -> bool:
@@ -148,43 +106,13 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     with whatever API key happens to be exported: the 1536-wide query vector
     finds nothing in an 8-wide table, and search just returns nothing.
 
-    Precedence matches :func:`resolve_embedder` and what ``serve`` already
-    does, so the same repo in the same shell never resolves two different ways:
-    an explicitly set ``REPOWISE_EMBEDDER`` wins (it is the documented escape
-    hatch after a manual re-embed), then the pin, then env detection.
+    An explicitly set ``REPOWISE_EMBEDDER`` wins (the documented escape hatch
+    after a manual re-embed), then the pin, then detection, with this repo's
+    own ``.env`` counted as evidence without merging it into ``os.environ``.
     """
-    from pathlib import Path
+    from repowise.core.providers.embedding.resolve import resolve_embedder_name
 
-    from repowise.cli.helpers import load_config
-
-    override = os.environ.get("REPOWISE_EMBEDDER", "").strip().lower()
-    if override:
-        return override
-    try:
-        pinned = load_config(Path(repo_path)).get("embedder")
-    except Exception:
-        pinned = None
-    if pinned:
-        return str(pinned)
-    # No pin, so fall back to detection — and let this repo's own persisted
-    # ``.env`` count as evidence. Read purely rather than merged into
-    # ``os.environ``: a workspace resolves several repos in one process, and a
-    # merge is first-writer-wins, so the first repo's key would silently answer
-    # for every sibling afterwards.
-    from repowise.core.repo_config import RepoConfigError, load_repo_env
-
-    try:
-        overlay = load_repo_env(repo_path)
-    except RepoConfigError as exc:
-        # A broken .env must surface — the embedder it pins would silently
-        # fall back to detection (issue #852).
-        from repowise.cli.helpers import err_console
-
-        err_console.print(f"[yellow]Warning:[/yellow] {exc}")
-        overlay = {}
-    except Exception:
-        overlay = {}
-    return resolve_embedder(None, overlay)
+    return resolve_embedder_name(repo_path=repo_path)[0]
 
 
 def build_embedder(embedder_name_resolved: str, repo_path: Any = None) -> Any:

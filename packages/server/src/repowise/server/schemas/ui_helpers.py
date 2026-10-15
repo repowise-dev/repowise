@@ -18,9 +18,14 @@ class OkResponse(BaseModel):
 
 class SetActiveProviderRequest(BaseModel):
     provider: str
+    #: Any model id the provider accepts, not only a catalog model.
     model: str | None = None
-    # When set, the selection is scoped to this repo (so picking a model for
-    # one repo never shadows another in a workspace). Omit for the global default.
+    #: An ``http(s)://`` endpoint (an OpenAI-compatible server such as LM
+    #: Studio). Omit to keep the current one; ``""`` or ``null`` clears it.
+    base_url: str | None = None
+    # When set, the selection is written to this repo's .repowise/config.yaml
+    # (so picking a model for one repo never shadows another in a workspace).
+    # Omit for the global default.
     repo_id: str | None = None
 
 
@@ -60,11 +65,22 @@ class EmbedderEntry(BaseModel):
     semantic: bool = True
 
 
+class SelectionProvenance(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+
+
 class ActiveProviderSelection(BaseModel):
     """The provider/model this scope resolves to; ``None`` when unset."""
 
     provider: str | None = None
     model: str | None = None
+    #: The endpoint requests go to; ``None`` means the provider's own default.
+    base_url: str | None = None
+    #: Where each value came from, per field: ``request``, ``config.yaml``,
+    #: ``global``, ``env:<VAR>``, ``default`` or ``autodetect``; ``None`` if unset.
+    provenance: SelectionProvenance = SelectionProvenance()
     #: USD per 1K tokens for ``model``; ``None`` when no model resolves.
     input_cost_per_1k: float | None = None
     output_cost_per_1k: float | None = None

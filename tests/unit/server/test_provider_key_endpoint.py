@@ -185,3 +185,51 @@ async def test_get_providers_returns_no_key_material(client: AsyncClient) -> Non
     for provider in resp.json()["providers"]:
         assert "key" not in provider
         assert "api_key" not in provider
+
+
+@pytest.mark.asyncio
+async def test_patch_active_with_repo_id_writes_config_yaml(client: AsyncClient) -> None:
+    from pathlib import Path
+
+    from repowise.core.repo_config import load_repo_config
+
+    repo = await create_test_repo(client)
+
+    resp = await client.patch(
+        "/api/providers/active",
+        json={
+            "provider": "openai",
+            "model": "qwen/qwen3-coder-30b",
+            "base_url": "http://localhost:1234/v1",
+            "repo_id": repo["id"],
+        },
+    )
+    assert resp.status_code == 200
+    active = resp.json()["active"]
+    assert (active["provider"], active["model"]) == ("openai", "qwen/qwen3-coder-30b")
+    assert active["base_url"] == "http://localhost:1234/v1"
+    assert active["provenance"]["base_url"] == "config.yaml"
+    cfg = load_repo_config(Path(repo["local_path"]))
+    assert cfg["openai"] == {"base_url": "http://localhost:1234/v1"}
+
+    # Leaving base_url out keeps it; the existing request shape still works.
+    resp = await client.patch(
+        "/api/providers/active",
+        json={"provider": "openai", "model": "other", "repo_id": repo["id"]},
+    )
+    assert resp.json()["active"]["base_url"] == "http://localhost:1234/v1"
+
+    resp = await client.patch(
+        "/api/providers/active",
+        json={"provider": "openai", "base_url": "", "repo_id": repo["id"]},
+    )
+    assert resp.json()["active"]["base_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_active_rejects_a_non_http_base_url(client: AsyncClient) -> None:
+    resp = await client.patch(
+        "/api/providers/active", json={"provider": "openai", "base_url": "localhost:1234"}
+    )
+    assert resp.status_code == 400
+    assert "http" in resp.json()["detail"]

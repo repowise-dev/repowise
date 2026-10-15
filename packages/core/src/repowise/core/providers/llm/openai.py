@@ -42,6 +42,7 @@ from repowise.core.providers.llm.openai_compat import (
     stream_openai_chat,
     translate_openai_errors,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -288,7 +289,7 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
 
     Args:
         api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var.
-        model:     Model identifier. Defaults to gpt-5.6-luna.
+        model:     Model identifier. Defaults to the spec's default_model.
         base_url:  Optional custom base URL for OpenAI-compatible endpoints.
         rate_limiter: Optional RateLimiter instance.
     """
@@ -296,7 +297,7 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-5.6-luna",
+        model: str = PROVIDER_SPECS["openai"].default_model,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,

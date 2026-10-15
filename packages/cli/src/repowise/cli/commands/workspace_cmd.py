@@ -427,10 +427,10 @@ def _resolve_docs_flag(
     Priority:
       1. Explicit ``--docs`` or ``--no-docs``.
       2. ``--provider`` flag forces docs ON.
-      3. Primary repo's ``.repowise/config.yaml`` has a provider → docs ON,
-         reusing the same provider settings.
-      4. ``REPOWISE_PROVIDER`` env var or detectable API key → docs ON.
-      5. Otherwise docs OFF, with a skip reason for the completion notice.
+      3. A provider resolves for the primary repo (its ``config.yaml``, the
+         global default, ``REPOWISE_PROVIDER``, or a detectable API key) →
+         docs ON, reusing the same provider settings.
+      4. Otherwise docs OFF, with a skip reason for the completion notice.
     """
     if run_docs is True:
         return True, None
@@ -439,34 +439,14 @@ def _resolve_docs_flag(
     if provider_name is not None:
         return True, None
 
-    # Check primary repo config
-    from repowise.cli.helpers import load_config
+    # The shared resolver: the primary repo's config.yaml, the global default,
+    # REPOWISE_PROVIDER, or a detectable API key.
+    from repowise.core.providers.llm.resolve import resolve_llm
 
     primary = ws_config.get_primary()
-    if primary is not None:
-        primary_path = (ws_root / primary.path).resolve()
-        cfg = load_config(primary_path)
-        if cfg.get("provider"):
-            return True, None
-
-    # Env-detected provider
-    import os as _os
-
-    env_provider = _os.environ.get("REPOWISE_PROVIDER")
-    if env_provider:
+    primary_path = (ws_root / primary.path).resolve() if primary is not None else None
+    if resolve_llm(primary_path).provider is not None:
         return True, None
-    for key in (
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "KIMI_API_KEY",
-        "OLLAMA_BASE_URL",
-    ):
-        if _os.environ.get(key):
-            return True, None
 
     return False, "no provider configured"
 

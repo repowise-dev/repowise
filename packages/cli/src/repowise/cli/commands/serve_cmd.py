@@ -245,12 +245,13 @@ def _save_global_embedder(embedder: str, api_key: str) -> None:
 
 
 def _load_local_provider_config() -> None:
-    """Load ``.repowise/.env`` and seed the chat provider from ``config.yaml``.
+    """Load ``.repowise/.env`` and seed the embedder from ``config.yaml``.
 
-    The API server runs in-process here, so env vars set now are inherited by
-    the provider-resolution code. ``load_dotenv`` never overwrites an existing
-    var, and we only set ``REPOWISE_PROVIDER``/``REPOWISE_MODEL`` when unset, so
-    explicit environment configuration always wins.
+    The API server runs in-process here and builds one process-wide embedder
+    at startup from env vars, so those are set now. ``load_dotenv`` never
+    overwrites an existing var, and the embedder vars are only set when unset,
+    so explicit environment configuration always wins. The chat provider
+    needs no seeding: it is resolved per repo from that repo's own files.
     """
     from repowise.cli.helpers import load_config
     from repowise.cli.ui import load_dotenv
@@ -261,18 +262,9 @@ def _load_local_provider_config() -> None:
 
     # 1) API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) from .repowise/.env
     load_dotenv(cwd)
-
-    # 2) Provider/model from .repowise/config.yaml → env vars the server reads
     cfg = load_config(cwd)
-    provider = cfg.get("provider")
-    if provider and not os.environ.get("REPOWISE_PROVIDER"):
-        os.environ["REPOWISE_PROVIDER"] = str(provider)
-        model = cfg.get("model")
-        if model and not os.environ.get("REPOWISE_MODEL"):
-            os.environ["REPOWISE_MODEL"] = str(model)
-        console.print(f"[dim]Using provider from config: {provider}[/dim]")
 
-    # 3) Embedder from config so chat/search work without an interactive prompt.
+    # 2) Embedder from config so chat/search work without an interactive prompt.
     # Including "mock": that pin is not a preference to be talked out of, it is
     # the width the table on disk was written at. Skipping it sent a keyless
     # repo down _setup_embedder's detection path, which picks up any exported
@@ -282,7 +274,7 @@ def _load_local_provider_config() -> None:
     if embedder and not os.environ.get("REPOWISE_EMBEDDER"):
         os.environ["REPOWISE_EMBEDDER"] = str(embedder)
 
-    # 4) Embedding model from config — without this the server rebuilds the
+    # 3) Embedding model from config — without this the server rebuilds the
     # embedder with a provider default (e.g. text-embedding-3-small) that
     # mismatches the indexed vectors, degrading chat/search retrieval (#426).
     embedding_model = cfg.get("embedding_model")

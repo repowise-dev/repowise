@@ -12,15 +12,22 @@ export async function getProviders(
   return apiGet<ProvidersResponse>(`/api/providers${qs}`);
 }
 
+/** Set the provider and model (any id the provider accepts). With `repoId`
+ *  the choice is written to that repo's `.repowise/config.yaml`, which the CLI
+ *  reads too; without it, the server-wide default. `baseUrl` is an http(s)
+ *  endpoint such as an OpenAI-compatible LM Studio server: omit it to keep the
+ *  current one, pass `""` to clear it. */
 export async function setActiveProvider(
   provider: string,
   model?: string,
   repoId?: string,
+  options: { baseUrl?: string } = {},
 ): Promise<ProvidersResponse> {
   return apiPatch<ProvidersResponse>("/api/providers/active", {
     provider,
     model: model ?? null,
     repo_id: repoId ?? null,
+    ...(options.baseUrl !== undefined ? { base_url: options.baseUrl } : {}),
   });
 }
 

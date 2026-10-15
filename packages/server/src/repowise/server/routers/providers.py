@@ -65,12 +65,23 @@ async def get_providers(request: Request, repo_id: str | None = None):
 
 @router.patch("/active", response_model=ProviderStatusResponse)
 async def set_active(body: SetActiveProviderRequest, request: Request):
-    """Set the active provider and model (per-repo when ``repo_id`` is given)."""
+    """Set the active provider, model and base URL.
+
+    With ``repo_id`` the choice is written to that repo's
+    ``.repowise/config.yaml``, which the CLI reads too; without it, the
+    server-wide default is set. ``base_url`` left out of the body keeps the
+    current endpoint; ``""`` or ``null`` clears it.
+    """
+    repo_path = await _repo_path_for(request, body.repo_id)
+    if body.repo_id and repo_path is None:
+        raise HTTPException(404, f"Repository {body.repo_id} has no local checkout.")
+    extra = {"base_url": body.base_url} if "base_url" in body.model_fields_set else {}
     try:
-        set_active_provider(body.provider, body.model, repo_id=body.repo_id)
+        set_active_provider(
+            body.provider, body.model, repo_id=body.repo_id, repo_path=repo_path, **extra
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    repo_path = await _repo_path_for(request, body.repo_id)
     return list_provider_status(repo_id=body.repo_id, repo_path=repo_path)
 
 

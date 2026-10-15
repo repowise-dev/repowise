@@ -22,6 +22,7 @@ from repowise.core.providers.llm.openai_compat import (
     OpenAICompatibleProvider,
     listed_model_options,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -90,7 +91,7 @@ class KimiProvider(OpenAICompatibleProvider):
 
     Args:
         api_key:      Kimi API key. Falls back to KIMI_API_KEY env var.
-        model:        Model identifier. Defaults to kimi-for-coding.
+        model:        Model identifier. Defaults to the spec's default_model.
         base_url:     Override the Kimi API URL (rarely needed).
         rate_limiter: Optional RateLimiter instance.
         cost_tracker: Optional CostTracker instance for usage recording.
@@ -110,7 +111,7 @@ class KimiProvider(OpenAICompatibleProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "kimi-for-coding",
+        model: str = PROVIDER_SPECS["kimi"].default_model,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,

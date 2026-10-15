@@ -118,6 +118,22 @@ def _isolate_tokens_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pyte
 
 
 @pytest.fixture(autouse=True)
+def _isolate_provider_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+):
+    """Keep a developer's ``~/.repowise/provider_config.json`` out of resolution.
+
+    Every LLM resolver reads its global default and stored keys, so a real one
+    on the machine would decide which provider a test resolves. The parse
+    cache is dropped too: test repos are rewritten faster than mtimes move.
+    """
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path_factory.mktemp("provider-config")))
+    module = sys.modules.get("repowise.core.providers.llm.resolve")
+    if module is not None:
+        module.clear_cache()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_per_index_caches():
     """Drop the MCP server's per-index caches before every test.
 

@@ -50,6 +50,7 @@ from repowise.core.providers.llm.base import (
     record_generation_cost,
 )
 from repowise.core.providers.llm.openai_compat import stream_openai_chat
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
 
@@ -154,7 +155,7 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
 
     def __init__(
         self,
-        model: str = "qwen3.5:4b",
+        model: str = PROVIDER_SPECS["ollama"].default_model,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
     ) -> None:

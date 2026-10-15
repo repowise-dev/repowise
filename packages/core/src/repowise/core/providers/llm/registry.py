@@ -296,8 +296,9 @@ def list_providers() -> list[str]:
 def provider_available_for_repo(repo_path: Path | str) -> bool:
     """Whether a provider would resolve for *repo_path*, constructing nothing.
 
-    Mirrors the CLI's resolution order: an explicit choice is checked for
-    usability, auto-detection asks only whether credentials name a provider.
+    Uses the shared resolver (``resolve.resolve_llm``): a configured choice is
+    checked for usability, auto-detection asks only whether credentials name a
+    provider.
     Reporting-only, so it answers False rather than raising on a broken config.
 
     Resolution reads the repo's own ``.repowise/.env`` as well as the process
@@ -307,16 +308,9 @@ def provider_available_for_repo(repo_path: Path | str) -> bool:
     ``git_archaeology`` lanes had no provider while those lanes were running.
     """
     try:
-        from repowise.core.repo_config import load_repo_config
+        from repowise.core.providers.llm.resolve import provider_ready, resolve_llm
 
-        getenv = repo_env_lookup(repo_path)
-        configured = (getenv("REPOWISE_PROVIDER") or "").strip()
-        if not configured:
-            configured = str(load_repo_config(repo_path).get("provider") or "").strip()
-        if configured:
-            return provider_is_usable(configured, getenv)
-        return any(
-            provider_credentials_present(name, getenv) for name in PROVIDER_AUTODETECT_ORDER
-        )
+        selection = resolve_llm(repo_path)
+        return selection.provider is not None and provider_ready(selection.provider, repo_path)
     except Exception:
         return False

@@ -43,10 +43,21 @@ export interface EmbedderInfo {
   semantic?: boolean;
 }
 
+/** Where a resolved value came from: `request`, `config.yaml`, `global`,
+ *  `env:<VAR>`, `default` or `autodetect`; null when the value is unset. */
+export interface SelectionProvenance {
+  provider: string | null;
+  model: string | null;
+  base_url: string | null;
+}
+
 export interface ProvidersResponse {
   active: {
     provider: string | null;
     model: string | null;
+    /** Endpoint requests go to; null means the provider's own default. */
+    base_url?: string | null;
+    provenance?: SelectionProvenance;
     /** USD per 1K tokens for `model`; null when no model resolves. */
     input_cost_per_1k?: number | null;
     output_cost_per_1k?: number | null;

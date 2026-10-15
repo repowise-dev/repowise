@@ -14,10 +14,7 @@ import json as _json
 import pytest
 
 from repowise.server.mcp_server.tool_answer import synthesis as synthesis_module
-from repowise.server.mcp_server.tool_answer.synthesis import (
-    _load_repo_provider_config,
-    _resolve_provider_for_answer,
-)
+from repowise.server.mcp_server.tool_answer.synthesis import _resolve_provider_for_answer
 
 
 @pytest.fixture(autouse=True)
@@ -51,27 +48,43 @@ def _write_repo(tmp_path, *, config=None, state=None):
     return tmp_path
 
 
-def test_config_yaml_outranks_state_json(tmp_path):
-    """config.yaml is user intent; state.json only records the last run."""
-    repo = _write_repo(
-        tmp_path,
-        config={"provider": "openai", "model": "gpt-5.4-nano"},
-        state={"provider": "gemini", "model": "gemini-3.1-flash-lite-preview"},
-    )
-    name, model, _ = _load_repo_provider_config(repo)
-    assert name == "openai"
-    assert model == "gpt-5.4-nano"
+def test_config_yaml_outranks_the_env_provider(tmp_path, monkeypatch):
+    """config.yaml is the repo's choice; REPOWISE_PROVIDER is a lower default."""
+    repo = _write_repo(tmp_path, config={"provider": "openai", "model": "gpt-5.4-nano"})
+    monkeypatch.setenv("REPOWISE_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    seen = _record_get_provider(monkeypatch)
+
+    assert _resolve_provider_for_answer(repo) is not None
+    assert seen["name"] == "openai"
+    assert seen["kwargs"]["model"] == "gpt-5.4-nano"
 
 
-def test_state_json_still_used_when_config_lacks_provider(tmp_path):
-    repo = _write_repo(
-        tmp_path,
-        config={"commit_limit": 200},
-        state={"provider": "openai", "model": "gpt-5.4-nano"},
+def test_doc_model_overrides_the_configured_model(tmp_path, monkeypatch):
+    repo = _write_repo(tmp_path, config={"provider": "openai", "model": "gpt-5.4-nano"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("REPOWISE_DOC_MODEL", "gpt-5.4")
+    seen = _record_get_provider(monkeypatch)
+
+    assert _resolve_provider_for_answer(repo) is not None
+    assert seen["kwargs"]["model"] == "gpt-5.4"
+
+
+def test_config_base_url_reaches_the_provider(tmp_path, monkeypatch):
+    """An OpenAI-compatible server (LM Studio) set once in config.yaml."""
+    d = tmp_path / ".repowise"
+    d.mkdir()
+    (d / "config.yaml").write_text(
+        "provider: openai\nmodel: qwen3\nopenai:\n  base_url: http://localhost:1234/v1\n",
+        encoding="utf-8",
     )
-    name, model, _ = _load_repo_provider_config(repo)
-    assert name == "openai"
-    assert model == "gpt-5.4-nano"
+    monkeypatch.setenv("OPENAI_API_KEY", "lm-studio")
+    seen = _record_get_provider(monkeypatch)
+
+    assert _resolve_provider_for_answer(tmp_path) is not None
+    assert seen["kwargs"]["base_url"] == "http://localhost:1234/v1"
+    assert seen["kwargs"]["model"] == "qwen3"
 
 
 def test_reasoning_is_loaded_from_repo_config(tmp_path):
@@ -81,8 +94,8 @@ def test_reasoning_is_loaded_from_repo_config(tmp_path):
 
 
 def test_keyless_persisted_provider_falls_back_to_available_key(tmp_path, monkeypatch):
-    """gemini persisted, only OPENAI_API_KEY present -> openai provider, not None."""
-    repo = _write_repo(tmp_path, state={"provider": "gemini", "model": "gemini-3.1-flash"})
+    """gemini configured, only OPENAI_API_KEY present -> openai provider, not None."""
+    repo = _write_repo(tmp_path, config={"provider": "gemini", "model": "gemini-3.1-flash"})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     provider = _resolve_provider_for_answer(repo)
     assert provider is not None
@@ -92,12 +105,12 @@ def test_keyless_persisted_provider_falls_back_to_available_key(tmp_path, monkey
 
 
 def test_no_keys_at_all_resolves_to_none(tmp_path):
-    repo = _write_repo(tmp_path, state={"provider": "gemini"})
+    repo = _write_repo(tmp_path, config={"provider": "gemini"})
     assert _resolve_provider_for_answer(repo) is None
 
 
 def test_explicit_env_provider_still_wins(tmp_path, monkeypatch):
-    repo = _write_repo(tmp_path, state={"provider": "gemini"})
+    repo = _write_repo(tmp_path)
     monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     provider = _resolve_provider_for_answer(repo)

@@ -28,21 +28,22 @@ def test_valid_dims_are_passed_through(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kwargs["output_dimensionality"] == 256
 
 
-def test_missing_dims_default_to_768(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_dims_leave_the_constructor_default(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_dims(monkeypatch)
     kwargs = _embedder_kwargs("gemini")
-    assert kwargs["output_dimensionality"] == 768
+    # GeminiEmbedder's own default (768) applies; it is declared only there.
+    assert "output_dimensionality" not in kwargs
 
 
 @pytest.mark.parametrize("bad", ["-5", "0", "-1", "abc", "3.14", "inf", "nan", ""])
-def test_bad_dims_fall_back_to_768(
+def test_bad_dims_fall_back_to_the_default(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, bad: str
 ) -> None:
     _clear_dims(monkeypatch)
     if bad:
         monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", bad)
     kwargs = _embedder_kwargs("gemini")
-    assert kwargs["output_dimensionality"] == 768
+    assert "output_dimensionality" not in kwargs
     if bad:
         assert "not a positive integer" in capsys.readouterr().err
 

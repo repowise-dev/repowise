@@ -100,14 +100,13 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "server/src/repowise/server/mcp_server/tool_answer/synthesis.py": frozenset({"openai"}),
     # Embedder surfaces: these literals name embedders, which share spellings.
     "core/src/repowise/core/providers/embedding/registry.py": _EMBEDDERS,
+    "core/src/repowise/core/providers/embedding/resolve.py": _EMBEDDERS,
     "cli/src/repowise/cli/commands/init_cmd/command.py": _EMBEDDERS,
     "cli/src/repowise/cli/commands/reindex_cmd.py": _EMBEDDERS,
     "cli/src/repowise/cli/commands/serve_cmd.py": _EMBEDDERS,
     "cli/src/repowise/cli/commands/update_cmd/deterministic.py": _EMBEDDERS,
     "cli/src/repowise/cli/providers/embedders.py": _EMBEDDERS,
-    "cli/src/repowise/cli/providers/keys.py": _EMBEDDERS,
     "cli/src/repowise/cli/ui/mode_selection.py": _EMBEDDERS,
-    "server/src/repowise/server/app.py": _EMBEDDERS,
     "server/src/repowise/server/mcp_server/_server.py": _EMBEDDERS,
 }
 

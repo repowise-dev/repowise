@@ -180,6 +180,24 @@ def test_serve_seeds_a_mock_pin_into_the_environment(
     assert os.environ.get("REPOWISE_EMBEDDER") == "mock"
 
 
+def test_serve_leaves_the_chat_provider_to_the_shared_resolver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Chat reads config.yaml per repo, so serve no longer copies it into env vars."""
+    from repowise.cli.commands import serve_cmd
+
+    _write_config(tmp_path, provider="openai", model="qwen3", embedder="mock")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+    monkeypatch.delenv("REPOWISE_MODEL", raising=False)
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "mock")
+
+    serve_cmd._load_local_provider_config()
+
+    assert "REPOWISE_PROVIDER" not in os.environ
+    assert "REPOWISE_MODEL" not in os.environ
+
+
 def test_reader_falls_back_to_the_environment_when_nothing_is_pinned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -157,7 +157,7 @@ def test_per_repo_selection_does_not_shadow_other_repo(clean_env, tmp_path):
     )
 
     # User picks a different model for repo A via the UI.
-    pc.set_active_provider("openai", "gpt-5.4", repo_id="ra")
+    pc.set_active_provider("openai", "gpt-5.4", repo_id="ra", repo_path=str(repo_a))
 
     a_provider, a_model = pc.get_active_provider(repo_id="ra", repo_path=str(repo_a))
     b_provider, b_model = pc.get_active_provider(repo_id="rb", repo_path=str(repo_b))
@@ -382,3 +382,101 @@ def test_configured_active_provider_needs_the_key_chat_needs(clean_env, tmp_path
 
     _make_repo(repo, env="ANTHROPIC_API_KEY=sk-ant-test\n")
     assert pc.get_configured_active_provider(repo_path=repo) == ("anthropic", "claude-x")
+
+
+# ---------------------------------------------------------------------------
+# config.yaml is the repo's single source; legacy JSON entries migrate once.
+# ---------------------------------------------------------------------------
+
+
+def _write_store(tmp_path: Path, data: dict) -> None:
+    import json
+
+    from repowise.core.providers.llm.resolve import forget_cached
+
+    path = tmp_path / "server" / "provider_config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    forget_cached(path)
+
+
+def test_repo_selection_is_written_to_config_yaml(clean_env, tmp_path):
+    from repowise.core.repo_config import load_repo_config
+
+    repo = _make_repo(tmp_path / "repo", config="provider: gemini\nembedder: gemini\n")
+
+    pc.set_active_provider(
+        "openai", "qwen3-coder", repo_id="r1", repo_path=repo, base_url="http://localhost:1234/v1"
+    )
+
+    cfg = load_repo_config(repo)
+    assert (cfg["provider"], cfg["model"], cfg["embedder"]) == ("openai", "qwen3-coder", "gemini")
+    assert cfg["openai"] == {"base_url": "http://localhost:1234/v1"}
+    assert "repos" not in pc._load_config()
+    active = pc.list_provider_status(repo_id="r1", repo_path=repo)["active"]
+    assert active["base_url"] == "http://localhost:1234/v1"
+    assert active["provenance"] == {
+        "provider": "config.yaml",
+        "model": "config.yaml",
+        "base_url": "config.yaml",
+    }
+
+
+def test_repo_selection_needs_a_checkout(clean_env):
+    with pytest.raises(ValueError, match="no local checkout"):
+        pc.set_active_provider("openai", "m", repo_id="r1")
+
+
+def test_bad_base_url_is_rejected_before_writing(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", config="provider: gemini\n")
+    with pytest.raises(ValueError, match="http"):
+        pc.set_active_provider("openai", "m", repo_id="r1", repo_path=repo, base_url="localhost")
+    assert "openai" not in (repo / ".repowise" / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_global_default_keeps_base_url_and_any_model(clean_env, tmp_path):
+    pc.set_active_provider("openai", "my-custom-model", base_url="http://lm:1234/v1")
+    stored = pc._load_config()
+    assert stored["active_model"] == "my-custom-model"
+    assert stored["active_base_url"] == "http://lm:1234/v1"
+
+    pc.set_active_provider("openai", "my-custom-model", base_url="")
+    assert "active_base_url" not in pc._load_config()
+
+
+def test_legacy_json_selection_moves_into_an_empty_config_yaml(clean_env, tmp_path):
+    from repowise.core.repo_config import load_repo_config
+
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    _write_store(tmp_path, {"repos": {"r1": {"provider": "openai", "model": "gpt-5.4"}}})
+
+    assert pc.get_active_provider(repo_id="r1", repo_path=repo) == ("openai", "gpt-5.4")
+    cfg = load_repo_config(repo)
+    assert (cfg["provider"], cfg["model"], cfg["embedder"]) == ("openai", "gpt-5.4", "mock")
+    assert "repos" not in pc._load_config()
+
+
+def test_legacy_json_selection_is_dropped_when_yaml_has_a_provider(clean_env, tmp_path):
+    from repowise.core.repo_config import load_repo_config
+
+    repo = _make_repo(tmp_path / "repo", config="provider: gemini\nmodel: g\n")
+    _write_store(
+        tmp_path,
+        {
+            "repos": {"r1": {"provider": "openai", "model": "gpt-5.4"}, "r2": {"provider": "kimi"}},
+            "keys": {"openai": "sk-keep"},
+        },
+    )
+
+    assert pc.get_active_provider(repo_id="r1", repo_path=repo) == ("gemini", "g")
+    assert load_repo_config(repo)["provider"] == "gemini"
+    stored = pc._load_config()
+    assert stored["repos"] == {"r2": {"provider": "kimi"}}
+    assert stored["keys"] == {"openai": "sk-keep"}
+
+
+def test_config_yaml_beats_the_env_provider_for_chat(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", config="provider: openai\nmodel: gemma4\n")
+    clean_env["REPOWISE_PROVIDER"] = "anthropic"
+    clean_env["REPOWISE_MODEL"] = "claude-x"
+    assert pc.get_active_provider(repo_path=repo) == ("openai", "gemma4")
