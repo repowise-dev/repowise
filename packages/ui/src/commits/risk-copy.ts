@@ -13,17 +13,18 @@ export const SIZE_AND_SPREAD_QUALIFIER = "diff size, not a bug predictor";
 export const LIMITS =
   "The rank is a diff-size statistic: it barely beats churn alone and cannot rank danger.";
 
+export const TERCILES: Record<string, string> = {
+  high: "sits in the top third of this repo's own diff-shape distribution by size and spread",
+  moderate:
+    "sits in the middle third of this repo's own diff-shape distribution by size and spread",
+  low: "sits in the bottom third of this repo's own diff-shape distribution by size and spread",
+};
+
 /**
  * Explains where the commit sits in the repository's diff-shape distribution.
  */
 export function formatSizeSentence(reviewPriority?: string | null): string {
-  const tercile: Record<string, string> = {
-    high: "sits in the top third of this repo's own diff-shape distribution by size and spread",
-    moderate:
-      "sits in the middle third of this repo's own diff-shape distribution by size and spread",
-    low: "sits in the bottom third of this repo's own diff-shape distribution by size and spread",
-  };
-  return `This commit ${tercile[reviewPriority ?? "moderate"] ?? tercile.moderate}.`;
+  return `This commit ${TERCILES[reviewPriority ?? "moderate"] ?? TERCILES.moderate}.`;
 }
 
 /**
