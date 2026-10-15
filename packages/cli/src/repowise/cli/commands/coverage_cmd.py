@@ -137,6 +137,8 @@ def coverage_add(
         build_coverage_map,
         discover_artifacts,
         expand_report_args,
+        measurement_commit,
+        oldest_report_time,
         parse_contexts_file,
         resolve_test_reports,
     )
@@ -173,6 +175,10 @@ def coverage_add(
     # ``.coverage`` sqlite only feeds the per-test map, so keep it out of the
     # text-parsing path (its binary bytes would not decode as UTF-8).
     agg_paths = [p for p in report_paths if not _is_sqlite(p)]
+
+    # When the reports on disk were written. Both writes below share one stamp,
+    # since the per-test map comes off the same files as the aggregate rows.
+    measured_at = oldest_report_time(report_paths)
 
     async def _do() -> bool:
         from repowise.core.persistence import (
@@ -211,13 +217,16 @@ def coverage_add(
             # working tree. They diverge when you commit, run your tests, then
             # ``coverage add`` without an intervening ``repowise update`` — the
             # report would be labelled with the older indexed commit (issue
-            # #1747). Live HEAD is the right answer for a provenance field:
-            # it is the tree the coverage was measured against. Resolve it
-            # from disk — the same source the health pass uses.
+            # #1747). HEAD is the right answer for a report written since the
+            # last commit; one left over from earlier measures the tree as of
+            # its own date, so the stamp moves back to the commit that was HEAD
+            # then (issue #3901). Resolve both from disk — the same source the
+            # health pass uses.
             head_sha = (
                 get_head_commit(Path(repo_path))
                 or getattr(repo_row, "head_commit", None)
             )
+            ingest_sha = measurement_commit(repo_path, measured_at, head_sha)
 
             # --- Per-file aggregate coverage (any format in COVERAGE_PARSERS).
             agg_matched = 0
@@ -249,7 +258,7 @@ def coverage_add(
                         repo_row.id,
                         resolved.files,
                         source_format=resolved.source_format or "lcov",
-                        ingested_commit_sha=head_sha,
+                        ingested_commit_sha=ingest_sha,
                         provenance=resolved.provenance,
                     )
                     agg_matched = resolved.matched
@@ -303,7 +312,7 @@ def coverage_add(
                     repo_row.id,
                     map_records,
                     source_format=map_format or "coverage.py",
-                    ingested_commit_sha=head_sha,
+                    ingested_commit_sha=ingest_sha,
                 )
                 dropped = len(map_records) - written
                 extra = (
