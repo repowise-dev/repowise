@@ -53,6 +53,31 @@ describe("Preview badge on list rows", () => {
     expect(document.querySelectorAll("[data-preview]")).toHaveLength(1);
   });
 
+  it("marks a work-queue card whose file is served from a preview cell", () => {
+    render(
+      <RefactoringCard
+        target={{
+          file_path: "src/main/java/App.java",
+          score: 4,
+          nloc: 300,
+          primary_biomarker: "brain_method",
+          primary_severity: "high",
+          primary_reason: "Oversized function.",
+          primary_function: "run",
+          primary_line_start: 10,
+          primary_line_end: 200,
+          total_impact: 3,
+          finding_count: 1,
+          biomarkers: ["brain_method"],
+          effort_bucket: "L",
+          impact_per_effort: 1,
+          preview: NOTE,
+        }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: `Preview: ${NOTE}` })).toBeTruthy();
+  });
+
   it("marks a preview performance opportunity in the queue", async () => {
     const item = opportunity({ preview: NOTE });
     render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => page({ items: [item] }) })} />);

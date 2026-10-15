@@ -1061,3 +1061,14 @@ describe("ScopeLine", () => {
     expect(screen.getByRole("status").textContent).toContain(expected);
   });
 });
+
+describe("performance drawer preview", () => {
+  it("marks the cause when the detail response carries a preview note", async () => {
+    const note = "preview, measured 40% precision on 30 judged causes, 2026-10-15";
+    const getDetail = vi.fn(async () => resolvedDetail({ preview: note }));
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunity: getDetail })} />);
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(await within(panel).findByRole("button", { name: `Preview: ${note}` })).toBeTruthy();
+  });
+});
