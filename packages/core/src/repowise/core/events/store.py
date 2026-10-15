@@ -212,9 +212,9 @@ async def refresh_contract_facts(session: Any, repository_id: str) -> list[Engin
     on the two runs compared. A run whose commit or
     stamp is no longer current, or contracts still unavailable, is left alone.
     """
-    from repowise.core.persistence.models import ComponentSnapshot, Repository
+    from repowise.core.persistence.models import Repository
 
-    from .snapshot import contract_facts, current_stamp
+    from .snapshot import contract_facts
 
     repo = await session.get(Repository, repository_id)
     if repo is None or not repo.local_path:
@@ -223,21 +223,48 @@ async def refresh_contract_facts(session: Any, repository_id: str) -> list[Engin
     settings = load_event_settings(root)
     if not settings.enabled:
         return []
-    run = await _newest_run(session, repository_id)
-    if run is None or not run.commit_sha or run.commit_sha != repo.head_commit:
-        return []
-    if run.stamp != current_stamp():
+    run = await _refreshable_run(session, repo)
+    if run is None:
         return []
     measured = await contract_facts(session, repository_id, root, head_commit=run.commit_sha)
-    if measured is None:
+    if measured is None or not await _still_current(session, repository_id, run):
         return []
-    # Another update may have moved the repo or stored a newer run meanwhile.
+    after = await _fill_contracts(session, run, measured)
+    pairs = await _contract_pairs(session, run, after, settings.kinds & CONTRACT_KINDS)
+    events = await _store_events(session, repo, run, pairs, after, _aware(run.taken_at))
+    await session.flush()
+    _deliver_after_commit(session, events, settings, root)
+    return events
+
+
+async def _refreshable_run(session: Any, repo: Any) -> Any:
+    """The newest run, when it is at the repo's commit under the current stamp."""
+    from .snapshot import current_stamp
+
+    run = await _newest_run(session, repo.id)
+    if run is None or not run.commit_sha or run.commit_sha != repo.head_commit:
+        return None
+    return run if run.stamp == current_stamp() else None
+
+
+async def _still_current(session: Any, repository_id: str, run: Any) -> bool:
+    """Whether *run* is still the newest and the repo still at its commit:
+    another update may have moved either during extraction."""
+    from repowise.core.persistence.models import Repository
+
     head = await session.scalar(
         select(Repository.head_commit).where(Repository.id == repository_id)
     )
     newest = await _newest_run(session, repository_id)
-    if head != run.commit_sha or newest is None or newest.id != run.id:
-        return []
+    return head == run.commit_sha and newest is not None and newest.id == run.id
+
+
+async def _fill_contracts(
+    session: Any, run: Any, measured: dict[str, tuple[str, dict[str, Any]]]
+) -> dict[str, dict[str, Any]]:
+    """Write *measured* contracts into *run*'s component rows; its facts after."""
+    from repowise.core.persistence.models import ComponentSnapshot
+
     after: dict[str, dict[str, Any]] = {}
     for row in await session.scalars(
         select(ComponentSnapshot).where(ComponentSnapshot.run_id == run.id)
@@ -249,11 +276,7 @@ async def refresh_contract_facts(session: Any, repository_id: str) -> list[Engin
             facts["contracts"] = contracts
             row.facts_json = json.dumps(facts, sort_keys=True)
         after[row.component] = facts
-    pairs = await _contract_pairs(session, run, after, settings.kinds & CONTRACT_KINDS)
-    events = await _store_events(session, repo, run, pairs, after, _aware(run.taken_at))
-    await session.flush()
-    _deliver_after_commit(session, events, settings, root)
-    return events
+    return after
 
 
 def _measured(facts: dict[str, Any]) -> bool:
