@@ -13,6 +13,7 @@ import { Button } from "../../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../../shared/responsive-table";
 import { LowerPriorityTag } from "../lower-priority-tag";
+import { PreviewBadge } from "../preview-badge";
 import type { PerformanceViewAdapter } from "./adapter";
 import {
   ACTIONABILITY_HINT,
@@ -193,6 +194,11 @@ const OpportunityRow = memo(function OpportunityRow({
         {opportunity.lower_priority ? (
           <p className="mt-1">
             <LowerPriorityTag reason={opportunity.lower_priority} />
+          </p>
+        ) : null}
+        {opportunity.preview ? (
+          <p className="mt-1">
+            <PreviewBadge note={opportunity.preview} />
           </p>
         ) : null}
         {why.length > 0 ? (

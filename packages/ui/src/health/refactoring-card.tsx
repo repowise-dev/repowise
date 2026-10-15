@@ -19,6 +19,7 @@ import { AskAboutThis } from "../chat/ask-about-this";
 import { SeverityMark } from "./severity-mark";
 import { VerificationTag } from "./verification-tag";
 import { LowerPriorityTag } from "./lower-priority-tag";
+import { PreviewBadge } from "./preview-badge";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
@@ -36,6 +37,9 @@ export interface HealthWorkItemFinding {
   /** `"unverified"` for a provisional finding type. */
   verification?: string | null;
   lower_priority?: string | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export interface HealthWorkItem {
@@ -321,6 +325,7 @@ export function HealthWorkItemCard({
                     </span>
                     <VerificationTag verification={f.verification} />
                     <LowerPriorityTag reason={f.lower_priority} />
+                    <PreviewBadge note={f.preview} />
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}

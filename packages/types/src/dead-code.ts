@@ -107,6 +107,9 @@ export interface DeadCodeFinding {
   /** Raw engine artifact fields — present in some downstream pipelines, optional here. */
   evidence?: string[] | null;
   age_days?: number | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export interface DeadCodePatchInput {

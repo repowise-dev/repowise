@@ -351,6 +351,9 @@ export interface HealthFinding {
   /** Why the finding can wait ("lower priority: ..."); null when it is worth
    *  doing first. Lower-priority findings are listed after the rest. */
   lower_priority?: string | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export type PerformanceExecutionContext = "production" | "tooling" | "test" | "unknown";
@@ -524,6 +527,9 @@ export interface PerformanceOpportunity {
   /** Why the opportunity can wait ("lower priority: ..."); null when its
    *  production loop is known to grow with the data. */
   lower_priority?: string | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
   plan_status: PerformancePlanStatus;

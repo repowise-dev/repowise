@@ -29,6 +29,7 @@ import { EFFORT_LABEL, WORK_UNIT_LABEL } from "../labels";
 import { RelatedWork, useRelatedWork } from "../related-work";
 import type { PerformanceViewAdapter } from "./adapter";
 import { LowerPriorityTag } from "../lower-priority-tag";
+import { PreviewBadge } from "../preview-badge";
 import { RawObservations } from "./evidence";
 import {
   ACTIONABILITY_LABEL,
@@ -335,6 +336,11 @@ function PlanSection({
       {opportunity.lower_priority ? (
         <p className="mt-1">
           <LowerPriorityTag reason={opportunity.lower_priority} />
+        </p>
+      ) : null}
+      {opportunity.preview ? (
+        <p className="mt-1">
+          <PreviewBadge note={opportunity.preview} />
         </p>
       ) : null}
       <p className="mt-1 text-sm text-[var(--color-text-tertiary)]">{presentation.detail}</p>
