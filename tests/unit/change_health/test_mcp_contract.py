@@ -134,6 +134,20 @@ async def test_a_surfaced_finding_can_be_expanded_by_its_id(tool, make_repo):
     assert "evidence" in detail["finding"]
 
 
+async def test_a_drill_down_skips_the_blocks_it_never_returns(tool, make_repo, monkeypatch):
+    module = tool(seeded(make_repo))
+    listing = await module.get_change_risk("HEAD", baseline=0)
+    row = listing["health_delta"]["top_findings"][0]
+
+    async def _unexpected(*_a, **_k):
+        raise AssertionError("a drill-down needs no tests, coverage or fix blocks")
+
+    monkeypatch.setattr(module, "_attach_change_blocks", _unexpected)
+    detail = await module.get_change_risk("HEAD", baseline=0, finding_id=row["id"])
+
+    assert detail["finding"]["id"] == row["id"]
+
+
 async def test_an_unknown_finding_id_says_so_and_lists_the_real_ones(tool, make_repo):
     module = tool(seeded(make_repo))
 

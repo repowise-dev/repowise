@@ -403,9 +403,19 @@ async def get_change_risk(
         )
     )
     try:
-        await _attach_change_blocks(
-            ctx, payload, result, revspec, extensions, (changed, changed_error), collector, includes
-        )
+        # A drill-down returns one finding and nothing else, so the tests,
+        # coverage, fix and cross-repo blocks would never reach the caller.
+        if finding_id is None:
+            await _attach_change_blocks(
+                ctx,
+                payload,
+                result,
+                revspec,
+                extensions,
+                (changed, changed_error),
+                collector,
+                includes,
+            )
         independent = await _attach_branch_blocks(
             ctx, payload, changed, collector, revspec, finding_id
         )
