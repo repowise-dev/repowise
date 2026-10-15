@@ -12,7 +12,7 @@ import {
 import { useChangelog } from "@/lib/hooks/use-meta-version";
 import { repoIdFromPath } from "@/lib/release-moment";
 import { useTranslations } from "next-intl";
-import { ReleaseNotes, releaseName } from "./release-notes";
+import { ReleaseHeader, ReleaseNotes, releaseName } from "./release-notes";
 
 /** How many earlier releases the switcher lists. */
 const EARLIER_SHOWN = 8;
@@ -44,14 +44,27 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
   const entry = entries.find((e) => e.version === selected) ?? fallback;
   const earlier = entries.filter((e) => e !== entry).slice(0, EARLIER_SHOWN);
 
+  const title = (
+    <DialogHeader>
+      <DialogTitle className="font-mono text-[10px] font-normal uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">
+        {t("whatsNewModal.title")}
+      </DialogTitle>
+      <DialogDescription className="sr-only">{t("whatsNewModal.description")}</DialogDescription>
+    </DialogHeader>
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>{t("whatsNewModal.title")}</DialogTitle>
-          <DialogDescription className="sr-only">{t("whatsNewModal.description")}</DialogDescription>
-        </DialogHeader>
+      {/* Its own deeper ground and a glow band: the release moment is the one
+          dialog that presents rather than asks. */}
+      <DialogContent className="max-h-[85vh] gap-0 overflow-y-auto bg-[var(--color-release-ground)] p-0 sm:max-w-3xl">
+        {entry ? (
+          <ReleaseHeader key={`h-${entry.version}`} entry={entry} title={title} />
+        ) : (
+          <div className="px-6 pt-6 sm:px-8">{title}</div>
+        )}
 
+        <div className="space-y-8 px-6 py-6 sm:px-8">
         {isLoading && (
           <p className="text-sm text-[var(--color-text-tertiary)]">
             {t("whatsNewModal.loading")}
@@ -110,6 +123,7 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
             </ul>
           </nav>
         )}
+        </div>
       </DialogContent>
     </Dialog>
   );

@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { ArrowRight } from "lucide-react";
 import { useFormatter, useTranslations } from "next-intl";
 import { Markdown } from "@repowise-dev/ui/shared/markdown";
-import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
+import { seriesColor } from "@repowise-dev/ui/shared/series";
 import type { ChangelogEntry, ReleaseStats } from "@/lib/api/meta";
 import { linkPullRequests, resolveHighlightHref } from "@/lib/release-moment";
 import { NewMark } from "./new-mark";
@@ -12,11 +13,54 @@ import { NewMark } from "./new-mark";
 const MICRO =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
+/** The glow band behind the version: orange into plum at low strength,
+ *  fading into the dialog ground. Solid stops, checked by contrast-check.py. */
+const BAND =
+  "linear-gradient(120deg, var(--color-release-glow-1) 0%, var(--color-release-glow-2) 55%, var(--color-release-ground) 100%)";
+
+/** A gentle rise on open; the global reduced-motion rule flattens it. */
+const ENTER = "motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 duration-500";
+
 export function releaseName(version: string, nextLabel: string): string {
   return version === "unreleased" ? nextLabel : `v${version}`;
 }
 
-/** One release: summary, the numbers, highlights, then every change. */
+/** The band at the top of the dialog: the version as the display heading. */
+export function ReleaseHeader({
+  entry,
+  title,
+}: {
+  entry: ChangelogEntry;
+  /** The dialog title, rendered above the version (a `DialogTitle`). */
+  title: React.ReactNode;
+}) {
+  const t = useTranslations("shell.whatsNewModal");
+  return (
+    <header
+      className="border-b border-[var(--color-border-default)] px-6 pb-6 pt-6 sm:px-8"
+      style={{ backgroundImage: BAND }}
+    >
+      {title}
+      <h3
+        id={`release-${entry.version}`}
+        className={`mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 ${ENTER}`}
+      >
+        <span className="font-serif text-4xl font-light tracking-tight text-[var(--color-text-primary)] sm:text-5xl">
+          {releaseName(entry.version, t("nextRelease"))}
+        </span>
+        {entry.label && (
+          <span className="font-mono text-xs text-[var(--color-text-secondary)]">{entry.label}</span>
+        )}
+      </h3>
+      {entry.version === "unreleased" && (
+        <p className="mt-2 text-xs text-[var(--color-text-secondary)]">{t("unreleasedNote")}</p>
+      )}
+    </header>
+  );
+}
+
+/** One release below its header: summary, the numbers, highlights, then
+ *  every change. */
 export function ReleaseNotes({
   entry,
   repoId,
@@ -35,63 +79,71 @@ export function ReleaseNotes({
   const sections = entry.sections.filter((s) => s.items.length > 0);
 
   return (
-    <article className="space-y-6" aria-labelledby={`release-${entry.version}`}>
-      <header className="space-y-2">
-        <h3 id={`release-${entry.version}`} className="flex flex-wrap items-baseline gap-x-2">
-          <span className="text-lg font-semibold text-[var(--color-text-primary)]">
-            {releaseName(entry.version, t("nextRelease"))}
-          </span>
-          {entry.label && (
-            <span className="font-mono text-xs text-[var(--color-text-tertiary)]">{entry.label}</span>
-          )}
-        </h3>
-        {entry.version === "unreleased" && (
-          <p className="text-xs text-[var(--color-text-tertiary)]">{t("unreleasedNote")}</p>
-        )}
-        {entry.summary && (
-          <div className="text-[var(--color-text-secondary)]">
-            <Markdown content={linkPullRequests(entry.summary)} density="narrow" fill />
-          </div>
-        )}
-      </header>
+    <article className="space-y-8" aria-labelledby={`release-${entry.version}`}>
+      {entry.summary && (
+        <div className="text-[var(--color-text-secondary)] [text-wrap:pretty]">
+          <Markdown content={linkPullRequests(entry.summary)} density="narrow" fill />
+        </div>
+      )}
 
       {entry.stats && <ReleaseNumbers stats={entry.stats} />}
 
       {highlights.length > 0 && (
-        <section className="space-y-2" aria-labelledby={`highlights-${entry.version}`}>
+        <section className="space-y-3" aria-labelledby={`highlights-${entry.version}`}>
           <h4 id={`highlights-${entry.version}`} className={MICRO}>
             {t("highlightsTitle")}
           </h4>
-          <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
-            {highlights.map((h) => {
+          <ul className="grid gap-2.5 sm:grid-cols-2">
+            {highlights.map((h, i) => {
               const href = resolveHighlightHref(h.href, repoId);
-              return (
-                <li key={h.id} className="flex items-baseline gap-3 py-2.5">
-                  <div className="min-w-0 flex-1">
-                    <p className="flex items-baseline gap-2 text-sm font-medium text-[var(--color-text-primary)]">
-                      {h.title}
-                      {fresh && <NewMark />}
+              const color = seriesColor(i);
+              const body = (
+                <>
+                  <p className="flex items-baseline gap-2 text-[15px] font-medium text-[var(--color-text-primary)]">
+                    {h.title}
+                    {fresh && <NewMark />}
+                  </p>
+                  {h.blurb && (
+                    <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+                      {h.blurb}
                     </p>
-                    {h.blurb && (
-                      <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-text-secondary)]">
-                        {h.blurb}
-                      </p>
-                    )}
-                  </div>
+                  )}
+                </>
+              );
+              // A card only when it opens something; a highlight with no page
+              // keeps its colour as a dot and stays plain.
+              return (
+                <li key={h.id} className={`flex ${ENTER}`}>
                   {href ? (
                     <Link
                       href={href}
                       onClick={onNavigate}
-                      className="shrink-0 rounded text-xs text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                      className="group flex w-full flex-col rounded-lg border border-[var(--color-border-default)] border-l-[3px] bg-[var(--color-release-card)] px-4 py-3 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                      style={{ borderLeftColor: color }}
                     >
-                      {t("open")}
-                      <span className="sr-only">: {h.title}</span>
+                      {body}
+                      <span className="mt-auto inline-flex items-center gap-1 pt-2 text-xs text-[var(--color-accent-primary)] group-hover:underline">
+                        {t("open")}
+                        <ArrowRight aria-hidden className="h-3 w-3" />
+                      </span>
                     </Link>
-                  ) : h.href ? (
-                    <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">
-                      {t("inEachRepo")}
-                    </span>
-                  ) : null}
+                  ) : (
+                    <div className="flex w-full gap-3 px-1 py-3">
+                      <span
+                        aria-hidden
+                        className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
+                        style={{ background: color }}
+                      />
+                      <div className="min-w-0">
+                        {body}
+                        {h.href && (
+                          <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
+                            {t("inEachRepo")}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </li>
               );
             })}
@@ -152,8 +204,14 @@ function SectionBody({ items }: { items: string[] }) {
   );
 }
 
-/** "By the numbers" as a hairline ribbon, then the thank-you. No names: the
- *  counts carry the credit. */
+interface Figure {
+  label: string;
+  value: string;
+  sub?: string | undefined;
+}
+
+/** "By the numbers": large figures, each over a short bar in its series
+ *  colour, then the thank-you. No names: the counts carry the credit. */
 export function ReleaseNumbers({ stats }: { stats: ReleaseStats }) {
   const t = useTranslations("shell.whatsNewModal");
   const format = useFormatter();
@@ -173,7 +231,7 @@ export function ReleaseNumbers({ stats }: { stats: ReleaseStats }) {
     .map(([key, count]) => t(key, { count: n(count) }));
   const kindsSub = kinds.length ? format.list(kinds, { type: "conjunction" }) : undefined;
 
-  const cells: RibbonStat[] = [
+  const figures: Figure[] = [
     { label: t("statPrs"), value: n(stats.prs), sub: t("statPrsSub", { count: n(stats.issues_closed) }) },
     {
       label: t("statContributors"),
@@ -194,12 +252,31 @@ export function ReleaseNumbers({ stats }: { stats: ReleaseStats }) {
   ];
 
   return (
-    <section className="space-y-2" aria-label={t("numbersTitle")}>
+    <section className="space-y-4" aria-label={t("numbersTitle")}>
       <p className={MICRO}>
         {t("numbersTitle")} · {t("numbersSince", { days: stats.days, since: stats.since })}
       </p>
-      <StatRibbon stats={cells} />
-      <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
+        {figures.map((f, i) => (
+          <div key={f.label} className={`min-w-0 ${ENTER}`}>
+            <span
+              aria-hidden
+              className="mb-2.5 block h-[3px] w-8 rounded-full"
+              style={{ background: seriesColor(i) }}
+            />
+            <dt className={MICRO}>{f.label}</dt>
+            <dd className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-[var(--color-text-primary)]">
+              {f.value}
+            </dd>
+            {f.sub && (
+              <dd className="mt-1 text-xs tabular-nums leading-snug text-[var(--color-text-secondary)]">
+                {f.sub}
+              </dd>
+            )}
+          </div>
+        ))}
+      </dl>
+      <p className="text-sm leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
         {first
           ? t("thanksFirst", { count: n(stats.contributors), first: n(first) })
           : t("thanks", { count: n(stats.contributors) })}

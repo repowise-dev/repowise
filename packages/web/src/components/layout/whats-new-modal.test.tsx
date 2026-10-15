@@ -63,10 +63,10 @@ describe("WhatsNewModal", () => {
     expect(within(dialog).getByText(/^45 features, 4 refactors,? and 6 documentation changes$/)).toBeTruthy();
     expect(dialog.textContent).not.toContain("performance");
     // Repo-scoped routes resolve to the repository being read.
-    expect(within(dialog).getByRole("link", { name: /Open.*Charts in chat/ }).getAttribute("href")).toBe(
+    expect(within(dialog).getByRole("link", { name: /^Charts in chat/ }).getAttribute("href")).toBe(
       "/repos/r1/chat",
     );
-    expect(within(dialog).getByRole("link", { name: /Open.*Models from Settings/ }).getAttribute("href")).toBe(
+    expect(within(dialog).getByRole("link", { name: /^Models from Settings/ }).getAttribute("href")).toBe(
       "/settings",
     );
     expect(within(dialog).getAllByText("New")).toHaveLength(3);
