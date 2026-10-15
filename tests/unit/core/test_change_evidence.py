@@ -27,6 +27,7 @@ from repowise.core.changes.evidence import (
     KINDS,
     ChangeEvidence,
     EvidenceInputs,
+    EvidenceItem,
     Unavailable,
     build_change_evidence,
     item_line,
@@ -198,6 +199,22 @@ def test_statuses_follow_the_facts():
     assert by["provenance"].details == [{"sha": "abc", "label": "agent", "tier": 2}]
     # A high diff-size rank is one row and never a verdict.
     assert by["risk_score"].status == "ok" and by["risk_score"].value == {"percentile": 97.5}
+
+
+def test_a_kept_checklist_reads_reaching_tests_under_the_current_rule():
+    """A checklist kept before the rule changed said attention for an unknown file."""
+    item = {
+        "kind": "reaching_tests",
+        "label": "Tests reaching the change",
+        "status": "attention",
+        "basis": "inferred",
+        "value": {"files_without_tests": 0, "files_unknown": 1},
+        "details": [{"path": "a.py", "tests": ["t"]}, {"path": "b.py", "tests": None}],
+        "source": "test impact",
+    }
+    assert EvidenceItem.from_dict(item).status == "unknown"
+    absent = {**item, "details": [*item["details"], {"path": "c.py", "tests": []}]}
+    assert EvidenceItem.from_dict(absent).status == "attention"
 
 
 def test_every_item_reads_as_a_plain_line():

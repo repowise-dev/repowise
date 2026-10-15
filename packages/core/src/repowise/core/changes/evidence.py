@@ -88,10 +88,14 @@ class EvidenceItem:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> EvidenceItem:
+        status = data["status"]
+        if data["kind"] == "reaching_tests" and data["basis"] != "unresolved":
+            # Derived from the rows, so a kept checklist reads under the current rule.
+            status = _tests_status(data.get("details") or [])
         return cls(
             kind=data["kind"],
             label=data["label"],
-            status=data["status"],
+            status=status,
             basis=data["basis"],
             value=data.get("value"),
             details=list(data.get("details") or []),
@@ -328,17 +332,24 @@ def _tests(bundle: ChangeReviewBundle, code: list[str]) -> EvidenceItem:
     }
     if rows and unknown == len(rows):
         return EvidenceItem(kind, label, "unknown", "unresolved", value, rows, source)
-    # Only a measured absence asks for a look; a file nothing knows about
-    # leaves the item partly known, with its rows saying which files.
     return EvidenceItem(
         kind,
         label,
-        "attention" if absent else ("unknown" if unknown else "ok"),
+        _tests_status(rows),
         "measured" if rows and all(r["measured"] for r in rows) else "inferred",
         value,
         rows,
         source,
     )
+
+
+def _tests_status(rows: Sequence[Mapping[str, Any]]) -> Status:
+    """Only a measured absence (``tests: []``) asks for a look; a file nothing
+    knows about (``tests: None``) leaves the item partly known."""
+    tests = [r.get("tests") for r in rows if isinstance(r, Mapping) and "path" in r]
+    if any(t == [] for t in tests):
+        return "attention"
+    return "unknown" if any(t is None for t in tests) else "ok"
 
 
 def _contracts(bundle: ChangeReviewBundle, inputs: EvidenceInputs) -> EvidenceItem:
