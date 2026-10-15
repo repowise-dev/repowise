@@ -21,7 +21,7 @@ but is not counted as a field.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from ....ingestion.python_overload import is_python_overload
 from ....test_paths import is_test_related_path

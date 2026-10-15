@@ -16,6 +16,7 @@ answering and stops reading as current.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Select, func, select, update
@@ -474,6 +475,7 @@ async def finalize_refactoring_opportunities(
         is_test_by_path = {node_id: is_test for node_id, is_test in node_rows}
 
     queue_order = _diversified_order(opportunities, is_test_by_path=is_test_by_path)
+    finding_ids = _finding_ids_by_file(findings)
 
     details_by_id = {
         item.opportunity_id: _details_payload(

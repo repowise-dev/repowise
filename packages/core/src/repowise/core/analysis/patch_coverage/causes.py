@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ...test_paths import is_test_related_path
 from .delta import CauseBasis, IndirectCause, IndirectChange

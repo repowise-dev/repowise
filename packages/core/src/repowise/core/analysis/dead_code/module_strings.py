@@ -30,9 +30,10 @@ fixture app it loads by name), never a member path (a ``mock.patch`` target).
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any
 
 from ...ingestion.languages.python_modules import module_parts
 from ...ingestion.languages.python_strings import defines_top_level, is_python, live_text

@@ -15,6 +15,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+from typing import Any
 
 from ...ingestion.languages.registry import REGISTRY
 from ...ownership.codeowners import parse_codeowners
