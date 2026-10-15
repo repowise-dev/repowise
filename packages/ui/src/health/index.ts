@@ -17,7 +17,6 @@ export * from "./sparkline";
 export * from "./health-tabs";
 export * from "./page-chrome";
 export * from "./trend-chart";
-export * from "./trend-slope-chart";
 export * from "./file-trend-chart";
 export * from "./file-signals-panel";
 export * from "./risk-coverage-scatter";

@@ -132,6 +132,12 @@ export const GOOD_MIN = 7.0;
 export const FAIR_MIN = 5.5;
 export const NEEDS_WORK_MIN = 4.0;
 
+/**
+ * The canonical three-band reading beside a health mark: Healthy at 8 or
+ * above, Warning from 4, Alert below 4 (`NEEDS_WORK_MIN`).
+ */
+export const HEALTHY_MIN = 8.0;
+
 /** Worst-first, matching how the surfaces list files. */
 export const HEALTH_BAND_ORDER: readonly HealthBand[] = [
   "at_risk",
@@ -276,6 +282,12 @@ export interface HealthFileMetric {
    * without re-deriving the answer from the path on every surface.
    */
   is_test?: boolean;
+  /**
+   * Where the file's code comes from (`production`, `test`, `vendored`,
+   * `generated`, `docs_example`, `tooling`, `build`). `null` on rows scored
+   * before the column existed; absent on payloads that do not carry it.
+   */
+  code_origin?: string | null;
   /**
    * Open performance-risk findings on this file. The performance lens on the
    * code-health map colors by this count (+ `performance_analyzed`), not by the
@@ -871,7 +883,15 @@ export interface HealthFilesQuery {
  * repository by size alone is a defensible sample for the health lens and the
  * wrong one for performance, because a small file can hold the worst cause.
  */
-export type HealthMapSelectionBasis = "active_then_performance_then_nloc";
+export type HealthMapSelectionBasis =
+  | "active_then_performance_then_nloc"
+  /**
+   * The pins, then a floor of two files per module, then everything else by
+   * origin tier (production, tooling and build, test, docs examples) with open
+   * performance causes leading each tier and a health-debt rank after them.
+   * Vendored and generated files are held out unless `include_held` is set.
+   */
+  | "active_then_module_floor_then_origin_tier_then_performance_then_debt";
 
 export interface HealthMapSelection {
   basis: HealthMapSelectionBasis;
@@ -883,6 +903,16 @@ export interface HealthMapSelection {
   performance_shown: number;
   performance_eligible: number;
   nloc_shown: number;
+  /** Files the per-module floor admitted. Absent on older servers. */
+  module_floor_shown?: number;
+  /** The search substring the field pinned matches for, or `null`. */
+  query?: string | null;
+  /** Eligible files whose path contains the query, drawn or not. */
+  query_matches?: number;
+  /** Matches the query pinned into the field (bounded). */
+  query_shown?: number;
+  /** Whether vendored and generated files were admitted. */
+  include_held?: boolean;
 }
 
 /** What the cap pushed out, in the units a reader would ask about. */
@@ -891,6 +921,11 @@ export interface HealthMapOmissions {
   performance_files: number;
   opportunities: number;
   observations: number;
+  /**
+   * Drawable vendored and generated files held out of the field (not counted
+   * in `files`). Absent on servers that do not hold them out.
+   */
+  held?: number;
 }
 
 export interface HealthMapModuleRollup {
@@ -946,6 +981,10 @@ export interface HealthMapQuery {
   active?: string[];
   /** Which half of the repository to describe. Defaults to `"all"`. */
   scope?: HealthScope;
+  /** Also draw vendored and generated files. */
+  include_held?: boolean;
+  /** Pin files whose path contains this substring. */
+  q?: string;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1148,6 +1187,12 @@ export interface HealthTrendResponse {
    * backend does not send it, so consumers fall back to `file_deltas.length`.
    */
   file_deltas_total?: number;
+  /**
+   * How many of those fell and rose. The server holds half the slice for each
+   * direction while it has rows to fill it. Optional like the total.
+   */
+  file_deltas_worse?: number;
+  file_deltas_improved?: number;
   snapshot_count: number;
   /** Which half of the repository these figures describe. */
   scope?: HealthScope;

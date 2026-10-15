@@ -37,12 +37,26 @@ async def get_health_map(
             "them so the cap can never push the subject off its own map."
         ),
     ),
+    include_held: bool = Query(
+        False,
+        description="Also draw vendored and generated files, which are held out by default.",
+    ),
+    q: str | None = Query(
+        None,
+        max_length=200,
+        description="Pin the files whose path contains this substring, so search finds undrawn files.",
+    ),
     scope: str = ScopeQuery,
     counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """One bounded field plus the exact scope of what the cap left out."""
     feed = await HealthMapService(session, repo_id).feed(
-        cap=cap, active=parse_active(active), scope=scope, counts=counts
+        cap=cap,
+        active=parse_active(active),
+        scope=scope,
+        counts=counts,
+        include_held=include_held,
+        query=q,
     )
     return feed.payload()

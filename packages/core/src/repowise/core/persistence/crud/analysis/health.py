@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
@@ -1076,10 +1077,15 @@ async def list_health_snapshots(
     repository_id: str,
     *,
     limit: int | None = None,
+    file_maps: bool = True,
 ) -> list[HealthSnapshot]:
     """Return snapshots **oldest-first** (the shape ``trends.diff_snapshots``
     expects). Pass ``limit`` to cap the most recent N (still returned
     oldest-first for stable iteration).
+
+    ``file_maps=False`` defers both per-file maps, for a caller that reads the
+    scalars of every row and the maps of a few: it loads those with
+    ``session.refresh(row, ["per_file_scores_json"])``.
 
     ``limit`` is pushed into SQL rather than applied to the fetched list. Every
     row carries ``per_file_scores_json`` and ``per_file_deductions_json``, both
@@ -1088,19 +1094,18 @@ async def list_health_snapshots(
     entire history off disk to throw most of it away. Taking the newest N
     descending and reversing gives the same list for a fraction of the bytes.
     """
+    base = select(HealthSnapshot).where(HealthSnapshot.repository_id == repository_id)
+    if not file_maps:
+        base = base.options(
+            defer(HealthSnapshot.per_file_scores_json),
+            defer(HealthSnapshot.per_file_deductions_json),
+        )
     if limit is not None:
         newest_first = await session.execute(
-            select(HealthSnapshot)
-            .where(HealthSnapshot.repository_id == repository_id)
-            .order_by(HealthSnapshot.taken_at.desc(), HealthSnapshot.id.desc())
-            .limit(limit)
+            base.order_by(HealthSnapshot.taken_at.desc(), HealthSnapshot.id.desc()).limit(limit)
         )
         return list(reversed(newest_first.scalars().all()))
-    q = (
-        select(HealthSnapshot)
-        .where(HealthSnapshot.repository_id == repository_id)
-        .order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
-    )
+    q = base.order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
     result = await session.execute(q)
     return list(result.scalars().all())
 

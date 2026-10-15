@@ -43,6 +43,8 @@ export interface CodeHealthMapFile {
   dead_code_lines?: number | null;
   /** Open security findings, drives the security lens. */
   security_findings?: number | null;
+  /** Where the file's code comes from (production, test, vendored, ...). */
+  code_origin?: string | null;
 }
 
 // The wire vocabulary itself, so a new state cannot drift past the map.
@@ -77,7 +79,12 @@ export interface FileNode {
 }
 
 export interface Galaxy {
+  /** Grouping key: the module, a sub-folder, or a fold of small modules. */
   module: string;
+  /** What the galaxy is called on the field. */
+  label: string;
+  /** Modules folded into this galaxy; 1 for an ordinary one. */
+  members: number;
   cx: number;
   cy: number;
   R: number;
@@ -111,4 +118,12 @@ export interface MapScope {
   };
   /** Paths the caller pinned that the index holds no drawable row for. */
   missing?: string[];
+  /**
+   * Vendored and generated files held out of the field, and whether the host
+   * asked for them. Absent when the host does not hold them out.
+   */
+  held?: number;
+  includeHeld?: boolean;
+  /** The search the server pinned matches for, and how many it found. */
+  query?: { text: string; matches: number; shown: number };
 }

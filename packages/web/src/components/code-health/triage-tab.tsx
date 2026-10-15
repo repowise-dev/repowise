@@ -43,6 +43,13 @@ export function TriageTab({
   trendSlot,
   scope,
   counts,
+  onDrawMore,
+  drawMoreStep,
+  onIncludeHeldChange,
+  onFindUndrawn,
+  mapPending,
+  mapError,
+  onRetryMap,
 }: {
   repoId: string;
   /** Trend fetched once at the page level. */
@@ -68,6 +75,14 @@ export function TriageTab({
   scope?: HealthScope;
   /** Whether those figures count change history or code shape alone. */
   counts?: HealthCounts;
+  /** Map field controls the page backs with a refetch. */
+  onDrawMore?: (() => void) | undefined;
+  drawMoreStep?: number;
+  onIncludeHeldChange?: (include: boolean) => void;
+  onFindUndrawn?: (query: string) => void;
+  mapPending?: boolean;
+  mapError?: unknown;
+  onRetryMap?: () => void;
 }) {
   const router = useRouter();
 
@@ -118,6 +133,13 @@ export function TriageTab({
       hotspotsSlot={hotspotsSlot}
       trendSlot={trendSlot}
       leadSlot={<FixFirstSection repoId={id} />}
+      onDrawMore={onDrawMore}
+      drawMoreStep={drawMoreStep}
+      onIncludeHeldChange={onIncludeHeldChange}
+      onFindUndrawn={onFindUndrawn}
+      mapPending={mapPending}
+      mapError={mapError}
+      onRetryMap={onRetryMap}
     />
   );
 }

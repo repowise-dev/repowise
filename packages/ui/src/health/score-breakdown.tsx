@@ -49,12 +49,16 @@ export interface ScoreBreakdownProps {
   score: number;
   totalDeduction: number;
   categories: ScoreBreakdownCategory[];
+  /** List each category's findings under its bar. Default true; a surface
+   *  that already lists the findings turns it off. */
+  showFindings?: boolean;
 }
 
 export function ScoreBreakdown({
   score,
   totalDeduction,
   categories,
+  showFindings = true,
 }: ScoreBreakdownProps) {
   return (
     <div className="space-y-3">
@@ -127,7 +131,7 @@ export function ScoreBreakdown({
                   }}
                 />
               </div>
-              {c.findings.length > 0 && (
+              {showFindings && c.findings.length > 0 && (
                 <ul className="mt-2 space-y-1">
                   {c.findings.slice(0, 6).map((f) => (
                     <li

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -250,9 +251,15 @@ def previews_on(layer: GateLayer) -> tuple[LanguageGate, ...]:
     return tuple(g for g in LANGUAGE_GATES if g.layer == layer and g.state == "preview")
 
 
+@lru_cache(maxsize=1 << 16)
+def _suffix(path: str) -> str:
+    # Cached: a gate pass asks once per finding, so a file's path repeats.
+    return PurePosixPath(path).suffix.lower()
+
+
 def language_of(path: str) -> str | None:
     """The language tag a stored path's extension maps to, or ``None``."""
-    return EXTENSION_TO_LANGUAGE.get(PurePosixPath(path or "").suffix.lower())
+    return EXTENSION_TO_LANGUAGE.get(_suffix(path or ""))
 
 
 def _match(
