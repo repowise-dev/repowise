@@ -5,6 +5,8 @@ import {
   NEW_MARK_DAYS,
   activeNewRoutes,
   decideMoment,
+  highlightRepoId,
+  rememberRepo,
   linkPullRequests,
   previewMoment,
   readNewSurfaces,
@@ -122,5 +124,27 @@ describe("decideMoment", () => {
     window.localStorage.setItem("repowise:last-seen-server-version", "0.56.0");
     expect(decideMoment("0.57.0", [HL("/settings")], "")).toEqual({ moment: "dialog", preview: false });
     expect(readNewSurfaces()?.routes).toEqual(["/settings"]);
+  });
+});
+
+describe("highlight repository", () => {
+  it("uses the page's repo, else the last opened, else the first listed", () => {
+    rememberRepo("/workspace", "first");
+    expect(highlightRepoId("/workspace")).toBe("first");
+    rememberRepo("/repos/abc/chat", "first");
+    expect(highlightRepoId("/workspace")).toBe("abc");
+    rememberRepo("/settings", "first");
+    expect(highlightRepoId("/settings")).toBe("abc");
+    expect(highlightRepoId("/repos/xyz/overview")).toBe("xyz");
+  });
+
+  it("is null with no repositories", () => {
+    rememberRepo("/", null);
+    expect(highlightRepoId("/")).toBeNull();
+  });
+
+  it("does not count as earlier use", () => {
+    rememberRepo("/repos/abc/chat", null);
+    expect(takeUpgradeMoment("0.57.0", true)).toBe("none");
   });
 });

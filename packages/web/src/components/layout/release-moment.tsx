@@ -8,6 +8,7 @@ import { Callout } from "@repowise-dev/ui/shared/callout";
 import { useChangelog, useMetaVersion } from "@/lib/hooks/use-meta-version";
 import {
   decideMoment,
+  rememberRepo,
   startNewSurfaces,
   visitNewSurface,
   type UpgradeMoment,
@@ -24,8 +25,8 @@ import { WhatsNewModal } from "./whats-new-modal";
  * demand, using the newest changelog entry, without changing what this
  * browser has seen. Read on a full page load only.
  */
-export function ReleaseMoment() {
-  const { version, moment, setMoment, preview } = useReleaseMoment();
+export function ReleaseMoment({ firstRepoId = null }: { firstRepoId?: string | null }) {
+  const { version, moment, setMoment, preview } = useReleaseMoment(firstRepoId);
   const [dialogOpen, setDialogOpen] = useState(false);
 
   useEffect(() => {
@@ -55,7 +56,7 @@ export function ReleaseMoment() {
   );
 }
 
-function useReleaseMoment() {
+function useReleaseMoment(firstRepoId: string | null) {
   const { meta } = useMetaVersion();
   const pathname = usePathname();
   const [moment, setMoment] = useState<UpgradeMoment>("none");
@@ -85,7 +86,8 @@ function useReleaseMoment() {
 
   useEffect(() => {
     if (pathname) visitNewSurface(pathname);
-  }, [pathname]);
+    rememberRepo(pathname, firstRepoId);
+  }, [pathname, firstRepoId]);
 
   return { version, moment, setMoment, preview };
 }

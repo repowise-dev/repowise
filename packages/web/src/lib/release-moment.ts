@@ -17,6 +17,9 @@ import type { ChangelogHighlight } from "@/lib/api/meta";
 const LAST_SEEN_KEY = "repowise:last-seen-server-version";
 const NEW_SURFACES_KEY = "repowise:new-surfaces";
 const NEW_SURFACES_EVENT = "repowise:new-surfaces";
+const LAST_REPO_KEY = "repowise:last-repo";
+/** Keys this module writes itself, which say nothing about earlier use. */
+const OWN_KEYS = new Set([LAST_SEEN_KEY, NEW_SURFACES_KEY, LAST_REPO_KEY]);
 export const NEW_MARK_DAYS = 14;
 
 export type UpgradeMoment = "none" | "dialog" | "notice";
@@ -80,7 +83,7 @@ function hasPriorUse(): boolean {
     const store = window.localStorage;
     for (let i = 0; i < store.length; i++) {
       const key = store.key(i);
-      if (key && /^repowise[:_]/.test(key) && key !== LAST_SEEN_KEY && key !== NEW_SURFACES_KEY) {
+      if (key && /^repowise[:_]/.test(key) && !OWN_KEYS.has(key)) {
         return true;
       }
     }
@@ -175,6 +178,21 @@ export function resolveHighlightHref(href: string | null | undefined, repoId: st
 export function repoIdFromPath(pathname: string | null): string | null {
   const m = pathname?.match(/^\/repos\/([^/]+)/);
   return m?.[1] ? decodeURIComponent(m[1]) : null;
+}
+
+/** Remembers the repository the reader last opened, so a highlight opened
+ *  from outside a repository (the dashboard, /workspace) still has one. The
+ *  first listed repository stands in until one is opened. */
+export function rememberRepo(pathname: string | null, firstRepoId: string | null): void {
+  const id = repoIdFromPath(pathname);
+  if (id) write(LAST_REPO_KEY, id);
+  else if (firstRepoId && !read(LAST_REPO_KEY)) write(LAST_REPO_KEY, firstRepoId);
+}
+
+/** The repository a repo-scoped highlight should open: the current page's,
+ *  else the last one opened. */
+export function highlightRepoId(pathname: string | null): string | null {
+  return repoIdFromPath(pathname) ?? read(LAST_REPO_KEY);
 }
 
 /** `?whats-new=preview` replays the minor-release moment, `?whats-new=patch`

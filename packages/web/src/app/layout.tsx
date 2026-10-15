@@ -103,7 +103,7 @@ export default async function RootLayout({
                   transcript) flows across sheets instead of one viewport. */}
               <div className="flex h-screen flex-col overflow-hidden print:block print:h-auto print:overflow-visible">
                 <UpgradeBanner />
-                <ReleaseMoment />
+                <ReleaseMoment firstRepoId={repos[0]?.id ?? null} />
                 <div className="flex flex-1 overflow-hidden print:block print:overflow-visible">
                 <Sidebar
                   repos={repos}

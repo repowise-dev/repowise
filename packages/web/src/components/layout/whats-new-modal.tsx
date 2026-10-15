@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from "@repowise-dev/ui/ui/dialog";
 import { useChangelog } from "@/lib/hooks/use-meta-version";
-import { repoIdFromPath } from "@/lib/release-moment";
+import { highlightRepoId } from "@/lib/release-moment";
 import { useTranslations } from "next-intl";
 import { ReleaseHeader, ReleaseNotes, releaseName } from "./release-notes";
 
@@ -40,7 +40,12 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
     if (open) setSelected(null);
   }, [open, version]);
 
-  const fallback = entries.find((e) => e.version === version) ?? entries[0];
+  // With no version to open on (a preview), the next release leads when it
+  // has highlights; in a released build there is no such entry.
+  const fallback =
+    entries.find((e) => e.version === version) ??
+    entries.find((e) => e.version === "unreleased" && (e.highlights?.length ?? 0) > 0) ??
+    entries[0];
   const entry = entries.find((e) => e.version === selected) ?? fallback;
   const earlier = entries.filter((e) => e !== entry).slice(0, EARLIER_SHOWN);
 
@@ -91,7 +96,7 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
           <ReleaseNotes
             key={entry.version}
             entry={entry}
-            repoId={repoIdFromPath(pathname)}
+            repoId={highlightRepoId(pathname)}
             fresh={fresh && entry === fallback}
             onNavigate={() => onOpenChange(false)}
           />
