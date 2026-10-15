@@ -529,7 +529,141 @@ def _rate_rows(rate: Mapping[str, Any] | None, unknown: str | None) -> list[dict
     return []
 
 
+# -- value lines -------------------------------------------------------------
+
+#: Names shown in a line before the rest are counted.
+_LINE_NAMES = 6
+
+
+def _names(names: Sequence[Any]) -> dict[str, Any]:
+    shown = [str(n) for n in names[:_LINE_NAMES]]
+    return {"names": ", ".join(shown), "more": max(len(names) - len(shown), 0)}
+
+
+def item_line(item: Mapping[str, Any]) -> dict[str, Any]:
+    """An item's value as ``{key, params}``, derived from its value and rows.
+
+    Each surface words the line itself: the web from its message catalog, the
+    CLI with :func:`line_text`. Derived on read, so a kept checklist gets it
+    too. An item with no value reads ``unknown`` with the reason it carries.
+    """
+    kind, value = item["kind"], item.get("value")
+    rows = [r for r in item.get("details") or () if isinstance(r, Mapping)]
+    if value is None:
+        reason = next((r["reason"] for r in rows if r.get("reason")), "")
+        return {"key": "unknown", "params": {"reason": str(reason)}}
+    if kind in ("components_touched", "suggested_reviewers") and isinstance(value, list):
+        return {"key": kind, "params": {"count": len(value), **_names(value)}}
+    if kind == "owners" and isinstance(value, list):
+        unowned = sum(len(r.get("paths") or ()) for r in rows if "owner" in r and r["owner"] is None)
+        return {"key": "owners", "params": {"count": len(value), "unowned": unowned, **_names(value)}}
+    if kind == "reaching_tests":
+        files = [r for r in rows if "path" in r]
+        return {
+            "key": "reaching_tests",
+            "params": {
+                "files": len(files),
+                "reached": sum(bool(r.get("tests")) for r in files),
+                "absent": sum(r.get("tests") == [] for r in files),
+                "unknown": sum(r.get("tests") is None for r in files),
+            },
+        }
+    if kind == "contracts":
+        breaking = value.get("breaking_symbols")
+        key = "contracts" if breaking is not None else "contracts_unchecked"
+        return {"key": key, "params": {"touched": value.get("touched", 0), "breaking": breaking or 0}}
+    if kind == "cross_repo_consumers":
+        return {"key": kind, "params": {"links": value.get("links", 0), **_names(value.get("repos") or [])}}
+    if kind == "decisions_crossed":
+        params = {"accepted": value.get("accepted", 0), "candidate": value.get("candidate", 0)}
+        return {"key": kind if any(params.values()) else "decisions_none", "params": params}
+    if kind == "health_delta":
+        params = {k: value.get(k, 0) for k in ("introduced", "worsened", "resolved")}
+        return {"key": "health_delta" if value.get("complete") else "health_delta_partial", "params": params}
+    if kind == "provenance":
+        known = int(value.get("agent_commits") or 0) + int(value.get("human_attested_commits") or 0)
+        commits = known + int(value.get("unknown_commits") or 0)
+        return {"key": kind, "params": {"label": value.get("label"), "known": known, "commits": commits}}
+    if kind == "risk_score":
+        return {"key": kind, "params": {"percentile": value.get("percentile")}}
+    if kind == "outcomes":
+        params = {"reverts": value.get("reverts", 0), "references": value.get("fix_references", 0)}
+        if value.get("files") is None:
+            return {"key": "outcomes", "params": params}
+        rate = {"fixed": value["files_fixed"], "files": value["files"], "days": value.get("days")}
+        return {"key": "outcomes_rate", "params": {**params, **rate}}
+    return {"key": "unknown", "params": {"reason": ""}}
+
+
+def _n(count: int, one: str, many: str | None = None) -> str:
+    return f"{count} {one if count == 1 else (many or one + 's')}"
+
+
+def _listed(p: Mapping[str, Any]) -> str:
+    return p["names"] + (f" and {p['more']} more" if p["more"] else "")
+
+
+def line_text(line: Mapping[str, Any]) -> str:
+    """A :func:`item_line` in plain English, the CLI's wording of the web's catalog."""
+    key, p = line["key"], line["params"]
+    if key == "unknown":
+        return f"Not known: {p['reason']}" if p["reason"] else "Not known"
+    if key == "components_touched":
+        return f"{_n(p['count'], 'component')}: {_listed(p)}"
+    if key == "suggested_reviewers":
+        return _listed(p)
+    if key == "owners":
+        named = _listed(p) if p["count"] else "No declared owner"
+        gap = f"; {_n(p['unowned'], 'changed file')} without one" if p["unowned"] else ""
+        return named + gap
+    if key == "reaching_tests":
+        if not p["files"]:
+            return "No changed source file"
+        parts = [f"{p['reached']} of {_n(p['files'], 'changed file')} reached by a test"]
+        if p["absent"]:
+            parts.append(f"{p['absent']} with none")
+        if p["unknown"]:
+            parts.append(f"{p['unknown']} not known")
+        return "; ".join(parts)
+    if key in ("contracts", "contracts_unchecked"):
+        touched = _n(p["touched"], "workspace contract") + " touched" if p["touched"] else "No workspace contract touched"
+        if key == "contracts_unchecked":
+            return f"{touched}; signatures not compared"
+        broke = _n(p["breaking"], "breaking signature change") if p["breaking"] else "no breaking signature change"
+        return f"{touched}; {broke}"
+    if key == "cross_repo_consumers":
+        return f"{_n(p['links'], 'consumer')} in {_listed(p)}" if p["links"] else "No consumer in another repo"
+    if key == "decisions_none":
+        return "No decision crossed"
+    if key == "decisions_crossed":
+        return f"{_n(p['accepted'], 'accepted decision')}, {_n(p['candidate'], 'candidate')}"
+    if key in ("health_delta", "health_delta_partial"):
+        text = f"Findings: {p['introduced']} introduced, {p['worsened']} worsened, {p['resolved']} resolved"
+        return text + (" (partial comparison)" if key == "health_delta_partial" else "")
+    if key == "provenance":
+        label = {"agent": "Agent", "human_attested": "Human attested"}.get(p["label"], "Unknown")
+        return f"{label}; known for {p['known']} of {_n(p['commits'], 'commit')}"
+    if key == "risk_score":
+        return f"Larger than {p['percentile']}% of recent commits"
+    if key in ("outcomes", "outcomes_rate"):
+        text = f"{_n(p['reverts'], 'revert')}, {_n(p['references'], 'cause reference')}"
+        if key == "outcomes_rate":
+            text += f"; {p['fixed']} of {_n(p['files'], 'file')} fixed within {p['days']} days"
+        return text
+    return ""
+
+
+#: The basis in words; ``unresolved`` is what a reader calls not known.
+BASIS_TEXT = {
+    "measured": "measured",
+    "inferred": "inferred",
+    "declared": "declared",
+    "unresolved": "not known",
+}
+
+
 __all__ = [
+    "BASIS_TEXT",
     "EVIDENCE_SCHEMA_VERSION",
     "KINDS",
     "ChangeEvidence",
@@ -537,4 +671,6 @@ __all__ = [
     "EvidenceItem",
     "Unavailable",
     "build_change_evidence",
+    "item_line",
+    "line_text",
 ]

@@ -23,7 +23,7 @@ from repowise.core.changes.collect import (
     save_evidence,
     with_item,
 )
-from repowise.core.changes.evidence import ChangeEvidence
+from repowise.core.changes.evidence import ChangeEvidence, item_line
 from repowise.core.changes.record import change_record
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
@@ -144,7 +144,10 @@ async def get_change(
             except TimeoutError:
                 record["evidence_building"] = True
         if kept is not None:
-            record["evidence"] = kept.to_dict()
+            wire = kept.to_dict()
+            for item in wire["items"]:
+                item["line"] = item_line(item)
+            record["evidence"] = wire
     return ChangeRecord(**record, commit_count=len(record["commits"]))
 
 

@@ -166,6 +166,11 @@ async def test_detail_carries_evidence_only_when_asked_and_keeps_it(
         "value": {"introduced": 0},
         "details": [],
         "source": "change health",
+        # Worded by the client from a key and its numbers.
+        "line": {
+            "key": "health_delta_partial",
+            "params": {"introduced": 0, "worsened": 0, "resolved": 0},
+        },
     }
     # Kept: the next read builds nothing; refresh builds again.
     again = (await client.get(base, params={"evidence": "true"})).json()

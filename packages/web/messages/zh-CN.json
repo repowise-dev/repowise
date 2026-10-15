@@ -317,6 +317,44 @@
         "deps": "依赖",
         "chore": "杂务",
         "other": "其他"
+      },
+      "evidenceKinds": {
+        "components_touched": "涉及的组件",
+        "owners": "声明的负责人",
+        "suggested_reviewers": "建议的评审人",
+        "reaching_tests": "覆盖此变更的测试",
+        "contracts": "涉及的契约",
+        "cross_repo_consumers": "其他仓库中的使用方",
+        "decisions_crossed": "涉及的决策",
+        "health_delta": "健康度变化",
+        "provenance": "AI 来源",
+        "risk_score": "差异规模排名",
+        "outcomes": "合并后的结果"
+      },
+      "evidenceBasis": {
+        "measured": "实测",
+        "inferred": "推断",
+        "declared": "声明",
+        "unresolved": "未知"
+      },
+      "evidenceLine": {
+        "unknown": "未知：{reason}",
+        "unknownBare": "未知",
+        "components_touched": "{count} 个组件：{names}{more, plural, =0 {} other {等另外 # 个}}",
+        "suggested_reviewers": "{names}{more, plural, =0 {} other {等另外 # 人}}",
+        "owners": "{count, plural, =0 {无声明的负责人} other {{names}{more, plural, =0 {} other {等另外 # 个}}}}{unowned, plural, =0 {} other {；# 个变更文件无负责人}}",
+        "reaching_tests": "{files, plural, =0 {没有变更的源文件} other {# 个变更文件中有 {reached} 个被测试覆盖}}{absent, plural, =0 {} other {；# 个没有测试}}{unknown, plural, =0 {} other {；# 个未知}}",
+        "contracts": "{touched, plural, =0 {未涉及工作区契约} other {涉及 # 个工作区契约}}；{breaking, plural, =0 {无破坏性签名变更} other {# 个破坏性签名变更}}",
+        "contracts_unchecked": "{touched, plural, =0 {未涉及工作区契约} other {涉及 # 个工作区契约}}；未比较签名",
+        "cross_repo_consumers": "{links, plural, =0 {其他仓库中没有使用方} other {# 个使用方，位于 {names}{more, plural, =0 {} other {等另外 # 个仓库}}}}",
+        "decisions_crossed": "{accepted} 个已接受的决策，{candidate} 个候选决策",
+        "decisions_none": "未涉及决策",
+        "health_delta": "发现：新增 {introduced}，恶化 {worsened}，解决 {resolved}",
+        "health_delta_partial": "发现：新增 {introduced}，恶化 {worsened}，解决 {resolved}（部分比较）",
+        "provenance": "{label, select, agent {智能体} human_attested {人工确认} other {未知}}；{commits} 个提交中已知 {known} 个",
+        "risk_score": "大于 {percentile}% 的近期提交",
+        "outcomes": "{reverts} 次回滚，{references} 次被引为原因",
+        "outcomes_rate": "{reverts} 次回滚，{references} 次被引为原因；{files} 个文件中有 {fixed} 个在 {days} 天内被修复"
       }
     },
     "architecture": {

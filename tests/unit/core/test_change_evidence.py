@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -28,6 +29,8 @@ from repowise.core.changes.evidence import (
     EvidenceInputs,
     Unavailable,
     build_change_evidence,
+    item_line,
+    line_text,
 )
 
 
@@ -195,6 +198,30 @@ def test_statuses_follow_the_facts():
     assert by["provenance"].details == [{"sha": "abc", "label": "agent", "tier": 2}]
     # A high diff-size rank is one row and never a verdict.
     assert by["risk_score"].status == "ok" and by["risk_score"].value == {"percentile": 97.5}
+
+
+def test_every_item_reads_as_a_plain_line():
+    """Each kind words its value; no raw key, boolean or dict reaches a reader."""
+    bundle = _bundle(
+        ["src/a.py", "src/b.py"],
+        health=_delta([_finding()]),
+        tests=_tests({"src/a.py": "inferred", "src/b.py": "unknown"}),
+        risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200),
+    )
+    inputs = dataclasses.replace(_full_inputs(), code_paths=None)
+    evidence = build_change_evidence(bundle, inputs, change_id="c", revspec="r").to_dict()
+    lines = {i["kind"]: line_text(item_line(i)) for i in evidence["items"]}
+
+    assert lines["reaching_tests"] == "1 of 2 changed files reached by a test; 1 not known"
+    assert lines["components_touched"] == "1 component: core"
+    assert lines["owners"] == "@team-core; 1 changed file without one"
+    assert lines["contracts"] == "1 workspace contract touched; signatures not compared"
+    assert lines["decisions_crossed"] == "1 accepted decision, 0 candidates"
+    assert lines["cross_repo_consumers"] == "No consumer in another repo"
+    assert lines["risk_score"] == "Larger than 97.5% of recent commits"
+    assert lines["outcomes"].startswith("Not known: ")
+    for text in lines.values():
+        assert text and not any(w in text for w in ("True", "False", "None", "_", "{"))
 
 
 def test_unknown_provenance_stays_unknown_and_unavailable_inputs_name_why():

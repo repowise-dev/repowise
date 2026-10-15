@@ -9,7 +9,7 @@ import { OverviewSection } from "@repowise-dev/ui/overview";
 import { formatDate } from "@repowise-dev/ui/lib/format";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import type { EvidenceItem } from "@repowise-dev/types/changes";
-import { changeLabel, commitsViewHref } from "@/lib/changes";
+import { changeLabel, commitsViewHref, evidenceValueText, evidenceWord } from "@/lib/changes";
 import { getChange } from "@/lib/api/changes";
 
 interface Props {
@@ -29,30 +29,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 const STATUS_VARIANT = { ok: "fresh", attention: "stale", unknown: "outline" } as const;
 const STATUS_KEY = { ok: "statusOk", attention: "statusAttention", unknown: "statusUnknown" } as const;
 
-/** An item's value in one line; an unknown one shows why. */
-function valueText(item: EvidenceItem): string {
-  const value = item.value;
-  if (value == null) {
-    const reason = item.details.find((d) => typeof d.reason === "string")?.reason;
-    return typeof reason === "string" ? reason : "";
-  }
-  if (Array.isArray(value)) return value.join(", ");
-  if (typeof value === "object") {
-    return Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v != null && !(Array.isArray(v) && v.length === 0))
-      .map(([k, v]) => `${k.replaceAll("_", " ")} ${Array.isArray(v) ? v.join(", ") : String(v)}`)
-      .join(" · ");
-  }
-  return String(value);
-}
-
 type Row = Record<string, unknown>;
 
 /** What later history says about the change, in the later commits' own words. */
 async function Outcomes({ item, repoId }: { item: EvidenceItem; repoId: string }) {
   const t = await getTranslations("views.changes");
   if (item.status === "unknown") {
-    return <p className="text-xs text-[var(--color-text-tertiary)]">{valueText(item)}</p>;
+    return <p className="text-xs text-[var(--color-text-tertiary)]">{evidenceValueText(t, item)}</p>;
   }
   const rows = item.details as Row[];
   const links = rows.filter((r) => r.kind === "revert" || r.kind === "fix_reference");
@@ -141,12 +124,14 @@ async function EvidenceSections({ repoId, changeId }: { repoId: string; changeId
             .map((item) => (
               <li key={item.kind} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
                 <span className="w-full shrink-0 font-medium text-[var(--color-text-primary)] sm:w-48">
-                  {item.label}
+                  {evidenceWord(t, `evidenceKinds.${item.kind}`, item.label)}
                 </span>
                 <Badge variant={STATUS_VARIANT[item.status]}>{t(STATUS_KEY[item.status])}</Badge>
-                <span className="text-[var(--color-text-tertiary)]">{item.basis}</span>
+                <span className="text-[var(--color-text-tertiary)]">
+                  {evidenceWord(t, `evidenceBasis.${item.basis}`, item.basis)}
+                </span>
                 <span className="min-w-[10rem] flex-1 break-words text-[var(--color-text-secondary)]">
-                  {valueText(item)}
+                  {evidenceValueText(t, item)}
                 </span>
               </li>
             ))}

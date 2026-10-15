@@ -317,6 +317,44 @@
         "deps": "deps",
         "chore": "chore",
         "other": "other"
+      },
+      "evidenceKinds": {
+        "components_touched": "Components touched",
+        "owners": "Declared owners",
+        "suggested_reviewers": "Suggested reviewers",
+        "reaching_tests": "Tests reaching the change",
+        "contracts": "Contracts touched",
+        "cross_repo_consumers": "Consumers in other repos",
+        "decisions_crossed": "Decisions crossed",
+        "health_delta": "Health delta",
+        "provenance": "AI provenance",
+        "risk_score": "Diff size rank",
+        "outcomes": "Outcomes since merge"
+      },
+      "evidenceBasis": {
+        "measured": "measured",
+        "inferred": "inferred",
+        "declared": "declared",
+        "unresolved": "not known"
+      },
+      "evidenceLine": {
+        "unknown": "Not known: {reason}",
+        "unknownBare": "Not known",
+        "components_touched": "{count, plural, one {# component} other {# components}}: {names}{more, plural, =0 {} other { and # more}}",
+        "suggested_reviewers": "{names}{more, plural, =0 {} other { and # more}}",
+        "owners": "{count, plural, =0 {No declared owner} other {{names}{more, plural, =0 {} other { and # more}}}}{unowned, plural, =0 {} one {; # changed file without one} other {; # changed files without one}}",
+        "reaching_tests": "{files, plural, =0 {No changed source file} one {{reached} of # changed file reached by a test} other {{reached} of # changed files reached by a test}}{absent, plural, =0 {} other {; # with none}}{unknown, plural, =0 {} other {; # not known}}",
+        "contracts": "{touched, plural, =0 {No workspace contract touched} one {# workspace contract touched} other {# workspace contracts touched}}; {breaking, plural, =0 {no breaking signature change} one {# breaking signature change} other {# breaking signature changes}}",
+        "contracts_unchecked": "{touched, plural, =0 {No workspace contract touched} one {# workspace contract touched} other {# workspace contracts touched}}; signatures not compared",
+        "cross_repo_consumers": "{links, plural, =0 {No consumer in another repo} one {# consumer in {names}{more, plural, =0 {} other { and # more}}} other {# consumers in {names}{more, plural, =0 {} other { and # more}}}}",
+        "decisions_crossed": "{accepted, plural, one {# accepted decision} other {# accepted decisions}}, {candidate, plural, one {# candidate} other {# candidates}}",
+        "decisions_none": "No decision crossed",
+        "health_delta": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved",
+        "health_delta_partial": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved (partial comparison)",
+        "provenance": "{label, select, agent {Agent} human_attested {Human attested} other {Unknown}}; known for {known} of {commits, plural, one {# commit} other {# commits}}",
+        "risk_score": "Larger than {percentile}% of recent commits",
+        "outcomes": "{reverts, plural, one {# revert} other {# reverts}}, {references, plural, one {# cause reference} other {# cause references}}",
+        "outcomes_rate": "{reverts, plural, one {# revert} other {# reverts}}, {references, plural, one {# cause reference} other {# cause references}}; {fixed} of {files, plural, one {# file} other {# files}} fixed within {days} days"
       }
     },
     "architecture": {

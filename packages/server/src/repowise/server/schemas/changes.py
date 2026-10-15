@@ -70,6 +70,13 @@ class ChangeSummary(BaseModel):
     provenance: ChangeProvenance | None = None
 
 
+class EvidenceLine(BaseModel):
+    """An item's value as a message key and its parameters, for a client to word."""
+
+    key: str
+    params: dict[str, Any]
+
+
 class EvidenceItem(BaseModel):
     """One checklist row: what was found, whether it needs a look, how it is known."""
 
@@ -80,6 +87,8 @@ class EvidenceItem(BaseModel):
     value: Any = None
     details: list[dict[str, Any]]
     source: str
+    #: ``value`` for a reader (``repowise.core.changes.evidence.item_line``).
+    line: EvidenceLine | None = None
 
 
 class ChangeEvidence(BaseModel):

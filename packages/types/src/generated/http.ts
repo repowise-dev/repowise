@@ -1609,6 +1609,13 @@ export interface EvidenceItem {
   value?: unknown;
   details: Record<string, unknown>[];
   source: string;
+  line?: EvidenceLine | null;
+}
+
+/** An item's value as a message key and its parameters, for a client to word. */
+export interface EvidenceLine {
+  key: string;
+  params: Record<string, unknown>;
 }
 
 /** The top-ranked evidence row, slimmed for list rows. */

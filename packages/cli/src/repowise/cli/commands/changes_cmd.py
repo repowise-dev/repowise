@@ -137,14 +137,16 @@ def _print_checklist(evidence: dict) -> None:
     from rich.markup import escape
     from rich.table import Table
 
+    from repowise.core.changes.evidence import BASIS_TEXT, item_line, line_text
+
     table = Table("Evidence", "Status", "Basis", "Value", title="Evidence checklist")
     for item in evidence["items"]:
         style = _STATUS_STYLE.get(item["status"], "")
         table.add_row(
             escape(item["label"]),
             f"[{style}]{item['status']}[/{style}]",
-            item["basis"],
-            escape(_value_text(item)),
+            BASIS_TEXT.get(item["basis"], item["basis"]),
+            escape(line_text(item_line(item))),
         )
     console.print(table)
     console.print(f"[dim]generated {evidence['generated_at']}; `--refresh` rebuilds it.[/dim]")
@@ -178,27 +180,6 @@ def outcome_lines(item: dict) -> list[str]:
     if not any(r["kind"] in ("revert", "fix_reference") for r in item["details"]):
         lines.insert(0, "no later commit in this history reverts this change or names it as a cause")
     return lines
-
-
-def _value_text(item: dict) -> str:
-    value = item["value"]
-    if item["kind"] == "outcomes" and isinstance(value, dict):
-        rate = (
-            f"{value['files_fixed']} of {value['files']} files fixed within {value['days']} days"
-            if value.get("files") is not None
-            else ""
-        )
-        said = f"{value['reverts']} revert(s), {value['fix_references']} cause reference(s)"
-        return ", ".join(x for x in (said, rate) if x)
-    if value is None:
-        reasons = [d.get("reason") for d in item["details"] if d.get("reason")]
-        return reasons[0] if reasons else ""
-    if isinstance(value, list):
-        more = f" (+{len(value) - 6})" if len(value) > 6 else ""
-        return ", ".join(map(str, value[:6])) + more
-    if isinstance(value, dict):
-        return ", ".join(f"{k} {v}" for k, v in value.items() if v is not None and v != [])
-    return str(value)
 
 
 _CSV_COLUMNS = (
