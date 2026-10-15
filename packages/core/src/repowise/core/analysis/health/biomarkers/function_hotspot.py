@@ -62,6 +62,10 @@ def refresh_replayed(replayed: BiomarkerResult, functions) -> bool:
             mods, p80 = replayed.details.get("modification_count"), replayed.details.get("repo_p80")
             if isinstance(mods, int) and isinstance(p80, int):
                 replayed.severity = _severity_for(mods, max(p80, _MIN_CHANGES), fc.ccn)
+                replayed.reason = (
+                    f"{fc.name} has been modified across {mods} commits (repo p80={p80}) "
+                    f"and carries CCN={fc.ccn} / nesting={fc.max_nesting}"
+                )
             return True
     return False
 

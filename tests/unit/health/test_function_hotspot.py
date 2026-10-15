@@ -153,5 +153,6 @@ def test_refresh_replayed_updates_complexity_or_drops_hotspot():
     assert refresh_replayed(kept, [_fc("hot", 1, 10, ccn=12, nesting=5)])
     assert (kept.details["ccn"], kept.details["max_nesting"]) == (12, 5)
     assert kept.severity == Severity.HIGH
+    assert "CCN=12 / nesting=5" in kept.reason
     assert not refresh_replayed(replayed(), [_fc("hot", 1, 10, ccn=9, nesting=2)])
     assert not refresh_replayed(replayed(), [_fc("other", 1, 10, ccn=30)])
