@@ -190,8 +190,8 @@ class ClaudeCliProvider(AgentCliProvider):
             )
             for slug, recommended, notes in (
                 ("claude-haiku-5-5", True, "fastest; ample for doc pages"),
-                ("claude-sonnet-4-6", False, "better prose, slower"),
-                ("claude-opus-4-6", False, "highest quality; heaviest on subscription limits"),
+                ("claude-sonnet-5-5", False, "better prose, slower"),
+                ("claude-opus-5-5", False, "highest quality; heaviest on subscription limits"),
             )
         )
 

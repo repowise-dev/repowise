@@ -732,6 +732,7 @@ _FLAGSHIP_MODEL_TOKENS = (
     "opus",
     "gpt-4o",
     "gpt-5",
+    "gpt-6",
     "pro",
     "sonnet",
     "ultra",

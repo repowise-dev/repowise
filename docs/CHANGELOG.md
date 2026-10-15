@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **One provider order everywhere.** The CLI, `repowise serve` chat and jobs, and the MCP server now resolve provider, model and base URL as flag or UI choice, then `.repowise/config.yaml`, then the web UI's global default, then `REPOWISE_PROVIDER` / `REPOWISE_MODEL`, so `config.yaml` now wins over those env vars in the CLI. Choosing a model or base URL for a repo in the web UI writes that repo's `config.yaml`, which makes switching models on a local OpenAI-compatible server such as LM Studio a single edit. A base URL in `config.yaml` now beats `OPENAI_BASE_URL` and the other `*_BASE_URL` variables. The default provider and model saved in the web UI settings now also apply to CLI runs in repos whose `config.yaml` names none. A `config.yaml` base URL receives an API key from outside that repo's `.repowise/.env` only when it is a local address or was confirmed in Settings or with `repowise init`.
+- **Current model lists and prices.** Pickers offer GPT-6 Luna and Sol, Claude Sonnet 5.5 and Opus 5.5, Gemini 3.8 Flash and Gemini 4 Argon. DeepSeek now defaults to `deepseek-flash` and LiteLLM to `groq/openai/gpt-oss-120b`, since the old ids were retired. Cost estimates use current rates, and GPT-6 models get the same reasoning, temperature and chat tool handling as GPT-5.6.
 
 ## [0.56.0] - 2026-10-12
 

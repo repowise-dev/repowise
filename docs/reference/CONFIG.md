@@ -779,8 +779,8 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 | Model | Notes |
 |-------|-------|
-| `claude-sonnet-4-6` | Best balance of quality and cost |
-| `claude-opus-4-6` | Highest quality, higher cost |
+| `claude-sonnet-5-5` | Best balance of quality and cost |
+| `claude-opus-5-5` | Highest quality, higher cost |
 | `claude-haiku-5-5` | Default, fastest, lowest cost |
 
 ```bash
@@ -858,7 +858,7 @@ Gemini is also the default embedding provider when `GEMINI_API_KEY` is set.
 
 ```bash
 export DEEPSEEK_API_KEY="..."
-repowise init --provider deepseek --model deepseek-chat
+repowise init --provider deepseek --model deepseek-flash
 ```
 
 ### Kimi

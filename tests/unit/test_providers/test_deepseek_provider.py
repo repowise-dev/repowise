@@ -26,7 +26,7 @@ def test_provider_name():
 
 def test_default_model_is_flash():
     p = DeepSeekProvider(api_key="sk-test")
-    assert p.model_name == "deepseek-v4-flash"
+    assert p.model_name == "deepseek-flash"
 
 
 def test_api_key_from_env(monkeypatch):
@@ -79,7 +79,7 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
 
     assert captured["url"] == "https://api.deepseek.com/models"
     assert captured["headers"] == {"Authorization": "Bearer sk-test"}
-    flash = next(option for option in options if option.model == "deepseek-v4-flash")
+    flash = next(option for option in options if option.model == "deepseek-flash")
     assert flash.reasoning_modes == (
         "auto",
         "off",
@@ -92,8 +92,8 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
         "max",
     )
     assert flash.recommended is True
-    current_flash = next(option for option in options if option.model == "deepseek-flash")
-    assert current_flash.reasoning_modes == flash.reasoning_modes
+    legacy_flash = next(option for option in options if option.model == "deepseek-v4-flash")
+    assert legacy_flash.reasoning_modes == flash.reasoning_modes
 
 
 def _make_mock_chat_response(
@@ -321,7 +321,7 @@ async def test_cost_tracker_called():
 
     mock_tracker.record.assert_called_once()
     call_kwargs = mock_tracker.record.call_args.kwargs
-    assert call_kwargs["model"] == "deepseek-v4-flash"
+    assert call_kwargs["model"] == "deepseek-flash"
     assert call_kwargs["input_tokens"] == 120
     assert call_kwargs["output_tokens"] == 60
 
