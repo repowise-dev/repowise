@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import {
   getProviders,
   setActiveProvider,
@@ -12,6 +12,7 @@ import {
 } from "@/lib/api/providers";
 import type { ProvidersResponse } from "@/lib/api/types";
 import type { ProviderValidationState } from "@repowise-dev/ui/settings/provider-settings";
+import { PROVIDER_MODELS_KEY } from "./use-provider-models";
 
 export function useProviders(repoId?: string) {
   const { data, mutate, isLoading } = useSWR<ProvidersResponse>(
@@ -19,6 +20,11 @@ export function useProviders(repoId?: string) {
     () => getProviders(repoId),
     { revalidateOnFocus: false },
   );
+
+  // A key or endpoint change makes the chat menu's cached model lists stale.
+  const { mutate: mutateAll } = useSWRConfig();
+  const refreshModelLists = () =>
+    mutateAll((key) => Array.isArray(key) && key[0] === PROVIDER_MODELS_KEY);
 
   const [validation, setValidation] = useState<
     Record<string, ProviderValidationState>
@@ -37,6 +43,7 @@ export function useProviders(repoId?: string) {
     await mutate(await setActiveProvider(providerId, model, repoId, options), {
       revalidate: false,
     });
+    void refreshModelLists();
   }
 
   function loadModels(
@@ -55,6 +62,7 @@ export function useProviders(repoId?: string) {
   async function saveKey(providerId: string, key: string) {
     await addProviderKey(providerId, key, repoId);
     await mutate();
+    void refreshModelLists();
   }
 
   async function removeKey(providerId: string) {
@@ -65,6 +73,7 @@ export function useProviders(repoId?: string) {
       return next;
     });
     await mutate();
+    void refreshModelLists();
   }
 
   async function validate(providerId: string) {

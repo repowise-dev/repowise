@@ -67,6 +67,22 @@ export interface ProviderSettingsLabels {
   /** The repo's config.yaml URL is not confirmed on this machine. */
   unconfirmedUrl: (url: string) => string;
   trustUrl: string;
+  active: string;
+  noKeyRequired: string;
+  keySet: string;
+  noKey: string;
+  use: string;
+  useAria: (name: string) => string;
+  test: string;
+  testAria: (name: string) => string;
+  addKey: string;
+  updateKey: string;
+  removeKeyAria: (name: string) => string;
+  keyAria: (name: string) => string;
+  keyPlaceholder: (name: string) => string;
+  saveKeyAria: (name: string) => string;
+  connectionVerified: string;
+  connectionFailed: string;
   /** One muted line naming where a value came from, or null to show none. */
   provenance: (source: string) => string | null;
 }
@@ -100,6 +116,22 @@ export const DEFAULT_PROVIDER_SETTINGS_LABELS: ProviderSettingsLabels = {
   unconfirmedUrl: (url) =>
     `This repository's .repowise/config.yaml sends requests to ${url}, which has not been confirmed on this machine, so your API key is not sent there. Trust it only if you set it or know the host.`,
   trustUrl: "Trust this URL",
+  active: "Active",
+  noKeyRequired: "No key required",
+  keySet: "Key set",
+  noKey: "No key",
+  use: "Use",
+  useAria: (name) => `Use ${name}`,
+  test: "Test",
+  testAria: (name) => `Test ${name} connection`,
+  addKey: "Add key",
+  updateKey: "Update key",
+  removeKeyAria: (name) => `Remove ${name} key`,
+  keyAria: (name) => `${name} API key`,
+  keyPlaceholder: (name) => `Paste your ${name} API key`,
+  saveKeyAria: (name) => `Save ${name} API key`,
+  connectionVerified: "Connection verified",
+  connectionFailed: "Connection failed",
   provenance: describeSource,
 };
 
@@ -263,21 +295,21 @@ function ProviderRow({
             </span>
             {isActive && (
               <Badge variant="accent" className="text-[10px]">
-                Active
+                {labels.active}
               </Badge>
             )}
             {keyless ? (
               <Badge variant="outline" className="text-[10px]">
-                No key required
+                {labels.noKeyRequired}
               </Badge>
             ) : provider.configured ? (
               <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-success)]">
                 <Check className="h-3 w-3" />
-                Key set
+                {labels.keySet}
               </span>
             ) : (
               <span className="text-[11px] text-[var(--color-text-tertiary)]">
-                No key
+                {labels.noKey}
               </span>
             )}
           </div>
@@ -292,9 +324,9 @@ function ProviderRow({
               className="h-7 text-xs"
               disabled={busy !== null || !usable}
               onClick={() => setSettingUp(true)}
-              aria-label={`Use ${provider.name}`}
+              aria-label={labels.useAria(provider.name)}
             >
-              Use
+              {labels.use}
             </Button>
           )}
           {(keyless || provider.configured) && (
@@ -305,14 +337,14 @@ function ProviderRow({
               className="h-7 gap-1.5 text-xs"
               disabled={status === "testing"}
               onClick={() => onValidate(provider.id)}
-              aria-label={`Test ${provider.name} connection`}
+              aria-label={labels.testAria(provider.name)}
             >
               {status === "testing" ? (
                 <Spinner size="sm" />
               ) : (
                 <Plug className="h-3.5 w-3.5" />
               )}
-              Test
+              {labels.test}
             </Button>
           )}
           {!keyless &&
@@ -325,7 +357,7 @@ function ProviderRow({
                 onClick={() => setEditing(true)}
               >
                 <KeyRound className="h-3.5 w-3.5" />
-                {provider.configured ? "Update key" : "Add key"}
+                {provider.configured ? labels.updateKey : labels.addKey}
               </Button>
             ))}
           {!keyless && provider.configured && !editing && (
@@ -336,7 +368,7 @@ function ProviderRow({
               className="h-7 w-7 p-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-error)]"
               disabled={busy !== null}
               onClick={removeKey}
-              aria-label={`Remove ${provider.name} key`}
+              aria-label={labels.removeKeyAria(provider.name)}
             >
               {busy === "remove" ? (
                 <Spinner size="sm" />
@@ -354,7 +386,7 @@ function ProviderRow({
             type="password"
             autoComplete="off"
             autoFocus
-            aria-label={`${provider.name} API key`}
+            aria-label={labels.keyAria(provider.name)}
             value={keyDraft}
             onChange={(e) => setKeyDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -367,7 +399,7 @@ function ProviderRow({
                 setKeyDraft("");
               }
             }}
-            placeholder={`Paste your ${provider.name} API key`}
+            placeholder={labels.keyPlaceholder(provider.name)}
             className="h-8 font-mono text-xs"
           />
           <Button
@@ -376,12 +408,12 @@ function ProviderRow({
             className="h-8 text-xs"
             disabled={!keyDraft.trim() || busy === "save"}
             onClick={saveKey}
-            aria-label={`Save ${provider.name} API key`}
+            aria-label={labels.saveKeyAria(provider.name)}
           >
             {busy === "save" ? (
               <Spinner size="sm" />
             ) : (
-              "Save"
+              labels.save
             )}
           </Button>
           <Button
@@ -393,7 +425,7 @@ function ProviderRow({
               setEditing(false);
               setKeyDraft("");
             }}
-            aria-label="Cancel"
+            aria-label={labels.cancel}
           >
             <X className="h-3.5 w-3.5" />
           </Button>
@@ -415,12 +447,12 @@ function ProviderRow({
       {status === "ok" && (
         <p className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--color-success)]">
           <Check className="h-3.5 w-3.5" />
-          Connection verified
+          {labels.connectionVerified}
         </p>
       )}
       {status === "error" && (
         <p className="mt-2 text-xs text-[var(--color-error)]">
-          {validation?.error || "Connection failed"}
+          {validation?.error || labels.connectionFailed}
         </p>
       )}
     </div>
@@ -461,6 +493,11 @@ function ProviderForm({
   // A save (here or elsewhere) changes what the drafts start from.
   useEffect(() => setModel(savedModel), [savedModel]);
   useEffect(() => setBaseUrl(savedUrl), [savedUrl]);
+  // A key or endpoint change makes a fetched list stale: fetch again on open.
+  useEffect(() => {
+    setList(null);
+    setTested(false);
+  }, [provider.configured, savedUrl]);
 
   const url = baseUrl.trim();
   const urlValid = !url || HTTP_URL.test(url);

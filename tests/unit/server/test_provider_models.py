@@ -222,3 +222,30 @@ async def test_a_recognised_provider_failure_uses_the_shared_hint(
     body = (await client.get("/api/providers/openai/models")).json()
 
     assert body["error"] == "API key rejected by openai. Update it in Settings."
+
+
+@pytest.mark.asyncio
+async def test_url_credentials_from_env_never_reach_the_error(
+    client: AsyncClient, fake, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://bob:hunter2@localhost:1234/v1")
+    fake(error=httpx.ConnectError("refused at http://bob:hunter2@localhost:1234/v1/models"))
+
+    body = (await client.get("/api/providers/openai/models")).json()
+
+    assert "hunter2" not in body["error"]
+    assert "bob" not in body["error"]
+    assert "http://localhost:1234/v1" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_trailing_slash_does_not_make_the_saved_url_a_probe(
+    client: AsyncClient, fake, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-stored-1234567890")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1/")
+    stub = fake(options=_api("gpt-6"))
+
+    await client.get("/api/providers/openai/models?base_url=https://gateway.example.com/v1")
+
+    assert stub.built[-1]["api_key"] == "sk-stored-1234567890"

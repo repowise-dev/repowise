@@ -25,6 +25,7 @@ from repowise.core.providers.llm.resolve import (
     UntrustedBaseUrlError,
     llm_provider_kwargs,
     resolve_llm,
+    without_credentials,
 )
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.server.provider_config import _redact_key
@@ -69,21 +70,12 @@ async def list_provider_models(
     without one. ``refresh`` skips the cache, not the shared in-flight fetch.
     """
     spec = PROVIDER_SPECS[provider_id]
-    selection = resolve_llm(repo_path, provider=provider_id, override_source="request")
-    default_model = selection.model or spec.default_model
-    probing = bool(base_url) and base_url != selection.base_url
-    try:
-        # A probe replaces the saved URL, so that URL's trust does not matter.
-        kwargs = llm_provider_kwargs(
-            replace(selection, base_url=None) if probing else selection, repo_path
-        )
-    except UntrustedBaseUrlError as exc:
-        # The message names the URL without credentials, never the key.
-        return _catalog_only(spec, default_model, str(exc))
-    if probing:
-        kwargs["base_url"] = base_url
-        if spec.api_key_envs:
-            kwargs["api_key"] = LOCAL_SERVER_API_KEY
+    # Resolution reads config files and the key chain; keep it off the loop.
+    default_model, kwargs, error = await asyncio.to_thread(
+        _target, provider_id, repo_path, base_url
+    )
+    if kwargs is None:
+        return _catalog_only(spec, default_model, error or "")
 
     key = (provider_id, kwargs.get("base_url") or "", _fingerprint(kwargs.get("api_key")))
     fetched = None if refresh else _cached(key)
@@ -104,6 +96,33 @@ async def list_provider_models(
         "default_model": default_model,
         "error": fetched.error,
     }
+
+
+def _target(
+    provider_id: str, repo_path: str | Path | None, base_url: str | None
+) -> tuple[str, dict[str, Any] | None, str | None]:
+    """``(default_model, constructor kwargs, None)``, or no kwargs and why."""
+    spec = PROVIDER_SPECS[provider_id]
+    selection = resolve_llm(repo_path, provider=provider_id, override_source="request")
+    default_model = selection.model or spec.default_model
+    probing = bool(base_url) and not _same_url(base_url, selection.base_url)
+    try:
+        # A probe replaces the saved URL, so that URL's trust does not matter.
+        kwargs = llm_provider_kwargs(
+            replace(selection, base_url=None) if probing else selection, repo_path
+        )
+    except UntrustedBaseUrlError as exc:
+        # The message names the URL without credentials, never the key.
+        return default_model, None, str(exc)
+    if probing:
+        kwargs["base_url"] = base_url
+        if spec.api_key_envs:
+            kwargs["api_key"] = LOCAL_SERVER_API_KEY
+    return default_model, kwargs, None
+
+
+def _same_url(a: str | None, b: str | None) -> bool:
+    return (a or "").rstrip("/") == (b or "").rstrip("/")
 
 
 def _catalog_only(spec: Any, default_model: str, error: str) -> dict[str, Any]:
@@ -163,14 +182,15 @@ def _fetch(provider_id: str, kwargs: dict[str, Any]) -> _Fetched:
     except Exception as exc:
         if PROVIDER_SPECS[provider_id].api_key_envs and not secret:
             return _Fetched((), False, f"Add an API key for {label} to list its models.")
-        return _Fetched((), False, _redact(f"{label} is not set up: {exc}", secret))
+        return _Fetched((), False, _redact(f"{label} is not set up: {exc}", secret, base_url))
     # A strict discovery (OpenAI-compatible) raises with the reason; the
     # general one falls back to the configured model silently.
     discover = getattr(provider, "discover_model_options", None)
     try:
         options = discover() if callable(discover) else provider.available_model_options()
     except Exception as exc:
-        return _Fetched((), False, _redact(describe_fetch_error(exc, base_url, label), secret))
+        message = describe_fetch_error(exc, base_url, label)
+        return _Fetched((), False, _redact(message, secret, base_url))
     rows = tuple(
         {"id": o.model, **({"label": o.label} if o.label and o.label != o.model else {})}
         for o in options
@@ -195,7 +215,7 @@ def describe_fetch_error(exc: Exception, base_url: str | None, label: str) -> st
     hint = describe_provider_error(exc)
     if hint is not None and hint.kind != "unreachable":
         return hint.message
-    where = base_url or label
+    where = without_credentials(base_url) if base_url else label
     if isinstance(exc, httpx.ConnectError):
         server = _LOCAL_SERVER_PORTS.get(urlparse(base_url or "").port or 0)
         hint = (
@@ -219,8 +239,14 @@ def describe_fetch_error(exc: Exception, base_url: str | None, label: str) -> st
     return f"Could not list models from {where}: {exc}"
 
 
-def _redact(text: str, secret: Any) -> str:
-    """Drop the key in use, then anything else shaped like one."""
+_USERINFO = re.compile(r"(https?://)[^/\s@]+@")
+
+
+def _redact(text: str, secret: Any, base_url: str | None = None) -> str:
+    """Drop the key in use, URL credentials, then anything shaped like a key."""
+    if base_url:
+        text = text.replace(base_url, without_credentials(base_url))
+    text = _USERINFO.sub(r"\1", text)
     if secret and secret != LOCAL_SERVER_API_KEY:
         text = text.replace(str(secret), "***")
     return _redact_key(text)

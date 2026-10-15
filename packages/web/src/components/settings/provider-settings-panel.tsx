@@ -57,6 +57,22 @@ export function ProviderSettingsPanel({ repoId }: { repoId?: string }) {
     regenerateNotice: repoId ? f("regenerateNotice") : f("regenerateNoticeGlobal"),
     unconfirmedUrl: (url) => f("unconfirmedUrl", { url }),
     trustUrl: f("trustUrl"),
+    active: f("active"),
+    noKeyRequired: f("noKeyRequired"),
+    keySet: f("keySet"),
+    noKey: f("noKey"),
+    use: f("use"),
+    useAria: (name) => f("useAria", { name }),
+    test: f("test"),
+    testAria: (name) => f("testAria", { name }),
+    addKey: f("addKey"),
+    updateKey: f("updateKey"),
+    removeKeyAria: (name) => f("removeKeyAria", { name }),
+    keyAria: (name) => f("keyAria", { name }),
+    keyPlaceholder: (name) => f("keyPlaceholder", { name }),
+    saveKeyAria: (name) => f("saveKeyAria", { name }),
+    connectionVerified: f("connectionVerified"),
+    connectionFailed: f("connectionFailed"),
     provenance: (source) => {
       if (source === "config.yaml") return f("sourceConfig");
       if (source === "global") return f("sourceGlobal");

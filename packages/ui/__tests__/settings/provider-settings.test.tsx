@@ -158,4 +158,50 @@ describe("ProviderSettings form", () => {
       }),
     );
   });
+
+  it("fetches the list again after a key is added", async () => {
+    const onLoadModels = vi.fn().mockResolvedValue({
+      models: [{ id: "gpt-6" }],
+      source: "live",
+      default_model: "gpt-5.6-luna",
+    });
+    const base = {
+      providers: [OPENAI],
+      active: { provider: "openai", model: "gpt-5.6-luna" },
+      onAddKey: vi.fn(),
+      onRemoveKey: vi.fn(),
+      onSetActive: vi.fn(),
+      onValidate: vi.fn(),
+      onLoadModels,
+    };
+    const { rerender } = render(<ProviderSettings {...base} />);
+    const model = () => screen.getByRole("combobox", { name: "OpenAI Model" });
+    fireEvent.focus(model());
+    await waitFor(() => expect(onLoadModels).toHaveBeenCalledTimes(1));
+    fireEvent.blur(model());
+
+    rerender(<ProviderSettings {...base} providers={[{ ...OPENAI, configured: true }]} />);
+    fireEvent.focus(model());
+    await waitFor(() => expect(onLoadModels).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps the drafts when a save fails", async () => {
+    const onSetActive = vi.fn().mockRejectedValue(new Error("nope"));
+    renderSettings({ onSetActive });
+
+    const model = screen.getByRole("combobox", { name: "OpenAI Model" });
+    fireEvent.change(model, { target: { value: "gpt-6" } });
+    fireEvent.keyDown(model, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSetActive).toHaveBeenCalled());
+    expect(model).toHaveValue("gpt-6");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("takes its row copy from labels", () => {
+    renderSettings({ labels: { test: "Probar", active: "Activo" } });
+    expect(screen.getByText("Activo")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test Anthropic connection" })).toHaveTextContent("Probar");
+  });
 });
