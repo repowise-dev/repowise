@@ -122,7 +122,11 @@ def _fake_evidence(monkeypatch):
             ],
         )
 
+    async def _build(session, repo_id, root, row, **_k):
+        return await _evidence(session, repo_id, root, row)
+
     monkeypatch.setattr(collect, "change_evidence", _evidence)
+    monkeypatch.setattr(collect, "build_stored_evidence", _build)
     return calls
 
 

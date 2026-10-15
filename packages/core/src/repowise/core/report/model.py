@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,14 @@ class ReportContext:
     repo_root: Path
     alias: str | None = None
     head_commit: str | None = None
+    #: The period a ``changes`` report covers: merged on or after *since*,
+    #: before *until*; ``None`` leaves that side open.
+    since: datetime | None = None
+    until: datetime | None = None
+    #: Rebuild every kept checklist in the period.
+    refresh: bool = False
+    #: Told about each checklist built: ``(position, total, change id)``.
+    progress: Callable[[int, int, str], None] | None = None
     _cache: dict[str, Any] = field(default_factory=dict)
 
     async def components(self) -> Any:
@@ -174,6 +183,8 @@ class Section:
     collect: Callable[[ReportContext], Awaitable[list[dict[str, Any]] | None]]
     #: Sections are listed by this, then by name.
     order: int = 100
+    #: The report kind the section belongs to (``assessment``, ``changes``).
+    report: str = "assessment"
 
 
 report_sections: SeamRegistry[Section] = SeamRegistry("report-section")

@@ -30,7 +30,10 @@ def _targets(target: Any) -> list[tuple[str | None, Path]]:
     return [(r.alias, (target.ws_root / r.path).resolve()) for r in target.ws_config.repos]
 
 
-async def _build(repos: list[tuple[str | None, Path]], sections: list, scope: dict) -> dict:
+async def _build(
+    repos: list[tuple[str | None, Path]], sections: list, scope: dict, **options: Any
+) -> dict:
+    """The document over *repos*; *options* go to each :class:`ReportContext`."""
     from repowise.core.persistence.models import Repository
     from repowise.core.report.build import assemble, collect_repo
     from repowise.core.report.model import ReportContext
@@ -49,7 +52,12 @@ async def _build(repos: list[tuple[str | None, Path]], sections: list, scope: di
             session, repo_id = opened
             repo = await session.get(Repository, repo_id)
             ctx = ReportContext(
-                session, repo_id, root, alias=alias, head_commit=repo.head_commit if repo else None
+                session,
+                repo_id,
+                root,
+                alias=alias,
+                head_commit=repo.head_commit if repo else None,
+                **options,
             )
             parts.append(await collect_repo(ctx, sections))
     return assemble(scope, parts)

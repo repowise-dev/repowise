@@ -380,3 +380,45 @@ def test_repo_without_fix_history_reports_nothing(tmp_path: Path) -> None:
     assert result.fix_density == 0.0
     assert result.hot_files == ()
     assert result.fix_percentile is None
+
+
+def test_one_walk_primes_the_same_pressure_every_ref_would_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.analysis.change_risk import fix_history
+
+    repo = tmp_path / "merges"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"a.py": "a = 0\n", "b.py": "b = 0\n"}, "feat: seed")
+    _commit(repo, {"a.py": "a = 1\n"}, "fix: a breaks")
+    _git(["checkout", "-q", "-b", "side"], repo)
+    _commit(repo, {"b.py": "b = 1\n"}, "fix: b breaks on the side")
+    _git(["checkout", "-q", "main"], repo)
+    _commit(repo, {"a.py": "a = 2\n"}, "fix: a breaks again")
+    _git(["-c", "user.name=Dev", "-c", "user.email=d@e.com", "merge", "-q", "--no-ff", "side",
+          "-m", "Merge side"], repo)
+    _commit(repo, {"b.py": "b = 2\n"}, "feat: b grows")
+    shas = subprocess.run(
+        ["git", "rev-list", "--first-parent", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.split()
+
+    history = fix_history.FixHistory(str(repo))
+    walked = {}
+    for sha in shas:
+        clear_fix_pressure_cache()
+        walked[sha] = fix_pressure(str(repo), sha)
+    clear_fix_pressure_cache()
+    assert fix_history.prime_fix_pressure(str(repo), history, shas) == len(shas)
+
+    def no_walk(*_a, **_k):
+        raise AssertionError("a primed ref walked git again")
+
+    monkeypatch.setattr(fix_history, "_walk", no_walk)
+    for sha in shas:
+        assert fix_pressure(str(repo), sha) == walked[sha]
+    assert walked[shas[0]]["b.py"] > 0  # the side branch's fix is reached through the merge
+    # A history past the walk limit answers nothing, and scoring walks git itself.
+    assert history.pressure(shas[0], depth=1) is None
+    assert history.pressure("f" * 40) is None

@@ -165,15 +165,111 @@ def fix_pressure(
 
     history = _walk(repo_path, sha, depth)
     as_of = float(_git(["show", "-s", "--format=%ct", sha], repo_path, check=False).strip() or 0.0)
+    pressure = _decayed(history, as_of)
+    _remember(key, pressure)
+    return pressure
+
+
+def _decayed(history: dict[str, list[float]], as_of: float) -> dict[str, float]:
     half_life = FIX_HALF_LIFE_DAYS * 86400.0
-    pressure = {
+    return {
         path: sum(0.5 ** (max(as_of - t, 0.0) / half_life) for t in stamps)
         for path, stamps in history.items()
     }
+
+
+def _remember(key: tuple, pressure: dict[str, float]) -> None:
     if len(_PRESSURE_CACHE) >= _PRESSURE_CACHE_MAX:
         _PRESSURE_CACHE.clear()
     _PRESSURE_CACHE[key] = pressure
-    return pressure
+
+
+class FixHistory:
+    """Every commit reachable from one ref, read by a single ``git log``.
+
+    Scoring many changes walks one deep history per change, each from its own
+    parent; :func:`prime_fix_pressure` answers all of them from this one walk,
+    over the same commits :func:`_walk` lists for each. Raises
+    ``subprocess.TimeoutExpired`` when git outruns its timeout.
+    """
+
+    def __init__(self, repo_path: str, ref: str = "HEAD") -> None:
+        self.shallow = (
+            _git(["rev-parse", "--is-shallow-repository"], repo_path, check=False).strip()
+            == "true"
+        )
+        out = _git(
+            ["log", "--format=%x1e%H%x1f%P%x1f%ct%x1f%s", "--name-only", "--end-of-options", ref],
+            repo_path,
+            check=False,
+        )
+        #: Shas in ``git log`` order.
+        self.order: list[str] = []
+        self.parents: dict[str, tuple[str, ...]] = {}
+        self.times: dict[str, float] = {}
+        #: Paths of each non-merge fix commit.
+        self.fixes: dict[str, list[str]] = {}
+        for block in out.split("\x1e"):
+            lines = block.strip("\n").split("\n")
+            head = lines[0].split("\x1f", 3)
+            if len(head) != 4:
+                continue
+            sha, parents, timestamp_raw, subject = head
+            try:
+                self.times[sha] = float(timestamp_raw)
+            except ValueError:
+                continue
+            self.order.append(sha)
+            self.parents[sha] = tuple(parents.split())
+            if len(self.parents[sha]) <= 1 and is_fix_commit(subject):
+                self.fixes[sha] = [p.strip() for p in lines[1:] if p.strip()]
+
+    def _ancestors(self, sha: str) -> set[str] | None:
+        seen = {sha}
+        todo = [sha]
+        while todo:
+            for parent in self.parents[todo.pop()]:
+                if parent not in self.parents:
+                    return None  # past this walk: the history is not all here
+                if parent not in seen:
+                    seen.add(parent)
+                    todo.append(parent)
+        return seen
+
+    def pressure(self, sha: str, depth: int = DEEP_WALK_LIMIT) -> dict[str, float] | None:
+        """:func:`fix_pressure` at *sha*, or ``None`` when this walk cannot say
+        (*sha* is not in it, or its history runs past *depth* commits)."""
+        reach = self._ancestors(sha) if sha in self.parents else None
+        if reach is None:
+            return None
+        listed = [c for c in self.order if c in reach and len(self.parents[c]) <= 1]
+        if len(listed) > depth:
+            return None
+        history: dict[str, list[float]] = {}
+        for c in listed:
+            if c in self.fixes and not (self.shallow and not self.parents[c]):
+                for path in self.fixes[c]:
+                    history.setdefault(path, []).append(self.times[c])
+        return _decayed(history, self.times[sha])
+
+
+def prime_fix_pressure(
+    repo_path: str, history: FixHistory, shas: Iterable[str], *, depth: int = DEEP_WALK_LIMIT
+) -> int:
+    """Memoize :func:`fix_pressure` at each of *shas* from *history*; how many were.
+
+    A sha the walk cannot answer is left out, and scoring it walks git as
+    before. Ceiling: the memo holds :data:`_PRESSURE_CACHE_MAX` entries, so a
+    caller primes at most that many before scoring them.
+    """
+    primed = 0
+    for sha in shas:
+        key = (repo_path, sha, depth)
+        pressure = _PRESSURE_CACHE.get(key) or history.pressure(sha, depth)
+        if pressure is not None:
+            _remember(key, pressure)
+            primed += 1
+    return primed
 
 
 def fixes_reachable_from(repo_path: str, upto_ref: str, shas: Iterable[str]) -> set[str]:
