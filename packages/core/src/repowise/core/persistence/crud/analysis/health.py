@@ -613,6 +613,7 @@ async def gated_health_counts(
     *,
     file_path: str | None = None,
     include_unverified: bool = False,
+    hold_history: bool = True,
 ) -> dict[str, dict]:
     """``{language or file hold: {count, reason}}`` over the open findings
     :func:`get_health_findings` leaves out by default, so a list says why it
@@ -631,6 +632,7 @@ async def gated_health_counts(
         *where,
         kind_col=HealthFinding.biomarker_type,
         include_unverified=include_unverified,
+        hold_history=hold_history,
     )
 
 

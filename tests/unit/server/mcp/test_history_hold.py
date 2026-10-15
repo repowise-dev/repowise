@@ -150,3 +150,45 @@ async def test_get_health_lists_count_and_scores_hold(setup_mcp, session, health
     plain = await get_health(only=["top_findings", "kpis", "worst_files"], limit=50)
     assert default["kpis"] == plain["kpis"]
     assert default["worst_files"] == plain["worst_files"]
+
+
+@pytest.mark.asyncio
+async def test_get_health_history_count_costs_one_int(setup_mcp, session, health_data):
+    import json
+
+    from repowise.server.mcp_server import get_health
+
+    await _seed(session, health_data)
+    result = await get_health()
+    gated = result["_meta"]["gated"]
+    # One integer under one key; no reason sentence while findings are listed.
+    assert gated["health"] == {"history": 2}
+    assert "reasons" not in gated
+    assert len(json.dumps(gated["health"])) < 20
+
+    # Nothing listed on the target but history markers: the reason comes once.
+    from repowise.core.persistence.crud import upsert_health_findings
+
+    await upsert_health_findings(
+        session,
+        health_data,
+        [
+            {
+                "file_path": _APP,
+                "biomarker_type": "ownership_risk",
+                "severity": "high",
+                "function_name": "run",
+                "line_start": 1,
+                "line_end": 90,
+                "details": {},
+                "health_impact": 1.5,
+                "reason": "ownership_risk only",
+            }
+        ],
+        file_paths=[_APP],
+    )
+    await session.commit()
+    targeted = await get_health(targets=[_APP])
+    assert not targeted.get("findings")
+    assert targeted["_meta"]["gated"]["health"] == {"history": 1}
+    assert targeted["_meta"]["gated"]["reasons"] == {"history": FILE_HOLDS["history"]}

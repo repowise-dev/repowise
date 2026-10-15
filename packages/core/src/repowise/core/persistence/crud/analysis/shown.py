@@ -155,6 +155,7 @@ async def gated_counts(
     *where: Any,
     kind_col: Any = None,
     include_unverified: bool = False,
+    hold_history: bool = True,
 ) -> dict[str, dict]:
     """What the gates on *layer* hold back among *model* rows matching *where*.
 
@@ -162,7 +163,11 @@ async def gated_counts(
     surface can say how many rows it left out and why instead of reading empty.
     Empty when ``include_unverified``: nothing was held back.
     """
-    cells = [] if include_unverified else _cells(layer, model.file_path, kind_col)
+    cells = (
+        []
+        if include_unverified
+        else _cells(layer, model.file_path, kind_col, hold_history=hold_history)
+    )
     if not cells:
         return {}
     language = case(*((match, lang) for lang, match in cells))

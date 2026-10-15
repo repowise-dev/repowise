@@ -308,21 +308,22 @@ async def file_detail(
     )
     # The score counts every finding; one a gate or file hold keeps back is left
     # out of the list and breakdown, and ``gated`` says how many and why.
-    findings, gated = split_gated(
-        "health",
-        findings,
-        kind="biomarker_type",
-        files={metric.file_path: metric} if metric is not None else None,
+    # History markers are held from the list only: the breakdown and the lead
+    # sum what the score counted.
+    held_files = {metric.file_path: metric} if metric is not None else None
+    scored, _ = split_gated(
+        "health", findings, kind="biomarker_type", files=held_files, hold_history=False
     )
+    findings, gated = split_gated("health", findings, kind="biomarker_type", files=held_files)
     snapshots = await crud.list_health_snapshots(
         session, repo_id, limit=crud.FILE_TREND_SNAPSHOT_WINDOW
     )
     health = {
-        "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,
+        "metric": _metric_to_dict(metric, _primary_and_magnitude(scored)) if metric else None,
         # None for a file with no score: rebuilt from findings it would read 10.0.
         "breakdown": (
-            _score_breakdown_from_findings(findings)
-            if findings and not (metric is not None and metric.score is None)
+            _score_breakdown_from_findings(scored)
+            if scored and not (metric is not None and metric.score is None)
             else None
         ),
         "findings": [_finding_dict(f, slim=slim) for f in findings],

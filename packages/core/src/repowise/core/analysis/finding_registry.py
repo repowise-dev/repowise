@@ -220,9 +220,12 @@ def history_kinds() -> frozenset[str]:
     return history_biomarkers()
 
 
-def file_hold(layer: GateLayer, kind: Any, code_origin: Any, is_test: Any) -> str | None:
+def file_hold(
+    layer: GateLayer, kind: Any, code_origin: Any, is_test: Any, *, hold_history: bool = True
+) -> str | None:
     """The :data:`FILE_HOLDS` key holding back a *layer* row of *kind* on a file
-    with that stored origin and test flag, or ``None``."""
+    with that stored origin and test flag, or ``None``. ``hold_history=False``
+    keeps history markers on production files (shown.py's flag of that name)."""
     if layer == "refactoring":
         return "test" if is_test is True else None
     if layer != "health":
@@ -230,7 +233,9 @@ def file_hold(layer: GateLayer, kind: Any, code_origin: Any, is_test: Any) -> st
     if code_origin in HELD_ORIGINS:
         return str(code_origin)
     if kind in history_kinds():
-        return "test_history" if is_test is True else "history"
+        if is_test is True:
+            return "test_history"
+        return "history" if hold_history else None
     return None
 
 
@@ -390,6 +395,7 @@ def row_hold(
     *,
     kind: str,
     get: Callable[[Any, str], Any] = getattr,
+    hold_history: bool = True,
 ) -> str | None:
     """The :data:`FILE_HOLDS` key on *row*, read off its file's metric row in
     *files* (``code_origin``, ``is_test``); a path missing from it is not held."""
@@ -397,7 +403,11 @@ def row_hold(
     if metric is None:
         return None
     return file_hold(
-        layer, get(row, kind), getattr(metric, "code_origin", None), getattr(metric, "is_test", None)
+        layer,
+        get(row, kind),
+        getattr(metric, "code_origin", None),
+        getattr(metric, "is_test", None),
+        hold_history=hold_history,
     )
 
 
@@ -430,20 +440,22 @@ def split_gated(
     get: Callable[[Any, str], Any] = getattr,
     include_unverified: bool = False,
     files: Mapping[str, Any] | None = None,
+    hold_history: bool = True,
 ) -> tuple[list[Any], dict[str, dict]]:
     """``(rows no gate holds back, gated_summary)`` for rows already in memory.
 
     *kind* names the row field holding the finding type; *get* reads a field.
     *files* maps a path to its health metric row so the :data:`FILE_HOLDS`
     apply too (:func:`row_hold`). ``include_unverified`` keeps every row and
-    reports nothing held back.
+    reports nothing held back; ``hold_history=False`` keeps history markers on
+    production files.
     """
     if include_unverified:
         return list(rows), {}
     shown: list[Any] = []
     counts: dict[str, int] = {}
     for row in rows:
-        held = row_hold(layer, row, files, kind=kind, get=get)
+        held = row_hold(layer, row, files, kind=kind, get=get, hold_history=hold_history)
         gate = None if held else gate_for(layer, get(row, "file_path") or "", get(row, kind))
         key = held or (gate.language if gate is not None else None)
         if key is None:
