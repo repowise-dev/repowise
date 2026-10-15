@@ -20,15 +20,14 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from repowise.server import chat_view_spec
+from repowise.server import chat_spec
+from repowise.server.chat_chart_part import ChartSource, chart_part
 from repowise.server.chat_datasets import catalog, dataset_names, get_dataset, load_rows
 from repowise.server.chat_references import CHART_TOOL
 from repowise.server.chat_views import (
-    ChartSource,
     TurnViews,
     ViewError,
     args_hash,
-    chart_part,
     finish_part,
     part_receipt,
 )
@@ -42,7 +41,7 @@ def chart_schema() -> dict[str, Any]:
     """OpenAI-format definition of the ``chart`` tool, listing each dataset's fields."""
     names = dataset_names()
     lines = [f"{name}: {', '.join(get_dataset(name).fields)}" for name in names]
-    kinds = [k for k in chat_view_spec.KINDS if k != "auto"]
+    kinds = [k for k in chat_spec.KINDS if k != "auto"]
     return {
         "type": "function",
         "function": {
@@ -65,7 +64,7 @@ def chart_schema() -> dict[str, Any]:
                     "dataset": {"type": "string", "enum": names},
                     "x": _NAME_OR_LIST,
                     "y": _NAME_OR_LIST,
-                    "aggregate": {"type": "string", "enum": list(chat_view_spec.AGGREGATES)},
+                    "aggregate": {"type": "string", "enum": list(chat_spec.AGGREGATES)},
                     "series": {"type": "string"},
                     "filter": {
                         "type": "array",
@@ -73,7 +72,7 @@ def chart_schema() -> dict[str, Any]:
                             "type": "object",
                             "properties": {
                                 "field": {"type": "string"},
-                                "op": {"type": "string", "enum": list(chat_view_spec.OPS)},
+                                "op": {"type": "string", "enum": list(chat_spec.OPS)},
                                 "value": {},
                             },
                             "required": ["field", "value"],

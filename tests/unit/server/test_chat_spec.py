@@ -1,4 +1,4 @@
-"""The ``chart`` view spec: parsing, field checks, filters, grouping, top + Other and the kind choice."""
+"""The chart spec: parsing, field checks, filters, grouping, top + Other and the kind choice."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from repowise.server.chat_view_spec import (
+from repowise.server.chat_spec import (
     OTHER_LABEL,
     SpecError,
     default_title,

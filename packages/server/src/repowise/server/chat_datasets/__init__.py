@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry, load_plugins
-from repowise.server.chat_view_spec import ARROW
+from repowise.server.chat_spec import ARROW
 
 #: Aggregations a numeric field takes; the first is the one used when rows must combine.
 SUMS = ("sum", "avg", "min", "max")
