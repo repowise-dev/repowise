@@ -15,11 +15,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.registry.plugins import SeamRegistry
+
+if TYPE_CHECKING:
+    from repowise.core.changes.period import PeriodRequest
 
 SCHEMA_VERSION = 1
 INCONCLUSIVE = -1
@@ -127,18 +129,10 @@ class ReportContext:
     repo_root: Path
     alias: str | None = None
     head_commit: str | None = None
-    #: The period a ``changes`` report covers: merged on or after *since*,
-    #: before *until*; ``None`` leaves that side open.
-    since: datetime | None = None
-    until: datetime | None = None
-    #: Rebuild every kept checklist in the period.
-    refresh: bool = False
-    #: Build and keep missing checklists; ``False`` reads kept ones only.
-    build: bool = True
-    #: Told once how many checklists will be built: ``(to build, total)``.
-    plan: Callable[[int, int], None] | None = None
-    #: Told about each checklist built: ``(position, total, change id)``.
-    progress: Callable[[int, int, str], None] | None = None
+    #: The period a ``changes`` report covers and how it builds missing
+    #: checklists (a :class:`~repowise.core.changes.period.PeriodRequest`);
+    #: ``None`` is every indexed change, building what is missing.
+    period: PeriodRequest | None = None
     _cache: dict[str, Any] = field(default_factory=dict)
 
     async def components(self) -> Any:

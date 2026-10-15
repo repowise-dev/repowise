@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from collections.abc import AsyncIterator, Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +51,37 @@ Progress = Callable[[int, int, str], None]
 Plan = Callable[[int, int], None]
 
 
+@dataclass(frozen=True)
+class PeriodRequest:
+    """Which changes a period pass reads, and how it builds missing checklists.
+
+    *since* is inclusive and *until* exclusive, on ``merged_at``; ``None``
+    leaves that side open. *refresh* rebuilds every checklist; without *build*
+    nothing is built, and a change with no kept checklist comes with ``None``.
+    *plan* is told how many checklists will be built before the first starts;
+    *progress* is told about each build.
+    """
+
+    since: datetime | None = None
+    until: datetime | None = None
+    refresh: bool = False
+    build: bool = True
+    concurrency: int = DEFAULT_CONCURRENCY
+    progress: Progress | None = None
+    plan: Plan | None = None
+
+
+@dataclass(frozen=True)
+class _Pass:
+    """One period pass over one repository's open index."""
+
+    session: Any
+    repo_id: str
+    root: Path
+    request: PeriodRequest
+    total: int
+
+
 class _Prime:
     """One fix-history walk for the period, primed page by page."""
 
@@ -59,33 +91,35 @@ class _Prime:
         self.useful = True
         self.misses = 0
 
-    def __call__(self, rows: Sequence[Any]) -> None:
-        from repowise.core.analysis.change_risk.fix_history import (
-            FixHistory,
-            prime_fix_pressure,
-        )
+    def _walk(self) -> Any:
+        """The period's walk, read on first use; ``None`` (given up) once git fails."""
+        from repowise.core.analysis.change_risk.fix_history import FixHistory
 
-        if not self.useful:
-            return
-        try:
-            if self.history is None:
+        if self.history is None and self.useful:
+            try:
                 self.history = FixHistory(self.root)
-        except (OSError, subprocess.SubprocessError) as exc:
-            logger.debug("period_fix_history_failed", error=str(exc))
-            self.useful = False
+            except (OSError, subprocess.SubprocessError) as exc:
+                logger.debug("period_fix_history_failed", error=str(exc))
+                self.useful = False
+        return self.history if self.useful else None
+
+    def __call__(self, rows: Sequence[Any]) -> None:
+        from repowise.core.analysis.change_risk.fix_history import prime_fix_pressure
+
+        history = self._walk()
+        if history is None:
             return
-        parents = [p[0] for r in rows if (p := self.history.parents.get(r.head_sha))]
-        if not parents or prime_fix_pressure(self.root, self.history, parents):
+        parents = [p[0] for r in rows if (p := history.parents.get(r.head_sha))]
+        if not parents or prime_fix_pressure(self.root, history, parents):
             self.misses = 0
             return
         self.misses += 1
         # Older changes reach fewer commits, so a miss can be followed by hits;
         # but once a page's oldest change lies outside the walk, so do all older.
-        if self.misses >= _PRIME_MISSES or not self.history.answers(rows[-1].head_sha):
-            self.useful = False
+        self.useful = self.misses < _PRIME_MISSES and history.answers(rows[-1].head_sha)
 
 
-async def _keep(session: Any, repo_id: str, row: Any, evidence: ChangeEvidence) -> ChangeEvidence:
+async def _keep(run: _Pass, row: Any, evidence: ChangeEvidence) -> ChangeEvidence:
     """Keep *evidence* unless another writer kept a checklist since *row* was
     read; then that one is what the change has, and is returned."""
     from sqlalchemy import select
@@ -97,45 +131,39 @@ async def _keep(session: Any, repo_id: str, row: Any, evidence: ChangeEvidence) 
 
     raw = dump_evidence(evidence.to_dict())
     if not await keep_evidence_if_unchanged(
-        session, repo_id, row.change_id, raw, expected=row.evidence_json
+        run.session, run.repo_id, row.change_id, raw, expected=row.evidence_json
     ):
         raw = (
-            await session.execute(
+            await run.session.execute(
                 select(Change.evidence_json).where(
-                    Change.repository_id == repo_id, Change.change_id == row.change_id
+                    Change.repository_id == run.repo_id, Change.change_id == row.change_id
                 )
             )
         ).scalar_one_or_none()
         evidence = collect.cached_evidence(SimpleNamespace(evidence_json=raw)) or evidence
-    await session.commit()
+    await run.session.commit()
     set_committed_value(row, "evidence_json", raw)
     return evidence
 
 
 async def _build_page(
-    session: Any,
-    repo_id: str,
-    root: Path,
-    rows: Sequence[Any],
-    *,
-    concurrency: int,
-    progress: Progress | None,
-    position: Callable[[Any], tuple[int, int]],
+    run: _Pass, rows: Sequence[Any], position: Callable[[Any], int]
 ) -> dict[str, ChangeEvidence]:
     """Build *rows* side by side, keeping each as it finishes. A failed build
     is raised once the others in flight have finished and been kept."""
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    gate = asyncio.Semaphore(max(1, concurrency))
+    gate = asyncio.Semaphore(max(1, run.request.concurrency))
     write = asyncio.Lock()  # the caller's session takes one writer at a time
+    progress = run.request.progress
 
     async def one(row: Any) -> tuple[str, ChangeEvidence]:
-        async with gate, AsyncSession(session.bind, expire_on_commit=False) as reader:
-            evidence = await collect.build_stored_evidence(reader, repo_id, root, row)
+        async with gate, AsyncSession(run.session.bind, expire_on_commit=False) as reader:
+            evidence = await collect.build_stored_evidence(reader, run.repo_id, run.root, row)
         async with write:
-            evidence = await _keep(session, repo_id, row, evidence)
+            evidence = await _keep(run, row, evidence)
         if progress is not None:
-            progress(*position(row), row.change_id)
+            progress(position(row), run.total, row.change_id)
         return row.change_id, evidence
 
     done = await asyncio.gather(*(one(r) for r in rows), return_exceptions=True)
@@ -145,66 +173,66 @@ async def _build_page(
     return dict(done)  # type: ignore[arg-type]
 
 
+async def _page_rows(run: _Pass, ids: list[str]) -> list[Any]:
+    """The rows of *ids*, in that order, read in one query; one deleted meanwhile drops out."""
+    from repowise.core.persistence.crud import ChangeFilter, list_changes
+
+    found, _ = await list_changes(
+        run.session, run.repo_id, ChangeFilter(change_ids=ids), limit=None
+    )
+    by_id = {r.change_id: r for r in found}
+    return [by_id[cid] for cid in ids if cid in by_id]
+
+
+async def _read_kept(
+    run: _Pass, rows: Sequence[Any], key: Any
+) -> dict[str, ChangeEvidence | None]:
+    """Each row's kept checklist (``None`` when none is kept), from the page
+    already read. Only a checklist whose outcomes were read at another HEAD
+    is read again, since that needs git for the change."""
+    kept = {r.change_id: collect.cached_evidence(r) for r in rows}
+    stale = [
+        r
+        for r in rows
+        if kept[r.change_id] is not None
+        and await collect.outcomes_stale(run.root, kept[r.change_id], key)
+    ]
+    for row in stale:
+        kept[row.change_id] = await collect.change_evidence(
+            run.session, run.repo_id, run.root, row, key=key
+        )
+    return kept
+
+
 async def period_evidence(
-    session: Any,
-    repo_id: str,
-    repo_root: Path | str,
-    *,
-    since: datetime | None,
-    until: datetime | None,
-    refresh: bool = False,
-    build: bool = True,
-    concurrency: int = DEFAULT_CONCURRENCY,
-    progress: Progress | None = None,
-    plan: Plan | None = None,
+    session: Any, repo_id: str, repo_root: Path | str, request: PeriodRequest
 ) -> AsyncIterator[tuple[Any, ChangeEvidence | None]]:
-    """``(row, checklist)`` for each change merged in ``[since, until)``, newest first.
+    """``(row, checklist)`` for each change *request* names, newest first."""
+    from repowise.core.persistence.crud import ChangeFilter, list_change_keys
 
-    *refresh* rebuilds every checklist. Without *build* nothing is built, and
-    a change with no kept checklist comes with ``None``. *plan* is told how
-    many checklists will be built before the first starts; *progress* is told
-    about each build.
-    """
-    from repowise.core.persistence.crud import ChangeFilter, list_change_keys, list_changes
-
-    root = Path(repo_root)
-    keys = await list_change_keys(session, repo_id, ChangeFilter(since=since, until=until))
-    total = len(keys)
-    if plan is not None:
-        plan(sum(refresh or not kept for _cid, kept in keys) if build else 0, total)
-    key = await collect.outcomes_key(root)
-    prime = _Prime(str(root))
-    for start in range(0, total, PAGE):
+    keys = await list_change_keys(
+        session, repo_id, ChangeFilter(since=request.since, until=request.until)
+    )
+    run = _Pass(session, repo_id, Path(repo_root), request, len(keys))
+    if request.plan is not None:
+        to_build = sum(request.refresh or not kept for _cid, kept in keys)
+        request.plan(to_build if request.build else 0, run.total)
+    key = await collect.outcomes_key(run.root)
+    prime = _Prime(str(run.root))
+    for start in range(0, run.total, PAGE):
         ids = [cid for cid, _kept in keys[start : start + PAGE]]
-        found, _ = await list_changes(session, repo_id, ChangeFilter(change_ids=ids), limit=None)
-        by_id = {r.change_id: r for r in found}
-        rows = [by_id[cid] for cid in ids if cid in by_id]  # one deleted meanwhile drops out
-        missing = [r for r in rows if refresh or collect.cached_evidence(r) is None]
+        rows = await _page_rows(run, ids)
+        missing = [r for r in rows if request.refresh or collect.cached_evidence(r) is None]
         built: dict[str, ChangeEvidence] = {}
-        if missing and build:
+        if missing and request.build:
             await asyncio.to_thread(prime, missing)
-            at = {cid: (start + i + 1, total) for i, cid in enumerate(ids)}
             built = await _build_page(
-                session,
-                repo_id,
-                root,
-                missing,
-                concurrency=concurrency,
-                progress=progress,
-                position=lambda r, at=at: at[r.change_id],
+                run, missing, lambda r, s=start, ids=ids: s + ids.index(r.change_id) + 1
             )
-        page: list[tuple[Any, ChangeEvidence | None]] = []
-        for row in rows:
-            if row.change_id in built:
-                page.append((row, built[row.change_id]))
-            elif collect.cached_evidence(row) is None:
-                page.append((row, None))
-            else:
-                evidence = await collect.change_evidence(session, repo_id, root, row, key=key)
-                page.append((row, evidence))
+        kept = await _read_kept(run, [r for r in rows if r.change_id not in built], key)
         await session.commit()
-        for pair in page:
-            yield pair
+        for row in rows:
+            yield row, built.get(row.change_id) or kept.get(row.change_id)
         session.expunge_all()
 
 
@@ -212,6 +240,7 @@ __all__ = [
     "DEFAULT_CONCURRENCY",
     "PAGE",
     "SECONDS_PER_BUILD",
+    "PeriodRequest",
     "Plan",
     "Progress",
     "period_evidence",

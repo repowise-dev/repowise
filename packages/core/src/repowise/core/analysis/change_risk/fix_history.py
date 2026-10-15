@@ -245,18 +245,32 @@ class FixHistory:
         hold them or more than *depth* of them are non-merge commits."""
         seen = {sha}
         todo = [sha]
-        listed = len(self.parents[sha]) <= 1
+        listed = self._listed(sha)
         while todo:
-            for parent in self.parents[todo.pop()]:
-                if parent not in self.parents:
-                    return None  # past this walk: the history is not all here
-                if parent not in seen:
-                    seen.add(parent)
-                    todo.append(parent)
-                    listed += len(self.parents[parent]) <= 1
-                    if listed > depth:
-                        return None  # past depth: where _walk cuts is left to _walk
+            fresh = self._new_parents(todo.pop(), seen)
+            if fresh is None:
+                return None  # past this walk: the history is not all here
+            seen.update(fresh)
+            todo.extend(fresh)
+            listed += sum(map(self._listed, fresh))
+            if listed > depth:
+                return None  # past depth: where _walk cuts is left to _walk
         return seen
+
+    def _listed(self, sha: str) -> bool:
+        """Whether ``git log --no-merges`` lists *sha* (it counts toward depth)."""
+        return len(self.parents[sha]) <= 1
+
+    def _new_parents(self, sha: str, seen: set[str]) -> list[str] | None:
+        """*sha*'s parents not yet *seen*, or ``None`` when one is past this walk."""
+        parents = self.parents[sha]
+        if any(p not in self.parents for p in parents):
+            return None
+        return [p for p in parents if p not in seen]
+
+    def _counted(self, sha: str) -> bool:
+        """Whether :func:`_walk` counts *sha* as a fix (a shallow boundary it skips)."""
+        return sha in self.fixes and not (self.shallow and not self.parents[sha])
 
     def pressure(self, sha: str, depth: int | None = None) -> dict[str, float] | None:
         """:func:`fix_pressure` at *sha*, or ``None`` when this walk cannot say
@@ -266,10 +280,9 @@ class FixHistory:
         if reach is None:
             return None
         history: dict[str, list[float]] = {}
-        for c in self.order:
-            if c in reach and c in self.fixes and not (self.shallow and not self.parents[c]):
-                for path in self.fixes[c]:
-                    history.setdefault(path, []).append(self.times[c])
+        for c in (c for c in self.order if c in reach and self._counted(c)):
+            for path in self.fixes[c]:
+                history.setdefault(path, []).append(self.times[c])
         return _decayed(history, self.times[sha])
 
 

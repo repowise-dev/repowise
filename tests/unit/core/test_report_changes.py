@@ -182,6 +182,7 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 async def ctx(root: Path):
+    from repowise.core.changes.period import PeriodRequest
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.models import Repository
     from repowise.core.report.model import ReportContext
@@ -189,8 +190,16 @@ async def ctx(root: Path):
     engine = create_engine(f"sqlite+aiosqlite:///{(root / '.repowise' / 'wiki.db').as_posix()}")
     async with get_session(create_session_factory(engine)) as session:
         repo = (await session.execute(Repository.__table__.select())).first()
-        yield ReportContext(session, repo.id, root, since=SINCE, until=UNTIL)
+        yield ReportContext(session, repo.id, root, period=PeriodRequest(since=SINCE, until=UNTIL))
     await engine.dispose()
+
+
+def _over(ctx, **options):
+    """The period pass over the fixture window, with *options* on its request."""
+    from repowise.core.changes.period import PeriodRequest, period_evidence
+
+    request = PeriodRequest(since=SINCE, until=UNTIL, **options)
+    return period_evidence(ctx.session, ctx.repository_id, ctx.repo_root, request)
 
 
 async def _document(ctx) -> dict:
@@ -212,15 +221,12 @@ def _section(doc: dict, sid: str) -> dict[str, dict]:
 
 async def test_period_builds_missing_checklists_once_and_keeps_them(ctx, builds):
     from repowise.core.changes.collect import cached_evidence
-    from repowise.core.changes.period import period_evidence
     from repowise.core.persistence.crud import get_change
 
     seen: list[tuple[int, int, str]] = []
     first = [
         r.change_id
-        async for r, _e in period_evidence(
-            ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL,
-            progress=lambda *a: seen.append(a),
+        async for r, _e in _over(ctx, progress=lambda *a: seen.append(a),
         )
     ]
     assert first == ["pr-2", "pr-1"] and sorted(builds) == ["pr-1", "pr-2"]
@@ -229,12 +235,10 @@ async def test_period_builds_missing_checklists_once_and_keeps_them(ctx, builds)
     assert kept is not None and kept.item("outcomes") is not None
 
     builds.clear()
-    again = [r.change_id async for r, _e in period_evidence(
-        ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL)]
+    again = [r.change_id async for r, _e in _over(ctx)]
     assert again == ["pr-2", "pr-1"] and builds == []
 
-    _ = [r async for r in period_evidence(
-        ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL, refresh=True)]
+    _ = [r async for r in _over(ctx, refresh=True)]
     assert sorted(builds) == ["pr-1", "pr-2"]
 
 
@@ -243,7 +247,7 @@ async def test_period_builds_missing_checklists_once_and_keeps_them(ctx, builds)
 
 def _entry(change_id: str, policy=None, policy_error=None, attribution=True) -> dict:
     from repowise.core.ownership.directory import DeclaredOwnership
-    from repowise.core.report.sections.changes import entry
+    from repowise.core.report.change_answers import EntryContext, entry
 
     record = {
         "id": change_id, "forge_ref": "#1", "title": "t", "merged_at": "2026-03-01T00:00:00+00:00",
@@ -251,11 +255,12 @@ def _entry(change_id: str, policy=None, policy_error=None, attribution=True) -> 
         "lines_added": 3, "lines_deleted": 1,
         "metadata": {"source": "git", "reviewers": None, "approvals": None},
     }
-    return entry(
-        record, _evidence(change_id).to_dict(), policy=policy, policy_error=policy_error,
+    context = EntryContext(
+        policy=policy, policy_error=policy_error,
         declared=DeclaredOwnership(codeowners_file=".github/CODEOWNERS"),
         agents={HEAD1: ("claude", "anthropic/claude-x")}, attribution=attribution,
     )
+    return entry(record, _evidence(change_id).to_dict(), context)
 
 
 def test_a_change_names_teams_and_counts_people():
@@ -271,7 +276,7 @@ def test_a_change_names_teams_and_counts_people():
 
 
 def test_review_is_not_recorded_in_git_never_missing():
-    from repowise.core.report.sections.changes import _review
+    from repowise.core.report.change_answers import review as _review
 
     e = _entry("pr-1")
     assert e["review"] == {
@@ -296,7 +301,7 @@ def test_unknown_evidence_stays_unknown_never_negative():
 
 def test_policy_evaluates_condition_rules_and_never_reruns_gates():
     from repowise.core.policy import parse_policy
-    from repowise.core.report.sections.changes import policy_verdict
+    from repowise.core.report.change_answers import policy_verdict
 
     policy = parse_policy(POLICY)
     verdict = _entry("pr-1", policy=policy)["policy"]
@@ -460,7 +465,6 @@ async def test_many_concurrent_builds_on_disk_are_all_kept(ctx, monkeypatch):
     from sqlalchemy import func, select
 
     from repowise.core.changes import collect
-    from repowise.core.changes.period import period_evidence
     from repowise.core.persistence.models import Change
 
     await _add_changes(ctx.repo_root, _many(20))
@@ -480,9 +484,7 @@ async def test_many_concurrent_builds_on_disk_are_all_kept(ctx, monkeypatch):
     seen = []
     got = [
         r.change_id
-        async for r, e in period_evidence(
-            ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL,
-            concurrency=6, progress=lambda *a: seen.append(a),
+        async for r, e in _over(ctx, concurrency=6, progress=lambda *a: seen.append(a),
         )
         if e is not None
     ]
@@ -495,7 +497,6 @@ async def test_many_concurrent_builds_on_disk_are_all_kept(ctx, monkeypatch):
 
 async def test_a_failed_build_keeps_the_rest_of_its_page(ctx, monkeypatch):
     from repowise.core.changes import collect
-    from repowise.core.changes.period import period_evidence
     from repowise.core.persistence.crud import list_changes
 
     async def build(session, repo_id, root, row, **_k):
@@ -505,8 +506,7 @@ async def test_a_failed_build_keeps_the_rest_of_its_page(ctx, monkeypatch):
 
     monkeypatch.setattr(collect, "build_stored_evidence", build)
     with pytest.raises(RuntimeError, match="parse blew up"):
-        _ = [p async for p in period_evidence(
-            ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL)]
+        _ = [p async for p in _over(ctx)]
     rows, _ = await list_changes(ctx.session, ctx.repository_id, limit=None)
     kept = {r.change_id for r in rows if r.evidence_json}
     assert kept == {"pr-2"}
@@ -514,7 +514,6 @@ async def test_a_failed_build_keeps_the_rest_of_its_page(ctx, monkeypatch):
 
 async def test_a_checklist_another_writer_kept_is_never_overwritten(ctx, monkeypatch):
     from repowise.core.changes import collect
-    from repowise.core.changes.period import period_evidence
     from repowise.core.persistence.crud import get_change
 
     theirs = ChangeEvidence("pr-2", None, "2026-01-01T00:00:00+00:00",
@@ -526,8 +525,7 @@ async def test_a_checklist_another_writer_kept_is_never_overwritten(ctx, monkeyp
         return _evidence(row.change_id)
 
     monkeypatch.setattr(collect, "build_stored_evidence", build)
-    got = {r.change_id: e async for r, e in period_evidence(
-        ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL)}
+    got = {r.change_id: e async for r, e in _over(ctx)}
     assert got["pr-2"].generated_at == "2026-01-01T00:00:00+00:00"
     ctx.session.expunge_all()
     stored = collect.cached_evidence(await get_change(ctx.session, ctx.repository_id, "pr-2"))
@@ -536,7 +534,6 @@ async def test_a_checklist_another_writer_kept_is_never_overwritten(ctx, monkeyp
 
 async def test_the_period_is_fixed_before_the_first_build(ctx, monkeypatch):
     from repowise.core.changes import collect, period
-    from repowise.core.changes.period import period_evidence
 
     added: list[str] = []
 
@@ -549,8 +546,7 @@ async def test_the_period_is_fixed_before_the_first_build(ctx, monkeypatch):
 
     monkeypatch.setattr(collect, "build_stored_evidence", build)
     monkeypatch.setattr(period, "PAGE", 1)  # a page per change, so a shift would show
-    got = [r.change_id async for r, _e in period_evidence(
-        ctx.session, ctx.repository_id, ctx.repo_root, since=SINCE, until=UNTIL)]
+    got = [r.change_id async for r, _e in _over(ctx)]
     assert got == ["pr-2", "pr-1"]
 
 

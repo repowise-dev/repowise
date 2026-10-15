@@ -110,7 +110,7 @@ async def _export(
 ) -> int | None:
     """Emit each change in the window with its checklist, a page at a time; the count."""
     from repowise.core.attribution import attribution_enabled
-    from repowise.core.changes.period import period_evidence
+    from repowise.core.changes.period import PeriodRequest, period_evidence
     from repowise.core.changes.record import change_record
 
     async with repo_index_session(root) as opened:
@@ -119,16 +119,10 @@ async def _export(
         session, repo_id = opened
         on = attribution_enabled(root)
         done = 0
-        async for row, evidence in period_evidence(
-            session,
-            repo_id,
-            root,
-            since=since,
-            until=until,
-            refresh=refresh,
-            progress=build_progress,
-            plan=build_plan,
-        ):
+        request = PeriodRequest(
+            since=since, until=until, refresh=refresh, progress=build_progress, plan=build_plan
+        )
+        async for row, evidence in period_evidence(session, repo_id, root, request):
             record = change_record(row, attribution=on)
             record["evidence"] = evidence.to_dict()
             emit(record)

@@ -12,7 +12,9 @@ an estimate and progress go to stderr.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import click
 
@@ -22,6 +24,29 @@ from repowise.cli.helpers import (
     run_async,
     silence_logs_for_machine_output_until_close,
 )
+
+
+@dataclass(frozen=True)
+class ChangesReportOptions:
+    """The command line of ``repowise report changes``, as click parses it."""
+
+    path: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    fmt: str = "markdown"
+    out_path: str | None = None
+    refresh: bool = False
+    no_build: bool = False
+    workspace_flag: bool = False
+    no_workspace: bool = False
+    repo_alias: str | None = None
+
+    def period(self) -> tuple[datetime | None, datetime | None]:
+        """``(since, until)`` in UTC; raises when the period is empty."""
+        since, until = (d.replace(tzinfo=UTC) if d else None for d in (self.since, self.until))
+        if since and until and since >= until:
+            raise click.BadParameter("--since must be before --until", param_hint="--since")
+        return since, until
 
 
 @click.command("changes")
@@ -47,18 +72,7 @@ from repowise.cli.helpers import (
 @click.option("--workspace", "workspace_flag", is_flag=True, help="Cover every workspace repo.")
 @click.option("--no-workspace", is_flag=True, help="Force single-repo mode.")
 @click.option("--repo", "repo_alias", default=None, help="Workspace repo alias to cover.")
-def changes_command(
-    path: str | None,
-    since: datetime | None,
-    until: datetime | None,
-    fmt: str,
-    out_path: str | None,
-    refresh: bool,
-    no_build: bool,
-    workspace_flag: bool,
-    no_workspace: bool,
-    repo_alias: str | None,
-) -> None:
+def changes_command(**params: Any) -> None:
     """Change evidence for a period: review record, reaching tests, policy result,
     owning teams, provenance and outcomes of every change merged in it.
 
@@ -66,25 +80,20 @@ def changes_command(
     index first (a few seconds each), unless --no-build is given.
     """
     from repowise.cli.commands.changes_cmd import build_plan, build_progress
-    from repowise.cli.commands.report_assessment_cmd import _build, _emit, _scope
+    from repowise.cli.commands.report_assessment_cmd import _build, _emit, _renderer, _scope
+    from repowise.core.changes.period import PeriodRequest
     from repowise.core.report.build import available_sections
-    from repowise.core.report.render import report_renderers
 
+    opts = ChangesReportOptions(**params)
     # Building a checklist parses code, which logs; stdout carries only the report.
     silence_logs_for_machine_output_until_close()
-    if fmt not in report_renderers.names:
-        raise click.BadParameter(
-            f"unknown format {fmt!r}; available: {', '.join(report_renderers.names)}",
-            param_hint="--format",
-        )
-    since, until = (d.replace(tzinfo=UTC) if d else None for d in (since, until))
-    if since and until and since >= until:
-        raise click.BadParameter("--since must be before --until", param_hint="--since")
+    render = _renderer(opts.fmt)
+    since, until = opts.period()
     target = resolve_command_target(
-        path=path,
-        workspace_flag=workspace_flag,
-        no_workspace_flag=no_workspace,
-        repo_alias=repo_alias,
+        path=opts.path,
+        workspace_flag=opts.workspace_flag,
+        no_workspace_flag=opts.no_workspace,
+        repo_alias=opts.repo_alias,
     )
     target.notice(err_console, command="report changes")
     repos, scope = _scope(target)
@@ -92,18 +101,14 @@ def changes_command(
         "since": since.isoformat() if since else None,
         "until": until.isoformat() if until else None,
     }
-    document = run_async(
-        _build(
-            repos,
-            available_sections("changes"),
-            scope,
-            since=since,
-            until=until,
-            refresh=refresh,
-            build=not no_build,
-            plan=build_plan,
-            progress=build_progress,
-        )
+    request = PeriodRequest(
+        since=since,
+        until=until,
+        refresh=opts.refresh,
+        build=not opts.no_build,
+        plan=build_plan,
+        progress=build_progress,
     )
+    document = run_async(_build(repos, available_sections("changes"), scope, period=request))
     document["kind"] = "changes"
-    _emit(report_renderers.get(fmt)(document), fmt, out_path, document)
+    _emit(render(document), opts.fmt, opts.out_path, document)
