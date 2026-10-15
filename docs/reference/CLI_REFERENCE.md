@@ -1118,6 +1118,8 @@ Report per-file code-health scores from 51 deterministic detectors (McCabe compl
 
 By default it reads the analysis the last `repowise init` or `repowise update` stored, the same rows MCP and the web UI serve, and writes nothing. `--recompute` analyzes the working tree in-process instead.
 
+When a listed finding or plan sits on a language its layer serves as a preview, the report prints one dim line per layer and language with the measurement behind it, for example `Refactoring on Java: preview, measured 22% precision on 55 judged plans from 2 Java repos, 2026-10-15`. `repowise dead-code` does the same.
+
 **Options:**
 
 | Flag | Description |
