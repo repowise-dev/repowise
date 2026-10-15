@@ -306,3 +306,46 @@ async def test_preview_rows_are_labelled_on_detail_routes(
         for lens, block in lenses[JAVA].items()
     )
     assert all("preview" not in block for block in lenses[PY].values())
+
+
+async def test_preview_rows_are_labelled_on_prompts_and_evidence(
+    client: AsyncClient, app, monkeypatch
+) -> None:
+    repo_id = await _seed(client, app)
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", _java_table("preview"))
+    note = preview_note(_java_table("preview")[0])
+    base = f"/api/repos/{repo_id}"
+    line = f"This language is served as a {note}."
+
+    def check(prompt: dict, on_java: bool) -> None:
+        assert prompt.get("preview") == (note if on_java else None)
+        assert (line in prompt["text"]) is on_java
+
+    queue = await _get(client, f"{base}/refactoring/opportunities", scope="all")
+    for item in queue["items"]:
+        prompt = await _get(
+            client, f"{base}/refactoring/opportunities/{item['opportunity_id']}/prompt"
+        )
+        check(prompt, item["file_path"] == JAVA)
+
+    for plan in (await _get(client, f"{base}/refactoring/targets"))["plans"]:
+        check(await _get(client, f"{base}/refactoring/{plan['id']}/prompt"), plan["file_path"] == JAVA)
+
+    every = {"context": "all", "proof": "unproven", "role": "all"}
+    perf = await _get(client, f"{base}/health/performance-opportunities", **every)
+    seen = set()
+    for item in perf["items"]:
+        evidence = await _get(
+            client, f"{base}/health/performance-opportunities/{item['opportunity_id']}/findings"
+        )
+        for row in evidence["items"]:
+            seen.add(row["file_path"])
+            assert row.get("preview") == (note if row["file_path"] == JAVA else None)
+    assert JAVA in seen
+
+    fix_first = await _get(client, f"{base}/health/fix-first", scope="all", limit=20)
+    for item in fix_first["items"]:
+        prompt = await _get(
+            client, f"{base}/health/fix-first/{item['id']}/prompt", scope="all"
+        )
+        check(prompt, item["target"]["file_path"] == JAVA)

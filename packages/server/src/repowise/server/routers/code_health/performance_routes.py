@@ -168,7 +168,7 @@ async def list_performance_opportunity_findings(
     )
     emitted = offset + len(items)
     return {
-        "items": items,
+        "items": label_previews("performance", items, kind="biomarker_type"),
         "total": total,
         "has_more": emitted < total,
         "next_offset": emitted if emitted < total else None,

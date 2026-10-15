@@ -106,6 +106,7 @@ export interface ActiveProviderSelection {
 export interface AgentPromptResponse {
   flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
   text: string;
+  preview?: string | null;
 }
 
 /** One month of commits by attribution label. */

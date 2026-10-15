@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.agent_prompts import Flavor, render_opportunity, render_plan
-from repowise.core.analysis.finding_registry import label_previews
+from repowise.core.analysis.finding_registry import label_previews, preview_label
 from repowise.core.analysis.health.refactoring.recipe import build_recipe
 from repowise.core.analysis.health.refactoring.serving import (
     CANONICAL_ORDERS,
@@ -257,6 +257,8 @@ async def get_refactoring_opportunity_detail(
 @router.get(
     "/{repo_id}/refactoring/opportunities/{opportunity_id}/prompt",
     response_model=AgentPromptResponse,
+    # ``preview`` is sent only when the item sits on a preview cell.
+    response_model_exclude_none=True,
 )
 async def get_refactoring_opportunity_prompt(
     repo_id: str,
@@ -272,7 +274,10 @@ async def get_refactoring_opportunity_prompt(
     if not detail.get("found"):
         raise HTTPException(status_code=404, detail="Unknown opportunity id")
     text = render_opportunity(detail, flavor, repo.name)
-    return AgentPromptResponse(flavor=flavor, text=text)
+    note = preview_label(
+        "refactoring", detail.get("file_path") or "", detail.get("lead_refactoring_type")
+    )
+    return AgentPromptResponse.labelled(flavor, text, note)
 
 
 @router.patch(
@@ -394,6 +399,8 @@ async def _repository(session: AsyncSession, repo_id: str) -> Any:
 @router.get(
     "/{repo_id}/refactoring/{suggestion_id}/prompt",
     response_model=AgentPromptResponse,
+    # ``preview`` is sent only when the item sits on a preview cell.
+    response_model_exclude_none=True,
 )
 async def get_refactoring_plan_prompt(
     repo_id: str,
@@ -405,7 +412,8 @@ async def get_refactoring_plan_prompt(
     repo = await _repository(session, repo_id)
     detail, public_id = await _plan_detail(session, repo_id, suggestion_id)
     text = render_plan({**detail, "id": public_id}, flavor, repo.name)
-    return AgentPromptResponse(flavor=flavor, text=text)
+    note = preview_label("refactoring", detail.get("file_path") or "", detail.get("refactoring_type"))
+    return AgentPromptResponse.labelled(flavor, text, note)
 
 
 @router.patch(

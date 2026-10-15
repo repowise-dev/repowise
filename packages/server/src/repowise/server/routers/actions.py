@@ -46,6 +46,8 @@ async def _require_repo(session: AsyncSession, repo_id: str) -> Repository:
 @router.get(
     "/api/repos/{repo_id}/actions/{action_id}/prompt",
     response_model=AgentPromptResponse,
+    # ``preview`` is sent only when the item sits on a preview cell.
+    response_model_exclude_none=True,
 )
 async def get_action_prompt(
     repo_id: str,

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.agent_prompts import Flavor, render_fix_item
+from repowise.core.analysis.finding_registry import GateLayer, preview_label
 from repowise.core.analysis.health.fix_first import FIX_SCOPES, FixItem
 from repowise.core.analysis.health.fix_first.model import FixTotals
 from repowise.core.analysis.health.queue.counts import QueueCounts
@@ -85,6 +86,8 @@ async def get_fix_first_item(
 @router.get(
     "/api/repos/{repo_id}/health/fix-first/{fix_id}/prompt",
     response_model=AgentPromptResponse,
+    # ``preview`` is sent only when the item sits on a preview cell.
+    response_model_exclude_none=True,
 )
 async def get_fix_first_item_prompt(
     repo_id: str,
@@ -95,7 +98,18 @@ async def get_fix_first_item_prompt(
 ) -> AgentPromptResponse:
     """One item as the prompt an agent starts from, worded for its harness."""
     repo, item = await _item(session, repo_id, fix_id, scope)
-    return AgentPromptResponse(flavor=flavor, text=render_fix_item(item.as_dict(), flavor, repo.name))
+    text = render_fix_item(item.as_dict(), flavor, repo.name)
+    layer = _FIX_KIND_LAYER.get(item.kind)
+    note = preview_label(layer, item.target.file_path) if layer else None
+    return AgentPromptResponse.labelled(flavor, text, note)
+
+
+#: A Fix-first item's kind, as the layer it was built from.
+_FIX_KIND_LAYER: dict[str, GateLayer] = {
+    "finding": "health",
+    "refactor": "refactoring",
+    "perf_fix": "performance",
+}
 
 
 __all__ = ["get_fix_first", "get_fix_first_item", "get_fix_first_item_prompt"]
