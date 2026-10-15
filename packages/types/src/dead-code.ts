@@ -121,6 +121,8 @@ export interface DeadCodeSummary {
   total_findings: number;
   confidence_summary: Record<string, number>;
   deletable_lines: number;
+  /** Deletion-ready findings, the ones `deletable_lines` sums. Absent from older hosts. */
+  safe_to_delete_count?: number | null;
   total_lines: number;
   by_kind: Record<string, number>;
   /**

@@ -8,8 +8,13 @@
  * injects the app-specific pieces so web and hosted render the same view.
  */
 
+import { useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { DeadCodeView, type DeadCodeAdapter } from "@repowise-dev/ui/dead-code";
+import {
+  DeadCodeView,
+  type DeadCodeAdapter,
+  type DeadCodeLedeLabels,
+} from "@repowise-dev/ui/dead-code";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getDeadCodeSummary,
@@ -47,6 +52,7 @@ async function waitForJob(jobId: string, timeoutMessage: string): Promise<void> 
 export function DeadCodeTab({ repoId }: { repoId: string }) {
   const t = useTranslations("risk");
   const router = useRouter();
+  const ledeLabels = useLedeLabels();
   const prefix = `/repos/${repoId}`;
 
   const adapter: DeadCodeAdapter = {
@@ -63,5 +69,27 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
     navigate: (href) => router.push(href),
   };
 
-  return <DeadCodeView adapter={adapter} />;
+  return <DeadCodeView adapter={adapter} ledeLabels={ledeLabels} />;
+}
+
+/** The lede copy from the catalog; exported for its test. */
+export function useLedeLabels(): DeadCodeLedeLabels {
+  const t = useTranslations("risk.deadCodeLede");
+  return useMemo<DeadCodeLedeLabels>(
+    () => ({
+      label: t("label"),
+      labelHint: t("labelHint"),
+      unit: t("unit"),
+      findingsUnit: (count) => t("findingsUnit", { count }),
+      separator: t("separator"),
+      clean: t("clean"),
+      ready: (count) => t("ready", { count }),
+      readyUncounted: t("readyUncounted"),
+      moreFlagged: (count) => t("moreFlagged", { count }),
+      flaggedInAll: ({ findings, lines }) => t("flaggedInAll", { findings, lines }),
+      noneReady: t("noneReady"),
+      flaggedForReview: ({ findings, lines }) => t("flaggedForReview", { findings, lines }),
+    }),
+    [t],
+  );
 }

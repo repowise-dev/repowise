@@ -1171,6 +1171,7 @@ export interface DeadCodeSummaryResponse {
   total_findings: number;
   confidence_summary: Record<string, unknown>;
   deletable_lines: number;
+  safe_to_delete_count?: number | null;
   total_lines: number;
   by_kind: Record<string, unknown>;
   analyzed_at?: string | null;

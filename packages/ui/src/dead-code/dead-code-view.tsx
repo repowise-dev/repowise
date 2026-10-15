@@ -3,7 +3,7 @@
 /**
  * Dead Code view, on the section design language.
  *
- * Three things, top to bottom: a lede with the reclaimable line count and one
+ * Three things, top to bottom: a lede with the deletion-ready line count and one
  * posture sentence, the safe-to-delete list, and the full findings table with
  * its status control in the section header. Carries the optimistic row patch
  * + Undo toast, bulk resolve, the "Propose cleanup" agent brief, and
@@ -37,7 +37,7 @@ import { OverviewSection } from "../overview/section";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import { buildDeadCodeAiPrompt } from "../health/ai-prompt-builder";
 
-import { AnalysedAt, DeadCodeLede } from "./dead-code-lede";
+import { AnalysedAt, DeadCodeLede, type DeadCodeLedeLabels } from "./dead-code-lede";
 import { SafeToDeletePile } from "./safe-to-delete-pile";
 import { FindingsTable } from "./findings-table";
 import { DEAD_CODE_STATUS_LABELS } from "./finding-cells";
@@ -72,7 +72,14 @@ function RetryCard({
   );
 }
 
-export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
+export function DeadCodeView({
+  adapter,
+  ledeLabels,
+}: {
+  adapter: DeadCodeAdapter;
+  /** The lede's copy, for a host that translates it. */
+  ledeLabels?: Partial<DeadCodeLedeLabels>;
+}) {
   const [analyzing, setAnalyzing] = useState(false);
   const [promptIds, setPromptIds] = useState<string[] | null>(null);
   /** Which slice the findings table shows; the lede and the list stay open-only. */
@@ -351,7 +358,11 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
             {analyzeAction("Run analysis")}
           </EmptyState>
         ) : (
-          <DeadCodeLede summary={summary} action={analyzeAction("Re-analyze")}>
+          <DeadCodeLede
+            summary={summary}
+            action={analyzeAction("Re-analyze")}
+            {...(ledeLabels ? { labels: ledeLabels } : {})}
+          >
             {clean ? (
               <EmptyState
                 tone="positive"

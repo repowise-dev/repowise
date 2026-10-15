@@ -1061,6 +1061,20 @@
       "byDirectory": "按目录",
       "byDirectoryBody": "匹配集中的位置，按数量从多到少排列。"
     },
+    "deadCodeLede": {
+      "label": "可删除",
+      "labelHint": "可删除指置信度高，且不在配置、引导和环境路径中，这些路径未经审查我们从不删除。置信度描述的是语言本身，而不是含糊其辞：按名称注册的 Python 入口点，或通过 barrel 文件重新导出的 TypeScript 符号，调用图遍历都看不到。",
+      "unit": "行",
+      "findingsUnit": "项发现",
+      "separator": "",
+      "clean": "没有待处理的发现。",
+      "ready": "{count, number} 项发现可删除。",
+      "readyUncounted": "这些行可删除。",
+      "moreFlagged": "另有 {count, number} 项已标记，待审查。",
+      "flaggedInAll": "共有 {findings, number} 项发现、{lines, number} 行被标记。",
+      "noneReady": "目前没有可删除的代码。",
+      "flaggedForReview": "{findings, number} 项发现（共 {lines, number} 行）已标记，待审查。"
+    },
     "analysisTimeout": "分析耗时超出预期。请重新加载以查看结果。",
     "syncStarted": "同步已开始 —— 完成后发现项会刷新",
     "syncFailed": "无法启动同步",

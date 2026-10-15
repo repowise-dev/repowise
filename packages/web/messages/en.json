@@ -1061,6 +1061,20 @@
       "byDirectory": "By directory",
       "byDirectoryBody": "Where the matches concentrate, busiest directories first."
     },
+    "deadCodeLede": {
+      "label": "Deletion-ready",
+      "labelHint": "Deletion-ready means high confidence and outside the config, bootstrap and environment paths we never delete from unreviewed. Confidence is a statement about the language, not a hedge: a Python entry point registered by name or a TypeScript symbol re-exported through a barrel file is invisible to a call-graph walk.",
+      "unit": "lines",
+      "findingsUnit": "{count, plural, one {finding} other {findings}}",
+      "separator": " ",
+      "clean": "No open findings remain.",
+      "ready": "{count, plural, one {# finding is} other {# findings are}} deletion-ready.",
+      "readyUncounted": "These lines are deletion-ready.",
+      "moreFlagged": "{count, plural, one {# more is} other {# more are}} flagged for review.",
+      "flaggedInAll": "{findings, plural, one {# finding} other {# findings}} across {lines, plural, one {# line} other {# lines}} {findings, plural, one {is} other {are}} flagged in all.",
+      "noneReady": "Nothing is deletion-ready right now.",
+      "flaggedForReview": "{findings, plural, one {# finding} other {# findings}} across {lines, plural, one {# line} other {# lines}} {findings, plural, one {is} other {are}} flagged for review."
+    },
     "analysisTimeout": "Analysis is taking longer than expected. Reload to see the results.",
     "syncStarted": "Sync started — findings refresh when it completes",
     "syncFailed": "Couldn't start a sync",

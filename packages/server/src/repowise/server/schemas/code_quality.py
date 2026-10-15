@@ -100,6 +100,8 @@ class DeadCodeSummaryResponse(BaseModel):
     total_findings: int
     confidence_summary: dict
     deletable_lines: int
+    #: Deletion-ready findings, the ones ``deletable_lines`` sums.
+    safe_to_delete_count: int | None = None
     total_lines: int
     by_kind: dict
     # When dead-code analysis last ran; None = never ran or unknown (not all-clear).
