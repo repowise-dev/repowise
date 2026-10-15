@@ -46,6 +46,9 @@ describe("RepositoryChatDock", () => {
     expect(getRepositoryDockCollisionInset("architecture", "packages")).toBeUndefined();
     expect(getRepositoryDockCollisionInset("architecture", "symbols")).toBeUndefined();
     expect(getRepositoryDockCollisionInset("architecture", "deps")).toBeUndefined();
+    // The tree scope is the same file graph as an outline: no canvas, and so
+    // nothing in the bottom-right corner to clear.
+    expect(getRepositoryDockCollisionInset("architecture", "tree")).toBeUndefined();
   });
 
   it("does not mount duplicate chat UI on the full chat route", () => {
