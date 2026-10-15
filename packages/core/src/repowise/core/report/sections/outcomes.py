@@ -10,6 +10,7 @@ blame, and a file fix rate is never read as a cause.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 from repowise.core.report.model import (
@@ -30,15 +31,16 @@ _FLAGGED = "reverted or named as the cause by a later fix"
 
 
 def _outcomes(raw: str | None) -> dict[str, Any] | None:
-    """The kept ``outcomes`` item of one checklist, when it was read and known."""
-    if not raw:
-        return None
-    try:
-        items = json.loads(raw).get("items") or []
-    except (TypeError, ValueError, AttributeError):
-        return None
-    item = next((i for i in items if isinstance(i, dict) and i.get("kind") == "outcomes"), None)
-    return item if item and item.get("status") != "unknown" else None
+    """The kept ``outcomes`` item of one checklist, when it was read and known.
+
+    Read through ``cached_evidence`` like every other reader of a kept
+    checklist, so a stored status is read under the current rules.
+    """
+    from repowise.core.changes.collect import cached_evidence
+
+    evidence = cached_evidence(SimpleNamespace(evidence_json=raw))
+    item = evidence.item("outcomes") if evidence is not None else None
+    return item.to_dict() if item is not None and item.status != "unknown" else None
 
 
 def _files(files_json: str | None) -> list[str]:

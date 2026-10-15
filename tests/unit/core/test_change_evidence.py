@@ -216,6 +216,14 @@ def test_a_kept_checklist_reads_reaching_tests_under_the_current_rule():
     absent = {**item, "details": [*item["details"], {"path": "c.py", "tests": []}]}
     assert EvidenceItem.from_dict(absent).status == "attention"
 
+    # The needs-attention list confirms its SQL prefilter through the same parse.
+    from repowise.core.changes.collect import evidence_summary
+    from repowise.core.persistence.crud.changes import dump_evidence
+
+    kept = {"schema_version": 1, "generated_at": "2026-10-14T00:00:00+00:00", "items": [item]}
+    row = SimpleNamespace(evidence_json=dump_evidence(kept))
+    assert evidence_summary(row)["attention"] == 0
+
 
 def test_every_item_reads_as_a_plain_line():
     """Each kind words its value; no raw key, boolean or dict reaches a reader."""

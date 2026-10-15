@@ -88,6 +88,8 @@ class EvidenceItem:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> EvidenceItem:
+        """Every reader of a kept checklist comes through here (``collect.cached_evidence``),
+        so a stored status that a rule now derives differently is read as derived today."""
         status = data["status"]
         if data["kind"] == "reaching_tests" and data["basis"] != "unresolved":
             # Derived from the rows, so a kept checklist reads under the current rule.

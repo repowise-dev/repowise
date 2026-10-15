@@ -90,7 +90,11 @@ def _filters(repository_id: str, where: ChangeFilter) -> list[Any]:
     clauses = [Change.repository_id == repository_id]
     if where.attention:
         # A kept checklist with an attention item, in dump_evidence's layout; a
-        # prefilter only, since the text could sit inside an item's details.
+        # prefilter only, since the text could sit inside an item's details,
+        # and a stored status may read differently today (a kept reaching_tests
+        # item is re-derived from its rows). Callers confirm each row through
+        # ``collect.evidence_summary``, which parses with ``ChangeEvidence.from_dict``;
+        # the re-derivation only ever lowers attention, so this stays a superset.
         clauses.append(Change.evidence_json.like(_ATTENTION_LIKE))
     if where.change_ids is not None:
         clauses.append(Change.change_id.in_(where.change_ids))

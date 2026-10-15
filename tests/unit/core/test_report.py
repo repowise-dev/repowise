@@ -318,7 +318,19 @@ async def test_outcomes_are_left_out_until_a_checklist_kept_them(ctx):
             "title": f"feat: {cid}",
             "head_sha": cid[3:].rjust(40, "a"),
             "files_json": json.dumps([{"path": path, "added": 1, "deleted": 0}]),
-            "evidence_json": json.dumps({"items": items}) if outcomes is not None else None,
+            # A kept checklist as the store writes it; the section reads it as every reader does.
+            "evidence_json": json.dumps(
+                {
+                    "schema_version": 1,
+                    "generated_at": "2026-10-14T00:00:00+00:00",
+                    "items": [
+                        {"label": "Outcomes since merge", "basis": "declared", "source": "git history", **i}
+                        for i in items
+                    ],
+                }
+            )
+            if outcomes is not None
+            else None,
         }
 
     assert await report_sections.get("outcomes").collect(ctx) is None
