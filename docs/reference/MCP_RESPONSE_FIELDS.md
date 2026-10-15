@@ -383,7 +383,7 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 
 Provisional finding types appear only with `include=["unverified"]`, each marked `verification: "unverified"`. A withheld type never lists but still lowers the score it was counted in, so a file row reports it as `withheld_deduction` and `_meta.withheld` names the type, its count and why it is held back. Targeted mode is never split into production and test.
 
-A layer on a language is gated, preview or ungated (no row), one row each in `finding_registry.py`. Gated rows are held back pending verification: still stored and addressable by id, counted in `_meta.gated` per layer and language, and listed with `include=["unverified"]`. Preview rows are served and counted like any other, and `_meta.preview` gives `{layer: {language: note}}` once for the cells a response lists, where the note is the measurement (for example `preview, measured 22% precision on 55 judged plans from 2 Java repos, 2026-10-15`). Health findings on Java, C#, C and C++ are gated; refactoring plans and opportunities and performance opportunities on those languages are preview.
+A layer on a language is gated, preview or ungated (no row), one row each in `finding_registry.py`. Gated rows are held back pending verification: still stored and addressable by id, counted in `_meta.gated` per layer and language, and listed with `include=["unverified"]`. Preview rows are served and counted like any other, and `_meta.preview` gives `{layer: {language: note}}` once for the cells a response lists, where the note is the measurement (for example `preview, measured 22% precision on 55 judged plans from 2 Java repos, 2026-10-15`). Nothing is gated today: health is ungated on Java, C# and C and preview on C++, and refactoring, performance and dead code are preview on Java, C#, C and C++ (dead code on Kotlin and Swift too).
 
 Health findings on files the index stores as vendored or generated are held back the same way, in every language: that code is changed upstream or by its generator. `_meta.gated.health` counts them under `vendored` and `generated` as plain numbers, and `_meta.gated.reasons` gives each reason once when the call lists no finding. Scores, KPIs and the worst-file order still count them.
 
@@ -435,7 +435,7 @@ The `performance_opportunities` list holds causes whose cost is measured (`cost_
 | `tiers` | Findings by tier: `high` (0.7 and up), `medium` (0.4 to 0.7), `low`. Each has path, kind, confidence, line count, cleanup impact and a stable `id` |
 | `summary` | Totals over every open finding; `filtered_findings` counts what the filters kept; `filters` echoes non-default filters; `scope` says which is which |
 | `summary.withheld_types` | Provisional finding types held back; ask with `kind=` to see them, marked unverified |
-| `summary.gated` | Findings held back pending verification on Java, C#, C, C++, Kotlin and Swift files, counted per language; `include_unverified=true` shows them |
+| `summary.gated` | Findings held back on a gated language, counted per language; `include_unverified=true` shows them. No language is gated today; dead code on Java, C#, C, C++, Kotlin and Swift is preview, labelled in `_meta.preview` |
 | `summary.call_resolution_basis` | Per language, how many call edges the index resolved and the share that are guesses: the graph the findings rest on |
 | `by_directory`, `by_owner` | Rollups with `group_by` |
 | `limit_note` | A `limit` over 25 was clamped |
