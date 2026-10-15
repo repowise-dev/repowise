@@ -6,10 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- Use `git-cliff` to auto-generate entries from conventional commits -->
+<!-- A minor release opens with a short summary, then `### Highlights` (3-5 bullets shaped `- **Title** · one-line blurb. → /route`; the route is optional and `:id` stands for the current repository) and `### By the numbers` from `python scripts/release_stats.py`. The web UI and `repowise whats-new` show both. -->
 
 ---
 
 ## [Unreleased]
+
+Chat draws any chart of your repository, from bars and lines to donuts, treemaps and heatmaps, and every chart in the web UI shares one palette. Models and base URLs are set from Settings with live model lists, so a local server such as LM Studio is one form away, and a failed sync says what went wrong and how to fix it. Every merged change becomes a Change Record with its evidence, and the Commits page groups commits by change.
+
+### Highlights
+
+- **Charts in chat** · Ask for any chart of your files, findings, changes, health trend, coverage, dead code, dependencies or layers, drawn as bars, lines, donuts, treemaps or heatmaps. → /repos/:id/chat
+- **Models from Settings, with live lists** · Pick a model from the provider's live list or type any id, and point repowise at LM Studio or another local OpenAI-compatible server with no key. → /settings
+- **Sync failures explain themselves** · A rejected key, rate limit, unreachable base URL or missing model shows on the sync with a short hint saying what to do. → /repos/:id/settings
+- **Commits grouped by change** · Every merged change is a Change Record with its evidence checklist, and the Commits page groups commits by the change that landed them. → /repos/:id/commits
+- **One palette for every chart** · Charts and share bars draw from the same eight series colours, and a commit type keeps its colour on every chart.
+
+### By the numbers
+
+In the 3 days since 0.56.0:
+
+- **205 pull requests** merged, from **24 contributors**, **11 of them first-time contributors**
+- **1,226 files** changed, **+103,206 / -11,127** lines
+- **147 fixes, 45 features, 0 performance changes**, 4 refactors and 6 documentation changes
+- **437 test files** touched, **144** of them new
+- **25 issues** closed
+
+Thank you to everyone who built this release with us.
 
 ### Changed
 

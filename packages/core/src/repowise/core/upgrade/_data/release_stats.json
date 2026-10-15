@@ -1,0 +1,42 @@
+{
+  "0.56.0": {
+    "since": "0.55.0",
+    "days": 8,
+    "prs": 311,
+    "contributors": 41,
+    "first_time_contributors": 25,
+    "files_changed": 1475,
+    "lines_added": 117442,
+    "lines_removed": 21293,
+    "types": {
+      "fixes": 165,
+      "features": 89,
+      "perf": 10,
+      "refactors": 28,
+      "docs": 6
+    },
+    "test_files_touched": 492,
+    "test_files_new": 158,
+    "issues_closed": 76
+  },
+  "unreleased": {
+    "since": "0.56.0",
+    "days": 3,
+    "prs": 205,
+    "contributors": 24,
+    "first_time_contributors": 11,
+    "files_changed": 1226,
+    "lines_added": 103206,
+    "lines_removed": 11127,
+    "types": {
+      "fixes": 147,
+      "features": 45,
+      "perf": 0,
+      "refactors": 4,
+      "docs": 6
+    },
+    "test_files_touched": 437,
+    "test_files_new": 144,
+    "issues_closed": 25
+  }
+}
