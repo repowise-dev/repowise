@@ -235,6 +235,40 @@ describe("PerformanceView drawer", () => {
     expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
   });
 
+  it("renders one-based positions and handles a missing rank", async () => {
+    const customPage = page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_pos1",
+          rank_position: 1,
+        }),
+        opportunity({
+          opportunity_id: "perf2_pos_null",
+          rank_position: null as unknown as number,
+        }),
+      ],
+    });
+
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getPerformanceOpportunities: async () => customPage,
+        })}
+      />,
+    );
+
+    const [first, second] = await rows();
+
+    expect(within(first!).getByText("2")).toBeTruthy();
+    expect(within(second!).getByText("—")).toBeTruthy();
+
+    fireEvent.click(first!);
+    const panel = await screen.findByRole("dialog");
+
+    expand(panel, "Why it ranks here");
+    expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 2 in the queue/);
+  });
+
   it("separates evidence confidence, actionability, and fix safety", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();
