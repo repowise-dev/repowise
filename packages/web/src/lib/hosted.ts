@@ -1,6 +1,6 @@
 /**
- * repowise.dev tips for the local dashboard: the links, the sentences, and
- * which one (if any) a page shows.
+ * repowise.dev tips for the local dashboard: the links, the catalog key of
+ * each sentence, and which one (if any) a page shows.
  *
  * Plain outbound links only: nothing here sends an event to repowise.dev.
  */
@@ -17,7 +17,8 @@ export function hostedLink(surface: string, moment: string): string {
 }
 
 export interface Nudge {
-  text: string;
+  /** Message key under the `hosted` namespace, read with the active locale. */
+  key: string;
   /** Becomes `src=local_web_<surface>`. */
   surface: string;
   /** The section of the hosted page the link opens. */
@@ -28,17 +29,17 @@ export interface Nudge {
  *  repos says "free for 10 days, card required", never just "free". */
 export const NUDGES = {
   mcp: {
-    text: "Use this repo inside Claude.ai or ChatGPT. Local MCP only works in desktop tools.",
+    key: "tips.mcp",
     surface: "mcp",
     moment: "mcp",
   },
   stale: {
-    text: "Keep this up to date automatically on every push.",
+    key: "tips.stale",
     surface: "stale",
     moment: "sync",
   },
   docs: {
-    text: "Want AI-written docs without an API key? repowise.dev includes the model.",
+    key: "tips.docs",
     surface: "docs",
     moment: "keys",
   },

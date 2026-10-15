@@ -105,8 +105,8 @@ export default async function RepoSettingsPage({ params }: Props) {
       </OverviewSection>
 
       <OverviewSection
-        title="Publish on repowise.dev"
-        description="Put this repository on repowise.dev, indexed from its GitHub remote. Nothing on this machine is uploaded."
+        title={t("publishTitle")}
+        description={t("publishDescription")}
       >
         <PublishPanel repoId={id} />
       </OverviewSection>

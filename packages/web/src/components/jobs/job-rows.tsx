@@ -18,11 +18,16 @@ const STATUS_INK: Record<string, string> = {
 export function JobRows({
   jobs,
   nameFor,
+  unknownRepoName,
 }: {
   jobs: JobResponse[];
   /** Repo name for a job's repository id, so a row says which repo it ran on
    *  — the old list showed a model name and a page count with no subject. */
   nameFor: (repositoryId: string) => string | null;
+  /** Shown when a job's repository id has no known name. Translated by the
+   *  page: this component stays a Server Component-safe leaf, and `nameFor`
+   *  is not serializable across a client boundary. */
+  unknownRepoName: string;
 }) {
   if (jobs.length === 0) return null;
 
@@ -46,7 +51,7 @@ export function JobRows({
                   style={{ background: ink }}
                 />
                 <span className="text-[13px] font-medium text-[var(--color-text-primary)]">
-                  {repoName ?? "Unknown repository"}
+                  {repoName ?? unknownRepoName}
                 </span>
                 <span className="text-[11px]" style={{ color: ink }}>
                   {job.status}

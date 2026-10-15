@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { HostedNudge } from "@repowise-dev/ui/shared/hosted-nudge";
 import { config } from "@/lib/config";
 import { NUDGES, hostedLink, pickNudge, type NudgeId } from "@/lib/hosted";
@@ -17,6 +18,7 @@ interface Props {
 }
 
 export function HostedNudgeSlot({ candidates, repoId, className }: Props) {
+  const t = useTranslations("hosted");
   const { identity } = useHostedIdentity();
   // Off until read after mount, so SSR and the first client render agree.
   const [tipsShown, setTipsShown] = useState(false);
@@ -29,7 +31,7 @@ export function HostedNudgeSlot({ candidates, repoId, className }: Props) {
   return (
     <HostedNudge
       id={id}
-      text={nudge.text}
+      text={t(nudge.key)}
       href={hostedLink(nudge.surface, nudge.moment)}
       className={className}
       action={
@@ -37,10 +39,13 @@ export function HostedNudgeSlot({ candidates, repoId, className }: Props) {
           <PublishItFree repoId={repoId} />
         ) : (
           <span>
-            Publish it free:{" "}
-            <code className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5">
-              repowise publish
-            </code>
+            {t.rich("actionCli", {
+              code: (chunks) => (
+                <code className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5">
+                  {chunks}
+                </code>
+              ),
+            })}
           </span>
         )
       }
