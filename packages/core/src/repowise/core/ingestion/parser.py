@@ -1435,6 +1435,124 @@ def _parse_tree(
     return root, parse_errors, grammar_tag, language
 
 
+# Kotlin modifier words a declaration may carry between its annotations and its
+# keyword. tree-sitter-kotlin also accepts most of them as identifiers, which is
+# what lets ``private fun f() {}`` read as an infix call.
+_KOTLIN_MODIFIER_WORDS = (
+    "public|private|internal|protected|abstract|open|final|sealed|data|enum|annotation|"
+    "inner|value|inline|noinline|crossinline|tailrec|operator|infix|external|suspend|"
+    "override|lateinit|const|vararg|expect|actual|companion|fun"
+)
+_KOTLIN_DECLARATION_HEAD = re.compile(
+    rb"(?:(?:" + _KOTLIN_MODIFIER_WORDS.encode() + rb")\s+)*"
+    rb"(?:fun|class|interface|object|val|var)\b"
+)
+
+
+def _kotlin_leading_annotations(top: Node) -> tuple[list[Node], Node | None]:
+    """The annotations leading a top-level expression node, and the node after them.
+
+    tree-sitter-kotlin reads ``@A @B private fun f() {}`` as nested
+    ``annotated_expression`` nodes, and ``@A @B private val p = 1`` as an
+    ``assignment`` whose left side is one. Returns ``([], None)`` for any other shape.
+    """
+    node = top
+    if (
+        node.type == "assignment"
+        and node.children
+        and node.children[0].type == "annotated_expression"
+    ):
+        node = node.children[0]
+    annotations: list[Node] = []
+    while node is not None and node.type == "annotated_expression":
+        annotations.extend(c for c in node.children if c.type == "annotation")
+        node = next(
+            (
+                c
+                for c in node.children
+                if c.is_named and c.type not in ("annotation", "line_comment", "block_comment")
+            ),
+            None,
+        )
+    return (annotations, node) if annotations and node is not None else ([], None)
+
+
+def _blank_kotlin_annotations(source: bytes, annotations: list[Node]) -> bytes:
+    """*source* with each annotation's bytes spaced out, newlines kept (offsets and lines hold)."""
+    blanked = bytearray(source)
+    for node in annotations:
+        for i in range(node.start_byte, node.end_byte):
+            if blanked[i] not in (0x0A, 0x0D):
+                blanked[i] = 0x20
+    return bytes(blanked)
+
+
+def _recover_kotlin_annotated_declarations(
+    language: Language, root: Node, source: bytes
+) -> tuple[Node, bytes, dict[int, tuple[int, str]]]:
+    """Re-parse a Kotlin file whose multi-annotation declarations parsed as expressions.
+
+    tree-sitter-kotlin 1.x reads a top-level ``@A @B private fun f() {}`` followed by
+    another declaration as nested ``annotated_expression`` nodes around an infix call,
+    with no ``has_error``, so the declaration never becomes a symbol. Only top-level
+    nodes are looked at: each whose leading annotations are followed by modifiers and a
+    declaration keyword gets those annotations (and only those) blanked to spaces at
+    byte-identical offsets, then the file is parsed again. A file without the shape is
+    returned untouched, parsed once.
+
+    Returns ``(root, source, recovered)``. *recovered* maps the 1-based line the
+    declaration proper starts on to ``(first annotation line, decorator text)``, the
+    text read from the original bytes the way a normal declaration's ``modifiers``
+    node reads, so the symbol can look like any other annotated declaration.
+    """
+    found: list[tuple[list[Node], Node]] = []
+    for top in root.children:
+        if top.type not in ("annotated_expression", "assignment"):
+            continue
+        annotations, rest = _kotlin_leading_annotations(top)
+        if rest is None:
+            continue
+        head = source[rest.start_byte : rest.start_byte + 160]
+        if _KOTLIN_DECLARATION_HEAD.match(head):
+            found.append((annotations, rest))
+    if not found:
+        return root, source, {}
+
+    blanked = _blank_kotlin_annotations(
+        source, [a for annotations, _ in found for a in annotations]
+    )
+    new_root = Parser(language).parse(blanked).root_node
+    # Keep the first parse if blanking made things worse.
+    if len(_collect_error_nodes(new_root)) > len(_collect_error_nodes(root)):
+        return root, source, {}
+
+    by_start = {c.start_byte: c for c in new_root.children}
+    recovered: dict[int, tuple[int, str]] = {}
+    for annotations, rest in found:
+        first = min(annotations, key=lambda a: a.start_byte)
+        end = max(a.end_byte for a in annotations)
+        decl = by_start.get(rest.start_byte)
+        modifiers = (
+            next((c for c in decl.children if c.type == "modifiers"), None) if decl else None
+        )
+        if modifiers is not None:
+            end = max(end, modifiers.end_byte)
+        text = source[first.start_byte : end].decode("utf-8", errors="replace")
+        recovered[rest.start_point[0] + 1] = (first.start_point[0] + 1, text)
+    return new_root, blanked, recovered
+
+
+def _restore_kotlin_annotations(
+    symbols: list[Symbol], recovered: dict[int, tuple[int, str]]
+) -> None:
+    """Give each recovered top-level symbol its first annotation's line and its decorators."""
+    for sym in symbols:
+        entry = recovered.get(sym.start_line)
+        if entry is not None and sym.parent_name is None:
+            sym.start_line, text = entry
+            sym.decorators = [text, *sym.decorators]
+
+
 def _parent_type_name(ancestor: Node, src: str) -> str | None:
     """The name a class/impl ancestor gives its members, without type arguments."""
     name_node = ancestor.child_by_field_name("name") or (
@@ -1604,6 +1722,13 @@ class ASTParser:
         source = prepare_source(lang, source, path=file_info.path)
 
         root, parse_errors, grammar_tag, language = _parse_tree(lang, language, grammar_tag, source)
+        recovered_annotations: dict[int, tuple[int, str]] = {}
+        if lang == "kotlin":
+            root, source, recovered_annotations = _recover_kotlin_annotated_declarations(
+                language, root, source
+            )
+            if recovered_annotations:
+                parse_errors = _collect_error_nodes(root)
         src = source.decode("utf-8", errors="replace")
 
         query = self._get_query(lang, language, grammar_tag)
@@ -1615,6 +1740,7 @@ class ASTParser:
         matches = _run_query(query, root) if query is not None else []
 
         symbols = self._extract_symbols(matches, config, file_info, src)
+        _restore_kotlin_annotations(symbols, recovered_annotations)
         # Per-language synthetic-symbol pass — recognises source-generator
         # attributes (e.g. CommunityToolkit.Mvvm) and adds the symbols the
         # generator would emit at compile time. No-op for languages

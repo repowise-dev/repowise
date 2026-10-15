@@ -132,3 +132,113 @@ class TestKotlinAliasImports:
         src = b"package x\nimport com.example.Foo as\nclass App\n"
         imp = parser.parse_file(_file(), src).imports[0]
         assert [(b.local_name, b.exported_name) for b in imp.bindings] == [("Foo", "Foo")]
+
+
+class TestKotlinMultiAnnotationDeclarations:
+    """A top-level declaration with two annotations can parse as an expression."""
+
+    _SCREEN = b"""\
+package app
+
+@Preview
+@Composable
+private fun TwoAnnotationsPreview() {
+    helper()
+}
+
+@Composable
+private fun OneAnnotation() {
+    helper()
+}
+
+@Preview @Composable private fun SameLine() {
+    helper()
+}
+
+@Target(AnnotationTarget.FUNCTION)
+@Retention(AnnotationRetention.BINARY)
+annotation class ThemePreviews
+
+@RunWith(JUnit4::class)
+@Config(sdk = [35])
+class ScreenTest {
+    fun check() = helper()
+}
+
+@A @B private val p = 1
+
+@A @B private object O {}
+
+fun helper() {}
+"""
+
+    def test_two_annotation_declarations_become_symbols(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_file("app/Screen.kt"), self._SCREEN)
+        by_name = {s.name: s for s in result.symbols}
+        for name in ("TwoAnnotationsPreview", "SameLine", "ThemePreviews", "ScreenTest", "p", "O"):
+            assert name in by_name, name
+        assert by_name["check"].parent_name == "ScreenTest"
+
+    def test_recovered_symbol_starts_at_first_annotation(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_file("app/Screen.kt"), self._SCREEN)
+        by_name = {s.name: s for s in result.symbols}
+        assert by_name["TwoAnnotationsPreview"].start_line == 3
+        assert by_name["SameLine"].start_line == 14
+        assert by_name["ThemePreviews"].start_line == 18
+        assert by_name["ScreenTest"].start_line == 22
+
+    def test_recovered_symbol_carries_both_annotations(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_file("app/Screen.kt"), self._SCREEN)
+        by_name = {s.name: s for s in result.symbols}
+        text = " ".join(by_name["TwoAnnotationsPreview"].decorators)
+        assert "@Preview" in text and "@Composable" in text
+        text = " ".join(by_name["ScreenTest"].decorators)
+        assert "@RunWith(JUnit4::class)" in text and "@Config(sdk = [35])" in text
+        assert by_name["TwoAnnotationsPreview"].visibility == "private"
+
+    def test_calls_attributed_to_recovered_symbol_not_module(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_file("app/Screen.kt"), self._SCREEN)
+        callers = {c.caller_symbol_id for c in result.calls if c.target_name == "helper"}
+        assert "app/Screen.kt::TwoAnnotationsPreview" in callers
+        assert "app/Screen.kt::SameLine" in callers
+        assert "app/Screen.kt::__module__" not in callers
+
+    def test_shape_as_last_declaration_parses_as_today(self, parser: ASTParser) -> None:
+        src = b"package a\n\nfun helper() {}\n\n@Preview\n@Composable\nprivate fun Last() {}\n"
+        names = {s.name for s in parser.parse_file(_file(), src).symbols}
+        assert {"helper", "Last"} <= names
+
+    def test_shapes_that_already_parse_are_unchanged(self, parser: ASTParser) -> None:
+        src = b"""\
+package a
+
+class Host {
+    @A
+    @B
+    private fun member() {}
+}
+
+@A @B private fun withParam(x: Int) {}
+
+@A @B suspend fun susp() {}
+
+fun after() {}
+"""
+        result = parser.parse_file(_file(), src)
+        by_name = {s.name: s for s in result.symbols}
+        assert {"Host", "member", "withParam", "susp", "after"} <= set(by_name)
+        assert by_name["member"].parent_name == "Host"
+        assert by_name["withParam"].start_line == 9
+
+    def test_real_expression_in_body_is_not_rewritten(self, parser: ASTParser) -> None:
+        src = b"""\
+package a
+
+fun outer() {
+    @Suppress("x") foo()
+}
+
+fun after() {}
+"""
+        result = parser.parse_file(_file(), src)
+        assert {s.name for s in result.symbols} == {"outer", "after"}

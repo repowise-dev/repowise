@@ -93,6 +93,9 @@ STORE_FORMAT_VERSION: int = 2
 #: the Java way, an extension's receiver leading its types
 #: (``toHexString#0(Byte)``, ``g#0(Int?)``), and a Kotlin trailing lambda counts as an
 #: argument.
+#: A top-level Kotlin declaration with two annotations (``@Preview @Composable
+#: private fun f()``) that the grammar read as an expression is re-parsed with its
+#: leading annotations blanked, so it becomes a symbol again.
 PARSER_SCHEMA_VERSION: int = 8
 
 #: state.json key holding the store format version that wrote the store.
