@@ -148,14 +148,10 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
             score += 3.0
 
     # Tests only, not test support: a fixture or a conftest helper is often what
-    # the query was after, so it keeps its score. The flag is read first for the
-    # same reason everywhere else does, but note it decides nothing here today —
-    # it is stamped on file nodes and these are symbol nodes, so the path rules
-    # are what answer in practice. Exact matches skip it: the shared key ranks
-    # kind before test path for them.
-    if not exact and (
-        (gnode is not None and gnode.is_test) or is_test_path(row.file_path or "", row.language)
-    ):
+    # the query was after, so it keeps its score.
+    # Exact matches skip it: the shared key ranks kind before test path for them.
+    is_test = gnode.is_test if gnode is not None else is_test_path(row.file_path or "", row.language)
+    if not exact and is_test:
         score -= 5.0
     return score
 
@@ -411,14 +407,17 @@ async def search_symbols_single(
         if is_excluded(row.file_path, spec) or row.file_path in tombstoned:
             continue
         g = gmap.get(row.symbol_id)
-        # The union here, unlike the ranking penalty above: ``kind`` splits the
-        # repo in two, and a fixture belongs on the test side of that line.
-        is_test = (g is not None and g.is_test) or is_test_related_path(
-            row.file_path or "", row.language
+        file_node = gmap.get(row.file_path)
+        node_with_test = file_node if file_node is not None else g
+        # The stored is_test flag decides; path rule only when there is no node.
+        is_test = (
+            node_with_test.is_test
+            if node_with_test is not None
+            else is_test_related_path(row.file_path or "", row.language)
         )
         if not _symbol_kind_for_request_kind(kind, is_test):
             continue
-        scored.append((_score_symbol(row, g, qtokens, qnorm), row))
+        scored.append((_score_symbol(row, node_with_test, qtokens, qnorm), row))
 
     def _rank(pair: tuple[float, WikiSymbol]) -> tuple:
         score, row = pair
