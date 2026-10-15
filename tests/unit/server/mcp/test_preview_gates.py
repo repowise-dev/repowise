@@ -44,6 +44,24 @@ def _get(row: dict, key: str):
     return row.get(key)
 
 
+def test_shipped_table_states():
+    # The one live-table pin: what ships today. Everything else patches a table.
+    states = {(g.layer, g.language): g.state for g in finding_registry.LANGUAGE_GATES}
+    audited = ("java", "csharp", "c", "cpp")
+    expected = {
+        ("health", "cpp"): "preview",
+        **{(layer, lang): "preview" for layer in ("refactoring", "performance") for lang in audited},
+        **{("dead_code", lang): "preview" for lang in (*audited, "kotlin", "swift")},
+    }
+    assert states == expected
+    assert all(finding_registry.gates_on(layer) == () for layer in ("health", "refactoring",
+                                                                     "performance", "dead_code"))
+    health_cpp = finding_registry.preview_for("health", "src/a.cpp")
+    assert health_cpp is not None and health_cpp.measure == "not wrong"
+    for path in ("src/A.java", "src/A.cs", "src/a.c"):
+        assert finding_registry.preview_for("health", path) is None
+
+
 def test_preview_note_quotes_the_measurement():
     assert preview_note(_row("refactoring", "preview")) == _NOTE
     unmeasured = LanguageGate(

@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import label_previews
 from repowise.core.analysis.health.impact_effort import (
     WORK_QUEUE_SORTS,
     build_impact_effort,
@@ -183,7 +184,9 @@ async def health_work_queue(
     # Both counts, because the view lists files but triages findings: "50 of
     # 812 files" alone leaves the size of the work unsaid.
     return {
-        "targets": targets[offset : offset + limit],
+        "targets": label_previews(
+            "health", targets[offset : offset + limit], kind="primary_biomarker"
+        ),
         "total": len(targets),
         "finding_total": sum(t["finding_count"] for t in targets),
         "history_only_excluded": history_only,

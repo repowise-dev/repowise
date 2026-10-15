@@ -2286,6 +2286,7 @@ export interface HealthWorkItem {
   biomarkers?: string[];
   effort_bucket: string;
   impact_per_effort: number;
+  preview?: string | null;
 }
 
 export interface HealthWorkQueueResponse {

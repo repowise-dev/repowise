@@ -24,7 +24,8 @@ is the same as for provisional types (:data:`UNVERIFIED_LABEL`). A gated row is
 still computed, stored and addressable by id, so the cell stays measurable and
 ungating it is deleting its row here after a re-audit clears it. A row in the
 ``preview`` state is served by default and counted as served, labelled with its
-measurement (:func:`preview_note`) instead of held back.
+measurement (:func:`preview_note`) instead of held back. A language with no row
+is served unlabelled.
 """
 
 from __future__ import annotations
@@ -108,52 +109,53 @@ class LanguageGate:
     layer: GateLayer
     #: An ``EXTENSION_TO_LANGUAGE`` tag; a file's extension decides its language.
     language: str
-    #: Measured precision on the sample that failed the bar, ``None`` when the
-    #: evidence was a share of wrong rows rather than a judged sample (or, on a
-    #: preview row, nothing was served to judge). A gated row's served text
-    #: never quotes it; a preview row's note does.
+    #: The share the judged sample scored on ``measure``, ``None`` when nothing
+    #: was served to judge or the evidence was not a judged sample. A gated
+    #: row's served text never quotes it; a preview row's note does.
     precision: float | None
     #: What the measurement ran on, in words (no repository names).
     corpus: str
     #: ISO date of the measurement.
     measured_on: str
-    #: Why the layer failed there, for maintainers; served text says only
-    #: that the layer is held back pending verification.
+    #: Why the layer falls short there, for maintainers; served text never
+    #: quotes it (a gated row says only that it is held back pending
+    #: verification).
     cause: str
     #: The kinds gated, or ``None`` for every kind of the layer.
     kinds: frozenset[str] | None = None
     state: GateState = "gated"
-    #: What ``precision`` measured, as the preview note words it.
+    #: What ``precision`` measured (``precision`` or ``not wrong``), as the preview note words it.
     measure: str = "precision"
 
 
 _AUDIT_DATE = "2026-10-02"
 _REAUDIT_DATE = "2026-10-15"
 _PREVIEW = "preview"
-_JAVA = "hand-judged sample of a 34k-file Java search engine"
-_DOTNET = "hand-judged samples of a 59k-file C#/C/C++ runtime and an 8k-file C#/C++ suite"
 _NO_PLAN = "No judged plan was acceptable as written."
 _NOT_A_COST = "Most judged opportunities were not real costs."
 _FEW_PLANS = "Most judged plans were not acceptable as written."
 _NONE_SERVED = "No opportunity was served to judge."
 _IN_MEMORY = "In-memory lookups are read as database calls."
 _ONE_PLAN = "One judged plan was not acceptable as written."
+_NOT_WRONG = "not wrong"
+_VENDORED_HEADER = "A vendored single-header library is not classed vendored."
 
-# Every layer measured below 90% on every audited language, so whole layers
-# are gated (``kinds=None``). Precision is the lowest share of true positives
-# in a judged sample (debatable counted as a miss). Columns: layer, language,
-# precision, corpus, cause, then optionally the state and its measurement date
-# (default gated, ``_AUDIT_DATE``). Appending ``_PREVIEW, <date>`` serves a row
-# as a preview; deleting a row ungates it.
+# Each row covers a whole layer on one language (``kinds=None``). Precision is
+# the share of true positives in a judged sample (debatable counted as a miss)
+# unless the row names another measure. Columns: layer, language, precision,
+# corpus, cause, then optionally the state, its measurement date (default
+# gated, ``_AUDIT_DATE``) and the measure. ``_PREVIEW`` serves a row labelled
+# with its measurement, ``"gated"`` in its place holds the layer back again,
+# and deleting the row ungates it.
 _GateRow = (
     tuple[GateLayer, str, float | None, str, str]
     | tuple[GateLayer, str, float | None, str, str, GateState, str]
+    | tuple[GateLayer, str, float | None, str, str, GateState, str, str]
 )
 _GATE_ROWS: tuple[_GateRow, ...] = (
-    ("health", "java", 0.09, _JAVA, "Field reads without `this.` and Java idioms read as defects."),
-    ("health", "csharp", 0.06, _DOTNET, "Implicit member access and stubs read as defects."),
-    ("health", "c", 0.09, _DOTNET, "Vendored and generated C read as defects."),
-    ("health", "cpp", 0.09, _DOTNET, "Implicit member access and vendored code read as defects."),
+    # Health ships on a not-wrong bar (debatable counts as not wrong): Java,
+    # C# and C cleared 0.90 on every corpus on 2026-10-15 and are ungated.
+    ("health", "cpp", 0.825, "the lower of 2 C++ repos, 40 judged each", _VENDORED_HEADER, _PREVIEW, _REAUDIT_DATE, _NOT_WRONG),
     ("refactoring", "java", 0.22, "55 judged plans from 2 Java repos", _FEW_PLANS, _PREVIEW, _REAUDIT_DATE),
     ("refactoring", "csharp", 0.83, "6 judged plans from 1 C# repo", _ONE_PLAN, _PREVIEW, _REAUDIT_DATE),
     ("refactoring", "c", 0.0, "1 judged plan from 1 C repo", _NO_PLAN, _PREVIEW, _REAUDIT_DATE),
@@ -162,10 +164,13 @@ _GATE_ROWS: tuple[_GateRow, ...] = (
     ("performance", "csharp", 0.0, "1 judged opportunity from 2 C# repos", _NOT_A_COST, _PREVIEW, _REAUDIT_DATE),
     ("performance", "c", None, "no served opportunities on 2 C repos", _NONE_SERVED, _PREVIEW, _REAUDIT_DATE),
     ("performance", "cpp", None, "no served opportunities on 2 C++ repos", _NONE_SERVED, _PREVIEW, _REAUDIT_DATE),
-    ("dead_code", "java", 0.20, _JAVA, "Reflection and plugin entry points are unseen."),
-    ("dead_code", "csharp", 0.07, _DOTNET, "A `using` reaches one file of its namespace."),
-    ("dead_code", "c", 0.04, _DOTNET, "P/Invoke, call-table and typedef uses are unseen."),
-    ("dead_code", "cpp", 0.04, _DOTNET, "Uses through DLL tables, COM and callbacks are unseen."),
+    # Dead code: pooled precision, with the lowest corpus in the corpus words.
+    ("dead_code", "java", 0.37, "30 judged findings from 3 Java repos (lowest 0%)", "Android manifest and layout uses are unseen.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "csharp", 0.26, "80 judged findings from 2 C# repos (lowest 5%)", "Custom MEF export attributes and C# 14 extension blocks are unseen.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "c", 0.66, "35 judged findings from 2 C repos (lowest 0%)", "P/Invoke exports are unseen.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "cpp", 0.68, "25 judged findings from 1 C++ repo", "Build-listed translation units and macro uses are unseen.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "kotlin", 0.18, "34 judged findings from 2 Kotlin repos (lowest 0%)", "DI-bound classes are not roots.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "swift", 0.44, "71 judged findings from 2 Swift repos (lowest 10%)", "Cross-module function and extension-member uses are unseen.", _PREVIEW, _REAUDIT_DATE),
 )
 
 
@@ -177,30 +182,14 @@ def _row_gate(
     cause: str,
     state: GateState = "gated",
     measured_on: str = _AUDIT_DATE,
+    measure: str = "precision",
 ) -> LanguageGate:
-    return LanguageGate(layer, language, precision, corpus, measured_on, cause, state=state)
+    return LanguageGate(
+        layer, language, precision, corpus, measured_on, cause, state=state, measure=measure
+    )
 
 
-LANGUAGE_GATES: tuple[LanguageGate, ...] = (
-    *(_row_gate(*row) for row in _GATE_ROWS),
-    # Dead code only: health on these languages is not gated.
-    LanguageGate(
-        "dead_code",
-        "kotlin",
-        2 / 47,
-        "hand-judged findings on a Kotlin/Android sample app",
-        "2026-10-13",
-        "45 of 47 judged findings were wrong.",
-    ),
-    LanguageGate(
-        "dead_code",
-        "swift",
-        None,
-        "unreachable-file findings on a SwiftUI app",
-        "2026-10-13",
-        "132 of 431 files reported unreachable at confidence 1.0 were reachable.",
-    ),
-)
+LANGUAGE_GATES: tuple[LanguageGate, ...] = tuple(_row_gate(*row) for row in _GATE_ROWS)
 
 
 #: Why a health finding is held back by the file it sits on rather than by its

@@ -245,6 +245,9 @@ async def test_preview_rows_are_served_labelled_and_not_counted(
     findings = await _get(client, f"/api/repos/{repo_id}/health/findings")
     assert by_path(findings) == {JAVA: note, PY: None}
 
+    queue_rows = await _get(client, f"/api/repos/{repo_id}/health/refactoring-targets")
+    assert by_path(queue_rows["targets"]) == {JAVA: note, PY: None}
+
     page = await _get(client, f"/api/repos/{repo_id}/files/{JAVA}")
     assert {f["preview"] for f in page["health"]["findings"]} == {note}
     assert page["health"]["gated"] == {}

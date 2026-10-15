@@ -204,6 +204,8 @@ class HealthWorkItem(BaseModel):
     #: S | M | L | XL
     effort_bucket: str
     impact_per_effort: float
+    #: The measurement note on a language health is served as a preview on.
+    preview: str | None = None
 
 
 class HealthWorkQueueResponse(BaseModel):
