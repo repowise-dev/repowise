@@ -54,8 +54,8 @@ _NAME = r"[^\W\d]\w*"
 _TYPE_USE = re.compile(
     rf"(?:[:<\[(,]|->|\bas[?!]?|\bis)\s*(?:{_NAME}\s*\.\s*)*({_NAME})|\b({_NAME})\s*[(.]"
 )
-#: A member written as ``.member`` or called as ``member(``, not declared by ``func``.
-_MEMBER_USE = re.compile(rf"\.\s*({_NAME})|(?<!\bfunc\s)\b({_NAME})\s*\(")
+#: A member written as ``.member`` or called as ``member(``, not declared by ``func``/``subscript``.
+_MEMBER_USE = re.compile(rf"\.\s*({_NAME})|(?<!\bfunc\s)\b(?!subscript\b)({_NAME})\s*\(")
 
 
 def _line_comment_end(text: str, i: int) -> int:

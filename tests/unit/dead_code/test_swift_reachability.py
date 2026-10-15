@@ -157,7 +157,11 @@ def _graph(decls: dict[str, list[tuple[str, str, str | None]]], entry: str) -> n
 
 _ROOT = "App/Main.swift"
 _DECLS: dict[str, list[tuple[str, str, str | None]]] = {
-    _ROOT: [("Main", "class", None), ("label", "method", "Main")],
+    _ROOT: [
+        ("Main", "class", None),
+        ("label", "method", "Main"),
+        ("subscript", "method", "Main"),
+    ],
     "Models/StatusHistory.swift": [("StatusHistory", "class", None)],
     "Models/Store.swift": [("Store", "class", None)],
     "Models/Store+Mode.swift": [("Store", "impl", None), ("Mode", "class", "Store")],
@@ -168,6 +172,7 @@ _DECLS: dict[str, list[tuple[str, str, str | None]]] = {
     "Probe/Observer+Store.swift": [("Observer", "impl", None), ("store", "method", "Observer")],
     "Probe/Canceller+Store.swift": [("Canceller", "impl", None), ("store", "method", "Canceller")],
     "Probe/Locale+Label.swift": [("Locale", "impl", None), ("label", "method", "Locale")],
+    "Probe/Grid+Cell.swift": [("Grid", "impl", None), ("subscript", "method", "Grid")],
     "Probe/DeadA.swift": [("DeadA", "class", None)],
     "Probe/DeadB.swift": [("DeadB", "class", None)],
     "Probe/Text.swift": [("Text", "class", None)],
@@ -189,6 +194,7 @@ _SOURCE = {
         b'  let r = #"RawQuotedType( \\"#\n'
         b"  let n = count + BareOperand\n"
         b"  func label() {}\n  func run() { token.store(in: &bag) }\n"
+        b"  subscript(k: Int) -> Int { k }\n"
         b'  let v = "ItemView"  // ItemView\n'
         b"}\n"
     ),
@@ -202,6 +208,7 @@ _SOURCE = {
     "Probe/Observer+Store.swift": b"extension Observer { func store(in b: Int) {} }\n",
     "Probe/Canceller+Store.swift": b"extension Canceller { func store(in b: Int) {} }\n",
     "Probe/Locale+Label.swift": b"extension Locale { func label() -> Int { 0 } }\n",
+    "Probe/Grid+Cell.swift": b"extension Grid { subscript(i: Int) -> Int { i } }\n",
     "Probe/DeadA.swift": b"struct DeadA { let b: DeadB }\n",
     "Probe/DeadB.swift": b"struct DeadB { let a: [DeadA] }\n",
     "Probe/Text.swift": b"struct Text {}\n",
@@ -232,6 +239,7 @@ def test_dead_code_the_text_cannot_vouch_for_stays_unreachable() -> None:
     assert not named & {
         "Probe/String+Probe.swift",  # an unused extension of a platform type
         "Probe/Locale+Label.swift",  # the root only declares `label`, never uses it
+        "Probe/Grid+Cell.swift",  # a subscript is declared, never written by name
         "Probe/DeadA.swift",  # two dead files naming each other
         "Probe/DeadB.swift",
         "Probe/Text.swift",  # a platform name
