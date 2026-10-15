@@ -211,3 +211,39 @@ async def test_non_resume_run_passes_no_persisted_ids(repo_dir, monkeypatch):
     )
     await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
     assert seen["persisted"] is None
+
+
+async def test_reuse_prior_pages_disabled_skips_the_prior_load(repo_dir, monkeypatch):
+    """``--force`` (``reuse_prior_pages=False``) must not load prior pages:
+    a forced run regenerates everything, so the load is pure waste — and
+    worse, would feed the reuse gate pages the run is supposed to replace."""
+
+    async def fake_run_generation(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        assert prior_pages == {}  # nothing loaded
+        return []
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
+    )
+    await run_generation_with_persistence(
+        repo_path=repo_dir, repo_name=repo_dir.name, reuse_prior_pages=False
+    )
+
+
+async def test_reuse_prior_pages_enabled_loads_prior_pages(repo_dir, monkeypatch):
+    """The default (no ``--force``) loads the prior map so the subject-keyed
+    gate can reuse unchanged pages."""
+
+    async def first_run(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        on_page_ready(_page("gamma"))
+        return [_page("gamma")]
+
+    async def second_run(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        assert prior_pages and "gamma" in prior_pages
+        return []
+
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", first_run, raising=True)
+    await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
+
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", second_run, raising=True)
+    await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
