@@ -689,7 +689,7 @@ def test_create_app_metadata_and_routes(monkeypatch):
     app = create_app()
     assert app.title == "repowise API"
     assert app.version == __version__
-    paths = {getattr(r, "path", None) for r in app.routes}
+    paths = set(app.openapi().get("paths", {}).keys())
     assert {"/api/repos", "/api/repos/summary", "/health"} <= paths
 
 
