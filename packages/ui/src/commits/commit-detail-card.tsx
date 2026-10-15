@@ -8,6 +8,12 @@ import { CommitHealthTable } from "./commit-health-table";
 import { PageLede } from "../shared/page-lede";
 import { OverviewSection } from "../overview/section";
 import { formatDateTime } from "../lib/format";
+import {
+  SIZE_AND_SPREAD_LABEL,
+  SIZE_AND_SPREAD_QUALIFIER,
+  TERCILES,
+  reconcileSizeAndFixHistory,
+} from "./risk-copy";
 import type { CommitDetail, CommitHealth } from "@repowise-dev/types/git";
 
 /** Above this many files, the list starts collapsed. */
@@ -92,14 +98,15 @@ export function CommitDetailCard({
       <div className="mt-7">
         {/* Named for what it measures: diff size, not danger. */}
         <PageLede
-          label="Review priority"
+          label={SIZE_AND_SPREAD_LABEL}
+          labelHint={SIZE_AND_SPREAD_QUALIFIER}
           value={`${Math.round(c.risk_percentile)}th`}
           unit="percentile in this repo"
           badge={<PriorityBadge priority={c.review_priority} />}
         >
           <p>{riskSentence(c)}</p>
-          {reconcile(c, fixPercentile ?? null) && (
-            <p>{reconcile(c, fixPercentile ?? null)}</p>
+          {reconcileSizeAndFixHistory(c.risk_percentile, fixPercentile ?? null) && (
+            <p>{reconcileSizeAndFixHistory(c.risk_percentile, fixPercentile ?? null)}</p>
           )}
         </PageLede>
       </div>
@@ -195,22 +202,6 @@ function healthSentence(h: CommitHealth): string {
 }
 
 /**
- * Says so when the two rankings disagree.
- *
- * Diff shape and fix history answer different questions and routinely part
- * company; the sheet used to show one of them and leave the reader to assume
- * it was the whole answer.
- */
-function reconcile(c: CommitDetail, fixPercentile: number | null): string | null {
-  if (fixPercentile == null) return null;
-  const gap = fixPercentile - c.risk_percentile;
-  if (Math.abs(gap) < 25) return null;
-  return gap > 0
-    ? `Ordinary in size, but it lands in files with a heavy fix record — ${Math.round(fixPercentile)}th percentile for prior fixes. That is the signal worth reading here.`
-    : `Large for this repo, but it lands in files that have rarely broken — ${Math.round(fixPercentile)}th percentile for prior fixes.`;
-}
-
-/**
  * The sentence that makes the score mean something.
  *
  * It explains where the commit sits in this repo. The headline already carries
@@ -218,13 +209,7 @@ function reconcile(c: CommitDetail, fixPercentile: number | null): string | null
  * defect probability from the supporting model score.
  */
 function riskSentence(c: CommitDetail): string {
-  const tercile: Record<string, string> = {
-    high: "sits in the top third of this repo's own diff-shape distribution, the review-priority band worth reviewing",
-    moderate:
-      "sits in the middle third of this repo's own diff-shape distribution, so its review priority is typical here",
-    low: "sits in the bottom third of this repo's own diff-shape distribution",
-  };
-  let out = `This commit ${tercile[c.review_priority] ?? tercile.moderate}`;
+  let out = `This commit ${TERCILES[c.review_priority] ?? TERCILES.moderate}`;
 
   out += ".";
 

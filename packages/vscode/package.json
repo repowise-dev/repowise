@@ -421,8 +421,8 @@
         "icon": "$(pulse)",
         "tags": ["repowise"],
         "when": "repowise.agentToolsEnabled",
-        "modelDescription": "Report on the current branch's changes against a base branch. Lead with the benchmarked repo-relative percentile and classification. Fix history is separate historical evidence; the supporting 0-10 score measures diff size and spread and is not a probability. Use it after making changes to judge whether the change set needs extra review or tests before pushing.",
-        "userDescription": "Repo-relative review priority for the current branch.",
+        "modelDescription": "Report on the current branch's changes against a base branch. Lead with the repo-relative percentile by size and spread (diff size, not a bug predictor). Fix history is separate historical evidence; the supporting 0-10 score measures diff size and spread and is not a probability. Use it after making changes to judge whether the change set needs extra review or tests before pushing.",
+        "userDescription": "Repo-relative size and spread for the current branch.",
         "inputSchema": {
           "type": "object",
           "properties": {

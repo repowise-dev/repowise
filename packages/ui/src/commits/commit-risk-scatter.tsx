@@ -103,7 +103,7 @@ export function CommitRiskScatter({
           preserveAspectRatio="xMidYMid meet"
           className="h-auto w-full"
           role="img"
-          aria-label="Commit size versus change diffusion, coloured by review priority"
+          aria-label="Commit size versus change diffusion, coloured by size and spread"
         >
           {/* Axes */}
           <line

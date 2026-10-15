@@ -25,6 +25,7 @@ import {
 import { Badge, Button } from "@repowise-dev/ui/ui";
 import { EmptyState } from "@repowise-dev/ui/shared";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
+import { SIZE_AND_SPREAD_LABEL } from "@repowise-dev/ui/commits";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { PatchCoverageSummary } from "@repowise-dev/ui/health/patch-coverage-summary";
 import type { ViewProps } from "../../runtime/mount";
@@ -269,7 +270,7 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
     <PageLede
       // Not "Change risk" again: the page's h1 two lines above already says
       // that, and a micro-label repeating the heading verbatim labels nothing.
-      label={ranked ? "Review priority" : "Diff shape"}
+      label={ranked ? SIZE_AND_SPREAD_LABEL : "Diff shape"}
       value={ranked ? (r.classification ?? priority) : r.score.toFixed(1)}
       valueColor={color}
       unit={ranked ? "for this repo" : "out of 10"}
@@ -349,13 +350,6 @@ function FixHistoryNote({
       {history.files.length > 1
         ? `, and ${history.files.length - 1} more do too`
         : ""}
-      {history.percentile != null ? (
-        <>
-          {" "}
-          — {ordinal(history.percentile)} percentile of this repo&apos;s recent
-          commits
-        </>
-      ) : null}
       .
     </p>
   );
