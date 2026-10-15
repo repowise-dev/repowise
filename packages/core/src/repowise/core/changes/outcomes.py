@@ -340,38 +340,51 @@ def _reference_index(repo_path: str, head: str, forge: str) -> _References:
     return _once(("reference", repo_path, head, forge), build)
 
 
+_Hit = tuple[str, str, str, str]  # (later commit, target sha, rule, fragment)
+
+
+def _number_hits(refs: _References, change: OutcomeTarget) -> list[_Hit]:
+    """References by the change's number, when its own commit is the one holding it."""
+    number = change.identity_value if change.identity_kind == "pr" else None
+    if number is None or refs.holder(number) not in change.own:
+        return []
+    tokens = []
+    if change.forge in _SHARED_NUMBERING:
+        tokens.append(f"#{number}")
+    if change.forge == "gitlab":
+        tokens.append(f"!{number}")
+    # Ceiling: Azure Repos also writes ``!N`` for a pull request; it is not
+    # read until it is measured there.
+    return [
+        (c, change.head_sha, r, f) for token in tokens for c, r, f in refs.by_token.get(token, ())
+    ]
+
+
+def _sha_hits(refs: _References, change: OutcomeTarget) -> list[_Hit]:
+    """References by a sha that is unique in the history and one of the change's own."""
+    from repowise.core.analysis.decisions.reverts import _resolve
+
+    own = change.own
+    hits: list[_Hit] = []
+    for token, rows in refs.by_token.items():
+        if token[0] in "#!" or not any(s.startswith(token) for s in own):
+            continue
+        full = _resolve(token, refs.shas)  # unique in the history, or nothing
+        if full in own:
+            hits += [(c, full, r, f) for c, r, f in rows]
+    return hits
+
+
 class GitReferenceOutcomes:
     """Later commits whose message names the change as what they fix."""
 
     def links(self, repo_path: Path, head: str, change: OutcomeTarget) -> list[OutcomeLink]:
-        from repowise.core.analysis.decisions.reverts import _resolve
-
         refs = _reference_index(str(repo_path), head, change.forge)
         if change.head_sha not in refs.hist.position:
             raise OutcomeUnknownError("the change is not in HEAD's history")
         own = change.own
-        hits: list[tuple[str, str, str, str]] = []  # (commit, target, rule, fragment)
-        number = change.identity_value if change.identity_kind == "pr" else None
-        # The number names this change only when this change's own commit (or
-        # its merge) is the one commit holding it.
-        if number is not None and refs.holder(number) in own:
-            tokens = []
-            if change.forge in _SHARED_NUMBERING:
-                tokens.append(f"#{number}")
-            if change.forge == "gitlab":
-                tokens.append(f"!{number}")
-            # Ceiling: Azure Repos also writes ``!N`` for a pull request; it is
-            # not read until it is measured there.
-            for token in tokens:
-                hits += [(c, change.head_sha, r, f) for c, r, f in refs.by_token.get(token, ())]
-        for token, rows in refs.by_token.items():
-            if token[0] in "#!" or not any(s.startswith(token) for s in own):
-                continue
-            full = _resolve(token, refs.shas)  # unique in the history, or nothing
-            if full in own:
-                hits += [(c, full, r, f) for c, r, f in rows]
         out: dict[str, OutcomeLink] = {}
-        for commit, target, rule, frag in hits:
+        for commit, target, rule, frag in _number_hits(refs, change) + _sha_hits(refs, change):
             if commit in own or commit in out or not refs.hist.is_ancestor(target, commit):
                 continue
             out[commit] = OutcomeLink(FIX_REFERENCE, commit, target, frag, rule)
@@ -418,35 +431,20 @@ def fix_days(repo_path: Path | str) -> int:
 _PATH_BATCH = 100
 
 
-def file_fix_rate(
-    repo_path: Path | str, head: str, change: OutcomeTarget, days: int
-) -> dict[str, Any]:
-    """How many of the change's files a later fix commit touched within *days*.
-
-    A fix is a commit the fix category holds (``is_fix_commit``, the rule every
-    fix count uses) that descends from the change. Paths are matched as the
-    change left them; a later rename is not followed. Raises
-    :class:`OutcomeUnknownError` when there is nothing to count or git cannot answer.
-
-    Ceiling: one date-bounded ``git log`` per 100 of the change's files; an
-    export of thousands of changes pays it per change.
-    """
+def _fix_commits_touching(
+    repo_path: Path | str,
+    head: str,
+    files: list[str],
+    start: int,
+    end: int,
+) -> list[tuple[str, set[str]]]:
+    """``(sha, paths)`` of fix commits with ``start < ts <= end`` touching *files*."""
     from repowise.core.ingestion.git_indexer._constants import is_fix_commit
 
-    if change.merged_at is None:
-        raise OutcomeUnknownError("the change has no merge time to count a window from")
-    if not change.files:
-        raise OutcomeUnknownError("the change lists no files")
-    refs = _reference_index(str(repo_path), head, change.forge)
-    if change.head_sha not in refs.hist.position:
-        raise OutcomeUnknownError("the change is not in HEAD's history")
-    start = int(change.merged_at.timestamp())
-    end = int((change.merged_at + timedelta(days=days)).timestamp())
-    files = sorted(set(change.files))
-    fixed: dict[str, list[str]] = {}
-    commits: set[str] = set()
+    found: list[tuple[str, set[str]]] = []
     for i in range(0, len(files), _PATH_BATCH):
-        # Bounded by date, then kept to the change's descendants. Not
+        batch = files[i : i + _PATH_BATCH]
+        # Bounded by date; the caller keeps the change's descendants. Not
         # ``--ancestry-path`` with ``--since``: the date cut stops the walk
         # before it reaches the change, and nothing qualifies.
         raw = _git_out(
@@ -460,25 +458,53 @@ def file_fix_rate(
             f"--format={_RECORD}%H{_FIELD}%ct{_FIELD}%s",
             head,
             "--",
-            *files[i : i + _PATH_BATCH],
+            *batch,
         )
-        wanted = set(files[i : i + _PATH_BATCH])
+        wanted = set(batch)
         for record in raw.split(_RECORD):
             header, _, names = record.strip("\n").partition("\n")
             parts = header.split(_FIELD)
             if len(parts) != 3 or not parts[1].isdigit():
                 continue
             sha, ts, subject = parts
-            if not start < int(ts) <= end or not is_fix_commit(subject):
-                continue
-            touched = wanted.intersection(names.splitlines())
-            if not touched or sha == change.head_sha:
-                continue
-            if not refs.hist.is_ancestor(change.head_sha, sha):
-                continue
-            commits.add(sha)
-            for path in touched:
-                fixed.setdefault(path, []).append(sha)
+            if start < int(ts) <= end and is_fix_commit(subject):
+                touched = wanted.intersection(names.splitlines())
+                if touched:
+                    found.append((sha, touched))
+    return found
+
+
+def file_fix_rate(
+    repo_path: Path | str, head: str, change: OutcomeTarget, days: int
+) -> dict[str, Any]:
+    """How many of the change's files a later fix commit touched within *days*.
+
+    A fix is a commit the fix category holds (``is_fix_commit``, the rule every
+    fix count uses) that descends from the change. Paths are matched as the
+    change left them; a later rename is not followed. Raises
+    :class:`OutcomeUnknownError` when there is nothing to count or git cannot answer.
+
+    Ceiling: one date-bounded ``git log`` per 100 of the change's files; an
+    export of thousands of changes pays it per change.
+    """
+    if change.merged_at is None:
+        raise OutcomeUnknownError("the change has no merge time to count a window from")
+    if not change.files:
+        raise OutcomeUnknownError("the change lists no files")
+    refs = _reference_index(str(repo_path), head, change.forge)
+    if change.head_sha not in refs.hist.position:
+        raise OutcomeUnknownError("the change is not in HEAD's history")
+    start = int(change.merged_at.timestamp())
+    end = int((change.merged_at + timedelta(days=days)).timestamp())
+    files = sorted(set(change.files))
+    fixed: dict[str, list[str]] = {}
+    commits: set[str] = set()
+    for sha, touched in _fix_commits_touching(repo_path, head, files, start, end):
+        if sha == change.head_sha or not refs.hist.is_ancestor(change.head_sha, sha):
+            continue
+        commits.add(sha)
+        for path in touched:
+            fixed.setdefault(path, []).append(sha)
     head_ts = _git_out(repo_path, "log", "-1", "--format=%ct", head).strip()
     return {
         "files": len(files),

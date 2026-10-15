@@ -41,7 +41,30 @@ def _outcomes(raw: str | None) -> dict[str, Any] | None:
     return item if item and item.get("status") != "unknown" else None
 
 
-async def collect(ctx: ReportContext) -> list[dict[str, Any]] | None:
+def _files(files_json: str | None) -> list[str]:
+    try:
+        return [f["path"] for f in json.loads(files_json or "[]") if f.get("path")]
+    except (TypeError, ValueError, AttributeError):
+        return []
+
+
+def _read_change(
+    change_id: str, title: str, files_json: str | None, item: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """One change's figures and its detail lines, from its kept outcomes item."""
+    links = [d for d in item.get("details") or () if d.get("kind") in ("revert", "fix_reference")]
+    reverted = any(d["kind"] == "revert" and d.get("in_force") for d in links)
+    named = [d for d in links if d["kind"] == "fix_reference"]
+    lines = [f"reverted: {change_id} {title}"] if reverted else []
+    for d in named:
+        said = d.get("evidence", "")
+        lines.append(f'{change_id} named by a later fix, in its words: "{said}"')
+    figures = {"reverted": reverted, "cause_references": len(named), "files": _files(files_json)}
+    return figures, lines
+
+
+async def _kept_outcomes(ctx: ReportContext) -> tuple[int, dict[str, dict[str, Any]], list[str]]:
+    """``(indexed changes, figures by change, detail lines)`` over the kept checklists."""
     from sqlalchemy import func, select
 
     from repowise.core.persistence.models import Change
@@ -59,47 +82,16 @@ async def collect(ctx: ReportContext) -> list[dict[str, Any]] | None:
     lines: list[str] = []
     for change_id, title, files_json, evidence_json in rows:
         item = _outcomes(evidence_json)
-        if item is None:
-            continue
-        links = [
-            d for d in item.get("details") or () if d.get("kind") in ("revert", "fix_reference")
-        ]
-        reverted = any(d["kind"] == "revert" and d.get("in_force") for d in links)
-        named = [d for d in links if d["kind"] == "fix_reference"]
-        try:
-            files = [f["path"] for f in json.loads(files_json or "[]") if f.get("path")]
-        except (TypeError, ValueError, AttributeError):
-            files = []
-        read[change_id] = {"reverted": reverted, "cause_references": len(named), "files": files}
-        if reverted:
-            lines.append(f"reverted: {change_id} {title}")
-        for d in named:
-            said = d.get("evidence", "")
-            lines.append(f'{change_id} named by a later fix, in its words: "{said}"')
-    if not read:
-        return None
-    flagged = [c for c, v in read.items() if v["reverted"] or v["cause_references"]]
-    out = [
-        check(
-            "outcomes",
-            reason=(
-                f"{len(flagged)} of {len(read)} change(s) with outcomes read were {_FLAGGED}; "
-                f"outcomes are read for {len(read)} of {total} indexed change(s)"
-            ),
-            details=capped(lines),
-            method=_METHOD,
-            basis="declared",
-            data={
-                "changes": total,
-                "read": len(read),
-                "flagged": flagged,
-                "by_change": {
-                    c: {k: v[k] for k in ("reverted", "cause_references")}
-                    for c, v in read.items()
-                },
-            },
-        )
-    ]
+        if item is not None:
+            read[change_id], said = _read_change(change_id, title, files_json, item)
+            lines += said
+    return total, read, lines
+
+
+async def _per_component(
+    ctx: ReportContext, read: dict[str, dict[str, Any]], flagged: list[str]
+) -> dict[str, dict[str, list[str]]]:
+    """Each component's read and flagged changes, by the files they touched."""
     found = await ctx.components()
     owner_of: dict[str, list[str]] = {}
     for comp in found.resolved.components:
@@ -112,20 +104,45 @@ async def collect(ctx: ReportContext) -> list[dict[str, Any]] | None:
             slot["read"].append(change_id)
             if change_id in flagged:
                 slot["flagged"].append(change_id)
+    return figures
+
+
+async def collect(ctx: ReportContext) -> list[dict[str, Any]] | None:
+    total, read, lines = await _kept_outcomes(ctx)
+    if not read:
+        return None
+    flagged = [c for c, v in read.items() if v["reverted"] or v["cause_references"]]
+    summary = check(
+        "outcomes",
+        reason=(
+            f"{len(flagged)} of {len(read)} change(s) with outcomes read were {_FLAGGED}; "
+            f"outcomes are read for {len(read)} of {total} indexed change(s)"
+        ),
+        details=capped(lines),
+        method=_METHOD,
+        basis="declared",
+        data={
+            "changes": total,
+            "read": len(read),
+            "flagged": flagged,
+            "by_change": {
+                c: {k: v[k] for k in ("reverted", "cause_references")} for c, v in read.items()
+            },
+        },
+    )
+    figures = await _per_component(ctx, read, flagged)
     marked = sorted(n for n, f in figures.items() if f["flagged"])
     quiet = sorted(n for n, f in figures.items() if not f["flagged"])
-    out.append(
-        component_summary(
-            "outcomes:components",
-            outcomes={f"with a change {_FLAGGED}": len(marked), "nothing to note": len(quiet)},
-            quiet=quiet,
-            named={_FLAGGED: marked},
-            method=_METHOD,
-            basis="declared",
-            data={"components": figures},
-        )
+    components = component_summary(
+        "outcomes:components",
+        outcomes={f"with a change {_FLAGGED}": len(marked), "nothing to note": len(quiet)},
+        quiet=quiet,
+        named={_FLAGGED: marked},
+        method=_METHOD,
+        basis="declared",
+        data={"components": figures},
     )
-    return out
+    return [summary, components]
 
 
 report_sections.register(

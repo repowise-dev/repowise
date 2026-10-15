@@ -489,35 +489,42 @@ def _outcomes(inputs: EvidenceInputs) -> EvidenceItem:
         )
     links = [dict(r) for r in block.get("links") or ()]
     rate = block.get("file_fix_rate")
-    rate_unknown = block.get("file_fix_rate_unknown")
+    value = _outcomes_value(block, links, rate)
+    # A rate never asks for a look on its own: it says where fixes landed, not why.
+    return EvidenceItem(
+        kind,
+        label,
+        "attention" if value["reverted"] or value["fix_references"] else "ok",
+        "declared" if links or rate is None else "measured",
+        value,
+        links + _rate_rows(rate, block.get("file_fix_rate_unknown")),
+        source,
+    )
+
+
+def _outcomes_value(
+    block: Mapping[str, Any], links: list[dict[str, Any]], rate: Mapping[str, Any] | None
+) -> dict[str, Any]:
     reverts = [r for r in links if r["kind"] == "revert"]
-    references = [r for r in links if r["kind"] == "fix_reference"]
-    in_force = any(r.get("in_force") for r in reverts)
-    value = {
-        "reverted": in_force,
+    return {
+        "reverted": any(r.get("in_force") for r in reverts),
         "reverts": len(reverts),
-        "fix_references": len(references),
+        "fix_references": sum(r["kind"] == "fix_reference" for r in links),
         "files_fixed": rate["files_fixed"] if rate else None,
         "files": rate["files"] if rate else None,
         "days": block.get("days"),
         "window_complete": rate["window_complete"] if rate else None,
         "as_of": block.get("as_of"),
     }
-    details = links
+
+
+def _rate_rows(rate: Mapping[str, Any] | None, unknown: str | None) -> list[dict[str, Any]]:
+    """The file fix rate as one detail row, or why it could not be counted."""
     if rate:
-        details = [*links, {"kind": "file_fix_rate", "basis": "measured", **rate}]
-    elif rate_unknown:
-        details = [*links, {"kind": "file_fix_rate", "basis": "unresolved", "reason": rate_unknown}]
-    # A rate never asks for a look on its own: it says where fixes landed, not why.
-    return EvidenceItem(
-        kind,
-        label,
-        "attention" if in_force or references else "ok",
-        "declared" if links or rate is None else "measured",
-        value,
-        details,
-        source,
-    )
+        return [{"kind": "file_fix_rate", "basis": "measured", **rate}]
+    if unknown:
+        return [{"kind": "file_fix_rate", "basis": "unresolved", "reason": unknown}]
+    return []
 
 
 __all__ = [
