@@ -2,7 +2,7 @@
 
 repowise serves its codebase intelligence to AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf and any other [Model Context Protocol](https://modelcontextprotocol.io) client) as a set of MCP tools. The tools answer questions from the index: the dependency graph, git history, generated docs, decision records, health and dead-code analysis. None of them edits your code. Two opt-in tools go further: `set_finding_status` records a triage verdict in the index, and `generate_refactoring_code` calls your configured LLM to draft a diff.
 
-18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible.
+19 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 8 specialist tools are opt-in where eligible.
 
 This page tells you which tool to call and with what arguments. Every response field, the full `_meta` envelope and the truncation rules are in [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md).
 
@@ -20,8 +20,8 @@ This page tells you which tool to call and with what arguments. Every response f
 **Workspace discovery utility (default in workspace mode, 1)**
 [list_repos](#list_repos)
 
-**Opt-in specialists (7; workspace eligibility still applies)**
-[get_dependency_path](#get_dependency_path) &middot; [get_execution_flows](#get_execution_flows) &middot; [generate_refactoring_code](#generate_refactoring_code) &middot; [set_finding_status](#set_finding_status) &middot; [get_blast_radius](#get_blast_radius) &middot; [get_architecture](#get_architecture) &middot; [get_conformance](#get_conformance)
+**Opt-in specialists (8; workspace eligibility still applies)**
+[get_architecture](#get_architecture) &middot; [get_blast_radius](#get_blast_radius) &middot; [get_dependency_path](#get_dependency_path) &middot; [get_execution_flows](#get_execution_flows) &middot; [get_glossary](#get_glossary) &middot; [generate_refactoring_code](#generate_refactoring_code) &middot; [get_conformance](#get_conformance) &middot; [set_finding_status](#set_finding_status)
 
 
 ---
@@ -453,6 +453,29 @@ Adding the tool to the surface is the opt-in step. Generation then runs only whe
 
 ```
 generate_refactoring_code(suggestion_id="a1b2c3d4")
+```
+
+### `get_glossary`
+
+The repository's canonical vocabulary, as data: which word the team decided is the right one for a concept, which synonyms it ruled out, and where each term is used. Rows come from a glossary the team authored (a root `CONTEXT.md`, `GLOSSARY.md`, or the per-context files a `CONTEXT-MAP.md` names) first, then from the house vocabulary mined out of the repository's own documents.
+
+A declared term is the authority on naming. It outranks a mined term that spells the same phrase, keeps its row even when no module group corroborates it yet (`note: "not yet in code"`), and carries its `avoid` list. A mined term whose phrase the declared glossary marks `_Avoid_` is kept and demoted rather than dropped, with `demoted_by` naming the word to use instead — that row is where the code and the glossary disagree.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `targets` | list[string] | No | Paths or module names; keeps only terms whose `used_in` intersects them |
+| `context` | string | No | Bounded-context label from a `CONTEXT-MAP.md`, to restrict to one context's declared terms |
+| `repo` | string | No | *(workspace only)* Target repo alias; `"all"` is not supported |
+| `limit` | int | No | Max rows served, clamped to 200 (default 40); the tail is dropped with a count |
+
+**Returns:** `terms` (each with `term`, `status`, `definition`, `avoid`, `context`, `source_path`, `used_in`), plus `declared_count`, `mined_count`, `demoted_count`, `total`, `emitted`. On a repository with no declared glossary it also carries `declared_glossary: {"present": false}` and a note saying the rows are mined, not decided — the two are different claims about a word and the payload keeps them apart.
+
+**When to use:** Before naming a concept in code, a doc, an issue or a commit message, or when a term in this repository means something narrower than it does elsewhere. Reading it is the difference between writing what the team calls a thing and writing what a linter would have guessed.
+
+```
+get_glossary()
+get_glossary(targets=["src/analysis"])
+get_glossary(context="Billing", limit=100)
 ```
 
 ### `set_finding_status`
