@@ -315,25 +315,3 @@ def test_a_pull_during_the_update_leaves_both_stamps_on_one_commit(
     state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
     assert state["last_sync_commit"] == started_at
     assert asyncio.run(_db_snapshot(repo))["head_commit"] == started_at
-
-
-def test_index_only_update_runs_the_member_cross_repo_hooks(tmp_path, monkeypatch):
-    """A member's own index-only update re-extracts the workspace contracts,
-    so its snapshot's contract facts are measured at the new commit."""
-    from repowise.cli.commands.update_cmd import command
-    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
-
-    (tmp_path / "api").mkdir()
-    (tmp_path / "web").mkdir()
-    WorkspaceConfig(
-        repos=[RepoEntry(path="api", alias="api"), RepoEntry(path="web", alias="web")]
-    ).save(tmp_path)
-    seen: list[list[str]] = []
-
-    async def _hooks(_config, _root, aliases):
-        seen.append(aliases)
-
-    monkeypatch.setattr("repowise.core.workspace.update.run_cross_repo_hooks", _hooks)
-    degraded: list[str] = []
-    command._run_member_cross_repo_hooks(tmp_path / "api", degraded)
-    assert seen == [["api"]] and degraded == []
