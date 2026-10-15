@@ -120,8 +120,7 @@
     "contracts": "Contracts",
     "coChanges": "Co-Changes",
     "groupPeopleAndHistory": "People & History",
-    "groupSettings": "Settings",
-    "events": "Events"
+    "groupSettings": "Settings"
   },
   "breadcrumb": {
     "overview": "Overview",
@@ -152,8 +151,7 @@
     "settings": "Settings",
     "knowledgeGraph": "Knowledge Graph",
     "zoom": "Zoom Map",
-    "files": "Files",
-    "events": "Events"
+    "files": "Files"
   },
   "errors": {
     "workspaceErrorTitle": "Failed to load the workspace",
@@ -250,9 +248,10 @@
       "changeRisk": "Change risk",
       "evolutionTitle": "How the work changed shape",
       "evolutionDescription": "Commit categories over time, read off the subject line. Fixes carry the accent because that is the series this chart exists to show.",
-      "viewLabel": "Group the history",
+      "viewLabel": "History view",
       "viewByChange": "By change",
-      "viewByCommit": "By commit"
+      "viewByCommit": "By commit",
+      "viewEvents": "Events"
     },
     "changes": {
       "description": "Every merged change on the main line, read back from git: pull and merge requests, Gerrit changes and lone commits, with the files each one landed.",

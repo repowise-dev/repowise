@@ -16,12 +16,15 @@ afterEach(() => {
 describe("CommitsViewToggle", () => {
   it("marks the current view and switches through the URL", () => {
     render(<CommitsViewToggle repoId="r1" view="commits" />);
-    expect(screen.getByRole("radiogroup", { name: "Group the history" })).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "History view" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "By commit" }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByRole("radio", { name: "By change" }).getAttribute("aria-checked")).toBe("false");
 
     fireEvent.click(screen.getByRole("radio", { name: "By change" }));
     expect(push).toHaveBeenLastCalledWith("/repos/r1/commits?view=changes");
+
+    fireEvent.click(screen.getByRole("radio", { name: "Events" }));
+    expect(push).toHaveBeenLastCalledWith("/repos/r1/commits?view=events");
   });
 
   it("goes back to the default commit view without a view param", () => {

@@ -3,9 +3,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { createTranslator } from "next-intl";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import messages from "../../../../../messages/en.json";
+import messages from "../../../messages/en.json";
 import type { CloudEvent, EventListResponse } from "@/lib/api/events";
 import { repoNavItems } from "@/components/layout/nav-items";
+import { parseCommitsView } from "@/lib/changes";
 
 const listEvents = vi.fn();
 vi.mock("@/lib/api/events", () => ({ listEvents: (...a: unknown[]) => listEvents(...a) }));
@@ -14,7 +15,7 @@ vi.mock("next-intl/server", () => ({
     createTranslator({ locale: "en", messages, namespace: namespace as never }),
 }));
 
-import EventsPage from "./page";
+import { EventsView } from "./events-view";
 
 function event(id: string, kind: string, time: string, component?: string): CloudEvent {
   return {
@@ -35,7 +36,7 @@ function event(id: string, kind: string, time: string, component?: string): Clou
 
 async function show(reply: EventListResponse) {
   listEvents.mockResolvedValue(reply);
-  render(await EventsPage({ params: Promise.resolve({ id: "r1" }) }));
+  render(await EventsView({ repoId: "r1" }));
 }
 
 afterEach(() => {
@@ -43,7 +44,7 @@ afterEach(() => {
   listEvents.mockReset();
 });
 
-describe("/repos/[id]/events", () => {
+describe("EventsView", () => {
   it("lists events newest first with kind, component and severity in words", async () => {
     await show({
       events: [
@@ -67,7 +68,8 @@ describe("/repos/[id]/events", () => {
     expect(screen.getByText(/start after the next `repowise update` on a new commit/)).toBeTruthy();
   });
 
-  it("is reachable from the repo navigation", () => {
-    expect(repoNavItems("r1").map((i) => i.href)).toContain("/repos/r1/events");
+  it("is a view of the Commits page, not a navigation entry", () => {
+    expect(parseCommitsView("events")).toBe("events");
+    expect(repoNavItems("r1").map((i) => i.href)).not.toContain("/repos/r1/events");
   });
 });

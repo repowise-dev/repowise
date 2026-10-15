@@ -13,6 +13,7 @@ import { CommitDetailSheet } from "@/components/commits/commit-detail-sheet";
 import { CommitDistribution } from "@/components/commits/commit-distribution";
 import { CommitsViewToggle } from "@/components/commits/commits-view-toggle";
 import { ByChangeView, type ByChangeParams } from "@/components/commits/by-change-view";
+import { EventsView } from "@/components/commits/events-view";
 import { parseCommitsView } from "@/lib/changes";
 import {
   getAgentTrend,
@@ -51,7 +52,8 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
  * scoring model.
  *
  * `?view=changes` swaps all of that for the history grouped by merged change
- * (`ByChangeView`); the commit view stays the default.
+ * (`ByChangeView`), `?view=events` for what moved between index runs
+ * (`EventsView`); the commit view stays the default.
  */
 export default async function CommitsPage({
   params,
@@ -77,6 +79,20 @@ export default async function CommitsPage({
         actions={toggle}
       >
         <ByChangeView repoId={id} params={sp} />
+      </PageShell>
+    );
+  }
+
+  if (view === "events") {
+    const te = await getTranslations("views.events");
+    return (
+      <PageShell
+        icon={<GitCommitHorizontal />}
+        title={t("title")}
+        description={te("description")}
+        actions={toggle}
+      >
+        <EventsView repoId={id} />
       </PageShell>
     );
   }
