@@ -84,15 +84,16 @@ const DONUT_FILLS = [
 const donutFill = (i: number): string => DONUT_FILLS[Math.min(i, DONUT_FILLS.length - 1)]!;
 
 /**
- * Heatmap steps, light to dark: ink mixed into the card. The two dark steps
- * carry card-coloured text and the light ones ink, so a value reads on its cell.
+ * Heatmap steps, light to dark (the heat tokens). The two dark steps carry
+ * card-coloured text and the light ones ink, each pair clearing 4.5:1, so a
+ * value reads on its cell.
  */
 const HEAT_STEPS = [
-  { fill: "color-mix(in srgb, var(--color-text-primary) 6%, var(--color-bg-surface))", ink: false },
-  { fill: "color-mix(in srgb, var(--color-text-primary) 14%, var(--color-bg-surface))", ink: false },
-  { fill: "color-mix(in srgb, var(--color-text-primary) 26%, var(--color-bg-surface))", ink: false },
-  { fill: "color-mix(in srgb, var(--color-text-primary) 62%, var(--color-bg-surface))", ink: true },
-  { fill: "color-mix(in srgb, var(--color-text-primary) 82%, var(--color-bg-surface))", ink: true },
+  { fill: "var(--color-heat-1)", ink: false },
+  { fill: "var(--color-heat-2)", ink: false },
+  { fill: "var(--color-heat-3)", ink: false },
+  { fill: "var(--color-heat-4)", ink: true },
+  { fill: "var(--color-heat-5)", ink: true },
 ] as const;
 
 /** Health bands as fills, worst first: the health galaxy's node ramp. */
@@ -569,7 +570,11 @@ function heatStep(value: number, low: number, high: number): (typeof HEAT_STEPS)
   return HEAT_STEPS[at]!;
 }
 
-/** A grid of rows by `x` and one column per series; every cell shows its value. */
+/**
+ * A grid of rows by `x` and one column per series; every cell shows its value.
+ * It is a table to assistive tech too (rows, headers, cells), since the
+ * values sit in the cells and not only in the colour.
+ */
 function HeatmapPlot({ view }: { view: ChartView }) {
   const labels = new Map(view.data.columns.map((c) => [c.key, c.label]));
   const xLabels = axisLabels(view.data.rows.map((row) => row[view.x] ?? null));
@@ -577,15 +582,26 @@ function HeatmapPlot({ view }: { view: ChartView }) {
   return (
     <div className="max-w-full overflow-x-auto">
       <div
+        role="table"
+        aria-label={view.title}
         className="grid gap-px text-[11px] tabular-nums"
         style={{ gridTemplateColumns: `minmax(6rem, 14rem) repeat(${view.series.length}, minmax(3rem, 1fr))` }}
       >
-        <span />
-        {view.series.map((key) => (
-          <span key={key} className="truncate px-1 pb-1 text-center text-[var(--color-text-tertiary)]" title={labels.get(key)}>
-            {short(labels.get(key) ?? key, 14)}
+        <div role="row" className="contents">
+          <span role="columnheader" className="truncate px-1 pb-1 text-[var(--color-text-tertiary)]">
+            {labels.get(view.x) ?? view.x}
           </span>
-        ))}
+          {view.series.map((key) => (
+            <span
+              key={key}
+              role="columnheader"
+              className="truncate px-1 pb-1 text-center text-[var(--color-text-tertiary)]"
+              title={labels.get(key)}
+            >
+              {short(labels.get(key) ?? key, 14)}
+            </span>
+          ))}
+        </div>
         {view.data.rows.map((row, i) => (
           <HeatRow key={i} label={xLabels[i]!} row={row} series={view.series} low={low} high={high} />
         ))}
@@ -608,19 +624,24 @@ function HeatRow({
   high: number | null;
 }) {
   return (
-    <>
-      <span className="truncate py-1 pr-2 text-[var(--color-text-secondary)]" title={label}>
+    <div role="row" className="contents">
+      <span role="rowheader" className="truncate py-1 pr-2 text-[var(--color-text-secondary)]" title={label}>
         {short(label, 30)}
       </span>
       {series.map((key) => {
         const value = row[key];
         if (typeof value !== "number" || low === null || high === null) {
-          return <span key={key} className="rounded-sm bg-[var(--color-bg-inset)]" />;
+          return (
+            <span key={key} role="cell" className="rounded-sm bg-[var(--color-bg-inset)]">
+              <span className="sr-only">none</span>
+            </span>
+          );
         }
         const step = heatStep(value, low, high);
         return (
           <span
             key={key}
+            role="cell"
             data-heat-cell=""
             className="rounded-sm px-1 py-1 text-center"
             style={{ background: step.fill, color: step.ink ? "var(--color-bg-surface)" : "var(--color-text-primary)" }}
@@ -629,7 +650,7 @@ function HeatRow({
           </span>
         );
       })}
-    </>
+    </div>
   );
 }
 
@@ -638,6 +659,8 @@ interface TreemapLeaf {
   size: number;
   color: string;
   path: string;
+  /** What the fill stands for ("at risk", "7.2"), named on the cell, not only coloured. */
+  tone: string | null;
 }
 interface TreemapBranch {
   name: string;
@@ -709,7 +732,8 @@ function TreemapPlot({ view }: { view: ChartView }) {
       }
       node = next;
     }
-    node.children.push({ name: xLabels[i]!, size, color: fills[i]!, path: cellText(row[view.x] ?? null) });
+    const tone = view.color ? cellText(row[view.color] ?? null) || null : null;
+    node.children.push({ name: xLabels[i]!, size, color: fills[i]!, path: cellText(row[view.x] ?? null), tone });
   });
   const laid = treemap<TreemapBranch | TreemapLeaf>()
     .size([TREEMAP_BOX.width, TREEMAP_BOX.height])
@@ -744,6 +768,7 @@ function TreemapPlot({ view }: { view: ChartView }) {
           );
         }
         const wide = node.x1 - node.x0 > 14 && node.y1 - node.y0 > 6;
+        const tall = wide && node.y1 - node.y0 > 12;
         return (
           <div
             key={`l${i}`}
@@ -751,9 +776,10 @@ function TreemapPlot({ view }: { view: ChartView }) {
             className="absolute overflow-hidden px-1 text-[10px] leading-3 text-[var(--color-text-primary)]"
             // A card-coloured halo keeps the label readable on any fill.
             style={{ ...box(node), background: d.color, textShadow: HALO }}
-            title={`${d.path}: ${d.size}`}
+            title={`${d.path}: ${d.size}${d.tone ? `, ${d.tone}` : ""}`}
           >
             {wide ? short(d.name, 24) : null}
+            {tall && d.tone ? <span className="block">{d.tone}</span> : null}
           </div>
         );
       })}
@@ -794,8 +820,9 @@ function ChartPart({ view, buildRefHref, domId }: PartProps & { view: ChartView 
   return (
     <PartFrame part={view} domId={domId}>
       <ChartLegend view={view} />
-      {/* The chart is a picture of the table below; the summary is its text. */}
-      <div aria-hidden>
+      {/* The chart is a picture of the table below; the summary is its text. A
+          heatmap is a table itself, with its values in its cells. */}
+      <div aria-hidden={view.chart_type === "heatmap" ? undefined : true}>
         <ChartPlot view={view} />
       </div>
       <button

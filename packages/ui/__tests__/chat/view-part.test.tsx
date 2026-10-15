@@ -238,6 +238,8 @@ describe("ViewPartList", () => {
     expect(cells).toHaveLength(2);
     expect(figure.querySelectorAll("[data-treemap-group]").length).toBeGreaterThanOrEqual(1);
     expect((cells[0] as HTMLElement).style.background).toBe("var(--color-node-good)");
+    // The band is named on the cell and in its title, not only coloured.
+    expect(cells[0]).toHaveAttribute("title", expect.stringContaining("good"));
     const legend = within(figure).getByRole("list");
     expect(legend).toHaveTextContent("at risk");
     expect(legend).toHaveTextContent("good");
@@ -254,6 +256,20 @@ describe("ViewPartList", () => {
     expect(cells[2]!.style.color).toBe("var(--color-bg-surface)");
     expect(cells[1]!.style.color).toBe("var(--color-text-primary)");
     expect(within(figure).getByRole("list")).toHaveTextContent("6 (darkest)");
+    // A table to assistive tech: a header row, then one row per week.
+    const grid = figure.querySelector('[role="table"]') as HTMLElement;
+    expect(grid).toHaveAttribute("aria-label", HEATMAP.title);
+    expect(within(grid).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Week", "fix", "feature"]);
+    expect(within(grid).getAllByRole("rowheader").map((h) => h.textContent)).toEqual(["2026-09-28", "2026-10-05"]);
+    expect(within(grid).getAllByRole("cell")).toHaveLength(4);
+    expect(within(grid).getByText("none")).toHaveClass("sr-only");
+  });
+
+  it("renders parts stored at schema version 1 and at the current one", () => {
+    expect(BAR.schema_version).toBe(1);
+    render(<ViewPartList views={[BAR, { ...BAR, id: "v2part", schema_version: 2 }]} />);
+    expect(part("c1").querySelector("svg.recharts-surface")).not.toBeNull();
+    expect(part("v2part").querySelector("svg.recharts-surface")).not.toBeNull();
   });
 
   it("fills an area chart and runs bars over dates as columns", () => {

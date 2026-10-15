@@ -134,6 +134,15 @@
   --color-share-4: color-mix(in srgb, var(--color-text-primary) 54%, var(--color-bg-inset));
   --color-share-5: color-mix(in srgb, var(--color-text-primary) 47%, var(--color-bg-inset));
   --color-share-tail: color-mix(in srgb, var(--color-text-primary) 20%, var(--color-bg-inset));
+  /* Heat steps — a heatmap cell's fill, light to dark: ink stepped into the
+     card. Steps 1-3 carry ink text, 4-5 card-coloured text; each pairing
+     clears 4.5:1 in both themes (contrast-check.py). Per theme for the same
+     reason as the share steps. */
+  --color-heat-1: color-mix(in srgb, var(--color-text-primary) 6%, var(--color-bg-surface));
+  --color-heat-2: color-mix(in srgb, var(--color-text-primary) 14%, var(--color-bg-surface));
+  --color-heat-3: color-mix(in srgb, var(--color-text-primary) 26%, var(--color-bg-surface));
+  --color-heat-4: color-mix(in srgb, var(--color-text-primary) 62%, var(--color-bg-surface));
+  --color-heat-5: color-mix(in srgb, var(--color-text-primary) 82%, var(--color-bg-surface));
   /* Supporting cast beside an accent series. Same idea, no hue. */
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
@@ -509,6 +518,11 @@
   --color-share-4: color-mix(in srgb, var(--color-text-primary) 48%, var(--color-bg-inset));
   --color-share-5: color-mix(in srgb, var(--color-text-primary) 40%, var(--color-bg-inset));
   --color-share-tail: color-mix(in srgb, var(--color-text-primary) 18%, var(--color-bg-inset));
+  --color-heat-1: color-mix(in srgb, var(--color-text-primary) 6%, var(--color-bg-surface));
+  --color-heat-2: color-mix(in srgb, var(--color-text-primary) 14%, var(--color-bg-surface));
+  --color-heat-3: color-mix(in srgb, var(--color-text-primary) 26%, var(--color-bg-surface));
+  --color-heat-4: color-mix(in srgb, var(--color-text-primary) 62%, var(--color-bg-surface));
+  --color-heat-5: color-mix(in srgb, var(--color-text-primary) 82%, var(--color-bg-surface));
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 70%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 45%, var(--color-bg-inset));
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));

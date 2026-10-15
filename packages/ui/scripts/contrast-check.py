@@ -142,6 +142,10 @@ LIGHT = {
     # 86/74/63/54/47%. The tail (20%) is exempt: it is always named.
     "share-1": "#413846", "share-2": "#59515C", "share-3": "#6F6871",
     "share-4": "#827B82", "share-5": "#90898F",
+    # Heat steps (light): --color-text-primary mixed into --color-bg-surface
+    # at 6/14/26/62/82%.
+    "heat-1": "#F2F1F2", "heat-2": "#E0DFE1", "heat-3": "#C6C4C8",
+    "heat-4": "#77727C", "heat-5": "#4B4452",
 }
 
 DARK = {
@@ -186,6 +190,9 @@ DARK = {
     # Share steps (dark): 86/71/58/48/40%; tail (18%) exempt.
     "share-1": "#D2D2D3", "share-2": "#AFAFB0", "share-3": "#919192",
     "share-4": "#79797A", "share-5": "#676768",
+    # Heat steps (dark): the same mixes over the dark card.
+    "heat-1": "#212123", "heat-2": "#333335", "heat-3": "#4E4E4F",
+    "heat-4": "#9E9E9F", "heat-5": "#CACACB",
 }
 
 # (fg, bg, floor, label)  — floor is the WCAG ratio the pair must meet.
@@ -230,6 +237,9 @@ CHECKS = [
         for n in range(1, 6)
         for bg, where in (("bg-root", "page"), ("bg-surface", "card"))
     ],
+    # Heatmap cells print their value: ink on the light steps, card colour on the dark.
+    *[("text-primary", f"heat-{n}", 4.5, f"Value on heat step {n}") for n in (1, 2, 3)],
+    *[("bg-surface", f"heat-{n}", 4.5, f"Value on heat step {n}") for n in (4, 5)],
 ]
 
 
