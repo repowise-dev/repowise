@@ -60,6 +60,7 @@ def suspects_command(
 ) -> None:
     """Rank the changes merged in a window against a symptom, with the evidence for each."""
     from repowise.core.suspects import Symptom
+    from repowise.core.suspects.rank import MAX_SYMPTOM_CHARS, MAX_SYMPTOM_FILES
 
     target = resolve_command_target(path=repo, no_workspace_flag=True)
     assert target.repo_path is not None
@@ -68,6 +69,11 @@ def suspects_command(
     trace_text = trace.read_text(encoding="utf-8", errors="replace") if trace else ""
     if not (symptom.strip() or files or trace_text.strip()):
         raise click.UsageError("Give a symptom: --symptom, --files or --trace.")
+    if len(symptom) > MAX_SYMPTOM_CHARS or len(files) > MAX_SYMPTOM_FILES:
+        raise click.UsageError(
+            f"Keep --symptom under {MAX_SYMPTOM_CHARS} characters and --files to {MAX_SYMPTOM_FILES};"
+            " only the head of a long log is read anyway."
+        )
     got = run_async(
         _suspects(root, Symptom(text=symptom, files=files, trace=trace_text, at=until), since, until, limit)
     )
@@ -100,4 +106,6 @@ def suspects_command(
             signals,
         )
     console.print(table)
+    if got.get("texts_missing"):
+        console.print(f"[dim]{got['texts_missing']} change(s) git could not read: ranked on title and files.[/dim]")
     console.print(f"[dim]{got['note']}[/dim]")

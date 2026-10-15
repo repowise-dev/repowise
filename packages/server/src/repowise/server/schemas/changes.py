@@ -160,9 +160,9 @@ def summary_from_record(record: dict) -> ChangeListItem:
 class SuspectsRequest(BaseModel):
     """A symptom and the window to rank the changes merged in."""
 
-    symptom: str = ""
-    files: list[str] = []
-    trace: str = ""
+    symptom: str = Field("", max_length=20_000)
+    files: list[str] = Field([], max_length=50)
+    trace: str = Field("", max_length=20_000)
     #: ISO 8601; default 14 days before ``until``.
     since: str | None = None
     #: ISO 8601, when the symptom was seen; default now.
@@ -193,6 +193,8 @@ class Suspect(BaseModel):
 class SuspectsResponse(BaseModel):
     window: dict[str, str]
     candidates: int
+    #: Changes git could not read; they are ranked on title and files alone.
+    texts_missing: int = 0
     symptom_files: list[str] = []
     suspects: list[Suspect]
     note: str

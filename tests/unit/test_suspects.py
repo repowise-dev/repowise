@@ -91,3 +91,47 @@ def test_path_mentions_reads_urls_and_bare_names():
 def test_hunk_symbols_reads_function_context():
     diff = "@@ -1,2 +1,3 @@ def as_sql(self, compiler):\n+x\n@@ -9 +9 @@ class Query(BaseExpression):\n@@ -20 +20 @@\n"
     assert hunk_symbols(diff) == ("as_sql", "Query")
+
+
+def test_a_raising_signal_did_not_fire():
+    class Broken:
+        def rank(self, symptom, candidates, ctx):
+            raise RuntimeError("boom")
+
+    suspect_signals.register("test-broken", Broken())
+    try:
+        out = rank_suspects(Symptom(text="", at=NOW), _candidates(), SuspectContext())
+        assert [s.change_id for s in out] == ["b", "a", "c"]
+        assert all("test-broken" not in s.signals for s in out)
+    finally:
+        suspect_signals._impls.pop("test-broken")
+
+
+def test_text_evidence_follows_the_fts_prefix_rule():
+    cands = [Candidate("a", "Invalidates the cache", NOW, ("x.py",))]
+    out = rank_suspects(Symptom(text="invalidat", at=NOW), cands, SuspectContext(), signals=["text"])
+    assert out[0].signals["text"].evidence == ("term invalidat",)
+
+
+def test_person_trailers_never_reach_the_text(tmp_path):
+    import subprocess
+
+    from repowise.core.suspects.git_text import read_change_texts, strip_person_trailers
+
+    body = "Why.\n\nPR-URL: https://h/pull/1\nReviewed-By: Ann Lee <ann@x.org>\nSigned-off-by: Bob\nCo-authored-by: C <c@d.e>"
+    assert strip_person_trailers(body) == "Why.\n\nPR-URL: https://h/pull/1"
+
+    env = {"GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@x", "GIT_COMMITTER_NAME": "a",
+           "GIT_COMMITTER_EMAIL": "a@x", "PATH": __import__("os").environ["PATH"]}
+    def git(*a):
+        return subprocess.run(["git", "-C", str(tmp_path), *a], capture_output=True, text=True,
+                              check=True, env=env).stdout.strip()
+    git("init", "-q")
+    (tmp_path / "f.py").write_text("def f():\n    return 1\n")
+    git("add", "f.py")
+    git("commit", "-q", "-m", "Add f", "-m", body)
+    head = git("rev-parse", "HEAD")
+    # An unknown and an empty sha in the batch cost only themselves.
+    got = read_change_texts(tmp_path, [(head, 1), ("f" * 40, 1), ("", 1)])
+    assert list(got) == [head]
+    assert "Ann" not in got[head][0] and "Bob" not in got[head][0]

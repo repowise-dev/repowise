@@ -4,6 +4,10 @@ Candidates are the stored Change Records merged in ``[since, until)``; the
 import graph and co-change partners come from the same index; message bodies
 and touched symbol names from git. Each row is the change's list fields, its
 rank, and every signal that fired with its own rank and evidence.
+
+Symptom files are mapped onto the files tracked at HEAD, so a file renamed or
+deleted inside the window may name no file and add no graph or co-change
+evidence.
 """
 
 from __future__ import annotations
@@ -122,13 +126,16 @@ async def find_suspects(
         for r in rows
     ]
     repo_files = await asyncio.to_thread(_tracked_files, repo_path)
-    named = prepare(symptom, SuspectContext(repo_files=repo_files)).files
+    prepared = prepare(symptom, SuspectContext(repo_files=repo_files))
+    named = prepared.files
     ctx = SuspectContext(
         repo_files=repo_files,
         imports=await _imports(session, repo_id) if named else {},
         co_change=await get_co_change_partners(session, repo_id, list(named)) if named else {},
     )
-    ranked = await asyncio.to_thread(rank_suspects, symptom, candidates, ctx)
+    ranked = await asyncio.to_thread(
+        lambda: rank_suspects(symptom, candidates, ctx, prepared=prepared)
+    )
     by_id = {r.change_id: r for r in rows}
     attribution = attribution_enabled(repo_path)
     out = []
@@ -142,6 +149,8 @@ async def find_suspects(
     return {
         "window": window,
         "candidates": len(candidates),
+        # Changes git could not read: ranked on their title and files alone.
+        "texts_missing": sum(1 for r in rows if r.head_sha not in texts),
         "symptom_files": list(named),
         "suspects": out,
         "note": NOTE,

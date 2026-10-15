@@ -63,6 +63,9 @@ async def run_find_suspects(arguments: dict[str, Any], repo: str | None) -> dict
     except ValueError:
         return {"error": "since and until must be ISO 8601 times", "error_code": "bad_arguments"}
     files = arguments.get("files") or []
+    if not isinstance(files, list):
+        files = []
+    # Cut to the core's bounds (``bounded``): a pasted log keeps its head.
     symptom = Symptom(
         text=str(arguments.get("symptom") or ""),
         files=tuple(str(f) for f in files if isinstance(f, str)),

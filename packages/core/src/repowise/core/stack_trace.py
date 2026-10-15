@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from functools import lru_cache
 from typing import NamedTuple
 
 
@@ -158,6 +159,16 @@ def _segment_suffix(longer: str, shorter: str) -> bool:
     return longer == shorter or longer.endswith("/" + shorter)
 
 
+def _normalize(paths: Iterable[str]) -> tuple[str, ...]:
+    return tuple(sorted({p.replace("\\", "/") for p in paths}))
+
+
+@lru_cache(maxsize=4)
+def _normalized(paths: frozenset[str]) -> tuple[str, ...]:
+    """A frozen file set normalized once, not per call (its hash is cached too)."""
+    return _normalize(paths)
+
+
 def map_to_repo_paths(frames: Iterable[Frame], indexed_paths: Iterable[str]) -> list[str]:
     """Repo files the frames name, in frame order, deduped.
 
@@ -167,7 +178,11 @@ def map_to_repo_paths(frames: Iterable[Frame], indexed_paths: Iterable[str]) -> 
     ``_MAX_AMBIGUOUS`` files is dropped. Vendored frames never match on a bare
     file name, which would only say some installed package has that file.
     """
-    indexed = sorted({p.replace("\\", "/") for p in indexed_paths})
+    indexed = (
+        _normalized(indexed_paths)
+        if isinstance(indexed_paths, frozenset)
+        else _normalize(indexed_paths)
+    )
     out: list[str] = []
     for frame in frames:
         if frame.vendored and "/" not in frame.path:

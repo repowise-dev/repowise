@@ -10,6 +10,7 @@ an order to read changes in, never a probability and never a cause.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -20,6 +21,12 @@ from repowise.core.registry.plugins import SeamRegistry, load_plugins
 from repowise.core.stack_trace import Frame, map_to_repo_paths, parse_trace
 
 RRF_K = 60
+#: Input bounds: a pasted log can be huge and only its head is a symptom.
+MAX_SYMPTOM_CHARS = 20_000
+MAX_SYMPTOM_FILES = 50
+MAX_PATH_MENTIONS = 200
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -106,15 +113,27 @@ def _aware(value: datetime) -> datetime:
 def _path_mentions(text: str) -> list[Frame]:
     from .signals import path_mentions
 
-    return [Frame(p, 0, None) for p in path_mentions(text)]
+    return [Frame(p, 0, None) for p in path_mentions(text)[:MAX_PATH_MENTIONS]]
+
+
+def bounded(symptom: Symptom) -> Symptom:
+    """*symptom* cut to the input bounds."""
+    return Symptom(
+        symptom.text[:MAX_SYMPTOM_CHARS],
+        tuple(symptom.files[:MAX_SYMPTOM_FILES]),
+        symptom.trace[:MAX_SYMPTOM_CHARS],
+        symptom.at,
+    )
 
 
 def prepare(symptom: Symptom, ctx: SuspectContext) -> PreparedSymptom:
+    """The symptom read against the repo's files; reads only ``ctx.repo_files``."""
+    symptom = bounded(symptom)
     frames = tuple(parse_trace(symptom.trace or symptom.text))
     trace_files = tuple(map_to_repo_paths(frames, ctx.repo_files))
     given = [f.replace("\\", "/").removeprefix("./") for f in symptom.files]
     named = map_to_repo_paths(_path_mentions(symptom.text), ctx.repo_files)
-    files = tuple(dict.fromkeys([*given, *named, *trace_files]))
+    files = tuple(dict.fromkeys([*given, *named, *trace_files]))[:MAX_SYMPTOM_FILES]
     at = _aware(symptom.at) if symptom.at else datetime.now(UTC)
     return PreparedSymptom(symptom, at, files, frames, trace_files)
 
@@ -139,19 +158,25 @@ def rank_suspects(
     *,
     signals: Sequence[str] | None = None,
     k: int = RRF_K,
+    prepared: PreparedSymptom | None = None,
 ) -> list[Suspect]:
-    """Every candidate in fused order; *signals* restricts which signals run."""
+    """Every candidate in fused order; *signals* restricts which signals run.
+
+    *prepared* is :func:`prepare`'s result for this symptom and these repo
+    files, when the caller already has it. A signal that raises did not fire.
+    """
     load_plugins()
     names = [n for n in suspect_signals.names if signals is None or n in signals]
-    prepared = prepare(symptom, ctx)
+    prepared = prepared or prepare(symptom, ctx)
     fused: dict[str, float] = {c.change_id: 0.0 for c in candidates}
     fired: dict[str, dict[str, SignalRank]] = {c.change_id: {} for c in candidates}
     for name in names:
-        hits = {
-            cid: hit
-            for cid, hit in suspect_signals.get(name).rank(prepared, candidates, ctx).items()
-            if cid in fused
-        }
+        try:
+            found = suspect_signals.get(name).rank(prepared, candidates, ctx)
+            hits = {cid: hit for cid, hit in found.items() if cid in fused}
+        except Exception:
+            _log.debug("suspect signal %s failed; it did not fire", name, exc_info=True)
+            continue
         for cid, rank in _competition_ranks(hits).items():
             fused[cid] += 1.0 / (k + rank)
             fired[cid][name] = SignalRank(rank, hits[cid].evidence)
@@ -165,6 +190,9 @@ def rank_suspects(
 
 
 __all__ = [
+    "MAX_PATH_MENTIONS",
+    "MAX_SYMPTOM_CHARS",
+    "MAX_SYMPTOM_FILES",
     "RRF_K",
     "Candidate",
     "Hit",
@@ -174,6 +202,7 @@ __all__ = [
     "SuspectContext",
     "SuspectSignal",
     "Symptom",
+    "bounded",
     "prepare",
     "rank_suspects",
     "suspect_signals",

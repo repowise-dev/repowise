@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import unicodedata
 from collections import deque
 from collections.abc import Mapping, Sequence
 from datetime import UTC
 
 from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT
-from repowise.core.fts_query import build_fts5_query, meaningful_terms
+from repowise.core.fts_query import PREFIX_MIN_CHARS, build_fts5_query, meaningful_terms
 
 from .rank import Candidate, Hit, PreparedSymptom, SuspectContext, suspect_signals
 
@@ -75,10 +76,40 @@ class TextSignal:
         wanted = list(dict.fromkeys(terms))
         out: dict[str, Hit] = {}
         for cid, score, body in rows:
-            words = set(meaningful_terms(body))
-            matched = [t for t in wanted if t in words][:_MAX_EVIDENCE]
+            words = _fts_words(body)
+            matched = [t for t in wanted if _fts_matches(t, words)][:_MAX_EVIDENCE]
             out[cid] = Hit(-score, tuple(f"term {t}" for t in matched))
         return out
+
+
+_FTS_TOKEN = re.compile(r"[^\W_]+")
+
+
+def _fold(text: str) -> str:
+    """Lowercase without diacritics, as FTS5's unicode61 tokenizer reads text."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(c))
+
+
+def _fts_words(body: str) -> tuple[list[str], set[str]]:
+    words = _FTS_TOKEN.findall(_fold(body))
+    return words, set(words)
+
+
+def _fts_matches(term: str, words: tuple[list[str], set[str]]) -> bool:
+    """Whether FTS5 matched *term* here: its tokens as a phrase, the last one by
+    prefix when the term is long enough (:func:`~repowise.core.fts_query.match_term`)."""
+    parts = _FTS_TOKEN.findall(_fold(term))
+    seq, vocab = words
+    prefix = len(term) >= PREFIX_MIN_CHARS
+    if len(parts) == 1:
+        return parts[0] in vocab or (prefix and any(w.startswith(parts[0]) for w in vocab))
+    n = len(parts)
+    for i in range(len(seq) - n + 1):
+        if seq[i : i + n - 1] == parts[:-1] and (
+            seq[i + n - 1] == parts[-1] or (prefix and seq[i + n - 1].startswith(parts[-1]))
+        ):
+            return True
+    return False
 
 
 def _hops(start: Sequence[str], imports: Mapping[str, object]) -> dict[str, tuple[int, str]]:

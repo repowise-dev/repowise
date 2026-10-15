@@ -3619,6 +3619,7 @@ export interface SuspectsRequest {
 export interface SuspectsResponse {
   window: Record<string, string>;
   candidates: number;
+  texts_missing?: number;
   symptom_files?: string[];
   suspects: Suspect[];
   note: string;
