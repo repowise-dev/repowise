@@ -1248,7 +1248,7 @@ class TestJavaNamedArguments:
     def test_argument_names_are_read_per_argument(self) -> None:
         text = 'class A {\n  void go(int x) {\n    f(x, 1, this.y, "s", z);\n  }\n}\n'
         (call,) = _parse("A.java", "java", text).calls
-        assert call.argument_names == ("x", None, None, None, "z")
+        assert call.argument_names == ("x", None, "this.y", None, "z")
         assert call.argument_types == (None, "int", None, "String", None)
 
     @pytest.mark.parametrize(
@@ -1373,3 +1373,57 @@ class TestJavaNamedArguments:
         )
         edges = _edges(tmp_path, {"app/Node.java": ("java", text)})
         assert edges == {("app/Node.java::Node::use", "app/Node.java::Node::add#2")}
+
+    def test_var_local_this_field_and_call_arguments_pick_overload(self, tmp_path: Path) -> None:
+        """Issue #3750: var x = make(), this.field, and put(make()) pick put(Item) over put(String)."""
+        files = {
+            "app/Item.java": ("java", "package app;\npublic class Item { }\n"),
+            "app/Sink.java": (
+                "java",
+                "package app;\npublic class Sink {\n"
+                "  public void put(String s) { }\n"
+                "  public void put(Item item) { }\n"
+                "}\n",
+            ),
+            "app/Use.java": (
+                "java",
+                "package app;\npublic class Use {\n"
+                "  Sink sink;\n"
+                "  Item field;\n"
+                "  Item missing;\n"
+                "  Item make() { return new Item(); }\n"
+                "  <T> T gen() { return null; }\n"
+                "  void useVar() {\n"
+                "    var item = make();\n"
+                "    sink.put(item);\n"
+                "  }\n"
+                "  void useFinalVar() {\n"
+                "    final var item = make();\n"
+                "    sink.put(item);\n"
+                "  }\n"
+                "  void useThisField() {\n"
+                "    sink.put(this.field);\n"
+                "  }\n"
+                "  void useCall() {\n"
+                "    sink.put(make());\n"
+                "  }\n"
+                "  void useGenericVar() {\n"
+                "    var x = gen();\n"
+                "    sink.put(x);\n"
+                "  }\n"
+                "  void useMissingThisField() {\n"
+                "    sink.put(this.notAField);\n"
+                "  }\n"
+                "}\n",
+            ),
+        }
+        edges = _edges(tmp_path, files)
+        sink_item = "app/Sink.java::Sink::put#1(Item)"
+        sink_str = "app/Sink.java::Sink::put#1(String)"
+        assert ("app/Use.java::Use::useVar", sink_item) in edges
+        assert ("app/Use.java::Use::useFinalVar", sink_item) in edges
+        assert ("app/Use.java::Use::useThisField", sink_item) in edges
+        assert ("app/Use.java::Use::useCall", sink_item) in edges
+        # Generics and missing fields do not type the argument, so they stay on declaration order (put(String))
+        assert ("app/Use.java::Use::useGenericVar", sink_str) in edges
+        assert ("app/Use.java::Use::useMissingThisField", sink_str) in edges

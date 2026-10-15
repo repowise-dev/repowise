@@ -1332,10 +1332,39 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         caller_id = call.caller_symbol_id or ""
         literals = call.argument_types or (None,) * len(names)
         types = tuple(
-            literal or (self._argument_type(file_path, caller_id, name) if name else None)
+            literal or (self._argument_expr_type(file_path, caller_id, call.line, name) if name else None)
             for literal, name in zip(literals, names, strict=True)
         )
         return replace(call, argument_types=types if any(types) else None)
+
+    def _argument_expr_type(
+        self, file_path: str, caller_id: str, line: int, name: str
+    ) -> str | None:
+        """The declared type of an argument expression: bare name, this.field, or call."""
+        if name.startswith("call:"):
+            _, receiver, target, count_s = name.split(":", 3)
+            probe = CallSite(
+                target_name=target,
+                receiver_name=receiver or None,
+                caller_symbol_id=caller_id,
+                line=line,
+                argument_count=int(count_s),
+            )
+            type_id = self._site_returned_type_id(file_path, probe, awaited=False)
+            if type_id is None:
+                return None
+            return erased_type(type_id.rsplit("::", 1)[-1])
+        if name.startswith("this."):
+            field_name = name[5:]
+            language = self._language_of(file_path) or ""
+            found = self._field_type(file_path, caller_id, language, field_name, builtin_local=False)
+            if found is None or found[0] is None:
+                return None
+            type_name = found[0]
+            if "::" in type_name:
+                return erased_type(type_name.rsplit("::", 1)[-1])
+            return erased_type(external_type_name(type_name) or type_name)
+        return self._argument_type(file_path, caller_id, name)
 
     def _argument_type(self, file_path: str, caller_id: str, name: str) -> str | None:
         """Argument *name*'s declared type, spelled as an overload id spells a parameter.
@@ -1355,8 +1384,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             )
             if scope == "field" and self._declares_name(file_path, caller_id, name):
                 return None
-        if type_name is None or "::" in type_name:
+        if type_name is None:
             return None
+        if "::" in type_name:
+            return erased_type(type_name.rsplit("::", 1)[-1])
         return erased_type(external_type_name(type_name) or type_name)
 
     def _overload_sibling_call(self, call: CallSite) -> ResolvedCall | None:
