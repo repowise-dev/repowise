@@ -67,10 +67,12 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   // Both panels default to whether the layout can afford them, not to `true`:
   // the tree from md, the rail from the 2xl breakpoint the reader uses to place
   // its sections. A manual toggle wins from then on, same contract as the app
-  // sidebar's route-based collapse. Read after hydration, before paint: the
-  // server cannot see the viewport, and a first render that differed from its
-  // HTML failed hydration on every phone.
-  const [treePanelOpen, setTreePanelOpen] = useState(true);
+  // sidebar's route-based collapse. The server cannot see the viewport, so the
+  // default is CSS until hydration: `null` renders the tree hidden below md and
+  // as a column from md (the rail is already `hidden 2xl:block`), and a phone
+  // never paints an open drawer. The layout effect then takes the breakpoint
+  // as state before paint; reading it during render failed hydration.
+  const [treePanelOpen, setTreePanelOpen] = useState<boolean | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   useLayoutEffect(() => {
     setTreePanelOpen(window.matchMedia("(min-width: 768px)").matches);
@@ -246,9 +248,11 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     <div
       className={cn(
         "bg-[var(--color-bg-surface)] transition-all duration-200 shrink-0 overflow-y-auto",
-        treePanelOpen
-          ? "absolute inset-y-0 left-0 z-30 w-full md:static md:w-[288px]"
-          : "w-0 overflow-hidden",
+        treePanelOpen === null
+          ? "absolute inset-y-0 left-0 z-30 w-full hidden md:static md:block md:w-[288px]"
+          : treePanelOpen
+            ? "absolute inset-y-0 left-0 z-30 w-full md:static md:w-[288px]"
+            : "w-0 overflow-hidden",
       )}
     >
       {isLoading ? (
@@ -336,13 +340,22 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       <button
         onClick={() => setTreePanelOpen((o) => !o)}
         aria-label={treePanelOpen ? t("explorer.hideTree") : t("explorer.showTree")}
-        aria-expanded={treePanelOpen}
+        aria-expanded={treePanelOpen ?? undefined}
         className={cn(
           "absolute top-3.5 z-20 rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors",
-          treePanelOpen ? "hidden md:block left-[292px]" : "left-1",
+          treePanelOpen === null
+            ? "left-1 md:left-[292px]"
+            : treePanelOpen
+              ? "hidden md:block left-[292px]"
+              : "left-1",
         )}
       >
-        {treePanelOpen ? (
+        {treePanelOpen === null ? (
+          <>
+            <PanelLeft className="h-3.5 w-3.5 md:hidden" />
+            <PanelLeftClose className="hidden h-3.5 w-3.5 md:block" />
+          </>
+        ) : treePanelOpen ? (
           <PanelLeftClose className="h-3.5 w-3.5" />
         ) : (
           <PanelLeft className="h-3.5 w-3.5" />
