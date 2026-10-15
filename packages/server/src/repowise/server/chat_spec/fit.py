@@ -207,6 +207,9 @@ def fit(
     """
     meta = meta or {}
     spec = _coerce_filters(_repair_names(spec, types), rows)
+    # parse_spec drops these too; a repaired name can make the repeat only now.
+    if spec.series and (spec.series == spec.x or spec.series in spec.y):
+        spec = spec.noted(f"series {spec.series!r} repeats x or y, so it was dropped", series=None)
     # "x" and "value" name the axis and the plotted value when no field has that name.
     if spec.sort and spec.sort[0] not in types:
         name, order = spec.sort
@@ -259,6 +262,13 @@ def fit(
             spec = spec.noted(f"the treemap nests by {', '.join(above)}", groups=above)
     if spec.kind != "treemap" and (spec.groups or spec.color):
         spec = spec.noted("groups and color shape a treemap only, so they were left out", groups=(), color=None)
+    # A group that is also the leaf or a plotted field would be its column twice.
+    taken = {spec.x, *spec.y, *([spec.series] if spec.series else [])}
+    if repeats := [g for g in spec.groups if g in taken]:
+        spec = spec.noted(
+            f"groups {repeats} are already the x or a plotted field, so they were left out",
+            groups=tuple(g for g in spec.groups if g not in taken),
+        )
 
     check_fields(spec, types)
 

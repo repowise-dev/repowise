@@ -340,6 +340,7 @@
   ],
   "valid_variants": [
     { "name": "a part at the current schema version", "from": "c6", "set": { "schema_version": 2 } },
+    { "name": "treemap coloured by one of its group levels", "from": "c6", "set": { "color": "package" } },
     { "name": "non-BMP title and summary", "from": "t1", "set": { "title": "😀", "summary": "Payments 💳 leads" } },
     { "name": "negative zero in a line", "from": "c3", "set": { "data.rows.0.commits": -0 } },
     { "name": "negative zero donut part", "from": "c4", "set": { "data.rows.2.files": -0.0 } },

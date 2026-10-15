@@ -314,9 +314,14 @@ def _chart_rows(
         place = found.places.get(row_out[spec.x], {})
         for g in spec.groups:
             row_out[g] = place.get(g)
-        if spec.color:
+        if _own_color_column(spec):
             row_out[_color_key(spec, keys)] = found.colors.get(row_out[spec.x])
     return out
+
+
+def _own_color_column(spec: ChartSpec) -> bool:
+    """A colour by a group level reads that level's column, so it adds none."""
+    return spec.color is not None and spec.color not in spec.groups
 
 
 def _color_key(spec: ChartSpec, keys: list[str]) -> str:
@@ -389,7 +394,9 @@ def transform(
             (
                 k
                 for k in _LABEL_FIELDS
-                if k in types and k != spec.x and k not in spec.y and k not in spec.x_parts
+                if k in types
+                and k not in (spec.x, spec.color)
+                and k not in (*spec.y, *spec.x_parts, *spec.groups)
             ),
             None,
         )
@@ -404,7 +411,7 @@ def transform(
         columns.insert(0, (label_key, label(label_key)))
     if spec.groups:
         columns[:0] = [(g, label(g)) for g in spec.groups]
-    if spec.color:
+    if spec.color and _own_color_column(spec):
         color_label = label(spec.color)
         if spec.aggregate and types.get(spec.color) == "number":
             color_label = f"Average {color_label.lower()}"
@@ -444,7 +451,7 @@ def transform(
                 bucket[k] = _round(sum(values)) if values else None
             for g in spec.groups:
                 bucket[g] = OTHER_LABEL
-            if spec.color:
+            if _own_color_column(spec):
                 bucket[_color_key(spec, keys)] = None
             if label_key:
                 bucket[label_key] = None

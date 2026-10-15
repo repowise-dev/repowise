@@ -442,6 +442,27 @@ def test_a_treemap_nests_by_the_hierarchy_and_colours_by_a_field():
     assert ("score", "Average score") in result.columns
 
 
+def test_a_treemap_coloured_by_a_group_level_reads_that_levels_column():
+    rows = [
+        {"package": "core", "directory": "core/a", "file": "x.py", "nloc": 10},
+        {"package": "core", "directory": "core/b", "file": "y.py", "nloc": 30},
+        {"package": "web", "directory": "web/src", "file": "z.ts", "nloc": 5},
+    ]
+    options = {"x": "directory", "y": "nloc", "aggregate": "sum", "kind": "treemap"}
+    result = _run(rows, **options, groups=["package", "directory"], color="package")
+    keys = [k for k, _ in result.columns]
+    assert keys == ["package", "directory", "nloc"]
+    assert result.groups == ["package"] and result.color == "package"
+    assert result.rows[0] == {"package": "core", "directory": "core/b", "nloc": 30}
+    assert "groups ['directory'] are already the x or a plotted field" in result.notes[0]
+
+
+def test_a_repaired_series_name_that_repeats_x_is_dropped():
+    result = _run(x="kind", series="Kind")
+    assert len(result.series) == 1
+    assert any("series 'kind' repeats x or y" in n for n in result.notes)
+
+
 def test_figures_carry_totals_and_shares_so_nobody_divides():
     result = _run(x="kind")
     assert result.figures["total"] == 5
