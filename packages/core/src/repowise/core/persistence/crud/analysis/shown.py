@@ -2,7 +2,8 @@
 
 ``finding_registry`` decides by finding type (``excluded_types``), by layer
 and language (``LANGUAGE_GATES``), and for health findings by the file's stored
-origin and test flag (``FILE_HOLDS``). Reads that list or count rows for a surface
+origin and test flag (``FILE_HOLDS``), which also hold refactoring plans
+back on test files. Reads that list or count rows for a surface
 filter here, so every surface agrees on what is held back. Reads by id and the
 writers do not: a held-back row is still stored and addressable.
 """
@@ -24,26 +25,42 @@ from ....analysis.finding_registry import (
     gates_on,
     history_kinds,
 )
-from ...models import HealthFileMetric, HealthFinding
+from ...models import (
+    HealthFileMetric,
+    HealthFinding,
+    RefactoringOpportunity,
+    RefactoringSuggestion,
+)
+
+# The row types each layer's file holds read, and only these: a hold is a join
+# on the row's repository and path.
+_HELD_MODELS: dict[str, tuple[Any, ...]] = {
+    "health": (HealthFinding,),
+    "refactoring": (RefactoringSuggestion, RefactoringOpportunity),
+}
 
 
 def _file_holds(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[str, Any]]:
-    """``(FILE_HOLDS key, row matches it)`` for health findings, read from the
-    file's stored metric row; ahead of the language cells, as ``file_hold`` is."""
-    if layer != "health" or getattr(path_col, "class_", None) is not HealthFinding:
+    """``(FILE_HOLDS key, row matches it)`` for health findings and plans, read
+    from the file's stored metric row; ahead of the language cells, as
+    ``file_hold`` is."""
+    model = getattr(path_col, "class_", None)
+    if model not in _HELD_MODELS.get(layer, ()):
         return []
 
     def on_file(*where: Any) -> Any:
         return (
             select(HealthFileMetric.id)
             .where(
-                HealthFileMetric.repository_id == HealthFinding.repository_id,
+                HealthFileMetric.repository_id == model.repository_id,
                 HealthFileMetric.file_path == path_col,
                 *where,
             )
             .exists()
         )
 
+    if layer == "refactoring":
+        return [("test", on_file(HealthFileMetric.is_test.is_(True)))]
     cells = [(origin, on_file(HealthFileMetric.code_origin == origin)) for origin in HELD_ORIGINS]
     if kind_col is not None:
         cells.append(
@@ -58,9 +75,11 @@ def _file_holds(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[st
     return cells
 
 
-def _cells(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[str, Any]]:
+def _cells(
+    layer: GateLayer, path_col: Any, kind_col: Any, *, file_holds: bool = True
+) -> list[tuple[str, Any]]:
     """``(key, row matches it)`` for each file hold, then each gate on *layer*."""
-    cells = _file_holds(layer, path_col, kind_col)
+    cells = _file_holds(layer, path_col, kind_col) if file_holds else []
     for gate in gates_on(layer):
         match = or_(*(path_col.ilike(f"%{ext}") for ext in gated_extensions(gate.language)))
         if gate.kinds is not None:
@@ -70,10 +89,18 @@ def _cells(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[str, An
 
 
 def ungated(
-    layer: GateLayer, path_col: Any, kind_col: Any = None, *, include_unverified: bool = False
+    layer: GateLayer,
+    path_col: Any,
+    kind_col: Any = None,
+    *,
+    include_unverified: bool = False,
+    file_holds: bool = True,
 ) -> Any:
-    """Rows of *layer* no language gate holds back (everything when opted in)."""
-    cells = [] if include_unverified else _cells(layer, path_col, kind_col)
+    """Rows of *layer* no language gate or file hold keeps back (everything when
+    opted in). ``file_holds=False`` applies the language gates alone."""
+    cells = (
+        [] if include_unverified else _cells(layer, path_col, kind_col, file_holds=file_holds)
+    )
     return not_(or_(*(match for _, match in cells))) if cells else true()
 
 

@@ -142,6 +142,10 @@ usual but held back pending verification: the plan lists, the queue, its facets
 and the rollup's lead leave them out unless the caller passes
 `include_unverified`, and responses count them in `gated`.
 
+Plans and opportunities on test files are held back the same way on every plan
+surface, `scope=all` included, as Fix first already leaves them out. They are
+counted in `gated` under `test`.
+
 Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
 them or how to move them, so an opportunity carries it as `evidence` instead of
 as a numbered step: it never leads, and never reaches Fix first. The plan itself

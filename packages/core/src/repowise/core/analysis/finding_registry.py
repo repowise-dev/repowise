@@ -174,12 +174,15 @@ LANGUAGE_GATES: tuple[LanguageGate, ...] = (
 #: Why a health finding is held back by the file it sits on rather than by its
 #: language: vendored and generated code is not the reader's to change, and a
 #: history marker on a test file describes how the test changes, not a defect
-#: in it. Read from the file's stored ``code_origin`` and ``is_test``, so it
-#: holds on every language, with the same opt-in as a language gate.
+#: in it. A refactoring plan or opportunity on a test file is held back too:
+#: Fix first never offers one, and no other plan surface does either. Read from
+#: the file's stored ``code_origin`` and ``is_test``, so it holds on every
+#: language, with the same opt-in as a language gate.
 FILE_HOLDS: dict[str, str] = {
     "vendored": "Held back on vendored files: the code is maintained upstream.",
     "generated": "Held back on generated files: change what generates them instead.",
     "test_history": "History markers held back on test files: they describe change, not a defect.",
+    "test": "Plans held back on test files: tests change with the code they cover.",
 }
 
 #: The stored ``code_origin`` values a health finding is never served on.
@@ -197,6 +200,8 @@ def history_kinds() -> frozenset[str]:
 def file_hold(layer: GateLayer, kind: Any, code_origin: Any, is_test: Any) -> str | None:
     """The :data:`FILE_HOLDS` key holding back a *layer* row of *kind* on a file
     with that stored origin and test flag, or ``None``."""
+    if layer == "refactoring":
+        return "test" if is_test is True else None
     if layer != "health":
         return None
     if code_origin in HELD_ORIGINS:
