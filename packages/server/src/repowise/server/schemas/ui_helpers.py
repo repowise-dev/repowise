@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -94,6 +96,24 @@ class ProviderStatusResponse(BaseModel):
     #: Registerable providers the catalog leaves out (picker_rank ``None``).
     flag_only_providers: list[str] = []
     embedders: list[EmbedderEntry] = []
+
+
+class ProviderModelEntry(BaseModel):
+    id: str
+    label: str | None = None
+
+
+class ProviderModelsResponse(BaseModel):
+    """Models a provider offers, newest-looking first after the default.
+
+    ``source`` is ``live`` when the provider listed them and ``catalog`` when
+    the built-in list stands in, with ``error`` saying why.
+    """
+
+    models: list[ProviderModelEntry]
+    source: Literal["live", "catalog"]
+    default_model: str
+    error: str | None = None
 
 
 class ProviderValidationResponse(BaseModel):

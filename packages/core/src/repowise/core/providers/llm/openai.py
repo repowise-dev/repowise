@@ -167,6 +167,10 @@ def _openai_temperature(model: str, requested: float) -> float:
 
 _OPENAI_API_URL = "https://api.openai.com/v1"
 
+#: The key sent to a local OpenAI-compatible server (LM Studio, vLLM, Ollama)
+#: when none is set. They ignore it; the SDK refuses an empty one.
+LOCAL_SERVER_API_KEY = "not-needed"
+
 
 def _openai_chat_tool_kwargs(model: str, *, has_tools: bool) -> dict[str, Any]:
     """Return Chat Completions overrides required by tool-enabled models.
@@ -288,7 +292,8 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
     """OpenAI Chat Completions provider.
 
     Args:
-        api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var.
+        api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var, and
+                   is optional for a local (loopback) ``base_url``.
         model:     Model identifier. Defaults to the spec's default_model.
         base_url:  Optional custom base URL for OpenAI-compatible endpoints.
         rate_limiter: Optional RateLimiter instance.
@@ -302,13 +307,15 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
     ) -> None:
+        resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not resolved_key and resolved_base_url and _is_loopback_url(resolved_base_url):
+            resolved_key = LOCAL_SERVER_API_KEY
         if not resolved_key:
             raise ProviderError(
                 "openai",
                 "No API key provided. Pass api_key= or set OPENAI_API_KEY.",
             )
-        resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._api_key = resolved_key
         self._base_url = resolved_base_url or _OPENAI_API_URL
         loopback = bool(resolved_base_url and _is_loopback_url(resolved_base_url))
