@@ -364,6 +364,10 @@ def sync_workspace_state_from_disk(
         disk_commit = read_state_commit(abs_path)
         if disk_commit is not None and disk_commit != entry.last_commit_at_index:
             entry.last_commit_at_index = disk_commit
+            # Use the child update's time, not the time this sync runs.
+            with suppress(OSError):
+                mtime = (abs_path / ".repowise" / "state.json").stat().st_mtime
+                entry.indexed_at = datetime.fromtimestamp(mtime, UTC).isoformat()
             changed.append(entry.alias)
     if changed and save_if_changed:
         try:

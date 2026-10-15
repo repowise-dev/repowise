@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,11 +37,15 @@ class TestSyncWorkspaceStateFromDisk:
         repo = _make_git_repo(tmp_path, "backend")
         new_sha = "deadbeef" * 5  # 40 chars
         _write_state(repo, new_sha)
+        state_path = repo / ".repowise" / "state.json"
+        indexed_at = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
+        os.utime(state_path, (indexed_at.timestamp(), indexed_at.timestamp()))
 
         ws_config = WorkspaceConfig(
             repos=[RepoEntry(
                 path="backend",
                 alias="backend",
+                indexed_at="2026-09-04T05:27:13+00:00",
                 last_commit_at_index="stale-sha",
             )],
         )
@@ -49,18 +54,75 @@ class TestSyncWorkspaceStateFromDisk:
         changed = sync_workspace_state_from_disk(tmp_path, ws_config)
         assert changed == ["backend"]
         assert ws_config.get_repo("backend").last_commit_at_index == new_sha
+        assert ws_config.get_repo("backend").indexed_at == indexed_at.isoformat()
+        saved = WorkspaceConfig.load(tmp_path).get_repo("backend")
+        assert saved.last_commit_at_index == new_sha
+        assert saved.indexed_at == indexed_at.isoformat()
 
     def test_no_change_when_in_sync(self, tmp_path: Path) -> None:
         repo = _make_git_repo(tmp_path, "backend")
         sha = "a" * 40
         _write_state(repo, sha)
+        indexed_at = "2026-09-04T05:27:13+00:00"
         ws_config = WorkspaceConfig(
             repos=[RepoEntry(
                 path="backend", alias="backend", last_commit_at_index=sha,
+                indexed_at=indexed_at,
             )],
         )
         ws_config.save(tmp_path)
         assert sync_workspace_state_from_disk(tmp_path, ws_config) == []
+        assert ws_config.get_repo("backend").indexed_at == indexed_at
+        assert WorkspaceConfig.load(tmp_path).get_repo("backend").indexed_at == indexed_at
+
+    def test_sync_without_saving_updates_only_in_memory(self, tmp_path: Path) -> None:
+        repo = _make_git_repo(tmp_path, "backend")
+        new_sha = "b" * 40
+        _write_state(repo, new_sha)
+        indexed_at = datetime.fromtimestamp(
+            (repo / ".repowise" / "state.json").stat().st_mtime, UTC,
+        ).isoformat()
+        old_indexed_at = "2026-09-04T05:27:13+00:00"
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(
+                path="backend", alias="backend", last_commit_at_index="old",
+                indexed_at=old_indexed_at,
+            )],
+        )
+        ws_config.save(tmp_path)
+
+        assert sync_workspace_state_from_disk(tmp_path, ws_config, save_if_changed=False) == ["backend"]
+        assert ws_config.get_repo("backend").last_commit_at_index == new_sha
+        assert ws_config.get_repo("backend").indexed_at == indexed_at
+        saved = WorkspaceConfig.load(tmp_path).get_repo("backend")
+        assert saved.last_commit_at_index == "old"
+        assert saved.indexed_at == old_indexed_at
+
+    def test_state_removed_after_read_keeps_commit_sync(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from repowise.core.workspace import update
+
+        repo = _make_git_repo(tmp_path, "backend")
+        new_sha = "b" * 40
+        _write_state(repo, new_sha)
+        indexed_at = "2026-09-04T05:27:13+00:00"
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(
+                path="backend", alias="backend", last_commit_at_index="old",
+                indexed_at=indexed_at,
+            )],
+        )
+
+        def read_then_remove(path: Path) -> str | None:
+            sha = read_state_commit(path)
+            (path / ".repowise" / "state.json").unlink()
+            return sha
+
+        monkeypatch.setattr(update, "read_state_commit", read_then_remove)
+        assert sync_workspace_state_from_disk(tmp_path, ws_config) == ["backend"]
+        assert ws_config.get_repo("backend").last_commit_at_index == new_sha
+        assert ws_config.get_repo("backend").indexed_at == indexed_at
 
     def test_missing_dir_skipped(self, tmp_path: Path) -> None:
         ws_config = WorkspaceConfig(
