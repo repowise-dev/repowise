@@ -60,6 +60,7 @@ SkipReason = Literal[
     "not_analyzable_data",
     "unsupported_language",
     "generated",
+    "vendored",
     "binary",
     "excluded",
     "deleted",

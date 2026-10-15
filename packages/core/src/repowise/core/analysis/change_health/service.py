@@ -268,6 +268,7 @@ class ChangeHealthDeltaService:
         )
 
         skipped.update(head_run.skipped)
+        skipped.update(_held_origins(head_sources, self.repo_path))
         # A file whose BASE side failed has no baseline, so every finding at its
         # head would read as introduced. Drop it from the subject and say so:
         # silently keeping it is how a partial run fabricates new findings.
@@ -407,6 +408,22 @@ def _nothing_compared(changes: list[FileChange], skipped: dict[str, str]) -> str
             "health analysis does not cover them."
         )
     return "No changed file is health-analyzable, so nothing was compared."
+
+
+def _held_origins(sources: dict[str, bytes], repo_root: str | None) -> dict[str, str]:
+    """``{path: "vendored" | "generated"}`` for the changed files every health
+    surface holds back by origin. Read from the head bytes with the classifier
+    the index stores ``code_origin`` from, so a file the index has not seen yet
+    (new in this change) is classed the same way it will be once indexed."""
+    from ...code_origin import code_origin
+    from ..finding_registry import HELD_ORIGINS
+
+    out: dict[str, str] = {}
+    for path, raw in sources.items():
+        origin = code_origin(path, raw, repo_root=repo_root)
+        if origin in HELD_ORIGINS:
+            out[path] = origin
+    return out
 
 
 def _skip_reason(change: FileChange) -> str:
