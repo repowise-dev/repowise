@@ -33,7 +33,7 @@ from repowise.core.stack_trace import (
     parse_trace,
 )
 from repowise.core.test_paths import is_test_path, is_test_related_path
-from repowise.server.mcp_server._graph_files import per_index
+from repowise.server.mcp_server._graph_files import graph_file_paths, per_index
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     _get_exclude_spec,
@@ -511,6 +511,15 @@ async def file_path_index(session: Any, repo_id: str) -> PathIndex:
     return await per_index(session, repo_id, "search_file_paths", build)
 
 
+async def path_search_paths(session: Any, repo_id: str) -> tuple[str, ...]:
+    """Path-mode candidates, including indexed files without a file page.
+
+    Keep ``file_path_index`` page-only for its other ranking consumers.
+    """
+    paged = (await file_path_index(session, repo_id)).paths
+    return tuple(sorted(set(paged) | set(await graph_file_paths(session, repo_id))))
+
+
 async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     """Path search against one repo context. Returns ranked file result dicts.
 
@@ -525,7 +534,8 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         index = await file_path_index(session, repository.id)
-        tokens = path_tokens(query, index.paths)
+        paths = await path_search_paths(session, repository.id)
+        tokens = path_tokens(query, paths)
         qnorms = [
             q
             for q in (t.strip().lower().replace("\\", "/").strip("*?") for t in tokens or [query])
@@ -534,7 +544,7 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
         if not qnorms:
             return []
         # A query carrying no path also matches paths by their words.
-        word_hits = {} if tokens else _word_path_hits(query, index.paths)
+        word_hits = {} if tokens else _word_path_hits(query, paths)
         res = await session.execute(
             select(Page.id, Page.title, Page.target_path, Page.freshness_status).where(
                 Page.repository_id == repository.id,
@@ -548,7 +558,21 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
                 ),
             )
         )
-        rows = res.all()
+        rows = [tuple(row) for row in res.all()]
+        paged = set(index.paths)
+        unpaged = [
+            path for path in paths
+            if path not in paged
+            and (any(q in path.lower() for q in qnorms) or path in word_hits)
+        ]
+        if unpaged:
+            # A broad graph-path match can exceed SQLite's bind-variable limit.
+            res = await session.execute(select(Page.target_path).where(
+                Page.repository_id == repository.id,
+                Page.freshness_status == "tombstone",
+            ))
+            tombstoned = set(res.scalars())
+            rows.extend((None, path, path, None) for path in unpaged if path not in tombstoned)
 
     spec = _get_exclude_spec(ctx.path)
     scored: list[tuple[float, Any]] = []
@@ -565,7 +589,7 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     return [
         {
             "type": "file",
-            "page_id": page_id,
+            **({"page_id": page_id} if page_id is not None else {}),
             "title": title,
             "file": target_path,
             "score": round(score, 4),

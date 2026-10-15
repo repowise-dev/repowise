@@ -92,6 +92,7 @@ from repowise.server.mcp_server.tool_search_symbols import (
     file_path_index,
     indexed_names,
     issue_files,
+    path_search_paths,
     search_paths_single,
     search_symbols_single,
 )
@@ -1112,7 +1113,7 @@ async def _structured_search(
         if mode == "path":
             f = await search_paths_single(ctx, query, limit)
             async with get_session(ctx.session_factory) as session:
-                paths = (await file_path_index(session, (await _get_repo(session)).id)).paths
+                paths = await path_search_paths(session, (await _get_repo(session)).id)
         if mode == "hybrid":
             c = await _search_single_repo(ctx, query, limit, page_type, kind)
             for item in c:

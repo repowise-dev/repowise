@@ -243,6 +243,89 @@ async def test_exact_path_query_is_unchanged(setup_mcp):
     assert await _path_search("src/agents/poll.ts") == ["src/agents/poll.ts"]
 
 
+async def _seed_graph_file(session, repo_id, path):
+    from repowise.core.persistence.models import GraphNode
+
+    session.add(GraphNode(
+        id=f"path-search:{path}", repository_id=repo_id, node_id=path,
+        node_type="file", name=path.rsplit("/", 1)[-1], file_path=path,
+        language="python",
+    ))
+    await session.commit()
+
+
+@pytest.mark.parametrize("query", [
+    "path_probe", "path probe unpaged", "src/path_probe_unpaged.py",
+    r"src\path_probe_unpaged.py", "path_probe_unpaged*",
+])
+async def test_path_search_includes_pageless_files(session, setup_mcp, query):
+    from types import SimpleNamespace
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server.tool_search_symbols import (
+        _path_score,
+        file_path_index,
+        search_paths_single,
+    )
+
+    paged = "src/path_probe_paged.py"
+    unpaged = "src/path_probe_unpaged.py"
+    await _seed_page(f"file_page:{paged}", paged)
+    await _seed_graph_file(session, setup_mcp, paged)
+    await _seed_graph_file(session, setup_mcp, unpaged)
+    ctx = SimpleNamespace(session_factory=mcp_mod._session_factory, path=mcp_mod._repo_path)
+    rows = await search_paths_single(ctx, query, limit=10)
+    assert [r["file"] for r in rows] == ([paged, unpaged] if query == "path_probe" else [unpaged])
+    assert rows[-1]["type"] == "file"
+    assert rows[-1]["next"] == "get_context"
+    assert not rows[-1].get("page_id", "").startswith("file_page:")
+    if query == "path_probe":
+        assert rows[0]["page_id"] == f"file_page:{paged}"
+        assert rows[0]["score"] == round(_path_score(paged, query), 4)
+    # Other ranking consumers still see the existing page-only path index.
+    assert unpaged not in (await file_path_index(session, setup_mcp)).paths
+
+
+@pytest.mark.parametrize("query", ["samples/route/handler.py", "look in samples/route please"])
+async def test_path_mode_opens_pageless_files_without_a_missing_index_hint(session, setup_mcp, query):
+    from repowise.server.mcp_server import search_codebase
+
+    path = "samples/route/handler.py"
+    await _seed_graph_file(session, setup_mcp, path)
+    result = await search_codebase(query, mode="path")
+    assert [row["path"] for row in result["results"]] == [path]
+    assert result["results"][0]["next"] == "get_context"
+    assert "grep_hint" not in result
+    assert "No indexed match" not in result.get("note", "")
+
+
+@pytest.mark.parametrize("page_type", ["file_page", "module_page"])
+async def test_pageless_path_search_keeps_tombstones_and_exclusions_out(
+    session, setup_mcp, monkeypatch, page_type,
+):
+    from types import SimpleNamespace
+
+    import pathspec
+    from sqlalchemy import update
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.persistence.models import Page
+    from repowise.server.mcp_server import tool_search_symbols as search
+
+    for path in ("probe/live.py", "probe/deleted.py", "probe/hidden.py"):
+        await _seed_graph_file(session, setup_mcp, path)
+    await _seed_page("tombstone:probe/deleted.py", "probe/deleted.py", page_type)
+    await session.execute(update(Page).where(Page.id == "tombstone:probe/deleted.py").values(
+        freshness_status="tombstone",
+    ))
+    await session.commit()
+    spec = pathspec.GitIgnoreSpec.from_lines(["probe/hidden.py"])
+    monkeypatch.setattr(search, "_get_exclude_spec", lambda _: spec)
+    ctx = SimpleNamespace(session_factory=mcp_mod._session_factory, path=mcp_mod._repo_path)
+    rows = await search.search_paths_single(ctx, "probe/", limit=10)
+    assert [row["file"] for row in rows] == ["probe/live.py"]
+
+
 class TestDecisionDownweight:
     """Decision records must not crowd file pages out of the top ranks."""
 
