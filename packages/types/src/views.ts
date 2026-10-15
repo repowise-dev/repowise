@@ -14,14 +14,19 @@
  * model plus one `ViewPart` union line in `repowise.server.schemas.views`;
  * and its cases in `packages/types/fixtures/views.conformance.json`. Maps
  * keyed by `ViewKind` (validator, renderers) fail to compile until filled.
- * `schema_version` changes whenever a field is removed or a required one is
- * added. An optional field leaves it alone: stored parts stay valid, and the
- * server and its web client ship together.
+ * `schema_version` changes whenever a field is added or removed, because both
+ * validators reject unknown fields; readers keep accepting the older versions
+ * so stored parts still render, and a client meeting a chart it cannot draw
+ * shows its table (`parseViewParts`).
  */
 
 import type { CardBasis, CardRef } from "./evidence.js";
 
-export const VIEW_SCHEMA_VERSION = 1 as const;
+/** The version a server writes. */
+export const VIEW_SCHEMA_VERSION = 2 as const;
+/** Versions a reader accepts: 1 is every part stored before treemaps and heatmaps. */
+export const VIEW_SCHEMA_VERSIONS = [1, 2] as const;
+export type ViewSchemaVersion = (typeof VIEW_SCHEMA_VERSIONS)[number];
 
 /** The chat-only tool that builds views. Its call is plumbing, not evidence. */
 export const SHOW_VIEW_TOOL = "show_view";
@@ -89,7 +94,7 @@ export interface ViewCoverage {
 }
 
 export interface ViewPartBase<K extends string> {
-  schema_version: typeof VIEW_SCHEMA_VERSION;
+  schema_version: ViewSchemaVersion;
   kind: K;
   /** Unique within one turn or report; sections and narrative cite parts by it. */
   id: string;

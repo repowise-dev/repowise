@@ -31,7 +31,9 @@ from repowise.server.schemas.evidence import (
     WireInt,
 )
 
-VIEW_SCHEMA_VERSION = 1
+VIEW_SCHEMA_VERSION = 2
+#: Versions a reader accepts: 1 is every part stored before treemaps and heatmaps.
+VIEW_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
 
 ChartType = Literal[
     "bar",
@@ -90,7 +92,7 @@ class ViewPartBase(StrictContract):
     #: Data parts carry provenance and are what other parts may name.
     is_data: ClassVar[bool] = False
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     id: PartId
     title: NonEmpty
     summary: NonEmpty | None = None
@@ -98,9 +100,9 @@ class ViewPartBase(StrictContract):
     @field_validator("schema_version", mode="before")
     @classmethod
     def _not_a_bool(cls, value: object) -> object:
-        # Literal[1] alone accepts True, which the TypeScript side rejects.
+        # Literal[1, 2] alone accepts True, which the TypeScript side rejects.
         if isinstance(value, bool):
-            raise ValueError(f"expected {VIEW_SCHEMA_VERSION}")
+            raise ValueError(f"expected one of {VIEW_SCHEMA_VERSIONS}")
         return value
 
     def references(self) -> list[str]:

@@ -1,7 +1,8 @@
 {
-  "about": "Shared conformance cases for chat view parts. The TypeScript validator (packages/api-client/src/views.test.ts) and the server models (tests/unit/server/test_view_parts_contract.py) both run every case, so they accept and reject the same payloads. An invalid case copies a valid part (from), then applies drop (paths), set (path to value) and grow (path to length, repeating the array's first item). Paths are dotted; numeric segments index arrays. error is the substring the TypeScript validator reports. valid_variants are accepted by both sides but not round-tripped (JSON writes -0 as 0). Strings have no maximum length, only non-empty, so UTF-16 units and code points agree; ids and column keys are ASCII patterns. Numbers stay within +/-(2^53 - 1).",
+  "about": "Shared conformance cases for chat view parts. The TypeScript validator (packages/api-client/src/views.test.ts) and the server models (tests/unit/server/test_view_parts_contract.py) both run every case, so they accept and reject the same payloads. An invalid case copies a valid part (from), then applies drop (paths), set (path to value) and grow (path to length, repeating the array's first item). Paths are dotted; numeric segments index arrays. error is the substring the TypeScript validator reports. valid_variants are accepted by both sides but not round-tripped (JSON writes -0 as 0). Strings have no maximum length, only non-empty, so UTF-16 units and code points agree; ids and column keys are ASCII patterns. Numbers stay within +/-(2^53 - 1). Valid parts are written at schema version 1, as parts stored before version 2 are, so both sides prove those still validate.",
   "vocabulary": {
-    "schema_version": 1,
+    "schema_version": 2,
+    "schema_versions": [1, 2],
     "max_wire_number": 9007199254740991,
     "view_kinds": ["table", "chart", "section"],
     "chart_types": ["bar", "horizontal_bar", "stacked_bar", "line", "area", "donut", "scatter", "treemap", "heatmap"],
@@ -271,7 +272,7 @@
   "invalid": [
     { "name": "unknown kind", "from": "t1", "set": { "kind": "pie" }, "error": "view.kind" },
     { "name": "missing kind", "from": "t1", "drop": ["kind"], "error": "view.kind" },
-    { "name": "wrong schema version", "from": "t1", "set": { "schema_version": 2 }, "error": "view.schema_version" },
+    { "name": "wrong schema version", "from": "t1", "set": { "schema_version": 3 }, "error": "view.schema_version" },
     { "name": "boolean schema version", "from": "s1", "set": { "schema_version": true }, "error": "view.schema_version" },
     { "name": "missing source", "from": "t1", "drop": ["source"], "error": "view.source: required" },
     { "name": "missing basis", "from": "c1", "drop": ["basis"], "error": "view.basis: required" },
@@ -338,6 +339,7 @@
     {"name": "stacked bar of all zeros", "from": "c2", "set": {"data.rows.0.measured": 0, "data.rows.0.inferred": 0, "data.rows.1.measured": 0, "data.rows.1.inferred": 0}, "error": "a stacked_bar needs a positive total"}
   ],
   "valid_variants": [
+    { "name": "a part at the current schema version", "from": "c6", "set": { "schema_version": 2 } },
     { "name": "non-BMP title and summary", "from": "t1", "set": { "title": "😀", "summary": "Payments 💳 leads" } },
     { "name": "negative zero in a line", "from": "c3", "set": { "data.rows.0.commits": -0 } },
     { "name": "negative zero donut part", "from": "c4", "set": { "data.rows.2.files": -0.0 } },
