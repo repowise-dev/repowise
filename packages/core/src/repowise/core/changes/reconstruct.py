@@ -119,6 +119,22 @@ def change_title(subject: str, body: str, is_merge: bool) -> str:
     return subject
 
 
+#: A squash title's trailing ``(#N)`` (GitHub) or ``(!N)`` (GitLab).
+_OWN_REF_SUFFIX = re.compile(r"\s*\((?:#|!)(\d+)\)\s*$")
+
+
+def without_own_ref(title: str, number: str) -> str:
+    """*title* less a trailing ``(#N)``/``(!N)`` naming its own change *number*.
+
+    Surfaces print the ref beside the title, so the forge's suffix repeats it.
+    A suffix naming another change stays.
+    """
+    m = _OWN_REF_SUFFIX.search(title)
+    if m and m.group(1) == number and m.start() > 0:
+        return title[: m.start()]
+    return title
+
+
 def change_identity(
     subject: str, body: str, sha: str, is_merge: bool, forge: ForgeKind | str
 ) -> tuple[str, str, str | None]:
@@ -390,6 +406,8 @@ class _Builder:
         else:
             shape = SHAPE_COMMIT
         title = change_title(head.subject, head.body, head.is_merge)
+        if kind == KIND_PR:
+            title = without_own_ref(title, value)
         self.out.append(
             ReconstructedChange(
                 change_id=change_id,
