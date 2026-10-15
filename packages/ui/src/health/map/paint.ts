@@ -204,6 +204,16 @@ export interface View {
   dpr: number;
 }
 
+/** What one frame paints with: the field, the camera, the box, the theme. */
+export interface Frame {
+  scene: FieldScene;
+  cam: Cam;
+  view: View;
+  palette: Palette;
+  /** Index of the focused galaxy, or -1. */
+  focus: number;
+}
+
 /** Opacity of a node outside the focused galaxy. */
 const FADED_ALPHA = 0.16;
 /** Peak opacity of a glow. Soft enough to read as light, not as a ring. */
@@ -213,63 +223,84 @@ function screen(cam: Cam, view: View, x: number, y: number): [number, number] {
   return [view.w / 2 + (x - cam.cx) * cam.scale, view.h / 2 + (y - cam.cy) * cam.scale];
 }
 
+/** Whether a disc of screen radius `r` at `(x, y)` misses the box. */
+function offscreen(view: View, x: number, y: number, r: number): boolean {
+  return x + r < 0 || y + r < 0 || x - r > view.w || y - r > view.h;
+}
+
+/** Reset to CSS-pixel space and clear. */
+function clear(ctx: CanvasRenderingContext2D, view: View): void {
+  ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  ctx.clearRect(0, 0, view.w, view.h);
+}
+
+/** How a galaxy's cloud and ring read: dimmed, focused, or at rest. */
+function galaxyTone(gi: number, focus: number): { cloud: number; ring: number; width: number } {
+  if (focus < 0) return { cloud: 0.04, ring: 0.6, width: 1 };
+  if (gi === focus) return { cloud: 0.04, ring: 1, width: 1.25 };
+  return { cloud: 0.012, ring: 0.3, width: 1 };
+}
+
+/**
+ * Galaxies are neutral: a soft cloud and a hairline, and no hue, because the
+ * nodes inside already speak in red, amber and green.
+ */
+function drawGalaxies(ctx: CanvasRenderingContext2D, f: Frame): void {
+  const { cam, view, palette } = f;
+  f.scene.galaxies.forEach((g, gi) => {
+    const [sx, sy] = screen(cam, view, g.cx, g.cy);
+    const R = g.R * cam.scale;
+    if (R < 1 || offscreen(view, sx, sy, R)) return;
+    const tone = galaxyTone(gi, f.focus);
+    const cloud = ctx.createRadialGradient(sx, sy, 0, sx, sy, R * 1.12);
+    cloud.addColorStop(0, rgba(palette.ink, tone.cloud));
+    cloud.addColorStop(1, rgba(palette.ink, 0));
+    ctx.fillStyle = cloud;
+    ctx.beginPath();
+    ctx.arc(sx, sy, R * 1.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = tone.width;
+    ctx.strokeStyle = rgba(palette.ring, tone.ring);
+    ctx.beginPath();
+    ctx.arc(sx, sy, R, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+}
+
+/** One batch at tween progress `t`: its glow, if it has one, then its discs. */
+function drawBatch(ctx: CanvasRenderingContext2D, b: Batch, t: number): void {
+  if (!b.path) return;
+  const alpha = b.faded ? FADED_ALPHA : 1;
+  const fill = rgba(t >= 1 ? b.to : mixRgb(b.from, b.to, t));
+  const glow = b.glowFrom + (b.glowTo - b.glowFrom) * t;
+  ctx.fillStyle = fill;
+  if (b.glow && glow > 0) {
+    ctx.globalAlpha = GLOW_ALPHA * glow * alpha;
+    ctx.fill(b.glow);
+  }
+  ctx.globalAlpha = alpha;
+  ctx.fill(b.path);
+}
+
 /**
  * The base layer: each galaxy's nebula and hairline, then the nodes.
  * `t` is the lens tween's progress, 1 at rest.
  */
 export function drawField(
   ctx: CanvasRenderingContext2D,
-  scene: FieldScene,
+  f: Frame,
   batches: Batch[],
-  cam: Cam,
-  view: View,
   t: number,
-  focus: number,
-  palette: Palette,
 ): void {
-  const { dpr } = view;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, view.w, view.h);
-
-  // Galaxies are neutral: a soft cloud and a hairline, and no hue, because
-  // the nodes inside already speak in red, amber and green.
-  scene.galaxies.forEach((g, gi) => {
-    const [sx, sy] = screen(cam, view, g.cx, g.cy);
-    const R = g.R * cam.scale;
-    if (sx + R < 0 || sy + R < 0 || sx - R > view.w || sy - R > view.h || R < 1) return;
-    const faded = focus >= 0 && gi !== focus;
-    const cloud = ctx.createRadialGradient(sx, sy, 0, sx, sy, R * 1.12);
-    cloud.addColorStop(0, rgba(palette.ink, faded ? 0.012 : 0.04));
-    cloud.addColorStop(1, rgba(palette.ink, 0));
-    ctx.fillStyle = cloud;
-    ctx.beginPath();
-    ctx.arc(sx, sy, R * 1.12, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.lineWidth = gi === focus ? 1.25 : 1;
-    ctx.strokeStyle = rgba(palette.ring, faded ? 0.3 : gi === focus ? 1 : 0.6);
-    ctx.beginPath();
-    ctx.arc(sx, sy, R, 0, Math.PI * 2);
-    ctx.stroke();
-  });
-
+  const { cam, view } = f;
+  clear(ctx, view);
+  drawGalaxies(ctx, f);
   const s = cam.scale;
-  ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * (view.w / 2 - cam.cx * s), dpr * (view.h / 2 - cam.cy * s));
-  for (const b of batches) {
-    if (!b.path) continue;
-    const alpha = b.faded ? FADED_ALPHA : 1;
-    const rgb = t >= 1 ? b.to : mixRgb(b.from, b.to, t);
-    const glow = b.glowFrom + (b.glowTo - b.glowFrom) * t;
-    if (b.glow && glow > 0) {
-      ctx.globalAlpha = GLOW_ALPHA * glow * alpha;
-      ctx.fillStyle = rgba(rgb);
-      ctx.fill(b.glow);
-    }
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = rgba(rgb);
-    ctx.fill(b.path);
-  }
+  const d = view.dpr;
+  ctx.setTransform(d * s, 0, 0, d * s, d * (view.w / 2 - cam.cx * s), d * (view.h / 2 - cam.cy * s));
+  for (const b of batches) drawBatch(ctx, b, t);
   ctx.globalAlpha = 1;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.setTransform(d, 0, 0, d, 0, 0);
 }
 
 export interface Marks {
@@ -277,52 +308,49 @@ export interface Marks {
   hovered: number;
   cursor: number;
   matches: readonly number[];
+  /** A node's resolved fill, for repainting it above its neighbours. */
+  fillOf: (i: number) => Rgb;
+  /** Smallest drawn radius, in px, so a ring hugs a floored dot. */
+  floorPx: number;
+}
+
+/** Screen centre and radius of node `i`, or null when it does not exist. */
+function nodeOnScreen(f: Frame, i: number, floorPx: number): [number, number, number] | null {
+  const nd = f.scene.nodes[i];
+  if (!nd) return null;
+  const [sx, sy] = screen(f.cam, f.view, nd.x, nd.y);
+  return [sx, sy, Math.max(nd.r * f.cam.scale, floorPx)];
 }
 
 /**
  * The top layer: rings in screen pixels, so a ring is the same weight at any
  * zoom. Cheap enough to repaint on every hover change.
  */
-export function drawMarks(
-  ctx: CanvasRenderingContext2D,
-  scene: FieldScene,
-  cam: Cam,
-  view: View,
-  marks: Marks,
-  fillOf: (i: number) => Rgb,
-  floorPx: number,
-  palette: Palette,
-): void {
-  const { dpr } = view;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, view.w, view.h);
-  const ring = (i: number, pad: number, width: number, colour: string, dash?: number[]) => {
-    const nd = scene.nodes[i];
-    if (!nd) return;
-    const [sx, sy] = screen(cam, view, nd.x, nd.y);
-    const r = Math.max(nd.r * cam.scale, floorPx) + pad;
-    if (sx + r < 0 || sy + r < 0 || sx - r > view.w || sy - r > view.h) return;
-    ctx.setLineDash(dash ?? []);
+export function drawMarks(ctx: CanvasRenderingContext2D, f: Frame, marks: Marks): void {
+  clear(ctx, f.view);
+  const ring = (i: number, pad: number, width: number, colour: string, dash: number[] = []) => {
+    const at = nodeOnScreen(f, i, marks.floorPx);
+    if (!at || offscreen(f.view, at[0], at[1], at[2] + pad)) return;
+    ctx.setLineDash(dash);
     ctx.lineWidth = width;
     ctx.strokeStyle = colour;
     ctx.beginPath();
-    ctx.arc(sx, sy, r, 0, Math.PI * 2);
+    ctx.arc(at[0], at[1], at[2] + pad, 0, Math.PI * 2);
     ctx.stroke();
   };
   const solid = (i: number, grow: number) => {
-    const nd = scene.nodes[i];
-    if (!nd) return;
-    const [sx, sy] = screen(cam, view, nd.x, nd.y);
-    ctx.fillStyle = rgba(fillOf(i));
+    const at = nodeOnScreen(f, i, marks.floorPx);
+    if (!at) return;
+    ctx.fillStyle = rgba(marks.fillOf(i));
     ctx.beginPath();
-    ctx.arc(sx, sy, Math.max(nd.r * cam.scale, floorPx) + grow, 0, Math.PI * 2);
+    ctx.arc(at[0], at[1], at[2] + grow, 0, Math.PI * 2);
     ctx.fill();
   };
-  const accent = rgba(palette.accent);
+  const accent = rgba(f.palette.accent);
   for (const i of marks.matches) ring(i, 2.5, 1.5, accent);
   if (marks.hovered >= 0 && marks.hovered !== marks.selected) {
     solid(marks.hovered, 1);
-    ring(marks.hovered, 2, 1.5, rgba(palette.ink, 0.85));
+    ring(marks.hovered, 2, 1.5, rgba(f.palette.ink, 0.85));
   }
   if (marks.selected >= 0) {
     solid(marks.selected, 0);

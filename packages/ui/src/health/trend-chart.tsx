@@ -1,7 +1,7 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent, PointerEvent, RefObject } from "react";
 import { HEALTHY_MIN, NEEDS_WORK_MIN, formatScore } from "@repowise-dev/types/health";
 
 import { EmptyState } from "../shared/empty-state";
@@ -173,6 +173,85 @@ function geometry(history: TrendSeriesPoint[], width: number, height: number): G
   };
 }
 
+const MICRO = { fontSize: 10, fill: "var(--color-text-tertiary)" } as const;
+
+/** The three health bands, named in the right margin. */
+function Bands({ g }: { g: Geometry }) {
+  return BANDS.map((b) => (
+    <g key={b.label}>
+      <rect x={PAD.l} width={g.plotW} y={g.y(b.from)} height={g.y(b.to) - g.y(b.from)} fill={b.fill} fillOpacity={0.06} />
+      <text x={PAD.l + g.plotW + 6} y={(g.y(b.from) + g.y(b.to)) / 2 + 3} textAnchor="start" {...MICRO}>
+        {b.label}
+      </text>
+    </g>
+  ));
+}
+
+/** The score gridlines and the date ticks. */
+function Axes({ g }: { g: Geometry }) {
+  return (
+    <>
+      {[0, 2, 4, 6, 8, 10].map((v) => (
+        <g key={v}>
+          <line x1={PAD.l} x2={PAD.l + g.plotW} y1={g.y(v)} y2={g.y(v)} stroke="currentColor" strokeOpacity={0.08} />
+          <text x={PAD.l - 6} y={g.y(v) + 3} textAnchor="end" {...MICRO}>
+            {v}
+          </text>
+        </g>
+      ))}
+      {g.ticks.map(({ i, label }, k) => (
+        <text
+          key={i}
+          x={g.x(i)}
+          y={g.height - 6}
+          textAnchor={k === 0 ? "start" : k === g.ticks.length - 1 ? "end" : "middle"}
+          {...MICRO}
+        >
+          {label}
+        </text>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Under the lines: the band is context for the code-health line, so its upper
+ * edge takes that line's colour and dims with it.
+ */
+function HistoryDrag({ g, opacity }: { g: Geometry; opacity: number }) {
+  return g.historyBands.map((d, i) => (
+    <path
+      key={i}
+      d={d}
+      fill="currentColor"
+      fillOpacity={0.07}
+      stroke={LINES.average_health.color}
+      strokeOpacity={0.4 * opacity}
+      strokeWidth={1}
+      strokeDasharray="2 3"
+    />
+  ));
+}
+
+function Line({ g, history, s, lead }: { g: Geometry; history: TrendSeriesPoint[]; s: Series; lead: boolean }) {
+  return (
+    <>
+      <path
+        d={g.paths[s.key]}
+        stroke={s.color}
+        strokeWidth={lead ? 2.5 : 1.5}
+        strokeDasharray={s.dash}
+        fill="none"
+        strokeLinejoin="round"
+      />
+      {history.map((p, i) => {
+        const v = value(p, s.key);
+        return v == null ? null : <circle key={i} cx={g.x(i)} cy={g.y(v)} r={2} fill={s.color} />;
+      })}
+    </>
+  );
+}
+
 /** Bands, axes and lines: everything that does not move with the pointer. */
 const Plot = memo(function Plot({
   g,
@@ -187,85 +266,29 @@ const Plot = memo(function Plot({
   lead: LineKey;
   emphasis: LineKey | null;
 }) {
-  const showsCodeHealth = series.some((s) => s.key === "average_health");
   const opacity = (key: LineKey) => (emphasis && emphasis !== key ? 0.2 : 1);
+  // The lead last, so a support line never crosses it out.
+  const ordered = [...series].sort((a, b) => Number(a.key === lead) - Number(b.key === lead));
   return (
     <>
-      {BANDS.map((b) => (
-        <g key={b.label}>
-          <rect
-            x={PAD.l}
-            width={g.plotW}
-            y={g.y(b.from)}
-            height={g.y(b.to) - g.y(b.from)}
-            fill={b.fill}
-            fillOpacity={0.06}
-          />
-          <text
-            x={PAD.l + g.plotW + 6}
-            y={(g.y(b.from) + g.y(b.to)) / 2 + 3}
-            fontSize={10}
-            textAnchor="start"
-            fill="var(--color-text-tertiary)"
-          >
-            {b.label}
-          </text>
-        </g>
-      ))}
-      {[0, 2, 4, 6, 8, 10].map((v) => (
-        <g key={v}>
-          <line x1={PAD.l} x2={PAD.l + g.plotW} y1={g.y(v)} y2={g.y(v)} stroke="currentColor" strokeOpacity={0.08} />
-          <text x={PAD.l - 6} y={g.y(v) + 3} fontSize={10} textAnchor="end" fill="var(--color-text-tertiary)">
-            {v}
-          </text>
-        </g>
-      ))}
-      {g.ticks.map(({ i, label }, k) => {
-        const anchor = k === 0 ? "start" : k === g.ticks.length - 1 ? "end" : "middle";
-        return (
-          <text key={i} x={g.x(i)} y={g.height - 6} fontSize={10} textAnchor={anchor} fill="var(--color-text-tertiary)">
-            {label}
-          </text>
-        );
-      })}
-      {/* Under the lines: the band is context for the code-health line, so its
-          upper edge takes that line's colour and dims with it. */}
-      {showsCodeHealth &&
-        g.historyBands.map((d, i) => (
-          <path
-            key={i}
-            d={d}
-            fill="currentColor"
-            fillOpacity={0.07}
-            stroke={LINES.average_health.color}
-            strokeOpacity={0.4 * opacity("average_health")}
-            strokeWidth={1}
-            strokeDasharray="2 3"
-          />
-        ))}
-      {/* The lead last, so a support line never crosses it out. */}
-      {[...series].sort((a, b) => Number(a.key === lead) - Number(b.key === lead)).map((s) => (
+      <Bands g={g} />
+      <Axes g={g} />
+      {series.some((s) => s.key === "average_health") && (
+        <HistoryDrag g={g} opacity={opacity("average_health")} />
+      )}
+      {ordered.map((s) => (
         <g key={s.key} opacity={opacity(s.key)}>
-          <path
-            d={g.paths[s.key]}
-            stroke={s.color}
-            strokeWidth={s.key === lead ? 2.5 : 1.5}
-            strokeDasharray={s.dash}
-            fill="none"
-            strokeLinejoin="round"
-          />
-          {history.map((p, i) => {
-            const v = value(p, s.key);
-            return v == null ? null : <circle key={i} cx={g.x(i)} cy={g.y(v)} r={2} fill={s.color} />;
-          })}
+          <Line g={g} history={history} s={s} lead={s.key === lead} />
         </g>
       ))}
     </>
   );
 });
 
+type ReadoutRow = { series: Series; value: number; delta: number | null };
+
 /** One line of the readout per shown series, in the order the legend lists them. */
-function readoutRows(history: TrendSeriesPoint[], i: number, series: Series[]) {
+function readoutRows(history: TrendSeriesPoint[], i: number, series: Series[]): ReadoutRow[] {
   const p = history[i]!;
   const prev = i > 0 ? history[i - 1]! : null;
   return series.flatMap((s) => {
@@ -293,19 +316,20 @@ function announce(history: TrendSeriesPoint[], i: number, series: Series[]): str
     .join(" ");
 }
 
-export function TrendChart({ history, height = 220 }: TrendChartProps) {
-  const boxRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(FALLBACK_WIDTH);
-  const [active, setActive] = useState<number | null>(null);
-  const [spoken, setSpoken] = useState("");
-  const [hidden, setHidden] = useState<ReadonlySet<LineKey>>(() => new Set());
-  const [emphasis, setEmphasis] = useState<LineKey | null>(null);
-  const frame = useRef<number | null>(null);
-  const pointerX = useRef(0);
+/** The snapshot a key moves to from *from*, or `null` for a key that steps nowhere. */
+function keyStep(key: string, from: number, last: number): number | null {
+  if (key === "ArrowLeft") return Math.max(0, from - 1);
+  if (key === "ArrowRight") return Math.min(last, from + 1);
+  if (key === "Home") return 0;
+  if (key === "End") return last;
+  return null;
+}
 
-  // Sized to the container rather than scaled, so 10px labels stay 10px.
+/** The container's width, so the chart is sized rather than scaled and 10px labels stay 10px. */
+function useChartSize(ref: RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(FALLBACK_WIDTH);
   useEffect(() => {
-    const el = boxRef.current;
+    const el = ref.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
       const w = Math.round(entries[0]?.contentRect.width ?? 0);
@@ -313,15 +337,13 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
-  useEffect(
-    () => () => {
-      if (frame.current != null) cancelAnimationFrame(frame.current);
-    },
-    [],
-  );
+  }, [ref]);
+  return width;
+}
 
-  const g = useMemo(() => geometry(history, width, height), [history, width, height]);
+/** Which series the history carries, which are drawn, and the legend's toggle. */
+function useSeriesVisibility(history: TrendSeriesPoint[]) {
+  const [hidden, setHidden] = useState<ReadonlySet<LineKey>>(() => new Set());
   const available = useMemo(() => {
     const has = (key: LineKey) => history.some((p) => value(p, key) != null);
     return (["maintainability_average", "average_health", "hotspot_health", "worst_performer_score"] as const)
@@ -334,28 +356,14 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
     const picked = available.filter((s) => !hidden.has(s.key));
     return picked.length > 0 ? picked : available;
   }, [available, hidden]);
-
-  // A tap shows the readout, so a touch leaving the plot does not clear it; a
-  // press anywhere else does.
-  useEffect(() => {
-    if (active == null) return;
-    const away = (e: globalThis.PointerEvent) => {
-      if (!boxRef.current?.contains(e.target as Node)) setActive(null);
-    };
-    document.addEventListener("pointerdown", away);
-    return () => document.removeEventListener("pointerdown", away);
-  }, [active]);
-
-  if (!history || history.length === 0) {
-    return (
-      <EmptyState
-        size="compact"
-        title="No snapshots yet"
-        description="Each index update records one, and the trend appears from the second."
-      />
-    );
-  }
-
+  // Flipped from what is drawn, not from the stored set, so a fallback to
+  // every series cannot turn a click on one into hiding all the others.
+  const toggle = (key: LineKey) => {
+    const next = new Set(available.filter((s) => !shown.includes(s)).map((s) => s.key));
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setHidden(next);
+  };
   // Maintainability leads wherever it was recorded. It is the series that
   // answers "is my code getting better", and the composite beside it moves
   // with git history too, so drawing the composite loudest emphasises the
@@ -363,16 +371,30 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
   const lead: LineKey = available.some((s) => s.key === "maintainability_average")
     ? "maintainability_average"
     : "average_health";
-  const last = history.length - 1;
-  // A shorter history can leave the held index past its end.
-  const at = active != null && active <= last ? active : null;
+  return { available, shown, toggle, lead };
+}
 
+/**
+ * Pointer handlers that move the active snapshot, at most once a frame. A tap
+ * shows the readout, so a touch leaving the plot does not clear it.
+ */
+function usePointerSnapshot(
+  setActive: (update: (prev: number | null) => number | null) => void,
+  last: number,
+  plotW: number,
+) {
+  const frame = useRef<number | null>(null);
+  const pointerX = useRef(0);
+  useEffect(
+    () => () => {
+      if (frame.current != null) cancelAnimationFrame(frame.current);
+    },
+    [],
+  );
   const nearest = (clientX: number, el: Element) => {
-    const left = el.getBoundingClientRect().left;
-    const t = last === 0 ? 0 : (clientX - left - PAD.l) / g.plotW;
+    const t = last === 0 ? 0 : (clientX - el.getBoundingClientRect().left - PAD.l) / plotW;
     return Math.max(0, Math.min(last, Math.round(t * last)));
   };
-  // One state update per frame at most, and none when the snapshot is the same.
   const onPointerMove = (e: PointerEvent<SVGSVGElement>) => {
     pointerX.current = e.clientX;
     if (frame.current != null) return;
@@ -387,49 +409,234 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
     if (e.pointerType === "touch") return;
     if (frame.current != null) cancelAnimationFrame(frame.current);
     frame.current = null;
-    setActive(null);
+    setActive(() => null);
   };
+  return { onPointerMove, onPointerDown: onPointerMove, onPointerLeave };
+}
+
+/** Clears the active snapshot on a press outside *ref*, while one is held. */
+function useClearOnPressAway(ref: RefObject<HTMLElement | null>, held: boolean, clear: () => void) {
+  useEffect(() => {
+    if (!held) return;
+    const away = (e: globalThis.PointerEvent) => {
+      if (!ref.current?.contains(e.target as Node)) clear();
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [held, ref, clear]);
+}
+
+/**
+ * The snapshot under the pointer or the keyboard cursor, the handlers that
+ * move it, and the sentence keyboard steps announce.
+ */
+function useActiveSnapshot(
+  boxRef: RefObject<HTMLElement | null>,
+  history: TrendSeriesPoint[],
+  shown: Series[],
+  plotW: number,
+) {
+  const [active, setActive] = useState<number | null>(null);
+  const [spoken, setSpoken] = useState("");
+  const last = history.length - 1;
+  // A shorter history can leave the held index past its end.
+  const at = active != null && active <= last ? active : null;
+  const svg = usePointerSnapshot(setActive, last, plotW);
+  const clear = useCallback(() => setActive(null), []);
+  useClearOnPressAway(boxRef, active != null, clear);
+
   const step = (i: number) => {
     setActive(i);
     setSpoken(announce(history, i, shown));
   };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const from = at ?? last;
-    const to =
-      e.key === "ArrowLeft"
-        ? Math.max(0, from - 1)
-        : e.key === "ArrowRight"
-          ? Math.min(last, from + 1)
-          : e.key === "Home"
-            ? 0
-            : e.key === "End"
-              ? last
-              : null;
-    if (to == null) {
-      if (e.key === "Escape") setActive(null);
-      return;
-    }
-    e.preventDefault();
-    step(to);
+    const to = keyStep(e.key, at ?? last, last);
+    if (to != null) {
+      e.preventDefault();
+      step(to);
+    } else if (e.key === "Escape") clear();
   };
+  const box = { onKeyDown, onFocus: () => active == null && step(last), onBlur: clear };
+  return { at, spoken, svg, box };
+}
 
-  // Flipped from what is drawn, not from the stored set, so a fallback to
-  // every series cannot turn a click on one into hiding all the others.
-  const toggle = (key: LineKey) => {
-    const next = new Set(available.filter((s) => !shown.includes(s)).map((s) => s.key));
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    setHidden(next);
-  };
-
-  const point = at == null ? null : history[at]!;
-  const rows = at == null ? [] : readoutRows(history, at, shown);
-  const activeX = at == null ? 0 : g.x(at);
-  const readoutW = Math.min(250, g.width - 8);
-  const readoutLeft = Math.max(
-    4,
-    Math.min(g.width - readoutW - 4, activeX > g.width / 2 ? activeX - 12 - readoutW : activeX + 12),
+function Swatch({ s, width, dim = false }: { s: Series; width: number; dim?: boolean }) {
+  return (
+    <svg width={width} height="6" aria-hidden className={dim ? "opacity-40" : ""}>
+      <line x1="0" x2={width} y1="3" y2="3" stroke={s.color} strokeWidth={2} strokeDasharray={s.dash} />
+    </svg>
   );
+}
+
+function LegendButton({
+  s,
+  on,
+  locked,
+  onToggle,
+  onEmphasis,
+}: {
+  s: Series;
+  on: boolean;
+  locked: boolean;
+  onToggle: (key: LineKey) => void;
+  onEmphasis: (key: LineKey | null) => void;
+}) {
+  const emphasise = () => on && onEmphasis(s.key);
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      disabled={locked}
+      title={locked ? "At least one series stays on the chart" : undefined}
+      onClick={() => onToggle(s.key)}
+      onPointerEnter={emphasise}
+      onPointerLeave={() => onEmphasis(null)}
+      onFocus={emphasise}
+      onBlur={() => onEmphasis(null)}
+      className={`inline-flex items-center gap-1.5 rounded px-1.5 py-1 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)] disabled:cursor-default ${
+        on ? "text-[var(--color-text-secondary)]" : "text-[var(--color-text-tertiary)] line-through"
+      }`}
+    >
+      <Swatch s={s} width={14} dim={!on} />
+      {s.label}
+    </button>
+  );
+}
+
+function Legend({
+  available,
+  shown,
+  drag,
+  onToggle,
+  onEmphasis,
+}: {
+  available: Series[];
+  shown: Series[];
+  /** Whether the history-drag band is drawn, so its key is listed. */
+  drag: boolean;
+  onToggle: (key: LineKey) => void;
+  onEmphasis: (key: LineKey | null) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-xs" role="group" aria-label="Series">
+      {available.map((s) => {
+        const on = shown.includes(s);
+        // The last series shown cannot be hidden: an empty plot answers nothing.
+        return (
+          <LegendButton
+            key={s.key}
+            s={s}
+            on={on}
+            locked={on && shown.length === 1}
+            onToggle={onToggle}
+            onEmphasis={onEmphasis}
+          />
+        );
+      })}
+      {drag && (
+        <span className="inline-flex items-center gap-1.5 px-1.5 text-[var(--color-text-tertiary)]">
+          <span className="inline-block h-2 w-3 rounded-[1px] bg-current opacity-25" aria-hidden />
+          History drag
+        </span>
+      )}
+    </div>
+  );
+}
+
+function Crosshair({ g, x, rows }: { g: Geometry; x: number; rows: ReadoutRow[] }) {
+  return (
+    <g pointerEvents="none">
+      <line x1={x} x2={x} y1={PAD.t} y2={g.height - PAD.b} stroke="var(--color-text-tertiary)" strokeWidth={1} />
+      {rows.map((r) => (
+        <circle
+          key={r.series.key}
+          cx={x}
+          cy={g.y(r.value)}
+          r={4}
+          fill={r.series.color}
+          stroke="var(--color-bg-root)"
+          strokeWidth={2}
+        />
+      ))}
+    </g>
+  );
+}
+
+function ReadoutLine({ r }: { r: ReadoutRow }) {
+  const tone = deltaColor(r.delta == null ? null : Number(r.delta.toFixed(2)));
+  return (
+    <div className="contents">
+      <dt className="inline-flex items-center gap-1.5 text-[var(--color-text-secondary)]">
+        <Swatch s={r.series} width={10} />
+        {r.series.label}
+      </dt>
+      <dd className="text-right font-mono tabular-nums text-[var(--color-text-primary)]">{formatScore(r.value)}</dd>
+      <dd className={`text-right font-mono tabular-nums ${tone}`}>{r.delta == null ? "" : formatDelta(r.delta)}</dd>
+    </div>
+  );
+}
+
+function Readout({
+  g,
+  x,
+  at,
+  history,
+  rows,
+}: {
+  g: Geometry;
+  x: number;
+  at: number;
+  history: TrendSeriesPoint[];
+  rows: ReadoutRow[];
+}) {
+  const point = history[at]!;
+  const width = Math.min(250, g.width - 8);
+  // Beside the crosshair on the roomier side, clamped inside the plot so a
+  // narrow screen never pushes it past an edge.
+  const left = Math.max(4, Math.min(g.width - width - 4, x > g.width / 2 ? x - 12 - width : x + 12));
+  const words = historyWords(point);
+  return (
+    <div
+      className="pointer-events-none absolute top-1 z-10 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] px-2.5 py-2 text-xs shadow-md"
+      style={{ width, left }}
+    >
+      <p className="mb-1 flex items-baseline justify-between gap-3 text-[var(--color-text-primary)]">
+        <span>{point.taken_at ? formatDate(point.taken_at) : "Undated snapshot"}</span>
+        <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">
+          {at + 1} of {history.length}
+        </span>
+      </p>
+      <dl className="grid grid-cols-[auto_auto_auto] items-center gap-x-3 gap-y-0.5">
+        {rows.map((r) => (
+          <ReadoutLine key={r.series.key} r={r} />
+        ))}
+      </dl>
+      {words && <p className="mt-1 text-[var(--color-text-tertiary)]">{words}</p>}
+    </div>
+  );
+}
+
+export function TrendChart({ history, height = 220 }: TrendChartProps) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const width = useChartSize(boxRef);
+  const [emphasis, setEmphasis] = useState<LineKey | null>(null);
+  const g = useMemo(() => geometry(history, width, height), [history, width, height]);
+  const { available, shown, toggle, lead } = useSeriesVisibility(history);
+  const { at, spoken, svg, box } = useActiveSnapshot(boxRef, history, shown, g.plotW);
+
+  if (!history || history.length === 0) {
+    return (
+      <EmptyState
+        size="compact"
+        title="No snapshots yet"
+        description="Each index update records one, and the trend appears from the second."
+      />
+    );
+  }
+
+  const rows = at == null ? [] : readoutRows(history, at, shown);
+  const x = at == null ? 0 : g.x(at);
+  const drag = g.historyBands.length > 0 && shown.some((s) => s.key === "average_health");
 
   return (
     // No card. The chart sits inside a section that already names it, so a
@@ -439,50 +646,14 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
         <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           KPI trend
         </h3>
-        <div className="flex flex-wrap items-center gap-1 text-xs" role="group" aria-label="Series">
-          {available.map((s) => {
-            const on = shown.includes(s);
-            // The last series shown cannot be hidden: an empty plot answers nothing.
-            const locked = on && shown.length === 1;
-            return (
-              <button
-                key={s.key}
-                type="button"
-                aria-pressed={on}
-                disabled={locked}
-                title={locked ? "At least one series stays on the chart" : undefined}
-                onClick={() => toggle(s.key)}
-                onPointerEnter={() => on && setEmphasis(s.key)}
-                onPointerLeave={() => setEmphasis(null)}
-                onFocus={() => on && setEmphasis(s.key)}
-                onBlur={() => setEmphasis(null)}
-                className={`inline-flex items-center gap-1.5 rounded px-1.5 py-1 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)] disabled:cursor-default ${
-                  on ? "text-[var(--color-text-secondary)]" : "text-[var(--color-text-tertiary)] line-through"
-                }`}
-              >
-                <svg width="14" height="6" aria-hidden className={on ? "" : "opacity-40"}>
-                  <line x1="0" x2="14" y1="3" y2="3" stroke={s.color} strokeWidth={2} strokeDasharray={s.dash} />
-                </svg>
-                {s.label}
-              </button>
-            );
-          })}
-          {g.historyBands.length > 0 && !hidden.has("average_health") && (
-            <span className="inline-flex items-center gap-1.5 px-1.5 text-[var(--color-text-tertiary)]">
-              <span className="inline-block h-2 w-3 rounded-[1px] bg-current opacity-25" aria-hidden />
-              History drag
-            </span>
-          )}
-        </div>
+        <Legend available={available} shown={shown} drag={drag} onToggle={toggle} onEmphasis={setEmphasis} />
       </div>
       <div
         ref={boxRef}
         tabIndex={0}
         role="group"
         aria-label="Health KPI trend. Arrow keys step through snapshots."
-        onKeyDown={onKeyDown}
-        onFocus={() => active == null && step(last)}
-        onBlur={() => setActive(null)}
+        {...box}
         className="relative rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent-primary)]"
       >
         <svg
@@ -491,71 +662,12 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
           viewBox={`0 0 ${g.width} ${g.height}`}
           className="block max-w-full touch-pan-y"
           aria-hidden
-          onPointerMove={onPointerMove}
-          onPointerDown={onPointerMove}
-          onPointerLeave={onPointerLeave}
+          {...svg}
         >
           <Plot g={g} history={history} series={shown} lead={lead} emphasis={emphasis} />
-          {point && (
-            <g pointerEvents="none">
-              <line
-                x1={activeX}
-                x2={activeX}
-                y1={PAD.t}
-                y2={g.height - PAD.b}
-                stroke="var(--color-text-tertiary)"
-                strokeWidth={1}
-              />
-              {rows.map((r) => (
-                <circle
-                  key={r.series.key}
-                  cx={activeX}
-                  cy={g.y(r.value)}
-                  r={4}
-                  fill={r.series.color}
-                  stroke="var(--color-bg-root)"
-                  strokeWidth={2}
-                />
-              ))}
-            </g>
-          )}
+          {at != null && <Crosshair g={g} x={x} rows={rows} />}
         </svg>
-        {point && (
-          <div
-            className="pointer-events-none absolute top-1 z-10 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] px-2.5 py-2 text-xs shadow-md"
-            // Beside the crosshair on the roomier side, clamped inside the plot
-            // so a narrow screen never pushes it past an edge.
-            style={{ width: readoutW, left: readoutLeft }}
-          >
-            <p className="mb-1 flex items-baseline justify-between gap-3 text-[var(--color-text-primary)]">
-              <span>{point.taken_at ? formatDate(point.taken_at) : "Undated snapshot"}</span>
-              <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">
-                {at! + 1} of {history.length}
-              </span>
-            </p>
-            <dl className="grid grid-cols-[auto_auto_auto] items-center gap-x-3 gap-y-0.5">
-              {rows.map((r) => (
-                <div key={r.series.key} className="contents">
-                  <dt className="inline-flex items-center gap-1.5 text-[var(--color-text-secondary)]">
-                    <svg width="10" height="6" aria-hidden>
-                      <line x1="0" x2="10" y1="3" y2="3" stroke={r.series.color} strokeWidth={2} strokeDasharray={r.series.dash} />
-                    </svg>
-                    {r.series.label}
-                  </dt>
-                  <dd className="text-right font-mono tabular-nums text-[var(--color-text-primary)]">
-                    {formatScore(r.value)}
-                  </dd>
-                  <dd className={`text-right font-mono tabular-nums ${deltaColor(r.delta == null ? null : Number(r.delta.toFixed(2)))}`}>
-                    {r.delta == null ? "" : formatDelta(r.delta)}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-            {historyWords(point) && (
-              <p className="mt-1 text-[var(--color-text-tertiary)]">{historyWords(point)}</p>
-            )}
-          </div>
-        )}
+        {at != null && <Readout g={g} x={x} at={at} history={history} rows={rows} />}
         <p className="sr-only" aria-live="polite">
           {spoken}
         </p>

@@ -18,7 +18,7 @@
  * double-fetched alongside anything else on the page.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AlertTriangle, Info } from "lucide-react";
 import type { HealthCounts, HealthTrendResponse } from "@repowise-dev/types/health";
 import { formatScore } from "@repowise-dev/types/health";
@@ -324,6 +324,63 @@ function MoversSection({
   );
 }
 
+function trendStats(data: HealthTrendResponse, otherReading: boolean): RibbonStat[] {
+  // The response names the scope it used, which is what tells a null hotspot
+  // figure under a narrowed scope apart from one on the full scope.
+  const narrowed = data.scope === "production";
+  return [
+    codeHealthStat(data.summary, otherReading),
+    hotspotStat(data.summary, otherReading, narrowed),
+    { label: "Snapshots", value: String(data.snapshot_count), sub: "rolling window, 50 max" },
+  ];
+}
+
+function TrendBody({
+  data,
+  counts,
+  onSelectFile,
+}: {
+  data: HealthTrendResponse;
+  counts?: HealthCounts | undefined;
+  onSelectFile?: ((path: string) => void) | undefined;
+}) {
+  const singleSnapshot = data.snapshot_count <= 1;
+  // Snapshots recorded the full score, so there is no code-shape series to
+  // read. These two carry the same labels as the lede's figures, and showing
+  // the other reading of them here put two different numbers under one name on
+  // one screen — the exact confusion the single headline exists to end.
+  const otherReading = counts === "code_shape";
+  // Oldest first, and stable across renders so the chart's geometry is not
+  // rebuilt by a parent re-render that did not change the data.
+  const history = useMemo(() => [...data.history].reverse(), [data.history]);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <StatRibbon stats={trendStats(data, otherReading)} />
+
+      <TrendAlerts alerts={data.alerts} />
+
+      {singleSnapshot ? (
+        <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
+          One snapshot so far. The trend lines appear once a second one lands, after the next
+          index update.
+        </p>
+      ) : (
+        <TrendChart history={history} />
+      )}
+
+      <MoversSection
+        data={data}
+        singleSnapshot={singleSnapshot}
+        // The code-health delta reads the full score, which the other reading
+        // does not show, so it stays off the line there.
+        net={otherReading ? null : data.summary.average_delta}
+        onSelectFile={onSelectFile}
+      />
+    </div>
+  );
+}
+
 export function TrendView({
   data,
   isLoading,
@@ -368,51 +425,5 @@ export function TrendView({
       />
     );
   }
-
-  const singleSnapshot = data.snapshot_count <= 1;
-
-  // Snapshots recorded the full score, so there is no code-shape series to
-  // read. These two carry the same labels as the lede's figures, and showing
-  // the other reading of them here put two different numbers under one name on
-  // one screen — the exact confusion the single headline exists to end.
-  const otherReading = counts === "code_shape";
-  // The response names the scope it used, which is what tells a null hotspot
-  // figure under a narrowed scope apart from one on the full scope.
-  const narrowed = data.scope === "production";
-
-  const stats: RibbonStat[] = [
-    codeHealthStat(data.summary, otherReading),
-    hotspotStat(data.summary, otherReading, narrowed),
-    {
-      label: "Snapshots",
-      value: String(data.snapshot_count),
-      sub: "rolling window, 50 max",
-    },
-  ];
-
-  return (
-    <div className="flex flex-col gap-6">
-      <StatRibbon stats={stats} />
-
-      <TrendAlerts alerts={data.alerts} />
-
-      {singleSnapshot ? (
-        <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
-          One snapshot so far. The trend lines appear once a second one lands, after the next
-          index update.
-        </p>
-      ) : (
-        <TrendChart history={[...data.history].reverse()} />
-      )}
-
-      <MoversSection
-        data={data}
-        singleSnapshot={singleSnapshot}
-        // The code-health delta reads the full score, which the other reading
-        // does not show, so it stays off the line there.
-        net={otherReading ? null : data.summary.average_delta}
-        onSelectFile={onSelectFile}
-      />
-    </div>
-  );
+  return <TrendBody data={data} counts={counts} onSelectFile={onSelectFile} />;
 }

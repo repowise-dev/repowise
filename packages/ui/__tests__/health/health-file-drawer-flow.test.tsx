@@ -7,40 +7,15 @@
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
-import type { FileSignals } from "@repowise-dev/types/health";
+import { HealthFileDrawer } from "../../src/health/health-file-drawer.js";
 import {
-  HealthFileDrawer,
-  type HealthDrawerFinding,
-  type HealthDrawerMetric,
-} from "../../src/health/health-file-drawer.js";
+  drawerFinding as finding,
+  drawerMetric as metric,
+  drawerSignals as signals,
+  openSection,
+} from "./drawer-test-utils.js";
 import { ScoreBreakdown } from "../../src/health/score-breakdown.js";
 import { fileVerdict } from "../../src/health/plain-language.js";
-
-function metric(partial: Partial<HealthDrawerMetric> = {}): HealthDrawerMetric {
-  return {
-    file_path: "src/a.py",
-    score: 1.0,
-    max_ccn: 40,
-    max_nesting: 6,
-    nloc: 800,
-    module: "src",
-    has_test_file: false,
-    ...partial,
-  };
-}
-
-function finding(partial: Partial<HealthDrawerFinding> & { id: string }): HealthDrawerFinding {
-  return {
-    biomarker_type: "brain_method",
-    severity: "high",
-    function_name: "fn",
-    line_start: 120,
-    line_end: 487,
-    health_impact: 1.5,
-    reason: "Oversized, deeply-nested function.",
-    ...partial,
-  };
-}
 
 const five = () => [
   finding({ id: "a", biomarker_type: "nested_complexity", function_name: "one", health_impact: 0.5 }),
@@ -49,29 +24,6 @@ const five = () => [
   finding({ id: "d", biomarker_type: "large_method", function_name: "four", health_impact: 2.0 }),
   finding({ id: "e", biomarker_type: "primitive_obsession", function_name: "five", health_impact: 0.1 }),
 ];
-
-const signals = (partial: Partial<FileSignals> = {}): FileSignals => ({
-  prior_defect_count: 2,
-  change_entropy_pct: null,
-  lines_added_90d: null,
-  lines_deleted_90d: null,
-  commit_count_90d: 14,
-  age_days: null,
-  primary_owner_name: null,
-  primary_owner_commit_pct: null,
-  recent_owner_name: null,
-  recent_owner_commit_pct: null,
-  in_degree: 4,
-  out_degree: 1,
-  bug_magnet: false,
-  last_fix_at: null,
-  fix_symbol_counts: null,
-  ...partial,
-});
-
-function openSection(name: RegExp) {
-  fireEvent.click(screen.getByRole("button", { name }));
-}
 
 const whatsWrong = () => within(screen.getByRole("region", { name: "What's wrong" }));
 

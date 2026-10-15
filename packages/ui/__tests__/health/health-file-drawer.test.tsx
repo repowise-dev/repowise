@@ -3,43 +3,13 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import {
   HealthFileDrawer,
   type HealthDrawerFinding,
-  type HealthDrawerMetric,
 } from "../../src/health/health-file-drawer.js";
 import type { PerformanceOpportunity } from "@repowise-dev/types/health";
-
-function metric(partial: Partial<HealthDrawerMetric> = {}): HealthDrawerMetric {
-  return {
-    file_path: "packages/cli/doctor_cmd.py",
-    score: 1.0,
-    max_ccn: 40,
-    max_nesting: 6,
-    nloc: 800,
-    module: "cli",
-    has_test_file: false,
-    ...partial,
-  };
-}
-
-let seq = 0;
-function finding(partial: Partial<HealthDrawerFinding> = {}): HealthDrawerFinding {
-  seq += 1;
-  return {
-    id: `f${seq}`,
-    biomarker_type: "brain_method",
-    severity: "high",
-    function_name: "_run_repo_checks",
-    line_start: 120,
-    line_end: 487,
-    health_impact: 1.5,
-    reason: "Oversized, deeply-nested function.",
-    ...partial,
-  };
-}
-
-/** Open a collapsed drawer section by its toggle. */
-function openSection(name: RegExp) {
-  fireEvent.click(screen.getByRole("button", { name }));
-}
+import {
+  drawerFinding as finding,
+  drawerMetric as metric,
+  openSection,
+} from "./drawer-test-utils.js";
 
 /** Three heavier issues of other kinds, so the findings under test land in
  *  Other issues rather than leading What's wrong. */

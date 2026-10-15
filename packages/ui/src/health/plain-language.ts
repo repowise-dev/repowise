@@ -141,32 +141,30 @@ export function plainIssue(biomarker: string): PlainIssue {
 
 const COUNT_WORD = ["", "one", "two", "three"];
 
+/** The clause each kind of problem adds to the verdict, other than size and shape. */
+const FIXED_CLAUSE: Partial<Record<BiomarkerCategory, string>> = {
+  duplication: "it repeats code found elsewhere",
+  test_coverage: "parts of it are untested",
+  test_coverage_gradient: "parts of it are untested",
+  test_quality: "its tests check little",
+  error_handling: "it catches errors too broadly",
+  performance: "it has slow patterns",
+  sql: "it has risky SQL",
+  organizational: "its change history is risky",
+};
+
+/** Size and shape read as one kind of problem: how many functions, and whether
+ *  "too long" is the whole of it. */
+function functionClause(functions: number, onlyLength: boolean): string {
+  const what = onlyLength ? "long" : "complex";
+  return functions > 1
+    ? `${COUNT_WORD[functions] ?? functions} functions are too ${what}`
+    : `one function is too ${what}`;
+}
+
 /** The clause one kind of problem contributes to the verdict sentence. */
 function clause(category: BiomarkerCategory, functions: number, onlyLength: boolean): string {
-  switch (category) {
-    case "structural_complexity":
-    case "size_and_complexity": {
-      const what = onlyLength ? "long" : "complex";
-      return functions > 1
-        ? `${COUNT_WORD[functions] ?? functions} functions are too ${what}`
-        : `one function is too ${what}`;
-    }
-    case "duplication":
-      return "it repeats code found elsewhere";
-    case "test_coverage":
-    case "test_coverage_gradient":
-      return "parts of it are untested";
-    case "test_quality":
-      return "its tests check little";
-    case "error_handling":
-      return "it catches errors too broadly";
-    case "performance":
-      return "it has slow patterns";
-    case "sql":
-      return "it has risky SQL";
-    case "organizational":
-      return "its change history is risky";
-  }
+  return FIXED_CLAUSE[category] ?? functionClause(functions, onlyLength);
 }
 
 export interface VerdictInput {
@@ -220,62 +218,66 @@ const IMPACT_EPSILON = 0.005;
  * open issue on hand (still loading, failed, or just triaged) gets no
  * positive claim.
  */
-export function fileVerdict({
+export function fileVerdict(input: VerdictInput): Verdict {
+  if (input.historyOnly) return { text: HISTORY_VERDICT, healthy: false };
+  return input.top.length === 0 ? nothingLeadsVerdict(input) : reasonsVerdict(input);
+}
+
+/** Nothing leads: say only what the findings on hand support. */
+function nothingLeadsVerdict({
   score,
-  top,
-  hasTestFile,
-  historyOnly,
   findingsKnown = true,
   rest = { count: 0, impact: 0, historyImpact: 0 },
 }: VerdictInput): Verdict {
-  if (historyOnly) return { text: HISTORY_VERDICT, healthy: false };
-  if (top.length === 0) {
-    if (!findingsKnown) return { text: null, healthy: false };
-    if (rest.impact > IMPACT_EPSILON) {
-      return rest.historyImpact >= rest.impact - IMPACT_EPSILON
-        ? { text: HISTORY_VERDICT, healthy: false }
-        : { text: "Its score comes from the issues listed in this panel.", healthy: false };
-    }
-    const band = score == null ? null : bandForScore(score);
-    if (band === "excellent" || band === "good") {
-      return {
-        text: rest.count > 0 ? "Nothing here takes points off its score." : "Nothing needs fixing here.",
-        healthy: true,
-      };
-    }
+  if (!findingsKnown) return { text: null, healthy: false };
+  if (rest.impact > IMPACT_EPSILON) {
+    const allHistory = rest.historyImpact >= rest.impact - IMPACT_EPSILON;
+    return {
+      text: allHistory ? HISTORY_VERDICT : "Its score comes from the issues listed in this panel.",
+      healthy: false,
+    };
+  }
+  const band = score == null ? null : bandForScore(score);
+  if (band !== "excellent" && band !== "good") {
     return { text: "No open issue on hand explains this score.", healthy: false };
   }
-  const lead = score == null ? "Worth a look" : BAND_LEAD[bandForScore(score)];
+  return {
+    text: rest.count > 0 ? "Nothing here takes points off its score." : "Nothing needs fixing here.",
+    healthy: true,
+  };
+}
 
-  // Group the reasons by kind, keeping the order of the worst finding.
-  const kinds: BiomarkerCategory[] = [];
-  const functionsByKind = new Map<BiomarkerCategory, Set<string>>();
-  const biomarkersByKind = new Map<BiomarkerCategory, Set<string>>();
+/** The leading problems, grouped by kind in the order of the worst finding. */
+function kindsOf(top: VerdictInput["top"]) {
+  const kinds = new Map<BiomarkerCategory, { functions: Set<string>; biomarkers: Set<string> }>();
   for (const f of top) {
     if (isHistoryBiomarker(f.biomarker_type)) continue;
     const raw = biomarkerInfo(f.biomarker_type).category;
     // Size and shape read as one kind of problem to a reader.
     const kind: BiomarkerCategory = raw === "size_and_complexity" ? "structural_complexity" : raw;
-    if (!functionsByKind.has(kind)) {
-      kinds.push(kind);
-      functionsByKind.set(kind, new Set());
-      biomarkersByKind.set(kind, new Set());
+    let entry = kinds.get(kind);
+    if (!entry) {
+      entry = { functions: new Set(), biomarkers: new Set() };
+      kinds.set(kind, entry);
     }
-    functionsByKind.get(kind)!.add(f.function_name ?? "");
-    biomarkersByKind.get(kind)!.add(f.biomarker_type);
+    entry.functions.add(f.function_name ?? "");
+    entry.biomarkers.add(f.biomarker_type);
   }
-  const parts = kinds
+  return kinds;
+}
+
+/** "<band lead>: <at most two reasons>." */
+function reasonsVerdict({ score, top, hasTestFile }: VerdictInput): Verdict {
+  const lead = score == null ? "Worth a look" : BAND_LEAD[bandForScore(score)];
+  const kinds = kindsOf(top);
+  const parts = [...kinds.entries()]
     .slice(0, 2)
-    .map((k) =>
-      clause(
-        k,
-        Math.max(1, functionsByKind.get(k)!.size),
-        [...biomarkersByKind.get(k)!].every((b) => b === "large_method"),
-      ),
+    .map(([kind, e]) =>
+      clause(kind, Math.max(1, e.functions.size), [...e.biomarkers].every((b) => b === "large_method")),
     );
-  if (parts.length < 2 && hasTestFile === false && !kinds.includes("test_coverage")) {
+  if (parts.length < 2 && hasTestFile === false && !kinds.has("test_coverage")) {
     parts.push("no test file was found for it");
   }
-  if (parts.length === 0) return { text: `${lead}.`, healthy: false };
-  return { text: `${lead}: ${parts.join(" and ")}.`, healthy: false };
+  const text = parts.length === 0 ? `${lead}.` : `${lead}: ${parts.join(" and ")}.`;
+  return { text, healthy: false };
 }
