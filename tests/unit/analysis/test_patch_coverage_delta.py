@@ -309,6 +309,32 @@ def test_name_pairing_finds_the_deleted_test_for_a_file() -> None:
     }
 
 
+def test_name_pairing_respects_pytest_roots() -> None:
+    from repowise.core.pytest_roots import read_pytest_roots
+
+    # src/tools/test_auth.py looks like a test by name, but pytest config collects only tests/
+    roots = read_pytest_roots([("pytest.ini", "[pytest]\ntestpaths = tests\n")])
+    # With roots, src/tools/test_auth.py is recognized as production code outside test collection, not a test
+    causes_with_roots = name_causes(
+        ["src/auth.py"],
+        {"src/tools/test_auth.py"},
+        {"src/tools/test_auth.py"},
+        roots=roots,
+    )
+    assert causes_with_roots == {"src/auth.py": ()}
+
+    # Without roots, it is classified as a test by default name heuristics
+    causes_without_roots = name_causes(
+        ["src/auth.py"],
+        {"src/tools/test_auth.py"},
+        {"src/tools/test_auth.py"},
+    )
+    assert causes_without_roots == {
+        "src/auth.py": (IndirectCause("test_deleted", "src/tools/test_auth.py", "name"),)
+    }
+
+
+
 def _with_project(rows, **kwargs):
     coverage = {"a.py": _fc("a.py", [1], [1])}
     pc = compute_patch_coverage({"a.py": {1}}, coverage)
