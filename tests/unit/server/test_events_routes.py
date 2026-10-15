@@ -58,3 +58,18 @@ async def test_events_are_cloudevents_oldest_first(client: AsyncClient, app) -> 
     assert [e["id"] for e in only] == [f"{1:032d}"]
     assert (await client.get(url, params={"kind": "nope"})).status_code == 422
     assert (await client.get("/api/repos/nope/events")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_an_empty_list_says_why(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    url = f"/api/repos/{repo['id']}/events"
+
+    empty = (await client.get(url)).json()
+    assert empty["events"] == [] and empty["snapshot_runs"] == 0
+    assert empty["empty_reason"] == "baseline_only"
+    assert "start after the next `repowise update` on a new commit" in empty["empty_note"]
+
+    await _seed(app, repo["id"])
+    full = (await client.get(url)).json()
+    assert full["empty_reason"] is None and full["empty_note"] is None

@@ -1599,6 +1599,9 @@ export interface EpisodeSummary {
 
 export interface EventListResponse {
   events: CloudEvent[];
+  snapshot_runs?: number;
+  empty_reason?: "baseline_only" | "no_match" | "nothing_moved" | null;
+  empty_note?: string | null;
 }
 
 /** One checklist row: what was found, whether it needs a look, how it is known. */

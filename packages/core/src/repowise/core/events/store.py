@@ -415,3 +415,35 @@ async def list_events(
         query = query.where(EngineEventRecord.kind.in_(list(kinds)))
     query = query.order_by(EngineEventRecord.occurred_at, EngineEventRecord.id).limit(limit)
     return [event_from_row(r) for r in await session.scalars(query)]
+
+
+async def snapshot_run_count(session: Any, repository_id: str) -> int:
+    """Component snapshots stored for the repository, gap markers left out."""
+    from sqlalchemy import func
+
+    from repowise.core.persistence.models import SnapshotRun
+
+    runs = await session.scalar(
+        select(func.count()).where(
+            SnapshotRun.repository_id == repository_id, ~SnapshotRun.stamp.startswith(GAP_STAMP)
+        )
+    )
+    return int(runs or 0)
+
+
+def empty_events_reason(runs: int, *, filtered: bool) -> tuple[str, str]:
+    """Why an event list is empty, as ``(code, sentence)``.
+
+    ``baseline_only``: fewer than two snapshots, so nothing could be compared
+    yet; ``no_match``: events exist but none pass the filters asked;
+    ``nothing_moved``: runs were compared and nothing crossed a threshold.
+    """
+    if runs < 2:
+        return "baseline_only", (
+            f"No events yet: {runs} component snapshot(s) stored. Events are what "
+            "moved between two index runs in a row, so they start after the next "
+            "`repowise update` on a new commit."
+        )
+    if filtered:
+        return "no_match", f"No events match these filters across {runs} stored component snapshots."
+    return "nothing_moved", f"No events across {runs} stored component snapshots."

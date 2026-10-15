@@ -19,6 +19,7 @@ import {
   GitCommitHorizontal,
   GitMerge,
   HeartPulse,
+  History,
   LayoutDashboard,
   Layers,
   Lightbulb,
@@ -87,6 +88,7 @@ export function repoNavGroups(repoId: string): NavGroup[] {
       labelKey: "groupPeopleAndHistory",
       items: [
         { label: "Commits", labelKey: "commits", href: `${base}/commits`, icon: GitCommitHorizontal },
+        { label: "Events", labelKey: "events", href: `${base}/events`, icon: History },
         { label: "Contributors", labelKey: "contributors", href: `${base}/owners`, icon: Users },
         { label: "Decisions", labelKey: "decisions", href: `${base}/decisions`, icon: Lightbulb },
       ],

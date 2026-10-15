@@ -38,22 +38,14 @@ def _parse_since(value: str | None) -> datetime | None:
 
 async def _read(root: Path, since: datetime | None, kinds: tuple[str, ...], limit: int):
     """``(events, snapshot runs stored)``, or ``None`` without an index."""
-    from sqlalchemy import func, select
-
-    from repowise.core.events.store import GAP_STAMP, list_events
-    from repowise.core.persistence.models import SnapshotRun
+    from repowise.core.events.store import list_events, snapshot_run_count
 
     async with repo_index_session(root) as opened:
         if opened is None:
             return None
         session, repo_id = opened
         events = await list_events(session, repo_id, since=since, kinds=kinds, limit=limit)
-        runs = await session.scalar(
-            select(func.count()).where(
-                SnapshotRun.repository_id == repo_id, ~SnapshotRun.stamp.startswith(GAP_STAMP)
-            )
-        )
-        return events, int(runs or 0)
+        return events, await snapshot_run_count(session, repo_id)
 
 
 @click.command("events")
@@ -89,16 +81,10 @@ def events_command(
     from rich.table import Table
 
     if not events:
+        from repowise.core.events.store import empty_events_reason
+
         # An empty list is only news once two runs could be compared.
-        if runs < 2:
-            console.print(
-                f"No events yet: {runs} component snapshot(s) stored. Events are what "
-                "moved between two index runs in a row, so they start after the next "
-                "`repowise update` on a new commit."
-            )
-        else:
-            scope = " match these filters" if since or kinds else ""
-            console.print(f"No events{scope} across {runs} stored component snapshots.")
+        console.print(empty_events_reason(runs, filtered=bool(since or kinds))[1])
         return
     table = Table("When", "Kind", "Component", "Severity", "Evidence")
     for e in events:

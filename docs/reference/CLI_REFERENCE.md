@@ -1656,6 +1656,8 @@ repowise events [--path PATH] [--since 7d|12h|ISO-DATE] [--kind KIND]... [--limi
 
 Kinds: `ownership_shift`, `owner_inactive`, `bus_factor_drop` (critical components), `new_hotspot` (off by default), `contract_added`, `contract_broken`, `decision_stale`, `dead_code_growth`, `test_reach_drop`, `attribution_jump` (regulated components). The `events:` block in `.repowise/config.yaml` sets `enabled`, `retention_days` (365), `compact_after_days` (30; older runs keep one per week), per-kind switches under `kinds`, and the `sinks` to deliver to (`jsonl` by default, `stdout` for CI).
 
+The web UI lists the same events on the repository's Events page, newest first. An empty list says why: `GET /api/repos/{id}/events` returns `snapshot_runs` and `empty_reason` (`baseline_only` until two snapshots exist, `nothing_moved`, or `no_match` under filters), and the same sentence this command prints as `empty_note`.
+
 ---
 
 ### `repowise report assessment [PATH]`
