@@ -6,6 +6,8 @@ is a wrong edge the resolver's validator has to catch.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from repowise.core.ingestion.languages.receiver_types import (
@@ -1090,3 +1092,53 @@ class TestRustRefusals:
     def test_rust_is_not_a_field_language(self) -> None:
         """A field is read through ``self.``, a dotted receiver not walked yet."""
         assert "rust" not in IMPLICIT_FIELD_LANGUAGES
+
+
+def test_kotlin_plain_constructor_parameter_used_in_property_initializer(tmp_path: Path) -> None:
+    from repowise.core.ingestion.call_resolver import CallResolver
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import parse_file
+
+    source = """\
+package app
+
+class UserDataRepository {
+    fun userData(): String = ""
+}
+
+class PlainParamViewModel(
+    repository: UserDataRepository,
+) {
+    val data = repository.userData()
+
+    class Nested(other: UserDataRepository) {
+        val nestedData = repository.userData()
+    }
+}
+"""
+    path = tmp_path / "App.kt"
+    path.write_text(source, encoding="utf-8")
+    info = FileInfo(
+        path="App.kt",
+        abs_path=str(path),
+        language="kotlin",
+        size_bytes=len(source),
+        git_hash="",
+        last_modified=None,
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    parsed = {"App.kt": parse_file(info, source.encode("utf-8"))}
+    resolver = CallResolver(parsed, {"App.kt": set()}, repo_path=str(tmp_path))
+    calls_by_caller = {
+        rc.caller_id: rc.callee_id
+        for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)
+    }
+    assert (
+        calls_by_caller.get("App.kt::PlainParamViewModel::data")
+        == "App.kt::UserDataRepository::userData"
+    )
+    # Nested class property does NOT see outer constructor parameter
+    assert "App.kt::Nested::nestedData" not in calls_by_caller

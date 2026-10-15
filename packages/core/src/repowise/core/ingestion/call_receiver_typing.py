@@ -1090,6 +1090,45 @@ class ReceiverTypingMixin:
             caller_id, host = host, self._capture_host(
                 file_path, host, language, receiver_name, body_types
             )
+        if (
+            language == "kotlin"
+            and receiver_name not in body_types
+            and receiver_name not in self._bound_names_in(file_path, caller_id, language)
+        ):
+            caller_sym = self._symbols_by_id.get(caller_id)
+            if caller_sym is not None and caller_sym.kind == "variable" and caller_sym.parent_name:
+                parent_class = next(
+                    (
+                        s
+                        for s in self._symbols_by_id.values()
+                        if s.kind == "class"
+                        and s.name == caller_sym.parent_name
+                        and s.start_line <= caller_sym.start_line <= s.end_line
+                        and self._symbol_paths_by_id.get(s.id) == file_path
+                    ),
+                    None,
+                )
+                if parent_class is not None:
+                    lines = self._text_of(file_path).splitlines()
+                    body_start = next(
+                        (
+                            i
+                            for i, line in enumerate(
+                                lines[parent_class.start_line - 1 : parent_class.end_line],
+                                start=parent_class.start_line,
+                            )
+                            if "{" in line
+                        ),
+                        parent_class.end_line,
+                    )
+                    header_decls = [
+                        d
+                        for d in self._declarations_for(file_path, language)
+                        if parent_class.start_line <= d.line <= body_start
+                    ]
+                    for d in header_decls:
+                        if d.name not in body_types:
+                            body_types[d.name] = d.type_name
         return caller_id, body_types
 
     def _captured_types(
