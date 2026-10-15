@@ -149,7 +149,11 @@ def _render_stored_refactoring_targets(
             findings = [
                 f
                 for f in await crud.get_health_findings(
-                    session, repo_id, exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS))
+                    session,
+                    repo_id,
+                    exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS)),
+                    # The targets table weighs history itself, as the web queue does.
+                    hold_history=False,
                 )
                 if keep(f.file_path)
             ]

@@ -498,6 +498,7 @@ async def get_health_findings(
     include_withheld: bool = False,
     include_unverified: bool = False,
     file_holds: bool = True,
+    hold_history: bool = True,
     limit: int | None = None,
 ) -> list[HealthFinding]:
     """Findings for one repository: production ahead of test files, worth doing
@@ -512,7 +513,8 @@ async def get_health_findings(
     provisional type). ``include_withheld`` is for analysis that must see every
     row. ``file_holds=False`` keeps the findings held back by their file
     (vendored, generated, history on a test) for a reader that sums scores or
-    KPIs, which count them.
+    KPIs, which count them. ``hold_history=False`` keeps history markers on
+    production files for a view that treats history itself.
 
     ``exclude_dimensions`` is how a general queue keeps a dimension out of a
     ranking it does not share units with. It is ignored when ``dimension``
@@ -555,6 +557,7 @@ async def get_health_findings(
                 requested=types,
                 include_unverified=include_unverified,
                 file_holds=file_holds,
+                hold_history=hold_history,
             )
         )
     if file_path is not None:

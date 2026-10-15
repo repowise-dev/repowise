@@ -105,6 +105,9 @@ async def _load_queue_rows(
         exclude_dimensions=(
             tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if q.biomarker is None else None
         ),
+        # The queue counts history-only files itself (``history_only_excluded``)
+        # and ``history=include`` lists them, so it reads history markers.
+        hold_history=False,
     )
     metrics, findings = narrow(q.scope, metrics, findings)
     metrics, findings, _unscored = project(q.counts, metrics, findings)

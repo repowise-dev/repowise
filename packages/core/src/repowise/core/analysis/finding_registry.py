@@ -206,7 +206,8 @@ LANGUAGE_GATES: tuple[LanguageGate, ...] = (
 #: Why a health finding is held back by the file it sits on rather than by its
 #: language: vendored and generated code is not the reader's to change, and a
 #: history marker on a test file describes how the test changes, not a defect
-#: in it. A refactoring plan or opportunity on a test file is held back too:
+#: in it. On any other file a history marker is context (it orders hotspots and
+#: Fix first) rather than a finding to list. A refactoring plan or opportunity on a test file is held back too:
 #: Fix first never offers one, and no other plan surface does either. Read from
 #: the file's stored ``code_origin`` and ``is_test``, so it holds on every
 #: language, with the same opt-in as a language gate.
@@ -214,6 +215,7 @@ FILE_HOLDS: dict[str, str] = {
     "vendored": "Held back on vendored files: the code is maintained upstream.",
     "generated": "Held back on generated files: change what generates them instead.",
     "test_history": "History markers held back on test files: they describe change, not a defect.",
+    "history": "History markers are context: they order hotspots and Fix first, not the defect list.",
     "test": "Plans held back on test files: tests change with the code they cover.",
 }
 
@@ -222,7 +224,7 @@ HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
 
 
 def history_kinds() -> frozenset[str]:
-    """The health markers read from git history alone (the ``test_history`` hold)."""
+    """The health markers read from git history alone (the history holds)."""
     # Deferred: the health package imports this module.
     from repowise.core.analysis.health.scoring import history_biomarkers
 
@@ -238,8 +240,8 @@ def file_hold(layer: GateLayer, kind: Any, code_origin: Any, is_test: Any) -> st
         return None
     if code_origin in HELD_ORIGINS:
         return str(code_origin)
-    if is_test is True and kind in history_kinds():
-        return "test_history"
+    if kind in history_kinds():
+        return "test_history" if is_test is True else "history"
     return None
 
 
