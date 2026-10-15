@@ -105,6 +105,57 @@ def test_observed_owner_turnover_needs_enough_owned_files():
     assert _kinds(_facts(), _facts(ownership=grew)) == []
 
 
+def _owned_by(counts):
+    paths, rows = [], {}
+    for person, count in counts.items():
+        for _ in range(count):
+            path = f"src/file{len(paths)}.py"
+            paths.append(path)
+            rows[path] = {"primary_owner_name": person, "primary_owner_email": None}
+
+    class Resolve:
+        def __call__(self, name, email):
+            return name
+
+        def is_bot(self, person):
+            return False
+
+    return snapshot_mod._ownership(paths, rows, [], Resolve(), b"k" * 32, False)
+
+
+def test_alphabetical_churn_at_ownership_margin_is_not_a_shift():
+    singles = dict.fromkeys("bcdefghij", 1)
+    before = _owned_by({"alice": 9, **singles})
+    after = _owned_by({"alice": 9, **singles, "aaron": 1})
+    assert before["main_owners"] != after["main_owners"]
+    assert _kinds(_facts(ownership=before), _facts(ownership=after)) == []
+
+
+def test_old_snapshot_does_not_report_a_new_tie_as_a_handover():
+    singles = dict.fromkeys("bcdefghij", 1)
+    before = _owned_by({"alice": 9, **singles})
+    before.pop("margin_tied_owners")  # Persisted before the margin fact existed.
+    after = _owned_by({"alice": 9, **singles, "aaron": 1})
+    assert _kinds(_facts(ownership=before), _facts(ownership=after)) == []
+
+
+def test_real_owner_handover_survives_a_tied_margin():
+    singles = dict.fromkeys("bcdefghij", 1)
+    before = _owned_by({"alice": 9, **singles})
+    after = _owned_by({"zoe": 9, **singles})
+    assert _kinds(_facts(ownership=before), _facts(ownership=after)) == [
+        ("ownership_shift", "observed")
+    ]
+
+
+def test_non_tied_multi_file_owner_handover_still_fires():
+    before = _owned_by({"alice": 9, "bob": 3, **dict.fromkeys("cdefghi", 1)})
+    after = _owned_by({"alice": 9, "zoe": 3, **dict.fromkeys("cdefghi", 1)})
+    assert _kinds(_facts(ownership=before), _facts(ownership=after)) == [
+        ("ownership_shift", "observed")
+    ]
+
+
 def test_owner_inactive_only_while_others_still_change_it():
     gone = {"active_main_owners": 0}
     assert _kinds(_facts(), _facts(ownership=gone)) == [("owner_inactive", "")]
