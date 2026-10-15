@@ -22,21 +22,21 @@
   "0.57.0": {
     "since": "0.56.0",
     "days": 3,
-    "prs": 242,
+    "prs": 260,
     "contributors": 41,
     "first_time_contributors": 25,
-    "files_changed": 1394,
-    "lines_added": 122239,
-    "lines_removed": 14928,
+    "files_changed": 1421,
+    "lines_added": 123192,
+    "lines_removed": 15113,
     "types": {
-      "fixes": 173,
+      "fixes": 191,
       "features": 51,
       "perf": 0,
       "refactors": 5,
       "docs": 7
     },
-    "test_files_touched": 489,
-    "test_files_new": 165,
+    "test_files_touched": 504,
+    "test_files_new": 168,
     "issues_closed": 53
   }
 }

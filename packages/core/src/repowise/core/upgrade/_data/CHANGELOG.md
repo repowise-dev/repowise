@@ -28,10 +28,10 @@ Chat draws any chart of your repository in one call and checks every figure in a
 
 In the 3 days since 0.56.0:
 
-- **242 pull requests** merged, from **41 contributors**, **25 of them first-time contributors**
-- **1,394 files** changed, **+122,239 / -14,928** lines
-- **173 fixes, 51 features**, 5 refactors and 7 documentation changes
-- **489 test files** touched, **165** of them new
+- **260 pull requests** merged, from **41 contributors**, **25 of them first-time contributors**
+- **1,421 files** changed, **+123,192 / -15,113** lines
+- **191 fixes, 51 features**, 5 refactors and 7 documentation changes
+- **504 test files** touched, **168** of them new
 - **53 issues** closed
 
 Thank you to everyone who built this release with us.
@@ -123,6 +123,9 @@ Thank you to everyone who built this release with us.
 - **Decisions.** `superseded_by` is validated against the repository's own decisions (#3748).
 - **Web UI.** The docs Export menu opens above the header (#3778), MetricCard labels and descriptions render as blocks (#3875), UI copy uses correct singulars, ordinals and field names (#3465), charts share one median helper and one effort label map (#3561), and UI components fill in summaries and states when a host omits them (#3566).
 - **Upgrades.** The chat sessions migration is chained after Change Records (#3763), REST responses carry `preview` only on preview cells (#3877), and one shared `git cat-file --batch` reader serves every analysis consumer (#3702).
+- **Release-day hardening.** Suspects runs its git reads off the MCP stdin pipe, so it answers promptly on every platform (#3888), and `get_change_risk` accepts only revisions, never git options (#3893). An oversized omission ref reads through page by page (#3899), the MCP handshake reports the repowise version (#3900), `get_overview` names unknown `include` values in `ignored_arguments` (#3916), and dead-code cross-repo notes list each consuming repository once (#3895).
+- **Index accuracy.** A symbol spotlight retires when its symbol leaves a live file (#3892), test-quality markers read the stamped test flag (#3898), replayed function hotspots are re-measured on upgrade (#3891), update keeps non-code co-change partners such as templates and stylesheets (#3896), git-ignored manifests stay out of package discovery (#3894), and src-layout packages are service boundaries (#3897).
+- **CLI.** `repowise changes show` accepts the forge ref `changes list` prints (#3904), `status` sync totals agree with the pages table (#3889), `doctor` leaves tombstoned pages out of store reconciliation (#3907), distill runs a forward-slash program path on Windows (#3918), and SyntaxWarnings from analysed Python stay off the console (#3890).
 - Internal: the contract-facts refresh and the C# and Swift dead-code passes are split into helpers, and unused code is removed (#3863, #3846, #3538, #3883, #3417, #3339, #3795, #3774, #3696).
 
 ### Documentation
@@ -135,6 +138,7 @@ Thank you to everyone who built this release with us.
 
 - Core: `tree-sitter-swift` pinned to `>=0.7.4,<0.8` (#3647).
 - Web: the unused `recharts` 2 dependency is removed; charts use recharts 3 from the UI package (#3780).
+- Security updates: fsspec 2026.9.0, Mako 1.4.3, multidict 6.9.1, source-map-js 1.2.2, postcss-selector-parser 7.1.6 and KaTeX 0.18.4 (#3887).
 
 ## [0.56.0] - 2026-10-12
 
