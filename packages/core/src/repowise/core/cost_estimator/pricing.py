@@ -74,6 +74,8 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
 _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "gpt-6-luna": (0.0001, 0.0005),
     "gpt-6-sol": (0.002, 0.010),
+    "gpt-6.1-sol": (0.002, 0.010),
+    "gpt-6-astra": (0.01, 0.05),
     "gpt-5.6-luna": (0.0002, 0.0012),
     "gpt-5.4-nano": (0.0002, 0.00125),
     "gpt-5.4-mini": (0.00075, 0.0045),
@@ -82,6 +84,8 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "claude-sonnet": (0.003, 0.015),
     "claude-haiku": (0.001, 0.005),
     "claude": (0.003, 0.015),
+    "gemini-3.8-flash": (0.0015, 0.0075),
+    "gemini-4-argon": (0.004, 0.02),
     "gemini": (0.0003, 0.0025),
     # DeepSeek V4 family — https://api-docs.deepseek.com/quick_start/pricing
     # deepseek-chat was the V3 alias; V4 Flash/Pro are the current names.

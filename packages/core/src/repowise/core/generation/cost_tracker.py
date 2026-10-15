@@ -142,7 +142,9 @@ def is_local_model(model: str) -> bool:
 #: the Sonnet fallback rate, which would undercount the agent savings it earned
 #: by ~5x. Ordered longest/most-specific prefix first.
 _CLAUDE_FAMILY_PRICING: tuple[tuple[str, dict[str, float]], ...] = (
+    ("claude-opus-5-5", {"input": 4.0, "output": 20.0}),
     ("claude-opus", {"input": 5.0, "output": 25.0}),
+    ("claude-sonnet-5", {"input": 2.0, "output": 10.0}),
     ("claude-sonnet", {"input": 3.0, "output": 15.0}),
     ("claude-haiku", {"input": 1.0, "output": 5.0}),
 )
