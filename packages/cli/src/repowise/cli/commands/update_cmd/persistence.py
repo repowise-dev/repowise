@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +20,7 @@ import structlog
 from repowise.cli.helpers import (
     as_commit_id,
     console,
+    err_console,
     head_commit_ts,
     load_config,
     load_state,
@@ -1826,22 +1826,27 @@ def _run_full_health_rescore(
 # stays deterministic on historical checkouts; override for tests.
 _FULL_RESCORE_INTERVAL_DAYS = 7.0
 
+# The malformed-value warning is global, not per-repo. `_full_rescore_interval_days`
+# is consulted once per repo in a workspace fan-out, `repowise watch` and post-commit
+# hook updates, so a naive warn-in-except would spam the terminal once per repo. Hoist
+# the once-per-invocation guarantee into a module-level guard (#1371).
+_FULL_RESCORE_WARNING_SENT = False
+
 
 def _full_rescore_interval_days() -> float:
+    global _FULL_RESCORE_WARNING_SENT
     raw = os.environ.get("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "").strip()
     if raw:
         try:
             return max(0.0, float(raw))
         except ValueError:
-            # Say it where the user will actually see it: a silently-ignored
-            # value makes the rescore cadence look deliberate when it is
-            # actually the default (issue #1370). stderr matches how
-            # build_embedder reports the same class of misconfiguration.
-            print(
-                f"REPOWISE_FULL_RESCORE_INTERVAL_DAYS={raw!r} is not a number; "
-                f"using the default {_FULL_RESCORE_INTERVAL_DAYS} days.",
-                file=sys.stderr,
-            )
+            if not _FULL_RESCORE_WARNING_SENT:
+                _FULL_RESCORE_WARNING_SENT = True
+                err_console.print(
+                    "[yellow]Warning:[/yellow] "
+                    f"REPOWISE_FULL_RESCORE_INTERVAL_DAYS must be a number "
+                    f"(got '{raw}'); using {_FULL_RESCORE_INTERVAL_DAYS:.0f}-day default"
+                )
     return _FULL_RESCORE_INTERVAL_DAYS
 
 
