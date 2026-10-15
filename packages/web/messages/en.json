@@ -874,7 +874,25 @@
     "cancelled": "Job cancelled",
     "cancelledDescription": "The pipeline was stopped before completion.",
     "cancelFailed": "Couldn't cancel job",
-    "progressCount": "{completed}/{total} pages"
+    "progressCount": "{completed}/{total} pages",
+    "completedWithProblems": "Finished with problems{name}",
+    "pagesFailed": "{count} pages could not be written.",
+    "progress": {
+      "warningTitle": "Finished with problems",
+      "noPagesWritten": "No documentation pages were written.",
+      "somePagesFailed": "{failed} of {total} pages could not be written. Run it again to retry them.",
+      "docsSkipped": "Documentation was not updated.",
+      "retry": "Retry",
+      "startAgain": "Start again",
+      "providerSettings": "Provider settings",
+      "dismiss": "Dismiss"
+    },
+    "banner": {
+      "finishedWithProblems": "{action} finished with problems",
+      "pagesFailed": "{count} pages not written",
+      "providerSettings": "Provider settings",
+      "dismiss": "Dismiss"
+    }
   },
   "overview": {
     "ask": {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -13,6 +13,8 @@ import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
+import { useWatchedJob } from "@/lib/hooks/use-watched-job";
+import type { JobOutcome } from "@repowise-dev/ui/jobs";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { useTranslations } from "next-intl";
 
@@ -55,10 +57,9 @@ export function QuickActionsWrapper({
         : key === "dead-code"
           ? t("quickActions.deadCode")
           : labelFor(key);
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  // Which action started the job on screen, so its completion can be reported
-  // and refreshed in its own terms rather than as a generic doc generation.
-  const [activeKey, setActiveKey] = useState<QuickActionKey | null>(null);
+  // The job on screen and which action started it, so its completion is
+  // reported in its own terms and a retry re-runs the same action.
+  const { watched, watch: startWatching, settle, dismiss } = useWatchedJob<QuickActionKey>();
 
   // Hydrate from any in-flight job so refreshes don't lose progress visibility.
   useEffect(() => {
@@ -71,7 +72,7 @@ export function QuickActionsWrapper({
         ]);
         if (cancelled) return;
         const inflight = running[0] ?? pending[0];
-        if (inflight) setActiveJobId(inflight.id);
+        if (inflight) startWatching(inflight.id, null);
       } catch {
         // best-effort
       }
@@ -79,40 +80,34 @@ export function QuickActionsWrapper({
     return () => {
       cancelled = true;
     };
-  }, [repoId]);
+  }, [repoId, startWatching]);
 
-  function startWatching(jobId: string, key: QuickActionKey | null) {
-    setActiveJobId(jobId);
-    setActiveKey(key);
-  }
-
-  function handleJobDone(status: "completed" | "failed" | "cancelled") {
-    const key = activeKey;
-    setActiveJobId(null);
-    setActiveKey(null);
+  function handleJobDone(outcome: JobOutcome) {
+    const key = watched?.action;
+    settle(outcome);
     if (key === "dead-code") {
-      if (status === "completed") toast.success(t("quickActions.deadCodeFinished"));
-      else if (status === "failed") toast.error(t("quickActions.deadCodeFailed"));
+      if (outcome === "completed") toast.success(t("quickActions.deadCodeFinished"));
+      else if (outcome === "failed") toast.error(t("quickActions.deadCodeFailed"));
     }
     // This page is server-rendered: without a refresh the "Dead Exports" tile
     // the scan exists to move keeps showing its pre-scan number, and the same
     // goes for every stat a sync, re-index or bulk generate just changed.
-    if (status === "completed") router.refresh();
+    if (outcome === "completed" || outcome === "warning") router.refresh();
   }
 
   async function handleAction(key: QuickActionKey) {
     try {
       if (key === "sync") {
-        const job = await syncRepo(repoId);
-        startWatching(job.id, key);
+        const { job_id } = await syncRepo(repoId);
+        startWatching(job_id, key);
         toast.info(
           t("quickActions.syncStarted", {
             name: repoName ? ` — ${repoName}` : "",
           }),
         );
       } else if (key === "resync") {
-        const job = await fullResyncRepo(repoId);
-        startWatching(job.id, key);
+        const { job_id } = await fullResyncRepo(repoId);
+        startWatching(job_id, key);
         toast.info(
           t("quickActions.resyncStarted", {
             name: repoName ? ` — ${repoName}` : "",
@@ -148,15 +143,20 @@ export function QuickActionsWrapper({
     }
   }
 
-  const activeSlot = activeJobId ? (
+  const retryAction = watched?.action;
+  const activeSlot = watched ? (
     <GenerationProgressWrapper
-      jobId={activeJobId}
+      // A fresh instance per job, so a retry reports its own outcome.
+      key={watched.id}
+      jobId={watched.id}
       repoName={repoName}
       // A dead-code scan runs the index-only pipeline, so the generic
       // "Documentation updated - 0 pages generated" toast would describe it
       // wrongly. It reports itself below instead.
-      quiet={activeKey === "dead-code"}
+      quiet={retryAction === "dead-code"}
       onDone={handleJobDone}
+      onRetry={retryAction ? () => void handleAction(retryAction) : undefined}
+      onDismiss={dismiss}
     />
   ) : null;
 

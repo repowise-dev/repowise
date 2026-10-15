@@ -1,10 +1,11 @@
 "use client";
 
-import { CheckCircle, XCircle, ExternalLink } from "lucide-react";
+import { AlertTriangle, CheckCircle, XCircle, ExternalLink, Settings, X } from "lucide-react";
 import { Spinner } from "../ui/spinner";
 import { Progress } from "../ui/progress";
 import { formatNumber, formatRelativeTime } from "../lib/format";
 import type { Job } from "@repowise-dev/types/jobs";
+import { jobOutcome, providerIssue } from "../jobs/job-outcome";
 
 export interface ActiveJobBannerProps {
   /**
@@ -19,7 +20,27 @@ export interface ActiveJobBannerProps {
    * If omitted, the link is suppressed.
    */
   detailsHref?: string;
+  /** Where the repo's provider is set up; linked when a failure or warning
+   *  is the provider's. */
+  settingsHref?: string;
+  /** Hides a failed or warning banner; a clean finish fades on its own. */
+  onDismiss?: () => void;
+  labels?: Partial<ActiveJobBannerLabels>;
 }
+
+export interface ActiveJobBannerLabels {
+  finishedWithProblems: (action: string) => string;
+  pagesFailed: (count: number) => string;
+  providerSettings: string;
+  dismiss: string;
+}
+
+export const DEFAULT_ACTIVE_JOB_BANNER_LABELS: ActiveJobBannerLabels = {
+  finishedWithProblems: (action) => `${action} finished with problems`,
+  pagesFailed: (count) => `${formatNumber(count)} pages not written`,
+  providerSettings: "Provider settings",
+  dismiss: "Dismiss",
+};
 
 const PHASE_LABELS: Record<number, string> = {
   0: "Indexing",
@@ -27,13 +48,24 @@ const PHASE_LABELS: Record<number, string> = {
   2: "Generating docs",
 };
 
-export function ActiveJobBanner({ job, detailsHref }: ActiveJobBannerProps) {
+export function ActiveJobBanner({
+  job,
+  detailsHref,
+  settingsHref,
+  onDismiss,
+  labels,
+}: ActiveJobBannerProps) {
   if (!job) return null;
   if (job.status === "pending") return null;
 
+  const l = { ...DEFAULT_ACTIVE_JOB_BANNER_LABELS, ...labels };
+  const outcome = jobOutcome(job);
   const isRunning = job.status === "running";
-  const isDone = job.status === "completed";
-  const isFailed = job.status === "failed";
+  const isDone = outcome === "completed";
+  const isWarning = outcome === "warning";
+  const isFailed = outcome === "failed";
+  const issue = providerIssue(job);
+  const showSettings = Boolean(settingsHref) && issue !== null && (isFailed || isWarning);
 
   const progress =
     job.total_pages > 0
@@ -49,11 +81,13 @@ export function ActiveJobBanner({ job, detailsHref }: ActiveJobBannerProps) {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {isRunning && <Spinner size="sm" className="text-[var(--color-text-tertiary)]" />}
         {isDone && <CheckCircle className="h-3.5 w-3.5 text-[var(--color-success)] shrink-0" />}
+        {isWarning && <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-warning)] shrink-0" />}
         {isFailed && <XCircle className="h-3.5 w-3.5 text-[var(--color-error)] shrink-0" />}
 
         <span className="text-xs text-[var(--color-text-secondary)]">
           {isRunning && `${label} · ${phaseLabel}…`}
           {isDone && `${label} complete`}
+          {isWarning && l.finishedWithProblems(label)}
           {isFailed && `${label} failed`}
         </span>
 
@@ -74,8 +108,18 @@ export function ActiveJobBanner({ job, detailsHref }: ActiveJobBannerProps) {
               {job.finished_at && <> · {formatRelativeTime(job.finished_at)}</>}
             </>
           )}
+          {isWarning && (issue?.message ?? l.pagesFailed(job.failed_pages))}
           {isFailed && (job.error_message ?? "Unknown error")}
         </span>
+
+        {showSettings && (
+          <a
+            href={settingsHref}
+            className="text-[10px] text-[var(--color-accent-primary)] hover:underline flex items-center gap-0.5 shrink-0"
+          >
+            <Settings className="h-2.5 w-2.5" /> {l.providerSettings}
+          </a>
+        )}
 
         {isDone && job.completed_pages > 0 && detailsHref && (
           <a
@@ -84,6 +128,17 @@ export function ActiveJobBanner({ job, detailsHref }: ActiveJobBannerProps) {
           >
             Details <ExternalLink className="h-2.5 w-2.5" />
           </a>
+        )}
+
+        {(isFailed || isWarning) && onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label={l.dismiss}
+            className="ml-auto rounded p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+          >
+            <X className="h-3 w-3" />
+          </button>
         )}
       </div>
     </div>

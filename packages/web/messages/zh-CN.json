@@ -874,7 +874,25 @@
     "cancelled": "任务已取消",
     "cancelledDescription": "流水线在完成之前就被停止了。",
     "cancelFailed": "无法取消任务",
-    "progressCount": "{completed}/{total} 个页面"
+    "progressCount": "{completed}/{total} 个页面",
+    "completedWithProblems": "已完成，但存在问题{name}",
+    "pagesFailed": "有 {count} 个页面未能写入。",
+    "progress": {
+      "warningTitle": "已完成，但存在问题",
+      "noPagesWritten": "没有写入任何文档页面。",
+      "somePagesFailed": "{total} 个页面中有 {failed} 个未能写入。再次运行即可重试这些页面。",
+      "docsSkipped": "文档未更新。",
+      "retry": "重试",
+      "startAgain": "重新开始",
+      "providerSettings": "模型提供方设置",
+      "dismiss": "关闭"
+    },
+    "banner": {
+      "finishedWithProblems": "{action}已完成，但存在问题",
+      "pagesFailed": "{count} 个页面未写入",
+      "providerSettings": "模型提供方设置",
+      "dismiss": "关闭"
+    }
   },
   "overview": {
     "ask": {
