@@ -397,6 +397,11 @@ def test_reference_stub_markers_are_anchored() -> None:
         "noxfile.py",
         "magefile.go",
         "Package.swift",
+        "Package@swift-6.0.swift",
+        "Package@swift-5.10.swift",
+        "Package@swift-6.swift",
+        "Package@swift-6.0.1.swift",
+        "sub/Package@swift-6.0.swift",
         "webpack.config.js",
         "packages/app/vite.config.mts",
         "rollup.config.prod.mjs",
@@ -434,6 +439,9 @@ def test_build_files_by_type(path: str) -> None:
         ("src/vite.ts", "production"),
         ("cmd/build/main.go", "tooling"),
         ("src/BUILD.md", "production"),
+        ("PackageManager.swift", "production"),
+        ("Package+Extensions.swift", "production"),
+        ("Sources/Alamofire/PackageManager.swift", "production"),
     ],
 )
 def test_build_near_misses_are_not_build_files(path: str, expected: str) -> None:

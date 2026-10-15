@@ -122,6 +122,8 @@ def test_origin_near_misses_stay_flaggable(path):
         "magefile.go",
         "noxfile.py",
         "cmake/Toolchain.cmake",
+        "Package@swift-6.0.swift",
+        "Package@swift-5.10.swift",
     ],
 )
 def test_build_files_are_never_flagged(path):
@@ -135,6 +137,8 @@ def test_build_files_are_never_flagged(path):
         "src/build.rs",  # a ``mod build;`` module
         "src/main/kotlin/io/ktor/Settings.kt",
         "lib/webpack.js",
+        "PackageManager.swift",
+        "Package+Extensions.swift",
     ],
 )
 def test_build_near_misses_stay_flaggable(path):
@@ -168,3 +172,54 @@ def test_dart_codegen_outputs_are_never_flagged(path):
 
 def test_hand_written_dart_stays_flaggable():
     assert not never_flag_path("lib/src/photo.dart")
+
+
+def test_swiftpm_version_specific_manifests_not_reported_unreachable(tmp_path):
+    from pathlib import Path
+
+    from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    manifest_59 = (
+        "// swift-tools-version:5.9\n"
+        "import PackageDescription\n"
+        'let package = Package(name: "Alamofire", targets: [.target(name: "Alamofire")])\n'
+    )
+    files = {
+        "Package.swift": manifest_59,
+        "Package@swift-6.0.swift": manifest_59.replace("5.9", "6.0"),
+        "Package@swift-5.10.swift": manifest_59.replace("5.9", "5.10"),
+        "Sources/Alamofire/Session.swift": "public final class Session {}\n",
+    }
+    for rel, text in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=tmp_path)
+    source_map: dict[str, bytes] = {}
+    parsed_files = {}
+    for fi in FileTraverser(tmp_path).traverse():
+        source = Path(fi.abs_path).read_bytes()
+        source_map[fi.path] = source
+        parsed = parser.parse_file(fi, source)
+        parsed_files[fi.path] = parsed
+        builder.add_file(parsed)
+    builder.set_source_map(source_map)
+    graph = builder.build()
+
+    report = DeadCodeAnalyzer(
+        graph,
+        {},
+        parsed_files=parsed_files,
+        source_map=source_map,
+        repo_root=tmp_path,
+    ).analyze(None)
+    unreachable = {
+        f.file_path for f in report.findings if f.kind is DeadCodeKind.UNREACHABLE_FILE
+    }
+    assert "Package.swift" not in unreachable
+    assert "Package@swift-6.0.swift" not in unreachable
+    assert "Package@swift-5.10.swift" not in unreachable
+

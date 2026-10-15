@@ -463,10 +463,12 @@ _BUILD_SUFFIXES = (
     ".cake",
     ".rockspec",
 )
-# Bundler configs and gulp files, any extension a JS tool's config takes.
+# Bundler configs, gulp files, any extension a JS tool's config takes, and
+# SwiftPM version-specific manifests (``Package@swift-6.0.swift``).
 _BUILD_NAME_RE = re.compile(
     r"^(?:gulpfile|(?:webpack|vite|rollup|rolldown|rspack|esbuild|tsup)\.config(?:\.[\w-]+)*)"
     r"\.[cm]?[jt]s$"
+    r"|^package@swift-\d+(?:\.\d+){0,2}\.swift$"
 )
 # Names a build tool reads only at the root: a nested ``setup.py`` is as often
 # a module (``homeassistant/setup.py`` sets up integrations).
