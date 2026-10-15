@@ -47,6 +47,24 @@ describe("takeUpgradeMoment", () => {
   });
 });
 
+describe("browsers from before the last-seen key", () => {
+  it("counts earlier repowise state as an upgrade", () => {
+    window.localStorage.setItem("repowise:upgrade-banner-dismissed:v0.55.0", "1");
+    expect(takeUpgradeMoment("0.57.0", true)).toBe("dialog");
+    expect(takeUpgradeMoment("0.57.0", true)).toBe("none");
+  });
+
+  it("counts underscore keys too, and a patch gets the note", () => {
+    window.localStorage.setItem("repowise_chat_hint_seen", "1");
+    expect(takeUpgradeMoment("0.57.1", false)).toBe("notice");
+  });
+
+  it("keeps a truly fresh browser quiet", () => {
+    window.localStorage.setItem("theme", "dark");
+    expect(takeUpgradeMoment("0.57.0", true)).toBe("none");
+  });
+});
+
 describe("new surfaces", () => {
   it("marks highlight routes until visited", () => {
     startNewSurfaces("0.57.0", [HL("/repos/:id/chat"), HL("/settings"), HL(null)]);

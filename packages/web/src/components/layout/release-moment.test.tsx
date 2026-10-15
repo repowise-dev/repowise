@@ -27,6 +27,12 @@ describe("ReleaseMoment", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
+  it("opens on load for a browser that used repowise before the key existed", () => {
+    window.localStorage.setItem("repowise:locale", "en");
+    render(<ReleaseMoment />);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
   it("stays quiet on a first visit", () => {
     render(<ReleaseMoment />);
     expect(screen.queryByRole("dialog")).toBeNull();

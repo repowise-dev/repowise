@@ -4,7 +4,8 @@
  * The last server version this browser saw lives in localStorage. When it
  * changes, a minor release (x.y.0, or any release with highlights) opens the
  * What's new dialog once, and a patch shows a quiet "Updated to vX" note. A
- * first visit stores the version and shows nothing. Highlighted pages carry a
+ * fresh browser stores the version and shows nothing; a browser with earlier
+ * repowise state but no stored version counts as an upgrade. Highlighted pages carry a
  * "New" mark in the nav until visited, or for 14 days.
  *
  * Every storage call is best-effort: blocked site data means no moment, never
@@ -66,9 +67,30 @@ function write(key: string, value: string): void {
   }
 }
 
+/** Whether this browser used repowise before it stored a version: any of the
+ *  app's own keys (banner dismissals, chat and docs state). Browsers that
+ *  predate the last-seen key would otherwise count as first visits and never
+ *  see the release they upgraded to. */
+function hasPriorUse(): boolean {
+  try {
+    const store = window.localStorage;
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i);
+      if (key && /^repowise[:_]/.test(key) && key !== LAST_SEEN_KEY && key !== NEW_SURFACES_KEY) {
+        return true;
+      }
+    }
+  } catch {
+    /* blocked site data reads as a fresh browser */
+  }
+  return false;
+}
+
 /** Reads the stored version, stores `current`, and returns the moment due. */
 export function takeUpgradeMoment(current: string, hasHighlights: boolean): UpgradeMoment {
-  const moment = upgradeMoment(read(LAST_SEEN_KEY), current, hasHighlights);
+  // "0" stands for "some earlier version": prior use with nothing stored.
+  const stored = read(LAST_SEEN_KEY) ?? (hasPriorUse() ? "0" : null);
+  const moment = upgradeMoment(stored, current, hasHighlights);
   write(LAST_SEEN_KEY, current);
   return moment;
 }
