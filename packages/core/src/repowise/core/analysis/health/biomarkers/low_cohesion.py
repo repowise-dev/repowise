@@ -32,7 +32,7 @@ class LowCohesionDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        if not cohesion_applies(ctx.file_path, ctx.language):
+        if not cohesion_applies(ctx.file_path, ctx.language, is_test=ctx.is_test_material):
             return out
         for cls in ctx.class_metrics:
             if cls.lcom4 < 2 or cls.method_count < self._MIN_METHODS:

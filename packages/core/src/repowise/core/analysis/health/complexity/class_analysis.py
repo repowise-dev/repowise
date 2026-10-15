@@ -21,7 +21,7 @@ but is not counted as a field.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from ....ingestion.python_overload import is_python_overload
 from ....test_paths import is_test_related_path
@@ -71,7 +71,13 @@ class _MemberRefs(NamedTuple):
     contracts: frozenset[int] = frozenset()
 
 
-def cohesion_applies(file_path: str, language: str) -> bool:
+def cohesion_applies(
+    file_path: str,
+    language: str,
+    *,
+    is_test: bool | None = None,
+    roots: Any | None = None,
+) -> bool:
     """Whether class cohesion findings and splits apply to *file_path*.
 
     Not in test files of implicit-receiver languages: a test class groups its
@@ -80,7 +86,12 @@ def cohesion_applies(file_path: str, language: str) -> bool:
     """
     lmap = get_language_map(language)
     implicit = lmap is not None and bool(lmap.field_decl_kinds)
-    return not (implicit and is_test_related_path(file_path, language))
+    test_flag = (
+        is_test
+        if is_test is not None
+        else is_test_related_path(file_path, language, roots=roots)
+    )
+    return not (implicit and test_flag)
 
 
 def _class_name(node: Node) -> str:

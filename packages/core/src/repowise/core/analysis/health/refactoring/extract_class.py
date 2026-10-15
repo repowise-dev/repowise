@@ -70,7 +70,13 @@ class ExtractClassDetector(RefactoringDetector):
 
     def detect(self, ctx: RefactoringContext) -> list[RefactoringSuggestion]:
         out: list[RefactoringSuggestion] = []
-        if not cohesion_applies(ctx.file_path, ctx.language):
+        node = (
+            ctx.graph.nodes.get(ctx.file_path)
+            if ctx.graph is not None and ctx.file_path in ctx.graph
+            else None
+        )
+        is_test = bool(node["is_test"]) if node is not None and "is_test" in node else None
+        if not cohesion_applies(ctx.file_path, ctx.language, is_test=is_test):
             return out
         impact_by_class = self._impact_by_class(ctx)
 

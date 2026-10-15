@@ -585,3 +585,17 @@ def test_a_target_in_the_same_language_family_still_moves():
         g.nodes[node].update(file_path="T.js", language="javascript")
     out = _detect_in(g, "C.tsx", "typescript")
     assert [s.plan["to_file"] for s in out] == ["T.js"]
+
+
+def test_stored_is_test_false_is_not_skipped_in_move_method():
+    """A file named test_*.py with is_test=False stored on its graph node is analysed."""
+    g = nx.DiGraph()
+    _add_class(g, "pkg/test_paths.py", "C", ["Envious", "Helper"])
+    _add_class(g, "pkg/target.py", "T", ["Alpha", "Beta", "Gamma"])
+    g.add_node("pkg/test_paths.py", is_test=False)
+    g.add_node("pkg/target.py", is_test=False)
+    for m in ("Alpha", "Beta", "Gamma"):
+        _call(g, "pkg/test_paths.py::C.Envious", f"pkg/target.py::T.{m}")
+    out = _detect_in(g, "pkg/test_paths.py", "python")
+    assert len(out) == 1
+    assert out[0].target_symbol == "C.Envious"
