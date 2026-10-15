@@ -145,7 +145,7 @@
   --color-heat-3: color-mix(in srgb, var(--color-accent-primary) 50%, var(--color-bg-surface));
   --color-heat-4: var(--color-accent-primary);
   --color-heat-5: var(--color-accent-hover);
-  /* Supporting cast beside an accent series. Same idea, no hue. */
+  /* Supporting cast beside an accent series: tertiary ink stepped into the well. */
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 22%, var(--color-bg-inset));
