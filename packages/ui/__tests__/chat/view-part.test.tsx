@@ -227,6 +227,100 @@ describe("ViewPartList", () => {
     expect(cite.getAttribute("href")).toBe(`#${part("c1").id}`);
   });
 
+  it("nests a treemap by its groups and colours its cells by health band", () => {
+    const TREEMAP = valid.c6 as ChartView;
+    render(<ViewPartList views={[TREEMAP]} />);
+    const figure = part("c6");
+
+    expect(figure).toHaveAttribute("data-chart-type", "treemap");
+    // A zero-sized row draws no cell; two packages hold the rest.
+    const cells = figure.querySelectorAll("[data-treemap-cell]");
+    expect(cells).toHaveLength(2);
+    expect(figure.querySelectorAll("[data-treemap-group]").length).toBeGreaterThanOrEqual(1);
+    expect((cells[0] as HTMLElement).style.background).toBe("var(--color-node-good)");
+    const legend = within(figure).getByRole("list");
+    expect(legend).toHaveTextContent("at risk");
+    expect(legend).toHaveTextContent("good");
+  });
+
+  it("draws a heatmap as a grid with every value in its cell", () => {
+    const HEATMAP = valid.c7 as ChartView;
+    render(<ViewPartList views={[HEATMAP]} />);
+    const figure = part("c7");
+
+    const cells = [...figure.querySelectorAll("[data-heat-cell]")] as HTMLElement[];
+    expect(cells.map((c) => c.textContent)).toEqual(["4", "1", "6"]);
+    // The largest value is the darkest step and carries card-coloured text.
+    expect(cells[2]!.style.color).toBe("var(--color-bg-surface)");
+    expect(cells[1]!.style.color).toBe("var(--color-text-primary)");
+    expect(within(figure).getByRole("list")).toHaveTextContent("6 (darkest)");
+  });
+
+  it("fills an area chart and runs bars over dates as columns", () => {
+    const weeks = ["2026-09-28", "2026-10-05", "2026-10-12"];
+    const dated = { ...LINE.data, rows: LINE.data.rows.map((r, i) => ({ ...r, week: weeks[i]! })) };
+    render(
+      <ViewPartList
+        views={[
+          { ...LINE, id: "a1", chart_type: "area" },
+          { ...LINE, id: "b1", chart_type: "bar", data: dated },
+          { ...LINE, id: "h1", chart_type: "horizontal_bar", data: dated },
+        ]}
+      />,
+    );
+
+    expect(part("a1").querySelector(".recharts-area-area")).not.toBeNull();
+    // Columns put the dates on the x axis; a horizontal bar puts them on y.
+    expect(part("b1").querySelector(".recharts-xAxis-tick-labels")).toHaveTextContent("2026-09-28");
+    expect(part("h1").querySelector(".recharts-yAxis-tick-labels")).toHaveTextContent("2026-09-28");
+  });
+
+  it("folds up to eight donut parts, each named with its value", () => {
+    const rows = Array.from({ length: 8 }, (_, i) => ({ tier: `t${i}`, files: i + 1 }));
+    render(
+      <ViewPartList views={[{ ...DONUT, id: "d8", data: { ...DONUT.data, rows, total_rows: 8 } }]} />,
+    );
+    const items = within(part("d8")).getAllByRole("listitem");
+
+    expect(items).toHaveLength(8);
+    expect(items[7]).toHaveTextContent("t7");
+    expect(items[7]).toHaveTextContent("8");
+  });
+
+  it("labels two files of one name by their shortest distinct path", () => {
+    const rows = [
+      { component: { type: "file" as const, id: "a/update_cmd/command.py" }, changes: 3 },
+      { component: { type: "file" as const, id: "a/init_cmd/command.py" }, changes: 2 },
+    ];
+    const { sort: _sort, ...unsorted } = BAR;
+    const data = { ...BAR.data, rows, total_rows: 2 };
+    render(<ViewPartList views={[{ ...unsorted, id: "u1", chart_type: "donut", data }]} />);
+
+    const legend = within(part("u1")).getByRole("list");
+    expect(legend).toHaveTextContent("update_cmd/command.py");
+    expect(legend).toHaveTextContent("init_cmd/command.py");
+  });
+
+  it("names a view tool's chart by its basis alone, and never says unresolved", () => {
+    const fromChart: ChartView = {
+      ...BAR,
+      id: "p1",
+      source: { ...BAR.source, tool_name: "chart" },
+    };
+    const unresolved: ChartView = {
+      ...BAR,
+      id: "p2",
+      basis: { kind: "unresolved", source: "get_overview" },
+      source: { ...BAR.source, tool_name: "get_overview" },
+    };
+    render(<ViewPartList views={[fromChart, unresolved]} />);
+
+    expect(part("p1").querySelector("[data-view-provenance]")).not.toHaveTextContent("chart");
+    const line = part("p2").querySelector("[data-view-provenance]") as HTMLElement;
+    expect(line).toHaveTextContent("From get_overview");
+    expect(line).not.toHaveTextContent(/unresolved/i);
+  });
+
   it("gives repeated view ids page-unique anchors across turns", () => {
     render(
       <>

@@ -2,7 +2,7 @@ import type { ChatMessageResponse } from "@/lib/api/types";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
 import { getLegacyChatArtifactType } from "@repowise-dev/ui/chat";
 import { parseEvidenceCards } from "@repowise-dev/api-client/cards";
-import { SHOW_VIEW_TOOL, parseViewParts } from "@repowise-dev/api-client/views";
+import { VIEW_TOOLS, parseViewParts } from "@repowise-dev/api-client/views";
 
 /** Stored cards are untrusted wire data; only the ones that validate render. */
 function storedCards(message: ChatMessageResponse): Pick<ChatUIMessage, "cards"> {
@@ -42,8 +42,8 @@ export function toChatUiMessages(
         arguments: toolCall.arguments ?? {},
         result: toolCall.result,
         summary: toolCall.summary,
-        // A show_view receipt is not evidence; the view itself renders inline.
-        ...(toolCall.name === SHOW_VIEW_TOOL
+        // A view tool's receipt is not evidence; the view itself renders inline.
+        ...(VIEW_TOOLS.has(toolCall.name)
           ? {}
           : toolCall.artifact
           ? { artifact: toolCall.artifact }
