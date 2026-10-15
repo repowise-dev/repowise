@@ -3281,7 +3281,9 @@ async function getHealthMap(repoId, opts = {}) {
     cap: opts.cap,
     active: opts.active?.length ? opts.active.join(",") : void 0,
     scope: opts.scope,
-    counts: opts.counts
+    counts: opts.counts,
+    include_held: opts.include_held || void 0,
+    q: opts.q?.trim() || void 0
   });
 }
 
