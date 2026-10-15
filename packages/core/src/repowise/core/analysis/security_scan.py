@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.secret_allowlist import secret_path_allowlist
 from repowise.core.code_origin import code_origin
+from repowise.core.pyparse import parse_python
 from repowise.core.support_paths import DOC_EXTENSIONS
 from repowise.core.test_paths import is_test_related_path
 
@@ -615,7 +616,7 @@ def _http_bindings(tree: ast.AST) -> set[str]:
 def _tls_verify_off_lines(source: str) -> set[int] | None:
     """Lines where ``verify=False`` reaches an HTTP client; None when *source* does not parse."""
     try:
-        tree = ast.parse(source)
+        tree = parse_python(source)
     except SyntaxError:
         return None
     bound = _http_bindings(tree)
@@ -1134,7 +1135,7 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
         return []
     if is_python:
         try:
-            tree = ast.parse(source)
+            tree = parse_python(source)
         except SyntaxError:
             pass
         else:
