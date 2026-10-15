@@ -36,6 +36,22 @@ function labelFor(key: QuickActionKey): string {
   return DEFAULT_QUICK_ACTIONS.find((a) => a.key === key)?.label ?? key;
 }
 
+/** The endpoint each action starts its job through. */
+const LAUNCH: Record<QuickActionKey, (repoId: string) => Promise<{ job_id: string }>> = {
+  sync: syncRepo,
+  resync: fullResyncRepo,
+  "dead-code": analyzeDeadCode,
+};
+
+/** The repo's running or queued job, if any. */
+async function findInflightJob(repoId: string): Promise<{ id: string } | undefined> {
+  const [running, pending] = await Promise.all([
+    listJobs({ repo_id: repoId, status: "running", limit: 1 }),
+    listJobs({ repo_id: repoId, status: "pending", limit: 1 }),
+  ]);
+  return running[0] ?? pending[0];
+}
+
 export function QuickActionsWrapper({
   repoId,
   repoName,
@@ -61,8 +77,7 @@ export function QuickActionsWrapper({
   // reported in its own terms and a retry re-runs the same action.
   const { watched, watch: startWatching, watchIfIdle, settle, dismiss } =
     useWatchedJob<QuickActionKey>();
-  // A retry goes back through the action's own confirm step (the full
-  // re-index cost estimate), which the shell renders once the panel is gone.
+  // Set by a retry; the shell opens that action as if clicked.
   const [confirmRequest, setConfirmRequest] = useState<QuickActionKey | null>(null);
 
   // Hydrate from any in-flight job so refreshes don't lose progress visibility.
@@ -70,13 +85,8 @@ export function QuickActionsWrapper({
     let cancelled = false;
     (async () => {
       try {
-        const [running, pending] = await Promise.all([
-          listJobs({ repo_id: repoId, status: "running", limit: 1 }),
-          listJobs({ repo_id: repoId, status: "pending", limit: 1 }),
-        ]);
-        if (cancelled) return;
-        const inflight = running[0] ?? pending[0];
-        if (inflight) watchIfIdle(inflight.id);
+        const inflight = await findInflightJob(repoId);
+        if (!cancelled && inflight) watchIfIdle(inflight.id);
       } catch {
         // best-effort
       }
@@ -99,38 +109,30 @@ export function QuickActionsWrapper({
     if (outcome === "completed" || outcome === "warning") router.refresh();
   }
 
+  function startedMessage(key: QuickActionKey): string {
+    const name = repoName ? ` — ${repoName}` : "";
+    if (key === "sync") return t("quickActions.syncStarted", { name });
+    if (key === "resync") return t("quickActions.resyncStarted", { name });
+    return t("quickActions.deadCodeStarted");
+  }
+
+  // A retry goes back through the action's own confirm step, which the shell
+  // renders once the panel is gone.
+  function requestRetry(key: QuickActionKey) {
+    dismiss();
+    setConfirmRequest(key);
+  }
+
   async function handleAction(key: QuickActionKey) {
     try {
-      if (key === "sync") {
-        const { job_id } = await syncRepo(repoId);
-        startWatching(job_id, key);
-        toast.info(
-          t("quickActions.syncStarted", {
-            name: repoName ? ` — ${repoName}` : "",
-          }),
-        );
-      } else if (key === "resync") {
-        const { job_id } = await fullResyncRepo(repoId);
-        startWatching(job_id, key);
-        toast.info(
-          t("quickActions.resyncStarted", {
-            name: repoName ? ` — ${repoName}` : "",
-          }),
-        );
-      } else if (key === "dead-code") {
-        const { job_id } = await analyzeDeadCode(repoId);
-        startWatching(job_id, key);
-        toast.info(t("quickActions.deadCodeStarted"));
-      }
+      const { job_id } = await LAUNCH[key](repoId);
+      startWatching(job_id, key);
+      toast.info(startedMessage(key));
     } catch (e) {
       const msg = toFriendlyMessage(e);
       if (/already in progress/i.test(msg)) {
         try {
-          const [running, pending] = await Promise.all([
-            listJobs({ repo_id: repoId, status: "running", limit: 1 }),
-            listJobs({ repo_id: repoId, status: "pending", limit: 1 }),
-          ]);
-          const inflight = running[0] ?? pending[0];
+          const inflight = await findInflightJob(repoId);
           if (inflight) {
             // Someone else's job: watch it, but do not claim it as this action.
             startWatching(inflight.id, null);
@@ -159,14 +161,7 @@ export function QuickActionsWrapper({
       // wrongly. It reports itself below instead.
       quiet={retryAction === "dead-code"}
       onDone={handleJobDone}
-      onRetry={
-        retryAction
-          ? () => {
-              dismiss();
-              setConfirmRequest(retryAction);
-            }
-          : undefined
-      }
+      onRetry={retryAction ? () => requestRetry(retryAction) : undefined}
       onDismiss={dismiss}
     />
   ) : null;

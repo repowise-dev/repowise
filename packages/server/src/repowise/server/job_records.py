@@ -67,6 +67,28 @@ async def _complete_job_row(
     )
 
 
+def _failure_fields(exc: BaseException) -> dict[str, Any]:
+    """The failed job's ``error_message`` and ``provider_issue``: the hint for a
+    recognised provider failure (the raw error is already logged), else the
+    error's own text."""
+    from repowise.core.providers.llm.error_hints import describe_provider_error
+
+    hint = describe_provider_error(exc)
+    if hint is None:
+        return {"error_message": str(exc)[:500], "provider_issue": None}
+    return {"error_message": hint.message, "provider_issue": hint.as_dict()}
+
+
+async def _record_provider_issue(session: Any, job_id: str, provider_issue: dict) -> None:
+    """Add ``provider_issue`` to the job's config, beside its run summary."""
+    job = await get_generation_job(session, job_id)
+    if job is None:
+        return
+    config = json.loads(job.config_json or "{}")
+    config["provider_issue"] = provider_issue
+    job.config_json = json.dumps(config)
+
+
 async def _finalize_job_status(
     app_state: Any,
     session_factory: Any,
@@ -96,11 +118,7 @@ async def _finalize_job_status(
     try:
         async with get_session(recovery_factory) as session:
             if provider_issue is not None:
-                job = await get_generation_job(session, job_id)
-                if job is not None:
-                    config = json.loads(job.config_json or "{}")
-                    config["provider_issue"] = provider_issue
-                    job.config_json = json.dumps(config)
+                await _record_provider_issue(session, job_id, provider_issue)
             await update_job_status(
                 session,
                 job_id,

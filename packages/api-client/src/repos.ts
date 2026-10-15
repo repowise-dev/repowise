@@ -34,18 +34,23 @@ export async function updateRepo(repoId: string, data: RepoUpdate): Promise<Repo
   return apiPatch<RepoResponse>(`/api/repos/${repoId}`, data);
 }
 
+/** POST a repo job endpoint that answers 202 with `{job_id, stream_token}`. */
+function launchRepoJob(repoId: string, action: string): Promise<JobLaunchResponse> {
+  return apiPost<JobLaunchResponse>(`/api/repos/${repoId}/${action}`);
+}
+
 export async function syncRepo(repoId: string): Promise<JobLaunchResponse> {
-  return apiPost<JobLaunchResponse>(`/api/repos/${repoId}/sync`);
+  return launchRepoJob(repoId, "sync");
 }
 
 export async function fullResyncRepo(repoId: string): Promise<JobLaunchResponse> {
-  return apiPost<JobLaunchResponse>(`/api/repos/${repoId}/full-resync`);
+  return launchRepoJob(repoId, "full-resync");
 }
 
 /** Start the first full index (docs included) for a registered repo.
  * Returns 409 when a job is already active for it. */
 export async function startIndexJob(repoId: string): Promise<JobLaunchResponse> {
-  return apiPost<JobLaunchResponse>(`/api/repos/${repoId}/index`);
+  return launchRepoJob(repoId, "index");
 }
 
 /** Provider connectivity smoke test + page/cost estimate for a first index. */

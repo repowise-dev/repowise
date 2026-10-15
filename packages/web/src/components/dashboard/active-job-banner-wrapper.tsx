@@ -31,6 +31,7 @@ function readDismissed(repoId: string): string | null {
   try {
     return window.localStorage.getItem(dismissedKey(repoId));
   } catch {
+    // Storage unavailable: nothing was remembered, so show the banner.
     return null;
   }
 }
@@ -39,7 +40,7 @@ function writeDismissed(repoId: string, jobId: string): void {
   try {
     window.localStorage.setItem(dismissedKey(repoId), jobId);
   } catch {
-    // best-effort
+    // Storage unavailable: the in-memory dismissal still hides it for now.
   }
 }
 

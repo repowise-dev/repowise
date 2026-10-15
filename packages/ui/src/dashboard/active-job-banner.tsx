@@ -68,7 +68,7 @@ export function ActiveJobBanner({
   const isWarning = outcome === "warning";
   const isFailed = outcome === "failed";
   const issue = providerIssue(job);
-  const showSettings = Boolean(settingsHref) && issue !== null && (isFailed || isWarning);
+  const isProblem = isFailed || isWarning;
 
   const progress =
     job.total_pages > 0
@@ -86,10 +86,7 @@ export function ActiveJobBanner({
       className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 sm:px-[var(--page-pad)]"
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        {isRunning && <Spinner size="sm" className="text-[var(--color-text-tertiary)]" />}
-        {isDone && <CheckCircle className="h-3.5 w-3.5 text-[var(--color-success)] shrink-0" />}
-        {isWarning && <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-warning)] shrink-0" />}
-        {isFailed && <XCircle className="h-3.5 w-3.5 text-[var(--color-error)] shrink-0" />}
+        {isRunning ? <Spinner size="sm" className="text-[var(--color-text-tertiary)]" /> : <OutcomeIcon outcome={outcome} />}
 
         <span className="text-xs text-[var(--color-text-secondary)]">
           {isRunning && `${label} · ${phaseLabel}…`}
@@ -119,7 +116,7 @@ export function ActiveJobBanner({
           {isFailed && (issue ? formatIssue(issue) : (job.error_message ?? "Unknown error"))}
         </span>
 
-        {showSettings && (
+        {isProblem && issue && settingsHref && (
           <a
             href={settingsHref}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline flex items-center gap-0.5 shrink-0"
@@ -137,17 +134,34 @@ export function ActiveJobBanner({
           </a>
         )}
 
-        {(isFailed || isWarning) && onDismiss && (
-          <button
-            type="button"
-            onClick={onDismiss}
-            aria-label={l.dismiss}
-            className="ml-auto rounded p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
-          >
-            <X className="h-3 w-3" />
-          </button>
-        )}
+        {isProblem && onDismiss && <DismissButton label={l.dismiss} onDismiss={onDismiss} />}
       </div>
     </div>
+  );
+}
+
+function OutcomeIcon({ outcome }: { outcome: ReturnType<typeof jobOutcome> }) {
+  if (outcome === "completed") {
+    return <CheckCircle className="h-3.5 w-3.5 text-[var(--color-success)] shrink-0" />;
+  }
+  if (outcome === "warning") {
+    return <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-warning)] shrink-0" />;
+  }
+  if (outcome === "failed") {
+    return <XCircle className="h-3.5 w-3.5 text-[var(--color-error)] shrink-0" />;
+  }
+  return null;
+}
+
+function DismissButton({ label, onDismiss }: { label: string; onDismiss: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onDismiss}
+      aria-label={label}
+      className="ml-auto rounded p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+    >
+      <X className="h-3 w-3" />
+    </button>
   );
 }

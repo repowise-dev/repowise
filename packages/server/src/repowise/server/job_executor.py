@@ -32,7 +32,6 @@ from repowise.core.persistence.crud import (
 from repowise.core.persistence.database import get_session
 from repowise.core.pipeline import persist_pipeline_result, run_pipeline
 from repowise.core.pipeline.modes import OrchestratorMode
-from repowise.core.providers.llm.error_hints import describe_provider_error
 from repowise.server.job_events import JobEventBuffer, create_event_buffer
 
 # The ``noqa: F401`` names live in the sibling job modules and are re-exported
@@ -51,6 +50,7 @@ from repowise.server.job_incremental import (
 )
 from repowise.server.job_records import (
     _complete_job_row,
+    _failure_fields,
     _finalize_job_status,
     _provider_issue,
 )
@@ -434,17 +434,8 @@ async def execute_job(
         )
     except Exception as exc:
         logger.exception("job_failed", job_id=job_id, error=str(exc))
-        # A recognised provider failure records what to do about it; the raw
-        # error is in the log above.
-        hint = describe_provider_error(exc)
         await _finalize_job_status(
-            app_state,
-            session_factory,
-            progress,
-            job_id,
-            status="failed",
-            error_message=hint.message if hint else str(exc)[:500],
-            provider_issue=hint.as_dict() if hint else None,
+            app_state, session_factory, progress, job_id, status="failed", **_failure_fields(exc)
         )
     finally:
         get_cancel_tokens(app_state).pop(job_id, None)
@@ -699,6 +690,9 @@ def _provider_failed_to_load(run: _JobRun) -> bool:
 
         provider_id, _ = get_active_provider(repo_id=spec.repo_id, repo_path=spec.repo_path)
     except Exception:
+        # Best-effort reporting: an unreadable provider config must not fail
+        # a job that already finished its work.
+        logger.debug("provider_config_unreadable", job_id=spec.job_id, exc_info=True)
         return False
     return provider_id is not None
 

@@ -45,46 +45,74 @@ def describe_provider_error(
     """The actionable hint for *exc*, or ``None`` when it is not a provider
     failure this recognises (an unknown error keeps its own text)."""
     chain = _exception_chain(exc)
-    provider_error = next((e for e in chain if isinstance(e, ProviderError)), None)
-    known = provider_error.provider if provider_error is not None else None
-    provider = known or "the provider"
-    status = _status(provider_error)
-
-    if any(isinstance(e, RateLimitError) for e in chain) or status == 429:
-        return ProviderErrorHint(
-            "rate_limit",
-            f"{provider} is rate limiting requests. Wait a few minutes, then run it again.",
-            provider=known,
-        )
-    if status in (401, 403):
-        return ProviderErrorHint(
-            "auth", f"API key rejected by {provider}. Update it in Settings.", provider=known
-        )
-    if status == 404:
-        named = f"Model {model}" if model else "The configured model"
-        # A bare 404 is as often a wrong base URL path as a missing model.
-        if "model" in str(provider_error).lower():
-            return ProviderErrorHint(
-                "model_not_found",
-                f"{named} was not found at {provider}. Choose another model in Settings.",
-                provider=known,
-                model=model,
-            )
-        return ProviderErrorHint(
-            "not_found",
-            f"{named} or the base URL path was not found at {provider}. Check both in Settings.",
-            provider=known,
-            model=model,
-        )
-    if any(_is_connect_error(e) for e in chain):
-        target = next((url for e in chain if (url := _request_origin(e))), None)
-        return ProviderErrorHint(
-            "unreachable",
-            f"Could not reach {target or provider}. Is the server running and the base URL correct?",
-            provider=known,
-            target=target,
-        )
+    error = next((e for e in chain if isinstance(e, ProviderError)), None)
+    for classify in (_rate_limit_hint, _auth_hint, _not_found_hint, _unreachable_hint):
+        hint = classify(chain, error, model)
+        if hint is not None:
+            return hint
     return None
+
+
+def _provider(error: ProviderError | None) -> tuple[str | None, str]:
+    """The provider's name if known, and how a message names it either way."""
+    known = error.provider if error is not None else None
+    return known, known or "the provider"
+
+
+def _rate_limit_hint(
+    chain: list[BaseException], error: ProviderError | None, model: str | None
+) -> ProviderErrorHint | None:
+    if not any(isinstance(e, RateLimitError) for e in chain) and _status(error) != 429:
+        return None
+    known, name = _provider(error)
+    return ProviderErrorHint(
+        "rate_limit",
+        f"{name} is rate limiting requests. Wait a few minutes, then run it again.",
+        provider=known,
+    )
+
+
+def _auth_hint(
+    chain: list[BaseException], error: ProviderError | None, model: str | None
+) -> ProviderErrorHint | None:
+    if _status(error) not in (401, 403):
+        return None
+    known, name = _provider(error)
+    return ProviderErrorHint(
+        "auth", f"API key rejected by {name}. Update it in Settings.", provider=known
+    )
+
+
+def _not_found_hint(
+    chain: list[BaseException], error: ProviderError | None, model: str | None
+) -> ProviderErrorHint | None:
+    if _status(error) != 404:
+        return None
+    known, name = _provider(error)
+    named = f"Model {model}" if model else "The configured model"
+    # A bare 404 is as often a wrong base URL path as a missing model.
+    if "model" in str(error).lower():
+        kind: ProviderIssueKind = "model_not_found"
+        message = f"{named} was not found at {name}. Choose another model in Settings."
+    else:
+        kind = "not_found"
+        message = f"{named} or the base URL path was not found at {name}. Check both in Settings."
+    return ProviderErrorHint(kind, message, provider=known, model=model)
+
+
+def _unreachable_hint(
+    chain: list[BaseException], error: ProviderError | None, model: str | None
+) -> ProviderErrorHint | None:
+    if not any(_is_connect_error(e) for e in chain):
+        return None
+    known, name = _provider(error)
+    target = next((url for e in chain if (url := _request_origin(e))), None)
+    return ProviderErrorHint(
+        "unreachable",
+        f"Could not reach {target or name}. Is the server running and the base URL correct?",
+        provider=known,
+        target=target,
+    )
 
 
 def _exception_chain(exc: BaseException) -> list[BaseException]:
@@ -110,7 +138,9 @@ def _request_origin(exc: BaseException) -> str | None:
     brackets."""
     try:
         parts = urlsplit(str(exc.request.url))  # type: ignore[attr-defined]
-    except Exception:
+    # No request attached (AttributeError; httpx raises RuntimeError when
+    # unset) or an unparseable URL (ValueError).
+    except (AttributeError, RuntimeError, ValueError):
         return None
     host = parts.netloc.rpartition("@")[2]
     if not parts.scheme or not host:
