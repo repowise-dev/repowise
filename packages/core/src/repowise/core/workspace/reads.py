@@ -298,6 +298,9 @@ def list_co_changes(
                 "strength": cc.get("strength", 0.0),
                 "frequency": cc.get("frequency", 0),
                 "last_date": cc.get("last_date", ""),
+                # Bounded sample, absent on pre-#483 overlays. Passed through
+                # as stored: the miner already capped and deduped it.
+                "evidence": cc.get("evidence"),
             }
             for cc in pairs[:limit]
         ],
