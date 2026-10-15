@@ -965,6 +965,8 @@ model, and base URL the same way, first match wins:
 Picking a model in the web UI for a repo writes it to that repo's `config.yaml`,
 so the CLI uses it too. A local OpenAI-compatible server such as LM Studio works
 as `provider: openai` with `openai: {base_url: http://localhost:1234/v1}`.
+Because `config.yaml` may be committed, a non-local base URL there only receives a key
+that is not in the repo's `.repowise/.env` after you confirm it in Settings or with `repowise init`.
 
 ---
 
