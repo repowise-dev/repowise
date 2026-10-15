@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
-from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.finding_registry import excluded_types, split_gated
 from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
@@ -303,7 +303,17 @@ async def file_detail(
     )
 
     # --- Health -----------------------------------------------------------
-    findings = await crud.get_health_findings(session, repo_id, file_path=file_path)
+    findings = await crud.get_health_findings(
+        session, repo_id, file_path=file_path, include_unverified=True
+    )
+    # The score counts every finding; one a gate or file hold keeps back is left
+    # out of the list and breakdown, and ``gated`` says how many and why.
+    findings, gated = split_gated(
+        "health",
+        findings,
+        kind="biomarker_type",
+        files={metric.file_path: metric} if metric is not None else None,
+    )
     snapshots = await crud.list_health_snapshots(
         session, repo_id, limit=crud.FILE_TREND_SNAPSHOT_WINDOW
     )
@@ -316,6 +326,7 @@ async def file_detail(
             else None
         ),
         "findings": [_finding_dict(f, slim=slim) for f in findings],
+        "gated": gated,
         "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
         "signals": _file_signals_to_dict(file_signals(git_meta, degrees)),
     }

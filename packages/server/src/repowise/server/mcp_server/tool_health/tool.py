@@ -13,7 +13,7 @@ from collections import Counter
 from time import perf_counter
 from typing import Any
 
-from repowise.core.analysis.finding_registry import withheld_summary
+from repowise.core.analysis.finding_registry import FILE_HOLDS, withheld_summary
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.refactoring.serving import (
     DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT,
@@ -282,10 +282,21 @@ async def get_health(
 
 
 def _attach_gated(meta: dict[str, Any], data: HealthData) -> None:
-    """What a language gate held back, in ``_meta`` so no ``only`` projection
-    drops it: an agent must read "held back", never "nothing found"."""
-    if data.gated:
-        meta["gated"] = {**data.gated, "opt_in": {"include": ["unverified"]}}
+    """What a language gate or file hold held back, in ``_meta`` so no ``only``
+    projection drops it: an agent must read "held back", never "nothing found"."""
+    if not data.gated:
+        return
+    # A file hold is a count per key: its reason is one fixed sentence, sent
+    # once under ``reasons`` and only when the call lists no finding, so a
+    # default response grows by a few tokens at most.
+    gated: dict[str, Any] = {
+        layer: {k: v["count"] if k in FILE_HOLDS else v for k, v in cells.items()}
+        for layer, cells in data.gated.items()
+    }
+    held = sorted({k for cells in data.gated.values() for k in cells if k in FILE_HOLDS})
+    if held and not data.findings.emitted:
+        gated["reasons"] = {k: FILE_HOLDS[k] for k in held}
+    meta["gated"] = {**gated, "opt_in": {"include": ["unverified"]}}
 
 
 def _attach_withheld(result: dict[str, Any], data: HealthData) -> None:

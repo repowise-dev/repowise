@@ -9,6 +9,7 @@ although the index stores ``code_origin = vendored``) and the PowerToys one
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -147,11 +148,68 @@ async def test_get_health_holds_back_by_file_and_says_so(setup_mcp, session, hea
     rows = default["top_findings"] + default.get("test_findings", [])
     files = {f["file_path"] for f in rows}
     assert not files & {_VENDORED, _GENERATED}
-    held = default["_meta"]["gated"]["health"]
-    assert held["vendored"] == {"count": 1, "reason": FILE_HOLDS["vendored"]}
-    assert held["generated"]["count"] == 1
-    assert held["test_history"]["count"] == 2
+    # Compact: a count per hold, no reason text while findings are listed.
+    gated = default["_meta"]["gated"]
+    assert gated["health"] == {"vendored": 1, "generated": 1, "test_history": 2}
+    assert "reasons" not in gated
 
     targeted = await get_health(targets=[_VENDORED])
     assert not targeted.get("findings")
-    assert targeted["_meta"]["gated"]["health"]["vendored"]["count"] == 1
+    # Nothing listed: the reason comes once, so the empty list is explained.
+    assert targeted["_meta"]["gated"]["health"] == {"vendored": 1}
+    assert targeted["_meta"]["gated"]["reasons"] == {"vendored": FILE_HOLDS["vendored"]}
+
+
+def _no_holds(monkeypatch) -> None:
+    from repowise.core.analysis import finding_registry
+    from repowise.core.persistence.crud.analysis import shown as shown_module
+
+    monkeypatch.setattr(shown_module, "_file_holds", lambda *a, **k: [])
+    monkeypatch.setattr(finding_registry, "row_hold", lambda *a, **k: None)
+
+
+@pytest.mark.asyncio
+async def test_get_health_kpis_and_worst_files_ignore_holds(
+    setup_mcp, session, health_data, monkeypatch
+):
+    # The holds shorten finding lists; the KPIs and the worst-file order read
+    # what the scores counted, so they must not move.
+    from repowise.server.mcp_server import get_health
+
+    await _seed(session, health_data)
+    held = await get_health(only=["kpis", "worst_files"])
+    _no_holds(monkeypatch)
+    plain = await get_health(only=["kpis", "worst_files"])
+    assert held["kpis"] == plain["kpis"]
+    assert held["worst_files"] == plain["worst_files"]
+
+
+@pytest.mark.asyncio
+async def test_default_get_health_does_not_grow(setup_mcp, session, health_data, monkeypatch):
+    # No gated language and no held row in the seeded repository: the default
+    # response is byte-identical with and without the holds.
+    from repowise.server.mcp_server import get_health
+
+    def size(result: dict) -> int:
+        result = {**result, "_meta": {k: v for k, v in result["_meta"].items() if k != "timing_ms"}}
+        return len(json.dumps(result, sort_keys=True, default=str))
+
+    with_holds = size(await get_health())
+    _no_holds(monkeypatch)
+    assert size(await get_health()) == with_holds
+
+
+@pytest.mark.asyncio
+async def test_default_get_health_grows_by_a_count_per_hold(
+    setup_mcp, session, health_data, monkeypatch
+):
+    # With held rows the list loses them and ``_meta.gated`` gains one integer
+    # per hold key: never a reason sentence while findings are listed.
+    from repowise.server.mcp_server import get_health
+
+    await _seed(session, health_data)
+    result = await get_health()
+    gated = result["_meta"]["gated"]
+    assert set(gated) == {"health", "opt_in"}
+    assert all(isinstance(v, int) for v in gated["health"].values())
+    assert len(json.dumps(gated["health"])) < 64

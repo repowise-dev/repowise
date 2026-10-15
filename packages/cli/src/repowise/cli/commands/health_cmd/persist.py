@@ -131,7 +131,8 @@ def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str
             metrics = await get_health_metrics(session, repo_id)
             if not metrics:
                 return None
-            findings = await get_health_findings(session, repo_id)
+            # KPIs count what the scores counted, file-held findings included.
+            findings = await get_health_findings(session, repo_id, file_holds=False)
             hotspots = await get_hotspot_file_paths(session, repo_id)
             languages = await get_file_language_map(session, repo_id)
         kpis = compute_kpis(metrics, hotspots, deductions=deduction_by_path(findings))

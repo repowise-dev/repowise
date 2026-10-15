@@ -74,21 +74,28 @@ async def health_overview(
     # worst-first ranking, and the findings read is the most expensive of the
     # two — so the route was paying for each of them twice per request.
     metrics = await crud.get_health_metrics(session, repo_id)
+    # Live rows, before ``project`` wraps them: what the file holds read.
+    files = {m.file_path: m for m in metrics}
     findings = await crud.get_health_findings(session, repo_id, include_unverified=True)
     metrics, findings = narrow(scope, metrics, findings)
     # Every figure below is computed from these two lists, so projecting here
     # is what keeps the headline, the distribution, the hotspot figure and the
     # work the page lists all describing the same thing.
     metrics, scored_findings, unscored = project(counts, metrics, findings)
+    # The KPIs count what the scores counted: language gates only. The lists
+    # below also leave out what a file hold keeps back, and ``gated`` says so.
+    kpi_findings, _ = split_gated(
+        "health", scored_findings, kind="biomarker_type", include_unverified=include_unverified
+    )
     findings, gated = split_gated(
         "health",
         scored_findings,
         kind="biomarker_type",
         include_unverified=include_unverified,
-        files={m.file_path: m for m in metrics},
+        files=files,
     )
     summary = await crud.get_health_summary(
-        session, repo_id, metrics=metrics, findings=findings
+        session, repo_id, metrics=metrics, findings=kpi_findings
     )
 
     # Recomputed from the metrics already loaded rather than read off the latest
@@ -112,7 +119,7 @@ async def health_overview(
     summary = {
         **summary,
         "hotspot_health": hotspot_health_value,
-        "severity_breakdown": severity_breakdown(findings),
+        "severity_breakdown": severity_breakdown(kpi_findings),
         # Echoed so a surface labels what it was sent rather than what it
         # asked for; the two differ while a request is in flight.
         "counts": counts,

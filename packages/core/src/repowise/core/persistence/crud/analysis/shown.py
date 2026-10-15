@@ -111,17 +111,25 @@ def shown(
     *,
     requested: Iterable[str] = (),
     include_unverified: bool = False,
+    file_holds: bool = True,
 ) -> Any:
     """Rows whose type the registry shows and whose language no gate holds back.
 
     *kind_col* holds a registry type (a biomarker type or a dead-code kind).
     ``include_unverified`` opts into provisional types and gated languages alike.
+    ``file_holds=False`` keeps the file-held rows: a score or KPI counts them.
     """
     return and_(
         kind_col.not_in(
             excluded_types(requested=requested, include_provisional=include_unverified)
         ),
-        ungated(layer, path_col, kind_col, include_unverified=include_unverified),
+        ungated(
+            layer,
+            path_col,
+            kind_col,
+            include_unverified=include_unverified,
+            file_holds=file_holds,
+        ),
     )
 
 

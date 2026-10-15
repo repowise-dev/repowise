@@ -385,7 +385,7 @@ Provisional finding types appear only with `include=["unverified"]`, each marked
 
 Health findings, refactoring plans and opportunities, and performance opportunities on Java, C#, C and C++ files are held back pending verification for those languages. They are still stored and a lookup by id still answers; `_meta.gated` counts them per layer and language, and `include=["unverified"]` shows them.
 
-Health findings on files the index stores as vendored or generated are held back the same way, in every language: that code is changed upstream or by its generator. `_meta.gated.health` counts them under `vendored` and `generated`, each with its reason.
+Health findings on files the index stores as vendored or generated are held back the same way, in every language: that code is changed upstream or by its generator. `_meta.gated.health` counts them under `vendored` and `generated` as plain numbers, and `_meta.gated.reasons` gives each reason once when the call lists no finding. Scores, KPIs and the worst-file order still count them.
 
 On test files, history markers (ownership, churn, change entropy, co-change and the other git-derived kinds) are held back too, counted under `test_history`: they describe how a test changes, not a defect in it. Code-shape findings on tests are still listed.
 
