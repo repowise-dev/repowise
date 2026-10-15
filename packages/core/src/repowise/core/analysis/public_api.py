@@ -25,6 +25,7 @@ from repowise.core.ingestion.languages.python_modules import (
     dotted_module_for,
 )
 from repowise.core.ingestion.package_roots import module_for, package_roots_from_paths
+from repowise.core.pyparse import parse_python
 from repowise.core.workspace.code_api import dunder_all
 
 # A Rust ``impl`` block is not a name anyone imports.
@@ -151,7 +152,7 @@ def _lazy_map_from(
     """Return ``(public_name, target_module, target_name)`` lazy exports."""
     try:
         source = Path(source_path or path).read_text(encoding="utf-8", errors="replace")
-        tree = ast.parse(source)
+        tree = parse_python(source)
     except (OSError, SyntaxError, ValueError):
         return []
     current = dotted_module_for(path, paths)

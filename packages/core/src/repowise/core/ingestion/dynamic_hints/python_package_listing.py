@@ -37,6 +37,8 @@ import ast
 import re
 from collections.abc import Callable
 
+from repowise.core.pyparse import parse_python
+
 # Cheap gate before parsing: a listing of ``__path__`` somewhere in the text.
 OWN_LISTING_RE = re.compile(rb"(?:iter_modules|walk_packages)\(\s*(?:path\s*=\s*)?__path__\b")
 
@@ -293,7 +295,7 @@ def _listing_loops(tree: ast.AST):
 
 def _parse(blob: bytes) -> ast.AST | None:
     try:
-        return ast.parse(blob)
+        return parse_python(blob)
     except (SyntaxError, ValueError):
         return None
 

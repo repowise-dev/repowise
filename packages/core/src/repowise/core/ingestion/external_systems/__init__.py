@@ -123,9 +123,13 @@ def _drop_first_party(
 def _discover(repo_root: Path) -> list[Path]:
     """Walk the repo (depth ≤ 4) collecting recognised manifest files."""
     from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
+    from repowise.core.ingestion.traverser import load_gitignore_spec
 
     seen: list[Path] = []
     root = Path(repo_root)
+    # walk_repo reads no ignore files: without this, a manifest in a local
+    # worktree or scratch dir that git status cannot see declared packages.
+    ignore = load_gitignore_spec(root)
     # The historical depth cap was a *post-hoc* filter on an unbounded
     # ``rglob("*")`` — the walk itself still descended into everything.
     # walk_repo prunes junk dirs and nested git repos at traversal time;
@@ -134,13 +138,20 @@ def _discover(repo_root: Path) -> list[Path]:
     # Historical skip list included target/dist/build — preserve it on top
     # of the shared never-source set.
     prune = PRUNED_DIRS | {"target", "dist", "build"}
-    for dirpath, dirnames, filenames in walk_repo(root, prune_dirs=prune):
+    # Ignored directories match with a trailing slash, as git matches them.
+    for dirpath, dirnames, filenames in walk_repo(
+        root,
+        prune_dirs=prune,
+        prune=lambda d: ignore.match_file(f"{d.relative_to(root).as_posix()}/"),
+    ):
         if len(dirpath.relative_to(root).parts) >= 3:
             dirnames[:] = []
-        for fname in filenames:
-            path = dirpath / fname
-            if _parser_for(path) is not None:
-                seen.append(path)
+        seen.extend(
+            dirpath / fname
+            for fname in filenames
+            if _parser_for(dirpath / fname) is not None
+            and not ignore.match_file((dirpath / fname).relative_to(root).as_posix())
+        )
     return seen
 
 

@@ -38,6 +38,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.pyparse import parse_python
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
@@ -209,7 +211,7 @@ def dunder_all(path: Path) -> frozenset[str] | None:
     import ast
 
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        tree = parse_python(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, SyntaxError, ValueError):
         return None
     names: set[str] | None = None

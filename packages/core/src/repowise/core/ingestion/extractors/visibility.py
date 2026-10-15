@@ -19,6 +19,8 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from repowise.core.pyparse import parse_python
+
 from .helpers import node_text
 
 if TYPE_CHECKING:
@@ -97,7 +99,7 @@ def py_module_all_names(src: str) -> frozenset[str] | None:
     if "__all__" not in src:
         return None
     try:
-        tree = ast.parse(src)
+        tree = parse_python(src)
     except (SyntaxError, ValueError):
         return None
 

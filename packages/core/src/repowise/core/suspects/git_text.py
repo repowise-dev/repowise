@@ -19,6 +19,8 @@ import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 
+from repowise.core.analysis import git_cli
+
 MAX_DIFF_FILES = 100
 _BATCH = 100
 _HUNK_RE = re.compile(r"^@@ [^@]+ @@ ?(.*)$", re.MULTILINE)
@@ -39,11 +41,8 @@ def strip_person_trailers(body: str) -> str:
 def _git(repo: Path, *args: str) -> str | None:
     """Stdout, or ``None`` when git fails (one unknown sha fails the whole call)."""
     try:
-        return subprocess.run(
-            ["git", "-C", str(repo), *args],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
+        return git_cli._git(list(args), str(repo))
+    except (OSError, subprocess.SubprocessError):
         return None
 
 

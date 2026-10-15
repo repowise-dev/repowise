@@ -2106,6 +2106,7 @@ async def persist_incremental_index(
             try:
                 from repowise.core.pipeline.persist import (
                     sweep_absent_cycle_pages,
+                    sweep_absent_symbol_spotlights,
                     sweep_retired_pages,
                 )
 
@@ -2115,8 +2116,11 @@ async def persist_incremental_index(
                     # never regenerates a cycle page, so asking the rebuilt
                     # graph whether the cycle still exists is the only way a
                     # fixed cycle's page can ever be retired for a user who
-                    # only runs `update`.
+                    # only runs `update`. Spotlights of removed symbols too.
                     swept_page_ids += await sweep_absent_cycle_pages(
+                        session, repo_id, graph_builder
+                    )
+                    swept_page_ids += await sweep_absent_symbol_spotlights(
                         session, repo_id, graph_builder
                     )
             except Exception as exc:

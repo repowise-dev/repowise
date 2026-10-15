@@ -51,6 +51,7 @@ from ..test_reachability import files_reached_by_tests, files_with_paired_tests
 from .asserts.lexicon import AssertVocabulary
 from .asserts.oracle_reach import collect_cross_file_oracles
 from .biomarkers import FileContext, detect_all
+from .biomarkers.function_hotspot import refresh_replayed
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .complexity.languages import has_health_dialect
 from .dataflow import FileDataflowCache
@@ -1725,8 +1726,11 @@ class HealthAnalyzer:
         if blame_index is None:
             for stored in self.stored_blame_findings.get(file_path, ()):
                 replayed = as_biomarker_result(stored)
-                if replayed.biomarker_type in BLAME_MARKERS and replayed.biomarker_type not in disabled:
-                    biomarker_results.append(replayed)
+                if replayed.biomarker_type not in BLAME_MARKERS or replayed.biomarker_type in disabled:
+                    continue
+                if replayed.biomarker_type == "function_hotspot" and not refresh_replayed(replayed, fns):
+                    continue
+                biomarker_results.append(replayed)
         biomarker_results = remap_severities(biomarker_results, severity_overrides)
         scores, deductions = score_file(biomarker_results)
         findings = attach_impacts(biomarker_results, deductions)

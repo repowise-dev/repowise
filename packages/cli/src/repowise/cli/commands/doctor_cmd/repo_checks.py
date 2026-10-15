@@ -141,9 +141,10 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     8900 of them. ``--repair`` deletes what this reports, so what it removed
     was the live index.
 
-    Four columns rather than whole rows: the id to match against the stores,
+    A few columns rather than whole rows: the id to match against the stores,
     the content and digest for the information floor, metadata_json for the stub
-    predicate, and target_path to tell whether the file is excluded. Nothing downstream reads any other field, and hydrating full
+    predicate, target_path to tell whether the file is excluded, and
+    freshness_status to leave tombstones out. Nothing downstream reads any other field, and hydrating full
     ORM objects for every page only to discard them is what made a cap look
     necessary in the first place.
     """
@@ -152,9 +153,14 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     from repowise.core.persistence.models import Page
 
     result = await session.execute(  # type: ignore[attr-defined]
-        select(Page.id, Page.content, Page.digest, Page.metadata_json, Page.target_path).where(
-            Page.repository_id == repo_id
-        )
+        select(
+            Page.id,
+            Page.content,
+            Page.digest,
+            Page.metadata_json,
+            Page.target_path,
+            Page.freshness_status,
+        ).where(Page.repository_id == repo_id)
     )
     return list(result.all())
 
@@ -514,6 +520,12 @@ def _run_repo_checks(
                         await engine.dispose()
                         return set(), set(), set(), set(), 0, None, False
                     pages = await _all_pages_for_reconciliation(session, repo.id)
+                    # A tombstone (its file is gone) is taken out of both
+                    # indexes by update, so it is never missing, and a store
+                    # row still holding one is an orphan `--repair` deletes.
+                    # Counting it as live sent `--repair` to re-index and
+                    # re-embed pages for deleted files.
+                    pages = [p for p in pages if p.freshness_status != "tombstone"]
                     sql_ids = {p.id for p in pages}
                     # ``Page``'s primary key is the column ``id``; there is no
                     # ``page_id`` attribute. The old spelling raised here on

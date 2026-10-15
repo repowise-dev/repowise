@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from repowise.core.analysis.health.biomarkers.base import FileContext
+from repowise.core.analysis.health.biomarkers.base import BiomarkerResult, FileContext
 from repowise.core.analysis.health.biomarkers.function_hotspot import (
     FunctionHotspotDetector,
+    refresh_replayed,
 )
 from repowise.core.analysis.health.complexity import FunctionComplexity
 from repowise.core.analysis.health.models import Severity
@@ -135,3 +136,23 @@ def test_severity_scales_from_the_floor_not_a_small_p80():
     assert FunctionHotspotDetector().detect(_ctx(fc, _changed(10), p80=3))[0].severity == (
         Severity.HIGH
     )
+
+
+def test_refresh_replayed_updates_complexity_or_drops_hotspot():
+    def replayed() -> BiomarkerResult:
+        return BiomarkerResult(
+            biomarker_type="function_hotspot",
+            severity=Severity.MEDIUM,
+            function_name="hot",
+            line_start=1,
+            line_end=10,
+            details={"ccn": 9, "max_nesting": 7, "modification_count": 12, "repo_p80": 5},
+        )
+
+    kept = replayed()
+    assert refresh_replayed(kept, [_fc("hot", 1, 10, ccn=12, nesting=5)])
+    assert (kept.details["ccn"], kept.details["max_nesting"]) == (12, 5)
+    assert kept.severity == Severity.HIGH
+    assert "CCN=12 / nesting=5" in kept.reason
+    assert not refresh_replayed(replayed(), [_fc("hot", 1, 10, ccn=9, nesting=2)])
+    assert not refresh_replayed(replayed(), [_fc("other", 1, 10, ccn=30)])
