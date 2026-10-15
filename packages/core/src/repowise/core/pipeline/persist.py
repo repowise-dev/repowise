@@ -1594,6 +1594,28 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
     return stale
 
 
+def _symbol_names_by_file(graph_builder: Any) -> dict[str, set[str]]:
+    """``file path -> names of the symbols it defines`` in the rebuilt graph.
+
+    Empty when there is no graph to ask. The synthetic ``__module__`` symbol is
+    left out, so a file that failed to parse has no entry at all.
+    """
+    if graph_builder is None:
+        return {}
+    try:
+        graph = graph_builder.graph()
+    except Exception:  # a released graph cannot speak for any symbol
+        return {}
+    names_by_file: dict[str, set[str]] = {}
+    for _node, data in graph.nodes(data=True):
+        if data.get("node_type") != "symbol" or data.get("kind") == "module":
+            continue
+        path, name = data.get("file_path"), data.get("name")
+        if path and name:
+            names_by_file.setdefault(path, set()).add(name)
+    return names_by_file
+
+
 async def sweep_absent_symbol_spotlights(
     session: Any, repo_id: str, graph_builder: Any
 ) -> list[str]:
@@ -1617,20 +1639,9 @@ async def sweep_absent_symbol_spotlights(
 
     from repowise.core.persistence.models import Page, PageVersion
 
-    if graph_builder is None:
+    names_by_file = _symbol_names_by_file(graph_builder)
+    if not names_by_file:
         return []
-    try:
-        graph = graph_builder.graph()
-    except Exception:  # a released graph cannot speak for any symbol
-        return []
-
-    names_by_file: dict[str, set[str]] = {}
-    for _node, data in graph.nodes(data=True):
-        if data.get("node_type") != "symbol" or data.get("kind") == "module":
-            continue
-        path, name = data.get("file_path"), data.get("name")
-        if path and name:
-            names_by_file.setdefault(path, set()).add(name)
 
     rows = (
         await session.execute(
