@@ -12,7 +12,7 @@ the keys present > ``~/.repowise/config.yaml``'s ``embedder`` > ``mock``.
 Credentials: process env > the repo's ``.repowise/.env`` >
 ``~/.repowise/config.yaml``'s ``embedder_api_key`` (only when its ``embedder``
 names the same backend). File reads go through the LLM resolver's
-mtime-keyed cache.
+content-keyed cache.
 """
 
 from __future__ import annotations
