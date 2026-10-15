@@ -80,3 +80,32 @@ def test_the_up_to_date_outcome_refreshes_the_views(tmp_path: Path, monkeypatch)
     )
     _invoke_update(repo)
     assert calls.get("views") == 1
+
+
+def test_a_snapshot_not_written_is_named_with_its_error(tmp_path: Path, monkeypatch, capsys) -> None:
+    """The update keeps the core log at ERROR, so the refresh says what failed itself."""
+    from contextlib import asynccontextmanager
+
+    from repowise.cli import helpers
+    from repowise.core.persistence.crud.analysis import actions
+
+    @asynccontextmanager
+    async def opened(_root):
+        yield (object(), "r1")
+
+    async def failing(_session, _repo_id):
+        return ["component: TypeError: key must be bytes"]
+
+    monkeypatch.setattr(helpers, "repo_index_session", opened)
+    monkeypatch.setattr(actions, "write_read_snapshots", failing)
+    refresh_read_snapshots(tmp_path)
+    assert "Snapshot not written, component: TypeError: key must be bytes" in capsys.readouterr().out
+
+    @asynccontextmanager
+    async def broken(_root):
+        raise OSError("database is locked")
+        yield
+
+    monkeypatch.setattr(helpers, "repo_index_session", broken)
+    refresh_read_snapshots(tmp_path)
+    assert "read snapshots: OSError: database is locked" in capsys.readouterr().out

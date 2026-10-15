@@ -279,6 +279,21 @@ def _dead_code_counts(
     return unreachable, unused
 
 
+def _dead_code_line(dead_code_report: Any, changed_paths: list[str] | None = None) -> str:
+    """The panel's dead-code line, naming its scope beside the repo-wide total.
+
+    The run log prints the report's repo-wide total of every kind, so a
+    scoped count shown bare would contradict it ("findings: 14" against
+    "0 unreachable").
+    """
+    unreachable, unused = _dead_code_counts(dead_code_report, changed_paths)
+    line = f"{unreachable} unreachable · {unused} unused exports"
+    if changed_paths is None:
+        return line
+    total = len(dead_code_report.findings) if dead_code_report else 0
+    return f"{line} in changed files" + (f" · {total} findings repo-wide" if total else "")
+
+
 def show_full_completion(
     *,
     generated_pages: list,
@@ -339,12 +354,10 @@ def show_index_only_completion(
     """
     render_degraded(degraded)
     graph = graph_builder.graph()
-    unreachable, unused = _dead_code_counts(dead_code_report, changed_paths)
-
     metrics: list[tuple[str, str]] = [
         ("Files changed", str(changed_count)),
         ("Graph", f"{graph.number_of_nodes():,} nodes · {graph.number_of_edges():,} edges"),
-        ("Dead code", f"{unreachable} unreachable · {unused} unused exports"),
+        ("Dead code", _dead_code_line(dead_code_report, changed_paths)),
     ]
     if pages_rendered:
         metrics.append(("Wiki pages", f"{pages_rendered} re-rendered from structure"))

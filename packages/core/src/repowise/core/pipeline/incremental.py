@@ -923,7 +923,10 @@ def run_partial_analysis(
                 "the rest keep their previous verdict[/yellow]"
             )
         if dead_code_report.total_findings:
-            log(f"Dead code findings: [yellow]{dead_code_report.total_findings}[/yellow]")
+            log(
+                f"Dead code findings: [yellow]{dead_code_report.total_findings}[/yellow]"
+                " repo-wide, every kind"
+            )
     except Exception as exc:
         log(f"[yellow]Dead code analysis skipped: {exc}[/yellow]")
     finally:

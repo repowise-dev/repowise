@@ -292,18 +292,24 @@ def refresh_read_snapshots(repo_path: Any) -> None:
     overview and the dashboard read one row instead of rebuilding in each new
     process. A view no write has invalidated since is left as it is, so the
     "already up to date" path costs one primary-key read per view.
-    Best-effort: without a snapshot a reader builds live, as before.
+    Best-effort: without a snapshot a reader builds live, as before. A
+    snapshot that is not written is named with its error, here rather than in
+    the core log, which an update keeps at ERROR.
     """
     from repowise.cli.helpers import repo_index_session
     from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
 
-    async def _run() -> None:
+    async def _run() -> list[str]:
         async with repo_index_session(Path(repo_path)) as opened:
-            if opened is not None:
-                await write_read_snapshots(*opened)
+            return [] if opened is None else await write_read_snapshots(*opened)
 
-    with contextlib.suppress(Exception):
-        run_async(_run())
+    try:
+        failed = run_async(_run())
+    except Exception as exc:
+        failed = [f"read snapshots: {type(exc).__name__}: {exc}"]
+    for line in failed:
+        log.warning("read_snapshot_not_written", detail=line)
+        console.print(f"[yellow]Snapshot not written, {line}[/yellow]")
 
 
 # A repair window that has grown past this many commits stopped being a repair
