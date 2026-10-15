@@ -17,16 +17,20 @@ API keys resolve on their own chain (:func:`resolve_api_key`): process env,
 then the repo's ``.repowise/.env``, then keys stored in ``provider_config.json``.
 
 Chat resolves on every request, so the three files are parsed once per
-version: reads are cached by path, mtime and size, and the writers here drop
-the entry they replace. Nothing in this module touches the network.
+version: reads are cached by path and a digest of the bytes. Nothing in this
+module touches the network.
 """
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import ipaddress
 import json
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,38 +56,36 @@ GLOBAL_CONFIG_FILENAME = "provider_config.json"
 # Cached reads
 # ---------------------------------------------------------------------------
 
-_cache: dict[Path, tuple[tuple[int, int], Any]] = {}
+_cache: dict[Path, tuple[bytes, Any]] = {}
 _cache_lock = threading.Lock()
 
 
 def cached_read(path: Path, parse: Callable[[Path], Any]) -> Any:
-    """``parse(path)``, reused while the file's mtime and size are unchanged.
+    """``parse(path)``, reused while the file's bytes are unchanged.
 
-    The value is shared between callers, so it is read-only by contract. A
-    missing file is ``{}``. ``parse`` handles its own errors, which lets a
-    broken file warn once per version instead of on every request.
+    Keyed on a digest of the content, not mtime: these files are a few hundred
+    bytes, so reading them is cheap and parsing is the cost, and a same-size
+    rewrite by another process inside one timestamp tick is still seen. The
+    value is shared between callers, so it is read-only by contract. A missing
+    file is ``{}``. ``parse`` handles its own errors, which lets a broken file
+    warn once per version instead of on every request.
     """
     try:
-        stat = path.stat()
+        digest = hashlib.blake2b(path.read_bytes(), digest_size=16).digest()
     except OSError:
         return {}
-    stamp = (stat.st_mtime_ns, stat.st_size)
     with _cache_lock:
         hit = _cache.get(path)
-    if hit is not None and hit[0] == stamp:
+    if hit is not None and hit[0] == digest:
         return hit[1]
     value = parse(path)
     with _cache_lock:
-        _cache[path] = (stamp, value)
+        _cache[path] = (digest, value)
     return value
 
 
 def forget_cached(path: Path | str) -> None:
-    """Drop *path* from the read cache. Writers call this after replacing it.
-
-    The mtime check already catches most rewrites; this covers a rewrite of
-    the same size inside the filesystem's timestamp resolution.
-    """
+    """Drop *path* from the read cache, for a writer that wants it gone now."""
     with _cache_lock:
         _cache.pop(Path(path), None)
 
@@ -137,6 +139,77 @@ def _parse_repo_env(path: Path) -> dict[str, str]:
 def read_global_config() -> Mapping[str, Any]:
     """The parsed ``provider_config.json``. Read-only: copy before editing."""
     return cached_read(global_config_path(), _parse_json)
+
+
+_global_write_lock = threading.RLock()
+
+
+def update_global_config(change: Callable[[dict[str, Any]], Any]) -> None:
+    """Apply *change* to ``provider_config.json`` under one lock, atomically.
+
+    Every writer (keys, the global default, migration, trusted URLs) goes
+    through here, so two requests' read-modify-writes cannot interleave and
+    lose one another's edit. The lock is per process; a second server process
+    writing the same file at the same instant is the remaining ceiling.
+    """
+    with _global_write_lock:
+        path = global_config_path()
+        config = json.loads(json.dumps(dict(read_global_config())))
+        change(config)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f"{path.suffix}.tmp.{os.getpid()}.{threading.get_ident()}")
+        tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        # Keys are sensitive: owner read/write only where the OS honours it.
+        with contextlib.suppress(OSError):
+            os.chmod(tmp, 0o600)
+        _replace(tmp, path)
+        forget_cached(path)
+
+
+def _replace(tmp: Path, path: Path) -> None:
+    """``os.replace``, retried while a reader briefly holds *path* open.
+
+    Windows refuses to replace a file another thread or process has open, and
+    every resolution reads this one, so a write can land mid-read.
+    """
+    for _attempt in range(50):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            time.sleep(0.01)
+    os.replace(tmp, path)
+
+
+def _repo_key(repo_path: Path | str) -> str:
+    return str(Path(repo_path).resolve())
+
+
+def base_url_trusted(repo_path: Path | str | None, url: str) -> bool:
+    """Whether the user confirmed *url* for this repo (web UI or ``repowise init``)."""
+    if repo_path is None:
+        return False
+    trusted = read_global_config().get("trusted_base_urls")
+    if not isinstance(trusted, Mapping):
+        return False
+    urls = trusted.get(_repo_key(repo_path))
+    return isinstance(urls, list) and url in urls
+
+
+def trust_base_url(repo_path: Path | str, url: str) -> None:
+    """Record that the user chose *url* for this repo, so stored keys may go there."""
+    if base_url_trusted(repo_path, url):
+        return
+
+    def change(config: dict[str, Any]) -> None:
+        trusted = config.get("trusted_base_urls")
+        if not isinstance(trusted, dict):
+            trusted = config["trusted_base_urls"] = {}
+        urls = trusted.setdefault(_repo_key(repo_path), [])
+        if url not in urls:
+            urls.append(url)
+
+    update_global_config(change)
 
 
 def read_repo_config(repo_path: Path | str | None) -> Mapping[str, Any]:
@@ -199,6 +272,11 @@ class LLMSelection:
             "base_url": self.base_url_source,
         }
 
+    @property
+    def display_base_url(self) -> str | None:
+        """``base_url`` safe to show: any user name or password removed."""
+        return without_credentials(self.base_url) if self.base_url else None
+
     def describe(self) -> str:
         """One line for a CLI summary, e.g. ``openai (config.yaml), model x (default)``."""
         if not self.provider:
@@ -207,7 +285,7 @@ class LLMSelection:
         if self.model:
             text += f", model {self.model} ({self.model_source})"
         if self.base_url:
-            text += f", base URL {self.base_url} ({self.base_url_source})"
+            text += f", base URL {self.display_base_url} ({self.base_url_source})"
         return text
 
 
@@ -230,6 +308,7 @@ def resolve_llm(
     override_source: str = "flag",
     known: Collection[str] | None = None,
     autodetect: bool = True,
+    repo_layer: Mapping[str, Any] | None = None,
 ) -> LLMSelection:
     """Resolve the provider, model and base URL for *repo_path*.
 
@@ -238,15 +317,20 @@ def resolve_llm(
     with: a layer naming a different provider contributes nothing, so a flag
     switching provider never inherits the repo's model for another provider.
     ``known`` limits which provider names count (the server's catalog), and
-    ``autodetect=False`` stops at the configured layers.
+    ``autodetect=False`` stops at the configured layers. ``repo_layer`` stands
+    in for ``config.yaml`` for a repo with no checkout to hold one (the
+    server's stored choice for it), labelled ``provider_config.json``.
     """
     getenv = repo_getenv(repo_path)
-    cfg = read_repo_config(repo_path)
+    if repo_layer is not None and repo_path is None:
+        cfg, repo_source = repo_layer, GLOBAL_CONFIG_FILENAME
+    else:
+        cfg, repo_source = read_repo_config(repo_path), "config.yaml"
     glob = read_global_config()
 
     layers = (
         _Layer(override_source, _clean(provider), _clean(model), _clean(base_url)),
-        _Layer("config.yaml", _clean(cfg.get("provider")), _clean(cfg.get("model"))),
+        _Layer(repo_source, _clean(cfg.get("provider")), _clean(cfg.get("model"))),
         _Layer(
             "global",
             _clean(glob.get("active_provider")),
@@ -291,7 +375,7 @@ def resolve_llm(
         if spec is not None:
             resolved_model, model_source = spec.default_model, "default"
 
-    resolved_url, url_source = _resolve_base_url(chosen, layers[0], cfg, layers[2], getenv)
+    resolved_url, url_source = _resolve_base_url(chosen, layers, cfg, getenv)
 
     return LLMSelection(
         provider=chosen,
@@ -305,16 +389,16 @@ def resolve_llm(
 
 def _resolve_base_url(
     chosen: str,
-    override: _Layer,
+    layers: tuple[_Layer, ...],
     cfg: Mapping[str, Any],
-    glob: _Layer,
     getenv: EnvLookup,
 ) -> tuple[str | None, str | None]:
+    override, repo, glob = layers[0], layers[1], layers[2]
     if override.base_url and override.provider in (None, chosen):
         return override.base_url, override.source
     section = cfg.get(chosen)
     if isinstance(section, Mapping) and _clean(section.get("base_url")):
-        return _clean(section.get("base_url")), "config.yaml"
+        return _clean(section.get("base_url")), repo.source
     if glob.base_url and glob.provider == chosen:
         return glob.base_url, "global"
     for var in PROVIDER_BASE_URL_ENVS.get(chosen, ()):
@@ -378,12 +462,67 @@ def llm_provider_kwargs(
         repo_path=repo_path,
         getenv=lambda _name: None,
     )
-    api_key, _source = resolve_api_key(selection.provider, repo_path)
+    api_key, key_source = resolve_api_key(selection.provider, repo_path)
     if api_key:
         kwargs["api_key"] = api_key
     if selection.base_url:
+        if selection.base_url_source == "config.yaml":
+            _check_repo_base_url(selection, repo_path, key_source)
         kwargs["base_url"] = selection.base_url
     return kwargs
+
+
+class UntrustedBaseUrlError(ValueError):
+    """A committed ``config.yaml`` points a key from elsewhere at an unconfirmed host."""
+
+
+def _check_repo_base_url(
+    selection: LLMSelection, repo_path: Path | str | None, key_source: str | None
+) -> None:
+    """Refuse to send a key to a ``config.yaml`` base URL nobody here confirmed.
+
+    ``config.yaml`` can be committed, so a cloned repo could otherwise redirect
+    the user's exported or stored key to any host. Allowed: no key at all, a
+    key from this repo's own ``.env``, a loopback host, or a URL the user set
+    through the web UI or ``repowise init`` on this machine.
+    """
+    url = selection.base_url or ""
+    try:
+        validate_base_url(url)
+    except ValueError as exc:
+        raise ValueError(
+            f"{selection.provider} base_url in .repowise/config.yaml: {exc}"
+        ) from None
+    if key_source is None or key_source == ".repowise/.env":
+        return
+    if _is_loopback(url) or base_url_trusted(repo_path, url):
+        return
+    raise UntrustedBaseUrlError(
+        f"This repo's .repowise/config.yaml sends {selection.provider} requests to "
+        f"{selection.display_base_url}, which has not been confirmed on this machine, so "
+        "your API key was not sent there. Confirm the URL in Settings or with "
+        "`repowise init`, or put the key in the repo's .repowise/.env."
+    )
+
+
+def _is_loopback(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def without_credentials(url: str) -> str:
+    """*url* with any ``user:password@`` removed, for display and errors."""
+    parsed = urlparse(url)
+    if not (parsed.username or parsed.password):
+        return url
+    host = parsed.hostname or ""
+    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    return parsed._replace(netloc=netloc).geturl()
 
 
 # ---------------------------------------------------------------------------
@@ -395,14 +534,20 @@ UNSET: Any = object()
 
 
 def validate_base_url(value: str | None) -> str | None:
-    """A trimmed ``http(s)://host...`` URL, or ``None`` for empty (clears it)."""
+    """A trimmed ``http(s)://host...`` URL without credentials, or ``None`` for empty."""
     text = _clean(value)
     if text is None:
         return None
     parsed = urlparse(text)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    if parsed.username or parsed.password:
         raise ValueError(
-            f"Base URL must start with http:// or https:// and name a host, got {text!r}"
+            "Base URL must not contain a user name or password. "
+            "Save the API key in Settings or .repowise/.env instead."
+        )
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError(
+            "Base URL must start with http:// or https:// and name a host, "
+            f"got {without_credentials(text)!r}"
         )
     return text
 
@@ -457,7 +602,9 @@ def save_repo_llm_selection(
 __all__ = [
     "UNSET",
     "LLMSelection",
+    "UntrustedBaseUrlError",
     "apply_llm_selection",
+    "base_url_trusted",
     "cached_read",
     "clear_cache",
     "forget_cached",
@@ -471,5 +618,8 @@ __all__ = [
     "resolve_api_key",
     "resolve_llm",
     "save_repo_llm_selection",
+    "trust_base_url",
+    "update_global_config",
     "validate_base_url",
+    "without_credentials",
 ]

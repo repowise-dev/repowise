@@ -21,6 +21,7 @@ from starlette.responses import StreamingResponse
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.providers.llm.base import ChatProvider
+from repowise.core.providers.llm.resolve import UntrustedBaseUrlError
 from repowise.core.redaction import redact_secrets
 from repowise.server.auth import PER_CALL_TOOL_SCOPE, Principal, get_authorizer
 from repowise.server.chat_artifacts import find_artifact, set_artifact_pinned
@@ -53,7 +54,11 @@ from repowise.server.deps import (
     resolve_session_factory,
     verify_api_key,
 )
-from repowise.server.provider_config import get_chat_provider_instance
+from repowise.server.provider_config import (
+    NoProviderConfiguredError,
+    UnknownProviderError,
+    get_chat_provider_instance,
+)
 from repowise.server.schemas import (
     ArtifactUpdateRequest,
     ChatArtifactEnvelope,
@@ -139,16 +144,18 @@ def _chat_provider(
         )
     except ValueError as exc:
         # Every detail here is shown to the person, so none echoes the config.
-        # The two texts matched are get_chat_provider_instance's own; another
-        # ValueError (a bad base URL, say) is an invalid configuration.
+        # Another ValueError (a bad base URL, say) is an invalid configuration.
         reason = str(exc)
         logger.warning("chat_provider_unavailable: %s", redact_secrets(reason))
-        if reason.startswith("No active provider configured"):
+        if isinstance(exc, NoProviderConfiguredError):
             raise HTTPException(400, NO_PROVIDER_MESSAGE) from exc
-        if provider and reason.startswith("Unknown provider"):
+        if isinstance(exc, UnknownProviderError):
             raise HTTPException(
                 400, f"Unknown provider {provider!r}. Pick a provider in Settings."
             ) from exc
+        if isinstance(exc, UntrustedBaseUrlError):
+            # Names only the URL, already stripped of any credentials.
+            raise HTTPException(400, str(exc)) from exc
         raise HTTPException(400, INVALID_PROVIDER_MESSAGE) from exc
     except Exception as exc:
         logger.warning(

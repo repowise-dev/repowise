@@ -117,20 +117,30 @@ def _isolate_tokens_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pyte
     monkeypatch.setenv("REPOWISE_TOKENS_FILE", str(missing))
 
 
+_REAL_HOME = Path.home()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_provider_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
 ):
-    """Keep a developer's ``~/.repowise/provider_config.json`` out of resolution.
+    """Keep a developer's ``~/.repowise`` provider and embedder settings out.
 
-    Every LLM resolver reads its global default and stored keys, so a real one
-    on the machine would decide which provider a test resolves. The parse
-    cache is dropped too: test repos are rewritten faster than mtimes move.
+    Every LLM resolver reads ``provider_config.json`` (global default, stored
+    keys) and the embedder resolver reads ``~/.repowise/config.yaml``, so real
+    ones on the machine would decide what a test resolves. A test that moves
+    ``Path.home`` on purpose still gets its own home.
     """
-    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path_factory.mktemp("provider-config")))
-    module = sys.modules.get("repowise.core.providers.llm.resolve")
-    if module is not None:
-        module.clear_cache()
+    scratch = tmp_path_factory.mktemp("provider-config")
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(scratch))
+    from repowise.core.providers.embedding import resolve as embedding_resolve
+
+    def _global_embedder_config() -> Path:
+        home = Path.home()
+        return (scratch if home == _REAL_HOME else home / ".repowise") / "config.yaml"
+
+    monkeypatch.setattr(embedding_resolve, "global_config_path", _global_embedder_config)
+    sys.modules["repowise.core.providers.llm.resolve"].clear_cache()
 
 
 @pytest.fixture(autouse=True)

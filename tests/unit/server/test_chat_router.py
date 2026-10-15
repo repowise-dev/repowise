@@ -13,6 +13,7 @@ from repowise.core.providers.llm.base import ChatStreamEvent, ChatToolCall, Prov
 from repowise.server.chat_prompt import _build_system_prompt
 from repowise.server.chat_session import WEB_POLICY
 from repowise.server.chat_tools import get_tool_catalog
+from repowise.server.provider_config import NoProviderConfiguredError, UnknownProviderError
 from repowise.server.schemas.chat import ChatPageContext
 from tests.unit.server.test_chat_stream_terminal_event import (
     _REPO_ID,
@@ -577,7 +578,7 @@ async def test_no_configured_provider_is_a_chat_error_event_not_an_http_error():
     from repowise.server.chat_errors import NO_PROVIDER_MESSAGE
 
     app = await _make_app()
-    failure = ValueError("No active provider configured. Set an API key first.")
+    failure = NoProviderConfiguredError("No active provider configured. Set an API key first.")
     with patch(_PROVIDER, side_effect=failure):
         events = _data_events(await _post(app, {"message": "hi"}))
     assert events == [{"type": "error", "message": NO_PROVIDER_MESSAGE}]
@@ -587,8 +588,10 @@ async def test_no_configured_provider_is_a_chat_error_event_not_an_http_error():
 @pytest.mark.parametrize(
     ("override", "failure", "expected"),
     [
-        (None, ValueError("No active provider configured. Set an API key first."), "No LLM provider"),
-        ("nope", ValueError("Unknown provider: nope"), "Unknown provider 'nope'"),
+        (None, NoProviderConfiguredError("No active provider configured."), "No LLM provider"),
+        ("nope", UnknownProviderError("Unknown provider: nope"), "Unknown provider 'nope'"),
+        # Matched by type, not text: a plain ValueError with the same words is generic.
+        (None, ValueError("No active provider configured."), "configuration is invalid"),
         (None, ValueError("base_url http://10.0.0.5:9/x?key=AIzaSecret1234 is invalid"), "configuration is invalid"),
         ("openai", RuntimeError("client init failed for sk-proj-abcdef1234567890"), "Could not start the chat provider"),
     ],

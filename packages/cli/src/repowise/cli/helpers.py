@@ -946,9 +946,32 @@ def save_config(
         existing["reasoning"] = resolve_reasoning(reasoning)
 
     save_repo_config(repo_path, existing)
+    _trust_configured_base_url(repo_path, existing, provider)
 
     if save_key:
         _persist_provider_key(repo_path, provider)
+
+
+def _trust_configured_base_url(repo_path: Path, config: dict[str, Any], provider: str) -> None:
+    """Record ``<provider>.base_url`` as confirmed: this init run chose to use it.
+
+    A config.yaml base URL only receives a key from outside the repo's own
+    ``.env`` once the user confirmed it on this machine; running ``init``
+    with it in place is that confirmation. An invalid URL is left unconfirmed,
+    and resolution reports it.
+    """
+    from repowise.core.providers.llm.resolve import trust_base_url, validate_base_url
+
+    section = config.get(provider)
+    if not isinstance(section, dict):
+        return
+    try:
+        url = validate_base_url(section.get("base_url"))
+    except ValueError:
+        return
+    if url:
+        with contextlib.suppress(OSError):
+            trust_base_url(repo_path, url)
 
 
 def save_config_partial(
@@ -1080,7 +1103,12 @@ def resolve_provider(
         raise reasoned_error(_no_provider_message(), reason="no_provider_configured")
 
     name = selection.provider
-    kwargs = llm_provider_kwargs(selection, repo_path)
+    try:
+        kwargs = llm_provider_kwargs(selection, repo_path)
+    except ValueError as exc:
+        # A base URL the repo's config.yaml sets that is malformed, or that
+        # nobody on this machine confirmed for a key from elsewhere.
+        raise reasoned_error(str(exc), reason="provider_setup_failed") from exc
     if selection.provider_source != "autodetect" and "api_key" not in kwargs:
         # A configured provider whose key is nowhere still gets built: the
         # constructor says what it needs. Agent CLIs are checked for install.
@@ -1234,11 +1262,14 @@ def resolve_provider_or_prompt(
 # ---------------------------------------------------------------------------
 
 
-def validate_provider_config(provider_name: str | None = None) -> list[str]:
+def validate_provider_config(
+    provider_name: str | None = None, repo_path: Path | None = None
+) -> list[str]:
     """Validate that required API keys/environment variables are set for the provider.
 
     Args:
         provider_name: The provider name to validate. If None, checks all possible providers.
+        repo_path: The repo whose configured provider counts as explicitly requested.
 
     Returns:
         List of warning messages for missing or invalid configuration.
@@ -1292,13 +1323,16 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
             warnings.append(f"Provider '{provider_name}' requires {' or '.join(env_vars)}")
     else:
         # Check all providers - warn about any that could be configured but are missing keys
+        from repowise.core.providers.llm.resolve import resolve_llm
+
+        configured = resolve_llm(repo_path, autodetect=False).provider
         for name, env_vars in provider_env_vars.items():
             if any(_is_env_var_set(var) for var in env_vars):
                 continue
             # Only warn if this provider is explicitly requested OR
             # if the env var exists but is invalid (empty)
             env_var_exists = any(_is_env_var_exists(var) for var in env_vars)
-            explicitly_requested = os.environ.get("REPOWISE_PROVIDER") == name
+            explicitly_requested = configured == name
             if explicitly_requested or env_var_exists:
                 warnings.append(f"Provider '{name}' requires {' or '.join(env_vars)}")
 

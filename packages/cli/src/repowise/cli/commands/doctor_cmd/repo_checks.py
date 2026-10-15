@@ -184,7 +184,7 @@ def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
 
     from repowise.cli.helpers import validate_provider_config
 
-    config_warnings = validate_provider_config()
+    config_warnings = validate_provider_config(repo_path=repo_path)
     config_ok = not config_warnings
     config_detail = "No misconfigured provider keys" if config_ok else "; ".join(config_warnings)
     checks.append(_check("Provider config", config_ok, config_detail))

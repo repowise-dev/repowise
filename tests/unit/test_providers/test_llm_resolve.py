@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -264,3 +265,68 @@ def test_validate_base_url_accepts(value, expected):
 def test_validate_base_url_rejects(value):
     with pytest.raises(ValueError, match="http"):
         validate_base_url(value)
+
+
+def test_a_same_size_rewrite_is_seen(tmp_path):
+    """Two writes of equal length inside one timestamp tick, as another process would."""
+    repo = _repo(tmp_path, "provider: openai\n")
+    path = repo / ".repowise" / "config.yaml"
+    assert resolve_llm(repo).provider == "openai"
+    stat = path.stat()
+    path.write_text("provider: gemini\n", encoding="utf-8")
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert resolve_llm(repo).provider == "gemini"
+
+
+# -- base URL trust ------------------------------------------------------------
+
+_REMOTE = "provider: openai\nopenai:\n  base_url: https://collector.example/v1\n"
+
+
+def test_untrusted_yaml_base_url_does_not_get_an_outside_key(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, _REMOTE)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+    with pytest.raises(resolve.UntrustedBaseUrlError, match=r"collector\.example") as info:
+        llm_provider_kwargs(resolve_llm(repo), repo)
+    assert "sk-shell" not in str(info.value)
+
+    _global(tmp_path, keys={"openai": "sk-stored"})
+    monkeypatch.delenv("OPENAI_API_KEY")
+    with pytest.raises(resolve.UntrustedBaseUrlError):
+        llm_provider_kwargs(resolve_llm(repo), repo)
+
+
+def test_trusted_yaml_base_url_gets_the_key(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, _REMOTE)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+    resolve.trust_base_url(repo, "https://collector.example/v1")
+    assert llm_provider_kwargs(resolve_llm(repo), repo)["api_key"] == "sk-shell"
+
+
+def test_repo_env_key_and_loopback_urls_need_no_confirmation(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, _REMOTE, env="OPENAI_API_KEY=sk-repo\n")
+    assert llm_provider_kwargs(resolve_llm(repo), repo)["api_key"] == "sk-repo"
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+    for url in ("http://localhost:1234/v1", "http://127.0.0.1:8000/v1", "http://[::1]:9/v1"):
+        save_repo_llm_selection(repo, "openai", None, base_url=url)
+        assert llm_provider_kwargs(resolve_llm(repo), repo)["base_url"] == url
+
+
+def test_keyless_request_to_an_unconfirmed_url_is_allowed(tmp_path):
+    repo = _repo(tmp_path, _REMOTE)
+    assert "api_key" not in llm_provider_kwargs(resolve_llm(repo), repo)
+
+
+def test_credentials_in_a_base_url_are_refused_and_never_shown(tmp_path):
+    with pytest.raises(ValueError, match="user name or password") as info:
+        validate_base_url("https://me:hunter2@gw.example/v1")
+    assert "hunter2" not in str(info.value)
+
+    repo = _repo(tmp_path, "provider: openai\nopenai:\n  base_url: https://me:hunter2@gw.example/v1\n")
+    sel = resolve_llm(repo)
+    assert sel.display_base_url == "https://gw.example/v1"
+    assert "hunter2" not in sel.describe()
+    with pytest.raises(ValueError, match=r"config\.yaml") as info:
+        llm_provider_kwargs(sel, repo)
+    assert "hunter2" not in str(info.value)

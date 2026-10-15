@@ -19,8 +19,10 @@ def isolate_server_store(monkeypatch, tmp_path):
     from repowise.server import provider_config as pc
 
     monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path / "server-store"))
-    # Don't let a real ANTHROPIC_API_KEY on the dev box mask the stored one.
+    # Don't let a real ANTHROPIC_API_KEY on the dev box mask the stored one,
+    # nor an OPENAI_BASE_URL another test exported stand in for a cleared one.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     return pc
 
 

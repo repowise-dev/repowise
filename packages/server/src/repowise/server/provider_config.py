@@ -20,10 +20,10 @@ mirrors a UI-added key into that file too.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -36,18 +36,23 @@ from repowise.core.providers.embedding.registry import (
 from repowise.core.providers.llm.resolve import (
     UNSET,
     LLMSelection,
-    forget_cached,
     global_config_path,
     read_global_config,
     read_repo_config,
     resolve_api_key,
     resolve_llm,
     save_repo_llm_selection,
+    trust_base_url,
+    update_global_config,
     validate_base_url,
 )
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
 logger = logging.getLogger(__name__)
+
+# One migration at a time: two first requests for the same repo must not both
+# write its config.yaml and state.json.
+_migration_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Provider catalog, derived from the provider specs. Flag-only providers
@@ -111,7 +116,7 @@ def _config_path() -> Path:
 
 
 def _load_config() -> dict[str, Any]:
-    """A fresh, editable copy of the stored config for read-modify-write."""
+    """A fresh copy of the stored config. Writes go through ``update_global_config``."""
     return json.loads(json.dumps(dict(read_global_config())))
 
 
@@ -122,22 +127,6 @@ def _redact_key(text: str) -> str:
     # Matches common key prefixes: sk-..., sk-ant-..., sk-proj-..., etc.
     # Keep first 3 chars to indicate presence, redact rest.
     return re.sub(r"(sk-[A-Za-z0-9\-_]{4,})", "sk-***", text)
-
-
-def _save_config(config: dict[str, Any]) -> None:
-    # Write-then-rename so a concurrent reader (or a second writer racing on
-    # the read-modify-write) never sees a half-written file or a truncated one.
-    # Keys are sensitive — ensure 0600 permissions (owner read/write only).
-    path = _config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f"{path.suffix}.tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
-    with contextlib.suppress(OSError):
-        os.chmod(tmp, 0o600)  # best-effort on platforms without chmod (e.g. Windows)
-    os.replace(tmp, path)
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
-    forget_cached(path)
 
 
 # ---------------------------------------------------------------------------
@@ -160,44 +149,124 @@ def _provider_configured(provider_id: str, repo_path: str | Path | None = None) 
     return not catalog["requires_key"] or bool(_get_key_for_provider(provider_id, repo_path))
 
 
+def _legacy_selection(repo_id: str | None) -> Mapping[str, Any] | None:
+    """The old server's stored ``repos[repo_id]`` choice, if one is left."""
+    if not repo_id:
+        return None
+    repos = read_global_config().get("repos")
+    selection = repos.get(repo_id) if isinstance(repos, Mapping) else None
+    return selection if isinstance(selection, Mapping) else None
+
+
+def _as_repo_layer(selection: Mapping[str, Any]) -> dict[str, Any]:
+    """A legacy entry in ``config.yaml``'s shape, for a repo with no checkout."""
+    provider = selection.get("provider")
+    layer: dict[str, Any] = {"provider": provider, "model": selection.get("model")}
+    if selection.get("base_url") and isinstance(provider, str):
+        layer[provider] = {"base_url": selection["base_url"]}
+    return layer
+
+
 def _migrate_repo_selection(repo_id: str | None, repo_path: str | Path | None) -> None:
     """Move a legacy ``repos[repo_id]`` entry into the repo's ``config.yaml``.
 
-    Written there only when the yaml has no provider yet; otherwise the yaml
-    wins and the entry is dropped. A dict lookup on the cached file once the
-    entry is gone, so this costs nothing on later requests.
+    Written there (base URL included) only when the yaml names no provider;
+    otherwise the yaml wins and the entry is dropped. A repo with no checkout
+    keeps its entry, which the resolver then reads in place of the yaml. Once
+    the entry is gone this is a dict lookup on the cached file.
+
+    The entry already chose the model for jobs started from the UI, so moving
+    it is not a model change: state.json's fingerprints are carried over and
+    the next ``repowise update`` does not regenerate because of it.
     """
-    if not repo_id or repo_path is None:
+    if repo_path is None or _legacy_selection(repo_id) is None:
         return
-    repos = read_global_config().get("repos")
-    if not isinstance(repos, Mapping) or repo_id not in repos:
-        return
-    selection = repos[repo_id]
-    if read_repo_config(repo_path).get("provider"):
-        logger.info(
-            "Dropped the stored chat selection for repo %s: its config.yaml already "
-            "names a provider",
-            repo_id,
-        )
-    elif isinstance(selection, Mapping) and selection.get("provider") in _CATALOG_BY_ID:
-        try:
-            save_repo_llm_selection(repo_path, selection["provider"], selection.get("model"))
-        except (OSError, ValueError):
-            logger.warning(
-                "Could not move the stored chat selection for repo %s into %s/.repowise/"
-                "config.yaml; keeping it for the next try",
-                repo_id,
-                repo_path,
-            )
+    with _migration_lock:
+        selection = _legacy_selection(repo_id)
+        if selection is None:
             return
-        logger.info("Moved the stored chat selection for repo %s into config.yaml", repo_id)
-    config = _load_config()
-    stored = config.get("repos")
+        provider = selection.get("provider")
+        if read_repo_config(repo_path).get("provider"):
+            logger.info(
+                "Dropped the stored chat selection for repo %s: its config.yaml already "
+                "names a provider",
+                repo_id,
+            )
+        elif provider not in _CATALOG_BY_ID:
+            logger.warning(
+                "Dropped the stored chat selection for repo %s: provider %r is not "
+                "available on this server",
+                repo_id,
+                provider,
+            )
+        else:
+            try:
+                _write_migrated_selection(repo_path, selection)
+            except (OSError, ValueError):
+                logger.warning(
+                    "Could not move the stored chat selection for repo %s into %s/.repowise/"
+                    "config.yaml; keeping it for the next try",
+                    repo_id,
+                    repo_path,
+                )
+                return
+            logger.info("Moved the stored chat selection for repo %s into config.yaml", repo_id)
+
+        def drop(config: dict[str, Any]) -> None:
+            stored = config.get("repos")
+            if isinstance(stored, dict):
+                stored.pop(repo_id, None)
+                if not stored:
+                    config.pop("repos", None)
+
+        update_global_config(drop)
+
+
+def _write_migrated_selection(repo_path: str | Path, selection: Mapping[str, Any]) -> None:
+    from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
+
+    before = (config_fingerprint(repo_path), config_dependency_fingerprints(repo_path))
+    base_url = validate_base_url(selection.get("base_url"))
+    save_repo_llm_selection(
+        repo_path,
+        selection["provider"],
+        selection.get("model"),
+        base_url if base_url else UNSET,
+    )
+    if base_url:
+        trust_base_url(repo_path, base_url)
+    _carry_fingerprints(repo_path, before)
+
+
+def _carry_fingerprints(repo_path: str | Path, before: tuple[str, dict[str, str]]) -> None:
+    """Move state.json's config fingerprints past the migration's own write.
+
+    Only a fingerprint that still matched the pre-migration config moves, so a
+    real config change waiting for the next update is still seen.
+    """
+    from repowise.core.fsutils import atomic_write_text
+    from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
+
+    state_path = Path(repo_path) / ".repowise" / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(state, dict):
+        return
+    old_fp, old_deps = before
+    changed = False
+    if state.get("config_fingerprint") == old_fp:
+        state["config_fingerprint"] = config_fingerprint(repo_path)
+        changed = True
+    stored = state.get("config_dependency_fingerprints")
     if isinstance(stored, dict):
-        stored.pop(repo_id, None)
-        if not stored:
-            config.pop("repos", None)
-    _save_config(config)
+        for bucket, value in config_dependency_fingerprints(repo_path).items():
+            if stored.get(bucket) == old_deps.get(bucket) and value != old_deps.get(bucket):
+                stored[bucket] = value
+                changed = True
+    if changed:
+        atomic_write_text(state_path, json.dumps(state, indent=2))
 
 
 def resolve_for_repo(
@@ -211,12 +280,14 @@ def resolve_for_repo(
     if provider_override and provider_override not in _CATALOG_BY_ID:
         raise UnknownProviderError(f"Unknown provider: {provider_override}")
     _migrate_repo_selection(repo_id, repo_path)
+    legacy = _legacy_selection(repo_id) if repo_path is None else None
     return resolve_llm(
         repo_path,
         provider=provider_override,
         model=model_override,
         override_source="request",
         known=_CATALOG_BY_ID,
+        repo_layer=_as_repo_layer(legacy) if legacy else None,
     )
 
 
@@ -268,7 +339,7 @@ def list_provider_status(
         "active": {
             "provider": active_id,
             "model": model,
-            "base_url": selection.base_url,
+            "base_url": selection.display_base_url,
             "provenance": selection.provenance,
             "input_cost_per_1k": input_rate,
             "output_cost_per_1k": output_rate,
@@ -301,7 +372,6 @@ def get_configured_active_provider(
     return provider_id, model
 
 
-
 def set_active_provider(
     provider_id: str,
     model: str | None = None,
@@ -330,19 +400,24 @@ def set_active_provider(
             )
         _migrate_repo_selection(repo_id, repo_path)
         save_repo_llm_selection(repo_path, provider_id, model, base_url)
+        if base_url not in (UNSET, None):
+            # Chosen here by the user, so stored keys may be sent to it.
+            trust_base_url(repo_path, base_url)
         return
-    config = _load_config()
-    config["active_provider"] = provider_id
-    if model:
-        config["active_model"] = model
-    else:
-        config.pop("active_model", None)
-    if base_url is not UNSET:
-        if base_url:
-            config["active_base_url"] = base_url
+
+    def change(config: dict[str, Any]) -> None:
+        config["active_provider"] = provider_id
+        if model:
+            config["active_model"] = model
         else:
-            config.pop("active_base_url", None)
-    _save_config(config)
+            config.pop("active_model", None)
+        if base_url is not UNSET:
+            if base_url:
+                config["active_base_url"] = base_url
+            else:
+                config.pop("active_base_url", None)
+
+    update_global_config(change)
 
 
 def set_api_key(
@@ -370,13 +445,14 @@ def set_api_key(
         # Reject before writing anything so a bad value can't inject extra env
         # lines nor leave a partial store update. A real key has no newline.
         raise ValueError("API key must not contain a newline")
-    config = _load_config()
-    keys = config.setdefault("keys", {})
-    if key:
-        keys[provider_id] = key
-    else:
-        keys.pop(provider_id, None)
-    _save_config(config)
+    def change(config: dict[str, Any]) -> None:
+        keys = config.setdefault("keys", {})
+        if key:
+            keys[provider_id] = key
+        else:
+            keys.pop(provider_id, None)
+
+    update_global_config(change)
 
     if repo_path is not None:
         _mirror_key_to_repo_env(provider_id, key, repo_path)
@@ -403,7 +479,6 @@ def _mirror_key_to_repo_env(
         save_repo_env_key(repo_path, env_keys[0], key)
     except OSError:
         logger.warning("Failed to mirror %s key into %s/.repowise/.env", provider_id, repo_path)
-    forget_cached(Path(repo_path) / ".repowise" / ".env")
 
 
 def get_chat_provider_instance(

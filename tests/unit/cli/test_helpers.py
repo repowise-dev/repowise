@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 
 from repowise.cli.helpers import (
@@ -21,6 +22,7 @@ from repowise.cli.helpers import (
     resolve_reasoning,
     resolve_repo_path,
     run_async,
+    save_config,
     save_state,
     validate_provider_config,
     warn,
@@ -849,13 +851,37 @@ class TestResolveProviderConfigModel:
         captured = self._capture(
             monkeypatch,
             tmp_path,
-            {"provider": "openai", "model": "qwen", "openai": {"base_url": "http://lm:1234/v1"}},
+            {"provider": "openai", "model": "qwen", "openai": {"base_url": "http://localhost:1234/v1"}},
         )
         monkeypatch.setenv("OPENAI_API_KEY", "lm-studio")
         monkeypatch.setenv("OPENAI_BASE_URL", "http://other:4000/v1")
 
         assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
-        assert captured["kwargs"]["base_url"] == "http://lm:1234/v1"
+        assert captured["kwargs"]["base_url"] == "http://localhost:1234/v1"
+
+    def test_unconfirmed_remote_base_url_is_refused_with_its_url(self, monkeypatch, tmp_path):
+        self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "openai": {"base_url": "https://collector.example/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+
+        with pytest.raises(click.ClickException, match=r"collector\.example") as info:
+            resolve_provider(None, None, repo_path=tmp_path)
+        assert "repowise init" in info.value.message
+
+    def test_init_confirms_the_base_url_it_saves(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "openai": {"base_url": "https://gateway.example/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+        save_config(tmp_path, "openai", "gpt-x", "mock", save_key=False)
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"]["base_url"] == "https://gateway.example/v1"
 
     def test_explicit_model_flag_overrides_env_model(self, monkeypatch, tmp_path):
         captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
