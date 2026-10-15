@@ -68,6 +68,8 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "models": list(spec.models),
         "env_keys": list(spec.api_key_envs),
         "requires_key": bool(spec.api_key_envs),
+        # Takes an endpoint (``<provider>: {base_url}`` in config.yaml).
+        "accepts_base_url": bool(spec.base_url_envs),
         # What a user sets to make it usable, and how to install it.
         "env_vars": list(spec.required_envs),
         "setup_hint": spec.setup_hint,
@@ -147,7 +149,19 @@ def _provider_configured(provider_id: str, repo_path: str | Path | None = None) 
     catalog = _CATALOG_BY_ID.get(provider_id)
     if catalog is None:
         return False
-    return not catalog["requires_key"] or bool(_get_key_for_provider(provider_id, repo_path))
+    if not catalog["requires_key"] or _get_key_for_provider(provider_id, repo_path):
+        return True
+    return PROVIDER_SPECS[provider_id].keyless_on_loopback and _on_local_server(
+        provider_id, repo_path
+    )
+
+
+def _on_local_server(provider_id: str, repo_path: str | Path | None) -> bool:
+    """Whether *provider_id* resolves to a local server, which needs no key."""
+    from repowise.core.providers.llm.openai import needs_api_key
+
+    base_url = resolve_llm(repo_path, provider=provider_id).base_url
+    return bool(base_url) and not needs_api_key(base_url)
 
 
 def _legacy_selection(repo_id: str | None) -> Mapping[str, Any] | None:
@@ -321,6 +335,7 @@ def list_provider_status(
                 "default_model": p["default_model"],
                 "configured": _provider_configured(p["id"], repo_path),
                 "requires_key": p["requires_key"],
+                "accepts_base_url": p["accepts_base_url"],
                 "env_vars": p["env_vars"],
                 "setup_hint": p["setup_hint"],
             }

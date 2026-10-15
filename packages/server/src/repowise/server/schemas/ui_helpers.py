@@ -51,6 +51,8 @@ class ProviderEntry(BaseModel):
     configured: bool = False
     #: Takes an API key; ``False`` hides the key field.
     requires_key: bool = True
+    #: Takes a custom endpoint (an OpenAI-compatible local server, a proxy).
+    accepts_base_url: bool = False
     #: Env vars a user sets to make the provider usable.
     env_vars: list[str] = []
     #: One line on how to install or set it up.

@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.server.deps import resolve_session_factory, verify_api_key
 from repowise.core.providers.llm.resolve import validate_base_url
+from repowise.server.deps import resolve_session_factory, verify_api_key
 from repowise.server.provider_config import (
     PROVIDER_CATALOG,
     _redact_key,

@@ -51,6 +51,8 @@ class ProviderSpec:
     base_url_envs: tuple[str, ...] = ()
     #: Runs with no API key: out-of-band login, a local model, or a proxy.
     keyless: bool = False
+    #: Runs with no key when ``base_url`` is a local server (LM Studio, vLLM).
+    keyless_on_loopback: bool = False
     #: Shells out with the repo as its working directory.
     needs_repo_cwd: bool = False
     #: Runs on this machine, so high concurrency can time out.
@@ -144,6 +146,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         models=("gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"),
         api_key_envs=("OPENAI_API_KEY",),
         base_url_envs=("OPENAI_BASE_URL",),
+        keyless_on_loopback=True,
         rate_limit=RateLimitConfig(requests_per_minute=5_000, tokens_per_minute=4_000_000),
         package="openai",
         autodetect_rank=1,

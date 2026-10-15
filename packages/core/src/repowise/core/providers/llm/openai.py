@@ -213,6 +213,11 @@ def _is_loopback_url(base_url: str) -> bool:
         return False
 
 
+def needs_api_key(base_url: str | None) -> bool:
+    """False for a local server, which runs on :data:`LOCAL_SERVER_API_KEY`."""
+    return not (base_url and _is_loopback_url(base_url))
+
+
 def _openai_option(
     model_id: str,
     *,
@@ -309,7 +314,7 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
     ) -> None:
         resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not resolved_key and resolved_base_url and _is_loopback_url(resolved_base_url):
+        if not resolved_key and not needs_api_key(resolved_base_url):
             resolved_key = LOCAL_SERVER_API_KEY
         if not resolved_key:
             raise ProviderError(

@@ -367,6 +367,7 @@ def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
             "default_model",
             "configured",
             "requires_key",
+            "accepts_base_url",
             "env_vars",
             "setup_hint",
         }

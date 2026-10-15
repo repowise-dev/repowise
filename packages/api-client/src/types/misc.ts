@@ -29,6 +29,8 @@ export interface ProviderInfo {
   configured: boolean;
   /** `false` for providers that authenticate without an API key. */
   requires_key?: boolean;
+  /** Takes a custom endpoint (an OpenAI-compatible local server, a proxy). */
+  accepts_base_url?: boolean;
   /** Env vars a user sets to make the provider usable. */
   env_vars?: string[];
   /** One line on how to install or set it up. */

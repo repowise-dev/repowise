@@ -3011,8 +3011,27 @@ export interface ProviderEntry {
   default_model?: string | null;
   configured?: boolean;
   requires_key?: boolean;
+  accepts_base_url?: boolean;
   env_vars?: string[];
   setup_hint?: string;
+}
+
+export interface ProviderModelEntry {
+  id: string;
+  label?: string | null;
+}
+
+/**
+ * Models a provider offers, newest-looking first after the default.
+ *
+ * ``source`` is ``live`` when the provider listed them and ``catalog`` when
+ * the built-in list stands in, with ``error`` saying why.
+ */
+export interface ProviderModelsResponse {
+  models: ProviderModelEntry[];
+  source: "live" | "catalog";
+  default_model: string;
+  error?: string | null;
 }
 
 export interface ProviderStatusResponse {
