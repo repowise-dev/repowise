@@ -304,6 +304,53 @@ async def test_decisions_per_component_with_stale(ctx, monkeypatch):
     }
 
 
+async def test_outcomes_are_left_out_until_a_checklist_kept_them(ctx):
+    import repowise.core.report.sections  # noqa: F401
+    from repowise.core.persistence.crud import upsert_changes
+
+    def change(cid: str, path: str, outcomes: dict | None) -> dict:
+        items = [] if outcomes is None else [outcomes]
+        return {
+            "change_id": cid,
+            "identity_kind": "pr",
+            "identity_value": cid[3:],
+            "shape": "squash",
+            "title": f"feat: {cid}",
+            "head_sha": cid[3:].rjust(40, "a"),
+            "files_json": json.dumps([{"path": path, "added": 1, "deleted": 0}]),
+            "evidence_json": json.dumps({"items": items}) if outcomes is not None else None,
+        }
+
+    assert await report_sections.get("outcomes").collect(ctx) is None
+    revert = {"kind": "revert", "sha": "r" * 40, "evidence": "This reverts commit x", "in_force": True}
+    cause = {"kind": "fix_reference", "sha": "f" * 40, "evidence": "regression from #2"}
+    item = lambda *links: {"kind": "outcomes", "status": "ok", "details": list(links)}  # noqa: E731
+    unknown = {"kind": "outcomes", "status": "unknown", "details": [{"reason": "shallow"}]}
+    await upsert_changes(
+        ctx.session,
+        ctx.repository_id,
+        [
+            change("pr-1", "api/a.py", item(revert)),
+            change("pr-2", "web/W.java", item(cause)),
+            change("pr-3", "api/b.py", item()),
+            change("pr-4", "api/b.py", unknown),
+            change("pr-5", "api/a.py", None),
+        ],
+    )
+    await ctx.session.flush()
+    items = await _section("outcomes", ctx)
+    top = items["outcomes"]
+    assert (top["basis"], top["score"]) == ("declared", None)
+    assert top["data"]["read"] == 3 and top["data"]["changes"] == 5
+    assert sorted(top["data"]["flagged"]) == ["pr-1", "pr-2"]
+    assert "reverted: pr-1 feat: pr-1" in top["details"]
+    assert any("regression from #2" in d for d in top["details"])
+    comps = items["outcomes:components"]
+    assert comps["data"]["components"]["api"] == {"read": ["pr-1", "pr-3"], "flagged": ["pr-1"]}
+    assert set(items) == {"outcomes", "outcomes:components"}
+    assert "caused" not in json.dumps(items)
+
+
 async def test_provenance_names_agents_without_counting_them(ctx):
     items = await _section("provenance", ctx)
     cov = items["provenance:coverage"]
