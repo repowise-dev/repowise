@@ -1,7 +1,10 @@
 "use client";
 
 import { toast } from "sonner";
-import { ProviderSettings } from "@repowise-dev/ui/settings/provider-settings";
+import {
+  ProviderSettings,
+  type ProviderSettingsLabels,
+} from "@repowise-dev/ui/settings/provider-settings";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { useProviders } from "@/lib/hooks/use-providers";
@@ -9,10 +12,12 @@ import { useTranslations } from "next-intl";
 
 /**
  * Web data wrapper around the shared `ProviderSettings` shell. Owns the fetch,
- * the repo-scoped key mutations (so D6 mirrors the key into `.repowise/.env`),
- * validation, and the toasts. The shell stays presentational and hosted-portable.
+ * the key mutations, validation, and the toasts. With `repoId` the choice is
+ * that repo's (its `.repowise/config.yaml`, and keys mirror into its
+ * `.repowise/.env`); without it, the server-wide default. The shell stays
+ * presentational and hosted-portable.
  */
-export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
+export function ProviderSettingsPanel({ repoId }: { repoId?: string }) {
   const {
     providers,
     active,
@@ -21,10 +26,12 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
     saveKey,
     removeKey,
     activate,
+    loadModels,
     validate,
   } = useProviders(repoId);
 
   const t = useTranslations("settings");
+  const f = useTranslations("settings.providerForm");
 
   if (isLoading) {
     return (
@@ -35,6 +42,28 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
       </div>
     );
   }
+
+  const labels: ProviderSettingsLabels = {
+    model: f("model"),
+    baseUrl: f("baseUrl"),
+    baseUrlHint: f("baseUrlHint"),
+    baseUrlInvalid: f("baseUrlInvalid"),
+    localServer: f("localServer"),
+    testConnection: f("testConnection"),
+    connected: (count) => f("connected", { count }),
+    save: f("save"),
+    useProvider: (name) => f("useProvider", { name }),
+    cancel: f("cancel"),
+    regenerateNotice: repoId ? f("regenerateNotice") : f("regenerateNoticeGlobal"),
+    provenance: (source) => {
+      if (source === "config.yaml") return f("sourceConfig");
+      if (source === "global") return f("sourceGlobal");
+      if (source === "default") return f("sourceDefault");
+      if (source === "autodetect") return f("sourceAutodetect");
+      if (source.startsWith("env:")) return f("sourceEnv", { name: source.slice(4) });
+      return null;
+    },
+  };
 
   async function handleAddKey(providerId: string, key: string) {
     try {
@@ -60,13 +89,20 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
     }
   }
 
-  async function handleSetActive(providerId: string, model?: string) {
+  async function handleSetActive(
+    providerId: string,
+    model?: string,
+    options?: { baseUrl?: string },
+  ) {
     try {
-      await activate(providerId, model);
+      await activate(providerId, model, options);
+      if (repoId) toast.success(f("saved"), { description: f("savedDescription") });
+      else toast.success(f("savedGlobal"));
     } catch (e) {
       toast.error(t("providerPanel.activateFailed"), {
         description: toFriendlyMessage(e),
       });
+      throw e;
     }
   }
 
@@ -77,8 +113,10 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
       onAddKey={handleAddKey}
       onRemoveKey={handleRemoveKey}
       onSetActive={handleSetActive}
+      onLoadModels={loadModels}
       onValidate={validate}
       validation={validation}
+      labels={labels}
     />
   );
 }

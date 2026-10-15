@@ -967,6 +967,10 @@ so the CLI uses it too. A local OpenAI-compatible server such as LM Studio works
 as `provider: openai` with `openai: {base_url: http://localhost:1234/v1}`.
 Because `config.yaml` may be committed, a non-local base URL there only receives a key
 that is not in the repo's `.repowise/.env` after you confirm it in Settings or with `repowise init`.
+You can set all of this from the repo's Settings page instead of editing the
+file: the model field lists the provider's live models and takes any id, and
+Test connection checks a base URL before you save it. A loopback base URL needs
+no API key.
 
 ---
 

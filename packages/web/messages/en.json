@@ -640,6 +640,28 @@
       "keyRemoveFailed": "Couldn't remove the key",
       "activateFailed": "Couldn't set the active provider"
     },
+    "providerForm": {
+      "model": "Model",
+      "baseUrl": "Base URL",
+      "baseUrlHint": "Leave empty to use the provider's own endpoint.",
+      "baseUrlInvalid": "Enter a URL that starts with http:// or https://.",
+      "localServer": "Local server",
+      "testConnection": "Test connection",
+      "connected": "Connected. {count, plural, one {# model} other {# models}} listed.",
+      "save": "Save",
+      "useProvider": "Use {name}",
+      "cancel": "Cancel",
+      "regenerateNotice": "Documentation is regenerated with the new model on the next sync. To try a model first, pick it in the chat model menu; that changes one conversation only.",
+      "regenerateNoticeGlobal": "Repositories without their own model regenerate their documentation with this one on their next sync. To try a model first, pick it in the chat model menu.",
+      "sourceConfig": "Saved in .repowise/config.yaml.",
+      "sourceGlobal": "From the default model in Settings.",
+      "sourceDefault": "The provider's default.",
+      "sourceAutodetect": "Picked because its API key is set.",
+      "sourceEnv": "From the {name} environment variable. Saving here takes precedence.",
+      "saved": "Model settings saved",
+      "savedDescription": "Written to .repowise/config.yaml. The CLI uses it too.",
+      "savedGlobal": "Default model saved"
+    },
     "display": {
       "title": "Display",
       "description": "What this browser shows and how it presents it. Nothing here changes the index.",
@@ -674,19 +696,12 @@
       "summarySingleRepo": "Single-repo mode, so workspace-only tools are unavailable here."
     },
     "provider": {
-      "title": "Model defaults",
-      "description": "Used when you trigger init or sync from this dashboard.",
-      "descriptionWithServer": "Used when you trigger init or sync from this dashboard. The server itself is currently configured with {provider}.",
-      "providerLabel": "Provider",
-      "providerAria": "Provider",
-      "modelLabel": "Model",
-      "modelHint": "Leave blank to use the provider's default.",
+      "title": "Default model",
+      "description": "Used by every repository that has no model of its own. Set one repository's model on its Settings page.",
       "embedderLabel": "Embedder",
       "embedderHint": "What semantic search is built from. The mock embedder disables it.",
-      "embedderAria": "Embedder",
-      "embedderOffNote": "Semantic search is off. Pick another embedder above and set <code>REPOWISE_EMBEDDER</code> on the server for real retrieval.",
-      "embedderOnNote": "Set <code>{env}</code> on the server.",
-      "catalogUnavailable": "Could not load the provider list from the server, so only the saved provider is shown."
+      "embedderOffNote": "Semantic search is off. Set <code>REPOWISE_EMBEDDER</code> on the server for real retrieval.",
+      "embedderOnNote": "Set with <code>{env}</code> on the server."
     }
   },
   "repos": {
@@ -877,7 +892,19 @@
     "noProvider": "No chat provider is configured. Add an API key in <link>settings</link> to start asking questions.",
     "noProviderShort": "No chat provider is configured. Add an API key in <link>settings</link>.",
     "unverifiedFigure": "Not found in this turn's tool results",
-    "unverifiedFiguresNote": "Figures with a dotted underline were not found in this turn's tool results."
+    "unverifiedFiguresNote": "Figures with a dotted underline were not found in this turn's tool results.",
+    "modelMenu": {
+      "dialog": "Choose conversation model",
+      "provider": "Provider",
+      "search": "Search or type a model id",
+      "useTyped": "Use \"{id}\"",
+      "repoDefault": "repo default",
+      "providerDefault": "default",
+      "loading": "Loading models",
+      "noMatch": "No listed model matches.",
+      "configure": "Configure in Settings",
+      "needsSetup": "More providers need a key first."
+    }
   },
   "codeHealth": {
     "hotspots": {

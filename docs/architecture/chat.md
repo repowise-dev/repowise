@@ -315,7 +315,8 @@ as a plotted value, and attribution figures only through `changes.provenance`.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/providers` | List all providers with status and active selection |
-| `PATCH` | `/api/providers/active` | Set active provider and model |
+| `PATCH` | `/api/providers/active` | Set active provider, model and base URL |
+| `GET` | `/api/providers/{id}/models` | The provider's live model list (cached briefly), or its built-in list with `error`; `?base_url=` tests an unsaved endpoint |
 | `POST` | `/api/providers/{id}/key` | Store an API key |
 | `DELETE` | `/api/providers/{id}/key` | Remove an API key |
 
@@ -326,7 +327,7 @@ as a plotted value, and attribution figures only through `changes.provenance`.
 ### API Layer (`src/lib/api/`)
 
 - `chat.ts` — `listConversations`, `getConversation`, `deleteConversation`, `postChatMessage` (returns raw Response for SSE reading)
-- `providers.ts` — `getProviders`, `setActiveProvider`, `addProviderKey`, `removeProviderKey`
+- `providers.ts` — `getProviders`, `getProviderModels`, `setActiveProvider`, `addProviderKey`, `removeProviderKey`
 
 ### Hooks (`src/lib/hooks/`)
 
@@ -342,7 +343,7 @@ as a plotted value, and attribution figures only through `changes.provenance`.
 | `ChatMarkdown` | Client-side markdown renderer using `react-markdown` + `remark-gfm` with design token styling |
 | `ToolCallBlock` | Inline tool call visualization — running (spinner), done collapsed (checkmark + summary), done expanded (input/output JSON) |
 | `ArtifactPanel` | Right slide-in panel with tabs for multiple artifacts. Renders by type: markdown, Mermaid diagrams, search results, raw JSON |
-| `ModelSelector` | Compact popover for switching provider/model and adding API keys inline |
+| `ModelSelector` | Per-conversation model menu: lists the chosen provider's live models when opened, takes a typed id, marks the repo default. It never writes config |
 | `ConversationHistory` | Dropdown listing past conversations with delete and new-conversation actions |
 
 ### Page Structure

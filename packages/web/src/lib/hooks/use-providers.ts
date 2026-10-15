@@ -8,6 +8,7 @@ import {
   addProviderKey,
   removeProviderKey,
   validateProviderKey,
+  getProviderModels,
 } from "@/lib/api/providers";
 import type { ProvidersResponse } from "@/lib/api/types";
 import type { ProviderValidationState } from "@repowise-dev/ui/settings/provider-settings";
@@ -26,9 +27,26 @@ export function useProviders(repoId?: string) {
   const activeProvider = data?.active.provider ?? null;
   const activeModel = data?.active.model ?? null;
 
-  async function activate(providerId: string, model?: string) {
-    await setActiveProvider(providerId, model, repoId);
-    await mutate();
+  // With repoId this writes the repo's .repowise/config.yaml (the CLI reads
+  // it too); without it, the server-wide default.
+  async function activate(
+    providerId: string,
+    model?: string,
+    options: { baseUrl?: string } = {},
+  ) {
+    await mutate(await setActiveProvider(providerId, model, repoId, options), {
+      revalidate: false,
+    });
+  }
+
+  function loadModels(
+    providerId: string,
+    options: { baseUrl?: string; refresh?: boolean } = {},
+  ) {
+    return getProviderModels(providerId, {
+      ...options,
+      ...(repoId ? { repoId } : {}),
+    });
   }
 
   // Repo-scoped so D6 mirrors the key into the repo's .repowise/.env, making a
@@ -69,12 +87,15 @@ export function useProviders(repoId?: string) {
 
   return {
     providers: data?.providers ?? [],
+    embedders: data?.embedders ?? [],
+    embedder: data?.active.embedder ?? null,
     activeProvider,
     activeModel,
     active: data?.active ?? { provider: null, model: null },
     isLoading,
     validation,
     activate,
+    loadModels,
     saveKey,
     removeKey,
     validate,

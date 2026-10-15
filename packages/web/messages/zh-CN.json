@@ -640,6 +640,28 @@
       "keyRemoveFailed": "无法移除密钥",
       "activateFailed": "无法设置当前提供商"
     },
+    "providerForm": {
+      "model": "模型",
+      "baseUrl": "Base URL",
+      "baseUrlHint": "留空则使用提供商自己的接口地址。",
+      "baseUrlInvalid": "请输入以 http:// 或 https:// 开头的 URL。",
+      "localServer": "本地服务",
+      "testConnection": "测试连接",
+      "connected": "连接成功，列出了 {count} 个模型。",
+      "save": "保存",
+      "useProvider": "使用 {name}",
+      "cancel": "取消",
+      "regenerateNotice": "下次同步时会用新模型重新生成文档。想先试用某个模型，请在对话的模型菜单中选择，那只影响当前对话。",
+      "regenerateNoticeGlobal": "没有单独设置模型的代码仓库会在下次同步时用此模型重新生成文档。想先试用某个模型，请在对话的模型菜单中选择。",
+      "sourceConfig": "保存在 .repowise/config.yaml 中。",
+      "sourceGlobal": "来自设置中的默认模型。",
+      "sourceDefault": "提供商的默认值。",
+      "sourceAutodetect": "因为已设置其 API 密钥而自动选用。",
+      "sourceEnv": "来自环境变量 {name}。在这里保存后将优先使用保存的值。",
+      "saved": "模型设置已保存",
+      "savedDescription": "已写入 .repowise/config.yaml，CLI 也会使用它。",
+      "savedGlobal": "默认模型已保存"
+    },
     "display": {
       "title": "显示",
       "description": "这个浏览器显示什么、怎么显示。这里的设置不会改变索引。",
@@ -674,19 +696,12 @@
       "summarySingleRepo": "当前为单仓库模式，因此仅限工作区的工具在此不可用。"
     },
     "provider": {
-      "title": "模型默认值",
-      "description": "从此仪表盘触发 init 或 sync 时使用。",
-      "descriptionWithServer": "从此仪表盘触发 init 或 sync 时使用。服务器自身当前配置为 {provider}。",
-      "providerLabel": "提供商",
-      "providerAria": "提供商",
-      "modelLabel": "模型",
-      "modelHint": "留空则使用提供商的默认值。",
+      "title": "默认模型",
+      "description": "没有单独设置模型的代码仓库都使用它。要为某个代码仓库设置模型，请打开该仓库的设置页面。",
       "embedderLabel": "嵌入模型",
       "embedderHint": "语义搜索基于它构建。mock 嵌入模型会禁用语义搜索。",
-      "embedderAria": "嵌入模型",
-      "embedderOffNote": "语义搜索已关闭。请在上方选择其他嵌入模型，并在服务端设置 <code>REPOWISE_EMBEDDER</code> 以启用真实检索。",
-      "embedderOnNote": "请在服务端设置 <code>{env}</code>。",
-      "catalogUnavailable": "无法从服务器加载提供商列表，因此只显示已保存的提供商。"
+      "embedderOffNote": "语义搜索已关闭。请在服务端设置 <code>REPOWISE_EMBEDDER</code> 以启用真实检索。",
+      "embedderOnNote": "通过服务端的 <code>{env}</code> 设置。"
     }
   },
   "repos": {
@@ -877,7 +892,19 @@
     "noProvider": "尚未配置对话提供商。请先在<link>设置</link>中添加 API 密钥，然后就可以开始提问了。",
     "noProviderShort": "尚未配置对话提供商。请先在<link>设置</link>中添加 API 密钥。",
     "unverifiedFigure": "未在本轮工具结果中找到",
-    "unverifiedFiguresNote": "带点状下划线的数字未在本轮工具结果中找到。"
+    "unverifiedFiguresNote": "带点状下划线的数字未在本轮工具结果中找到。",
+    "modelMenu": {
+      "dialog": "选择对话模型",
+      "provider": "提供商",
+      "search": "搜索或输入模型 ID",
+      "useTyped": "使用“{id}”",
+      "repoDefault": "仓库默认",
+      "providerDefault": "默认",
+      "loading": "正在加载模型",
+      "noMatch": "没有匹配的模型。",
+      "configure": "在设置中配置",
+      "needsSetup": "其他提供商需要先添加密钥。"
+    }
   },
   "codeHealth": {
     "hotspots": {
