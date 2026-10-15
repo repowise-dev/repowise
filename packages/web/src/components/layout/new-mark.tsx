@@ -1,6 +1,15 @@
 "use client";
 
 import { useTranslations } from "next-intl";
+import { useIsNewSurface } from "@/lib/hooks/use-new-surfaces";
+
+/** Whether a nav item's page is new, and its accessible name with the mark
+ *  spelled out (the icon rail shows only a dot). */
+export function useNavNewMark(href: string, label: string) {
+  const t = useTranslations("shell");
+  const isNew = useIsNewSurface()(href);
+  return { isNew, ariaLabel: isNew ? `${label}, ${t("newMark")}` : label };
+}
 
 /** Dot plus "New" beside a nav label for a page the latest upgrade added or
  *  changed. `dotOnly` for the collapsed icon rail, with the word kept for

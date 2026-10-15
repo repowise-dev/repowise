@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   NEW_MARK_DAYS,
   activeNewRoutes,
+  decideMoment,
   linkPullRequests,
   previewMoment,
   readNewSurfaces,
@@ -108,5 +109,18 @@ describe("links", () => {
     expect(previewMoment("?whats-new=preview")).toBe("dialog");
     expect(previewMoment("?whats-new=patch")).toBe("notice");
     expect(previewMoment("?x=1")).toBeNull();
+  });
+});
+
+describe("decideMoment", () => {
+  it("replays a preview without touching what the browser has seen", () => {
+    expect(decideMoment("0.57.0", [], "?whats-new=preview")).toEqual({ moment: "dialog", preview: true });
+    expect(window.localStorage.getItem("repowise:last-seen-server-version")).toBeNull();
+  });
+
+  it("starts the New marks only for a real upgrade", () => {
+    window.localStorage.setItem("repowise:last-seen-server-version", "0.56.0");
+    expect(decideMoment("0.57.0", [HL("/settings")], "")).toEqual({ moment: "dialog", preview: false });
+    expect(readNewSurfaces()?.routes).toEqual(["/settings"]);
   });
 });

@@ -118,33 +118,39 @@ def numbers_line(stats: dict | None) -> str | None:
 def _format_entry(entry: ChangelogEntry, *, max_items: int, stats: dict | None = None) -> str:
     # Highlights and the numbers lead and do not count toward the bullet cap:
     # they are the part of the release a reader should not miss.
-    lines: list[str] = []
-    if entry.highlights:
-        lines.append("[bold]Highlights[/bold]")
-        for h in entry.highlights:
-            blurb = f": {escape(h.blurb)}" if h.blurb else ""
-            lines.append(f"  - [bold]{escape(h.title)}[/bold]{blurb}")
+    lines = _highlight_lines(entry)
     numbers = numbers_line(stats)
     if numbers:
         lines.append(f"[dim]By the numbers: {numbers}[/dim]")
-    shown = 0
-    truncated = False
+    lines.extend(_section_lines(entry, max_items=max_items))
+    return "\n".join(lines)
+
+
+def _highlight_lines(entry: ChangelogEntry) -> list[str]:
+    if not entry.highlights:
+        return []
+    lines = ["[bold]Highlights[/bold]"]
+    for h in entry.highlights:
+        blurb = f": {escape(h.blurb)}" if h.blurb else ""
+        lines.append(f"  - [bold]{escape(h.title)}[/bold]{blurb}")
+    return lines
+
+
+def _section_lines(entry: ChangelogEntry, *, max_items: int) -> list[str]:
+    """Section bullets up to *max_items* in total, then an ellipsis."""
+    lines: list[str] = []
+    budget = max_items
     for section in entry.sections:
-        if shown >= max_items:
-            truncated = True
-            break
         if not section.items:
             continue
+        if budget <= 0:
+            return [*lines, "  [dim]...[/dim]"]
         lines.append(f"[bold]{section.name}[/bold]")
-        for item in section.items:
-            if shown >= max_items:
-                truncated = True
-                break
-            lines.append(f"  - {_strip_markdown(item)}")
-            shown += 1
-    if truncated:
-        lines.append("  [dim]...[/dim]")
-    return "\n".join(lines)
+        lines.extend(f"  - {_strip_markdown(item)}" for item in section.items[:budget])
+        if len(section.items) > budget:
+            return [*lines, "  [dim]...[/dim]"]
+        budget -= len(section.items)
+    return lines
 
 
 def _strip_markdown(text: str) -> str:

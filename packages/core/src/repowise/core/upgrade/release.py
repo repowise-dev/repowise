@@ -180,17 +180,17 @@ def fetch_release_highlights(version: str, timeout: float = 2.0) -> list[str] | 
     ``None`` on any network or parse failure, so the caller keeps its plain
     wording. Nothing is sent but the GET.
     """
-    try:
-        import httpx
+    import httpx
 
+    try:
         resp = httpx.get(CHANGELOG_URL, timeout=timeout)
         resp.raise_for_status()
-        for entry in parse_changelog(resp.text):
-            if entry.version == version:
-                return [h.title for h in entry.highlights]
-        return []
-    except Exception:
+    except httpx.HTTPError:  # offline, timeout, non-2xx
         return None
+    for entry in parse_changelog(resp.text):
+        if entry.version == version:
+            return [h.title for h in entry.highlights]
+    return []
 
 
 _EMPTY_TTL_HOURS = 0.25
@@ -215,10 +215,10 @@ def latest_highlights_cached(
         ttl = ttl_hours if titles else min(ttl_hours, _EMPTY_TTL_HOURS)
         if cached.get("version") == version and 0 <= age < ttl * 3600:
             return titles
-    except Exception:
-        pass
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass  # no cache yet, or a malformed one: fetch
     titles = fetch_release_highlights(version, timeout=timeout)
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(OSError):  # a read-only home only costs a refetch
         _HIGHLIGHTS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         _HIGHLIGHTS_CACHE_PATH.write_text(
             json.dumps({"checked_at": time.time(), "version": version, "titles": titles or []}),
@@ -248,7 +248,7 @@ def load_bundled_changelog() -> list[ChangelogEntry]:
     """Parse repowise's bundled changelog, or ``[]`` if it cannot be read."""
     try:
         return list(_load_cached(BUNDLED_CHANGELOG_PATH, parse_changelog))
-    except Exception:
+    except (OSError, UnicodeDecodeError):  # missing from an unusual install
         return []
 
 
@@ -257,7 +257,7 @@ def load_release_stats() -> dict[str, dict[str, Any]]:
     try:
         data = _load_cached(RELEASE_STATS_PATH, json.loads)
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (OSError, ValueError):  # missing, or not JSON
         return {}
 
 

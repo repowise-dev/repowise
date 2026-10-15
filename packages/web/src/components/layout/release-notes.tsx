@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ArrowRight } from "lucide-react";
 import { useFormatter, useTranslations } from "next-intl";
 import { Markdown } from "@repowise-dev/ui/shared/markdown";
 import { seriesColor } from "@repowise-dev/ui/shared/series";
-import type { ChangelogEntry, ReleaseStats } from "@/lib/api/meta";
+import type { ChangelogEntry, ChangelogHighlight, ReleaseStats } from "@/lib/api/meta";
 import { linkPullRequests, resolveHighlightHref } from "@/lib/release-moment";
 import { NewMark } from "./new-mark";
 
@@ -32,7 +32,7 @@ export function ReleaseHeader({
 }: {
   entry: ChangelogEntry;
   /** The dialog title, rendered above the version (a `DialogTitle`). */
-  title: React.ReactNode;
+  title: ReactNode;
 }) {
   const t = useTranslations("shell.whatsNewModal");
   return (
@@ -85,85 +85,103 @@ export function ReleaseNotes({
           <Markdown content={linkPullRequests(entry.summary)} density="narrow" fill />
         </div>
       )}
-
       {entry.stats && <ReleaseNumbers stats={entry.stats} />}
-
       {highlights.length > 0 && (
-        <section className="space-y-3" aria-labelledby={`highlights-${entry.version}`}>
-          <h4 id={`highlights-${entry.version}`} className={MICRO}>
-            {t("highlightsTitle")}
-          </h4>
+        <Block id={`highlights-${entry.version}`} title={t("highlightsTitle")}>
           <ul className="grid gap-2.5 sm:grid-cols-2">
-            {highlights.map((h, i) => {
-              const href = resolveHighlightHref(h.href, repoId);
-              const color = seriesColor(i);
-              const body = (
-                <>
-                  <p className="flex items-baseline gap-2 text-[15px] font-medium text-[var(--color-text-primary)]">
-                    {h.title}
-                    {fresh && <NewMark />}
-                  </p>
-                  {h.blurb && (
-                    <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-                      {h.blurb}
-                    </p>
-                  )}
-                </>
-              );
-              // A card only when it opens something; a highlight with no page
-              // keeps its colour as a dot and stays plain.
-              return (
-                <li key={h.id} className={`flex ${ENTER}`}>
-                  {href ? (
-                    <Link
-                      href={href}
-                      onClick={onNavigate}
-                      className="group flex w-full flex-col rounded-lg border border-[var(--color-border-default)] border-l-[3px] bg-[var(--color-release-card)] px-4 py-3 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-                      style={{ borderLeftColor: color }}
-                    >
-                      {body}
-                      <span className="mt-auto inline-flex items-center gap-1 pt-2 text-xs text-[var(--color-accent-primary)] group-hover:underline">
-                        {t("open")}
-                        <ArrowRight aria-hidden className="h-3 w-3" />
-                      </span>
-                    </Link>
-                  ) : (
-                    <div className="flex w-full gap-3 px-1 py-3">
-                      <span
-                        aria-hidden
-                        className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
-                        style={{ background: color }}
-                      />
-                      <div className="min-w-0">
-                        {body}
-                        {h.href && (
-                          <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
-                            {t("inEachRepo")}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </li>
-              );
-            })}
+            {highlights.map((h, i) => (
+              <li key={h.id} className={`flex ${ENTER}`}>
+                <HighlightItem
+                  highlight={h}
+                  href={resolveHighlightHref(h.href, repoId)}
+                  color={seriesColor(i)}
+                  fresh={fresh}
+                  onNavigate={onNavigate}
+                />
+              </li>
+            ))}
           </ul>
-        </section>
+        </Block>
       )}
-
       {sections.length > 0 && (
-        <section className="space-y-2" aria-labelledby={`all-${entry.version}`}>
-          <h4 id={`all-${entry.version}`} className={MICRO}>
-            {t("everything")}
-          </h4>
+        <Block id={`all-${entry.version}`} title={t("everything")}>
           <div className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
             {sections.map((s) => (
               <ChangeSection key={s.name} name={s.name} items={s.items} />
             ))}
           </div>
-        </section>
+        </Block>
       )}
     </article>
+  );
+}
+
+/** A titled part of the release: micro-label heading, then its content. */
+function Block({ id, title, children }: { id: string; title: string; children: ReactNode }) {
+  return (
+    <section className="space-y-3" aria-labelledby={id}>
+      <h4 id={id} className={MICRO}>
+        {title}
+      </h4>
+      {children}
+    </section>
+  );
+}
+
+/** A card only when it opens something; a highlight with no page keeps its
+ *  colour as a dot and stays plain. */
+function HighlightItem({
+  highlight: h,
+  href,
+  color,
+  fresh,
+  onNavigate,
+}: {
+  highlight: ChangelogHighlight;
+  /** Resolved route, or null when there is none for this reader. */
+  href: string | null;
+  color: string;
+  fresh: boolean;
+  onNavigate: () => void;
+}) {
+  const t = useTranslations("shell.whatsNewModal");
+  const body = (
+    <>
+      <p className="flex items-baseline gap-2 text-[15px] font-medium text-[var(--color-text-primary)]">
+        {h.title}
+        {fresh && <NewMark />}
+      </p>
+      {h.blurb && (
+        <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+          {h.blurb}
+        </p>
+      )}
+    </>
+  );
+  if (href) {
+    return (
+      <Link
+        href={href}
+        onClick={onNavigate}
+        className="group flex w-full flex-col rounded-lg border border-[var(--color-border-default)] border-l-[3px] bg-[var(--color-release-card)] px-4 py-3 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        style={{ borderLeftColor: color }}
+      >
+        {body}
+        <span className="mt-auto inline-flex items-center gap-1 pt-2 text-xs text-[var(--color-accent-primary)] group-hover:underline">
+          {t("open")}
+          <ArrowRight aria-hidden className="h-3 w-3" />
+        </span>
+      </Link>
+    );
+  }
+  return (
+    <div className="flex w-full gap-3 px-1 py-3">
+      <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
+      <div className="min-w-0">
+        {body}
+        {h.href && <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">{t("inEachRepo")}</p>}
+      </div>
+    </div>
   );
 }
 

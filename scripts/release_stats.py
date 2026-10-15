@@ -246,53 +246,60 @@ def _prior_commit_counts(handles: list[str], until: str) -> dict[str, int | None
         return dict(zip(handles, pool.map(_one, handles), strict=True))
 
 
-def compute(prev: str, ref: str, *, github: bool) -> tuple[dict, list[str], list[str]]:
-    """Figures for ``prev..ref`` plus the (returning, first-time) handle lists."""
-    rng = f"{prev}..{ref}"
-    fmt = _FIELD_SEP.join(["%H", "%an", "%ae", "%s", "%B"]) + _COMMIT_SEP
-    commits = parse_log(_git("log", f"--format={fmt}", rng))
-    files, added, removed = parse_shortstat(_git("diff", "--shortstat", rng))
-    touched = [p for p in _git("diff", "--name-only", rng).splitlines() if is_test_path(p)]
-    new = [
-        p for p in _git("diff", "--name-only", "--diff-filter=A", rng).splitlines() if is_test_path(p)
-    ]
-    prev_date, ref_date = _commit_date(prev), _commit_date(ref)
-    subjects = [c["subject"] for c in commits]
-    names = {c["name"] for c in commits if not is_bot(None, c["name"])}
+def _test_files(rng: str, *extra: str) -> int:
+    return sum(1 for p in _git("diff", "--name-only", *extra, rng).splitlines() if is_test_path(p))
 
-    stats = {
+
+def _git_stats(prev: str, ref: str, commits: list[dict[str, str]]) -> dict:
+    """Every figure git alone can give for ``prev..ref``."""
+    rng = f"{prev}..{ref}"
+    files, added, removed = parse_shortstat(_git("diff", "--shortstat", rng))
+    subjects = [c["subject"] for c in commits]
+    return {
         "since": prev.lstrip("v"),
-        "days": max(0, (ref_date.date() - prev_date.date()).days),
+        "days": max(0, (_commit_date(ref).date() - _commit_date(prev).date()).days),
         "prs": count_prs(subjects),
-        "contributors": len(names),
+        "contributors": len({c["name"] for c in commits if not is_bot(None, c["name"])}),
         "first_time_contributors": None,
         "files_changed": files,
         "lines_added": added,
         "lines_removed": removed,
         "types": count_types(subjects),
-        "test_files_touched": len(touched),
-        "test_files_new": len(new),
+        "test_files_touched": _test_files(rng),
+        "test_files_new": _test_files(rng, "--diff-filter=A"),
         "issues_closed": count_issues([c["body"] for c in commits]),
     }
 
-    returning: list[str] = []
-    first: list[str] = []
-    if github and shutil.which("gh"):
-        by_email = _resolve_handles(commits)
-        community = sorted(
-            {
-                login
-                for c in commits
-                if (login := by_email.get(c["email"]))
-                and not is_maintainer(login, c["name"])
-                and not is_bot(login, c["name"])
-            }
-        )
-        if community:
-            prior = _prior_commit_counts(community, prev_date.isoformat())
-            returning, first = split_first_time(community, prior)
-            if any(v is not None for v in prior.values()):
-                stats["first_time_contributors"] = len(first)
+
+def _community_split(commits: list[dict[str, str]], until: str) -> tuple[list[str], list[str], bool]:
+    """(returning, first-time, known) community handles, from GitHub."""
+    by_email = _resolve_handles(commits)
+    community = sorted(
+        {
+            login
+            for c in commits
+            if (login := by_email.get(c["email"]))
+            and not is_maintainer(login, c["name"])
+            and not is_bot(login, c["name"])
+        }
+    )
+    if not community:
+        return [], [], False
+    prior = _prior_commit_counts(community, until)
+    returning, first = split_first_time(community, prior)
+    return returning, first, any(v is not None for v in prior.values())
+
+
+def compute(prev: str, ref: str, *, github: bool) -> tuple[dict, list[str], list[str]]:
+    """Figures for ``prev..ref`` plus the (returning, first-time) handle lists."""
+    fmt = _FIELD_SEP.join(["%H", "%an", "%ae", "%s", "%B"]) + _COMMIT_SEP
+    commits = parse_log(_git("log", f"--format={fmt}", f"{prev}..{ref}"))
+    stats = _git_stats(prev, ref, commits)
+    if not (github and shutil.which("gh")):
+        return stats, [], []
+    returning, first, known = _community_split(commits, _commit_date(prev).isoformat())
+    if known:
+        stats["first_time_contributors"] = len(first)
     return stats, returning, first
 
 

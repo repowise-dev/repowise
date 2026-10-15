@@ -116,68 +116,57 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     An ``Unreleased`` block with no content is dropped (the normal state right
     after a release).
     """
-    entries: list[ChangelogEntry] = []
-    cur_version: str | None = None
-    cur_label: str | None = None
-    sections: list[ChangelogSection] = []
-    cur_section_name: str | None = None
-    cur_items: list[str] = []
-    summary: list[str] = []
-    highlights: list[ChangelogHighlight] = []
+    entries = [_parse_release(*block) for block in _release_blocks(text)]
+    return [e for e in entries if not (e.version == UNRELEASED and e.is_empty)]
 
-    def _flush_section() -> None:
-        nonlocal cur_section_name, cur_items
-        if cur_section_name == HIGHLIGHTS_SECTION:
-            highlights.extend(parse_highlight(item) for item in cur_items)
-        elif cur_section_name is not None and cur_section_name != NUMBERS_SECTION:
-            sections.append(ChangelogSection(name=cur_section_name, items=tuple(cur_items)))
-        cur_section_name = None
-        cur_items = []
 
-    def _flush_release() -> None:
-        nonlocal cur_version, cur_label, sections, summary, highlights
-        _flush_section()
-        if cur_version is not None:
-            entry = ChangelogEntry(
-                version=cur_version,
-                label=cur_label,
-                sections=tuple(sections),
-                summary=_join_paragraphs(summary),
-                highlights=tuple(highlights),
-            )
-            if not (entry.version == UNRELEASED and entry.is_empty):
-                entries.append(entry)
-        cur_version = None
-        cur_label = None
-        sections = []
-        summary = []
-        highlights = []
-
+def _release_blocks(text: str):
+    """``(version, label, lines)`` per release header; the preamble is skipped."""
+    version: str | None = None
+    label: str | None = None
+    lines: list[str] = []
     for raw in text.splitlines():
         line = raw.rstrip()
         rel = _RELEASE_RE.match(line)
         if rel:
-            _flush_release()
-            version = rel.group("version")
-            cur_version = UNRELEASED if version.lower() == UNRELEASED else version
-            cur_label = rel.group("label")
-            continue
-        if cur_version is None:
-            continue  # still in the preamble
+            if version is not None:
+                yield version, label, lines
+            found = rel.group("version")
+            version = UNRELEASED if found.lower() == UNRELEASED else found
+            label, lines = rel.group("label"), []
+        elif version is not None:
+            lines.append(line)
+    if version is not None:
+        yield version, label, lines
+
+
+def _parse_release(version: str, label: str | None, lines: list[str]) -> ChangelogEntry:
+    """One release's lines: summary prose up to the first ``###``, then
+    sections of bullets. Highlights come out separately and By the numbers
+    is dropped."""
+    summary: list[str] = []
+    groups: list[tuple[str, list[str]]] = []
+    for line in lines:
         sec = _SECTION_RE.match(line)
         if sec:
-            _flush_section()
-            cur_section_name = sec.group("name")
-            continue
-        if cur_section_name is None and not sections:
+            groups.append((sec.group("name"), []))
+        elif not groups:
             summary.append(line)
-            continue
-        bullet = _BULLET_RE.match(line)
-        if bullet and cur_section_name is not None:
-            cur_items.append(bullet.group("text"))
-
-    _flush_release()
-    return entries
+        elif bullet := _BULLET_RE.match(line):
+            groups[-1][1].append(bullet.group("text"))
+    highlights = [parse_highlight(i) for name, items in groups if name == HIGHLIGHTS_SECTION for i in items]
+    sections = [
+        ChangelogSection(name=name, items=tuple(items))
+        for name, items in groups
+        if name not in (HIGHLIGHTS_SECTION, NUMBERS_SECTION)
+    ]
+    return ChangelogEntry(
+        version=version,
+        label=label,
+        sections=tuple(sections),
+        summary=_join_paragraphs(summary),
+        highlights=tuple(highlights),
+    )
 
 
 def _join_paragraphs(lines: list[str]) -> str:

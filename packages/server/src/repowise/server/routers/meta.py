@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import ValidationError
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
@@ -121,5 +122,5 @@ def _stats(raw: dict | None) -> ReleaseStatsModel | None:
     """Validated figures, or ``None`` for a missing or malformed record."""
     try:
         return ReleaseStatsModel.model_validate(raw) if raw else None
-    except Exception:
+    except ValidationError:
         return None

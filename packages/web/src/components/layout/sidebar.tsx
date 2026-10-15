@@ -26,8 +26,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise-dev/ui/ui/too
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import { VersionFooter } from "./version-footer";
-import { NewMark } from "./new-mark";
-import { useIsNewSurface } from "@/lib/hooks/use-new-surfaces";
+import { NewMark, useNavNewMark } from "./new-mark";
 import { FeedbackButton } from "./feedback-button";
 import { LanguageSwitcher } from "./language-switcher";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
@@ -564,10 +563,9 @@ function SidebarNavItem({
   iconOnly?: boolean;
 }) {
   const t = useTranslations("nav");
-  const ts = useTranslations("shell");
   const label = t(item.labelKey);
   const Icon = item.icon;
-  const isNew = useIsNewSurface()(item.href);
+  const { isNew, ariaLabel } = useNavNewMark(item.href, label);
 
   if (iconOnly) {
     return (
@@ -575,7 +573,7 @@ function SidebarNavItem({
         <TooltipTrigger asChild>
           <Link
             href={item.href}
-            aria-label={isNew ? `${label}, ${ts("newMark")}` : label}
+            aria-label={ariaLabel}
             className={cn(
               "relative flex items-center justify-center rounded-lg p-2.5 transition-colors",
               isActive

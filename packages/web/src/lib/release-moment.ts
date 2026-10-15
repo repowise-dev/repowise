@@ -46,15 +46,19 @@ export function upgradeMoment(
   hasHighlights: boolean,
 ): UpgradeMoment {
   if (!stored || stored === current || !isNewer(current, stored)) return "none";
-  const parts = releaseParts(current);
-  const minor = hasHighlights || (parts !== null && (parts[2] ?? 0) === 0);
-  return minor ? "dialog" : "notice";
+  return isMinorRelease(current, hasHighlights) ? "dialog" : "notice";
+}
+
+/** x.y.0, or any release that names highlights. */
+function isMinorRelease(version: string, hasHighlights: boolean): boolean {
+  return hasHighlights || (releaseParts(version)?.[2] ?? 0) === 0;
 }
 
 function read(key: string): string | null {
   try {
     return window.localStorage.getItem(key);
   } catch {
+    // Blocked site data (privacy mode, storage disabled): read as unset.
     return null;
   }
 }
@@ -113,6 +117,7 @@ export function readNewSurfaces(): NewSurfaces | null {
     const v = JSON.parse(raw) as NewSurfaces;
     return Array.isArray(v.routes) && Array.isArray(v.visited) ? v : null;
   } catch {
+    // A hand-edited or truncated value: no marks, and the next upgrade rewrites it.
     return null;
   }
 }
@@ -174,9 +179,24 @@ export function repoIdFromPath(pathname: string | null): string | null {
 
 /** `?whats-new=preview` replays the minor-release moment, `?whats-new=patch`
  *  the patch note, without touching what this browser has seen. */
+const PREVIEWS: Record<string, UpgradeMoment> = { preview: "dialog", patch: "notice" };
+
 export function previewMoment(search: string): UpgradeMoment | null {
-  const v = new URLSearchParams(search).get("whats-new");
-  return v === "preview" ? "dialog" : v === "patch" ? "notice" : null;
+  return PREVIEWS[new URLSearchParams(search).get("whats-new") ?? ""] ?? null;
+}
+
+/** The moment due on load: a `?whats-new=` replay, or the real upgrade check,
+ *  which also starts the "New" marks for that release. */
+export function decideMoment(
+  version: string,
+  highlights: ChangelogHighlight[],
+  search: string,
+): { moment: UpgradeMoment; preview: boolean } {
+  const replay = previewMoment(search);
+  if (replay) return { moment: replay, preview: true };
+  const moment = takeUpgradeMoment(version, highlights.length > 0);
+  if (moment !== "none") startNewSurfaces(version, highlights);
+  return { moment, preview: false };
 }
 
 /** `#123` in changelog prose links to its pull request, outside code spans. */
