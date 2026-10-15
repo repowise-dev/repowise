@@ -210,3 +210,15 @@ async def test_an_unconfirmed_repo_url_is_flagged_until_saved_from_settings(
         json={"provider": "openai", "base_url": url, "repo_id": repo["id"]},
     )
     assert resp.json()["active"]["base_url_unconfirmed"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_recognised_provider_failure_uses_the_shared_hint(
+    client: AsyncClient, fake, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-1234567890")
+    fake(error=ProviderError("openai", "bad key sk-test-1234567890", status_code=401))
+
+    body = (await client.get("/api/providers/openai/models")).json()
+
+    assert body["error"] == "API key rejected by openai. Update it in Settings."

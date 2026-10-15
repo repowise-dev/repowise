@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from repowise.core.providers.llm.error_hints import describe_provider_error
 from repowise.core.providers.llm.openai import LOCAL_SERVER_API_KEY
 from repowise.core.providers.llm.registry import get_provider
 from repowise.core.providers.llm.resolve import (
@@ -183,9 +184,17 @@ def _fetch(provider_id: str, kwargs: dict[str, Any]) -> _Fetched:
 
 
 def describe_fetch_error(exc: Exception, base_url: str | None, label: str) -> str:
-    """A sentence saying what failed and what to check, for the settings UI."""
+    """A sentence saying what failed and what to check, for the settings UI.
+
+    A provider failure the shared hints recognise uses that hint, except an
+    unreachable server: the text below names the URL and the likely local
+    server. Raw httpx errors from ``/models`` discovery are worded here.
+    """
     import httpx
 
+    hint = describe_provider_error(exc)
+    if hint is not None and hint.kind != "unreachable":
+        return hint.message
     where = base_url or label
     if isinstance(exc, httpx.ConnectError):
         server = _LOCAL_SERVER_PORTS.get(urlparse(base_url or "").port or 0)
