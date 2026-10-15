@@ -16,6 +16,24 @@ from .prune import path_liveness
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
 
+async def _analyzed_repo_path(session: Any, repo_id: str) -> Path | None:
+    """The working tree the health pass scored, read from the repository row.
+
+    The same source :func:`_analyzed_commit` takes HEAD from, so a commit stamp
+    and the tree it names cannot disagree. The pipeline result is not that
+    source: the resume checkpoint hands ``persist_analysis`` a view of the
+    reports only, which carries no path.
+    """
+    from repowise.core.persistence.models import Repository
+
+    try:
+        repo = await session.get(Repository, repo_id)
+        local_path = getattr(repo, "local_path", None) if repo else None
+        return Path(local_path) if local_path else None
+    except Exception:
+        return None
+
+
 async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
     """Live HEAD of the repo being indexed, for stamping health rows.
 
@@ -26,15 +44,10 @@ async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
     is honest, while a wrong sha would not be. Both index paths read it here;
     the pipeline result carries no sha, so the full path used to stamp ``NULL``.
     """
-    from repowise.core.persistence.models import Repository
     from repowise.core.workspace.update import get_head_commit
 
-    try:
-        repo = await session.get(Repository, repo_id)
-        local_path = getattr(repo, "local_path", None) if repo else None
-        return get_head_commit(Path(local_path)) if local_path else None
-    except Exception:
-        return None
+    local_path = await _analyzed_repo_path(session, repo_id)
+    return get_head_commit(local_path) if local_path is not None else None
 
 
 async def snapshot_health_from_store(session: Any, repo_id: str) -> None:

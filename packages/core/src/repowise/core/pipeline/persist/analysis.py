@@ -24,6 +24,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     decisions/governance are idempotent. Intended to run once the analysis
     phase has fully completed.
     """
+    from repowise.core.analysis.health.coverage import measurement_commit
     from repowise.core.persistence.crud import (
         replace_doc_drift_guarded,
         save_coverage_files,
@@ -69,13 +70,22 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         # Resolved coverage rows, when a report was ingested this run.
         coverage_files = getattr(hr, "coverage_files", None)
         if coverage_files:
+            prov = getattr(hr, "coverage_provenance", None)
+            # A report found on disk measures the tree as of its own write
+            # time, not of HEAD (#3901); HEAD is right only for a report
+            # written since the last commit, which measurement_commit also
+            # answers. ``ingested_at`` stays the ingest time.
             await save_coverage_files(
                 session,
                 repo_id,
                 coverage_files,
                 source_format=getattr(hr, "coverage_format", None) or "lcov",
-                ingested_commit_sha=head_sha,
-                provenance=getattr(hr, "coverage_provenance", None),
+                ingested_commit_sha=measurement_commit(
+                    await _persist._analyzed_repo_path(session, repo_id),
+                    getattr(prov, "measured_at", None),
+                    head_sha,
+                ),
+                provenance=prov,
             )
         # Per-function blame rollup (FULL tier only; empty otherwise).
         fn_blame_rows = getattr(hr, "function_blame_rows", None)

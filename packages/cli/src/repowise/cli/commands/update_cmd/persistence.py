@@ -1013,6 +1013,7 @@ async def _rescore_health_from_db(
         from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
+        from repowise.core.analysis.health.coverage import measurement_commit
         from repowise.core.analysis.health.history_refresh import (
             BLAME_MARKERS,
             git_meta_rows_to_map,
@@ -1154,15 +1155,21 @@ async def _rescore_health_from_db(
                 # ``repo.head_commit`` column. The column names the last
                 # *indexed* commit; the coverage just scored describes the
                 # working tree, and the two diverge when the tree moved after
-                # the last index (issue #1747). Live HEAD is the provenance
-                # answer: it is the tree the coverage was measured against.
+                # the last index (issue #1747). HEAD is the right answer for a
+                # report written since the last commit; one left over from
+                # earlier measures the tree as of its own date, so the stamp
+                # moves back to the commit that was HEAD then (issue #3901).
                 live_head = get_head_commit(Path(repo_path)) or getattr(repo, "head_commit", None)
                 await save_coverage_files(
                     session,
                     repo_id,
                     coverage.files,
                     source_format=coverage.source_format or "lcov",
-                    ingested_commit_sha=live_head,
+                    ingested_commit_sha=measurement_commit(
+                        repo_path,
+                        getattr(coverage.provenance, "measured_at", None),
+                        live_head,
+                    ),
                     provenance=coverage.provenance,
                 )
 
