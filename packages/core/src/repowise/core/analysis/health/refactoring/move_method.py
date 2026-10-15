@@ -287,6 +287,9 @@ def _binds_method(cls: Any, name: str) -> bool:
     if getattr(cls, "contract_impl", False):
         return True
     # ``getattr``: a walk cached before the field existed reads as no signal.
+    # Ceiling: only languages with class analysis fill it (Go emits no classes,
+    # so a Go receiver's fields are not read here); static fields such as a
+    # ``static final`` logger never count, being no instance's state.
     if name in getattr(cls, "field_readers", ()):
         return True
     groups = getattr(cls, "components", None) or ()
