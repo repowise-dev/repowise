@@ -63,7 +63,7 @@ from .type_names import (
 _TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"})
 _FUNCTION_KINDS = frozenset({"function", "method"})
 # Languages whose extensions the extension index holds, keyed on the type extended.
-_EXTENSION_LANGUAGES = frozenset({"csharp", "kotlin"})
+_EXTENSION_LANGUAGES = frozenset({"csharp", "kotlin", "dart"})
 # Members an extension of the same name can never beat: those of Kotlin's
 # ``Any``, which every type has, and the common ones of the builtin types a
 # library declares, which the repo's index cannot see. Not exhaustive.
@@ -272,8 +272,13 @@ class ReceiverTypingMixin:
         own = self._file_extension_methods.get(file_path, {})
         if key in own:
             return own[key], "same_file"
-        if self._language_of(file_path) == "kotlin":
+        lang = self._language_of(file_path)
+        if lang == "kotlin":
             return self._kotlin_extension_scope(file_path, site, method_name)
+        if lang == "dart":
+            if site[0] in self._visible_files(file_path):
+                return site[1], "import"
+            return None
         merged = self._merged_extension_methods_for(file_path)
         if key in merged:
             return merged[key], "import"

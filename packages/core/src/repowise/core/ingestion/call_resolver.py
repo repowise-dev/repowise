@@ -810,7 +810,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 self._global_methods[key].append((path, index_id))
 
             extended = (
-                self._csharp_extended_type(sym)
+                self._csharp_extended_type(sym) or self._dart_extended_type(sym)
                 if sym.parent_name
                 else self._kotlin_extended_type(sym)
             )
@@ -831,6 +831,21 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if extended is None or not is_resolvable_type_name(extended, "csharp"):
             return None
         return extended if extended in self._csharp_type_names else None
+
+    def _dart_extended_type(self, sym: Symbol) -> str | None:
+        """The bare type a Dart extension method extends, or None."""
+        if sym.language != "dart" or not sym.parent_name:
+            return None
+        parent_id = f"{sym.id.rsplit('::', 1)[0]}"
+        parent = self._symbols_by_id.get(parent_id)
+        if parent is None or not parent.signature.startswith("extension "):
+            return None
+        _, _, after_on = parent.signature.partition(" on ")
+        if not after_on:
+            return None
+        raw_type = after_on.strip().rstrip("?")
+        bare = bare_type_name(raw_type) or raw_type
+        return bare.rstrip("?") or None
 
     def _kotlin_extended_type(self, sym: Symbol) -> str | None:
         """The type a top-level Kotlin extension function extends, a library one included.
