@@ -56,6 +56,11 @@ def test_join_identifier_renders_each_convention():
     words = ["compute", "mean", "value"]
     assert join_identifier(words, "snake_case") == "compute_mean_value"
     assert join_identifier(words, "camelCase") == "computeMeanValue"
+    assert join_identifier(words, "PascalCase") == "ComputeMeanValue"
+
+
+def test_join_identifier_numbers_a_pascal_case_name_without_an_underscore():
+    assert join_identifier(["extracted", "helper", "2"], "PascalCase") == "ExtractedHelper2"
 
 
 def test_join_identifier_uses_the_first_word_as_lowercase_head():
@@ -67,3 +72,4 @@ def test_join_identifier_uses_the_first_word_as_lowercase_head():
 def test_join_identifier_of_no_words_is_empty():
     assert join_identifier([], "camelCase") == ""
     assert join_identifier([], "snake_case") == ""
+    assert join_identifier([], "PascalCase") == ""
