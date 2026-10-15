@@ -91,6 +91,9 @@ def test_highlight_fields():
     assert parse_highlight("**One palette**: every chart.").href is None
     assert parse_highlight("**One palette**: every chart.").blurb == "every chart."
     assert parse_highlight("**Settings models** - live lists -> /settings").href == "/settings"
+    # A dash is a separator only with space on both sides.
+    assert parse_highlight("**Fast** -fast path").blurb == "-fast path"
+    assert parse_highlight("**Fast** — a path").blurb == "a path"
 
 
 def test_highlight_id_is_stable_across_blurb_edits():
@@ -161,6 +164,18 @@ def test_latest_highlights_offline_is_empty_and_cached(monkeypatch, tmp_path):
     assert rel.latest_highlights_cached("0.57.0") == []
     assert rel.latest_highlights_cached("0.57.0") == []
     assert calls["n"] == 1
+
+
+def test_latest_highlights_empty_result_expires_sooner(monkeypatch, tmp_path):
+    import time
+
+    _redirect(monkeypatch, tmp_path)
+    (tmp_path / "release-highlights.json").write_text(
+        json.dumps({"checked_at": time.time() - 3600, "version": "0.57.0", "titles": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rel, "fetch_release_highlights", lambda v, timeout=2.0: ["Now"])
+    assert rel.latest_highlights_cached("0.57.0") == ["Now"]
 
 
 def test_latest_highlights_expired_cache_refetches(monkeypatch, tmp_path):

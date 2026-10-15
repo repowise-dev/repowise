@@ -20,10 +20,10 @@ export const NEW_MARK_DAYS = 14;
 
 export type UpgradeMoment = "none" | "dialog" | "notice";
 
-/** The numeric parts of a version, or null when it has none. */
+/** The numeric parts of a plain release version, or null for anything else
+ *  (a dev or rc build is not compared as a release). */
 function releaseParts(version: string): number[] | null {
-  const parts = version.split(".").map((p) => parseInt(p, 10));
-  return parts.length && parts.every((n) => Number.isFinite(n)) ? parts : null;
+  return /^\d+(\.\d+)*$/.test(version) ? version.split(".").map(Number) : null;
 }
 
 function isNewer(next: string, prev: string): boolean {

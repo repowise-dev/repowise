@@ -34,7 +34,9 @@ _BULLET_RE = re.compile(r"^[-*]\s+(?P<text>.+?)\s*$")
 # ``**Title** · blurb. → /route``. The separator after the title may be ``·``,
 # ``:``, ``|`` or a dash, and the trailing route (``→`` or ``->``) is optional,
 # so a loosely written highlight still parses.
-_HIGHLIGHT_RE = re.compile(r"^\*\*(?P<title>.+?)\*\*\s*(?:[·:|\-–—]\s*)?(?P<rest>.*)$")
+_HIGHLIGHT_RE = re.compile(
+    r"^\*\*(?P<title>.+?)\*\*(?:\s*[·:|]|\s+[-–—](?=\s))?\s*(?P<rest>.*)$"
+)
 _ROUTE_RE = re.compile(r"\s*(?:→|->)\s*(?P<href>/\S*)\s*$")
 
 #: Version string the parser gives ``## [Unreleased]``.

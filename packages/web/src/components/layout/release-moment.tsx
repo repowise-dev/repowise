@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { X } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -22,7 +22,7 @@ import { WhatsNewModal } from "./whats-new-modal";
  *
  * `?whats-new=preview` (dialog) and `?whats-new=patch` (note) replay it on
  * demand, using the newest changelog entry, without changing what this
- * browser has seen.
+ * browser has seen. Read on a full page load only.
  */
 export function ReleaseMoment() {
   const t = useTranslations("shell");
@@ -36,8 +36,13 @@ export function ReleaseMoment() {
 
   const version = meta?.server_version ?? null;
 
+  // The decision is taken once per version. StrictMode runs effects twice in
+  // development, and the second run would read the version the first stored.
+  const decided = useRef<string | null>(null);
+
   useEffect(() => {
-    if (!version || !meta) return;
+    if (!version || !meta || decided.current === version) return;
+    decided.current = version;
     const highlights = meta.highlights ?? [];
     const replay = previewMoment(window.location.search);
     const next = replay ?? takeUpgradeMoment(version, highlights.length > 0);

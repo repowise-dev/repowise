@@ -193,25 +193,33 @@ def fetch_release_highlights(version: str, timeout: float = 2.0) -> list[str] | 
         return None
 
 
+_EMPTY_TTL_HOURS = 0.25
+
+
 def latest_highlights_cached(
     version: str,
     *,
     ttl_hours: float = DEFAULT_TTL_HOURS,
     timeout: float = 2.0,
 ) -> list[str]:
-    """TTL-cached :func:`fetch_release_highlights`, ``[]`` when unknown."""
+    """TTL-cached :func:`fetch_release_highlights`, ``[]`` when unknown.
+
+    An empty or failed lookup is kept for :data:`_EMPTY_TTL_HOURS` only, so an
+    offline machine does not retry on every request but a flaky first check
+    does not hide the titles for a whole day.
+    """
     try:
         cached = json.loads(_HIGHLIGHTS_CACHE_PATH.read_text(encoding="utf-8"))
         age = time.time() - float(cached["checked_at"])
-        if cached.get("version") == version and 0 <= age < ttl_hours * 3600:
-            return list(cached.get("titles") or [])
+        titles = list(cached.get("titles") or [])
+        ttl = ttl_hours if titles else min(ttl_hours, _EMPTY_TTL_HOURS)
+        if cached.get("version") == version and 0 <= age < ttl * 3600:
+            return titles
     except Exception:
         pass
     titles = fetch_release_highlights(version, timeout=timeout)
     with contextlib.suppress(Exception):
         _HIGHLIGHTS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        # A failed fetch is cached too, so an offline machine does not retry
-        # on every request; the TTL bounds how long it waits.
         _HIGHLIGHTS_CACHE_PATH.write_text(
             json.dumps({"checked_at": time.time(), "version": version, "titles": titles or []}),
             encoding="utf-8",
