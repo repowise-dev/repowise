@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+import httpx
 
 from repowise.core.providers.llm.error_hints import describe_provider_error
 from repowise.core.providers.llm.openai import LOCAL_SERVER_API_KEY
@@ -29,6 +32,8 @@ from repowise.core.providers.llm.resolve import (
 )
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.server.provider_config import _redact_key
+
+logger = logging.getLogger(__name__)
 
 _LIVE_TTL = 120.0
 # Short, so starting a local server and opening the picker again recovers.
@@ -81,21 +86,26 @@ async def list_provider_models(
     fetched = None if refresh else _cached(key)
     if fetched is None:
         fetched = await _shared_fetch(key, provider_id, kwargs)
-
-    ids = [m["id"] for m in fetched.models]
-    if not fetched.live:
-        ids = [*spec.models, *ids]
-    labels = {m["id"]: m["label"] for m in fetched.models if m.get("label")}
-    models = [
-        {"id": model_id, **({"label": labels[model_id]} if model_id in labels else {})}
-        for model_id in sort_models([*ids, default_model], default_model)
-    ]
     return {
-        "models": models,
+        "models": _model_rows(fetched, spec.models, default_model),
         "source": "live" if fetched.live else "catalog",
         "default_model": default_model,
         "error": fetched.error,
     }
+
+
+def _model_rows(
+    fetched: _Fetched, catalog: tuple[str, ...], default_model: str
+) -> list[dict[str, str]]:
+    """Sorted rows; the built-in list joins in when nothing live came back."""
+    ids = [m["id"] for m in fetched.models]
+    if not fetched.live:
+        ids = [*catalog, *ids]
+    labels = {m["id"]: m["label"] for m in fetched.models if m.get("label")}
+    return [
+        {"id": model_id, **({"label": labels[model_id]} if model_id in labels else {})}
+        for model_id in sort_models([*ids, default_model], default_model)
+    ]
 
 
 def _target(
@@ -173,24 +183,44 @@ def _store(key: tuple[str, str, str], fetched: _Fetched) -> None:
 
 
 def _fetch(provider_id: str, kwargs: dict[str, Any]) -> _Fetched:
-    """Build the provider and ask it for models. Runs in a worker thread."""
+    """Build the provider and ask it for models. Runs in a worker thread.
+
+    Never raises: any failure becomes the reason shown beside the built-in
+    list, so both handlers are deliberately broad. Provider constructors and
+    discovery raise SDK, HTTP, import and value errors alike; each is logged.
+    """
     secret = kwargs.get("api_key")
     base_url = kwargs.get("base_url")
-    label = PROVIDER_SPECS[provider_id].label
+    spec = PROVIDER_SPECS[provider_id]
     try:
         provider = get_provider(provider_id, with_rate_limiter=False, **kwargs)
     except Exception as exc:
-        if PROVIDER_SPECS[provider_id].api_key_envs and not secret:
-            return _Fetched((), False, f"Add an API key for {label} to list its models.")
-        return _Fetched((), False, _redact(f"{label} is not set up: {exc}", secret, base_url))
-    # A strict discovery (OpenAI-compatible) raises with the reason; the
-    # general one falls back to the configured model silently.
-    discover = getattr(provider, "discover_model_options", None)
+        if spec.api_key_envs and not secret:
+            message = f"Add an API key for {spec.label} to list its models."
+        else:
+            message = f"{spec.label} is not set up: {exc}"
+        return _failed(provider_id, _redact(message, secret, base_url))
     try:
-        options = discover() if callable(discover) else provider.available_model_options()
+        options = _discover(provider)
     except Exception as exc:
-        message = describe_fetch_error(exc, base_url, label)
-        return _Fetched((), False, _redact(message, secret, base_url))
+        message = describe_fetch_error(exc, base_url, spec.label)
+        return _failed(provider_id, _redact(message, secret, base_url))
+    return _from_options(options, spec.label)
+
+
+def _failed(provider_id: str, message: str) -> _Fetched:
+    logger.info("Model list for %s unavailable: %s", provider_id, message)
+    return _Fetched((), False, message)
+
+
+def _discover(provider: Any) -> tuple[Any, ...]:
+    """A strict discovery (OpenAI-compatible) raises with the reason; the
+    general one falls back to the configured model silently."""
+    discover = getattr(provider, "discover_model_options", None)
+    return discover() if callable(discover) else provider.available_model_options()
+
+
+def _from_options(options: tuple[Any, ...], label: str) -> _Fetched:
     rows = tuple(
         {"id": o.model, **({"label": o.label} if o.label and o.label != o.model else {})}
         for o in options
@@ -210,33 +240,50 @@ def describe_fetch_error(exc: Exception, base_url: str | None, label: str) -> st
     unreachable server: the text below names the URL and the likely local
     server. Raw httpx errors from ``/models`` discovery are worded here.
     """
-    import httpx
-
     hint = describe_provider_error(exc)
     if hint is not None and hint.kind != "unreachable":
         return hint.message
     where = without_credentials(base_url) if base_url else label
-    if isinstance(exc, httpx.ConnectError):
-        server = _LOCAL_SERVER_PORTS.get(urlparse(base_url or "").port or 0)
-        hint = (
-            f"Is {server}'s server running?"
-            if server
-            else "Check that the server is running and the URL is right."
-        )
-        return f"Could not reach {where}. {hint}"
-    if isinstance(exc, httpx.TimeoutException):
-        return f"{where} did not answer within 5 seconds."
-    if isinstance(exc, httpx.HTTPStatusError):
-        code = exc.response.status_code
-        if code in (401, 403):
-            return f"{where} turned the request down (HTTP {code}). Check the API key."
-        if code == 404:
-            return (
-                f"{where} has no /models endpoint (HTTP 404). "
-                "OpenAI-compatible URLs usually end in /v1."
-            )
-        return f"{where} answered HTTP {code}."
-    return f"Could not list models from {where}: {exc}"
+    describe = next((fn for kind, fn in _DESCRIBERS if isinstance(exc, kind)), None)
+    if describe is None:
+        return f"Could not list models from {where}: {exc}"
+    return describe(exc, where, base_url)
+
+
+def _unreachable(exc: Exception, where: str, base_url: str | None) -> str:
+    server = _LOCAL_SERVER_PORTS.get(urlparse(base_url or "").port or 0)
+    if server:
+        return f"Could not reach {where}. Is {server}'s server running?"
+    return f"Could not reach {where}. Check that the server is running and the URL is right."
+
+
+def _timed_out(exc: Exception, where: str, base_url: str | None) -> str:
+    return f"{where} did not answer within 5 seconds."
+
+
+_KEY_REJECTED = "{where} turned the request down (HTTP {code}). Check the API key."
+_STATUS_MESSAGES = {
+    401: _KEY_REJECTED,
+    403: _KEY_REJECTED,
+    404: (
+        "{where} has no /models endpoint (HTTP 404). "
+        "OpenAI-compatible URLs usually end in /v1."
+    ),
+}
+
+
+def _http_status(exc: Exception, where: str, base_url: str | None) -> str:
+    code = exc.response.status_code  # type: ignore[attr-defined]
+    template = _STATUS_MESSAGES.get(code, "{where} answered HTTP {code}.")
+    return template.format(where=where, code=code)
+
+
+# First match wins.
+_DESCRIBERS = (
+    (httpx.ConnectError, _unreachable),
+    (httpx.TimeoutException, _timed_out),
+    (httpx.HTTPStatusError, _http_status),
+)
 
 
 _USERINFO = re.compile(r"(https?://)[^/\s@]+@")
