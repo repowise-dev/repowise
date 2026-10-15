@@ -678,7 +678,8 @@
       "keyPlaceholder": "粘贴你的 {name} API 密钥",
       "saveKeyAria": "保存 {name} API 密钥",
       "connectionVerified": "连接已验证",
-      "connectionFailed": "连接失败"
+      "connectionFailed": "连接失败",
+      "saveFailed": "未保存。你的修改仍保留在这里，请重试。"
     },
     "display": {
       "title": "显示",

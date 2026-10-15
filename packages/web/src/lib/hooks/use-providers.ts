@@ -1,18 +1,16 @@
 "use client";
 
-import { useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import {
   getProviders,
   setActiveProvider,
   addProviderKey,
   removeProviderKey,
-  validateProviderKey,
   getProviderModels,
 } from "@/lib/api/providers";
 import type { ProvidersResponse } from "@/lib/api/types";
-import type { ProviderValidationState } from "@repowise-dev/ui/settings/provider-settings";
 import { PROVIDER_MODELS_KEY } from "./use-provider-models";
+import { useProviderValidation } from "./use-provider-validation";
 
 export function useProviders(repoId?: string) {
   const { data, mutate, isLoading } = useSWR<ProvidersResponse>(
@@ -26,9 +24,7 @@ export function useProviders(repoId?: string) {
   const refreshModelLists = () =>
     mutateAll((key) => Array.isArray(key) && key[0] === PROVIDER_MODELS_KEY);
 
-  const [validation, setValidation] = useState<
-    Record<string, ProviderValidationState>
-  >({});
+  const { validation, validate, forget } = useProviderValidation(repoId);
 
   const activeProvider = data?.active.provider ?? null;
   const activeModel = data?.active.model ?? null;
@@ -67,31 +63,9 @@ export function useProviders(repoId?: string) {
 
   async function removeKey(providerId: string) {
     await removeProviderKey(providerId, repoId);
-    setValidation((v) => {
-      const next = { ...v };
-      delete next[providerId];
-      return next;
-    });
+    forget(providerId);
     await mutate();
     void refreshModelLists();
-  }
-
-  async function validate(providerId: string) {
-    setValidation((v) => ({ ...v, [providerId]: { status: "testing" } }));
-    try {
-      const res = await validateProviderKey(providerId, repoId);
-      setValidation((v) => ({
-        ...v,
-        [providerId]: res.ok
-          ? { status: "ok" }
-          : { status: "error", error: res.error },
-      }));
-    } catch (e) {
-      setValidation((v) => ({
-        ...v,
-        [providerId]: { status: "error", error: (e as Error).message },
-      }));
-    }
   }
 
   return {

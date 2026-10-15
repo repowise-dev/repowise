@@ -678,7 +678,8 @@
       "keyPlaceholder": "Paste your {name} API key",
       "saveKeyAria": "Save {name} API key",
       "connectionVerified": "Connection verified",
-      "connectionFailed": "Connection failed"
+      "connectionFailed": "Connection failed",
+      "saveFailed": "Not saved. Your changes are still here; try again."
     },
     "display": {
       "title": "Display",

@@ -1,14 +1,12 @@
 "use client";
 
 import { toast } from "sonner";
-import {
-  ProviderSettings,
-  type ProviderSettingsLabels,
-} from "@repowise-dev/ui/settings/provider-settings";
+import { ProviderSettings } from "@repowise-dev/ui/settings/provider-settings";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { useProviders } from "@/lib/hooks/use-providers";
 import { useTranslations } from "next-intl";
+import { useProviderFormLabels } from "./use-provider-form-labels";
 
 /**
  * Web data wrapper around the shared `ProviderSettings` shell. Owns the fetch,
@@ -32,6 +30,7 @@ export function ProviderSettingsPanel({ repoId }: { repoId?: string }) {
 
   const t = useTranslations("settings");
   const f = useTranslations("settings.providerForm");
+  const labels = useProviderFormLabels(Boolean(repoId));
 
   if (isLoading) {
     return (
@@ -43,45 +42,6 @@ export function ProviderSettingsPanel({ repoId }: { repoId?: string }) {
     );
   }
 
-  const labels: ProviderSettingsLabels = {
-    model: f("model"),
-    baseUrl: f("baseUrl"),
-    baseUrlHint: f("baseUrlHint"),
-    baseUrlInvalid: f("baseUrlInvalid"),
-    localServer: f("localServer"),
-    testConnection: f("testConnection"),
-    connected: (count) => f("connected", { count }),
-    save: f("save"),
-    useProvider: (name) => f("useProvider", { name }),
-    cancel: f("cancel"),
-    regenerateNotice: repoId ? f("regenerateNotice") : f("regenerateNoticeGlobal"),
-    unconfirmedUrl: (url) => f("unconfirmedUrl", { url }),
-    trustUrl: f("trustUrl"),
-    active: f("active"),
-    noKeyRequired: f("noKeyRequired"),
-    keySet: f("keySet"),
-    noKey: f("noKey"),
-    use: f("use"),
-    useAria: (name) => f("useAria", { name }),
-    test: f("test"),
-    testAria: (name) => f("testAria", { name }),
-    addKey: f("addKey"),
-    updateKey: f("updateKey"),
-    removeKeyAria: (name) => f("removeKeyAria", { name }),
-    keyAria: (name) => f("keyAria", { name }),
-    keyPlaceholder: (name) => f("keyPlaceholder", { name }),
-    saveKeyAria: (name) => f("saveKeyAria", { name }),
-    connectionVerified: f("connectionVerified"),
-    connectionFailed: f("connectionFailed"),
-    provenance: (source) => {
-      if (source === "config.yaml") return f("sourceConfig");
-      if (source === "global") return f("sourceGlobal");
-      if (source === "default") return f("sourceDefault");
-      if (source === "autodetect") return f("sourceAutodetect");
-      if (source.startsWith("env:")) return f("sourceEnv", { name: source.slice(4) });
-      return null;
-    },
-  };
 
   async function handleAddKey(providerId: string, key: string) {
     try {

@@ -194,7 +194,7 @@ describe("ProviderSettings form", () => {
     fireEvent.keyDown(model, { key: "Enter" });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(onSetActive).toHaveBeenCalled());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Not saved");
     expect(model).toHaveValue("gpt-6");
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   });

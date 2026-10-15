@@ -83,6 +83,8 @@ export interface ProviderSettingsLabels {
   saveKeyAria: (name: string) => string;
   connectionVerified: string;
   connectionFailed: string;
+  /** Shown when a save is rejected; the drafts stay. */
+  saveFailed: string;
   /** One muted line naming where a value came from, or null to show none. */
   provenance: (source: string) => string | null;
 }
@@ -132,6 +134,7 @@ export const DEFAULT_PROVIDER_SETTINGS_LABELS: ProviderSettingsLabels = {
   saveKeyAria: (name) => `Save ${name} API key`,
   connectionVerified: "Connection verified",
   connectionFailed: "Connection failed",
+  saveFailed: "Not saved. Your changes are still here; try again.",
   provenance: describeSource,
 };
 
@@ -162,7 +165,8 @@ export interface ProviderSettingsProps {
   };
   onAddKey: (providerId: string, apiKey: string) => Promise<void> | void;
   onRemoveKey: (providerId: string) => Promise<void> | void;
-  /** Saves provider, model and (when given) base URL; `""` clears it. */
+  /** Saves provider, model and (when given) base URL; `""` clears it.
+   *  Reject to keep the form open with the user's drafts. */
   onSetActive: (
     providerId: string,
     model?: string,
@@ -223,60 +227,24 @@ export function ProviderSettings({
   );
 }
 
-function ProviderRow({
-  provider,
-  isActive,
-  active,
-  onAddKey,
-  onRemoveKey,
-  onSetActive,
-  onValidate,
-  onLoadModels,
-  validation,
-  labels,
-}: {
-  provider: ProviderOption;
-  isActive: boolean;
-  active: ProviderSettingsProps["active"];
+interface RowProps {
   onAddKey: ProviderSettingsProps["onAddKey"];
   onRemoveKey: ProviderSettingsProps["onRemoveKey"];
   onSetActive: ProviderSettingsProps["onSetActive"];
   onValidate: ProviderSettingsProps["onValidate"];
   onLoadModels: ProviderSettingsProps["onLoadModels"];
+  provider: ProviderOption;
+  isActive: boolean;
+  active: ProviderSettingsProps["active"];
   validation: ProviderValidationState | undefined;
   labels: ProviderSettingsLabels;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [keyDraft, setKeyDraft] = useState("");
-  const [busy, setBusy] = useState<null | "save" | "remove">(null);
+}
+
+function ProviderRow({ provider, isActive, labels, validation, ...props }: RowProps) {
   // "Use" opens the form for an inactive provider; nothing is written until Save.
   const [settingUp, setSettingUp] = useState(false);
-
+  const keys = useKeyEditor(provider.id, props.onAddKey, props.onRemoveKey);
   const keyless = provider.requires_key === false;
-  const usable = keyless || provider.configured || provider.local_server === true;
-  const status = validation?.status ?? "idle";
-
-  async function saveKey() {
-    const key = keyDraft.trim();
-    if (!key) return;
-    setBusy("save");
-    try {
-      await onAddKey(provider.id, key);
-      setKeyDraft("");
-      setEditing(false);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function removeKey() {
-    setBusy("remove");
-    try {
-      await onRemoveKey(provider.id);
-    } finally {
-      setBusy(null);
-    }
-  }
 
   return (
     <div
@@ -288,189 +256,318 @@ function ProviderRow({
       )}
     >
       <div className="flex items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-[var(--color-text-primary)]">
-              {provider.name}
-            </span>
-            {isActive && (
-              <Badge variant="accent" className="text-[10px]">
-                {labels.active}
-              </Badge>
-            )}
-            {keyless ? (
-              <Badge variant="outline" className="text-[10px]">
-                {labels.noKeyRequired}
-              </Badge>
-            ) : provider.configured ? (
-              <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-success)]">
-                <Check className="h-3 w-3" />
-                {labels.keySet}
-              </span>
-            ) : (
-              <span className="text-[11px] text-[var(--color-text-tertiary)]">
-                {labels.noKey}
-              </span>
-            )}
-          </div>
-        </div>
-
+        <ProviderHeading provider={provider} isActive={isActive} labels={labels} />
         <div className="flex shrink-0 items-center gap-1.5">
           {!isActive && !settingUp && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs"
-              disabled={busy !== null || !usable}
-              onClick={() => setSettingUp(true)}
-              aria-label={labels.useAria(provider.name)}
-            >
-              {labels.use}
-            </Button>
+            <UseButton
+              provider={provider}
+              disabled={keys.busy !== null}
+              onUse={() => setSettingUp(true)}
+              labels={labels}
+            />
           )}
           {(keyless || provider.configured) && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 gap-1.5 text-xs"
-              disabled={status === "testing"}
-              onClick={() => onValidate(provider.id)}
-              aria-label={labels.testAria(provider.name)}
-            >
-              {status === "testing" ? (
-                <Spinner size="sm" />
-              ) : (
-                <Plug className="h-3.5 w-3.5" />
-              )}
-              {labels.test}
-            </Button>
+            <TestButton
+              provider={provider}
+              testing={validation?.status === "testing"}
+              onTest={() => props.onValidate(provider.id)}
+              labels={labels}
+            />
           )}
-          {!keyless &&
-            (editing ? null : (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1.5 text-xs"
-                onClick={() => setEditing(true)}
-              >
-                <KeyRound className="h-3.5 w-3.5" />
-                {provider.configured ? labels.updateKey : labels.addKey}
-              </Button>
-            ))}
-          {!keyless && provider.configured && !editing && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-error)]"
-              disabled={busy !== null}
-              onClick={removeKey}
-              aria-label={labels.removeKeyAria(provider.name)}
-            >
-              {busy === "remove" ? (
-                <Spinner size="sm" />
-              ) : (
-                <Trash2 className="h-3.5 w-3.5" />
-              )}
-            </Button>
+          {!keyless && !keys.editing && (
+            <KeyButtons provider={provider} keys={keys} labels={labels} />
           )}
         </div>
       </div>
 
-      {editing && !keyless && (
-        <div className="mt-3 flex items-center gap-2">
-          <Input
-            type="password"
-            autoComplete="off"
-            autoFocus
-            aria-label={labels.keyAria(provider.name)}
-            value={keyDraft}
-            onChange={(e) => setKeyDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void saveKey();
-              }
-              if (e.key === "Escape") {
-                setEditing(false);
-                setKeyDraft("");
-              }
-            }}
-            placeholder={labels.keyPlaceholder(provider.name)}
-            className="h-8 font-mono text-xs"
-          />
-          <Button
-            type="button"
-            size="sm"
-            className="h-8 text-xs"
-            disabled={!keyDraft.trim() || busy === "save"}
-            onClick={saveKey}
-            aria-label={labels.saveKeyAria(provider.name)}
-          >
-            {busy === "save" ? (
-              <Spinner size="sm" />
-            ) : (
-              labels.save
-            )}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-8 w-8 p-0"
-            onClick={() => {
-              setEditing(false);
-              setKeyDraft("");
-            }}
-            aria-label={labels.cancel}
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      )}
+      {keys.editing && !keyless && <KeyEditor provider={provider} keys={keys} labels={labels} />}
 
       {(isActive || settingUp) && (
         <ProviderForm
           provider={provider}
           isActive={isActive}
-          active={active}
-          onSetActive={onSetActive}
-          onLoadModels={onLoadModels}
+          active={props.active}
+          onSetActive={props.onSetActive}
+          onLoadModels={props.onLoadModels}
           onDone={() => setSettingUp(false)}
           labels={labels}
         />
       )}
 
-      {status === "ok" && (
-        <p className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--color-success)]">
-          <Check className="h-3.5 w-3.5" />
-          {labels.connectionVerified}
-        </p>
-      )}
-      {status === "error" && (
-        <p className="mt-2 text-xs text-[var(--color-error)]">
-          {validation?.error || labels.connectionFailed}
-        </p>
-      )}
+      <ValidationLine validation={validation} labels={labels} />
     </div>
   );
 }
 
-const HTTP_URL = /^https?:\/\/[^\s/?#]+/i;
-
-/** Model and endpoint for one provider. Writes nothing until Save. */
-function ProviderForm({
+function ProviderHeading({
   provider,
   isActive,
-  active,
-  onSetActive,
-  onLoadModels,
-  onDone,
   labels,
 }: {
+  provider: ProviderOption;
+  isActive: boolean;
+  labels: ProviderSettingsLabels;
+}) {
+  return (
+    <div className="min-w-0 flex-1">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium text-[var(--color-text-primary)]">
+          {provider.name}
+        </span>
+        {isActive && (
+          <Badge variant="accent" className="text-[10px]">
+            {labels.active}
+          </Badge>
+        )}
+        <KeyStatus provider={provider} labels={labels} />
+      </div>
+    </div>
+  );
+}
+
+function KeyStatus({ provider, labels }: { provider: ProviderOption; labels: ProviderSettingsLabels }) {
+  if (provider.requires_key === false) {
+    return (
+      <Badge variant="outline" className="text-[10px]">
+        {labels.noKeyRequired}
+      </Badge>
+    );
+  }
+  if (provider.configured) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-success)]">
+        <Check className="h-3 w-3" />
+        {labels.keySet}
+      </span>
+    );
+  }
+  return <span className="text-[11px] text-[var(--color-text-tertiary)]">{labels.noKey}</span>;
+}
+
+function UseButton({
+  provider,
+  disabled,
+  onUse,
+  labels,
+}: {
+  provider: ProviderOption;
+  disabled: boolean;
+  onUse: () => void;
+  labels: ProviderSettingsLabels;
+}) {
+  const usable =
+    provider.requires_key === false || provider.configured || provider.local_server === true;
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="h-7 text-xs"
+      disabled={disabled || !usable}
+      onClick={onUse}
+      aria-label={labels.useAria(provider.name)}
+    >
+      {labels.use}
+    </Button>
+  );
+}
+
+function TestButton({
+  provider,
+  testing,
+  onTest,
+  labels,
+}: {
+  provider: ProviderOption;
+  testing: boolean;
+  onTest: () => void;
+  labels: ProviderSettingsLabels;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-7 gap-1.5 text-xs"
+      disabled={testing}
+      onClick={onTest}
+      aria-label={labels.testAria(provider.name)}
+    >
+      {testing ? <Spinner size="sm" /> : <Plug className="h-3.5 w-3.5" />}
+      {labels.test}
+    </Button>
+  );
+}
+
+type KeyEditorState = ReturnType<typeof useKeyEditor>;
+
+/** The add/update/remove key affordance of one row. */
+function useKeyEditor(
+  providerId: string,
+  onAddKey: ProviderSettingsProps["onAddKey"],
+  onRemoveKey: ProviderSettingsProps["onRemoveKey"],
+) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState<null | "save" | "remove">(null);
+
+  async function run(kind: "save" | "remove", action: () => Promise<void> | void) {
+    setBusy(kind);
+    try {
+      await action();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function cancel() {
+    setEditing(false);
+    setDraft("");
+  }
+
+  async function save() {
+    const key = draft.trim();
+    if (!key) return;
+    await run("save", async () => {
+      await onAddKey(providerId, key);
+      cancel();
+    });
+  }
+
+  return {
+    editing,
+    draft,
+    busy,
+    open: () => setEditing(true),
+    setDraft,
+    cancel,
+    save,
+    remove: () => run("remove", () => onRemoveKey(providerId)),
+  };
+}
+
+function KeyButtons({
+  provider,
+  keys,
+  labels,
+}: {
+  provider: ProviderOption;
+  keys: KeyEditorState;
+  labels: ProviderSettingsLabels;
+}) {
+  return (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 gap-1.5 text-xs"
+        onClick={keys.open}
+      >
+        <KeyRound className="h-3.5 w-3.5" />
+        {provider.configured ? labels.updateKey : labels.addKey}
+      </Button>
+      {provider.configured && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 w-7 p-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-error)]"
+          disabled={keys.busy !== null}
+          onClick={() => void keys.remove()}
+          aria-label={labels.removeKeyAria(provider.name)}
+        >
+          {keys.busy === "remove" ? <Spinner size="sm" /> : <Trash2 className="h-3.5 w-3.5" />}
+        </Button>
+      )}
+    </>
+  );
+}
+
+const KEY_INPUT_ACTIONS: Record<string, (keys: KeyEditorState) => void> = {
+  Enter: (keys) => void keys.save(),
+  Escape: (keys) => keys.cancel(),
+};
+
+function KeyEditor({
+  provider,
+  keys,
+  labels,
+}: {
+  provider: ProviderOption;
+  keys: KeyEditorState;
+  labels: ProviderSettingsLabels;
+}) {
+  return (
+    <div className="mt-3 flex items-center gap-2">
+      <Input
+        type="password"
+        autoComplete="off"
+        autoFocus
+        aria-label={labels.keyAria(provider.name)}
+        value={keys.draft}
+        onChange={(e) => keys.setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          const action = KEY_INPUT_ACTIONS[e.key];
+          if (!action) return;
+          if (e.key === "Enter") e.preventDefault();
+          action(keys);
+        }}
+        placeholder={labels.keyPlaceholder(provider.name)}
+        className="h-8 font-mono text-xs"
+      />
+      <Button
+        type="button"
+        size="sm"
+        className="h-8 text-xs"
+        disabled={!keys.draft.trim() || keys.busy === "save"}
+        onClick={() => void keys.save()}
+        aria-label={labels.saveKeyAria(provider.name)}
+      >
+        {keys.busy === "save" ? <Spinner size="sm" /> : labels.save}
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-8 w-8 p-0"
+        onClick={keys.cancel}
+        aria-label={labels.cancel}
+      >
+        <X className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  );
+}
+
+function ValidationLine({
+  validation,
+  labels,
+}: {
+  validation: ProviderValidationState | undefined;
+  labels: ProviderSettingsLabels;
+}) {
+  if (validation?.status === "ok") {
+    return (
+      <p className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--color-success)]">
+        <Check className="h-3.5 w-3.5" />
+        {labels.connectionVerified}
+      </p>
+    );
+  }
+  if (validation?.status === "error") {
+    return (
+      <p className="mt-2 text-xs text-[var(--color-error)]">
+        {validation.error || labels.connectionFailed}
+      </p>
+    );
+  }
+  return null;
+}
+
+const HTTP_URL = /^https?:\/\/[^\s/?#]+/i;
+
+interface FormProps {
   provider: ProviderOption;
   isActive: boolean;
   active: ProviderSettingsProps["active"];
@@ -478,60 +575,29 @@ function ProviderForm({
   onLoadModels: ProviderSettingsProps["onLoadModels"];
   onDone: () => void;
   labels: ProviderSettingsLabels;
-}) {
-  const formId = useId();
+}
+
+type FormState = ReturnType<typeof useProviderFormState>;
+
+/** Drafts for model and base URL, and the save that writes them. */
+function useProviderFormState({ provider, isActive, active, onSetActive, onDone }: FormProps) {
   const savedModel = isActive ? (active.model ?? "") : provider.default_model;
   const savedUrl = isActive ? (active.base_url ?? "") : "";
   const [model, setModel] = useState(savedModel);
   const [baseUrl, setBaseUrl] = useState(savedUrl);
-  // The list and the endpoint it was fetched for ("" = the saved one).
-  const [list, setList] = useState<{ url: string; result: ProviderModelList } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [tested, setTested] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
 
   // A save (here or elsewhere) changes what the drafts start from.
   useEffect(() => setModel(savedModel), [savedModel]);
   useEffect(() => setBaseUrl(savedUrl), [savedUrl]);
-  // A key or endpoint change makes a fetched list stale: fetch again on open.
-  useEffect(() => {
-    setList(null);
-    setTested(false);
-  }, [provider.configured, savedUrl]);
 
   const url = baseUrl.trim();
-  const urlValid = !url || HTTP_URL.test(url);
-  const probeUrl = url && url !== savedUrl ? url : "";
-  const current = list?.url === probeUrl ? list.result : null;
   const modelChanged = !isActive || model.trim() !== savedModel;
-  const dirty = modelChanged || url !== savedUrl;
-
-  async function load(refresh = false) {
-    if (!onLoadModels || !urlValid || (current && !refresh)) return;
-    setLoading(true);
-    try {
-      const result = await onLoadModels(provider.id, {
-        ...(probeUrl ? { baseUrl: probeUrl } : {}),
-        refresh,
-      });
-      setList({ url: probeUrl, result });
-    } catch (error) {
-      setList({
-        url: probeUrl,
-        result: {
-          models: [],
-          source: "catalog",
-          default_model: provider.default_model,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function save(trust = false) {
     setSaving(true);
+    setSaveFailed(false);
     try {
       await onSetActive(
         provider.id,
@@ -544,150 +610,337 @@ function ProviderForm({
       );
       onDone();
     } catch {
-      // The consumer reports the failure; the drafts stay for another try.
+      // The consumer reports why; the drafts stay and the form says it was
+      // not saved, so the user can retry without retyping.
+      setSaveFailed(true);
     } finally {
       setSaving(false);
     }
   }
 
-  const models = current?.models ?? provider.models.map((id) => ({ id }));
-  const provenance = (field: "model" | "base_url", unchanged: boolean) => {
-    const source = isActive && unchanged ? active.provenance?.[field] : null;
+  return {
+    model,
+    setModel,
+    baseUrl,
+    setBaseUrl,
+    url,
+    savedModel,
+    savedUrl,
+    urlValid: !url || HTTP_URL.test(url),
+    probeUrl: url && url !== savedUrl ? url : "",
+    modelChanged,
+    dirty: modelChanged || url !== savedUrl,
+    saving,
+    saveFailed,
+    save,
+  };
+}
+
+type ConnectionState = ReturnType<typeof useConnectionTest>;
+
+/** The model list for the endpoint in the form, fetched on demand. */
+function useConnectionTest(
+  provider: ProviderOption,
+  form: FormState,
+  onLoadModels: ProviderSettingsProps["onLoadModels"],
+) {
+  // The list and the endpoint it was fetched for ("" = the saved one).
+  const [list, setList] = useState<{ url: string; result: ProviderModelList } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [tested, setTested] = useState(false);
+
+  // A key or endpoint change makes a fetched list stale: fetch again on open.
+  useEffect(() => {
+    setList(null);
+    setTested(false);
+  }, [provider.configured, form.savedUrl]);
+
+  const current = list?.url === form.probeUrl ? list.result : null;
+
+  async function load(refresh = false) {
+    if (!onLoadModels || !form.urlValid || (current && !refresh)) return;
+    const url = form.probeUrl;
+    setLoading(true);
+    try {
+      const result = await onLoadModels(provider.id, {
+        ...(url ? { baseUrl: url } : {}),
+        refresh,
+      });
+      setList({ url, result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setList({ url, result: catalogFallback(provider, message) });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return {
+    current,
+    loading,
+    tested,
+    canTest: Boolean(onLoadModels) && form.urlValid && !loading,
+    resetTest: () => setTested(false),
+    open: () => void load(),
+    test: () => {
+      setTested(true);
+      void load(true);
+    },
+  };
+}
+
+function catalogFallback(provider: ProviderOption, error: string): ProviderModelList {
+  return { models: [], source: "catalog", default_model: provider.default_model, error };
+}
+
+/** Model and endpoint for one provider. Writes nothing until Save. */
+function ProviderForm(props: FormProps) {
+  const { provider, labels } = props;
+  const formId = useId();
+  const form = useProviderFormState(props);
+  const connection = useConnectionTest(provider, form, props.onLoadModels);
+  const sourceOf = (field: "model" | "base_url", unchanged: boolean) => {
+    const source = props.isActive && unchanged ? props.active.provenance?.[field] : null;
     return source ? labels.provenance(source) : null;
   };
-  const modelSource = provenance("model", model.trim() === savedModel);
-  const urlSource = provenance("base_url", url === savedUrl);
 
   return (
     <div className="mt-3 space-y-3 border-t border-[var(--color-border-default)] pt-3">
-      <div className="space-y-1.5">
-        <Label htmlFor={`${formId}-model`} className="text-xs text-[var(--color-text-secondary)]">
-          {labels.model}
-        </Label>
-        <ModelCombobox
-          id={`${formId}-model`}
-          ariaLabel={`${provider.name} ${labels.model}`}
-          value={model}
-          onSelect={setModel}
-          models={models}
-          defaultModel={current?.default_model ?? provider.default_model}
-          loading={loading}
-          onOpen={() => void load()}
-          className="sm:max-w-sm"
-        />
-        {modelSource && <Muted>{modelSource}</Muted>}
-        {current?.error && !tested && <Muted>{current.error}</Muted>}
-      </div>
-
+      <ModelSection
+        id={`${formId}-model`}
+        provider={provider}
+        form={form}
+        connection={connection}
+        source={sourceOf("model", form.model.trim() === form.savedModel)}
+        labels={labels}
+      />
       {provider.accepts_base_url && (
-        <div className="space-y-1.5">
-          <Label htmlFor={`${formId}-url`} className="text-xs text-[var(--color-text-secondary)]">
-            {labels.baseUrl}
-          </Label>
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              id={`${formId}-url`}
-              type="url"
-              inputMode="url"
-              autoComplete="off"
-              spellCheck={false}
-              value={baseUrl}
-              onChange={(e) => {
-                setBaseUrl(e.target.value);
-                setTested(false);
-              }}
-              placeholder="https://"
-              aria-invalid={!urlValid || undefined}
-              aria-describedby={`${formId}-url-hint`}
-              className="h-8 font-mono text-xs sm:max-w-sm"
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1.5 text-xs"
-              disabled={!onLoadModels || !urlValid || loading}
-              onClick={() => {
-                setTested(true);
-                void load(true);
-              }}
-            >
-              {loading && tested ? <Spinner size="sm" /> : <Plug className="h-3.5 w-3.5" />}
-              {labels.testConnection}
-            </Button>
-          </div>
-          {provider.local_server && (
-            <p className="flex flex-wrap items-center gap-x-2 text-xs text-[var(--color-text-tertiary)]">
-              <span>{labels.localServer}:</span>
-              {LOCAL_SERVER_PRESETS.map((preset) => (
-                <button
-                  key={preset.url}
-                  type="button"
-                  className="text-[var(--color-accent-primary)] hover:underline"
-                  onClick={() => {
-                    setBaseUrl(preset.url);
-                    setTested(false);
-                  }}
-                >
-                  {preset.name}
-                </button>
-              ))}
-            </p>
-          )}
-          {isActive && active.base_url_unconfirmed && url === savedUrl && (
-            <div role="alert" className="space-y-1.5">
-              <p className="text-xs text-[var(--color-error)]">
-                {labels.unconfirmedUrl(savedUrl)}
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-                disabled={saving}
-                onClick={() => void save(true)}
-              >
-                {labels.trustUrl}
-              </Button>
-            </div>
-          )}
-          <Muted id={`${formId}-url-hint`}>
-            {!urlValid ? labels.baseUrlInvalid : (urlSource ?? labels.baseUrlHint)}
-          </Muted>
-          {tested && current && !loading && (
-            current.source === "live" ? (
-              <p role="status" className="inline-flex items-center gap-1 text-xs text-[var(--color-success)]">
-                <Check className="h-3.5 w-3.5" />
-                {labels.connected(current.models.length)}
-              </p>
-            ) : (
-              <p role="alert" className="text-xs text-[var(--color-error)]">
-                {current.error}
-              </p>
-            )
-          )}
-        </div>
+        <BaseUrlSection
+          id={`${formId}-url`}
+          provider={provider}
+          form={form}
+          connection={connection}
+          unconfirmed={props.isActive && props.active.base_url_unconfirmed === true}
+          source={sourceOf("base_url", form.url === form.savedUrl)}
+          labels={labels}
+        />
       )}
+      <SaveBar provider={provider} isActive={props.isActive} form={form} onCancel={props.onDone} labels={labels} />
+    </div>
+  );
+}
 
-      {dirty && modelChanged && <Muted>{labels.regenerateNotice}</Muted>}
+interface SectionProps {
+  id: string;
+  provider: ProviderOption;
+  form: FormState;
+  connection: ConnectionState;
+  /** Where the saved value came from, worded; null to show nothing. */
+  source: string | null;
+  labels: ProviderSettingsLabels;
+}
 
+function ModelSection({ id, provider, form, connection, source, labels }: SectionProps) {
+  const { current } = connection;
+  return (
+    <div className="space-y-1.5">
+      <FieldLabel htmlFor={id}>{labels.model}</FieldLabel>
+      <ModelCombobox
+        id={id}
+        ariaLabel={`${provider.name} ${labels.model}`}
+        value={form.model}
+        onSelect={form.setModel}
+        models={current?.models ?? provider.models.map((m) => ({ id: m }))}
+        defaultModel={current?.default_model ?? provider.default_model}
+        loading={connection.loading}
+        onOpen={connection.open}
+        className="sm:max-w-sm"
+      />
+      {source && <Muted>{source}</Muted>}
+      {current?.error && !connection.tested && <Muted>{current.error}</Muted>}
+    </div>
+  );
+}
+
+function BaseUrlSection({
+  id,
+  provider,
+  form,
+  connection,
+  unconfirmed,
+  source,
+  labels,
+}: SectionProps & { unconfirmed: boolean }) {
+  const edit = (value: string) => {
+    form.setBaseUrl(value);
+    connection.resetTest();
+  };
+  return (
+    <div className="space-y-1.5">
+      <FieldLabel htmlFor={id}>{labels.baseUrl}</FieldLabel>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          id={id}
+          type="url"
+          inputMode="url"
+          autoComplete="off"
+          spellCheck={false}
+          value={form.baseUrl}
+          onChange={(e) => edit(e.target.value)}
+          placeholder="https://"
+          aria-invalid={!form.urlValid || undefined}
+          aria-describedby={`${id}-hint`}
+          className="h-8 font-mono text-xs sm:max-w-sm"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1.5 text-xs"
+          disabled={!connection.canTest}
+          onClick={connection.test}
+        >
+          {connection.loading && connection.tested ? (
+            <Spinner size="sm" />
+          ) : (
+            <Plug className="h-3.5 w-3.5" />
+          )}
+          {labels.testConnection}
+        </Button>
+      </div>
+      {provider.local_server && <LocalServerPresets onPick={edit} labels={labels} />}
+      {unconfirmed && form.url === form.savedUrl && (
+        <UnconfirmedUrl url={form.savedUrl} form={form} labels={labels} />
+      )}
+      <Muted id={`${id}-hint`}>
+        {form.urlValid ? (source ?? labels.baseUrlHint) : labels.baseUrlInvalid}
+      </Muted>
+      <ConnectionResult connection={connection} labels={labels} />
+    </div>
+  );
+}
+
+function LocalServerPresets({
+  onPick,
+  labels,
+}: {
+  onPick: (url: string) => void;
+  labels: ProviderSettingsLabels;
+}) {
+  return (
+    <p className="flex flex-wrap items-center gap-x-2 text-xs text-[var(--color-text-tertiary)]">
+      <span>{labels.localServer}:</span>
+      {LOCAL_SERVER_PRESETS.map((preset) => (
+        <button
+          key={preset.url}
+          type="button"
+          className="text-[var(--color-accent-primary)] hover:underline"
+          onClick={() => onPick(preset.url)}
+        >
+          {preset.name}
+        </button>
+      ))}
+    </p>
+  );
+}
+
+function UnconfirmedUrl({
+  url,
+  form,
+  labels,
+}: {
+  url: string;
+  form: FormState;
+  labels: ProviderSettingsLabels;
+}) {
+  return (
+    <div role="alert" className="space-y-1.5">
+      <p className="text-xs text-[var(--color-error)]">{labels.unconfirmedUrl(url)}</p>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="h-7 text-xs"
+        disabled={form.saving}
+        onClick={() => void form.save(true)}
+      >
+        {labels.trustUrl}
+      </Button>
+    </div>
+  );
+}
+
+function ConnectionResult({
+  connection,
+  labels,
+}: {
+  connection: ConnectionState;
+  labels: ProviderSettingsLabels;
+}) {
+  const { current } = connection;
+  if (!connection.tested || !current || connection.loading) return null;
+  if (current.source === "live") {
+    return (
+      <p role="status" className="inline-flex items-center gap-1 text-xs text-[var(--color-success)]">
+        <Check className="h-3.5 w-3.5" />
+        {labels.connected(current.models.length)}
+      </p>
+    );
+  }
+  return (
+    <p role="alert" className="text-xs text-[var(--color-error)]">
+      {current.error}
+    </p>
+  );
+}
+
+function SaveBar({
+  provider,
+  isActive,
+  form,
+  onCancel,
+  labels,
+}: {
+  provider: ProviderOption;
+  isActive: boolean;
+  form: FormState;
+  onCancel: () => void;
+  labels: ProviderSettingsLabels;
+}) {
+  const idleLabel = isActive ? labels.save : labels.useProvider(provider.name);
+  return (
+    <>
+      {form.dirty && form.modelChanged && <Muted>{labels.regenerateNotice}</Muted>}
+      {form.saveFailed && (
+        <p role="alert" className="text-xs text-[var(--color-error)]">
+          {labels.saveFailed}
+        </p>
+      )}
       <div className="flex items-center gap-2">
         <Button
           type="button"
           size="sm"
           className="h-8 text-xs"
-          disabled={!dirty || !urlValid || saving}
-          onClick={() => void save()}
+          disabled={!form.dirty || !form.urlValid || form.saving}
+          onClick={() => void form.save()}
         >
-          {saving ? <Spinner size="sm" /> : isActive ? labels.save : labels.useProvider(provider.name)}
+          {form.saving ? <Spinner size="sm" /> : idleLabel}
         </Button>
         {!isActive && (
-          <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" onClick={onDone}>
+          <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" onClick={onCancel}>
             {labels.cancel}
           </Button>
         )}
       </div>
-    </div>
+    </>
+  );
+}
+
+function FieldLabel({ htmlFor, children }: { htmlFor: string; children: ReactNode }) {
+  return (
+    <Label htmlFor={htmlFor} className="text-xs text-[var(--color-text-secondary)]">
+      {children}
+    </Label>
   );
 }
 

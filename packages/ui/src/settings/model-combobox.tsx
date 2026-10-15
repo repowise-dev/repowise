@@ -7,7 +7,7 @@
  * `aria-activedescendant` names the highlighted option.
  */
 
-import { useId, useMemo, useState, type KeyboardEvent } from "react";
+import { useId, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { Spinner } from "../ui/spinner";
 import { cn } from "../lib/cn";
@@ -53,6 +53,142 @@ export interface ModelComboboxProps {
   className?: string;
 }
 
+interface ModelOption extends ModelChoice {
+  /** The typed text offered as an id of its own. */
+  typed: boolean;
+}
+
+/** Models matching *typed*, plus the typed text itself when no id equals it. */
+function useModelOptions(models: ModelChoice[], typed: string): ModelOption[] {
+  return useMemo(() => {
+    const needle = typed.toLowerCase();
+    const matches = needle
+      ? models.filter((m) => `${m.id} ${m.label ?? ""}`.toLowerCase().includes(needle))
+      : models;
+    const rows: ModelOption[] = matches.map((m) => ({ ...m, typed: false }));
+    if (typed && !models.some((m) => m.id === typed)) {
+      rows.push({ id: typed, label: null, typed: true });
+    }
+    return rows;
+  }, [models, typed]);
+}
+
+interface ComboboxState {
+  expanded: boolean;
+  /** null while the user has not typed: the input then shows the value. */
+  query: string | null;
+  typed: string;
+  active: number;
+  options: ModelOption[];
+  listId: string;
+  optionId: (index: number) => string;
+  setActive: (index: number) => void;
+  type: (text: string) => void;
+  show: () => void;
+  hide: () => void;
+  choose: (model: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+}
+
+type KeyAction = (state: ComboboxState, event: KeyboardEvent<HTMLInputElement>) => void;
+
+function moveBy(step: number): KeyAction {
+  return (state, event) => {
+    event.preventDefault();
+    if (!state.expanded) state.show();
+    const count = state.options.length;
+    if (count === 0) return;
+    const next = (state.active + step + count) % count;
+    state.setActive(next);
+    document.getElementById(state.optionId(next))?.scrollIntoView?.({ block: "nearest" });
+  };
+}
+
+const KEY_ACTIONS: Record<string, KeyAction> = {
+  ArrowDown: moveBy(1),
+  ArrowUp: moveBy(-1),
+  Enter: (state, event) => {
+    const picked = state.options[state.active]?.id ?? (state.typed || null);
+    if (!picked || !state.expanded) return;
+    event.preventDefault();
+    state.choose(picked);
+  },
+};
+
+function useComboboxState({
+  models,
+  inline,
+  onOpen,
+  onSelect,
+}: {
+  models: ModelChoice[];
+  inline: boolean;
+  onOpen: (() => void) | undefined;
+  onSelect: (model: string) => void;
+}): ComboboxState {
+  const listId = useId();
+  const [open, setOpen] = useState(inline);
+  const [query, setQuery] = useState<string | null>(null);
+  const [active, setActive] = useState(-1);
+  const typed = (query ?? "").trim();
+  const options = useModelOptions(models, typed);
+  const expanded = inline || open;
+
+  function show() {
+    if (!open) onOpen?.();
+    setOpen(true);
+  }
+
+  function reset() {
+    setQuery(null);
+    setActive(-1);
+  }
+
+  function hide() {
+    if (inline) return;
+    setOpen(false);
+    reset();
+  }
+
+  function choose(model: string) {
+    onSelect(model);
+    reset();
+    if (!inline) setOpen(false);
+  }
+
+  function type(text: string) {
+    setQuery(text);
+    setActive(-1);
+    show();
+  }
+
+  const state: ComboboxState = {
+    expanded,
+    query,
+    typed,
+    active,
+    options,
+    listId,
+    optionId: (index) => `${listId}-${index}`,
+    setActive,
+    type,
+    show,
+    hide,
+    choose,
+    onKeyDown: (event) => {
+      if (event.key === "Escape" && open && !inline) {
+        // Close the list only; an enclosing dialog stays open.
+        event.preventDefault();
+        event.stopPropagation();
+        hide();
+        return;
+      }
+      KEY_ACTIONS[event.key]?.(state, event);
+    },
+  };
+  return state;
+}
+
 export function ModelCombobox({
   value,
   onSelect,
@@ -68,77 +204,8 @@ export function ModelCombobox({
   className,
 }: ModelComboboxProps) {
   const labels = { ...DEFAULT_LABELS, ...labelOverrides };
-  const listId = useId();
-  const [open, setOpen] = useState(inline);
-  // null while the user has not typed: the input then shows the value.
-  const [query, setQuery] = useState<string | null>(null);
-  const [active, setActive] = useState(-1);
-
-  const typed = (query ?? "").trim();
-  const options = useMemo(() => {
-    const needle = typed.toLowerCase();
-    const matches = needle
-      ? models.filter((m) =>
-          `${m.id} ${m.label ?? ""}`.toLowerCase().includes(needle),
-        )
-      : models;
-    const rows = matches.map((m) => ({ ...m, typed: false }));
-    if (typed && !models.some((m) => m.id === typed)) {
-      rows.push({ id: typed, label: null, typed: true });
-    }
-    return rows;
-  }, [models, typed]);
-
-  const expanded = inline || open;
-  const optionId = (index: number) => `${listId}-${index}`;
-
-  function show() {
-    if (!open) onOpen?.();
-    setOpen(true);
-  }
-
-  function hide() {
-    if (inline) return;
-    setOpen(false);
-    setQuery(null);
-    setActive(-1);
-  }
-
-  function choose(model: string) {
-    onSelect(model);
-    setQuery(null);
-    setActive(-1);
-    if (!inline) setOpen(false);
-  }
-
-  function move(step: number) {
-    if (!expanded) show();
-    if (options.length === 0) return;
-    const next = (active + step + options.length) % options.length;
-    setActive(next);
-    document.getElementById(optionId(next))?.scrollIntoView?.({ block: "nearest" });
-  }
-
-  function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      move(1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      move(-1);
-    } else if (event.key === "Enter") {
-      const picked = options[active]?.id ?? (typed || null);
-      if (picked && expanded) {
-        event.preventDefault();
-        choose(picked);
-      }
-    } else if (event.key === "Escape" && open && !inline) {
-      // Close the list only; an enclosing dialog stays open.
-      event.preventDefault();
-      event.stopPropagation();
-      hide();
-    }
-  }
+  const state = useComboboxState({ models, inline, onOpen, onSelect });
+  const { active, options } = state;
 
   return (
     <div className={cn("relative", className)}>
@@ -147,32 +214,28 @@ export function ModelCombobox({
         type="text"
         role="combobox"
         aria-label={ariaLabel}
-        aria-expanded={expanded}
-        aria-controls={listId}
+        aria-expanded={state.expanded}
+        aria-controls={state.listId}
         aria-autocomplete="list"
-        aria-activedescendant={active >= 0 ? optionId(active) : undefined}
+        aria-activedescendant={active >= 0 ? state.optionId(active) : undefined}
         autoComplete="off"
         spellCheck={false}
         autoFocus={autoFocus}
         placeholder={inline ? labels.placeholder : value || labels.placeholder}
-        value={query ?? (inline ? "" : value)}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setActive(-1);
-          show();
-        }}
-        onFocus={inline ? undefined : show}
-        onClick={inline ? undefined : show}
-        onBlur={hide}
-        onKeyDown={onKeyDown}
+        value={state.query ?? (inline ? "" : value)}
+        onChange={(event) => state.type(event.target.value)}
+        onFocus={inline ? undefined : state.show}
+        onClick={inline ? undefined : state.show}
+        onBlur={state.hide}
+        onKeyDown={state.onKeyDown}
         className={cn(
           "box-border flex h-8 w-full min-w-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 font-mono text-xs text-[var(--color-text-primary)]",
           "placeholder:text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)]",
         )}
       />
-      {expanded && (
+      {state.expanded && (
         <ul
-          id={listId}
+          id={state.listId}
           role="listbox"
           aria-label={ariaLabel}
           aria-busy={loading || undefined}
@@ -183,68 +246,97 @@ export function ModelCombobox({
               : "absolute left-0 right-0 top-full z-[var(--z-dropdown)] mt-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] shadow-[var(--shadow-lg)]",
           )}
         >
-          {options.map((option, index) => {
-            const selected = !option.typed && option.id === value;
-            return (
-              <li
-                key={`${option.typed ? "typed:" : ""}${option.id}`}
-                id={optionId(index)}
-                role="option"
-                aria-selected={selected}
-                // mousedown, so the input's blur does not close the list first.
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  choose(option.id);
-                }}
-                onMouseEnter={() => setActive(index)}
-                className={cn(
-                  "flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-xs",
-                  index === active
-                    ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
-                    : "text-[var(--color-text-secondary)]",
-                )}
-              >
-                <span className="min-w-0 flex-1 truncate font-mono" title={option.id}>
-                  {option.typed ? labels.useTyped(option.id) : option.id}
-                </span>
-                {option.label && option.label !== option.id && (
-                  <span className="truncate text-[var(--color-text-tertiary)]">
-                    {option.label}
-                  </span>
-                )}
-                {!option.typed && option.id === defaultModel && (
-                  <span className="shrink-0 text-[10px] text-[var(--color-text-tertiary)]">
-                    {labels.defaultTag}
-                  </span>
-                )}
-                {selected && (
-                  <Check
-                    aria-hidden="true"
-                    className="h-3 w-3 shrink-0 text-[var(--color-accent-primary)]"
-                  />
-                )}
-              </li>
-            );
-          })}
+          {options.map((option, index) => (
+            <OptionRow
+              key={`${option.typed ? "typed:" : ""}${option.id}`}
+              id={state.optionId(index)}
+              option={option}
+              selected={!option.typed && option.id === value}
+              highlighted={index === active}
+              isDefault={!option.typed && option.id === defaultModel}
+              labels={labels}
+              onChoose={() => state.choose(option.id)}
+              onHover={() => state.setActive(index)}
+            />
+          ))}
           {loading && (
-            <li
-              role="presentation"
-              className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)]"
-            >
+            <StatusRow>
               <Spinner size="sm" />
               {labels.loading}
-            </li>
+            </StatusRow>
           )}
-          {!loading && options.length === 0 && (
-            <li
-              role="presentation"
-              className="px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)]"
-            >
-              {labels.noMatch}
-            </li>
-          )}
+          {!loading && options.length === 0 && <StatusRow>{labels.noMatch}</StatusRow>}
         </ul>
       )}
     </div>
+  );
+}
+
+function OptionRow({
+  id,
+  option,
+  selected,
+  highlighted,
+  isDefault,
+  labels,
+  onChoose,
+  onHover,
+}: {
+  id: string;
+  option: ModelOption;
+  selected: boolean;
+  highlighted: boolean;
+  isDefault: boolean;
+  labels: ModelComboboxLabels;
+  onChoose: () => void;
+  onHover: () => void;
+}) {
+  return (
+    <li
+      id={id}
+      role="option"
+      aria-selected={selected}
+      // mousedown, so the input's blur does not close the list first.
+      onMouseDown={(event) => {
+        event.preventDefault();
+        onChoose();
+      }}
+      onMouseEnter={onHover}
+      className={cn(
+        "flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-xs",
+        highlighted
+          ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
+          : "text-[var(--color-text-secondary)]",
+      )}
+    >
+      <span className="min-w-0 flex-1 truncate font-mono" title={option.id}>
+        {option.typed ? labels.useTyped(option.id) : option.id}
+      </span>
+      {option.label && option.label !== option.id && (
+        <span className="truncate text-[var(--color-text-tertiary)]">{option.label}</span>
+      )}
+      {isDefault && (
+        <span className="shrink-0 text-[10px] text-[var(--color-text-tertiary)]">
+          {labels.defaultTag}
+        </span>
+      )}
+      {selected && (
+        <Check
+          aria-hidden="true"
+          className="h-3 w-3 shrink-0 text-[var(--color-accent-primary)]"
+        />
+      )}
+    </li>
+  );
+}
+
+function StatusRow({ children }: { children: ReactNode }) {
+  return (
+    <li
+      role="presentation"
+      className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)]"
+    >
+      {children}
+    </li>
   );
 }
