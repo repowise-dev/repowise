@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { PreviewBadge } from "../../src/health/preview-badge";
+import { PreviewBadge, PreviewBadgeStringsContext } from "../../src/health/preview-badge";
 import { RefactoringCard } from "../../src/health/refactoring-card";
 import { PerformanceView } from "../../src/health/performance-view";
 import { adapter, opportunity, page } from "./fixtures/performance";
@@ -15,6 +15,20 @@ describe("PreviewBadge", () => {
     expect(badge.textContent).toBe("Preview");
     fireEvent.focus(badge);
     expect((await screen.findAllByText(NOTE)).length).toBeGreaterThan(0);
+  });
+
+  it("uses the strings a host provides", () => {
+    render(
+      <PreviewBadgeStringsContext.Provider value={{ label: "预览", ariaLabel: (n) => `预览：${n}` }}>
+        <PreviewBadge note={NOTE} />
+      </PreviewBadgeStringsContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: `预览：${NOTE}` }).textContent).toBe("预览");
+  });
+
+  it("lets an explicit label override the provided one", () => {
+    render(<PreviewBadge note={NOTE} label="Beta" />);
+    expect(screen.getByRole("button", { name: `Beta: ${NOTE}` }).textContent).toBe("Beta");
   });
 
   it.each([undefined, null, "", "   "])("renders nothing for %p", (note) => {

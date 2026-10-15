@@ -12,7 +12,11 @@
     "dismiss": "Dismiss",
     "close": "Close",
     "back": "Back",
-    "retry": "Try again"
+    "retry": "Try again",
+    "preview": {
+      "label": "Preview",
+      "ariaLabel": "Preview: {note}"
+    }
   },
   "language": {
     "label": "Language",

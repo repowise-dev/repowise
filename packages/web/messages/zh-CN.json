@@ -12,7 +12,11 @@
     "dismiss": "忽略",
     "close": "关闭",
     "back": "返回",
-    "retry": "重试"
+    "retry": "重试",
+    "preview": {
+      "label": "预览",
+      "ariaLabel": "预览：{note}"
+    }
   },
   "language": {
     "label": "语言",
