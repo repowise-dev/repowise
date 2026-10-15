@@ -19,6 +19,19 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _provider_issue(pages: list, docs_skip_reason: str | None = None) -> dict | None:
+    """What the UI shows when a completed run still went wrong with the provider:
+    the hint its failed pages share, else why docs were skipped."""
+    from repowise.core.generation.models import dominant_stub_fallback_hint
+
+    hint = dominant_stub_fallback_hint(pages)
+    if hint is not None:
+        return hint
+    if docs_skip_reason:
+        return {"kind": "docs_skipped", "message": docs_skip_reason[:500]}
+    return None
+
+
 async def _complete_job_row(
     session: Any,
     job_id: str,
@@ -54,6 +67,7 @@ async def _finalize_job_status(
     *,
     status: str,
     error_message: str,
+    provider_issue: dict | None = None,
 ) -> None:
     """Best-effort terminal status write shared by the failure and cancel paths.
 
@@ -73,6 +87,12 @@ async def _finalize_job_status(
         return
     try:
         async with get_session(recovery_factory) as session:
+            if provider_issue is not None:
+                job = await get_generation_job(session, job_id)
+                if job is not None:
+                    config = json.loads(job.config_json or "{}")
+                    config["provider_issue"] = provider_issue
+                    job.config_json = json.dumps(config)
             await update_job_status(
                 session,
                 job_id,

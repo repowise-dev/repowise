@@ -32,6 +32,7 @@ from repowise.core.persistence.crud import (
 from repowise.core.persistence.database import get_session
 from repowise.core.pipeline import persist_pipeline_result, run_pipeline
 from repowise.core.pipeline.modes import OrchestratorMode
+from repowise.core.providers.llm.error_hints import describe_provider_error
 from repowise.server.job_events import JobEventBuffer, create_event_buffer
 
 # The ``noqa: F401`` names live in the sibling job modules and are re-exported
@@ -48,7 +49,11 @@ from repowise.server.job_incremental import (
     _incremental_page_regen,
     _plan_incremental_page_regen,  # noqa: F401
 )
-from repowise.server.job_records import _complete_job_row, _finalize_job_status
+from repowise.server.job_records import (
+    _complete_job_row,
+    _finalize_job_status,
+    _provider_issue,
+)
 from repowise.server.job_state import (
     _load_state,  # noqa: F401
     _persist_initial_index_state,
@@ -429,13 +434,17 @@ async def execute_job(
         )
     except Exception as exc:
         logger.exception("job_failed", job_id=job_id, error=str(exc))
+        # A recognised provider failure records what to do about it; the raw
+        # error is in the log above.
+        hint = describe_provider_error(exc)
         await _finalize_job_status(
             app_state,
             session_factory,
             progress,
             job_id,
             status="failed",
-            error_message=str(exc)[:500],
+            error_message=hint.message if hint else str(exc)[:500],
+            provider_issue=hint.as_dict() if hint else None,
         )
     finally:
         get_cancel_tokens(app_state).pop(job_id, None)
@@ -698,6 +707,11 @@ async def _record_index_completion(
                 "file_count": result.file_count,
                 "symbol_count": result.symbol_count,
                 "pages_generated": pages_generated,
+                # A keyless first index writes templates on purpose, so its
+                # skipped model docs are not a problem to report.
+                "provider_issue": _provider_issue(
+                    all_pages, None if run.spec.is_initial_index else run.docs_skip_reason
+                ),
             },
             completed_pages=(
                 pages_generated - stub_fallbacks if pages_generated else result.file_count

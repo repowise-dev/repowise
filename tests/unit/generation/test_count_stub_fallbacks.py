@@ -72,3 +72,27 @@ def test_tolerates_a_page_without_metadata():
         pass
 
     assert count_stub_fallbacks([_Bare()]) == 0
+
+
+def test_dominant_hint_is_the_one_most_failed_pages_share():
+    from repowise.core.generation.models import STUB_FALLBACK_HINT, dominant_stub_fallback_hint
+
+    auth = {"kind": "auth", "message": "API key rejected by openai. Update it in Settings."}
+    pages = [_page("a", stub_error="401"), _page("b", stub_error="401"), _page("c", stub_error="x")]
+    pages[0].metadata[STUB_FALLBACK_HINT] = auth
+    pages[1].metadata[STUB_FALLBACK_HINT] = auth
+
+    assert dominant_stub_fallback_hint(pages) == auth
+    assert dominant_stub_fallback_hint([_page("d"), pages[2]]) is None
+
+
+def test_a_stub_for_a_rejected_key_carries_the_hint():
+    from repowise.core.generation.models import STUB_FALLBACK_HINT
+    from repowise.core.generation.page_generator.pertype import _stub_fallback
+    from repowise.core.providers.llm.base import ProviderError
+
+    page = _stub_fallback(_page("a"), "module_page", ProviderError("openai", "bad key", 401))
+    plain = _stub_fallback(_page("b"), "module_page", ValueError("artifact check"))
+
+    assert page.metadata[STUB_FALLBACK_HINT]["kind"] == "auth"
+    assert STUB_FALLBACK_HINT not in plain.metadata
