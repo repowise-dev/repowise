@@ -1089,9 +1089,13 @@ _PREPROCESSED_LANGUAGES: frozenset[str] = frozenset({"c", "cpp", "objectivec"})
 _BARE_NAME_USE_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin", "scala"})
 
 # Annotations whose *argument* is the signal (``@SuppressWarnings("unused")``),
-# matched against the raw decorator text rather than its base name.
-_DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (
-    ("SuppressWarnings", "unused"),
+# matched against the raw decorator text rather than its base name. The third
+# field asks for a whole quoted argument, case-insensitive: Kotlin writes both
+# ``unused`` and ``UNUSED``, and ``UNUSED_PARAMETER`` / ``UNUSED_VARIABLE``
+# silence a warning inside the body, not one about the declaration.
+_DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str, bool], ...] = (
+    ("SuppressWarnings", "unused", False),
+    ("Suppress", "unused", True),
 )
 
 # Inner class names a framework reads off the class that declares them, so no

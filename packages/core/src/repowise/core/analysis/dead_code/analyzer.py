@@ -185,8 +185,13 @@ def _declared_deliberately_unused(decorators: Iterable[str]) -> bool:
                 continue
             base = _decorator_base(token)
             if any(
-                base == name and argument in token
-                for name, argument in _DELIBERATELY_UNUSED_ANNOTATIONS
+                base == name
+                and (
+                    argument in (q[1:-1].lower() for q in _QUOTED_STR_RE.findall(token))
+                    if whole
+                    else argument in token
+                )
+                for name, argument, whole in _DELIBERATELY_UNUSED_ANNOTATIONS
             ):
                 return True
     return False

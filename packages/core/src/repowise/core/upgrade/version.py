@@ -95,6 +95,8 @@ STORE_FORMAT_VERSION: int = 2
 #: argument.
 #: A Kotlin call whose only argument is a trailing lambda (``AppTheme { }``,
 #: ``s.forEachSegment { }``) is a call site, with one argument.
+#: A top-level Kotlin declaration keeps the annotations the grammar splits off
+#: it when the last one takes one argument (``@Suppress("unused")``).
 PARSER_SCHEMA_VERSION: int = 8
 
 #: state.json key holding the store format version that wrote the store.
