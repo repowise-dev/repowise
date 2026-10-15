@@ -63,6 +63,9 @@ _FILES = {
         "import Foundation\n\npublic struct PartialAccountWithAvatar: Codable {\n"
         "  public let id: String\n}\n"
     ),
+    f"{_DS}/Views/DismissGame.swift": (
+        "import SwiftUI\n\nextension DependencyValues {\n  public var dismissGame: Int { 0 }\n}\n"
+    ),
     f"{_MODELS}/Legacy.swift": (
         "import Foundation\n\npublic struct LegacyThing {}\n\n"
         "extension LegacyThing {\n  func old() {}\n}\n"
@@ -74,6 +77,7 @@ _FILES = {
         "  @State private var history: [StatusHistory]?\n"
         "  let store = StatusEditor.EditorStore()\n"
         '  let label = "LegacyThing"\n'
+        "  @Dependency(\\.dismissGame) var dismissGame\n"
         "  public var body: some View {\n"
         '    TagRowView(tag: "swift").foregroundColor(.brandTint)\n  }\n}\n'
     ),
@@ -121,6 +125,7 @@ def test_files_a_live_file_uses_names_or_extends_are_reachable(tmp_path: Path) -
             "Colors.swift",  # a member of its platform-type extension is used
             "EditorStore.swift",
             "EditorMode.swift",  # extends a type declared in a reachable file
+            "DismissGame.swift",  # `.dismissGame` is also declared in the using file
         }
     ), unreachable
 
@@ -152,7 +157,11 @@ def _graph(decls: dict[str, list[tuple[str, str, str | None]]], entry: str) -> n
 
 _ROOT = "App/Main.swift"
 _DECLS: dict[str, list[tuple[str, str, str | None]]] = {
-    _ROOT: [("Main", "class", None)],
+    _ROOT: [
+        ("Main", "class", None),
+        ("label", "method", "Main"),
+        ("subscript", "method", "Main"),
+    ],
     "Models/StatusHistory.swift": [("StatusHistory", "class", None)],
     "Models/Store.swift": [("Store", "class", None)],
     "Models/Store+Mode.swift": [("Store", "impl", None), ("Mode", "class", "Store")],
@@ -160,6 +169,10 @@ _DECLS: dict[str, list[tuple[str, str, str | None]]] = {
     "Probe/String+Probe.swift": [("String", "impl", None), ("probeTrimmed", "method", "String")],
     "Probe/URL+Id.swift": [("URL", "impl", None), ("id", "variable", "URL")],
     "Probe/Account.swift": [("Account", "class", None), ("id", "variable", "Account")],
+    "Probe/Observer+Store.swift": [("Observer", "impl", None), ("store", "method", "Observer")],
+    "Probe/Canceller+Store.swift": [("Canceller", "impl", None), ("store", "method", "Canceller")],
+    "Probe/Locale+Label.swift": [("Locale", "impl", None), ("label", "method", "Locale")],
+    "Probe/Grid+Cell.swift": [("Grid", "impl", None), ("subscript", "method", "Grid")],
     "Probe/DeadA.swift": [("DeadA", "class", None)],
     "Probe/DeadB.swift": [("DeadB", "class", None)],
     "Probe/Text.swift": [("Text", "class", None)],
@@ -180,6 +193,8 @@ _SOURCE = {
         b'  let q = """\n  QuotedType(\n  """\n'
         b'  let r = #"RawQuotedType( \\"#\n'
         b"  let n = count + BareOperand\n"
+        b"  func label() {}\n  func run() { token.store(in: &bag) }\n"
+        b"  subscript(k: Int) -> Int { k }\n"
         b'  let v = "ItemView"  // ItemView\n'
         b"}\n"
     ),
@@ -190,6 +205,10 @@ _SOURCE = {
     "Probe/String+Probe.swift": b"extension String { func probeTrimmed() -> String { self } }\n",
     "Probe/URL+Id.swift": b"extension URL { var id: String { absoluteString } }\n",
     "Probe/Account.swift": b"struct Account { let id: String }\n",
+    "Probe/Observer+Store.swift": b"extension Observer { func store(in b: Int) {} }\n",
+    "Probe/Canceller+Store.swift": b"extension Canceller { func store(in b: Int) {} }\n",
+    "Probe/Locale+Label.swift": b"extension Locale { func label() -> Int { 0 } }\n",
+    "Probe/Grid+Cell.swift": b"extension Grid { subscript(i: Int) -> Int { i } }\n",
     "Probe/DeadA.swift": b"struct DeadA { let b: DeadB }\n",
     "Probe/DeadB.swift": b"struct DeadB { let a: [DeadA] }\n",
     "Probe/Text.swift": b"struct Text {}\n",
@@ -208,7 +227,10 @@ def test_live_uses_in_type_and_member_positions_reach_a_file() -> None:
         "Models/StatusHistory.swift",  # [StatusHistory]
         "Models/Store.swift",  # Store()
         "Models/Store+Mode.swift",  # extends a reached type
-        "Views/Colors.swift",  # .brandTint, declared by no other file
+        "Views/Colors.swift",  # .brandTint
+        "Probe/URL+Id.swift",  # `$0.id`, though a repo struct has an `id` too
+        "Probe/Observer+Store.swift",  # one `.store(in:)` reaches both extensions
+        "Probe/Canceller+Store.swift",
     } <= named, named
 
 
@@ -216,7 +238,8 @@ def test_dead_code_the_text_cannot_vouch_for_stays_unreachable() -> None:
     named = build_swift_named_files(_graph(_DECLS, _ROOT), _SOURCE)
     assert not named & {
         "Probe/String+Probe.swift",  # an unused extension of a platform type
-        "Probe/URL+Id.swift",  # its only member name is declared elsewhere too
+        "Probe/Locale+Label.swift",  # the root only declares `label`, never uses it
+        "Probe/Grid+Cell.swift",  # a subscript is declared, never written by name
         "Probe/DeadA.swift",  # two dead files naming each other
         "Probe/DeadB.swift",
         "Probe/Text.swift",  # a platform name
