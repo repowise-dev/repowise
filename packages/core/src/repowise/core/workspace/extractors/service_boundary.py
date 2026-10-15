@@ -147,7 +147,7 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
             # src-layout packages (src/<pkg>/...) keep sources below the first level
             has_source = any(
                 Path(f).suffix.lower() in _SOURCE_EXTENSIONS
-                for _, _, fs in os.walk(Path(dirpath, "src"))
+                for _, _, fs in walk_repo(Path(dirpath, "src"))
                 for f in fs
             )
 
