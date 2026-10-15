@@ -1092,8 +1092,7 @@ def resolve_provider(
     default in ``provider_config.json`` > ``REPOWISE_PROVIDER`` /
     ``REPOWISE_MODEL`` > auto-detection from API keys.
     """
-    from repowise.core.providers import get_provider
-    from repowise.core.providers.llm.resolve import llm_provider_kwargs, resolve_llm
+    from repowise.core.providers.llm.resolve import resolve_llm
 
     selection = resolve_llm(repo_path, provider=provider_name, model=model)
     if selection.provider is None:
@@ -1101,8 +1100,13 @@ def resolve_provider(
         # wiki instead, so the reason must not be recorded until it ends a
         # command.
         raise reasoned_error(_no_provider_message(), reason="no_provider_configured")
+    return _build_provider(selection, _provider_kwargs_or_error(selection, repo_path))
 
-    name = selection.provider
+
+def _provider_kwargs_or_error(selection: Any, repo_path: Path | None) -> dict[str, Any]:
+    """Constructor kwargs, warning when a configured provider has no key anywhere."""
+    from repowise.core.providers.llm.resolve import llm_provider_kwargs
+
     try:
         kwargs = llm_provider_kwargs(selection, repo_path)
     except ValueError as exc:
@@ -1112,10 +1116,17 @@ def resolve_provider(
     if selection.provider_source != "autodetect" and "api_key" not in kwargs:
         # A configured provider whose key is nowhere still gets built: the
         # constructor says what it needs. Agent CLIs are checked for install.
-        for warning in validate_provider_config(name):
+        for warning in validate_provider_config(selection.provider):
             warn(warning)
+    return kwargs
+
+
+def _build_provider(selection: Any, kwargs: dict[str, Any]) -> Any:
+    """Construct the provider, turning a setup failure into a config error."""
+    from repowise.core.providers import get_provider
+
     try:
-        return get_provider(name, **kwargs)
+        return get_provider(selection.provider, **kwargs)
     except click.ClickException:
         raise
     except Exception as exc:
@@ -1124,8 +1135,8 @@ def resolve_provider(
         # configuration error, not a repowise bug, but it used to surface as
         # a raw traceback that escaped every caller's handler.
         raise reasoned_error(
-            f"Could not set up the {name} provider: {exc}. Resolved {selection.describe()}. "
-            "Check those settings.",
+            f"Could not set up the {selection.provider} provider: {exc}. "
+            f"Resolved {selection.describe()}. Check those settings.",
             reason="provider_setup_failed",
         ) from exc
 

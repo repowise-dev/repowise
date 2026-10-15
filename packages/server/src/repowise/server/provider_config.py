@@ -25,6 +25,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -390,34 +391,47 @@ def set_active_provider(
     """
     if provider_id not in _CATALOG_BY_ID:
         raise UnknownProviderError(f"Unknown provider: {provider_id}")
-    model = (model or "").strip() or None
-    if base_url is not UNSET:
-        base_url = validate_base_url(base_url)
+    choice = _Choice(
+        provider_id,
+        (model or "").strip() or None,
+        base_url if base_url is UNSET else validate_base_url(base_url),
+    )
     if repo_id:
-        if repo_path is None:
-            raise ValueError(
-                f"Repository {repo_id} has no local checkout to save the provider in."
-            )
-        _migrate_repo_selection(repo_id, repo_path)
-        save_repo_llm_selection(repo_path, provider_id, model, base_url)
-        if base_url not in (UNSET, None):
-            # Chosen here by the user, so stored keys may be sent to it.
-            trust_base_url(repo_path, base_url)
-        return
+        _save_repo_choice(choice, repo_id, repo_path)
+    else:
+        update_global_config(choice.apply_global)
 
-    def change(config: dict[str, Any]) -> None:
-        config["active_provider"] = provider_id
-        if model:
-            config["active_model"] = model
-        else:
-            config.pop("active_model", None)
-        if base_url is not UNSET:
-            if base_url:
-                config["active_base_url"] = base_url
-            else:
-                config.pop("active_base_url", None)
 
-    update_global_config(change)
+@dataclass(frozen=True, slots=True)
+class _Choice:
+    """A validated provider/model/base URL; ``base_url`` may be ``UNSET`` (keep)."""
+
+    provider: str
+    model: str | None
+    base_url: Any
+
+    def apply_global(self, config: dict[str, Any]) -> None:
+        config["active_provider"] = self.provider
+        _set_or_pop(config, "active_model", self.model)
+        if self.base_url is not UNSET:
+            _set_or_pop(config, "active_base_url", self.base_url)
+
+
+def _set_or_pop(config: dict[str, Any], key: str, value: Any) -> None:
+    if value:
+        config[key] = value
+    else:
+        config.pop(key, None)
+
+
+def _save_repo_choice(choice: _Choice, repo_id: str, repo_path: str | Path | None) -> None:
+    if repo_path is None:
+        raise ValueError(f"Repository {repo_id} has no local checkout to save the provider in.")
+    _migrate_repo_selection(repo_id, repo_path)
+    save_repo_llm_selection(repo_path, choice.provider, choice.model, choice.base_url)
+    if choice.base_url not in (UNSET, None):
+        # Chosen here by the user, so stored keys may be sent to it.
+        trust_base_url(repo_path, choice.base_url)
 
 
 def set_api_key(

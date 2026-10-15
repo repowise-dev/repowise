@@ -20,14 +20,17 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from repowise.core.providers.embedding.registry import _BUILTIN_EMBEDDERS, DEFAULT_EMBEDDER
 from repowise.core.providers.llm.registry import EnvLookup
 from repowise.core.providers.llm.resolve import (
+    Step,
     cached_read,
+    first_found,
+    found,
     read_repo_config,
     read_repo_env,
     repo_getenv,
@@ -114,24 +117,18 @@ def resolve_embedder_name(
     ``detect=False`` stops before key detection and the global file (a reader
     that must not guess a backend the index was not built with).
     """
-    if flag:
-        return flag.strip().lower(), "flag"
     lookup = getenv or repo_getenv(repo_path)
-    configured = (lookup("REPOWISE_EMBEDDER") or "").strip().lower()
-    if configured:
-        return configured, "env:REPOWISE_EMBEDDER"
+    steps: list[Step] = [
+        lambda: found(flag, "flag"),
+        lambda: found(lookup("REPOWISE_EMBEDDER"), "env:REPOWISE_EMBEDDER"),
+    ]
     if use_pin and repo_path is not None:
-        pinned = str(read_repo_config(repo_path).get("embedder") or "").strip().lower()
-        if pinned:
-            return pinned, "config.yaml"
+        steps.append(lambda: found(read_repo_config(repo_path).get("embedder"), "config.yaml"))
     if detect:
-        detected = detect_embedder(lookup)
-        if detected:
-            return detected, "autodetect"
-        saved = global_config_embedder()
-        if saved:
-            return saved, "global"
-    return DEFAULT_EMBEDDER, "default"
+        steps.append(lambda: found(detect_embedder(lookup), "autodetect"))
+        steps.append(lambda: found(global_config_embedder(), "global"))
+    name, source = first_found(steps)
+    return (name.lower(), source) if name and source else (DEFAULT_EMBEDDER, "default")
 
 
 class KeyLookup(NamedTuple):
@@ -147,29 +144,45 @@ def resolve_embedder_key(name: str, repo_path: Path | str | None = None) -> KeyL
     if not env_vars:
         return KeyLookup(None, ())
 
-    searched: list[str] = [" or ".join(env_vars) + " in the environment"]
-    for var in env_vars:
-        value = (os.environ.get(var) or "").strip()
-        if value:
-            return KeyLookup(value, tuple(searched))
-
+    places: list[tuple[str, Callable[[], str | None]]] = [
+        (" or ".join(env_vars) + " in the environment", lambda: _first_var(os.environ, env_vars))
+    ]
     if repo_path is not None:
-        searched.append(str(Path(repo_path) / ".repowise" / ".env"))
-        overlay = read_repo_env(repo_path)
-        for var in env_vars:
-            value = (overlay.get(var) or "").strip()
-            if value:
-                return KeyLookup(value, tuple(searched))
+        places.append(
+            (
+                str(Path(repo_path) / ".repowise" / ".env"),
+                lambda: _first_var(read_repo_env(repo_path), env_vars),
+            )
+        )
+    places.append((f"embedder_api_key in {global_config_path()}", lambda: _global_key(name)))
 
-    searched.append(f"embedder_api_key in {global_config_path()}")
-    cfg = read_global_embedder_config()
-    # Only the key saved for this same backend: an openai key handed to
-    # gemini fails in a way that reads as a bad key, not a mismatched one.
-    if str(cfg.get("embedder") or "").strip().lower() == name:
-        key = str(cfg.get("embedder_api_key") or "").strip()
+    searched: list[str] = []
+    for place, lookup in places:
+        searched.append(place)
+        key = lookup()
         if key:
             return KeyLookup(key, tuple(searched))
     return KeyLookup(None, tuple(searched))
+
+
+def _first_var(source: Mapping[str, str], env_vars: tuple[str, ...]) -> str | None:
+    for var in env_vars:
+        value = (source.get(var) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _global_key(name: str) -> str | None:
+    """The global config's key, only when it was saved for this same backend.
+
+    An openai key handed to gemini fails in a way that reads as a bad key,
+    not a mismatched one.
+    """
+    cfg = read_global_embedder_config()
+    if str(cfg.get("embedder") or "").strip().lower() != name:
+        return None
+    return str(cfg.get("embedder_api_key") or "").strip() or None
 
 
 def _positive_int(var: str) -> int | None:
@@ -199,29 +212,42 @@ def embedding_model_for(name: str) -> str | None:
     return os.environ.get("REPOWISE_EMBEDDING_MODEL")
 
 
+def _ollama_kwargs() -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    base_url = os.environ.get("OLLAMA_BASE_URL")
+    if base_url:
+        kwargs["base_url"] = base_url
+    dims = _positive_int("OLLAMA_EMBEDDING_DIMS") or _positive_int("REPOWISE_EMBEDDING_DIMS")
+    if dims:
+        kwargs["dimensions"] = dims
+    return kwargs
+
+
+def _gemini_kwargs() -> dict[str, Any]:
+    # Gemini spells the width ``output_dimensionality``; openai and ollama
+    # read REPOWISE_EMBEDDING_DIMS in their own constructors.
+    dims = _positive_int("REPOWISE_EMBEDDING_DIMS")
+    return {"output_dimensionality": dims} if dims else {}
+
+
+#: Constructor arguments only some embedders take.
+_EXTRA_KWARGS: dict[str, Callable[[], dict[str, Any]]] = {
+    "ollama": _ollama_kwargs,
+    "gemini": _gemini_kwargs,
+}
+
+
 def embedder_kwargs(name: str, repo_path: Path | str | None = None) -> dict[str, Any]:
     """Constructor kwargs for *name*: model, width, endpoint, key.
 
     Only what is configured is passed; everything else falls through to the
     embedder's own defaults, which are declared once in its constructor.
     """
-    kwargs: dict[str, Any] = {}
     model = embedding_model_for(name)
-    if model:
-        kwargs["model"] = model
-    if name == "ollama":
-        base_url = os.environ.get("OLLAMA_BASE_URL")
-        if base_url:
-            kwargs["base_url"] = base_url
-        dims = _positive_int("OLLAMA_EMBEDDING_DIMS") or _positive_int("REPOWISE_EMBEDDING_DIMS")
-        if dims:
-            kwargs["dimensions"] = dims
-    elif name == "gemini":
-        # Gemini spells the width ``output_dimensionality``; openai and ollama
-        # read REPOWISE_EMBEDDING_DIMS in their own constructors.
-        dims = _positive_int("REPOWISE_EMBEDDING_DIMS")
-        if dims:
-            kwargs["output_dimensionality"] = dims
+    kwargs: dict[str, Any] = {"model": model} if model else {}
+    extra = _EXTRA_KWARGS.get(name)
+    if extra is not None:
+        kwargs.update(extra())
     # Passed explicitly so a key in the repo's .env or the global config
     # reaches the embedder, not only an exported one.
     key = resolve_embedder_key(name, repo_path).key

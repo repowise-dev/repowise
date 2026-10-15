@@ -30,7 +30,7 @@ import json
 import logging
 import os
 import threading
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -274,14 +274,96 @@ class LLMSelection:
         return text
 
 
+#: ``(value, source)`` from one precedence step, or ``None`` when it has nothing.
+Found = tuple[str, str] | None
+Step = Callable[[], Found]
+
+
+def first_found(steps: Iterable[Step]) -> tuple[str | None, str | None]:
+    """The first step's ``(value, source)``, walking *steps* in precedence order."""
+    for step in steps:
+        found = step()
+        if found:
+            return found
+    return None, None
+
+
+def found(value: Any, source: str) -> Found:
+    """``(value, source)`` for a non-blank *value*, else ``None``."""
+    text = _clean(value)
+    return (text, source) if text else None
+
+
 @dataclass(frozen=True, slots=True)
 class _Layer:
+    """One configured layer: what it names, and the label each field reports."""
+
     source: str
     provider: str | None
     model: str | None
     base_url: str | None = None
     provider_source: str | None = None
     model_source: str | None = None
+
+    def names(self, chosen: str) -> bool:
+        """Whether this layer's model and URL belong to *chosen*."""
+        return self.provider is None or self.provider == chosen
+
+
+@dataclass(frozen=True, slots=True)
+class _Context:
+    """Everything one resolution reads, gathered once."""
+
+    override: _Layer
+    repo: _Layer
+    glob: _Layer
+    env: _Layer
+    repo_config: Mapping[str, Any]
+    global_config: Mapping[str, Any]
+    getenv: EnvLookup
+    known: Collection[str] | None
+
+    @property
+    def layers(self) -> tuple[_Layer, ...]:
+        return (self.override, self.repo, self.glob, self.env)
+
+    def counts(self, name: str | None) -> bool:
+        return bool(name) and (self.known is None or name in self.known)
+
+
+def _context(
+    repo_path: Path | str | None,
+    override: _Layer,
+    known: Collection[str] | None,
+    repo_layer: Mapping[str, Any] | None,
+) -> _Context:
+    getenv = repo_getenv(repo_path)
+    if repo_layer is not None and repo_path is None:
+        cfg, repo_source = repo_layer, GLOBAL_CONFIG_FILENAME
+    else:
+        cfg, repo_source = read_repo_config(repo_path), "config.yaml"
+    glob = read_global_config()
+    return _Context(
+        override=override,
+        repo=_Layer(repo_source, _clean(cfg.get("provider")), _clean(cfg.get("model"))),
+        glob=_Layer(
+            "global",
+            _clean(glob.get("active_provider")),
+            _clean(glob.get("active_model")),
+            _clean(glob.get("active_base_url")),
+        ),
+        env=_Layer(
+            "env",
+            getenv("REPOWISE_PROVIDER"),
+            getenv("REPOWISE_MODEL"),
+            provider_source="env:REPOWISE_PROVIDER",
+            model_source="env:REPOWISE_MODEL",
+        ),
+        repo_config=cfg,
+        global_config=glob,
+        getenv=getenv,
+        known=known,
+    )
 
 
 def resolve_llm(
@@ -306,62 +388,13 @@ def resolve_llm(
     in for ``config.yaml`` for a repo with no checkout to hold one (the
     server's stored choice for it), labelled ``provider_config.json``.
     """
-    getenv = repo_getenv(repo_path)
-    if repo_layer is not None and repo_path is None:
-        cfg, repo_source = repo_layer, GLOBAL_CONFIG_FILENAME
-    else:
-        cfg, repo_source = read_repo_config(repo_path), "config.yaml"
-    glob = read_global_config()
-
-    layers = (
-        _Layer(override_source, _clean(provider), _clean(model), _clean(base_url)),
-        _Layer(repo_source, _clean(cfg.get("provider")), _clean(cfg.get("model"))),
-        _Layer(
-            "global",
-            _clean(glob.get("active_provider")),
-            _clean(glob.get("active_model")),
-            _clean(glob.get("active_base_url")),
-        ),
-        _Layer(
-            "env",
-            getenv("REPOWISE_PROVIDER"),
-            getenv("REPOWISE_MODEL"),
-            provider_source="env:REPOWISE_PROVIDER",
-            model_source="env:REPOWISE_MODEL",
-        ),
-    )
-
-    def counts(name: str | None) -> bool:
-        return bool(name) and (known is None or name in known)
-
-    chosen: str | None = None
-    chosen_source: str | None = None
-    for layer in layers:
-        if counts(layer.provider):
-            chosen = layer.provider
-            chosen_source = layer.provider_source or layer.source
-            break
-    if chosen is None and autodetect:
-        chosen = _autodetect(getenv, glob, known)
-        chosen_source = "autodetect" if chosen else None
+    override = _Layer(override_source, _clean(provider), _clean(model), _clean(base_url))
+    ctx = _context(repo_path, override, known, repo_layer)
+    chosen, chosen_source = first_found(_provider_steps(ctx, autodetect))
     if chosen is None:
         return LLMSelection()
-
-    def applies(layer: _Layer) -> bool:
-        return layer.provider is None or layer.provider == chosen
-
-    resolved_model, model_source = None, None
-    for layer in layers:
-        if layer.model and applies(layer):
-            resolved_model, model_source = layer.model, layer.model_source or layer.source
-            break
-    if resolved_model is None:
-        spec = PROVIDER_SPECS.get(chosen)
-        if spec is not None:
-            resolved_model, model_source = spec.default_model, "default"
-
-    resolved_url, url_source = _resolve_base_url(chosen, layers, cfg, getenv)
-
+    resolved_model, model_source = first_found(_model_steps(ctx, chosen))
+    resolved_url, url_source = first_found(_base_url_steps(ctx, chosen))
     return LLMSelection(
         provider=chosen,
         model=resolved_model,
@@ -372,35 +405,58 @@ def resolve_llm(
     )
 
 
-def _resolve_base_url(
-    chosen: str,
-    layers: tuple[_Layer, ...],
-    cfg: Mapping[str, Any],
-    getenv: EnvLookup,
-) -> tuple[str | None, str | None]:
-    override, repo, glob = layers[0], layers[1], layers[2]
-    if override.base_url and override.provider in (None, chosen):
-        return override.base_url, override.source
-    section = cfg.get(chosen)
-    if isinstance(section, Mapping) and _clean(section.get("base_url")):
-        return _clean(section.get("base_url")), repo.source
-    if glob.base_url and glob.provider == chosen:
-        return glob.base_url, "global"
-    for var in PROVIDER_BASE_URL_ENVS.get(chosen, ()):
-        value = getenv(var)
-        if value:
-            return value, f"env:{var}"
-    return None, None
+def _provider_steps(ctx: _Context, autodetect: bool) -> list[Step]:
+    steps: list[Step] = [
+        lambda layer=layer: (
+            found(layer.provider, layer.provider_source or layer.source)
+            if ctx.counts(layer.provider)
+            else None
+        )
+        for layer in ctx.layers
+    ]
+    if autodetect:
+        steps.append(lambda: found(_autodetect(ctx), "autodetect"))
+    return steps
 
 
-def _autodetect(
-    getenv: EnvLookup, glob: Mapping[str, Any], known: Collection[str] | None
-) -> str | None:
-    stored = glob.get("keys") if isinstance(glob.get("keys"), Mapping) else {}
+def _model_steps(ctx: _Context, chosen: str) -> list[Step]:
+    steps: list[Step] = [
+        lambda layer=layer: (
+            found(layer.model, layer.model_source or layer.source) if layer.names(chosen) else None
+        )
+        for layer in ctx.layers
+    ]
+    spec = PROVIDER_SPECS.get(chosen)
+    steps.append(lambda: found(spec.default_model, "default") if spec else None)
+    return steps
+
+
+def _base_url_steps(ctx: _Context, chosen: str) -> list[Step]:
+    section = ctx.repo_config.get(chosen)
+    repo_url = section.get("base_url") if isinstance(section, Mapping) else None
+    steps: list[Step] = [
+        lambda: (
+            found(ctx.override.base_url, ctx.override.source)
+            if ctx.override.names(chosen)
+            else None
+        ),
+        lambda: found(repo_url, ctx.repo.source),
+        lambda: found(ctx.glob.base_url, "global") if ctx.glob.provider == chosen else None,
+    ]
+    steps.extend(
+        lambda var=var: found(ctx.getenv(var), f"env:{var}")
+        for var in PROVIDER_BASE_URL_ENVS.get(chosen, ())
+    )
+    return steps
+
+
+def _autodetect(ctx: _Context) -> str | None:
+    keys = ctx.global_config.get("keys")
+    stored = keys if isinstance(keys, Mapping) else {}
     for name in PROVIDER_AUTODETECT_ORDER:
-        if known is not None and name not in known:
+        if not ctx.counts(name):
             continue
-        if provider_credentials_present(name, getenv) or _clean(stored.get(name)):
+        if provider_credentials_present(name, ctx.getenv) or _clean(stored.get(name)):
             return name
     return None
 
@@ -592,7 +648,9 @@ __all__ = [
     "base_url_trusted",
     "cached_read",
     "clear_cache",
+    "first_found",
     "forget_cached",
+    "found",
     "global_config_path",
     "llm_provider_kwargs",
     "provider_ready",
