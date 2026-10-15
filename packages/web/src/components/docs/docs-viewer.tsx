@@ -161,6 +161,9 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
   );
 }
 
+/** Page types whose `target_path` is a file or a `file::symbol` id. */
+const SIGNAL_PAGE_TYPES = new Set(["file_page", "symbol_spotlight", "api_contract", "infra_page"]);
+
 /**
  * Consolidated "At a glance" signals for a file page — hotspot, ownership,
  * churn, bus factor — pulled from the git-metadata endpoint so the reader
@@ -351,10 +354,11 @@ export function DocsViewer({
   );
 
   const targetPath = page?.target_path ?? "";
-  // Decided by page type, not path shape: a module page's target is a
-  // directory, which every row below would answer with nothing, and the
-  // reader already gives module pages their own history card.
-  const showSignals = !!targetPath && page?.page_type !== "module_page";
+  // Decided by page type, not path shape: only these target a file or a
+  // symbol. Any other target (the repo overview's repo name, a module's
+  // directory, a cycle id) is no file, so every row below asked the API for
+  // it and got a 404; module pages already have their own history card.
+  const showSignals = !!targetPath && SIGNAL_PAGE_TYPES.has(page?.page_type ?? "");
   // Security findings only make sense for real source files.
   const isFilePath =
     showSignals &&

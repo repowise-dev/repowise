@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import useSWR from "swr";
 import { useSearchParams, useRouter } from "next/navigation";
 import { BookOpen, PanelLeftClose, PanelLeft, Search } from "lucide-react";
@@ -64,18 +64,18 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     // and retrying a 404 just delays the empty state.
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
-  const [treePanelOpen, setTreePanelOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.matchMedia("(min-width: 768px)").matches;
-  });
-  // The rail defaults to whether the layout can afford it, not to `true`.
-  // Mirrors the 2xl breakpoint the reader uses to place its sections; a manual
-  // toggle wins from then on, same contract as the app sidebar's route-based
-  // collapse.
-  const [sidebarOpen, setSidebarOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.matchMedia("(min-width: 1536px)").matches;
-  });
+  // Both panels default to whether the layout can afford them, not to `true`:
+  // the tree from md, the rail from the 2xl breakpoint the reader uses to place
+  // its sections. A manual toggle wins from then on, same contract as the app
+  // sidebar's route-based collapse. Read after hydration, before paint: the
+  // server cannot see the viewport, and a first render that differed from its
+  // HTML failed hydration on every phone.
+  const [treePanelOpen, setTreePanelOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  useLayoutEffect(() => {
+    setTreePanelOpen(window.matchMedia("(min-width: 768px)").matches);
+    setSidebarOpen(window.matchMedia("(min-width: 1536px)").matches);
+  }, []);
   const [searchOpen, setSearchOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const searchParams = useSearchParams();
