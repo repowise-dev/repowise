@@ -137,6 +137,23 @@ def test_person_trailers_never_reach_the_text(tmp_path):
     assert "Ann" not in got[head][0] and "Bob" not in got[head][0]
 
 
+def test_git_never_inherits_stdin_and_cannot_hang(monkeypatch, tmp_path):
+    # Under the stdio MCP server on Windows an inherited stdin pipe blocks git.
+    import subprocess
+
+    from repowise.core.suspects import git_text
+
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(git_text.subprocess, "run", fake_run)
+    assert git_text._git(tmp_path, "ls-files") is None
+    assert seen["stdin"] is subprocess.DEVNULL and seen["timeout"] > 0
+
+
 def test_text_evidence_skips_filler_and_the_repo_name_but_is_never_empty():
     cands = [
         Candidate("a", "repowise shows the invoice total", NOW, ("billing/invoice.py",)),

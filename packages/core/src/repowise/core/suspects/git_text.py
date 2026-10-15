@@ -36,14 +36,22 @@ def strip_person_trailers(body: str) -> str:
     return _PERSON_TRAILER_RE.sub("", body).strip()
 
 
+_GIT_TIMEOUT_S = 60
+
+
 def _git(repo: Path, *args: str) -> str | None:
-    """Stdout, or ``None`` when git fails (one unknown sha fails the whole call)."""
+    """Stdout, or ``None`` when git fails (one unknown sha fails the whole call).
+
+    stdin=DEVNULL is load-bearing: under the stdio MCP server on Windows, a
+    child that inherits the JSON-RPC stdin pipe blocks until the next request.
+    """
     try:
         return subprocess.run(
             ["git", "-C", str(repo), *args],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+            stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT_S,
         ).stdout
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.SubprocessError):
         return None
 
 
