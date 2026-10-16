@@ -15,6 +15,7 @@ from repowise.core.generation.structural_labels import is_structural_title
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
+    GraphNode,
     Page,
 )
 from repowise.core.persistence.search import strip_leading_headings
@@ -276,7 +277,7 @@ def _is_test_query(query: str) -> bool:
     return bool(_TEST_QUERY_RE.search(query))
 
 
-def _is_test_page(item: dict) -> bool:
+def _is_test_page(item: dict, test_map: dict[str, bool] | None = None) -> bool:
     """True when a hit is a whole-file row for a test file.
 
     Tests only, deliberately not test support: a ``conftest.py`` or a fixture
@@ -284,15 +285,22 @@ def _is_test_page(item: dict) -> bool:
     rank. The ``kind`` filter counts both (see :func:`_classify_hit_kind`) —
     asking for tests and asking to rank tests lower are different questions.
     """
-    return item.get("page_type") in FILE_ROW_TYPES and is_test_path(item.get("target_path") or "")
+    if item.get("page_type") not in FILE_ROW_TYPES:
+        return False
+    target = item.get("target_path") or ""
+    if test_map is not None and target in test_map:
+        return test_map[target]
+    return is_test_path(target)
 
 
-def _downweight_test_pages(output: list[dict], query: str) -> None:
+def _downweight_test_pages(
+    output: list[dict], query: str, test_map: dict[str, bool] | None = None
+) -> None:
     """Scale test file_page relevance in place unless the query is about tests."""
     if _is_test_query(query):
         return
     for item in output:
-        if item.get("relevance_score") and _is_test_page(item):
+        if item.get("relevance_score") and _is_test_page(item, test_map):
             item["relevance_score"] = round(item["relevance_score"] * _TEST_DOWNWEIGHT, 4)
 
 
@@ -469,7 +477,9 @@ _CONFIG_PATH_TOKENS = (
 )
 
 
-def _classify_hit_kind(target_path: str, page_type: str) -> str:
+def _classify_hit_kind(
+    target_path: str, page_type: str, test_map: dict[str, bool] | None = None
+) -> str:
     """Bucket a hit into implementation / test / config / doc.
 
     Pages without a file behind them (decision records, repo overviews,
@@ -495,7 +505,11 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
         return "config"
     # Original case, not ``tp``: the camel (FooTest.java) and .NET project-dir
     # (Foo.Tests/) rules are deliberately case-sensitive.
-    if is_test_related_path(target_path):
+    if test_map is not None and target_path in test_map:
+        is_test = test_map[target_path]
+    else:
+        is_test = is_test_related_path(target_path)
+    if is_test:
         return "test"
     return "implementation"
 
@@ -505,7 +519,9 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
 _VALID_KINDS = frozenset({"implementation", "test", "config", "doc"})
 
 
-def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
+def _filter_by_kind(
+    output: list[dict], kind: str | None, test_map: dict[str, bool] | None = None
+) -> list[dict]:
     """Keep only hits classified as ``kind`` (no-op when ``kind`` is falsy).
 
     Runs on the over-fetched list BEFORE the limit cut so the caller still
@@ -516,7 +532,10 @@ def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
     return [
         item
         for item in output
-        if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) == kind
+        if _classify_hit_kind(
+            item.get("target_path", ""), item.get("page_type", ""), test_map
+        )
+        == kind
     ]
 
 
@@ -642,13 +661,18 @@ def _drop_internal_ranking_fields(results: list[dict]) -> None:
 
 
 async def _load_page_info(
-    session, output: list[dict], *, with_git: bool = False
-) -> tuple[dict, set, dict]:
-    """Batch-load target paths, tombstones, and git.
+    session,
+    output: list[dict],
+    *,
+    repository_id: str | None = None,
+    with_git: bool = False,
+) -> tuple[dict, set, dict, dict[str, bool]]:
+    """Batch-load target paths, tombstones, git, and stored is_test flags.
 
-    Returns ``(page_info, tombstoned, git_map)`` where ``page_info`` maps
+    Returns ``(page_info, tombstoned, git_map, test_map)`` where ``page_info`` maps
     page_id -> target_path, ``tombstoned`` is the set of tombstoned page_ids,
-    and ``git_map`` maps file_path -> GitMetadata (empty unless ``with_git``).
+    ``git_map`` maps file_path -> GitMetadata (empty unless ``with_git``), and
+    ``test_map`` maps file_path -> is_test.
     """
     page_ids = [item["page_id"] for item in output]
     res = await session.execute(
@@ -658,15 +682,25 @@ async def _load_page_info(
     page_info = {row[0]: row[1] for row in rows}
     tombstoned = {row[0] for row in rows if row[2] == "tombstone"}
 
+    test_map: dict[str, bool] = {}
+    target_paths = [tp for tp in page_info.values() if tp]
+    if target_paths:
+        gn_query = select(GraphNode.node_id, GraphNode.is_test).where(
+            GraphNode.node_id.in_(target_paths),
+            GraphNode.node_type == "file",
+        )
+        if repository_id is not None:
+            gn_query = gn_query.where(GraphNode.repository_id == repository_id)
+        gn_res = await session.execute(gn_query)
+        test_map = {nid: bool(is_t) for nid, is_t in gn_res.all()}
+
     git_map: dict[str, GitMetadata] = {}
-    if with_git:
-        target_paths = [tp for tp in page_info.values() if tp]
-        if target_paths:
-            git_res = await session.execute(
-                select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
-            )
-            git_map = {g.file_path: g for g in git_res.scalars().all()}
-    return page_info, tombstoned, git_map
+    if with_git and target_paths:
+        git_res = await session.execute(
+            select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
+        )
+        git_map = {g.file_path: g for g in git_res.scalars().all()}
+    return page_info, tombstoned, git_map, test_map
 
 
 def _apply_freshness_boost(item: dict, gm: GitMetadata | None) -> None:
@@ -880,10 +914,14 @@ async def _search_single_repo(
     # over-fetched list so the kind filter below has real headroom. Load
     # precedes the sort/demotion so they see the page metadata they key on
     # (test demotion needs target_path to classify a test file page).
+    test_map: dict[str, bool] = {}
     if output:
         async with get_session(ctx.session_factory) as session:
-            page_info, tombstoned, _ = await _load_page_info(session, output)
-            path_index = await file_path_index(session, (await _get_repo(session)).id)
+            repo_id = (await _get_repo(session)).id
+            page_info, tombstoned, _, test_map = await _load_page_info(
+                session, output, repository_id=repo_id
+            )
+            path_index = await file_path_index(session, repo_id)
         output = [item for item in output if item["page_id"] not in tombstoned]
         _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
@@ -891,11 +929,11 @@ async def _search_single_repo(
             output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
         )
 
-    _downweight_test_pages(output, query)
+    _downweight_test_pages(output, query, test_map)
     _sort_demoting_noise(output, query)
     output = _dedup_decisions(output)
 
-    output = _filter_by_kind(output, kind)
+    output = _filter_by_kind(output, kind, test_map)
     return _collapse_by_file(output)[:limit]
 
 
@@ -1384,10 +1422,13 @@ async def search_codebase(
     _downweight_decisions(output, query)
     output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
 
+    test_map: dict[str, bool] = {}
     # Batch-lookup page target paths for the kind filter + git freshness boost
     if output:
         async with get_session(ctx.session_factory) as session:
-            page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
+            page_info, tombstoned, git_map, test_map = await _load_page_info(
+                session, output, repository_id=repository.id, with_git=True
+            )
             path_index = await file_path_index(session, repository.id)
         # Tombstoned pages document deleted/renamed files — never results.
         output = [item for item in output if item["page_id"] not in tombstoned]
@@ -1414,11 +1455,11 @@ async def search_codebase(
         boost_named_paths(
             output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
         )
-        _downweight_test_pages(output, query)
+        _downweight_test_pages(output, query, test_map)
         _sort_demoting_noise(output, query)
         output = _dedup_decisions(output)
 
-    output = _filter_by_kind(output, kind)
+    output = _filter_by_kind(output, kind, test_map)
     # A file page and a symbol page of one file are one place to look.
     output = _collapse_by_file(output)
     # Files the page retrievers structurally cannot see (a private helper, a

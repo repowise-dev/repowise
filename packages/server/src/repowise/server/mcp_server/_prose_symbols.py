@@ -237,6 +237,7 @@ def _score(
     row: WikiSymbol,
     gnode: GraphNode | None,
     covered: dict[str, float],
+    test_node: GraphNode | None = None,
 ) -> float:
     """Rank one candidate by how much of the question its name accounts for.
 
@@ -253,7 +254,13 @@ def _score(
         score += min(gnode.betweenness or 0.0, 0.1) * 20.0
         if gnode.is_entry_point:
             score += 3.0
-    if (gnode is not None and gnode.is_test) or is_test_path(row.file_path or "", row.language):
+    effective_node = test_node if test_node is not None else gnode
+    is_test = (
+        effective_node.is_test
+        if effective_node is not None
+        else is_test_path(row.file_path or "", row.language)
+    )
+    if is_test:
         score -= 5.0
     return score
 
@@ -334,10 +341,12 @@ async def search_symbols_by_terms(
         )
         by_id = {row.symbol_id: row for row in res.scalars().all()}
 
+        # One batched fetch of graph nodes: the symbols and their files.
+        node_ids = set(by_id) | {r.file_path for r in by_id.values() if r.file_path}
         gres = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repository.id,
-                GraphNode.node_id.in_(list(by_id)),
+                GraphNode.node_id.in_(list(node_ids)),
             )
         )
         gmap = {g.node_id: g for g in gres.scalars().all()}
@@ -351,8 +360,12 @@ async def search_symbols_by_terms(
         if is_excluded(row.file_path, spec) or row.file_path in tombstoned:
             continue
         gnode = gmap.get(symbol_id)
-        is_test = (gnode is not None and gnode.is_test) or is_test_related_path(
-            row.file_path or "", row.language
+        file_node = gmap.get(row.file_path)
+        node_with_test = file_node if file_node is not None else gnode
+        is_test = (
+            node_with_test.is_test
+            if node_with_test is not None
+            else is_test_related_path(row.file_path or "", row.language)
         )
         if not _symbol_kind_for_request_kind(kind, is_test):
             continue
@@ -373,7 +386,7 @@ async def search_symbols_by_terms(
             covered.update({t: 1.0 for t in terms if _stem(t) in words})
         if not _corroborated(row, covered, saturated):
             continue
-        scored.append((_score(row, gnode, covered), row))
+        scored.append((_score(row, gnode, covered, test_node=node_with_test), row))
 
     scored.sort(key=lambda pair: (-pair[0], pair[1].symbol_id or ""))
     return [_symbol_result(row, score) for score, row in scored[:limit]]

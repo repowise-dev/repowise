@@ -2421,3 +2421,61 @@ class TestServedSnippet:
             "lib/layer.rb": "Cache layer with no heading. ## not a heading here",
             "docs/only.md": "# docs/only.md\n\n## Overview\n",
         }
+
+
+@pytest.mark.asyncio
+async def test_search_codebase_kind_filter_respects_stored_is_test(setup_mcp, monkeypatch):
+    """When a file has a test-like name (e.g. src/test_runner.py) but is_test=False in GraphNode,
+
+    search_codebase(kind='implementation') treats it as implementation, not test.
+    """
+    from sqlalchemy import select
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import GraphNode, Repository
+    from repowise.core.persistence.search import SearchResult
+    from repowise.server.mcp_server import search_codebase
+
+    path = "src/test_runner.py"
+    page_id = f"file_page:{path}"
+    await _seed_page(page_id, path)
+
+    # Insert GraphNode with is_test = False
+    async with get_session(mcp_mod._session_factory) as session:
+        repo = (await session.execute(select(Repository))).scalars().first()
+        session.add(
+            GraphNode(
+                node_id=path,
+                repository_id=repo.id,
+                node_type="file",
+                name="test_runner.py",
+                is_test=False,
+            )
+        )
+        await session.commit()
+
+    hit = SearchResult(
+        page_id=page_id,
+        title="Test Runner Service",
+        page_type="file_page",
+        target_path=path,
+        score=0.9,
+        snippet="Main production test orchestration service",
+        search_type="vector",
+    )
+
+    async def fake_search(query, limit=10):
+        return [hit]
+
+    monkeypatch.setattr(mcp_mod._vector_store, "search", fake_search)
+    monkeypatch.setattr(mcp_mod._fts, "search", fake_search)
+
+    # Search with kind="implementation" should include it because stored is_test is False
+    res_impl = await search_codebase("test orchestration", kind="implementation")
+    assert any(r["path"] == path for r in res_impl["results"])
+
+    # Search with kind="test" should NOT include it because stored is_test is False
+    res_test = await search_codebase("test orchestration", kind="test")
+    assert not any(r["path"] == path for r in res_test["results"])
+
