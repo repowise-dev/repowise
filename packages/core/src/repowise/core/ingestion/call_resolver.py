@@ -1350,7 +1350,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 line=line,
                 argument_count=int(count_s),
             )
-            type_id = self._site_returned_type_id(file_path, probe, awaited=False)
+            probe = self._typed_arguments(file_path, probe)
+            resolved = self._resolve_one(file_path, probe)
+            if resolved is None or "global" in resolved.origin:
+                return None
+            narrowed = self._narrow_overload(self._redirect_to_definition(resolved), probe)
+            callee_id = narrowed.callee_id if narrowed else resolved.callee_id
+            type_id = self._returned_type_id(callee_id, awaited=False, argument_count=probe.argument_count)
             if type_id is None:
                 return None
             return erased_type(type_id.rsplit("::", 1)[-1])

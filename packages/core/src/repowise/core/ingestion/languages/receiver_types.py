@@ -1094,7 +1094,7 @@ _DART_CALL_ASSIGNMENT = re.compile(
 )
 
 _JAVA_CALL_ASSIGNMENT = re.compile(
-    rf"(?<![\w.])(?:final\s+)?var\s+(?P<name>[a-z_]\w*)\s*=\s*{_CALL_HEAD}"
+    rf"(?<![\w.])(?:final\s+)?var\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*{_CALL_HEAD}"
 )
 
 _CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {
