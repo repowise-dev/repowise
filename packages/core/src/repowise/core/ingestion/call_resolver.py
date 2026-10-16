@@ -1359,7 +1359,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             type_id = self._returned_type_id(callee_id, awaited=False, argument_count=probe.argument_count)
             if type_id is None:
                 return None
-            return erased_type(type_id.rsplit("::", 1)[-1])
+            return erased_type(bare_type_name(type_id))
         if name.startswith("this."):
             field_name = name[5:]
             language = self._language_of(file_path) or ""
@@ -1368,7 +1368,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 return None
             type_name = found[0]
             if "::" in type_name:
-                return erased_type(type_name.rsplit("::", 1)[-1])
+                return erased_type(bare_type_name(type_name))
             return erased_type(external_type_name(type_name) or type_name)
         return self._argument_type(file_path, caller_id, name)
 
@@ -1393,7 +1393,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if type_name is None:
             return None
         if "::" in type_name:
-            return erased_type(type_name.rsplit("::", 1)[-1])
+            return erased_type(bare_type_name(type_name))
         return erased_type(external_type_name(type_name) or type_name)
 
     def _overload_sibling_call(self, call: CallSite) -> ResolvedCall | None:
