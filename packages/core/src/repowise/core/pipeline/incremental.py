@@ -161,7 +161,7 @@ def _add_synthetic_edges(
     except Exception as exc:
         logger.warning("dynamic_hints_extraction_failed", error=str(exc))
         log(
-            f"[yellow]Dynamic hint extraction failed: {exc}. Dynamic edges"
+            f"[yellow]Dynamic hint extraction failed: {exc}. Dynamic edges "
             "will be missing from this update.[/yellow]"
         )
 
