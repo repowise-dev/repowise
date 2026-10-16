@@ -1,19 +1,9 @@
 """Onboarding subkind: Glossary.
 
-The words this repository uses for itself, defined in its own sentences. Every
-row is read from the repository's own documents: the term, the sentence nearest
-it, and the path that sentence came from. Nothing here is written for the page.
-
-That is the whole design. A glossary is the page where an invented definition
-does the most damage — it is the one a reader consults *because* they do not
-know the answer, so they have nothing to check it against. So this page has no
-model in its path at all: the spec is registered ``deterministic``, and two
-renders of an unchanged repository are byte-identical.
-
-The cost is honesty about coverage. A term the repository names without ever
-defining renders with an em dash rather than a plausible sentence, and a
-repository whose documents define nothing gets no page. Both are the correct
-answers to a question this page cannot answer from the code.
+The keyed path synthesizes concise definitions from bounded authoritative
+documents selected through the shared evidence channel. The keyless and
+provider-failure path remains deterministic: it quotes adequate repository
+definitions and leaves unsupported rows blank.
 
 Gate: at least five terms survive corroboration. Below that the page is a
 handful of rows pretending to be a vocabulary.
@@ -159,13 +149,46 @@ def _build(signals: OnboardingSignals) -> GlossaryContext | None:
     )
 
 
+def _evidence_references(ctx: object) -> tuple[str, ...]:
+    """Authoritative documents that may support glossary synthesis, in row order."""
+    if not isinstance(ctx, GlossaryContext):
+        return ()
+    paths: list[str] = []
+    for entry in ctx.entries:
+        path = entry.definition_evidence_source or entry.source_path
+        if path and path not in paths:
+            paths.append(path)
+    return tuple(paths)
+
+
+def _valid_generated_content(ctx: object, content: str) -> bool:
+    """Require the model-written table to retain every deterministic term row."""
+    if not isinstance(ctx, GlossaryContext):
+        return False
+    if content.count("## Coverage") != 1:
+        return False
+
+    rendered_terms: set[str] = set()
+    for line in content.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        term = cells[0].strip("`*_ ").casefold()
+        if term and term not in {"term", "---"}:
+            rendered_terms.add(term)
+    return rendered_terms == {entry.term.casefold() for entry in ctx.entries}
+
+
 register(
     SubkindSpec(
         slot=SLOT_GLOSSARY,
         title=SLOT_TITLES[SLOT_GLOSSARY],
         template="glossary.j2",
         build_context=_build,
-        deterministic=True,
+        evidence_references=_evidence_references,
+        validate_generated_content=_valid_generated_content,
         needs_module_corroboration=True,
     )
 )

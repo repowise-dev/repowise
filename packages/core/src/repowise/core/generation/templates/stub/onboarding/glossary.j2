@@ -1,17 +1,13 @@
-{#- The glossary. Deterministic on every run, not only under --no-prose.
+{#- The deterministic glossary fallback used under --no-prose or provider failure.
 
     Every cell is mined: the term, the repository's own sentence about it, the
     parts of the system that name it, and the document the sentence came from.
-    There is nothing here for a model to add that would not be an invention,
-    and this is the page where an invented definition does the most damage —
-    the reader consults it precisely because they cannot check the answer.
-
-    The spec sets ``deterministic=True``, so the prompt template that every
-    other subkind has does not exist for this one; this file is the page.
+    This path intentionally performs no synthesis: adequate repository-written
+    definitions are quoted and unsupported definitions remain blank.
 -#}
 # Glossary
 
-{{ ctx.entries | length }} term{{ "s" if ctx.entries | length != 1 else "" }} `{{ ctx.repo_name }}` uses for itself, read from its own documentation. Each definition is the repository's own sentence, quoted rather than written — a term the repository names without defining is left blank rather than filled in.
+{{ ctx.entries | length }} term{{ "s" if ctx.entries | length != 1 else "" }} the repository uses for itself, read from its own documentation. Each definition is the repository's own sentence, quoted rather than written — a term the repository names without defining is left blank rather than filled in.
 
 | Term | What the repository says it is | Where it is used | Written in |
 |---|---|---|---|
@@ -46,6 +42,6 @@ The {{ ctx.entries | length }} most corroborated are listed; {{ ctx.corroborated
 {{ "\n" }}
 ---
 
-*Every term, definition and path on this page is quoted from the repository's
-own documents. Nothing here is written by a model, so two builds of an
+*This fallback quotes repository-written definitions and leaves unsupported
+definitions blank. Nothing here is written by a model, so two builds of an
 unchanged repository produce this page byte for byte.*

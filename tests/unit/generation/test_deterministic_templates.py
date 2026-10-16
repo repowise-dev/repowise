@@ -92,7 +92,7 @@ def test_active_landscape_renders(generator):
             HotFile(
                 path="src/core.py",
                 commit_count_90d=30,
-                primary_owner="Ada",
+                historical_contributor_count=4,
                 is_hotspot=True,
                 age_days=400,
             )
@@ -107,9 +107,11 @@ def test_active_landscape_renders(generator):
         "onboarding/active_landscape",
     )
 
-    assert "120 commits touched 45 files" in page.content
+    assert "120 file-level commit touches accumulated across 45 files" in page.content
     assert "`src/core.py`" in page.content
-    assert "Ada" in page.content
+    assert "| 4 |" in page.content
+    assert "| Owner |" not in page.content
+    assert "Ada" not in page.content
     assert "old_fn" in page.content
 
 
