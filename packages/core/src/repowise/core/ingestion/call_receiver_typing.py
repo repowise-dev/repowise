@@ -262,6 +262,8 @@ class ReceiverTypingMixin:
         Kotlin has no global one: see ``_kotlin_extension_scope``.
         """
         type_name, method_name = key
+        if self._reaches_a_member(type_name, method_name):
+            return None
         own = self._file_extension_methods.get(file_path, {})
         if key in own:
             return own[key], "same_file"
@@ -280,8 +282,6 @@ class ReceiverTypingMixin:
         if site is None:
             return None
         if not self._writes_one_type(file_path, site[0], type_name):
-            return None
-        if self._reaches_a_member(type_name, method_name):
             return None
         if lang == "kotlin":
             return self._kotlin_extension_scope(file_path, site, method_name)
