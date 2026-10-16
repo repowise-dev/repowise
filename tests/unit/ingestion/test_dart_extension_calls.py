@@ -224,3 +224,51 @@ class App {
         if rc.caller_id == "app.dart::App::run"
     ]
     assert edges == []
+
+
+def test_dart_single_visible_extension_resolves_when_unrelated_extension_exists(
+    tmp_path: Path,
+) -> None:
+    repo_src = """\
+class Repo {}
+extension RepoX on Repo {
+  void flush() {}
+}
+"""
+    other_src = """\
+import 'repo.dart';
+extension RepoUnrelated on Repo {
+  void flush() {}
+}
+"""
+    app_src = """\
+import 'repo.dart';
+class App {
+  void run(Repo r) {
+    r.flush();
+  }
+}
+"""
+    p_repo = _parse(tmp_path, "repo.dart", repo_src)
+    p_other = _parse(tmp_path, "other.dart", other_src)
+    p_app = _parse(tmp_path, "app.dart", app_src)
+    p_other.imports[0].resolved_file = "repo.dart"
+    p_app.imports[0].resolved_file = "repo.dart"
+
+    parsed = {"repo.dart": p_repo, "other.dart": p_other, "app.dart": p_app}
+    resolver = CallResolver(
+        parsed,
+        {
+            "app.dart": {"repo.dart"},
+            "other.dart": {"repo.dart"},
+            "repo.dart": set(),
+        },
+        repo_path=str(tmp_path),
+    )
+    edges = [
+        (rc.callee_id, rc.origin)
+        for rc in resolver.resolve_file("app.dart", p_app.calls)
+        if rc.caller_id == "app.dart::App::run"
+    ]
+    assert edges == [("repo.dart::RepoX::flush", "receiver_extension_import")]
+

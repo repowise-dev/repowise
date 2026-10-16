@@ -990,11 +990,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         across files is, and stays refused.
         """
         for key, sites in candidates.items():
-            if len({sym_id for _, sym_id in sites}) != 1:
-                continue
-            path, sym_id = next(iter(sites))
-            self._extension_methods[key] = (path, sym_id)
-            self._file_extension_methods.setdefault(path, {})[key] = sym_id
+            for path, sym_id in sites:
+                self._file_extension_methods.setdefault(path, {})[key] = sym_id
+            if len({sym_id for _, sym_id in sites}) == 1:
+                path, sym_id = next(iter(sites))
+                self._extension_methods[key] = (path, sym_id)
 
     def _link_declarations(
         self,

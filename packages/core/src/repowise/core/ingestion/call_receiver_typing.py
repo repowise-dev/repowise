@@ -261,24 +261,30 @@ class ReceiverTypingMixin:
         Same three scopes as ``_receiver_pair_match``, over the extension index.
         Kotlin has no global one: see ``_kotlin_extension_scope``.
         """
-        site = self._extension_methods.get(key)
-        if site is None:
-            return None
         type_name, method_name = key
-        if not self._writes_one_type(file_path, site[0], type_name):
-            return None
-        if self._reaches_a_member(type_name, method_name):
-            return None
         own = self._file_extension_methods.get(file_path, {})
         if key in own:
             return own[key], "same_file"
         lang = self._language_of(file_path)
+        if lang == "dart":
+            visible = self._visible_files(file_path)
+            matches = [
+                (p, sym_id)
+                for p in visible
+                if (sym_id := self._file_extension_methods.get(p, {}).get(key)) is not None
+            ]
+            if len(matches) == 1:
+                return matches[0][1], "import"
+            return None
+        site = self._extension_methods.get(key)
+        if site is None:
+            return None
+        if not self._writes_one_type(file_path, site[0], type_name):
+            return None
+        if self._reaches_a_member(type_name, method_name):
+            return None
         if lang == "kotlin":
             return self._kotlin_extension_scope(file_path, site, method_name)
-        if lang == "dart":
-            if site[0] in self._visible_files(file_path):
-                return site[1], "import"
-            return None
         merged = self._merged_extension_methods_for(file_path)
         if key in merged:
             return merged[key], "import"
