@@ -836,7 +836,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """The bare type a Dart extension method extends, or None."""
         if sym.language != "dart" or not sym.parent_name:
             return None
-        parent_id = f"{sym.id.rsplit('::', 1)[0]}"
+        parent_id = _extract_class_id(sym.id)
+        if not parent_id:
+            return None
         parent = self._symbols_by_id.get(parent_id)
         if parent is None or not parent.signature.startswith("extension "):
             return None

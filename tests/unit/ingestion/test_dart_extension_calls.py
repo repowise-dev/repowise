@@ -272,3 +272,123 @@ class App {
     ]
     assert edges == [("repo.dart::RepoX::flush", "receiver_extension_import")]
 
+
+def test_dart_explicit_extension_invocation(tmp_path: Path) -> None:
+    repo_src = """\
+class Repo {}
+extension RepoX on Repo {
+  void flush() {}
+}
+"""
+    app_src = """\
+import 'repo.dart';
+class App {
+  void run(Repo r) {
+    RepoX(r).flush();
+  }
+}
+"""
+    p_repo = _parse(tmp_path, "repo.dart", repo_src)
+    p_app = _parse(tmp_path, "app.dart", app_src)
+    for imp in p_app.imports:
+        imp.resolved_file = "repo.dart"
+
+    parsed = {"repo.dart": p_repo, "app.dart": p_app}
+    resolver = CallResolver(
+        parsed,
+        {"app.dart": {"repo.dart"}, "repo.dart": set()},
+        repo_path=str(tmp_path),
+    )
+    edges = [
+        (rc.callee_id, rc.origin)
+        for rc in resolver.resolve_file("app.dart", p_app.calls)
+        if rc.caller_id == "app.dart::App::run" and rc.callee_id.endswith("::flush")
+    ]
+    assert edges == [("repo.dart::RepoX::flush", "return_type_import")]
+
+
+def test_dart_multiple_extensions_targeting_different_receiver_types(
+    tmp_path: Path,
+) -> None:
+    types_src = """\
+class User {}
+class Order {}
+extension UserExt on User {
+  void notifyUser() {}
+}
+extension OrderExt on Order {
+  void cancelOrder() {}
+}
+"""
+    app_src = """\
+import 'types.dart';
+class App {
+  void run(User u, Order o) {
+    u.notifyUser();
+    o.cancelOrder();
+    UserExt(u).notifyUser();
+    OrderExt(o).cancelOrder();
+  }
+}
+"""
+    p_types = _parse(tmp_path, "types.dart", types_src)
+    p_app = _parse(tmp_path, "app.dart", app_src)
+    for imp in p_app.imports:
+        imp.resolved_file = "types.dart"
+
+    parsed = {"types.dart": p_types, "app.dart": p_app}
+    resolver = CallResolver(
+        parsed,
+        {"app.dart": {"types.dart"}, "types.dart": set()},
+        repo_path=str(tmp_path),
+    )
+    run_calls = [
+        (rc.callee_id, rc.origin)
+        for rc in resolver.resolve_file("app.dart", p_app.calls)
+        if rc.caller_id == "app.dart::App::run"
+        and (rc.callee_id.endswith("::notifyUser") or rc.callee_id.endswith("::cancelOrder"))
+    ]
+    assert set(run_calls) == {
+        ("types.dart::UserExt::notifyUser", "receiver_extension_import"),
+        ("types.dart::OrderExt::cancelOrder", "receiver_extension_import"),
+        ("types.dart::UserExt::notifyUser", "return_type_import"),
+        ("types.dart::OrderExt::cancelOrder", "return_type_import"),
+    }
+
+
+def test_dart_receiver_with_no_matching_extension(tmp_path: Path) -> None:
+    types_src = """\
+class User {}
+extension UserExt on User {
+  void notifyUser() {}
+}
+"""
+    app_src = """\
+import 'types.dart';
+class Other {}
+class App {
+  void run(Other o, User u) {
+    o.notifyUser();
+    u.nonExistentMethod();
+  }
+}
+"""
+    p_types = _parse(tmp_path, "types.dart", types_src)
+    p_app = _parse(tmp_path, "app.dart", app_src)
+    for imp in p_app.imports:
+        imp.resolved_file = "types.dart"
+
+    parsed = {"types.dart": p_types, "app.dart": p_app}
+    resolver = CallResolver(
+        parsed,
+        {"app.dart": {"types.dart"}, "types.dart": set()},
+        repo_path=str(tmp_path),
+    )
+    edges = [
+        rc
+        for rc in resolver.resolve_file("app.dart", p_app.calls)
+        if rc.caller_id == "app.dart::App::run"
+    ]
+    assert edges == []
+
+
