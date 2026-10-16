@@ -30,6 +30,7 @@ _READER_PROJECT_RE = re.compile(
     re.I,
 )
 
+
 def _is_tool_config_path(target: str) -> bool:
     """Whether *target* is a well-known agent/editor config path.
 
@@ -41,6 +42,11 @@ def _is_tool_config_path(target: str) -> bool:
     whole-directory exemptions only for ``.cursor/`` and ``.kiro/`` (which hold
     nothing but tooling), plus the specific files the issue names.
 
+    ``AGENTS.md`` and ``CLAUDE.md`` are matched at the repository root only: the
+    same basename under a directory the repo has (``docs/CLAUDE.md``,
+    ``.claude/CLAUDE.md``) is an ordinary path and keeps the normal anchoring
+    verdict, so a nested file that was deleted is still reported.
+
     A path in this set that DOES exist in the repo still resolves normally,
     because the exact/relative checks above run first.
     """
@@ -50,7 +56,7 @@ def _is_tool_config_path(target: str) -> bool:
 
     if first in (".cursor", ".kiro"):
         return True
-    if base in ("AGENTS.md", "CLAUDE.md"):
+    if len(parts) == 1 and base in ("AGENTS.md", "CLAUDE.md"):
         return True
     if first == ".vscode" and base in ("mcp.json", "settings.json"):
         return True
@@ -58,13 +64,10 @@ def _is_tool_config_path(target: str) -> bool:
         if base == "copilot-instructions.md":
             return True
         # `.github/instructions/<name>.instructions.md`
-        if (
-            len(parts) >= 3
-            and parts[1] == "instructions"
-            and base.endswith(".instructions.md")
-        ):
+        if len(parts) >= 3 and parts[1] == "instructions" and base.endswith(".instructions.md"):
             return True
     return False
+
 
 # Setext headings. ``Title`` over ``=====`` or ``-----`` is a heading, and
 # GitHub gives it an anchor exactly as it does an ATX one; recognising only

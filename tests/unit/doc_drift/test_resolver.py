@@ -167,6 +167,36 @@ def test_other_github_paths_remain_missing():
     assert res.detail == "no-candidate"
 
 
+@pytest.mark.parametrize("target", ["docs/CLAUDE.md", "docs/AGENTS.md"])
+def test_agent_config_name_under_an_existing_dir_is_not_exempt(target: str):
+    """#3175 review: only the repository-root AGENTS.md and CLAUDE.md are agent
+    config. The same basename under a directory the repo has (`docs/CLAUDE.md`)
+    is an ordinary path, so a nested file that was removed is still reported.
+    """
+    res = resolve(_index(), _ref(target))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.detail == "no-candidate"
+
+
+def test_dot_claude_config_dir_does_not_exempt_its_basename():
+    """#3175 review: `.claude/CLAUDE.md` is not a config path agents read from a
+    project, so its basename alone must not exempt it either.
+    """
+    tree = TREE | {".claude/settings.json"}
+    res = resolve(_index(tree=tree), _ref(".claude/CLAUDE.md"))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.detail == "no-candidate"
+
+
+def test_root_agent_config_is_still_exempt():
+    """The root-level exemption the issue asked for is unchanged by the
+    narrowing above.
+    """
+    res = resolve(_index(), _ref("CLAUDE.md"))
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "tool-config"
+
+
 def test_a_missing_path_on_a_neutral_line_still_reports():
     context = "See `src/index.ts` for the entry point, and `src/gone.py` which was removed."
     res = resolve(_index(), _sentence_ref(context, "src/gone.py"))

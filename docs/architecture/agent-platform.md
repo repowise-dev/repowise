@@ -366,7 +366,7 @@ user and must round-trip byte for byte.
 
 If two targets write the same file, one owns the block and the other shares
 it. `copilot` reuses `vscode.write_instructions` for
-`.github/copilot-instructions.md`, and `vscode.remove_instructions` asks <!-- repowise-drift-ignore -->
+`.github/copilot-instructions.md`, and `vscode.remove_instructions` asks
 `registry.other_managers_of` before stripping the block, so removing one agent
 leaves the block in place while the other still reads it.
 
