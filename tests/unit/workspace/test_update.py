@@ -15,6 +15,8 @@ from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.update import (
     RepoUpdateResult,
     check_repo_staleness,
+    clear_stale_update_pending,
+    commit_exists,
     count_commits_between,
     get_head_commit,
     read_state_commit,
@@ -210,6 +212,37 @@ class TestCheckRepoStaleness:
 # ---------------------------------------------------------------------------
 # count_commits_between
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("helper", "args", "stdout", "expected"),
+    [
+        (get_head_commit, (), "abc123\n", "abc123"),
+        (count_commits_between, ("base", "head"), "2\n", 2),
+        (commit_exists, ("abc123",), "", True),
+    ],
+)
+def test_workspace_git_helpers_do_not_inherit_stdin(tmp_path, helper, args, stdout, expected):
+    with patch("subprocess.run") as run:
+        run.return_value = subprocess.CompletedProcess([], 0, stdout=stdout)
+        assert helper(tmp_path, *args) == expected
+
+    assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+    assert run.call_args.kwargs["timeout"] == 10
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_pending_update_ancestor_probe_does_not_inherit_stdin(tmp_path, returncode):
+    pending = tmp_path / ".repowise" / ".update.pending"
+    pending.parent.mkdir()
+    pending.write_text("new-head", encoding="utf-8")
+    with patch("subprocess.run") as run:
+        run.return_value = subprocess.CompletedProcess([], returncode)
+        clear_stale_update_pending(tmp_path, "indexed-head")
+
+    assert pending.exists() is (returncode == 0)
+    assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+    assert run.call_args.kwargs["timeout"] == 10
 
 
 class TestCountCommitsBetween:

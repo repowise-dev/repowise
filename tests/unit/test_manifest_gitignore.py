@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from repowise.core.repo_config import ensure_manifest_tracked
+from repowise.core.repo_config import _git_ignores, ensure_manifest_tracked
 
 
 def _git(repo, *args) -> subprocess.CompletedProcess:
@@ -34,6 +34,20 @@ def repo(tmp_path):
 
 def _ignored(repo, rel: str) -> bool:
     return _git(repo, "check-ignore", "-q", rel).returncode == 0
+
+
+@pytest.mark.parametrize("source", [".gitignore", ".git/info/exclude"])
+def test_ignore_probe_does_not_inherit_stdin(tmp_path, monkeypatch, source):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{source}:1:.repowise/\t.repowise/\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _git_ignores(tmp_path, ".repowise/") is (source == ".gitignore")
+    assert seen["stdin"] is subprocess.DEVNULL
+    assert seen["timeout"] == 10
 
 
 def test_the_manifest_becomes_committable(repo):

@@ -240,7 +240,7 @@ def test_update_evidence_keeps_only_commits_in_this_update_range():
     assert update_evidence_by_file(diffs, meta, set()) == {}
 
 
-def test_commits_in_range_lists_short_shas_between_refs(tmp_path):
+def test_commits_in_range_lists_short_shas_between_refs(tmp_path, monkeypatch):
     def git(*args: str) -> str:
         return subprocess.run(
             ["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True
@@ -257,10 +257,21 @@ def test_commits_in_range_lists_short_shas_between_refs(tmp_path):
         git("commit", "-q", "-m", f"c{i}")
         shas.append(git("rev-parse", "HEAD"))
 
+    calls = []
+    real_run = subprocess.run
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
     assert commits_in_range(tmp_path, shas[0], shas[2]) == {shas[1][:8], shas[2][:8]}
     assert commits_in_range(tmp_path, shas[2], None) == set()
     # A ref git cannot resolve yields nothing rather than whole-history evidence.
     assert commits_in_range(tmp_path, "no-such-ref", None) == set()
+    assert len(calls) == 3
+    assert all(call.get("stdin") is subprocess.DEVNULL for call in calls)
+    assert all(call["timeout"] == 60 for call in calls)
 
 
 # ---------------------------------------------------------------------------

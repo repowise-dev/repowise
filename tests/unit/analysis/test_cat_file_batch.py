@@ -104,6 +104,34 @@ def test_cat_file_batch_on_missing_raise(sample_repo: Path) -> None:
         cat_file_batch(str(sample_repo), specs, on_missing="raise")
 
 
+@pytest.mark.parametrize("is_submodule", [True, False])
+def test_missing_object_probe_does_not_inherit_stdin(tmp_path, monkeypatch, is_submodule):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[1] == "cat-file":
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"HEAD:sub_mod missing\n")
+        output = "160000 commit deadbeef\tsub_mod\n" if is_submodule else ""
+        return subprocess.CompletedProcess(cmd, 0, stdout=output)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    if is_submodule:
+        assert cat_file_batch(str(tmp_path), ["HEAD:sub_mod"], on_missing="raise") == [
+            ("HEAD:sub_mod", None)
+        ]
+    else:
+        with pytest.raises(ValueError, match="git has no object"):
+            cat_file_batch(str(tmp_path), ["HEAD:sub_mod"], on_missing="raise")
+
+    assert len(calls) == 2
+    assert calls[0][1]["input"] == b"HEAD:sub_mod\n"
+    assert "stdin" not in calls[0][1]  # input= owns the batch command's pipe.
+    assert calls[1][0] == ["git", "ls-tree", "HEAD", "sub_mod"]
+    assert calls[1][1]["stdin"] is subprocess.DEVNULL
+    assert calls[1][1]["timeout"] == 5.0
+
+
 def test_cat_file_batch_submodule_gitlink(sample_repo: Path, tmp_path: Path) -> None:
     """Submodule whose commit is missing or present in repo is parsed as None."""
     # Create another repo to be added as submodule

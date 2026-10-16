@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -44,6 +45,8 @@ class TestParseGitLog:
             )()
             commits = _parse_git_log(tmp_path)
 
+        assert mock_run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+        assert mock_run.call_args.kwargs["timeout"] == 60
         assert len(commits) == 2
         assert commits[0].author_email == "alice@co.com"
         assert commits[0].author_name == "Alice"
