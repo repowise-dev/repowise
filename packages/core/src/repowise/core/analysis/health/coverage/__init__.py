@@ -31,10 +31,11 @@ from .discovery import (
     expand_report_args,
     expand_report_patterns,
     normalize_report_path,
+    oldest_report_time,
     resolve_reports,
     resolve_test_reports,
 )
-from .freshness import FreshnessStatus, coverage_freshness
+from .freshness import FreshnessStatus, coverage_freshness, measurement_commit
 from .goprofile import parse_go_coverprofile
 from .jacoco import parse_jacoco
 from .lcov import parse_lcov
@@ -74,8 +75,10 @@ __all__ = [
     "expand_report_patterns",
     "file_coverage",
     "is_test_file",
+    "measurement_commit",
     "measurement_ref",
     "normalize_report_path",
+    "oldest_report_time",
     "parse",
     "parse_clover",
     "parse_cobertura",
