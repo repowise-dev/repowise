@@ -722,3 +722,35 @@ async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path,
     assert found["src/core/Ky.ts"].tests == ["test/x.test.ts"]
     assert found["src/core/Ky.ts"].via == "import-graph"
     assert "src/retry.ts" not in found
+
+
+async def test_edge_reads_batch_an_in_list_wider_than_sqlites_variable_cap(
+    async_session, monkeypatch
+):
+    """A walk level wider than SQLite's bind-variable cap is read in batches.
+
+    A ~100k-symbol repo puts more targets in one level than SQLite binds (32766
+    since 3.32), which raised ``too many SQL variables`` during ``init``. The batch
+    is shrunk here so the split runs without seeding that many rows, and the input
+    repeats ids so a duplicate straddling two batches cannot return a row twice.
+    """
+    from repowise.core.analysis import test_reachability as walk
+
+    repo = await insert_repo(async_session)
+    files = [f"src/m{i}.py" for i in range(5)]
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_m.py": True, "src/base.py": False, **dict.fromkeys(files, False)},
+        edges=[
+            *(("tests/test_m.py", f, "imports") for f in files),
+            *((f, "src/base.py", "imports") for f in files),
+        ],
+    )
+    monkeypatch.setattr(walk, "_IN_BATCH", 2)
+    ids = [*files, *files[:3]]
+
+    into = await walk._edges_into(async_session, repo.id, ids, ["imports"], frozenset())
+    assert sorted(into) == [("tests/test_m.py", f) for f in files]
+    out = await walk._edges_from(async_session, repo.id, ids, ["imports"])
+    assert sorted(out) == [(f, "src/base.py") for f in files]
