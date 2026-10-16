@@ -2429,12 +2429,13 @@ async def test_search_codebase_kind_filter_respects_stored_is_test(setup_mcp, mo
 
     search_codebase(kind='implementation') treats it as implementation, not test.
     """
+    from sqlalchemy import select
+
     import repowise.server.mcp_server as mcp_mod
     from repowise.core.persistence.database import get_session
     from repowise.core.persistence.models import GraphNode, Repository
     from repowise.core.persistence.search import SearchResult
     from repowise.server.mcp_server import search_codebase
-    from sqlalchemy import select
 
     path = "src/test_runner.py"
     page_id = f"file_page:{path}"

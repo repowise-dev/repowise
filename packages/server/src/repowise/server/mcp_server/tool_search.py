@@ -661,7 +661,11 @@ def _drop_internal_ranking_fields(results: list[dict]) -> None:
 
 
 async def _load_page_info(
-    session, output: list[dict], *, with_git: bool = False
+    session,
+    output: list[dict],
+    *,
+    repository_id: str | None = None,
+    with_git: bool = False,
 ) -> tuple[dict, set, dict, dict[str, bool]]:
     """Batch-load target paths, tombstones, git, and stored is_test flags.
 
@@ -681,12 +685,13 @@ async def _load_page_info(
     test_map: dict[str, bool] = {}
     target_paths = [tp for tp in page_info.values() if tp]
     if target_paths:
-        gn_res = await session.execute(
-            select(GraphNode.node_id, GraphNode.is_test).where(
-                GraphNode.node_id.in_(target_paths),
-                GraphNode.node_type == "file",
-            )
+        gn_query = select(GraphNode.node_id, GraphNode.is_test).where(
+            GraphNode.node_id.in_(target_paths),
+            GraphNode.node_type == "file",
         )
+        if repository_id is not None:
+            gn_query = gn_query.where(GraphNode.repository_id == repository_id)
+        gn_res = await session.execute(gn_query)
         test_map = {nid: bool(is_t) for nid, is_t in gn_res.all()}
 
     git_map: dict[str, GitMetadata] = {}
@@ -912,8 +917,11 @@ async def _search_single_repo(
     test_map: dict[str, bool] = {}
     if output:
         async with get_session(ctx.session_factory) as session:
-            page_info, tombstoned, _, test_map = await _load_page_info(session, output)
-            path_index = await file_path_index(session, (await _get_repo(session)).id)
+            repo_id = (await _get_repo(session)).id
+            page_info, tombstoned, _, test_map = await _load_page_info(
+                session, output, repository_id=repo_id
+            )
+            path_index = await file_path_index(session, repo_id)
         output = [item for item in output if item["page_id"] not in tombstoned]
         _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
@@ -1419,7 +1427,7 @@ async def search_codebase(
     if output:
         async with get_session(ctx.session_factory) as session:
             page_info, tombstoned, git_map, test_map = await _load_page_info(
-                session, output, with_git=True
+                session, output, repository_id=repository.id, with_git=True
             )
             path_index = await file_path_index(session, repository.id)
         # Tombstoned pages document deleted/renamed files — never results.

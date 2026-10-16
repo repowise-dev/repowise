@@ -237,6 +237,7 @@ def _score(
     row: WikiSymbol,
     gnode: GraphNode | None,
     covered: dict[str, float],
+    test_node: GraphNode | None = None,
 ) -> float:
     """Rank one candidate by how much of the question its name accounts for.
 
@@ -253,7 +254,12 @@ def _score(
         score += min(gnode.betweenness or 0.0, 0.1) * 20.0
         if gnode.is_entry_point:
             score += 3.0
-    is_test = gnode.is_test if gnode is not None else is_test_path(row.file_path or "", row.language)
+    effective_node = test_node if test_node is not None else gnode
+    is_test = (
+        effective_node.is_test
+        if effective_node is not None
+        else is_test_path(row.file_path or "", row.language)
+    )
     if is_test:
         score -= 5.0
     return score
@@ -380,7 +386,7 @@ async def search_symbols_by_terms(
             covered.update({t: 1.0 for t in terms if _stem(t) in words})
         if not _corroborated(row, covered, saturated):
             continue
-        scored.append((_score(row, gnode, covered), row))
+        scored.append((_score(row, gnode, covered, test_node=node_with_test), row))
 
     scored.sort(key=lambda pair: (-pair[0], pair[1].symbol_id or ""))
     return [_symbol_result(row, score) for score, row in scored[:limit]]
