@@ -11,6 +11,12 @@ how authentication behaves, the shape of an error, how the two SSE streams are
 sequenced, and the conventions several routes share. Start at `/docs` for a
 specific endpoint; come back here for the things a schema cannot state.
 
+Each GitHub release also carries the same document as an `openapi.json` asset
+(`https://github.com/repowise-dev/repowise/releases/latest/download/openapi.json`).
+Every operation in it has `x-repowise-stability`: `stable` routes are the
+integration surface, and breaking changes to them are named in the changelog;
+`internal` routes serve the bundled dashboard and can change in any release.
+
 Nothing in this document duplicates a route table on purpose. Where a fact
 below is derived from code, the file is named so the claim can be re-checked.
 The default API address is `http://127.0.0.1:7337` (`docs/reference/CLI_REFERENCE.md`).
