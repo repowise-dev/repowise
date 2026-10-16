@@ -154,7 +154,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="openrouter",
-        picker_rank=10,
+        picker_rank=11,
         impl=f"{_LLM}.openrouter:OpenRouterProvider",
         label="OpenRouter",
         default_model="google/gemini-3.5-flash-lite",
@@ -221,7 +221,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="ollama",
-        picker_rank=9,
+        picker_rank=10,
         impl=f"{_LLM}.ollama:OllamaProvider",
         label="Ollama (Local)",
         default_model="qwen3.5:4b",
@@ -237,7 +237,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="litellm",
-        picker_rank=11,
+        picker_rank=12,
         impl=f"{_LLM}.litellm:LiteLLMProvider",
         label="LiteLLM",
         default_model="groq/openai/gpt-oss-120b",
@@ -297,6 +297,20 @@ _SPECS: tuple[ProviderSpec, ...] = (
         zero_cost=True,
         agent="opencode",
         note="uses your opencode CLI setup",
+    ),
+    ProviderSpec(
+        name="copilot_cli",
+        picker_rank=9,
+        impl=f"{_LLM}.copilot_cli:CopilotCliProvider",
+        label="GitHub Copilot (Local CLI)",
+        default_model="copilot_cli/default",
+        models=("copilot_cli/default",),
+        keyless=True,
+        needs_repo_cwd=True,
+        local=True,
+        zero_cost=True,
+        agent="copilot",
+        note="uses your Copilot CLI login",
     ),
     ProviderSpec(
         name="mock",
