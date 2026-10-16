@@ -79,7 +79,12 @@ def _ownership(before: Mapping[str, Any], after: Mapping[str, Any]) -> Iterator[
     if min(a.get("owned_files", 0), b.get("owned_files", 0)) < MIN_OWNED_FILES:
         return
     old, new = set(a.get("main_owners") or ()), set(b.get("main_owners") or ())
-    if old and new and len(old & new) / len(old | new) < OWNERSHIP_SHIFT_JACCARD:
+    # New snapshots identify the whole tie at the cutoff. Remove those
+    # identities from both comparisons, including a legacy snapshot without
+    # the tie fact; its alphabetically selected member is not a real shift.
+    tied = set(a.get("margin_tied_owners") or ()) | set(b.get("margin_tied_owners") or ())
+    stable_old, stable_new = old - tied, new - tied
+    if stable_old and stable_new and len(stable_old & stable_new) / len(stable_old | stable_new) < OWNERSHIP_SHIFT_JACCARD:
         yield "ownership_shift", "observed", {
             "basis": "observed",
             "main_owners_before": len(old),
