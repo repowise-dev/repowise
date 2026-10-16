@@ -41,6 +41,26 @@ async def test_git_failure_reports_the_revspec_and_git_stderr(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+async def test_unknown_ref_drops_git_command_line_advice(monkeypatch, newline):
+    fatal = (
+        "fatal: ambiguous argument 'not-a-ref': "
+        "unknown revision or path not in the working tree."
+    )
+    stderr = newline.join([
+        fatal,
+        "Use '--' to separate paths from revisions, like this:",
+        "'git <command> [<revision>...] -- [<file>...]'",
+        "",
+    ])
+    exc = subprocess.CalledProcessError(128, ["git"], stderr=stderr)
+
+    result = await _score_raising(monkeypatch, exc, "not-a-ref")
+
+    assert result == {"error": f"Could not read change 'not-a-ref': {fatal}"}
+
+
+@pytest.mark.asyncio
 async def test_git_failure_without_stderr_falls_back_to_the_exception_text(monkeypatch):
     exc = subprocess.CalledProcessError(1, ["git", "diff"], stderr="")
     result = await _score_raising(monkeypatch, exc)

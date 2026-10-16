@@ -115,6 +115,11 @@ async def _finding_detail_response(
             targets=[match.file_path] if match else None,
         ),
     }
+    if match is None and finding_id.startswith(("fix", _ACTION_ID_PREFIX)):
+        result["hint"] = (
+            "Pass fix_first ids (fix1_...) and next_actions ids (act_...) "
+            "as fix_id, not finding_id."
+        )
     await _attach_repository_analysis_meta(session, repository, result["_meta"])
     return result
 

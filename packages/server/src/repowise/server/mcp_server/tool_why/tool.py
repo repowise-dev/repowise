@@ -73,7 +73,9 @@ async def get_why(
     # --- repo="all": search decisions across ALL repos ---
     if repo == "all":
         if not query:
-            return _unsupported_repo_all("get_why (health dashboard)")
+            response = _unsupported_repo_all("get_why (health dashboard)")
+            response["error"] += " To search all repositories, pass a query."
+            return response
         return _stamp_answer_basis(await _why_workspace_search(query))
 
     # --- Mode 1: No query → the targets, or the health dashboard ---
