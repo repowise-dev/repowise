@@ -1,7 +1,7 @@
 """Single-target resolution for get_context.
 
-``_resolve_one_target`` walks the file → module → symbol → fallback ladder for
-one target and assembles its triage card (docs, triage signals, ownership,
+``_resolve_one_target`` resolves one target through the ladder in
+``resolution`` and assembles its triage card (docs, triage signals, ownership,
 last_change, decisions, freshness, KG layer/tour, and the opt-in enrichment
 blocks delegated to ``enrichment``).
 """
@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -55,17 +53,11 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     filter_dicts_by_key,
     filter_path_list,
-    is_excluded,
-    read_repo_file_text,
 )
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity, symbol_identity
-from repowise.server.mcp_server._symbol_lookup import (
-    nearest_symbol_ids,
-    resolve_symbol_rows,
-    symbol_id_variants,
-)
+from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
 from repowise.server.mcp_server.tool_context.enrichment import (
     _DOC_DRIFT_PATH,
     _MIN_CALL_CONFIDENCE,
@@ -79,6 +71,22 @@ from repowise.server.mcp_server.tool_context.kg import (
     _classify_file_role,
     _find_layer_for_file,
     _find_tour_step_for_file,
+)
+from repowise.server.mcp_server.tool_context.preview import (  # noqa: F401  (re-exported)
+    _NO_SYMBOL_SUMMARY_SUFFIX,
+    _file_preview,
+    _markdown_headings,
+    _outline_lines,
+    _preview_summary,
+    _rst_headings,
+    _rst_table_lines,
+)
+from repowise.server.mcp_server.tool_context.resolution import (  # noqa: F401  (re-exported)
+    ResolvedTarget,
+    TargetQuery,
+    _did_you_mean,
+    _size_exclusion_note,
+    resolve_target,
 )
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
@@ -111,32 +119,6 @@ _CALLABLE_KINDS = frozenset({"function", "method", "macro", "decorator"})
 def _kind_rank(kind: str | None) -> int:
     kind = (kind or "").lower()
     return 0 if kind in _TYPE_KINDS else 1 if kind in _CALLABLE_KINDS else 2
-
-
-async def _did_you_mean(
-    session: AsyncSession,
-    repo_id: str,
-    target: str,
-    file_path: str | None = None,
-    exclude_spec: Any = None,
-) -> dict[str, list[str]]:
-    """``{"did_you_mean": [...]}``: the nearest symbol ids to a missed name, or ``{}``.
-
-    The missed name follows the file head when ``file_path`` is given or the
-    head is a path (``src/a.py::sned``), else it is the whole target
-    (``Clinet.send``, ``httpx.Client::send``); a plain path has none. A path
-    has a separator, as in ``resolve_symbol_rows``' path-less rung.
-    """
-    head, sep, tail = target.partition("::")
-    path_head = any(c in head for c in "/\\")
-    if file_path or (sep and path_head):
-        query = tail
-    elif path_head:
-        return {}
-    else:
-        query = target
-    ids = await nearest_symbol_ids(session, repo_id, query, file_path, exclude_spec)
-    return {"did_you_mean": [symbol_identity(sid) for sid in ids]} if ids else {}
 
 
 async def _compact_symbol_rows(
@@ -201,202 +183,6 @@ def _synthesize_structural_summary(file_path: str, classes: list[str], functions
     return f"{name}: " + "; ".join(parts) + "."
 
 
-# The summary a symbol-less file falls back to; named so the preview block can
-# recognise and replace its own stub.
-_NO_SYMBOL_SUMMARY_SUFFIX = "empty or non-symbol file"
-
-
-def _preview_summary(file_path: str, preview: dict[str, Any]) -> str:
-    """One truthful line about a symbol-less file, built from its own counts."""
-    name = file_path.rsplit("/", 1)[-1]
-    lines = preview.get("lines", 0)
-    if not lines:
-        return f"{name}: empty file"
-    heading_count = preview.get("heading_count")
-    if heading_count:
-        return f"{name}: {lines}-line document, {heading_count} headings, no indexed symbols."
-    return f"{name}: {lines} lines, no indexed symbols."
-
-
-# Bounds on the preview a symbol-less file (README, YAML, SQL) gets: counts
-# plus a few verbatim lines, cheap enough to stay on by default.
-_PREVIEW_MAX_LINES = 3
-_PREVIEW_MAX_LINE_CHARS = 120
-# Beyond this the file is big enough that a preview would misrepresent it; the
-# counts and the "go Read it" note are the honest reply.
-_PREVIEW_MAX_BYTES = 2_000_000
-
-_MARKDOWN_EXTS = (".md", ".markdown", ".mdx")
-_RST_EXTS = (".rst",)
-_MD_HEADING = re.compile(r" {0,3}#{1,6}(\s|$)")
-_MD_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
-_RST_ADORNMENT = re.compile(r"([!-/:-@\[-`{-~])\1+")
-# Lines that open with a comment marker: licence banners and the like.
-_COMMENT_PREFIXES = ("#", "//", "--", "/*", "*", "<!--")
-
-
-def _markdown_headings(lines: list[str]) -> list[str]:
-    """ATX headings outside front matter, fenced code and HTML comments."""
-    headings: list[str] = []
-    start = 0
-    if lines and lines[0].strip() == "---":
-        close = next((i for i in range(1, len(lines)) if lines[i].strip() in ("---", "...")), None)
-        if close is not None:
-            start = close + 1
-    fence = ""
-    in_comment = False
-    for ln in lines[start:]:
-        if in_comment:
-            in_comment = "-->" not in ln
-            continue
-        if fence:
-            # Only a bare run of the opening character, at least as long, closes.
-            bare = ln.strip()
-            if bare and set(bare) == {fence[0]} and len(bare) >= len(fence):
-                fence = ""
-            continue
-        m = _MD_FENCE.match(ln)
-        if m:
-            fence = m.group(1)
-            continue
-        opened = ln.find("<!--")
-        if opened != -1 and "-->" not in ln[opened + 4 :]:
-            in_comment = True
-            continue
-        if _MD_HEADING.match(ln):
-            headings.append(ln.strip())
-    return headings
-
-
-def _rst_table_lines(lines: list[str]) -> set[int]:
-    """Line indexes inside simple tables: a blank-free block with 3+ ``=`` borders."""
-    inside: set[int] = set()
-    i = 0
-    while i < len(lines):
-        if not lines[i].strip():
-            i += 1
-            continue
-        j = i
-        while j < len(lines) and lines[j].strip():
-            j += 1
-        borders = sum(1 for k in range(i, j) if set(lines[k].strip()) <= {"=", " "})
-        if borders >= 3 and set(lines[i].strip()) <= {"=", " "}:
-            inside.update(range(i, j))
-        i = j
-    return inside
-
-
-def _rst_headings(lines: list[str]) -> list[str]:
-    """Section titles: an unindented line underlined by punctuation at least as long.
-
-    Indented lines (literal and directive bodies) are never titles, so a
-    ``# comment`` inside a ``code-block`` is not one either, and neither is a
-    row of a simple table framed by ``=`` borders.
-    """
-    tables = _rst_table_lines(lines)
-    headings: list[str] = []
-    for i in range(len(lines) - 1):
-        title, under = lines[i].rstrip(), lines[i + 1].rstrip()
-        if (
-            i not in tables
-            and title
-            and not title[0].isspace()
-            and not _RST_ADORNMENT.fullmatch(title)
-            and _RST_ADORNMENT.fullmatch(under)
-            and len(under) >= len(title)
-        ):
-            headings.append(title)
-    return headings
-
-
-def _outline_lines(text: str, file_path: str) -> tuple[str, list[str]]:
-    """Return a document's headings, or the head lines of anything else.
-
-    Returns the kind of excerpt chosen so the caller can label it truthfully.
-    A heading-less document falls through to head lines rather than reporting
-    an empty outline. Head lines skip comment banners unless that is all
-    the file has.
-    """
-    lines = text.splitlines()
-    lower = file_path.lower()
-    if lower.endswith(_MARKDOWN_EXTS):
-        headings = _markdown_headings(lines)
-    elif lower.endswith(_RST_EXTS):
-        headings = _rst_headings(lines)
-    else:
-        headings = []
-    if headings:
-        return "headings", headings
-    head = [ln.rstrip() for ln in lines if ln.strip()]
-    content = [ln for ln in head if not ln.lstrip().startswith(_COMMENT_PREFIXES)]
-    return "head", content or head
-
-
-def _file_preview(repo_root: Any, file_path: str) -> dict[str, Any] | None:
-    """Cheap, true facts about a file the symbol index has nothing to say about.
-
-    Only counts and verbatim excerpts, nothing inferred. Returns None when the
-    file cannot be read, so the caller keeps its existing behaviour rather than
-    reporting an empty preview as if the file were empty.
-    """
-    text = read_repo_file_text(repo_root, file_path)
-    if text is None:
-        return None
-
-    lines = text.splitlines()
-    preview: dict[str, Any] = {"lines": len(lines), "chars": len(text)}
-    if not text.strip():
-        preview["note"] = "File is empty."
-        return preview
-    if len(text) > _PREVIEW_MAX_BYTES:
-        preview["note"] = "File is too large to preview; Read it directly."
-        return preview
-
-    kind, excerpt = _outline_lines(text, file_path)
-    if kind == "headings":
-        preview["heading_count"] = len(excerpt)
-    if excerpt:
-        preview[kind] = [ln[:_PREVIEW_MAX_LINE_CHARS] for ln in excerpt[:_PREVIEW_MAX_LINES]]
-    preview["note"] = (
-        "No indexed symbols; counts and a short excerpt only. Read the file for its content."
-    )
-    return preview
-
-
-def _size_exclusion_note(repo_root: Any, target: str) -> str | None:
-    """Explain a missing file that ingestion dropped on size, else None.
-
-    Computed live from the file on disk rather than read from the index,
-    because a file excluded from ingestion leaves no row to read. Delegates the
-    actual rule to ``size_verdict`` so this answer cannot drift from the code
-    that produced the exclusion.
-    """
-    if repo_root is None:
-        return None
-    try:
-        from repowise.core.ingestion.traverser import size_verdict
-
-        root = Path(str(repo_root))
-        abs_path = (root / target).resolve()
-        # An index row is not a trust boundary; refuse anything outside the repo.
-        abs_path.relative_to(root.resolve())
-        size_bytes = abs_path.stat().st_size
-        verdict = size_verdict(abs_path, size_bytes)
-    except (OSError, ValueError):
-        return None
-    if verdict is None or not verdict.is_source:
-        return None
-    detail = {
-        "minified": "it looks minified (machine-packed, not hand-written)",
-        "unreadable": "it could not be read",
-    }.get(verdict.reason, "it exceeds the maximum size for an indexed source file")
-    return (
-        f"'{target}' is not indexed: {detail} "
-        f"({size_bytes // 1024:,} KB). It has no page and no symbols, and "
-        "`repowise update` will not create them. Read the file directly."
-    )
-
-
 async def _days_since_last_change(
     session: AsyncSession,
     repo_id: str,
@@ -443,289 +229,31 @@ async def _resolve_one_target(
 ) -> dict:
     """Resolve a single target and return its full context."""
     repo_id = repository.id
+    resolved = await resolve_target(
+        TargetQuery(
+            session,
+            repository,
+            target,
+            include,
+            compact,
+            exclude_spec=exclude_spec,
+            repo_root=repo_root,
+            collector=collector,
+            as_of_ts=as_of_ts,
+        )
+    )
+    if isinstance(resolved, dict):
+        return resolved
+    target_type = resolved.target_type
+    page = resolved.page
+    file_path_for_git = resolved.file_path
+    live_file_meta = resolved.live_file_meta
+    live_unindexed_file = resolved.live_unindexed_file
+    graph_symbol = resolved.graph_symbol
+    symbol_node_id = resolved.symbol_node_id
+    sym_matches = resolved.sym_matches
+
     result_data: dict[str, Any] = {}
-
-    # Reject excluded file / ``path::Name`` targets outright (bare symbol names
-    # aren't path-matchable here and fall through to neighbor filtering).
-    gate_path = target.split("::", 1)[0] if "::" in target else target
-    if is_excluded(gate_path, exclude_spec):
-        return {
-            "target": target,
-            "error": f"'{target}' is excluded by exclude_patterns configuration",
-        }
-
-    # --- Determine target type ---
-    # 1. Try file page (most common)
-    page_id = f"file_page:{target}"
-    page = await session.get(Page, page_id)
-    target_type = None
-    file_path_for_git: str | None = None
-    live_file_meta: GitMetadata | None = None
-    live_unindexed_file = False
-    # Set only when a symbol target resolved through the call graph rather than
-    # the symbol index (index-only mode); carries the fields the node has.
-    graph_symbol: GraphNode | None = None
-    # The resolved symbol's graph id. Graph queries key on it, never on the
-    # caller's spelling, so ``Class.method`` and ``Class::method`` agree.
-    symbol_node_id: str | None = None
-
-    if page and page.repository_id == repo_id:
-        target_type = "file"
-        file_path_for_git = target
-    else:
-        # 1b. Normalise directory targets: strip trailing slash and try module
-        clean_target = target.rstrip("/")
-        # 2. Try module page (exact, then cleaned, then partial)
-        res = await session.execute(
-            select(Page).where(
-                Page.repository_id == repo_id,
-                Page.page_type == "module_page",
-                Page.target_path == target,
-            )
-        )
-        page = res.scalar_one_or_none()
-        if page is None and clean_target != target:
-            res = await session.execute(
-                select(Page).where(
-                    Page.repository_id == repo_id,
-                    Page.page_type == "module_page",
-                    Page.target_path == clean_target,
-                )
-            )
-            page = res.scalar_one_or_none()
-        if page is None:
-            # Partial module match, only on a path-segment boundary ("api"
-            # matches "src/api", not "apiclient"). Skipped when the target is a
-            # known file, so a module match cannot shadow the file rung below.
-            file_meta_res = await session.execute(
-                select(GitMetadata.file_path).where(
-                    GitMetadata.repository_id == repo_id,
-                    GitMetadata.file_path == clean_target,
-                )
-            )
-            is_known_file = file_meta_res.scalar_one_or_none() is not None
-            if not is_known_file:
-                esc = escape_like(clean_target)
-                res = await session.execute(
-                    select(Page).where(
-                        Page.repository_id == repo_id,
-                        Page.page_type == "module_page",
-                        or_(
-                            Page.target_path == clean_target,
-                            Page.target_path.like(f"%/{esc}", escape=LIKE_ESCAPE),
-                            Page.target_path.like(f"{esc}/%", escape=LIKE_ESCAPE),
-                            Page.target_path.like(f"%/{esc}/%", escape=LIKE_ESCAPE),
-                        ),
-                    )
-                )
-                # Deterministic pick among several matches: shortest path, then
-                # lexicographic.
-                candidates = sorted(
-                    res.scalars().all(), key=lambda p: (len(p.target_path), p.target_path)
-                )
-                if candidates:
-                    page = candidates[0]
-        if page:
-            target_type = "module"
-        else:
-            # 3. Try symbol. A "{path}::{Name}" id goes through get_symbol's
-            # lookup so ids resolve the same in both tools; the name rungs
-            # below can never match a path-qualified id.
-            if "::" in target:
-                sym_matches = await resolve_symbol_rows(session, repo_id, target)
-            else:
-                res = await session.execute(
-                    select(WikiSymbol).where(
-                        WikiSymbol.repository_id == repo_id,
-                        WikiSymbol.name == target,
-                    )
-                )
-                sym_matches = list(res.scalars().all())
-                if not sym_matches:
-                    # "Client.send": a qualified name with no file.
-                    sym_matches = await resolve_symbol_rows(session, repo_id, target)
-                if not sym_matches:
-                    res = await session.execute(
-                        select(WikiSymbol)
-                        .where(
-                            WikiSymbol.repository_id == repo_id,
-                            WikiSymbol.name.ilike(f"%{escape_like(target)}%", escape=LIKE_ESCAPE),
-                        )
-                        .limit(10)
-                    )
-                    sym_matches = list(res.scalars().all())
-            if sym_matches:
-                target_type = "symbol"
-                file_path_for_git = sym_matches[0].file_path
-                symbol_node_id = sym_matches[0].symbol_id
-            else:
-                # 4. Try file page by target_path search
-                res = await session.execute(
-                    select(Page).where(
-                        Page.repository_id == repo_id,
-                        Page.page_type == "file_page",
-                        Page.target_path == target,
-                    )
-                )
-                page = res.scalar_one_or_none()
-                if page:
-                    target_type = "file"
-                    file_path_for_git = target
-
-    if target_type is None:
-        # Fallback 1: index-only mode (no wiki pages). Return the graph node,
-        # typed by what it is: a symbol node is a symbol target whose file is
-        # the node's file, not its id. Every separator form is tried, as the
-        # symbol rung does. Among several, the verbatim id wins, then a symbol
-        # node, then the id order, so the pick never depends on row order.
-        res = await session.execute(
-            select(GraphNode).where(
-                GraphNode.repository_id == repo_id,
-                GraphNode.node_id.in_(symbol_id_variants(target)),
-            )
-        )
-        gnode = min(
-            res.scalars().all(),
-            key=lambda g: (g.node_id != target, g.node_type != "symbol", g.node_id),
-            default=None,
-        )
-        if gnode is not None and gnode.node_type == "symbol":
-            target_type = "symbol"
-            graph_symbol = gnode
-            file_path_for_git = gnode.file_path
-            symbol_node_id = gnode.node_id
-            page = None
-        elif gnode is not None:
-            target_type = "file"
-            file_path_for_git = target
-            page = None  # no wiki page; subsequent blocks must guard for this
-
-        # Fallback 2: check git_metadata — file may exist but have no wiki page AND no graph node
-        if target_type is None:
-            res = await session.execute(
-                select(GitMetadata).where(
-                    GitMetadata.repository_id == repo_id,
-                    GitMetadata.file_path == target,
-                )
-            )
-            meta = res.scalar_one_or_none()
-            if meta:
-                # A file excluded on size will never get a page, so regenerating
-                # docs cannot help; say so instead of the generic answer.
-                size_note = _size_exclusion_note(repo_root, target)
-                if size_note:
-                    return {
-                        "target": target,
-                        "error": size_note,
-                        "exists_in_git": True,
-                    }
-                target_type = "file"
-                file_path_for_git = target
-                live_file_meta = meta
-                page = None
-
-        # A live file never indexed into git_metadata is still a valid public
-        # path; resolve it from the checkout.
-        if target_type is None and _file_preview(repo_root, target) is not None:
-            target_type = "file"
-            file_path_for_git = target
-            page = None
-            live_unindexed_file = True
-
-        # Fallback 2b: legacy "community-12" module ids; point them at the
-        # directory-path vocabulary.
-        if target_type is None and re.fullmatch(r"community[-_]\d+", clean_target, re.IGNORECASE):
-            res = await session.execute(
-                select(Page.target_path)
-                .where(
-                    Page.repository_id == repo_id,
-                    Page.page_type == "module_page",
-                )
-                .order_by(Page.target_path)
-                .limit(10)
-            )
-            module_paths = filter_path_list([row[0] for row in res.all()], exclude_spec)
-            return {
-                "target": target,
-                "error": (
-                    f"Target not found: '{target}'. Module pages are no longer "
-                    "keyed by community ordinal — pass the module's directory "
-                    "path instead (see suggestions)."
-                ),
-                "suggestions": module_paths,
-            }
-
-        # Fallback 2c: an unresolved "{path}::{Name}" whose file is real gets
-        # the file's card (its symbol list holds the right id), marked with
-        # ``resolved_to`` so the degrade is legible.
-        if target_type is None and "::" in target:
-            file_part = target.split("::", 1)[0]
-            if file_part and file_part != target and not is_excluded(file_part, exclude_spec):
-                # file_part contains no "::", so this recursion is depth-1. The
-                # caller is hunting for a name: ``did_you_mean`` picks the
-                # closest from every symbol of the file, so the list keeps its cap.
-                card = await _resolve_one_target(
-                    session,
-                    repository,
-                    file_part,
-                    include,
-                    compact,
-                    exclude_spec=exclude_spec,
-                    repo_root=repo_root,
-                    collector=collector,
-                    as_of_ts=as_of_ts,
-                )
-                # Only a file card is the degrade; a symbol card for the head
-                # ("Command" of "Command::Nope") would claim the wrong symbol.
-                if "error" not in card and card.get("type") == "file":
-                    card["target"] = target
-                    card["resolved_to"] = file_part
-                    nearest = await _did_you_mean(session, repo_id, target, file_part)
-                    card.update(nearest)
-                    card["note"] = (
-                        f"No symbol matched {target.split('::', 1)[1]!r} in this file; "
-                        f"showing the card for {file_part!r} instead. "
-                        + (
-                            "Closest names are in did_you_mean."
-                            if nearest
-                            else "Pass include=['symbols'] for the full symbol list."
-                        )
-                    )
-                    return card
-
-        # Fallback 3: fuzzy path suggestions — match by filename or partial path.
-        # Only runs if the prior fallbacks didn't resolve the target.
-        if target_type is None:
-            # For directory-like targets, suggest files within that directory
-            dir_prefix = clean_target.rstrip("/") + "/"
-            res = await session.execute(
-                select(GitMetadata.file_path)
-                .where(
-                    GitMetadata.repository_id == repo_id,
-                    GitMetadata.file_path.like(f"{escape_like(dir_prefix)}%", escape=LIKE_ESCAPE),
-                )
-                .limit(5)
-            )
-            suggestions = [row[0] for row in res.all()]
-            if not suggestions:
-                # Fall back to filename / partial path match
-                tail = target.rsplit("/", 1)[-1]
-                res = await session.execute(
-                    select(GitMetadata.file_path)
-                    .where(
-                        GitMetadata.repository_id == repo_id,
-                        GitMetadata.file_path.contains(tail),
-                    )
-                    .limit(5)
-                )
-                suggestions = [row[0] for row in res.all() if row[0] != target]
-            suggestions = filter_path_list(suggestions, exclude_spec)
-            miss: dict[str, Any] = {"target": target, "error": f"Target not found: '{target}'"}
-            if suggestions:
-                miss["suggestions"] = suggestions
-            miss.update(await _did_you_mean(session, repo_id, target, exclude_spec=exclude_spec))
-            return miss
-
     result_data["target"] = target
     result_data["type"] = target_type
     if target_type == "file" and file_path_for_git:
@@ -961,7 +489,7 @@ async def _resolve_one_target(
             # In index-only mode the symbol may exist as a graph node with no
             # WikiSymbol row, so the node carries the fields it has and the
             # rest are simply absent rather than faked.
-            sym = sym_matches[0] if sym_matches else graph_symbol  # type: ignore[possibly-undefined]
+            sym = sym_matches[0] if sym_matches else graph_symbol
             docs["name"] = sym.name
             docs["kind"] = sym.kind
             docs["file_path"] = sym.file_path
@@ -1058,7 +586,7 @@ async def _resolve_one_target(
                     cache_key=index_state_key(repository),
                 )
             # Candidates
-            if len(sym_matches) > 1:  # type: ignore[possibly-undefined]
+            if len(sym_matches) > 1:
                 docs["candidates"] = filter_dicts_by_key(
                     [
                         {
@@ -1067,7 +595,7 @@ async def _resolve_one_target(
                             "file_path": m.file_path,
                             "symbol_id": symbol_identity(m.symbol_id),
                         }
-                        for m in sym_matches[1:5]  # type: ignore[possibly-undefined]
+                        for m in sym_matches[1:5]
                     ],
                     "file_path",
                     exclude_spec,
