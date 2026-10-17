@@ -116,6 +116,87 @@ def test_a_path_in_the_readers_own_project_is_uncheckable(context: str, raw: str
     assert res.detail == "reader-project"
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        ".github/copilot-instructions.md",
+        ".github/instructions/foo.instructions.md",
+        ".vscode/settings.json",
+        ".vscode/mcp.json",
+        ".cursor/rules/does-not-exist.mdc",
+        ".kiro/steering/x.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+    ],
+)
+def test_tool_config_paths_are_uncheckable(target: str):
+    """#3175: a well-known agent/editor config path is a reader-project
+    reference, not drift about this repository.
+
+    The repo here has `.github/` (and `.vscode/`, `.cursor/`) as top-level
+    directories, so without the exemption the anchoring rule promoted a
+    non-existent `.github/copilot-instructions.md` to a false MISSING.
+    """
+    tree = TREE | {
+        ".github/workflows/ci.yml",
+        ".vscode/launch.json",
+        ".cursor/rules/x.mdc",
+    }
+    res = resolve(_index(tree=tree), _ref(target))
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "tool-config"
+
+
+def test_present_tool_config_path_still_resolves():
+    """#3175: a tool-config path that DOES exist resolves normally, so real
+    drift on the repo's own `.github/copilot-instructions.md` is still caught.
+    """
+    tree = TREE | {".github/copilot-instructions.md"}
+    res = resolve(_index(tree=tree), _ref(".github/copilot-instructions.md"))
+    assert res.verdict is DriftVerdict.RESOLVED
+
+
+def test_other_github_paths_remain_missing():
+    """#3175 regression: only the named tool-config paths are exempted. A
+    non-existent `.github/workflows/gone.yml` (which the issue explicitly calls
+    out) must still be reported as MISSING, not swallowed as tool-config.
+    """
+    tree = TREE | {".github/workflows/ci.yml"}
+    res = resolve(_index(tree=tree), _ref(".github/workflows/gone.yml"))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.detail == "no-candidate"
+
+
+@pytest.mark.parametrize("target", ["docs/CLAUDE.md", "docs/AGENTS.md"])
+def test_agent_config_name_under_an_existing_dir_is_not_exempt(target: str):
+    """#3175 review: only the repository-root AGENTS.md and CLAUDE.md are agent
+    config. The same basename under a directory the repo has (`docs/CLAUDE.md`)
+    is an ordinary path, so a nested file that was removed is still reported.
+    """
+    res = resolve(_index(), _ref(target))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.detail == "no-candidate"
+
+
+def test_dot_claude_config_dir_does_not_exempt_its_basename():
+    """#3175 review: `.claude/CLAUDE.md` is not a config path agents read from a
+    project, so its basename alone must not exempt it either.
+    """
+    tree = TREE | {".claude/settings.json"}
+    res = resolve(_index(tree=tree), _ref(".claude/CLAUDE.md"))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.detail == "no-candidate"
+
+
+def test_root_agent_config_is_still_exempt():
+    """The root-level exemption the issue asked for is unchanged by the
+    narrowing above.
+    """
+    res = resolve(_index(), _ref("CLAUDE.md"))
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "tool-config"
+
+
 def test_a_missing_path_on_a_neutral_line_still_reports():
     context = "See `src/index.ts` for the entry point, and `src/gone.py` which was removed."
     res = resolve(_index(), _sentence_ref(context, "src/gone.py"))

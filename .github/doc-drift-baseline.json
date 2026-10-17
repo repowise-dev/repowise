@@ -3,12 +3,6 @@
   "basis": "Documentation drift accepted as known. A listed finding does not fail the gate; it is keyed on document, kind and target, not line.",
   "entries": [
     {
-      "fingerprint": "cbff1edf863eea0a013d3d97de98ef7e",
-      "file_path": "docs/architecture/editor-files.md",
-      "kind": "path",
-      "target": ".github/copilot-instructions.md"
-    },
-    {
       "fingerprint": "af6d03fb19b64196881bb0a708447606",
       "file_path": "docs/architecture/language-support.md",
       "kind": "path",
