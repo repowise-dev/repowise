@@ -53,6 +53,7 @@ from repowise.cli.helpers import (
     silence_logs_for_machine_output_until_close,
 )
 from repowise.cli.output import emit_json
+from repowise.core.analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
 from repowise.core.analysis.test_collection import plan_scopes, read_checkout, select
 from repowise.core.analysis.test_selection import RUNNERS
 
@@ -395,7 +396,8 @@ def _print_map_state(result: dict) -> None:
         console.print(
             "[yellow]No test-to-code map ingested.[/yellow] Run "
             "[cyan]repowise coverage add[/cyan] on a coverage.py report written with "
-            "[cyan]coverage run --contexts=test[/cyan] to get exact impacted tests. "
+            f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) to get exact "
+            "impacted tests. "
             "Falling back to the dependency graph and filename patterns below."
         )
     elif not result["map_current"]:

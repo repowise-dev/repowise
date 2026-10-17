@@ -17,7 +17,7 @@ report (see [Patch coverage in CI](#patch-coverage-in-ci)).
 ```bash
 # 1. Produce a report. Any supported format works.
 pytest --cov --cov-report=lcov:coverage.lcov
-coverage run --contexts=test -m pytest      # also records which test ran each line
+pytest --cov=<package> --cov-context=test   # also records which test ran each line (needs pytest-cov)
 # 2. Ingest it.
 repowise coverage add coverage.lcov
 repowise coverage add .coverage             # per-file coverage + per-test map
@@ -57,7 +57,7 @@ test functions nearest each function in the call graph as runnable selectors
 | **LCOV** | Yes, when each record carries a non-blank `TN:` test name |
 | **Cobertura**, **Clover** and **JaCoCo** XML | No |
 | **Go coverprofile** (`go test -coverprofile`) | No |
-| **coverage.py `.coverage`** | Yes, when written with `--contexts` |
+| **coverage.py `.coverage`** | Yes, when recorded with per-test contexts |
 | **Normalized JSON** (`repowise-coverage-v1`) | No |
 
 The format is sniffed from the file
@@ -85,7 +85,7 @@ did not map. The coverage summary (`get_health`, the REST coverage route) report
 each report mapped and whether it was measured at the indexed commit.
 
 **Building a per-test map.** The main path is coverage.py dynamic contexts:
-`coverage run --contexts=test -m pytest`, then `repowise coverage add .coverage`.
+`pytest --cov=<package> --cov-context=test` (needs pytest-cov), then `repowise coverage add .coverage`.
 Contexts like `tests/test_auth.py::TestLogin::test_ok|run` become test ids, with no
 runtime dependency on coverage.py. Per-test LCOV works too: each record carries a
 distinct `TN:` name, and blank `TN:` records are skipped. If the report has no contexts,

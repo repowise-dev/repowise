@@ -429,8 +429,8 @@ changed. On aspnetcore, an update with no changes takes about 4 seconds.
 ## Test intelligence
 
 Repowise links tests to the code they exercise from the call graph, with no
-coverage run needed. We checked those inferred links against a real
-`coverage run --contexts=test` on this repository, over a slice with complete
+coverage run needed. We checked those inferred links against real per-test
+coverage on this repository, over a slice with complete
 per-test attribution (37 test files, 159 production files).
 
 | Question | Precision | Sample |

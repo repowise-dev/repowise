@@ -57,6 +57,7 @@ repowise coverage check origin/main...HEAD --report coverage/lcov.info --fail-un
 - `coverage add` always stores per-file line/branch coverage.
 - The **per-test map** (needed by `{{cmd:impacted-tests}}`) is built only
   when the report carries per-test contexts — e.g. a coverage.py `.coverage`
-  written with `coverage run --contexts=test`, or a per-test lcov. Reports
+  recorded with `pytest --cov=<package> --cov-context=test` (needs
+  pytest-cov), or a per-test lcov. Reports
   without contexts ingest aggregates only; say so plainly.
 - After ingesting, suggest `repowise health --recompute` so untested-hotspot markers update.
