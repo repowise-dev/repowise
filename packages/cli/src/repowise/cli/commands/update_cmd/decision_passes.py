@@ -1,9 +1,7 @@
 """The decision passes a docs update runs before regenerating pages.
 
-Marker re-scan, session mining, session discovery, injection feedback, hook
-efficacy and decision evolution. Each is best-effort and most are model
-calls, so they share one ``decisions`` timing row; a failure lands in the
-run's degraded list instead of failing the update.
+Each is best-effort and shares one ``decisions`` timing row; a failure lands in
+the run's degraded list instead of failing the update.
 """
 
 from __future__ import annotations
@@ -18,47 +16,32 @@ from repowise.core.pipeline import timed
 from .incremental import _build_update_vector_store
 from .options import DocsPass, UpdateOptions, UpdateRun
 
-#: How far back the hook-efficacy classifier re-reads transcripts on an update.
-#: Wider than the update cadence on purpose: a firing near the end of a session
-#: has no following tool calls yet, so re-running over the same transcript later
-#: is what upgrades an early "ignored" to the truth. Re-classification is
-#: idempotent (the ledger id is a hash of the firing's own text).
+# Wider than the update cadence: a late firing is re-judged once later calls exist.
 _EFFICACY_LOOKBACK_SECONDS = 7 * 86400.0
 
 
 def run_decision_passes(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
     """Run every decision pass in order; fills the decision fields of *docs*."""
-    # One row for the decision passes below: the marker re-scan, session
-    # mining, discovery, injection feedback, hook efficacy and evolution. Each
-    # is best-effort and most are model calls, so they are read as a group.
     run.timings.start("decisions")
 
-    # Re-scan changed files for inline decision markers
     from repowise.core.analysis.decisions.policy import resolve_policy
 
     policy = resolve_policy(run.cfg).policy
 
-    # A wider/different history window changes the evidence available to the
-    # Git archaeology source even when no source file changed. Re-run that
-    # source against the freshly rebuilt full metadata map so update converges
-    # with a clean index. Treat a source failure as a required config-rebuild
-    # failure; otherwise the new fingerprint would suppress the only retry.
+    # A history-window change re-runs git archaeology; its failure must fail the
+    # run, or the new fingerprint would suppress the only retry.
     if run.config.git_changed and policy.source_enabled("git_archaeology"):
         _rerun_git_archaeology(run, docs, policy)
 
-    # Sub-rows of ``decisions``; each step is best-effort and catches its own
-    # errors, so a plain start/stop pair brackets it.
     run.timings.start("decisions.rescan")
     _rescan_inline_markers(opts, run, docs, policy)
     run.timings.stop("decisions.rescan")
 
-    # Session mining, session discovery, injection feedback and hook efficacy.
     run.timings.start("decisions.sessions")
     _run_session_passes(opts, run, docs, policy)
     run.timings.stop("decisions.sessions")
 
-    # Build the shared vector store once: reused by the supersession detector
-    # below and by the decision upsert in _persist (semantic dedup + search).
+    # Shared by evolution and the decision upsert.
     with timed(run.timings, "decisions.vector_store"):
         docs.decision_vector_store = _build_update_vector_store(
             run.repo_path,
@@ -67,12 +50,7 @@ def run_decision_passes(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> 
             required=(run.config.traversal_changed or run.config.generation_changed),
         )
 
-    # --- Two-pass decision evolution (Phase 3C), BEFORE page regeneration ----
-    # Cross-reference the diff + new commit bodies against existing decisions
-    # governing the changed files (Pass 1, cheap) then ask the LLM whether each
-    # survivor is amended/superseded/reaffirmed (Pass 2, gated). Governed pages
-    # of an evolved decision are folded into ``affected.regenerate`` so they
-    # re-render in this same run — the cascade-coupling the design calls for.
+    # Before generation: evolved decisions queue their governed pages for this run.
     run.timings.start("decisions.evolution")
     _evolve_decisions(opts, run, docs)
     run.timings.stop("decisions.evolution")
@@ -116,9 +94,7 @@ def _rescan_inline_markers(
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
         changed_paths = [fd.path for fd in run.file_diffs if fd.status in ("added", "modified")]
-        # The rescan is the inline_marker source; it was running regardless of
-        # whether that source was switched off. It also reads uncommitted
-        # files on purpose: a marker is source text, not history.
+        # Reads uncommitted files on purpose: a marker is source text, not history.
         if changed_paths and policy.source_enabled("inline_marker"):
             extractor = DecisionExtractor(
                 repo_path=run.repo_path,
@@ -127,8 +103,6 @@ def _rescan_inline_markers(
                 git_meta_map=run.git_meta_map,
                 policy=policy,
             )
-            # Label these calls as decision extraction so the Costs page can
-            # tell them apart from page regeneration (both ride this provider).
             with docs.cost_tracker.record_as("decision_extraction"):
                 docs.new_decision_markers.extend(
                     run_async(extractor.scan_inline_markers(restrict_to_files=changed_paths))
@@ -151,18 +125,10 @@ def _skipped(opts: UpdateOptions, run: UpdateRun, label: str, verbose_label: str
 def _run_session_passes(
     opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any
 ) -> None:
-    # Session-sourced decisions: mine agent transcript lines appended since
-    # the last update, structure new candidates in one batched LLM pass, and
-    # collect the observation-qualified promotions. They ride the same
-    # decision upsert as the marker re-scan below. Everything stays local, and
-    # the lane ships off: `decision source set session --on` enables it.
-    # The indexed file set bounds what a session-mined record may claim to
-    # govern: a transcript names scratch files, plan docs and sibling
-    # checkouts, and only this set knows which paths are this codebase.
+    # The indexed file set bounds which paths a session-mined record may govern.
     indexed_files = frozenset(run.source_map) if run.source_map else None
     _mine_session_decisions(opts, run, docs, policy, indexed_files)
-    # The broad lane: at most one model call over the prose the pass above
-    # just read. It runs second because that read is what fills its queue.
+    # Second: the mining pass is what fills discovery's queue.
     _discover_session_decisions(opts, run, docs, policy, indexed_files)
     _apply_injection_feedback(opts, run, policy)
     _classify_hook_efficacy(opts, run, policy)
@@ -223,20 +189,7 @@ def _discover_session_decisions(
 
 
 def _apply_injection_feedback(opts: UpdateOptions, run: UpdateRun, policy: Any) -> None:
-    """Judge injected decisions against the sessions they were injected into.
-
-    Usage feedback v1: decisions the augment hooks injected into agent
-    sessions are judged against those sessions' mined corrections (followed
-    -> staleness relaxes, contradicted -> staleness bumps). Pure SQLite over
-    the staging sidecar + decision_records; no LLM.
-
-    Gated on the ``session`` source even though it judges injected decisions
-    of *every* source: its only evidence is that session's mined user
-    corrections, which no other lane writes. With the lane off, every row
-    would be judgeable=False and settle as ``unjudgeable`` — and
-    ``mark_injection_evaluated`` is terminal, so turning the lane on later
-    could never recover them. Inert without the lane, like session discovery.
-    """
+    """Judge injected decisions against their sessions' corrections (no model)."""
     try:
         from repowise.core.sessions.miners.decisions import apply_injection_feedback
 
@@ -274,20 +227,7 @@ async def _injection_feedback(repo_path: Path, apply_injection_feedback) -> dict
 
 
 def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun, policy: Any) -> None:
-    """Judge the non-decision hook firings by what the agent did next.
-
-    Those firings point at a file or a search result rather than a decision
-    record, so they are judged by what the agent did next — which only the
-    transcript knows. Scoped to transcripts touched since the last update; the
-    whole history is a one-off `repowise hook backfill`.
-
-    Gated on the ``session`` source because that switch is documented as what
-    stops repowise reading your transcripts, and this reads them. It is the
-    privacy boundary, not a statement about what the rows are for, so it fails
-    closed: with the lane off the live hook still records its own firings and
-    only the replay-filled columns are missing, which `repowise hook backfill`
-    fills on demand.
-    """
+    """Classify hook firings by what the agent did next (reads transcripts)."""
     try:
         from repowise.core.sessions.efficacy import ingest_transcript_efficacy
 
@@ -326,8 +266,7 @@ def _apply_evolution(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, evo: d
     evo_regen = evo.get("regen_files") or set()
     if not evo_regen:
         return
-    # page_id == file path for file pages, so adding the governed
-    # file paths schedules their pages for regeneration.
+    # A file page's id is its path.
     affected = run.affected
     affected.regenerate = list(dict.fromkeys([*affected.regenerate, *sorted(evo_regen)]))
     if opts.verbose:
@@ -350,12 +289,7 @@ def _run_decision_evolution(
     cost_tracker: Any,
     max_concurrency: int,
 ) -> dict | None:
-    """Run the update's decision-evolution pass, or ``None`` with no changed file.
-
-    Pass 1 sees only the commits in ``base_ref..head``: older ones were judged
-    by the update that brought them in. The judge calls are booked as decision
-    spend, not page generation.
-    """
+    """Run decision evolution over ``base_ref..head``, or ``None`` with no changed file."""
     changed_set = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
     if not changed_set:
         return None

@@ -30,11 +30,7 @@ def _generation_warning_handler(
 
 
 class _PageProgress:
-    """Live progress for generate_all: a bar in rich mode, JSON events otherwise.
-
-    Cost is read from the tracker as each page lands so the readout ticks up
-    in real time.
-    """
+    """Live progress for generate_all: a bar in rich mode, JSON events otherwise."""
 
     def __init__(self, emitter: Any, cost_tracker: Any) -> None:
         self.emitter = emitter
@@ -53,9 +49,7 @@ class _PageProgress:
 
     def on_page_done(self, _page_id: str) -> None:
         self.completed += 1
-        # The total is an up-front estimate (see _announce_total); some page
-        # categories can't be predicted exactly, so keep it monotonic with the
-        # real count, so it never renders "43 of 41" (issue #922).
+        # The total is an estimate; keep it at least the real count.
         if self.total is not None and self.completed > self.total:
             self.total = self.completed
         if self.emitter is not None:
@@ -74,18 +68,13 @@ def generate_pages(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
     """Regenerate the affected pages, checkpointing each one as it lands."""
     from repowise.core.generation import ContextAssembler, PageGenerator
 
-    # Filter to only affected files
     regen_set = set(run.affected.regenerate)
     affected_parsed = [pf for pf in run.parsed_files if pf.file_info.path in regen_set]
     affected_source = {p: s for p, s in run.source_map.items() if p in regen_set}
 
     docs.prior_pages = _load_prior_pages(run)
 
-    # Generate affected pages. The vector store (shared with the decision
-    # pass above) must ride along: without it regenerated pages are never
-    # re-embedded, so every update silently evicted its pages from semantic
-    # search — on long-lived repos the LanceDB corpus ended up holding
-    # decisions and structural pages but zero current file pages.
+    # Without the vector store, regenerated pages drop out of semantic search.
     repo_path = run.repo_path
     config = docs.config
     assembler = ContextAssembler(config, repo_path=repo_path)
@@ -103,16 +92,9 @@ def generate_pages(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
     if run.emitter is not None:
         run.emitter.stage("generate")
 
-    # Drive a live progress bar (owl spinner + running cost) off generate_all's
-    # page callbacks, matching init's generation phase. In json progress mode
-    # there is no bar, so the same callbacks emit total_known / page_done
-    # events on stdout instead.
     progress = _PageProgress(run.emitter, docs.cost_tracker)
 
-    # Checkpoint each page to the DB as it lands: a crash mid-generation used
-    # to lose every finished page (persist ran only at the very end), so the
-    # rerun re-billed all of them. With the row persisted, the rerun's
-    # prompt-hash skip sees the fresh content and never re-calls the LLM.
+    # Each page is persisted as it lands, so a rerun after a crash re-bills nothing.
     from .persistence import PageCheckpointer
 
     checkpointer = PageCheckpointer(repo_path, repo_name)
@@ -157,10 +139,7 @@ def generate_pages(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
                 run.emitter.error(str(exc))
             raise
 
-        # Reconcile the bar to the pages actually produced. The up-front total
-        # is an estimate and onboarding slots may gate-skip, leaving it above
-        # the real count; snap total to completed so the bar reads N of N at
-        # 100% instead of stalling short (issue #922).
+        # Snap the estimate to the real count so the bar ends at N of N.
         if progress.task is not None:
             gen_progress.update(progress.task, total=progress.completed, completed=progress.completed)
 
@@ -170,8 +149,7 @@ def generate_pages(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
 
 
 def _load_prior_pages(run: UpdateRun) -> dict[str, object]:
-    """Prior pages, so the generator can skip the LLM call for any affected
-    file whose freshly rendered prompt still hashes to the persisted value."""
+    """Prior pages, so an unchanged prompt hash skips the model call."""
     repo_path = run.repo_path
 
     async def _load_prior() -> dict[str, object]:
@@ -194,21 +172,12 @@ def _load_prior_pages(run: UpdateRun) -> dict[str, object]:
     try:
         return run_async(_load_prior())
     except Exception as exc:
-        # Without prior pages the prompt-hash skip is off and every affected
-        # page re-bills; surface that instead of silently paying it.
         run.degraded.append(f"Prior-page reuse: {exc}")
         return {}
 
 
 def render_stale_structure(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
-    """Re-render stale structural (SCC) pages from the complete repository view.
-
-    SCC pages are deterministic but describe the complete graph, so the
-    changed-file generator cannot safely refresh them. Render only the stale
-    structural ids with the template provider. This performs no model calls
-    and reuses the update's vector store so semantic search is refreshed with
-    the page.
-    """
+    """Re-render stale structural pages from the full graph (no model calls)."""
     if not run.stale_deterministic_ids or run.config.generation_changed:
         return
     from .deterministic import regenerate_deterministic_page_ids

@@ -1712,8 +1712,7 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     generate_pages(opts, run, docs)
     render_stale_structure(opts, run, docs)
 
-    # Flush the buffered LLM cost rows now that generation is done — a single
-    # transaction outside the contended generation window (issue #326).
+    # One transaction, outside the contended generation window.
     from repowise.cli.providers import flush_cost_tracker
 
     flush_cost_tracker(docs.cost_tracker)
@@ -1721,23 +1720,15 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     _persist_docs(run, docs)
     _rescore_after_persist(run)
 
-    # A scanner version bump means every unchanged file's stored findings may
-    # be stale (#3072): the normal persist above only rescanned the changed
-    # files. Does its own full parse, since unlike health there is no stored
-    # structural fact to replay from the DB for a security finding.
+    # The persist above only rescanned the changed files.
     if run.scanner_changed:
         with timed(run.timings, "security_rescan"):
             rescan_security_if_changed(run.repo_path, run.state, run.exclude_patterns)
 
-    # ---- Stored read views, then the editor files that quote them ----
     _finish_outcome(run.repo_path, opts.agents_md, run.degraded, timings=run.timings)
     _save_docs_state(run, docs)
 
-    # --- Pending-marker cleanup --------------------------------------------
-    # Another `repowise update` (from a post-commit hook) may have written a
-    # ``.update.pending`` marker while we were generating pages. Drop it now
-    # that we've caught up; it is only kept when it points to a commit strictly
-    # newer than the one we just indexed.
+    # A pending marker is kept only when it names a newer commit.
     consume_update_pending(run.repo_path, run.head)
     if not opts.skip_cross_repo_hooks:
         _run_cross_repo_hooks(run)
@@ -1746,17 +1737,12 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 
 def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
     """Generation config, the provider (prompting when allowed) and its cost tracker."""
-    # The generation/LLM layer is only needed past this point — importing it
-    # above the index-only branch would make every index-only update (the
-    # post-commit hook's hot path) pay the import for code it never runs.
+    # Imported here so index-only updates never pay for the generation layer.
     from repowise.core.generation import GenerationConfig
 
     cfg = run.cfg
     generation_changed = run.config.generation_changed
     language = cfg.get("language", "en")
-    # Config-driven (saved by `repowise init`); CLI override not surfaced
-    # on update yet — defaults to on to keep the onboarding collection
-    # fresh as the codebase evolves.
     enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
     config = GenerationConfig.from_repo_config(
         cfg,
@@ -1764,29 +1750,13 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
         language=language,
         reasoning=resolve_reasoning(opts.reasoning, cfg),
         enable_onboarding=enable_onboarding_cfg,
-        # Honor the wiki style chosen at init (or via `repowise restyle`) so pages
-        # regenerated for changed files match the rest of the wiki's voice.
         wiki_style=cfg.get("wiki_style", "comprehensive"),
         cache_enabled=not generation_changed,
-        # An incremental update regenerates only the changed files' pages, and
-        # it feeds generate_all a parsed_files filtered to those files. Levels 3
-        # and up describe the whole repository from parsed_files, so without
-        # this a one-commit update would rewrite the codebase map, module and
-        # overview pages from a truncated view (a module page claiming one file,
-        # a codebase map with no directories). Stop the ladder after level 2 and
-        # leave the repo-wide pages for a full run — the same guard the
-        # deterministic index-only update already uses. `repowise generate`
-        # refreshes the repo-wide pages correctly, from the complete view.
+        # Levels 3+ describe the whole repo; a changed-file slice would truncate them.
         file_pages_only=not generation_changed,
     )
 
-    # Resolve the generation provider. If the repo wants docs but was never
-    # given a provider/key (e.g. it started --index-only and later asked for
-    # LLM docs, or `repowise update --docs`), onboard the same way init
-    # does: prompt for provider + key and persist, but only in an interactive
-    # terminal. Hooks / CI / --progress json keep the clean non-blocking error.
-    # In the workspace docs flow each member reaches this per-repo run; the
-    # first prompt sets the key in-process, so later members auto-resolve.
+    # Prompts for a provider only in an interactive terminal.
     provider = resolve_provider_or_prompt(
         opts.provider_name,
         opts.model,
@@ -1795,11 +1765,7 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
         interactive=_docs_provider_prompt_allowed(run.emitter),
     )
 
-    # Attach a DB-backed CostTracker so every LLM call made during this update
-    # (decision rescan + page regeneration) is persisted to the `llm_costs`
-    # table — matching what `repowise init` already does. Without this,
-    # `repowise costs` only ever reflects the initial index and shows $0 for
-    # all subsequent updates.
+    # Persist this update's model spend to llm_costs, as init does.
     from repowise.cli.providers import build_cost_tracker
 
     cost_tracker = build_cost_tracker(
@@ -1810,16 +1776,7 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
 
 
 def _enrich_knowledge_graph(run: UpdateRun, docs: DocsPass) -> None:
-    """LLM re-enrichment of the refreshed KG, mirroring the init pipeline.
-
-    Layer naming + summary backfill from this run's regenerated pages. Runs
-    whenever the refresh returned a result, which is the graph shape moving
-    *or* KG_BUILDER_VERSION being bumped by a release — the second is a graph
-    that did not change, and it still pays here. That is deliberate and it is
-    the one cost of the version bump: a wider edge map or a new entry-point
-    ranking changes the layers, and layer names the carry-forward restored
-    were written against the old ones.
-    """
+    """Model enrichment of a refreshed KG (layer names, summaries), as init does."""
     kg = run.knowledge_graph_result
     if kg is None:
         return
@@ -1844,11 +1801,7 @@ def _enrich_knowledge_graph(run: UpdateRun, docs: DocsPass) -> None:
 
 
 def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
-    """Persist everything in one transaction.
-
-    Pages fail loudly, derived layers degrade into the collected list — see
-    _persist_full_update.
-    """
+    """Persist in one transaction: pages fail loudly, derived layers degrade."""
     from .persistence import _persist_full_update
 
     config = run.config
@@ -1884,18 +1837,7 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
 
 
 def _rescore_after_persist(run: UpdateRun) -> None:
-    """Periodic idle-file health re-score (#728), reusing this run's graph.
-
-    git_metadata is now fresh in the DB, so re-score every file's findings
-    against the decayed inputs. No second rebuild; gated to ~weekly. Stamped
-    into ``state`` and written by the final save_state.
-
-    A config change forces the same re-score off this path's graph rather
-    than letting the config-only branch run a standalone one and return: a
-    config edit invalidates every persisted score, and the partial health
-    update only reaches the changed files. Reusing this hook is what makes
-    falling through cost nothing extra — the graph is already built.
-    """
+    """Re-score every file off this run's graph: weekly, or forced by a config or parser change."""
     from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
     from .persistence import full_rescore_due, run_decay_health_rescore
@@ -1908,10 +1850,7 @@ def _rescore_after_persist(run: UpdateRun) -> None:
                 run.repo_path, run.graph_builder, run.parsed_files, run.exclude_patterns
             )
     if rescored:
-        # Only the time gate reads this stamp, and it treats a non-numeric
-        # value as "never re-scored". A forced re-score with git unavailable
-        # has no timestamp to record, so leave a real stamp alone rather than
-        # writing None over it.
+        # No timestamp (git unavailable): keep the existing stamp.
         if run.head_ts is not None:
             run.state["last_full_rescore_at"] = run.head_ts
         run.state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
@@ -1930,21 +1869,16 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
     if run.knowledge_graph_result is not None:
         _export_knowledge_graph(run)
 
-    # Never write a null pointer. ``get_head_commit`` returns None whenever
-    # ``git rev-parse HEAD`` fails, and erasing a good baseline strands the
-    # store: the next update reads the null as its base and refuses to run.
-    # #1507 guarded the same write in ``generate``; these are the rest of it.
+    # Never write a null pointer: the next update would refuse to run.
     if head:
         state["last_sync_commit"] = head
         state["last_docs_commit"] = head
-    # Real DB total, not an accumulation: regeneration upserts existing pages,
-    # so adding len(generated_pages) every run inflated the count forever.
+    # The DB total; regeneration upserts existing pages.
     state["total_pages"] = docs.db_total_pages
     state["config_fingerprint"] = config_fingerprint(repo_path)
     state["config_dependency_fingerprints"] = run.config.curr_dependency_fps
     state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
-    # Closed at the state write, as the index-only path does, so the two
-    # paths' ``run`` rows measure the same span.
+    # Closed at the state write, as on the index-only path.
     run.timings.stop("run")
     state["phase_timings"] = run.timings.totals
     if run.full_git_summaries:
@@ -1970,12 +1904,7 @@ def _export_knowledge_graph(run: UpdateRun) -> None:
 
 
 def _run_cross_repo_hooks(run: UpdateRun) -> None:
-    """Rebuild the cross-repo layer when this repo is a workspace member.
-
-    The workspace docs flow suppresses this per-repo and runs the hooks once
-    over every updated repo, so the cross-repo layer isn't rebuilt from a
-    half-updated set on every member.
-    """
+    """Rebuild the cross-repo layer when this repo is a workspace member."""
     try:
         ws_root = find_workspace_root(run.repo_path)
         if ws_root is not None:
@@ -1989,8 +1918,7 @@ def _run_cross_repo_hooks(run: UpdateRun) -> None:
                 run_async(run_cross_repo_hooks(ws_config, ws_root, [alias]))
                 console.print("[green]Cross-repo analysis updated.[/green]")
     except Exception as exc:
-        # Cross-repo hooks must never fail the update, but a stale cross-repo
-        # layer should not masquerade as a fully clean run.
+        # Never fails the update, but is not reported as clean either.
         run.degraded.append(f"Cross-repo analysis: {exc}")
 
 
@@ -2127,10 +2055,7 @@ def run_update(
     assert run.repo_path is not None  # single mode always sets repo_path
     _prepare_repo(run.repo_path)
 
-    # --- Fast -> full upgrade (--full): a distinct path that reuses the
-    # persisted graph rather than diffing changed files. Dispatched before any
-    # incremental change-detection so the normal `repowise update` flow below
-    # is byte-for-byte unchanged. ---
+    # --full reuses the persisted graph instead of diffing changed files.
     if opts.full:
         return _full_upgrade(opts, run)
     _load_sync_base(opts, run)
@@ -2152,8 +2077,6 @@ def run_update(
         return _no_changed_files(opts, run)
 
     if run.config.health_changed:
-        # Full re-score (not the partial update) so unchanged files pick up the
-        # new rules/excludes instead of being left stale.
         console.print("[yellow]Config files changed — re-running health analysis.[/yellow]")
     if _config_change_only(run):
         return _config_only_update(opts, run)
