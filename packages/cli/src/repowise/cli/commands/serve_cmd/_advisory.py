@@ -37,3 +37,12 @@ def _start_update_advisory_loop(announced: set[str]) -> None:
             _update_advisory_tick(announced)
 
     threading.Thread(target=_loop, name="update-advisory", daemon=True).start()
+
+
+def _start_update_advisory() -> None:
+    """Announce now, then once per interval; interactive terminals only."""
+    if not console.is_terminal:
+        return
+    announced: set[str] = set()
+    _update_advisory_tick(announced)
+    _start_update_advisory_loop(announced)

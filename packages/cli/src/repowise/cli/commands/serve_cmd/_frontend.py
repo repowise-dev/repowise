@@ -7,7 +7,97 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from repowise.cli import __version__
+from repowise.cli.helpers import console
+
 from . import _web_assets
+
+_DOCKER_RUN = "  docker run -p 7337:7337 -p 3000:3000 -v .repowise:/data repowise[/dim]"
+
+
+def _node_is_usable(node: str | None) -> bool:
+    """Reject a missing node, or one older than the bundled Next.js needs.
+
+    An old node otherwise fails inside the Next.js runtime with cryptic syntax
+    errors (e.g. ``Unexpected token '?'`` on ``??``), see issue #276. An
+    unreadable version is treated as usable.
+    """
+    min_major = _web_assets._NODE_MIN_MAJOR
+    if not node:
+        console.print(
+            f"[yellow]Node.js not found — starting API server only.[/yellow]\n"
+            f"[dim]To get the web UI, install Node.js {min_major}+ or use Docker:\n"
+            f"{_DOCKER_RUN}"
+        )
+        return False
+    node_major = _web_assets._node_major_version(node)
+    if node_major is None or node_major >= min_major:
+        return True
+    console.print(
+        f"[yellow]Node.js {node_major} is too old for the bundled web UI "
+        f"(requires {min_major}+) — starting API server only.[/yellow]\n"
+        f"[dim]Upgrade Node.js to {min_major}+ or use Docker:\n"
+        f"{_DOCKER_RUN}"
+    )
+    return False
+
+
+def _rebuild_stale_local_web(local_web: Path) -> bool:
+    """Rebuild a local bundle that is behind its source; False means fall back."""
+    npm = _web_assets._npm_available()
+    if not npm:
+        console.print(
+            "[yellow]Local web bundle is stale and npm not found — "
+            "falling back to released tarball.[/yellow]"
+        )
+        return False
+    console.print("[dim]Local web bundle is older than source — rebuilding...[/dim]")
+    if _web_assets._build_local_web(local_web, npm):
+        return True
+    console.print("[yellow]Local rebuild failed — falling back to released tarball.[/yellow]")
+    return False
+
+
+def _resolve_web_bundle(refresh_ui: bool) -> tuple[bool, Path | None]:
+    """Return (ready, local_web): a fresh local build, else the cache, else a download.
+
+    ``--refresh-ui`` skips both the local build and the cache.
+    """
+    local_web = None if refresh_ui else _web_assets._find_local_web()
+    if local_web and (
+        not _web_assets._local_build_is_stale(local_web) or _rebuild_stale_local_web(local_web)
+    ):
+        return True, local_web
+    if not refresh_ui and _web_assets._web_is_cached(__version__):
+        return True, None
+    return _web_assets._download_web(__version__), None
+
+
+def _launch_web_ui(
+    host: str, api_port: int, ui_port: int, *, refresh_ui: bool
+) -> subprocess.Popen | None:
+    """Start the web UI when node and a bundle are available; None runs API only."""
+    node = _web_assets._node_available()
+    if not _node_is_usable(node):
+        return None
+
+    ready, local_web = _resolve_web_bundle(refresh_ui)
+    if not ready:
+        console.print(
+            "[yellow]Web UI not available — starting API server only.[/yellow]\n"
+            "[dim]The web UI will be available in a future release.\n"
+            "For now, use Docker for the full experience:[/dim]\n"
+            f"[dim]  docker build -t repowise https://github.com/{_web_assets._GITHUB_REPO}.git\n"
+            "  docker run -p 7337:7337 -p 3000:3000 -v .repowise:/data repowise[/dim]"
+        )
+        return None
+
+    proc = _start_frontend(node, api_port, ui_port, local_web=local_web, host=host)
+    if proc:
+        console.print(f"[green]Web UI starting on http://localhost:{ui_port}[/green]")
+    else:
+        console.print("[yellow]Could not start web UI — running API only.[/yellow]")
+    return proc
 
 
 def _start_frontend(

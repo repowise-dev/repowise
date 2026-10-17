@@ -12,6 +12,15 @@ from repowise.cli.helpers import console, load_config
 _GLOBAL_CONFIG_DIR = Path.home() / ".repowise"
 
 
+#: Embedders offered at the prompt, in menu order, with the env vars that
+#: carry their key. The first var is the one prompted for and set.
+_EMBEDDER_KEY_VARS: dict[str, tuple[str, ...]] = {
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "openai": ("OPENAI_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+}
+
+
 def _setup_embedder() -> None:
     """Ensure REPOWISE_EMBEDDER is set before the server starts.
 
@@ -20,111 +29,81 @@ def _setup_embedder() -> None:
       2. Saved in ~/.repowise/config.yaml → restore it (and its API key).
       3. Prompt the user interactively → save choice for next time.
     """
-    if os.environ.get("REPOWISE_EMBEDDER"):
+    if os.environ.get("REPOWISE_EMBEDDER") or _restore_saved_embedder():
         return
 
-    # Check global config saved by a previous serve/init run.
-    cfg = load_config(Path.home())
-    saved_embedder = cfg.get("embedder", "")
-    if saved_embedder and saved_embedder != "mock":
-        os.environ["REPOWISE_EMBEDDER"] = saved_embedder
-        # Restore API key if saved alongside the config.
-        if cfg.get("embedder_api_key"):
-            _set_api_key_env(saved_embedder, cfg["embedder_api_key"])
-        return
-
-    # Detect which providers already have keys in the environment.
-    has_gemini = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
-    has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
-
-    console.print(
-        "\n[bold]Chat & search require an embedder.[/bold] "
-        "Choose one or skip (other features still work).\n"
-    )
-
-    options = []
-    labels = []
-    if has_gemini:
-        options.append("gemini")
-        labels.append("[1] gemini      [green]✓ key set[/green]")
-    else:
-        options.append("gemini")
-        labels.append("[1] gemini      [dim]needs GEMINI_API_KEY / GOOGLE_API_KEY[/dim]")
-    if has_openai:
-        options.append("openai")
-        labels.append("[2] openai      [green]✓ key set[/green]")
-    else:
-        options.append("openai")
-        labels.append("[2] openai      [dim]needs OPENAI_API_KEY[/dim]")
-    if has_openrouter:
-        options.append("openrouter")
-        labels.append("[3] openrouter  [green]✓ key set[/green]")
-    else:
-        options.append("openrouter")
-        labels.append("[3] openrouter  [dim]needs OPENROUTER_API_KEY[/dim]")
-    options.append("skip")
-    labels.append(f"[{len(options)}] skip        [dim]no chat/search[/dim]")
-
-    for label in labels:
-        console.print(f"  {label}")
-    console.print()
-
-    default = "1" if (has_gemini or has_openai) else "3"
-    raw = click.prompt("  Select", default=default).strip()
-
-    # Map number or name to option.
-    choice = (
-        raw
-        if raw in options
-        else (options[int(raw) - 1] if raw.isdigit() and 1 <= int(raw) <= len(options) else "skip")
-    )
-
+    choice = _prompt_embedder_choice()
     if choice == "skip":
         console.print("[dim]Skipping embedder — chat and search will be unavailable.[/dim]\n")
         return
 
     os.environ["REPOWISE_EMBEDDER"] = choice
-
-    # Ensure the API key is present; prompt if missing.
     api_key = _get_or_prompt_api_key(choice)
-    if api_key:
-        _set_api_key_env(choice, api_key)
-
+    _set_api_key_env(choice, api_key)
     # Save choice (and key) to ~/.repowise/config.yaml for future runs.
     _save_global_embedder(choice, api_key)
     console.print()
 
 
+def _restore_saved_embedder() -> bool:
+    """Restore the embedder (and key) a previous serve/init saved globally."""
+    cfg = load_config(Path.home())
+    saved_embedder = cfg.get("embedder", "")
+    if not saved_embedder or saved_embedder == "mock":
+        return False
+    os.environ["REPOWISE_EMBEDDER"] = saved_embedder
+    if cfg.get("embedder_api_key"):
+        _set_api_key_env(saved_embedder, cfg["embedder_api_key"])
+    return True
+
+
+def _exported_key(embedder: str) -> str:
+    """The first non-empty exported key for *embedder*, or ``""``."""
+    names = _EMBEDDER_KEY_VARS.get(embedder, ())
+    return next((os.environ[n] for n in names if os.environ.get(n)), "")
+
+
+def _prompt_embedder_choice() -> str:
+    """Show the embedder menu and return the chosen name, or ``"skip"``."""
+    console.print(
+        "\n[bold]Chat & search require an embedder.[/bold] "
+        "Choose one or skip (other features still work).\n"
+    )
+    options = [*_EMBEDDER_KEY_VARS, "skip"]
+    for number, (name, key_vars) in enumerate(_EMBEDDER_KEY_VARS.items(), start=1):
+        status = (
+            "[green]✓ key set[/green]"
+            if _exported_key(name)
+            else f"[dim]needs {' / '.join(key_vars)}[/dim]"
+        )
+        console.print(f"  [{number}] {name:<12}{status}")
+    console.print(f"  [{len(options)}] skip        [dim]no chat/search[/dim]")
+    console.print()
+
+    default = "1" if (_exported_key("gemini") or _exported_key("openai")) else "3"
+    raw = click.prompt("  Select", default=default).strip()
+    if raw in options:
+        return raw
+    if raw.isdigit() and 1 <= int(raw) <= len(options):
+        return options[int(raw) - 1]
+    return "skip"
+
+
 def _get_or_prompt_api_key(embedder: str) -> str:
     """Return existing API key for *embedder* or prompt the user for one."""
-    if embedder == "gemini":
-        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if key:
-            return key
-        return click.prompt("  GEMINI_API_KEY", default="", show_default=False).strip()
-    if embedder == "openai":
-        key = os.environ.get("OPENAI_API_KEY", "")
-        if key:
-            return key
-        return click.prompt("  OPENAI_API_KEY", default="", show_default=False).strip()
-    if embedder == "openrouter":
-        key = os.environ.get("OPENROUTER_API_KEY", "")
-        if key:
-            return key
-        return click.prompt("  OPENROUTER_API_KEY", default="", show_default=False).strip()
-    return ""
+    key_vars = _EMBEDDER_KEY_VARS.get(embedder)
+    if not key_vars:
+        return ""
+    return (
+        _exported_key(embedder)
+        or click.prompt(f"  {key_vars[0]}", default="", show_default=False).strip()
+    )
 
 
 def _set_api_key_env(embedder: str, key: str) -> None:
-    if not key:
-        return
-    if embedder == "gemini":
-        os.environ.setdefault("GEMINI_API_KEY", key)
-    elif embedder == "openai":
-        os.environ.setdefault("OPENAI_API_KEY", key)
-    elif embedder == "openrouter":
-        os.environ.setdefault("OPENROUTER_API_KEY", key)
+    key_vars = _EMBEDDER_KEY_VARS.get(embedder)
+    if key and key_vars:
+        os.environ.setdefault(key_vars[0], key)
 
 
 def _save_global_embedder(embedder: str, api_key: str) -> None:
