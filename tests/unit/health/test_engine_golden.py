@@ -94,7 +94,7 @@ def test_health_engine_matches_golden(tmp_path: Path) -> None:
         root = tmp_path / name.replace("/", "_")
         _copy_lf(src, root)
         actual[name] = _analyze(root)
-    if os.environ.get("REPOWISE_REWRITE_GOLDEN"):
+    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
         GOLDEN.parent.mkdir(exist_ok=True)
         GOLDEN.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))

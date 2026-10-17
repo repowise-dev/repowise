@@ -87,7 +87,7 @@ def _analyze(tmp_path: Path, sample_repo_path: Path) -> dict:
 
 def test_dead_code_matches_golden(tmp_path: Path, sample_repo_path: Path) -> None:
     actual = _analyze(tmp_path, sample_repo_path)
-    if os.environ.get("REPOWISE_REWRITE_GOLDEN"):
+    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
         GOLDEN.parent.mkdir(exist_ok=True)
         GOLDEN.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))

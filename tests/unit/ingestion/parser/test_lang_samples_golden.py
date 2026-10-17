@@ -58,7 +58,7 @@ def _parse_language(parser: ASTParser, language: str) -> dict:
 def test_parse_matches_golden(parser: ASTParser, language: str) -> None:
     actual = _parse_language(parser, language)
     golden = GOLDEN_DIR / f"{language}.json"
-    if os.environ.get("REPOWISE_REWRITE_GOLDEN"):
+    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
         GOLDEN_DIR.mkdir(exist_ok=True)
         golden.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
     assert actual == json.loads(golden.read_text(encoding="utf-8"))

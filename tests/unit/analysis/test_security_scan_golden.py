@@ -347,7 +347,7 @@ def _actual(tmp_path: Path) -> dict:
 
 def test_security_scan_matches_golden(tmp_path: Path) -> None:
     actual = _actual(tmp_path)
-    if os.environ.get("REPOWISE_REWRITE_GOLDEN"):
+    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
         GOLDEN.parent.mkdir(exist_ok=True)
         GOLDEN.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))
