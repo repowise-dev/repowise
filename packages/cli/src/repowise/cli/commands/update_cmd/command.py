@@ -1707,6 +1707,7 @@ def _embed_config_pages(vector_store, pages: list) -> None:
 
 def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     """Model-backed update: decisions, page generation, persist, then state."""
+    repo_path = run.repo_path
     docs = _start_docs_pass(opts, run)
     run_decision_passes(opts, run, docs)
     generate_pages(opts, run, docs)
@@ -1723,13 +1724,13 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     # The persist above only rescanned the changed files.
     if run.scanner_changed:
         with timed(run.timings, "security_rescan"):
-            rescan_security_if_changed(run.repo_path, run.state, run.exclude_patterns)
+            rescan_security_if_changed(repo_path, run.state, run.exclude_patterns)
 
-    _finish_outcome(run.repo_path, opts.agents_md, run.degraded, timings=run.timings)
+    _finish_outcome(repo_path, opts.agents_md, run.degraded, timings=run.timings)
     _save_docs_state(run, docs)
 
     # A pending marker is kept only when it names a newer commit.
-    consume_update_pending(run.repo_path, run.head)
+    consume_update_pending(repo_path, run.head)
     if not opts.skip_cross_repo_hooks:
         _run_cross_repo_hooks(run)
     return _report_docs_outcome(opts, run, docs)
