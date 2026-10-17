@@ -176,7 +176,11 @@ class AtomicStorageCoordinator:
             "decision_drift": None,
         }
         try:
-            res = await self._session.execute(text("SELECT COUNT(*) FROM wiki_pages"))
+            # Tombstones are kept in SQL but held out of the vector store, so
+            # counting them reads a consistent store as page drift.
+            res = await self._session.execute(
+                text("SELECT COUNT(*) FROM wiki_pages WHERE freshness_status != 'tombstone'")
+            )
             report["sql_pages"] = int(res.scalar() or 0)
         except Exception as e:
             report["sql_pages_error"] = str(e)
