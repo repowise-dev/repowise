@@ -27,16 +27,18 @@ from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 from repowise.core.pipeline.modes import OrchestratorMode
 from repowise.core.pipeline.progress import (
     STAGE_ANALYSIS,
-    STAGE_INGESTION,
     ProgressCallback,
     emit_stage,
     emit_warning,
 )
-from repowise.core.registry import HookProgressCallback
-from repowise.core.registry.plugins import load_plugins
 
+from ._run.index import run_index_phase
+from ._run.state import PipelineRun, attach_cost_tracker, hooked_progress, start_checkpointer
 from .phase_timing import timed
 from .phases._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
+
+# The ``_run`` stage modules call these phase functions through this module
+# (``_orch.<name>``), so imports and patches on the orchestrator keep reaching them.
 from .phases.analysis import (
     _run_dead_code_analysis,
     _run_decision_extraction,
@@ -45,11 +47,11 @@ from .phases.analysis import (
 )
 from .phases.generation import run_generation
 from .phases.git import (
-    _run_git_indexing,
+    _run_git_indexing,  # noqa: F401
     drop_transient_git_signals,
-    label_co_change_structure,
+    label_co_change_structure,  # noqa: F401
 )
-from .phases.ingestion import _run_ingestion, reparse_for_resume
+from .phases.ingestion import _run_ingestion, reparse_for_resume  # noqa: F401
 from .resume import ResumePhase
 from .resume.controller import ResumeController
 
@@ -270,204 +272,55 @@ async def run_pipeline(
     """
     repo_path = Path(repo_path).resolve()
     start = time.monotonic()
+    progress = hooked_progress(progress)
+    checkpointer = await start_checkpointer(job_store, repo_path)
+    attach_cost_tracker(llm_client, cost_tracker)
+    run = PipelineRun(
+        repo_path=repo_path,
+        start=start,
+        mode=mode,
+        # Mode policy, the single switch point: FAST forces ESSENTIAL git indexing and
+        # disables doc generation (so every LLM call); DETERMINISTIC renders pages from
+        # templates; STANDARD keeps the caller's flags. Later stages read these, not mode.
+        generate_docs=generate_docs and mode.allows_doc_generation,
+        git_tier=mode.git_tier,
+        progress=progress,
+        checkpointer=checkpointer,
+        commit_depth=max(1, min(commit_depth, 10000)),
+        follow_renames=follow_renames,
+        skip_tests=skip_tests,
+        skip_infra=skip_infra,
+        exclude_patterns=exclude_patterns,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+        derive_environment_facts=derive_environment_facts,
+        llm_client=llm_client,
+        embedder=embedder,
+        vector_store=vector_store,
+        concurrency=concurrency,
+        test_run=test_run,
+        resume=resume,
+        generation_config=generation_config,
+        wiki_style=wiki_style,
+        existing_kg_fingerprint=existing_kg_fingerprint,
+        on_page_ready=on_page_ready,
+        resume_controller=resume_controller,
+        coverage_report_paths=coverage_report_paths,
+    )
+    generate_docs = run.generate_docs
 
-    commit_depth = max(1, min(commit_depth, 10000))
-
-    # Mode policy: FAST forces ESSENTIAL git indexing and disables doc
-    # generation (and therefore all LLM calls). DETERMINISTIC generates every
-    # page from a template and supplies its own null provider, so a caller
-    # with no API key still gets a wiki. STANDARD preserves the caller's flags
-    # exactly. This is the single switch point: the rest of the pipeline
-    # reads ``generate_docs`` / the git tier, not ``mode``.
-    git_tier = mode.git_tier
-    generate_docs = generate_docs and mode.allows_doc_generation
-
-    # Wrap the incoming progress callback so registered pipeline hooks fire
-    # around each phase transition. Zero-op when no hooks are registered.
-    # Plugins load first so the hooks they register are among them.
-    load_plugins()
-    progress = HookProgressCallback(progress)
-
-    # Optional crash-resume checkpointing. When a JobStore is supplied, a
-    # checkpointer records each major phase's lifecycle (via the same hook
-    # seam) so a re-run can detect completed phases. No-op otherwise — the
-    # default (None) preserves existing behaviour exactly.
-    _checkpointer = None
-    if job_store is not None:
-        from repowise.core.pipeline.checkpoint import PhaseCheckpointer
-
-        _checkpointer = PhaseCheckpointer(job_store, str(repo_path))
-        await _checkpointer.start()
-
-    # Attach cost tracker to provider if supplied
-    if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
-        llm_client._cost_tracker = cost_tracker
-
-    # ---- Phase 1: Ingestion ------------------------------------------------
-    emit_stage(progress, STAGE_INGESTION)
-
-    # Launch git indexing as a background task immediately — it is independent
-    # of parsing and graph-build, so the two stages can run concurrently.
-    # _run_ingestion does: traverse → ProcessPool parse → graph build → dynamic hints.
-    # _run_git_indexing does: git log → co-change accumulation (I/O bound, own executor).
-
-    async def _git_stage() -> tuple:
-        return await _run_git_indexing(
-            repo_path,
-            commit_depth=commit_depth,
-            follow_renames=follow_renames,
-            tier=git_tier,
-            exclude_patterns=exclude_patterns,
-            progress=progress,
-        )
-
-    async def _ingestion_stage() -> tuple:
-        return await _run_ingestion(
-            repo_path,
-            exclude_patterns=exclude_patterns,
-            include_submodules=include_submodules,
-            include_nested_repos=include_nested_repos,
-            skip_tests=skip_tests,
-            skip_infra=skip_infra,
-            progress=progress,
-            derive_environment_facts=derive_environment_facts,
-        )
-
-    # Resume fast-path: when a prior run already persisted the INDEX phase
-    # (graph + git), rehydrate it from the DB and only re-parse source files —
-    # skipping the git history walk and the graph centrality kernels, which
-    # are the minutes-long work that makes a first index slow. Falls back to a
-    # full compute if rehydration yields no graph (nothing was persisted).
-    skip_index = bool(resume_controller and await resume_controller.can_skip(ResumePhase.INDEX))
-    git_summary = None
-    if skip_index:
-        try:
-            graph_builder, git_meta_map = await resume_controller.rehydrate_index(repo_path)
-            if progress:
-                progress.on_message("info", "  ↳ Resuming — reusing persisted graph + git index")
-            (
-                parsed_files,
-                file_infos,
-                repo_structure,
-                source_map,
-                tech_items,
-            ) = await reparse_for_resume(
-                repo_path,
-                exclude_patterns=exclude_patterns,
-                include_submodules=include_submodules,
-                include_nested_repos=include_nested_repos,
-                skip_tests=skip_tests,
-                skip_infra=skip_infra,
-                progress=progress,
-                derive_environment_facts=derive_environment_facts,
-            )
-            traversal_stats = None
-            graph_builder.restore_parse_only_attrs(parsed_files)
-            # Rehydrated rows can predate the structural label, and nothing
-            # else on this path recomputes it.
-            label_co_change_structure(graph_builder, git_meta_map)
-            git_metadata_list = list(git_meta_map.values())
-        except Exception as exc:
-            logger.warning("resume_rehydrate_failed_recomputing", error=str(exc))
-            skip_index = False
-
-    if not skip_index:
-        (
-            (
-                parsed_files,
-                file_infos,
-                repo_structure,
-                source_map,
-                graph_builder,
-                traversal_stats,
-                tech_items,
-            ),
-            (
-                git_summary,
-                git_metadata_list,
-                git_meta_map,
-            ),
-        ) = await asyncio.gather(_ingestion_stage(), _git_stage())
-
-        # Add co-change edges to the graph (rehydrated graphs already carry them)
-        if git_meta_map:
-            label_co_change_structure(graph_builder, git_meta_map)
-            graph_builder.add_co_change_edges(git_meta_map)
-
-    # ---- External systems (C4 L1) ------------------------------------------
-    # Parse repo manifests for declared third-party dependencies. Failure here
-    # must not break the pipeline — log and continue with an empty list.
-    external_systems: list[dict] = []
-    if progress:
-        progress.on_phase_start("external_systems", None)
-    try:
-        from repowise.core.ingestion.external_systems import extract_external_systems
-
-        records = await asyncio.to_thread(extract_external_systems, repo_path)
-        external_systems = [
-            {
-                "name": r.name,
-                "display_name": r.display_name,
-                "ecosystem": r.ecosystem,
-                "category": r.category,
-                "io_kind": r.io_kind,
-                "version": r.version,
-                "declared_in": r.declared_in,
-                "is_dev_dep": r.is_dev_dep,
-            }
-            for r in records
-        ]
-        if progress and external_systems:
-            progress.on_message(
-                "info",
-                f"→ External systems: {len(external_systems):,} declared deps across manifests",
-            )
-    except Exception as _ext_err:
-        logger.warning("external_systems_extraction_failed", error=str(_ext_err))
-        emit_warning(
-            progress,
-            f"External dependency manifests not parsed ({_ext_err}); "
-            "pages will not name this repo's third-party systems.",
-        )
-    _phase_done(progress, "external_systems")
-
-    # ---- Checkpoint: INDEX -------------------------------------------------
-    # Persist the freshly-computed graph + git + symbols now so an interrupt
-    # during the analysis phase below can resume without redoing the expensive
-    # index. Skipped when we rehydrated (already persisted) — best-effort.
-    if resume_controller is not None and not skip_index:
-        await resume_controller.checkpoint_index(
-            parsed_files=parsed_files,
-            graph_builder=graph_builder,
-            git_metadata_list=git_metadata_list,
-            git_summary=git_summary,
-            external_systems=external_systems,
-            source_map=source_map,
-            progress=progress,
-        )
-
-    # Emit rich insight summary for the ingestion phase
-    if progress:
-        _g = graph_builder.graph()
-        _n_nodes = _g.number_of_nodes()
-        _n_edges = _g.number_of_edges()
-        progress.on_message(
-            "info",
-            f"→ {len(parsed_files):,} files parsed · "
-            f"{sum(len(pf.symbols) for pf in parsed_files):,} symbols extracted",
-        )
-        progress.on_message(
-            "info",
-            f"→ Graph: {_n_nodes:,} nodes · {_n_edges:,} edges",
-        )
-        if git_summary and git_summary.files_indexed:
-            _hotspot_msg = ""
-            if hasattr(git_summary, "hotspots") and git_summary.hotspots:
-                _hotspot_msg = f" · {git_summary.hotspots} hotspots"
-            progress.on_message(
-                "info",
-                f"→ Git: {git_summary.files_indexed:,} files indexed{_hotspot_msg}",
-            )
+    await run_index_phase(run)
+    parsed_files = run.parsed_files
+    file_infos = run.file_infos
+    repo_structure = run.repo_structure
+    source_map = run.source_map
+    graph_builder = run.graph_builder
+    traversal_stats = run.traversal_stats
+    tech_items = run.tech_items
+    git_summary = run.git_summary
+    git_metadata_list = run.git_metadata_list
+    git_meta_map = run.git_meta_map
+    external_systems = run.external_systems
 
     # Test-run: limit to top 10 files by PageRank (shared helper with
     # ``run_generation`` so the two paths cannot drift).
@@ -963,8 +816,8 @@ async def run_pipeline(
     # Flush checkpoints on the success path; on an exception above this point
     # the checkpointer is intentionally not closed so interrupted phases stay
     # RUNNING for a resumable re-run.
-    if _checkpointer is not None:
-        await _checkpointer.aclose()
+    if checkpointer is not None:
+        await checkpointer.aclose()
 
     elapsed = time.monotonic() - start
     languages = {fi.language for fi in file_infos if hasattr(fi, "language") and fi.language}
