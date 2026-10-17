@@ -69,3 +69,25 @@ class UpdateRun:
     stale_db_paths: list[str] = field(default_factory=list)
     stale_deterministic_ids: set[str] = field(default_factory=set)
     file_diffs: list = field(default_factory=list)
+
+    # Index: the rebuilt graph, the page plan and the partial analyses.
+    # Each best-effort step that fails appends here; shown in the completion panel.
+    degraded: list[str] = field(default_factory=list)
+    exclude_patterns: list[str] = field(default_factory=list)
+    git_decay_map: dict[str, dict] = field(default_factory=dict)
+    full_git_summaries: list[Any] = field(default_factory=list)
+    working_tree_only: bool = False
+    head_ts: float | None = None
+    parsed_files: Any = None
+    source_map: Any = None
+    graph_builder: Any = None
+    repo_structure: Any = None
+    file_count: int = 0
+    git_meta_map: Any = None
+    cascade_budget: int | None = None
+    affected: Any = None
+    partial_health_report: Any = None
+    dead_code_report: Any = None
+    doc_drift_report: Any = None
+    persisted_git_meta: Any = None
+    knowledge_graph_result: Any = None
