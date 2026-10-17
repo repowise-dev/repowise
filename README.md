@@ -20,7 +20,7 @@ and what evidence stands behind each change that landed.</p>
 <table align="center">
 <tr>
 <td align="center" width="250"><b>−31.6%</b><br /><sub>less agent output · <em>p&lt;0.0001</em></sub></td>
-<td align="center" width="250"><b>2.3×</b><br /><sub>defects found vs CodeScene · <em>p=0.003</em></sub></td>
+<td align="center" width="250"><b>2.3×</b><br /><sub>later-defective files surfaced vs CodeScene · <em>p=0.003</em></sub></td>
 <td align="center" width="250"><b>15M</b><br /><sub>lines of code indexed once on one laptop · <em>then incremental on every commit</em></sub></td>
 </tr>
 </table>
@@ -442,7 +442,7 @@ unified diff.
 (2,826 files scored at a fixed point and checked against the following 6 months of bug
 fixes): <strong>ROC AUC 0.737</strong> [0.683, 0.787]. Against <strong>CodeScene</strong>
 on the 2,770 files both tools scored, ranking by Repowise surfaces <strong>2.3x the
-defects under a fixed review budget</strong> (paired, p = 0.003). CodeScene keeps a
+later-defective files under a fixed review budget</strong> (paired, p = 0.003). CodeScene keeps a
 shorter, slightly more precise list.
 <a href="docs/BENCHMARKS.md#5-code-health-predicts-defects">Full head-to-head and its limits →</a></sub>
 
