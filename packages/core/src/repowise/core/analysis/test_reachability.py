@@ -1139,6 +1139,12 @@ async def direct_importers(session: AsyncSession, repo_id: str, files: list[str]
     return {source for source, _ in rows}
 
 
+# Node ids per IN list, batched like the crud lookups: SQLITE_MAX_VARIABLE_NUMBER is
+# 999 before SQLite 3.32 and 32766 after, and a repo with ~100k symbols walks more
+# targets than that in one level.
+_IN_BATCH = 500
+
+
 def _in_clause(prefix: str, values: list[str], params: dict[str, Any]) -> str:
     """Bind *values* as ``:prefix0, :prefix1, ...`` and return the clause body."""
     params.update({f"{prefix}{i}": v for i, v in enumerate(values)})
@@ -1151,6 +1157,12 @@ async def _edges_from(
     """``(source, target)`` pairs leaving *sources* along *edge_types*."""
     if not sources:
         return []
+    sources = list(dict.fromkeys(sources))
+    if len(sources) > _IN_BATCH:
+        out: list[tuple[str, str]] = []
+        for i in range(0, len(sources), _IN_BATCH):
+            out += await _edges_from(session, repo_id, sources[i : i + _IN_BATCH], edge_types)
+        return out
     params: dict[str, Any] = {"repo_id": repo_id}
     src = _in_clause("s", sources, params)
     ets = _in_clause("e", edge_types, params)
@@ -1181,6 +1193,14 @@ async def _edges_into(
     """
     if not targets:
         return []
+    targets = list(dict.fromkeys(targets))
+    if len(targets) > _IN_BATCH:
+        out: list[tuple[str, str]] = []
+        for i in range(0, len(targets), _IN_BATCH):
+            out += await _edges_into(
+                session, repo_id, targets[i : i + _IN_BATCH], edge_types, excluded_origins
+            )
+        return out
     params: dict[str, Any] = {"repo_id": repo_id}
     tgt = _in_clause("p", targets, params)
     ets = _in_clause("e", edge_types, params)
