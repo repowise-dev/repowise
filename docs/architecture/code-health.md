@@ -273,7 +273,7 @@ A single pass over the parsed file list. For each file the analyzer:
    `max(ccn)` into `Symbol.complexity_estimate` as a side effect, so the
    `ContextAssembler` symbol ranker benefits even when a caller never touches
    the health tables.
-3. **Evaluates the file** (`_evaluate_file`): builds a `FileContext` (nloc,
+3. **Evaluates the file** (`FileEvaluator.evaluate` in `file_evaluator.py`): builds a `FileContext` (nloc,
    `has_test_file`, module, per-function and per-class metrics, the per-file
    `git_meta`, graph in-degree as `dependents_count`, the repo-wide p80 of
    in-degree used as the `brain_method` floor, coverage fields when ingested,
@@ -1138,7 +1138,7 @@ per-path `disabled_biomarkers` and `severity_overrides`, keyed by a
 gitignore-semantics glob over the repo-relative POSIX path (every matching rule
 applies; disabled sets union) (`path`, with `path_glob` and `glob` as
 accepted aliases). `to_analyzer_config(file_paths)` resolves the globs to
-per-file disabled sets, which the engine honors in `_evaluate_file()`. The
+per-file disabled sets, which the engine honors in `FileEvaluator.evaluate()`. The
 schema and examples are in the
 [user guide](../layers/CODE_HEALTH.md#configuration).
 
@@ -1222,7 +1222,7 @@ from `coverage/detector.parse`. Stdlib-only (no extra XML libraries).
 Users (not contributors) author `.repowise/health-rules.json`. To add
 a new override key (beyond `disabled_biomarkers`), extend
 `HealthConfig` and thread it through `to_analyzer_config()` ->
-`engine._evaluate_file()`.
+`FileEvaluator.evaluate()` in `file_evaluator.py`.
 
 ---
 

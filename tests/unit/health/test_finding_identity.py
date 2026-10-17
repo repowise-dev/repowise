@@ -15,6 +15,7 @@ import pytest
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
+from repowise.core.analysis.health.file_evaluator import FileEvaluator
 from repowise.core.analysis.health.finding_identity import (
     IDENTITY_DETAIL_KEYS,
     SYMBOL_INDEX_KEY,
@@ -63,9 +64,12 @@ def _findings(source: str):
         ),
         symbols=[],
     )
-    _, findings, _ = HealthAnalyzer(graph=None)._evaluate_file(
-        pf, fcx, paired_tests=set(), package_roots=set(), disabled=[], dup_report=DuplicationReport()
-    )
+    _, findings, _ = FileEvaluator(
+        HealthAnalyzer(graph=None),
+        paired_tests=set(),
+        package_roots=set(),
+        dup_report=DuplicationReport(),
+    ).evaluate(pf, fcx)
     return findings
 
 
