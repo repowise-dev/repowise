@@ -23,6 +23,7 @@ from repowise.cli.output import notice_console
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeReport
 from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
 from repowise.core.analysis.dead_code.serving import safe_only_note
+from repowise.core.analysis.finding_registry import preview_lines
 
 #: The floor ``init`` and ``update`` store findings at: they run the analyzer
 #: with its default config, which keeps nothing below this and runs all four
@@ -359,6 +360,13 @@ def dead_code_command(
         )
 
     console.print(table)
+    for line in preview_lines(
+        "dead_code",
+        findings,
+        kind="kind",
+        get=lambda f, k: f.kind.value if k == "kind" else getattr(f, k),
+    ):
+        console.print(f"[dim]{line}[/dim]")
     # confidence_summary is a {"high": N, ...} dict; interpolating it printed a
     # raw Python repr, braces and quotes included, at the end of an otherwise
     # formatted report.

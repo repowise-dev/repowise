@@ -9,7 +9,7 @@ import type {
   ChatUIToolCall as ChatToolCall,
   ChatUIMessage as ChatMessage,
 } from "@repowise-dev/types/chat";
-import { SHOW_VIEW_TOOL, parseViewParts } from "@repowise-dev/api-client/views";
+import { VIEW_TOOLS, parseViewParts } from "@repowise-dev/api-client/views";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { toChatUiMessages } from "@/lib/chat/to-chat-ui-messages";
 
@@ -274,8 +274,8 @@ export function useChat(repoId: string) {
                           ...tc,
                           result: data,
                           summary: ev.summary,
-                          // A show_view receipt is not evidence; the view itself renders inline.
-                          ...(ev.tool_name === SHOW_VIEW_TOOL ? {} : { artifact: ev.artifact }),
+                          // A view tool's receipt is not evidence; the view itself renders inline.
+                          ...(VIEW_TOOLS.has(ev.tool_name) ? {} : { artifact: ev.artifact }),
                           status: failed ? ("error" as const) : ("done" as const),
                         }
                       : tc,

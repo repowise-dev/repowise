@@ -70,7 +70,7 @@ function PartnerLink({
             onPartnerSelect(path);
           }
         }}
-        className="text-[var(--color-accent-primary)] hover:underline"
+        className="text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-2 hover:decoration-current"
       >
         {inner}
       </a>
@@ -84,7 +84,7 @@ function PartnerLink({
           e.stopPropagation();
           onPartnerSelect(path);
         }}
-        className="text-[var(--color-accent-primary)] hover:underline text-left"
+        className="text-left text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-2 hover:decoration-current"
       >
         {inner}
       </button>

@@ -587,10 +587,9 @@ def _refresh_workspace_editor_project_files(
     who never passed ``--agents-md`` (the default), making the index look stale
     long after it was current. Mirrors the single-repo update path.
     """
+    from repowise.cli.commands._index_outcome import refresh_read_snapshots
     from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
     from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
-
-    from .persistence import refresh_read_snapshots
 
     options: EditorSetupOptions | None = None
     if agents_md is not None:

@@ -131,7 +131,8 @@ class ReportContext:
     head_commit: str | None = None
     #: The period a ``changes`` report covers and how it builds missing
     #: checklists (a :class:`~repowise.core.changes.period.PeriodRequest`);
-    #: ``None`` is every indexed change, building what is missing.
+    #: ``None`` is the default request: the 90 days before the newest
+    #: indexed commit, building what is missing.
     period: PeriodRequest | None = None
     _cache: dict[str, Any] = field(default_factory=dict)
 

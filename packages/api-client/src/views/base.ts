@@ -5,7 +5,7 @@
 
 import {
   VIEW_COVERAGE_METRICS,
-  VIEW_SCHEMA_VERSION,
+  VIEW_SCHEMA_VERSIONS,
   type ViewCoverage,
   type ViewKind,
   type ViewPartBase,
@@ -23,6 +23,7 @@ import {
   nullable,
   obj,
   oneOf,
+  oneOfNumbers,
   ratio,
   str,
   type Check,
@@ -50,7 +51,7 @@ export const COVERAGE_SPEC: Spec<ViewCoverage> = {
 export function baseSpec<K extends string>(kind: K): Spec<ViewPartBase<K>> {
   return {
     required: {
-      schema_version: constant(VIEW_SCHEMA_VERSION),
+      schema_version: oneOfNumbers(VIEW_SCHEMA_VERSIONS),
       kind: constant(kind),
       id: partId,
       title: str,

@@ -215,6 +215,11 @@ def find_extractions(
     evaluated = 0
     for block, loop in all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
         stmts = block.named_children
+        # A match/switch body holds the arms, not statements: a span of them is
+        # neither a function body nor a valid call site. Each arm's own body is
+        # still a block of its own.
+        if any(stmt.type in lmap.case_kinds for stmt in stmts):
+            continue
         n = len(stmts)
         resources = _scoped_resource_indexes(stmts, lmap)
         is_body = block.id == body_container.id

@@ -3,34 +3,23 @@
  * Powers the upgrade banner, what's-new view, and version footer.
  */
 
+import type {
+  ChangelogEntryModel,
+  ChangelogHighlightModel,
+  ChangelogResponse,
+  ChangelogSectionModel,
+  ReleaseStatsModel,
+  VersionResponse,
+} from "@repowise-dev/types/generated/http";
 import { apiGet } from "./client";
 
-export interface MetaVersion {
-  server_version: string;
-  latest_version: string | null;
-  /** null when PyPI could not be reached (distinct from "up to date"). */
-  update_available: boolean | null;
-  upgrade_command: string;
-  store_format_version: number | null;
-  store_compatible: boolean | null;
-  reindex_recommended: boolean;
-  reindex_command: string | null;
-}
-
-export interface ChangelogSection {
-  name: string;
-  items: string[];
-}
-
-export interface ChangelogEntry {
-  version: string;
-  label: string | null;
-  sections: ChangelogSection[];
-}
-
-export interface ChangelogData {
-  entries: ChangelogEntry[];
-}
+export type MetaVersion = VersionResponse;
+export type ChangelogSection = ChangelogSectionModel;
+export type ChangelogHighlight = ChangelogHighlightModel;
+export type ReleaseStats = ReleaseStatsModel;
+/** `version` is `"unreleased"` for the next release's notes in a dev build. */
+export type ChangelogEntry = ChangelogEntryModel;
+export type ChangelogData = ChangelogResponse;
 
 export async function getMetaVersion(repoId?: string): Promise<MetaVersion> {
   return apiGet<MetaVersion>(

@@ -30,3 +30,11 @@ def test_instructions_keep_the_no_index_and_workspace_guidance() -> None:
     assert "repowise init --yes" in text
     assert "do not run it yourself" in text
     assert "get_architecture" in text and "get_blast_radius" in text
+
+
+def test_handshake_reports_the_repowise_version_not_the_sdk_version() -> None:
+    from repowise.server import __version__
+
+    options = mcp._mcp_server.create_initialization_options()
+    assert options.server_name == "repowise"
+    assert options.server_version == __version__

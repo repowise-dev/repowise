@@ -25,6 +25,7 @@ LanguageTag = Literal[
     # Single-file components — parsed as TypeScript via sfc_source.
     "svelte",
     "vue",
+    "astro",
     "go",
     "rust",
     "java",

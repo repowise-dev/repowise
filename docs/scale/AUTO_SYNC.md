@@ -9,7 +9,8 @@ method that fits your setup; they can be combined.
 | [File watcher](#2-file-watcher) | Local development, uncommitted work | No |
 | [GitHub webhook](#3-github-webhook) | Teams, a shared repowise server | Yes |
 | [GitLab webhook](#4-gitlab-webhook) | Teams, a shared repowise server | Yes |
-| [Polling fallback](#5-polling-fallback) | Safety net for missed webhooks | Yes |
+| [Gitea / Forgejo webhook](#5-gitea--forgejo-webhook) | Self-hosted teams | Yes |
+| [Polling fallback](#6-polling-fallback) | Safety net for missed webhooks | Yes |
 
 Whichever you use, agents are told when the index is behind: the SessionStart
 hook reports indexed commit vs `HEAD` ([HOOKS.md](../agent/HOOKS.md)), and MCP
@@ -127,13 +128,49 @@ With `REPOWISE_GITLAB_WEBHOOK_TOKEN` set, the server compares it with the
 `401 Unauthorized`. Without the token, only local callers are accepted and every
 other caller gets `403 Forbidden`, as with GitHub.
 
-Both endpoints match the payload's repository to a registered one by a
+---
+
+## 5. Gitea / Forgejo Webhook
+
+One endpoint serves both: Forgejo is a Gitea fork and still sends the
+`X-Gitea-*` headers alongside its own `X-Forgejo-*` ones.
+
+```bash
+export REPOWISE_GITEA_WEBHOOK_SECRET="your-secret-here"
+```
+
+In your repository, open **Settings > Webhooks > Add Webhook > Gitea**
+(**Forgejo** on Forgejo):
+
+1. **Target URL:** `https://your-server.example.com/api/webhooks/gitea`
+2. **HTTP Method:** `POST`
+3. **POST Content Type:** `application/json`
+4. **Secret:** the value of `REPOWISE_GITEA_WEBHOOK_SECRET`
+5. **Trigger On:** **Push Events**
+
+### Security (Gitea / Forgejo)
+
+With `REPOWISE_GITEA_WEBHOOK_SECRET` set, every request must carry a valid
+HMAC-SHA256 digest of the raw body in `X-Gitea-Signature` or
+`X-Forgejo-Signature`. Both forges send it as **bare lowercase hex with no
+`sha256=` prefix**, which is the one way their delivery differs from GitHub's;
+a prefixed value is rejected with `401 Unauthorized`, as is a mismatch.
+
+Without the secret, only local callers are accepted and every other caller gets
+`403 Forbidden`, as with GitHub and GitLab.
+
+Gitea and Forgejo also send GitHub's `X-Hub-Signature-256` for compatibility,
+so an existing hook pointed at `/api/webhooks/github` keeps working — it is
+just recorded as a GitHub event. Use this endpoint to have the delivery
+attributed to the forge that sent it, and to give it its own secret.
+
+All three endpoints match the payload's repository to a registered one by a
 canonical key, so clone, ssh and web URLs of the same repository match, case
 aside. Other hosts are listed in [GIT_HOSTS.md](../start/GIT_HOSTS.md).
 
 ---
 
-## 5. Polling Fallback
+## 6. Polling Fallback
 
 While `repowise serve` runs, a background job polls every registered repository
 every 15 minutes. New commits a webhook missed trigger an incremental update.
@@ -186,6 +223,7 @@ LLM cost. `POST /api/repos/{id}/full-resync` also regenerates every page.
 |----------|---------|-------------|
 | `REPOWISE_GITHUB_WEBHOOK_SECRET` | Server | HMAC secret for GitHub webhook verification |
 | `REPOWISE_GITLAB_WEBHOOK_TOKEN` | Server | Token for GitLab webhook verification |
+| `REPOWISE_GITEA_WEBHOOK_SECRET` | Server | HMAC secret for Gitea / Forgejo webhook verification |
 
 Provider API keys, the database URL and the API token are listed in
 [CONFIG.md](../reference/CONFIG.md#environment-variables). Keys saved to
@@ -204,12 +242,14 @@ Provider API keys, the database URL and the API token are listed in
 installed.
 
 **Webhook returns 401**: a secret or token is set on the server but the
-request's signature did not match (or the GitHub `sha256=` prefix was missing).
-Check the value matches on both sides.
+request's signature did not match. Check the value matches on both sides, and
+the prefix: GitHub's `X-Hub-Signature-256` needs the `sha256=` prefix, while
+Gitea's and Forgejo's `X-Gitea-Signature` must not have one.
 
 **Webhook returns 403**: no secret or token is set, and the request came from a
-non-local caller. Set `REPOWISE_GITHUB_WEBHOOK_SECRET` or
-`REPOWISE_GITLAB_WEBHOOK_TOKEN`, restart the server, and redeliver the payload.
+non-local caller. Set `REPOWISE_GITHUB_WEBHOOK_SECRET`,
+`REPOWISE_GITLAB_WEBHOOK_TOKEN` or `REPOWISE_GITEA_WEBHOOK_SECRET`, restart the
+server, and redeliver the payload.
 
 **Update is slow**: the first update after many commits does more work.
 `repowise update --index-only` skips page regeneration when you only need the

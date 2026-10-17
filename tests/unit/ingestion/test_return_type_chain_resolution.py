@@ -742,6 +742,7 @@ _DART_REPO = (
     "  factory Repo.copy() {\n    return Repo.other();\n  }\n"
     "  static Repo parse(String text) => Repo();\n"
     "  Item item(int i) => Item();\n"
+    "  Repo self() => this;\n"
     "  Item? maybe() => null;\n"
     "  Future<Item> later() async => Item();\n"
     "  void close() {}\n"
@@ -832,6 +833,8 @@ def test_dart_chain_binds_the_method_of_the_inner_return_type(
     [
         "r.later().save();",  # a Future is not the class it wraps
         "r.item(1).close();",  # the returned class lacks the method
+        "r.self().later().save();",  # a Future mid-chain binds nothing
+        "r.self().item(1).close();",  # class lacks method on third link
         "unknown().save();",  # nothing types the inner call
         "r..item(1)..close();",  # a cascade is not a chain
         "r?.item(1).save();",  # a null-aware first link is not captured
@@ -841,10 +844,34 @@ def test_dart_chain_without_a_typed_method_binds_no_bare_name(tmp_path: Path, bo
     assert {e for e in _dart_edges(tmp_path, body) if e[1] in _DART_OUTER} == set()
 
 
+def test_dart_third_link_of_a_chain_binds_by_return_type(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "r.self().self().close();")
+
+    assert (1, "repo.dart::Repo::close", "return_type_import") in edges
+
+
+def test_dart_third_link_on_constructor_binds_by_return_type(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "Repo().self().self().close();")
+
+    assert (1, "repo.dart::Repo::close", "return_type_import") in edges
+
+
+def test_dart_third_link_type_changes_mid_chain(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "r.self().item(1).save();")
+
+    assert (1, "repo.dart::Item::save", "return_type_import") in edges
+
+
+def test_dart_three_links_parser_yields_three_sites(tmp_path: Path) -> None:
+    parsed = _parse(tmp_path, "app.dart", "dart", "void run(Repo r) { r.self().self().close(); }")
+    assert len(parsed["app.dart"].calls) == 3
+
+
 def test_dart_third_link_of_a_chain_is_dropped_not_misbound(tmp_path: Path) -> None:
     edges = _dart_edges(tmp_path, "r.item(1).save().close();")
 
     assert {e[1] for e in edges if e[1] in _DART_OUTER} == {"repo.dart::Item::save"}
+
 
 
 def test_dart_constructor_initializers_are_not_calls(tmp_path: Path) -> None:
@@ -894,6 +921,7 @@ _KOTLIN_LOCALS = (
     "class Repo {\n    fun load() {}\n}\n"
     "class Other {\n    fun load() {}\n}\n"
     "fun makeRepo(): Repo = Repo()\n"
+    "fun build(name: String, block: () -> Unit): Repo = Repo()\n"
     "fun mk(a: Int): Repo = Repo()\nfun mk(a: String): Other = Other()\n"
     "fun <T> gen(): T = TODO()\n"
     "object Factory {\n    fun other(): Other = Other()\n}\n"
@@ -903,6 +931,7 @@ _SWIFT_LOCALS = (
     "class Repo {\n    func load() {}\n}\n"
     "class Other {\n    func load() {}\n}\n"
     "func makeRepo() throws -> Repo { return Repo() }\n"
+    "func findRepo() -> Repo? { return nil }\n"
     "func mk(a: Int) -> Repo { return Repo() }\nfunc mk(a: String) -> Other { return Other() }\n"
     "func fetch() async -> Repo { return Repo() }\n"
     "enum Factory {\n    static func other() async -> Other { return Other() }\n}\n"
@@ -932,10 +961,17 @@ def _last_line_callees(tmp_path: Path, language: str, body: str) -> set[str]:
     [
         ("kotlin", "val r = makeRepo()\nr.load()", "a.kt::Repo::load"),
         ("kotlin", "val r = Factory.other()\nr.load()", "a.kt::Other::load"),
+        ("kotlin", 'val r = build("a") { }\nr.load()', "a.kt::Repo::load"),
+        ("kotlin", 'val r = build("a") {\n    println("x")\n}\nr.load()', "a.kt::Repo::load"),
         ("swift", "let r = try makeRepo()\nr.load()", "a.swift::Repo::load"),
         ("swift", "let r = await Factory.other()\nr.load()", "a.swift::Other::load"),
         ("swift", "let r = try? makeRepo()\nr?.load()", "a.swift::Repo::load"),
         ("swift", "async let r = fetch()\nawait r.load()", "a.swift::Repo::load"),
+        ("swift", "if let r = findRepo() {\nr.load()", "a.swift::Repo::load"),
+        ("swift", "if var r = findRepo() {\nr.load()", "a.swift::Repo::load"),
+        ("swift", "guard let r = findRepo() else { return }\nr.load()", "a.swift::Repo::load"),
+        ("swift", "while let r = findRepo() {\nr.load()", "a.swift::Repo::load"),
+        ("swift", "if let o = makeRepo(), let r = findRepo() {\nr.load()", "a.swift::Repo::load"),
     ],
 )
 def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
@@ -952,7 +988,11 @@ def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
         ("swift", "var r = try makeRepo()\n    .other()"),
         ("kotlin", "val r = makeRepo()\n    ?: Other()"),
         ("kotlin", "val r = makeRepo()\n    as Other"),
+        ("kotlin", 'val r = build("a") { }.let { Other() }'),
+        ("kotlin", 'val r = build("a") { } ?: Other()'),
         ("swift", "let r = try makeRepo()\n    as! Other"),
+        ("swift", "let r = makeRepo() { Other() }"),
+        ("swift", "if case let .some(r) = findRepo() {"),
         ("kotlin", "val r = mk(1)"),  # overloads of one arity that return different types
         ("swift", "let r = mk(a: 1)"),
         ("kotlin", "val r = gen()"),  # a type parameter is no class

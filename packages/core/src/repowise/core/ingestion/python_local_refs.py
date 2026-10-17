@@ -48,6 +48,8 @@ import ast
 from collections.abc import Iterator
 from collections.abc import Set as AbstractSet
 
+from repowise.core.pyparse import parse_python
+
 __all__ = ["extract_python_local_refs", "local_refs_from_tree", "parse_python_module"]
 
 
@@ -88,7 +90,7 @@ def extract_python_local_refs(
 def parse_python_module(source: str) -> ast.Module | None:
     """*source* as an ``ast`` module, or ``None`` when Python 3 cannot parse it."""
     try:
-        return ast.parse(source)
+        return parse_python(source)
     except (SyntaxError, ValueError):
         return None
 
@@ -185,7 +187,7 @@ def _forward_ref_nodes(annotation: ast.expr) -> Iterator[tuple[ast.AST, int]]:
         if not (isinstance(sub, ast.Constant) and isinstance(sub.value, str)):
             continue
         try:
-            inner = ast.parse(sub.value, mode="eval")
+            inner = parse_python(sub.value, mode="eval")
         except (SyntaxError, ValueError):
             continue
         for ref in ast.walk(inner):

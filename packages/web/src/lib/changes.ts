@@ -10,17 +10,20 @@ export function changeLabel(c: Pick<ChangeListItem, "forge_ref" | "id">): string
   return c.forge_ref ?? (c.id.length > 19 ? c.id.slice(0, 19) : c.id);
 }
 
-export type CommitsView = "changes" | "commits";
+export type CommitsView = "changes" | "commits" | "events";
 
-/** The Commits page in one view: `?view=changes` groups by merged change. */
+/**
+ * The Commits page in one view: `?view=changes` groups by merged change,
+ * `?view=events` lists what moved between index runs.
+ */
 export function commitsViewHref(repoId: string, view: CommitsView): string {
   const base = `/repos/${repoId}/commits`;
-  return view === "changes" ? `${base}?view=changes` : base;
+  return view === "commits" ? base : `${base}?view=${view}`;
 }
 
 /** The view a `?view=` value asks for; anything else is the commit view. */
 export function parseCommitsView(raw: string | string[] | undefined): CommitsView {
-  return raw === "changes" ? "changes" : "commits";
+  return raw === "changes" || raw === "events" ? raw : "commits";
 }
 
 /** Filters and paging of the by-change view, as its query parameters keep them. */

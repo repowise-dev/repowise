@@ -217,6 +217,12 @@ _KT_ANNOTATED = re.compile(
 _KT_CONSTRUCTED = re.compile(
     r"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\((?![^()]*\)\s*\.)"
 )
+# `val x = Foo { ... }`: a constructor whose only argument is a trailing lambda.
+# The match ends at the `{`; `scan_declarations` keeps it only when the lambda
+# ends the statement, so `Foo { }.build()` is not a `Foo`.
+_KT_CONSTRUCTED_LAMBDA = re.compile(
+    r"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)[ \t]*(?=\{)"
+)
 
 # Swift annotates after the name: `let x: Foo`, `var x: Foo` and every parameter
 # spelling are `name: Type`. Anchored on the colon, not the opening bracket,
@@ -332,7 +338,7 @@ _JAVA_PATTERN_VARIABLE = re.compile(
 # IMPLICIT_FIELD_LANGUAGES: a field is read through its receiver (``c.parent``),
 # so it types a chain hop and never a bare name.
 _GO_FAMILY = (_GO_PARAM, _GO_SHORT_DECL, _GO_VAR_DECL, _GO_FIELD, _GO_EMBEDDED_FIELD)
-_KT_FAMILY = (_KT_ANNOTATED, _KT_CONSTRUCTED)
+_KT_FAMILY = (_KT_ANNOTATED, _KT_CONSTRUCTED, _KT_CONSTRUCTED_LAMBDA)
 _SWIFT_FAMILY = (_SWIFT_ANNOTATED, _SWIFT_CONSTRUCTED)
 _DART_FAMILY = (_DART_TYPED, _DART_CONSTRUCTED)
 _PY_FAMILY = (_PY_ANNOTATED, _PY_CONSTRUCTED, _PY_SELF_ANNOTATED, _PY_SELF_CONSTRUCTED)
@@ -1004,6 +1010,10 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     inside = _inside_parentheses(cleaned) if language in _PARAMETERS_AT_CLASS_SCOPE else None
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
+            if pattern is _KT_CONSTRUCTED_LAMBDA and not _ends_statement(
+                cleaned, _lambda_end(cleaned, match.end()), language
+            ):
+                continue
             raw = match.group("type")
             if raw not in resolved:
                 resolved[raw] = _usable_type_name(raw, language)
@@ -1120,6 +1130,8 @@ _LANGUAGE_STATEMENT_ENDS = {"python": frozenset("\n"), "dart": frozenset(";")}
 _NEXT_LINE_CONTINUES = {
     language: re.compile(r"[.?:+\-*/%&|=!<>]|(?:as|is)\b") for language in ("kotlin", "swift")
 }
+_SWIFT_OPTIONAL_BINDING_PREFIX = re.compile(r"(?:\b(?:if|guard|while)|,)\s*$")
+_SWIFT_BINDING_ENDS = re.compile(r"[{,]|\belse\b")
 
 
 def _call_end(text: str, index: int) -> int:
@@ -1142,12 +1154,57 @@ def _call_end(text: str, index: int) -> int:
     return -1
 
 
-def _call_ends_statement(cleaned: str, opened: int, language: str) -> bool:
+def _lambda_end(text: str, index: int) -> int:
+    """Index just past the ``}`` closing the ``{`` at *index*, or -1."""
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if char in _QUOTES:
+            index += 1
+            while index < len(text) and text[index] != char:
+                index += 2 if char != "`" and text[index] == "\\" else 1
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return -1
+
+
+def _after_trailing_lambda(text: str, end: int) -> int:
+    """*end*, or past a Kotlin trailing lambda that starts on the same line.
+
+    ``f(a) { .. }`` is still the call ``f``: the lambda is its last argument.
+    """
+    brace = end
+    while brace < len(text) and text[brace] in " \t":
+        brace += 1
+    if brace < len(text) and text[brace] == "{":
+        return _lambda_end(text, brace)
+    return end
+
+
+def _call_ends_statement(cleaned: str, opened: int, language: str, start: int = 0) -> bool:
     """Does the call whose ``(`` ends just before *opened* end its statement?"""
     end = _call_end(cleaned, opened)
+    if end >= 0 and language == "kotlin":
+        end = _after_trailing_lambda(cleaned, end)
+    return _ends_statement(cleaned, end, language, start)
+
+
+def _ends_statement(cleaned: str, end: int, language: str, start: int = 0) -> bool:
+    """Does the expression ending at *end* end its statement (-1: it never ends)?"""
     if end < 0:
         return False
     rest = cleaned[end:].lstrip(" \t\n" if language == "dart" else " \t")
+    if (
+        language == "swift"
+        and _SWIFT_OPTIONAL_BINDING_PREFIX.search(cleaned[:start])
+        and _SWIFT_BINDING_ENDS.match(rest)
+    ):
+        return True
     if rest and rest[0] not in _LANGUAGE_STATEMENT_ENDS.get(language, _STATEMENT_ENDS):
         return False
     continues = _NEXT_LINE_CONTINUES.get(language)
@@ -1167,7 +1224,7 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
     found: list[CallAssignment] = []
     for match in pattern.finditer(cleaned):
-        if not _call_ends_statement(cleaned, match.end(), language):
+        if not _call_ends_statement(cleaned, match.end(), language, match.start()):
             continue
         found.append(
             CallAssignment(

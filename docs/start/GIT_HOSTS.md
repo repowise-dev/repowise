@@ -34,7 +34,8 @@ matching a webhook to a registered repository. This page says what works where.
 | Azure DevOps (`dev.azure.com`, `ssh.dev.azure.com`, `*.visualstudio.com`) | Yes, all three URL forms as one repo | Azure Pipelines | Yes | No |
 | Bitbucket Cloud | Yes | Bitbucket Pipelines | Yes | No |
 | Bitbucket Data Center | With an override | Jenkins or another [listed CI](#ci-systems) | Yes | No |
-| Other git hosts (Gitea, cgit, plain ssh) | As a generic host | Any [listed CI](#ci-systems) | Yes | No |
+| Gitea / Forgejo | As a generic host | Any [listed CI](#ci-systems) | Yes | `/api/webhooks/gitea` |
+| Other git hosts (cgit, plain ssh) | As a generic host | Any [listed CI](#ci-systems) | Yes | No |
 
 Azure DevOps Server needs an override too. Bot accounts and noreply addresses
 from every host are recognised on every repository, since history can predate

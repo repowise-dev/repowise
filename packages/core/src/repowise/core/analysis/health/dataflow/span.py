@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..complexity.ast_utils import is_comment
 from .slice import all_blocks
 
 if TYPE_CHECKING:
@@ -75,7 +76,3 @@ def exiting_guard(st: Node, lmap: LanguageNodeMap, exits: frozenset[str]) -> Nod
     stmts = [c for c in body.named_children if not is_comment(c)]
     last = body if body.type in exits or not stmts else stmts[-1]
     return st.child_by_field_name("condition") if last.type in exits else None
-
-
-def is_comment(node: Node) -> bool:
-    return "comment" in node.type

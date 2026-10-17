@@ -3,9 +3,10 @@
 Every change merged between ``--since`` and ``--until`` with whether it carries
 a review record, which tests reach it, the local change policy's verdict, the
 teams accountable for what it touched, its provenance and its outcomes, plus a
-period summary and a method appendix. Built the way ``report assessment``
-builds its document and rendered by the same renderers (JSON, Markdown, HTML,
-CSV). A change without a kept checklist has one built and stored first, as
+period summary and a method appendix. Without ``--since`` the period is the 90
+days before the newest indexed commit; ``--since all`` covers every change.
+Built the way ``report assessment`` builds its document and rendered by the
+same renderers (JSON, Markdown, HTML, CSV). A change without a kept checklist has one built and stored first, as
 ``repowise changes export`` does, unless ``--no-build``; the count to build,
 an estimate and progress go to stderr.
 """
@@ -25,13 +26,25 @@ from repowise.cli.helpers import (
     silence_logs_for_machine_output_until_close,
 )
 
+#: ``--since all``: every indexed change rather than the default window.
+ALL_HISTORY = "all"
+
+
+def _since(ctx: click.Context, param: click.Parameter, value: str | None) -> datetime | str | None:
+    """``--since``: a date, :data:`ALL_HISTORY`, or unset for the default window."""
+    if value is None:
+        return None
+    if value.strip().lower() == ALL_HISTORY:
+        return ALL_HISTORY
+    return click.DateTime().convert(value, param, ctx)
+
 
 @dataclass(frozen=True)
 class ChangesReportOptions:
     """The command line of ``repowise report changes``, as click parses it."""
 
     path: str | None = None
-    since: datetime | None = None
+    since: datetime | str | None = None
     until: datetime | None = None
     fmt: str = "markdown"
     out_path: str | None = None
@@ -41,9 +54,14 @@ class ChangesReportOptions:
     no_workspace: bool = False
     repo_alias: str | None = None
 
+    @property
+    def whole_history(self) -> bool:
+        return self.since == ALL_HISTORY
+
     def period(self) -> tuple[datetime | None, datetime | None]:
         """``(since, until)`` in UTC; raises when the period is empty."""
-        since, until = (d.replace(tzinfo=UTC) if d else None for d in (self.since, self.until))
+        start = None if self.whole_history else self.since
+        since, until = (d.replace(tzinfo=UTC) if d else None for d in (start, self.until))
         if since and until and since >= until:
             raise click.BadParameter("--since must be before --until", param_hint="--since")
         return since, until
@@ -52,7 +70,13 @@ class ChangesReportOptions:
 @click.command("changes")
 @click.argument("path", required=False, type=click.Path(exists=True, file_okay=False))
 @click.option(
-    "--since", type=click.DateTime(), default=None, help="Merged on or after this date (UTC)."
+    "--since",
+    default=None,
+    callback=_since,
+    metavar="DATE|all",
+    # The day count is DEFAULT_WINDOW_DAYS, written out to keep `--help` off the core import.
+    help="Merged on or after this date (UTC); default the 90 days before the newest indexed "
+    "commit, `all` for every indexed change.",
 )
 @click.option("--until", type=click.DateTime(), default=None, help="Merged before this date (UTC).")
 @click.option(
@@ -81,7 +105,7 @@ def changes_command(**params: Any) -> None:
     """
     from repowise.cli.commands.changes_cmd import build_plan, build_progress
     from repowise.cli.commands.report_assessment_cmd import _build, _emit, _renderer, _scope
-    from repowise.core.changes.period import PeriodRequest
+    from repowise.core.changes.period import DEFAULT_WINDOW_DAYS, PeriodRequest
     from repowise.core.report.build import available_sections
 
     opts = ChangesReportOptions(**params)
@@ -101,9 +125,14 @@ def changes_command(**params: Any) -> None:
         "since": since.isoformat() if since else None,
         "until": until.isoformat() if until else None,
     }
+    window_days = None if opts.whole_history else DEFAULT_WINDOW_DAYS
+    if since is None and window_days:
+        # Each repo's start is measured from its own newest commit; the summary names it.
+        scope["period"]["window_days"] = window_days
     request = PeriodRequest(
         since=since,
         until=until,
+        window_days=window_days,
         refresh=opts.refresh,
         build=not opts.no_build,
         plan=build_plan,

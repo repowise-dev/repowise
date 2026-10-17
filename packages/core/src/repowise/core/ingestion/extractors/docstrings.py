@@ -119,7 +119,7 @@ def extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
                 "future_import_statement",
             ):
                 break
-    elif lang in ("typescript", "javascript", "svelte", "vue"):
+    elif lang in ("typescript", "javascript", "svelte", "vue", "astro"):
         # Look for leading /** ... */ comment
         for child in root.children:
             if child.type == "comment":
@@ -326,7 +326,7 @@ def extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None:
                 return None
         return None
 
-    elif lang in ("typescript", "javascript", "svelte", "vue"):
+    elif lang in ("typescript", "javascript", "svelte", "vue", "astro"):
         return find_preceding_jsdoc(def_node, src)
 
     elif lang == "go":

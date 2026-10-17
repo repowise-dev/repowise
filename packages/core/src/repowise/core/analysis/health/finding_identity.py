@@ -160,12 +160,6 @@ def legacy_finding_public_id(row: Any) -> str:
     )
 
 
-def is_finding_public_id(value: str) -> bool:
-    """Whether a caller-supplied string has the shape this kernel mints."""
-    prefix, separator, digest = value.partition("_")
-    return bool(separator) and prefix == _PREFIX and len(digest) == 20
-
-
 __all__ = [
     "FINDING_ID_VERSION",
     "IDENTITY_DETAIL_KEYS",
@@ -173,6 +167,5 @@ __all__ = [
     "SYMBOL_KEY",
     "SYMBOL_LINE_KEY",
     "finding_public_id",
-    "is_finding_public_id",
     "legacy_finding_public_id",
 ]

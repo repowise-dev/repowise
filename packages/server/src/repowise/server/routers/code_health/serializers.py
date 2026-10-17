@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from repowise.core.analysis.finding_registry import verification_label
+from repowise.core.analysis.finding_registry import preview_label, verification_label
 from repowise.core.analysis.health.aggregation import (
     primary_and_magnitude,
     primary_and_magnitude_by_file,
@@ -21,7 +21,7 @@ def _finding_to_dict(f: Any, lower_priority: str | None = None) -> dict:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
         details = {}
-    return {
+    row = {
         "id": f.id,
         "file_path": f.file_path,
         "biomarker_type": f.biomarker_type,
@@ -41,6 +41,10 @@ def _finding_to_dict(f: Any, lower_priority: str | None = None) -> dict:
         "verification": verification_label(f.biomarker_type),
         "lower_priority": LOW_PRIORITY_LABEL.get(lower_priority or ""),
     }
+    # The measurement label, sent only on a language the layer serves as a preview.
+    if note := preview_label("health", f.file_path, f.biomarker_type):
+        row["preview"] = note
+    return row
 
 
 def _round_opt(v: Any) -> float | None:

@@ -31,9 +31,21 @@ from repowise.server.schemas.evidence import (
     WireInt,
 )
 
-VIEW_SCHEMA_VERSION = 1
+VIEW_SCHEMA_VERSION = 2
+#: Versions a reader accepts: 1 is every part stored before treemaps and heatmaps.
+VIEW_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
 
-ChartType = Literal["bar", "stacked_bar", "line", "donut", "scatter"]
+ChartType = Literal[
+    "bar",
+    "horizontal_bar",
+    "stacked_bar",
+    "line",
+    "area",
+    "donut",
+    "scatter",
+    "treemap",
+    "heatmap",
+]
 CHART_TYPES: tuple[str, ...] = get_args(ChartType)
 
 ViewCoverageMetric = Literal["attribution", "test_reach"]
@@ -50,7 +62,8 @@ VIEW_LIMITS: dict[str, int] = {
     "chart_points": 100,
     "chart_series": 8,
     "donut_min_parts": 2,
-    "donut_max_parts": 5,
+    "donut_max_parts": 8,
+    "treemap_groups": 3,
     "narrative_blocks": 50,
     "section_views": 20,
 }
@@ -79,7 +92,7 @@ class ViewPartBase(StrictContract):
     #: Data parts carry provenance and are what other parts may name.
     is_data: ClassVar[bool] = False
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     id: PartId
     title: NonEmpty
     summary: NonEmpty | None = None
@@ -87,9 +100,9 @@ class ViewPartBase(StrictContract):
     @field_validator("schema_version", mode="before")
     @classmethod
     def _not_a_bool(cls, value: object) -> object:
-        # Literal[1] alone accepts True, which the TypeScript side rejects.
+        # Literal[1, 2] alone accepts True, which the TypeScript side rejects.
         if isinstance(value, bool):
-            raise ValueError(f"expected {VIEW_SCHEMA_VERSION}")
+            raise ValueError(f"expected one of {VIEW_SCHEMA_VERSIONS}")
         return value
 
     def references(self) -> list[str]:
@@ -144,12 +157,16 @@ class TableView(ViewTableData, ViewProvenance, ViewPartBase):
 
 _SERIES_BOUNDS: dict[str, tuple[int, int]] = {
     "bar": (1, VIEW_LIMITS["chart_series"]),
+    "horizontal_bar": (1, VIEW_LIMITS["chart_series"]),
     "line": (1, VIEW_LIMITS["chart_series"]),
+    "area": (1, VIEW_LIMITS["chart_series"]),
     "stacked_bar": (2, VIEW_LIMITS["chart_series"]),
     "donut": (1, 1),
     "scatter": (1, VIEW_LIMITS["chart_series"]),
+    "treemap": (1, 1),
+    "heatmap": (1, VIEW_LIMITS["chart_series"]),
 }
-_PARTS_OF_A_WHOLE = frozenset({"stacked_bar", "donut"})
+_PARTS_OF_A_WHOLE = frozenset({"stacked_bar", "donut", "treemap"})
 
 
 class ChartView(ViewProvenance, ViewPartBase):
@@ -162,6 +179,8 @@ class ChartView(ViewProvenance, ViewPartBase):
     series: list[NonEmpty] = Field(max_length=VIEW_LIMITS["chart_series"])
     sort: ChartSortOrder | None = None
     summary: NonEmpty
+    groups: list[NonEmpty] | None = Field(default=None, max_length=VIEW_LIMITS["treemap_groups"])
+    color: NonEmpty | None = None
 
     @model_validator(mode="after")
     def _chart_rules(self) -> ChartView:
@@ -170,6 +189,7 @@ class ChartView(ViewProvenance, ViewPartBase):
         kind = self.chart_type
         if self.x not in columns:
             raise ValueError("x is not a column of data")
+        self._treemap_rules(columns)
         for s in self.series:
             if s not in columns:
                 raise ValueError(f"series {s!r} is not a column of data")
@@ -217,6 +237,22 @@ class ChartView(ViewProvenance, ViewPartBase):
             if any(sign * (b - a) < 0 for a, b in pairwise(totals)):
                 raise ValueError(f"rows are not in {self.sort} order of their series total")
         return self
+
+    def _treemap_rules(self, columns: dict[str, ViewColumn]) -> None:
+        if self.groups is None and self.color is None:
+            return
+        if self.chart_type != "treemap":
+            raise ValueError("groups and color apply to a treemap only")
+        groups = self.groups or []
+        for g in groups:
+            if g not in columns:
+                raise ValueError(f"group {g!r} is not a column of data")
+            if g == self.x or g in self.series:
+                raise ValueError(f"group {g!r} is the x or a series column")
+        if _duplicates(groups):
+            raise ValueError("groups repeats a column")
+        if self.color is not None and (self.color not in columns or self.color == self.x):
+            raise ValueError("color is not a column of data other than x")
 
 
 def _finite_number(cell: object) -> bool:

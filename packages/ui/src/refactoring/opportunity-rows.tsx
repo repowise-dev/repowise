@@ -26,6 +26,7 @@ import * as React from "react";
 
 import { formatNumber } from "../lib/format";
 import { typeMeta } from "./meta";
+import { PreviewBadge } from "../health/preview-badge";
 import {
   STATUS_LABEL,
   TRIAGE_STATUSES,
@@ -188,6 +189,11 @@ function OpportunityRow({
     >
       <div className="order-2 text-xs text-[var(--color-text-secondary)] lg:order-none lg:pt-px">
         {meta.label}
+        {opportunity.preview ? (
+          <span className="ml-2">
+            <PreviewBadge note={opportunity.preview} />
+          </span>
+        ) : null}
       </div>
 
       <button

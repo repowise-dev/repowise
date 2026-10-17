@@ -91,8 +91,8 @@ export { resolveToken, resolveTokens, useThemeVersion } from "./use-theme-tokens
 export {
   ProportionBar,
   SHARE_STEPS,
-  SHARE_TAIL,
   shareColor,
   type ProportionBarProps,
   type ProportionSegment,
 } from "./proportion-bar";
+export { SERIES, SERIES_TAIL, seriesColor, commitCategoryColor } from "./series";

@@ -166,10 +166,9 @@ export function salienceOrder(marks: StructuralMark[]): string[] {
 /**
  * Two hues, then neutrals.
  *
- * The accent/secondary pair, and deliberately not the `--color-share-*`
- * steps: those are for shares of a whole, where position means magnitude, so
- * spending them on unrelated categories would claim an order the types do not
- * have. Type is carried in full
+ * The accent/secondary pair, and deliberately not the full `--color-series-*`
+ * palette: eight equal hues would give every type the same weight, and here
+ * hue ranks attention. Type is carried in full
  * by the mark's shape, and named in the legend and the hover card, so hue here
  * only ranks attention - which is why the tail can recede into neutrals without
  * anything becoming unreadable.

@@ -714,6 +714,30 @@ class TestCrossRepoHooks:
         import asyncio
         asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, ["backend"]))
 
+    def test_measures_contract_facts_of_the_changed_repos_last(self, tmp_path: Path) -> None:
+        """The snapshot each update took ran before extraction, so the hooks
+        end by filling its contract facts, for the repos that changed only."""
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="api", alias="api"), RepoEntry(path="web", alias="web")]
+        )
+        order: list[str] = []
+
+        async def _phases(*_a, **_k):
+            order.append("phases")
+
+        async def _refresh(path):
+            order.append(path.name)
+
+        import asyncio
+
+        with (
+            patch("repowise.core.workspace.update._run_phases", _phases),
+            patch("repowise.core.workspace.store.refresh_workspace_store", AsyncMock()),
+            patch("repowise.core.workspace.update._refresh_contract_facts", _refresh),
+        ):
+            asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, ["api"]))
+        assert order == ["phases", "api"]
+
 
 # ---------------------------------------------------------------------------
 # RepoUpdateResult

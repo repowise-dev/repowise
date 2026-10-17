@@ -3,23 +3,15 @@
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Code } from "lucide-react";
+import { SERIES_TAIL, seriesColor } from "../shared/series";
 
-const LANG_COLORS: Record<string, string> = {
-  python: "var(--color-lang-python)",
-  typescript: "var(--color-lang-typescript)",
-  javascript: "var(--color-lang-typescript)",
-  go: "var(--color-lang-go)",
-  rust: "var(--color-lang-rust)",
-  java: "var(--color-lang-java)",
-  cpp: "var(--color-lang-cpp)",
-  c: "var(--color-lang-cpp)",
-  config: "var(--color-lang-config)",
-};
+const MAX_NAMED = 6;
 
 const HIDDEN_LANGUAGE_USAGE_FORMATS = new Set(["json", "yaml", "toml"]);
 
-function getLangColor(lang: string): string {
-  return LANG_COLORS[lang.toLowerCase()] ?? "var(--color-lang-other)";
+/** Largest language first in the series colours; the folded rest in grey. */
+function langFill(rank: number): string {
+  return rank < MAX_NAMED ? seriesColor(rank) : SERIES_TAIL;
 }
 
 function shouldShowLanguageUsage(name: string): boolean {
@@ -42,8 +34,8 @@ export function LanguageDonut({ distribution, viewAllHref }: LanguageDonutProps)
   const total = entries.reduce((s, e) => s + e.value, 0);
   if (total === 0) return null;
 
-  const shown = entries.slice(0, 6);
-  const otherValue = entries.slice(6).reduce((s, e) => s + e.value, 0);
+  const shown = entries.slice(0, MAX_NAMED);
+  const otherValue = entries.slice(MAX_NAMED).reduce((s, e) => s + e.value, 0);
   if (otherValue > 0) shown.push({ name: "other", value: otherValue });
 
   return (
@@ -79,8 +71,8 @@ export function LanguageDonut({ distribution, viewAllHref }: LanguageDonutProps)
                   dataKey="value"
                   stroke="none"
                 >
-                  {shown.map((entry) => (
-                    <Cell key={entry.name} fill={getLangColor(entry.name)} />
+                  {shown.map((entry, i) => (
+                    <Cell key={entry.name} fill={langFill(i)} />
                   ))}
                 </Pie>
                 <Tooltip
@@ -100,12 +92,12 @@ export function LanguageDonut({ distribution, viewAllHref }: LanguageDonutProps)
             </ResponsiveContainer>
           </div>
           <div className="space-y-1.5 min-w-0 flex-1">
-            {shown.map((entry) => (
+            {shown.map((entry, i) => (
               <div key={entry.name} className="flex items-center justify-between text-xs">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span
                     className="h-2 w-2 rounded-full shrink-0"
-                    style={{ backgroundColor: getLangColor(entry.name) }}
+                    style={{ backgroundColor: langFill(i) }}
                   />
                   <span className="text-[var(--color-text-secondary)] capitalize truncate">
                     {entry.name}

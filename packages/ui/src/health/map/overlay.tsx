@@ -1,111 +1,17 @@
 "use client";
 
 /**
- * Everything that follows the pointer, the keyboard, or the search box.
+ * The hover card, and the bound on how many search matches take a ring.
  *
- * Kept off the base field on purpose. Hovering a node used to re-render the
- * whole node layer, and typing a search query used to re-render it once per
- * keystroke, because the query dimmed every non-matching circle. Both are now
- * bounded marks drawn on top: hover paints one circle, and search paints a
- * ring on the matches instead of touching the thousands that did not match.
+ * The rings themselves paint on the map's top canvas, above the field, so
+ * hover and typing repaint a few marks and never the thousands of nodes.
  */
 
 import { performanceSentence, scoreText } from "./lens";
-import type { CodeHealthMapFile, CodeHealthOverlay, FileNode } from "./types";
+import type { CodeHealthMapFile, CodeHealthOverlay } from "./types";
 
 /** Match rings drawn at once. Beyond this the field is the answer, not a mark. */
 export const SEARCH_MARK_CAP = 250;
-
-/** The hovered and selected nodes only, drawn on top of the static field. */
-export function NodeHighlight({
-  hovered,
-  selectedPath,
-  nodeIndex,
-  offX,
-  offY,
-  fill,
-}: {
-  hovered: CodeHealthMapFile | null;
-  selectedPath: string | null;
-  nodeIndex: Map<string, FileNode>;
-  offX: number;
-  offY: number;
-  fill: (f: CodeHealthMapFile) => string;
-}) {
-  const sel = selectedPath ? nodeIndex.get(selectedPath) : null;
-  const hov = hovered ? nodeIndex.get(hovered.file_path) : null;
-  return (
-    <g className="pointer-events-none">
-      {sel ? (
-        <circle
-          data-selected={sel.file.file_path}
-          cx={sel.x + offX}
-          cy={sel.y + offY}
-          r={sel.r}
-          fill={fill(sel.file)}
-          fillOpacity={1}
-          stroke="var(--color-accent-primary)"
-          strokeWidth={2}
-          vectorEffect="non-scaling-stroke"
-        />
-      ) : null}
-      {hov && hov !== sel ? (
-        <circle
-          cx={hov.x + offX}
-          cy={hov.y + offY}
-          r={hov.r + 1.5}
-          fill={fill(hov.file)}
-          fillOpacity={1}
-          stroke="var(--color-bg-root)"
-          strokeWidth={0.5}
-          vectorEffect="non-scaling-stroke"
-        />
-      ) : null}
-    </g>
-  );
-}
-
-/**
- * A ring on every node whose path matches the query, bounded.
- *
- * Marking the matches rather than dimming the rest is what keeps typing off
- * the base layer: the number of elements this draws tracks the answer, not the
- * repository, and the field underneath is untouched.
- */
-export function SearchMatches({
-  paths,
-  nodeIndex,
-  offX,
-  offY,
-}: {
-  paths: string[];
-  nodeIndex: Map<string, FileNode>;
-  offX: number;
-  offY: number;
-}) {
-  if (paths.length === 0) return null;
-  return (
-    <g className="pointer-events-none">
-      {paths.slice(0, SEARCH_MARK_CAP).map((path) => {
-        const nd = nodeIndex.get(path);
-        if (!nd) return null;
-        return (
-          <circle
-            key={path}
-            data-match={path}
-            cx={nd.x + offX}
-            cy={nd.y + offY}
-            r={nd.r + 2.5}
-            fill="none"
-            stroke="var(--color-accent-primary)"
-            strokeWidth={1.5}
-            vectorEffect="non-scaling-stroke"
-          />
-        );
-      })}
-    </g>
-  );
-}
 
 /**
  * Card box, for the edge flip.
@@ -168,11 +74,11 @@ export function HoverCard({
           {dir}
         </div>
       ) : null}
-      <div className="break-all font-mono text-[11px] font-medium leading-snug text-[var(--color-text-primary)]">
+      <div className="break-all font-mono text-xs font-medium leading-snug text-[var(--color-text-primary)]">
         {name}
       </div>
       {overlay === "performance" ? (
-        <div className="mt-0.5 text-[11px] leading-tight text-[var(--color-text-secondary)]">
+        <div className="mt-0.5 text-xs leading-tight text-[var(--color-text-secondary)]">
           {performanceSentence(file)}
         </div>
       ) : null}

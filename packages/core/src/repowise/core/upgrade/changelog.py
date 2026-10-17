@@ -1,13 +1,18 @@
 """Parse ``CHANGELOG.md`` (Keep-a-Changelog) into structured release entries.
 
-Shared by the CLI ("what's new" panel + ``repowise whats-new``) and, in a later
-phase, the web ``/api/meta/changelog`` endpoint, so the format is parsed once
-here rather than in each presenter.
+Shared by the CLI ("what's new" panel + ``repowise whats-new``) and the web
+``/api/meta/changelog`` endpoint, so the format is parsed once here rather than
+in each presenter.
 
 The parser is intentionally forgiving: it recognises ``## [X.Y.Z] - date``
-release headers and ``### Section`` subsection headers, and collects the bullet
-lines under each. Anything it does not understand (the preamble, HTML comments,
-horizontal rules) is skipped rather than treated as an error.
+release headers (and ``## [Unreleased]``, as version ``unreleased``) and
+``### Section`` subsection headers, and collects the bullet lines under each.
+The prose between a release header and its first section is the release
+summary. ``### Highlights`` bullets (``- **Title** · blurb. → /route``) come back
+as structured highlights, and ``### By the numbers`` is left out of the sections
+because its figures ship as data in ``_data/release_stats.json``. Anything it
+does not understand (the preamble, HTML comments, horizontal rules) is skipped
+rather than treated as an error.
 """
 
 from __future__ import annotations
@@ -16,16 +21,31 @@ import re
 from dataclasses import dataclass, field
 
 # ``## [0.21.0] - 2026-06-19`` or ``## [0.21.0] — Unreleased`` (any dash). The
-# version must be a dotted numeric; the trailing label (date / "Unreleased") is
-# optional and captured loosely.
+# version must be a dotted numeric or ``Unreleased``; the trailing label (date /
+# "Unreleased") is optional and captured loosely.
 # The trailing label group allows an empty label (a stray ``-`` with no date)
 # so a malformed header degrades to ``label=None`` instead of dropping the whole
 # release. ``.*\S`` keeps the captured label trimmed of trailing whitespace.
 _RELEASE_RE = re.compile(
-    r"^##\s*\[(?P<version>\d+\.\d+(?:\.\d+)?)\]\s*(?:[-–—]\s*(?P<label>.*\S)?)?\s*$"
+    r"^##\s*\[(?P<version>\d+\.\d+(?:\.\d+)?|[Uu]nreleased)\]\s*(?:[-–—]\s*(?P<label>.*\S)?)?\s*$"
 )
 _SECTION_RE = re.compile(r"^###\s+(?P<name>.+?)\s*$")
 _BULLET_RE = re.compile(r"^[-*]\s+(?P<text>.+?)\s*$")
+# ``**Title** · blurb. → /route``. The separator after the title may be ``·``,
+# ``:``, ``|`` or a dash, and the trailing route (``→`` or ``->``) is optional,
+# so a loosely written highlight still parses.
+_HIGHLIGHT_RE = re.compile(
+    r"^\*\*(?P<title>.+?)\*\*(?:\s*[·:|]|\s+[-–—](?=\s))?\s*(?P<rest>.*)$"
+)
+_ROUTE_RE = re.compile(r"\s*(?:→|->)\s*(?P<href>/\S*)\s*$")
+
+#: Version string the parser gives ``## [Unreleased]``.
+UNRELEASED = "unreleased"
+HIGHLIGHTS_SECTION = "Highlights"
+NUMBERS_SECTION = "By the numbers"
+
+# Unreleased sorts above every release, so it is never "already seen".
+_UNRELEASED_RANK = 10**9
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,67 +57,131 @@ class ChangelogSection:
 
 
 @dataclass(frozen=True, slots=True)
+class ChangelogHighlight:
+    """One ``### Highlights`` bullet. ``id`` is the title's slug, so it stays
+    stable while the blurb is edited."""
+
+    id: str
+    title: str
+    blurb: str
+    href: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ChangelogEntry:
     """One ``## [X.Y.Z]`` release with its grouped bullet sections."""
 
     version: str
     label: str | None
     sections: tuple[ChangelogSection, ...] = field(default_factory=tuple)
+    #: The prose paragraphs between the release header and its first section.
+    summary: str = ""
+    highlights: tuple[ChangelogHighlight, ...] = field(default_factory=tuple)
 
     @property
     def release_tuple(self) -> tuple[int, ...]:
         """Numeric release tuple for ordering/comparison (e.g. (0, 21, 0))."""
+        if self.version == UNRELEASED:
+            return (_UNRELEASED_RANK,)
         return tuple(int(p) for p in self.version.split("."))
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.summary and not self.highlights and not any(s.items for s in self.sections)
+
+
+def parse_highlight(text: str) -> ChangelogHighlight:
+    """Parse one highlight bullet. A bullet without a bold title keeps its whole
+    text as the title, so a loosely written line is never lost."""
+    href = None
+    route = _ROUTE_RE.search(text)
+    if route:
+        href = route.group("href")
+        text = text[: route.start()]
+    m = _HIGHLIGHT_RE.match(text.strip())
+    if m:
+        title, blurb = m.group("title").strip(), m.group("rest").strip()
+    else:
+        title, blurb = text.strip(), ""
+    return ChangelogHighlight(id=_slug(title), title=title, blurb=blurb, href=href)
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
 def parse_changelog(text: str) -> list[ChangelogEntry]:
-    """Parse Keep-a-Changelog *text* into entries, newest first (as written)."""
-    entries: list[ChangelogEntry] = []
-    cur_version: str | None = None
-    cur_label: str | None = None
-    sections: list[ChangelogSection] = []
-    cur_section_name: str | None = None
-    cur_items: list[str] = []
+    """Parse Keep-a-Changelog *text* into entries, newest first (as written).
 
-    def _flush_section() -> None:
-        nonlocal cur_section_name, cur_items
-        if cur_section_name is not None:
-            sections.append(ChangelogSection(name=cur_section_name, items=tuple(cur_items)))
-        cur_section_name = None
-        cur_items = []
+    An ``Unreleased`` block with no content is dropped (the normal state right
+    after a release).
+    """
+    entries = [_parse_release(*block) for block in _release_blocks(text)]
+    return [e for e in entries if not (e.version == UNRELEASED and e.is_empty)]
 
-    def _flush_release() -> None:
-        nonlocal cur_version, cur_label, sections
-        _flush_section()
-        if cur_version is not None:
-            entries.append(
-                ChangelogEntry(version=cur_version, label=cur_label, sections=tuple(sections))
-            )
-        cur_version = None
-        cur_label = None
-        sections = []
 
+def _release_blocks(text: str):
+    """``(version, label, lines)`` per release header; the preamble is skipped."""
+    version: str | None = None
+    label: str | None = None
+    lines: list[str] = []
     for raw in text.splitlines():
         line = raw.rstrip()
         rel = _RELEASE_RE.match(line)
         if rel:
-            _flush_release()
-            cur_version = rel.group("version")
-            cur_label = rel.group("label")
-            continue
-        if cur_version is None:
-            continue  # still in the preamble
+            if version is not None:
+                yield version, label, lines
+            found = rel.group("version")
+            version = UNRELEASED if found.lower() == UNRELEASED else found
+            label, lines = rel.group("label"), []
+        elif version is not None:
+            lines.append(line)
+    if version is not None:
+        yield version, label, lines
+
+
+def _parse_release(version: str, label: str | None, lines: list[str]) -> ChangelogEntry:
+    """One release's lines: summary prose up to the first ``###``, then
+    sections of bullets. Highlights come out separately and By the numbers
+    is dropped."""
+    summary: list[str] = []
+    groups: list[tuple[str, list[str]]] = []
+    for line in lines:
         sec = _SECTION_RE.match(line)
         if sec:
-            _flush_section()
-            cur_section_name = sec.group("name")
-            continue
-        bullet = _BULLET_RE.match(line)
-        if bullet and cur_section_name is not None:
-            cur_items.append(bullet.group("text"))
+            groups.append((sec.group("name"), []))
+        elif not groups:
+            summary.append(line)
+        elif bullet := _BULLET_RE.match(line):
+            groups[-1][1].append(bullet.group("text"))
+    highlights = [parse_highlight(i) for name, items in groups if name == HIGHLIGHTS_SECTION for i in items]
+    sections = [
+        ChangelogSection(name=name, items=tuple(items))
+        for name, items in groups
+        if name not in (HIGHLIGHTS_SECTION, NUMBERS_SECTION)
+    ]
+    return ChangelogEntry(
+        version=version,
+        label=label,
+        sections=tuple(sections),
+        summary=_join_paragraphs(summary),
+        highlights=tuple(highlights),
+    )
 
-    _flush_release()
-    return entries
+
+def _join_paragraphs(lines: list[str]) -> str:
+    """Summary lines to paragraphs, dropping rules and HTML comments."""
+    paragraphs: list[str] = []
+    cur: list[str] = []
+    for line in [*lines, ""]:
+        text = line.strip()
+        if not text or text == "---" or text.startswith("<!--"):
+            if cur:
+                paragraphs.append(" ".join(cur))
+            cur = []
+            continue
+        cur.append(text)
+    return "\n\n".join(paragraphs)
 
 
 def entries_between(
@@ -142,8 +226,13 @@ def _gt(a: tuple[int, ...], b: tuple[int, ...] | None) -> bool:
 
 
 __all__ = [
+    "HIGHLIGHTS_SECTION",
+    "NUMBERS_SECTION",
+    "UNRELEASED",
     "ChangelogEntry",
+    "ChangelogHighlight",
     "ChangelogSection",
     "entries_between",
     "parse_changelog",
+    "parse_highlight",
 ]

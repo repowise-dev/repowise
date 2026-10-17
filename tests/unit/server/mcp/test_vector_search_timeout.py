@@ -99,6 +99,6 @@ def test_no_hardcoded_eight_second_vector_budget() -> None:
     from pathlib import Path
 
     root = Path(tool_search.__file__).parent
-    for name in ("tool_search.py", "_answer_pipeline.py"):
-        text = (root / name).read_text(encoding="utf-8")
-        assert "timeout=8.0" not in text, f"{name} still hardcodes the old vector budget"
+    for path in (root / "tool_search.py", *sorted((root / "_answer_pipeline").glob("*.py"))):
+        text = path.read_text(encoding="utf-8")
+        assert "timeout=8.0" not in text, f"{path.name} still hardcodes the old vector budget"

@@ -66,6 +66,23 @@ MULTIPLATFORM = {
     _SRC.format("nativeMain") + "n/UseNative.kt": "package n\n\nfun useNative() = Plat()\n",
 }
 
+# A test set sees its main set; a platform set sees the groups above it, not its siblings.
+_V = "vis/src/{}/kotlin/"
+_DECL = "package n\n\ninternal fun platformName(): String = \"x\"\n"
+VISIBILITY = {
+    _V.format("appleMain") + "n/Platform.kt": _DECL,
+    _V.format("jvmMain") + "n/Platform.kt": _DECL,
+    _V.format("nativeMain") + "n/Platform.kt": _DECL,
+    _V.format("jvmTest") + "n/PlatformTest.kt": "package n\n\nfun jvmTestCaller() = platformName()\n",
+    _V.format("linuxMain") + "n/UseLinux.kt": "package n\n\nfun linuxCaller() = platformName()\n",
+    _V.format("commonMain") + "p/Foo.kt": "package p\n\nexpect class Foo()\n",
+    _V.format("jvmMain") + "p/Foo.kt": "package p\n\nactual class Foo actual constructor()\n",
+    _V.format("jvmMain") + "p/UseJvm.kt": "package p\n\nfun jvmMainCaller() = Foo()\n",
+    _V.format("jvmTest") + "p/FooTest.kt": "package p\n\nfun jvmTestFooCaller() = Foo()\n",
+    # Imported rather than reached through the package.
+    _V.format("jvmTest") + "q/ImportTest.kt": "package q\n\nimport p.Foo\n\nfun jvmTestImports() = Foo()\n",
+}
+
 _APP = "app/src/{}/kotlin/m/"
 PLAIN_GRADLE = {
     _APP.format("main") + "Helper.kt": "package m\n\nclass Helper\n",
@@ -95,6 +112,11 @@ def _calls(repo: Path, files: dict[str, str]) -> dict[str, set[str]]:
 @pytest.fixture(scope="module")
 def calls(tmp_path_factory: pytest.TempPathFactory) -> dict[str, set[str]]:
     return _calls(tmp_path_factory.mktemp("kmp"), MULTIPLATFORM)
+
+
+@pytest.fixture(scope="module")
+def visibility_calls(tmp_path_factory: pytest.TempPathFactory) -> dict[str, set[str]]:
+    return _calls(tmp_path_factory.mktemp("vis"), VISIBILITY)
 
 
 @pytest.fixture(scope="module")
@@ -136,11 +158,28 @@ def test_without_an_expect_a_platform_calls_its_own_actual(calls: dict[str, set[
     assert calls["useJvm"] == {_SRC.format("jvmMain") + "n/Plat.kt::Plat"}
 
 
-def test_without_an_expect_or_own_actual_the_first_in_package_order_answers(
+def test_without_an_expect_or_own_actual_a_set_that_sees_no_declaration_has_no_callee(
     calls: dict[str, set[str]],
 ) -> None:
-    # Source-set dependencies are not read, so this is a guess, kept stable.
-    assert calls["useNative"] == {_SRC.format("appleMain") + "n/Plat.kt::Plat"}
+    # ``nativeMain`` sees neither ``appleMain`` nor ``jvmMain``: no edge, not a guess.
+    assert "useNative" not in calls
+
+
+def test_a_test_set_binds_the_declaration_its_main_set_sees(
+    visibility_calls: dict[str, set[str]],
+) -> None:
+    jvm_main = _V.format("jvmMain")
+    assert visibility_calls["jvmTestCaller"] == {jvm_main + "n/Platform.kt::platformName"}
+    assert visibility_calls["jvmTestFooCaller"] == {jvm_main + "p/Foo.kt::Foo"}
+    assert visibility_calls["jvmTestImports"] == {jvm_main + "p/Foo.kt::Foo"}
+    assert visibility_calls["jvmMainCaller"] == {jvm_main + "p/Foo.kt::Foo"}
+
+
+def test_a_platform_group_binds_the_declaration_of_the_group_it_depends_on(
+    visibility_calls: dict[str, set[str]],
+) -> None:
+    # ``linuxMain`` -> ``nativeMain``; its sibling ``appleMain`` is out of sight.
+    assert visibility_calls["linuxCaller"] == {_V.format("nativeMain") + "n/Platform.kt::platformName"}
 
 
 @pytest.mark.parametrize(("caller", "source_set"), [("useMain", "main"), ("useTest", "test")])

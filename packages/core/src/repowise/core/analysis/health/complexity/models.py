@@ -54,6 +54,9 @@ class FunctionComplexity:
     # flags below, read only by ``primitive_obsession``. ``complexity/signature.py``.
     typed_param_count: int = 0
     primitive_param_count: int = 0
+    # Of ``param_count``, the ones a framework binds by annotation
+    # (``@PathVariable``); they are in neither count above.
+    bound_param_count: int = 0
     # A constructor, by node kind, conventional name, or its type's name.
     is_constructor: bool = False
     # The parameter list is set by another declaration (an override, an

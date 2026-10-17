@@ -51,7 +51,7 @@ async def test_partial_clone_warning_reaches_incremental_log(tmp_path) -> None:
 
     with (
         patch(
-            "repowise.core.pipeline.incremental.build_repo_graph",
+            "repowise.core.pipeline.incremental.graph.build_repo_graph",
             return_value=([], {}, graph_builder, MagicMock(), 0),
         ),
         patch("repowise.core.ingestion.git_indexer.GitIndexer") as indexer_type,

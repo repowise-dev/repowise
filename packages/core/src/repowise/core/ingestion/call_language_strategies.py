@@ -21,7 +21,12 @@ from .lang_helpers.kotlin_lambdas import in_lambda
 from .languages.receiver_types import dart_named_constructors
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
-from .resolvers.jvm_gradle import declaration_rank, source_set_dir
+from .resolvers.jvm_gradle import (
+    SourceSetGraph,
+    build_source_set_graph,
+    declaration_rank,
+    source_set_dir,
+)
 from .symbol_identity import outer_scope
 from .type_names import bare_type_name
 
@@ -59,10 +64,8 @@ _BUILD_ROOT_LANGUAGES = frozenset({"dart", "java", "kotlin", "scala", "swift"})
 
 _TYPED_RECEIVER = ("_resolve_typed_receiver",)
 
-# Kotlin Multiplatform's common declaration, and a rank worse than any
-# ``declaration_rank`` returns.
+# Kotlin Multiplatform's common declaration.
 _EXPECT = "expect"
-_NO_RANK = 3
 
 
 def _gradle_script_receiver(path: str) -> str | None:
@@ -151,6 +154,9 @@ class LanguageStrategiesMixin:
 
         # Whether any symbol is a Kotlin Multiplatform ``expect``; None until asked.
         self._has_expect: bool | None = None
+
+        # Kotlin Multiplatform source-set dependencies; None until asked.
+        self._source_set_graph: SourceSetGraph | None = None
 
         # {Dart class id: the named constructors its body declares}
         self._dart_constructors: dict[str, frozenset[str]] = {}
@@ -453,19 +459,33 @@ class LanguageStrategiesMixin:
         A Kotlin Multiplatform name has one declaration per source set; see
         ``declaration_rank``. *found* is read lazily: the first declaration
         answers when no rank can tell them apart, and one in the caller's own
-        source set ends the search.
+        source set ends the search. A declaration in a source set the caller
+        cannot see is skipped.
         """
         if source_set_dir(file_path) is None and not self._repo_declares_expect():
             return next(found, (None, None))[1]
+        graph = self._get_source_set_graph()
         best: str | None = None
-        best_rank = _NO_RANK
+        best_rank: int | None = None
         for path, sym_id in found:
-            rank = declaration_rank(file_path, path, self._is_expect(sym_id))
+            rank = declaration_rank(file_path, path, self._is_expect(sym_id), graph)
+            if rank is None:
+                continue
             if rank == 0:
                 return sym_id
-            if rank < best_rank:
+            if best_rank is None or rank < best_rank:
                 best, best_rank = sym_id, rank
         return best
+
+    def _get_source_set_graph(self) -> SourceSetGraph:
+        """The repository's Kotlin Multiplatform source-set dependencies. Built once."""
+        if self._source_set_graph is None:
+            from pathlib import Path
+
+            self._source_set_graph = build_source_set_graph(
+                self._parsed_files, Path(self._repo_path) if self._repo_path else None
+            )
+        return self._source_set_graph
 
     def _is_expect(self, sym_id: str) -> bool:
         """Is *sym_id* an ``expect`` declaration, or a member of an ``expect`` type?"""

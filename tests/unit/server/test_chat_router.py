@@ -383,6 +383,37 @@ async def test_a_route_with_no_target_leaves_the_static_tier_standing():
 
 
 @pytest.mark.asyncio
+async def test_a_route_with_no_target_quotes_datasets_a_chart_cached():
+    app = await _make_app()
+    cached = AsyncMock(return_value={"dead_code": [{}, {}, {}]})
+    execute = AsyncMock(return_value=_RISK_RESULT)
+
+    with patch("repowise.server.routers.chat.cached_rows", cached), patch(_EXECUTE, execute):
+        body = await _suggestions(app, kind="dead-code")
+
+    assert body == {
+        "suggestions": [
+            {
+                "text": "Stacked bar of the 3 dead-code findings by kind and confidence tier",
+                "source": "page",
+                "toolHint": "chart",
+            }
+        ]
+    }
+    cached.assert_awaited_once_with(["dead_code"], None)
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cache_read_yields_no_chips():
+    app = await _make_app()
+    with patch(
+        "repowise.server.routers.chat.cached_rows", AsyncMock(side_effect=RuntimeError("x"))
+    ):
+        assert await _suggestions(app, kind="health") == {"suggestions": []}
+
+
+@pytest.mark.asyncio
 async def test_a_page_kind_the_server_does_not_serve_is_not_an_error():
     app = await _make_app()
     assert await _suggestions(app, kind="not-a-page", target="x") == {"suggestions": []}

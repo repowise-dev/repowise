@@ -10,6 +10,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { formatConfidence } from "../lib/format";
 import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
+import { PreviewBadge } from "../health/preview-badge";
 import {
   deadCodeRiskFactorLabel,
   type DeadCodeFinding,
@@ -124,6 +125,11 @@ export function FindingIdentity({ finding, href, onNavigate, mark }: FindingIden
           {finding.reason}
         </span>
       )}
+      {finding.preview ? (
+        <span className="mt-0.5 block">
+          <PreviewBadge note={finding.preview} />
+        </span>
+      ) : null}
       <FindingSafety finding={finding} mark={mark ?? "review"} />
     </div>
   );

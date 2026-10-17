@@ -346,16 +346,18 @@ async def get_dead_code_summary(
     # risk-factor logic existed (or in a config/bootstrap/database/environment
     # file the allowlist missed) are not counted as deletion-ready.
     # Totals sum the known counts; an unknown (NULL) count adds nothing.
-    deletable_lines = sum(
-        f.lines or 0
+    deletable = [
+        f
         for f in findings
         if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete, f.kind)
-    )
+    ]
+    deletable_lines = sum(f.lines or 0 for f in deletable)
 
     return {
         "total_findings": len(findings),
         "confidence_summary": summary,
         "deletable_lines": deletable_lines,
+        "safe_to_delete_count": len(deletable),
         "total_lines": total_lines,
         "by_kind": by_kind,
         "gated": gated,

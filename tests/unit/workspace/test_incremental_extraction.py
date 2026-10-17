@@ -495,3 +495,127 @@ async def test_walk_count_scales_with_changed_repos_not_workspace_size(
     full_total = sum(s.get("files_walked", 0) for s in first.extraction_stats.values())
     assert 0 < walked_this_run < full_total
     assert second.extraction_stats["alpha"]["walks"] == 1  # still one walk per repo
+
+
+# ---------------------------------------------------------------------------
+# MassTransit: the message-type index is part of the extraction fingerprint
+# ---------------------------------------------------------------------------
+
+
+def _message_repos(tmp_path: Path, contract_dir: str = "Sample.Contracts") -> tuple[Path, Path]:
+    """Alpha declares the message ``Ping``; beta consumes ``Ping`` and ``Pong``."""
+    alpha, beta = tmp_path / "alpha", tmp_path / "beta"
+    contract = alpha / contract_dir
+    contract.mkdir()
+    (contract / f"{contract_dir}.csproj").write_text("<Project />", encoding="utf-8")
+    _message(contract, "Ping")
+    (beta / "Consumers.cs").write_text(
+        "using Sample.Contracts;\n"
+        "public class PingConsumer : IConsumer<Ping> { }\n"
+        "public class PongConsumer : IConsumer<Pong> { }\n",
+        encoding="utf-8",
+    )
+    _commit_all(alpha, beta, message="contract")
+    return alpha, contract
+
+
+def _message(directory: Path, name: str) -> None:
+    (directory / f"{name}.cs").write_text(
+        f"namespace Sample.Contracts\n{{\n    public class {name} {{ }}\n}}\n", encoding="utf-8"
+    )
+
+
+def _commit_all(*repos: Path, message: str) -> None:
+    for repo in repos:
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", message)
+
+
+def _topic_ids(store: ContractStore, alias: str) -> list[str]:
+    return sorted(c.contract_id for c in store.rows_for_repo(alias) if c.contract_type == "topic")
+
+
+async def test_new_contract_type_in_one_repo_re_extracts_its_consumers_elsewhere(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    """A MassTransit consumer resolves against another repo's contract project.
+
+    Beta's source and HEAD never move, so only the message-type fingerprint can
+    tell it that the message it consumes now exists.
+    """
+    alpha, contract = _message_repos(tmp_path)
+    first = await _first_run(workspace, tmp_path)
+    assert _topic_ids(first, "beta") == ["topic::sample.contracts:ping"]
+    extracted.clear()
+
+    _message(contract, "Pong")
+    _commit_all(alpha, message="add Pong")
+    second = await run_contract_extraction(workspace, tmp_path, ["alpha"], None, first)
+
+    assert sorted(extracted) == ["alpha", "beta"]
+    assert _topic_ids(second, "beta") == [
+        "topic::sample.contracts:ping",
+        "topic::sample.contracts:pong",
+    ]
+
+
+async def test_removed_contract_type_re_extracts_its_consumers_elsewhere(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    alpha, contract = _message_repos(tmp_path)
+    first = await _first_run(workspace, tmp_path)
+    extracted.clear()
+
+    (contract / "Ping.cs").unlink()
+    _commit_all(alpha, message="remove Ping")
+    second = await run_contract_extraction(workspace, tmp_path, ["alpha"], None, first)
+
+    assert sorted(extracted) == ["alpha", "beta"]
+    assert _topic_ids(second, "beta") == []
+
+
+async def test_renamed_contract_type_re_extracts_its_consumers_elsewhere(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    alpha, contract = _message_repos(tmp_path)
+    first = await _first_run(workspace, tmp_path)
+    extracted.clear()
+
+    (contract / "Ping.cs").unlink()
+    _message(contract, "Pong")
+    _commit_all(alpha, message="rename Ping to Pong")
+    second = await run_contract_extraction(workspace, tmp_path, ["alpha"], None, first)
+
+    assert sorted(extracted) == ["alpha", "beta"]
+    assert _topic_ids(second, "beta") == ["topic::sample.contracts:pong"]
+
+
+async def test_unchanged_contract_types_still_reuse(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    _message_repos(tmp_path)
+    first = await _first_run(workspace, tmp_path)
+    extracted.clear()
+
+    await run_contract_extraction(workspace, tmp_path, [], None, first)
+
+    assert extracted == []
+
+
+async def test_changed_contract_project_pattern_re_extracts_every_repo(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    """The pattern decides which projects hold messages, and moves no commit."""
+    _message_repos(tmp_path, contract_dir="Sample.Messages")
+    first = await _first_run(workspace, tmp_path)
+    assert _topic_ids(first, "beta") == []
+    extracted.clear()
+
+    configured = WorkspaceConfig(
+        repos=list(workspace.repos),
+        contracts=ContractConfig(contract_project_pattern=r".+\.messages"),
+    )
+    second = await run_contract_extraction(configured, tmp_path, [], None, first)
+
+    assert sorted(extracted) == ["alpha", "beta"]
+    assert _topic_ids(second, "beta") == ["topic::sample.contracts:ping"]

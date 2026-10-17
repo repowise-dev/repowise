@@ -145,8 +145,8 @@ def test_available_model_options_are_labelled(claude_on_path):
     options = ClaudeCliProvider().available_model_options()
     assert [o.model for o in options] == [
         "claude_cli/claude-haiku-5-5",
-        "claude_cli/claude-sonnet-4-6",
-        "claude_cli/claude-opus-4-6",
+        "claude_cli/claude-sonnet-5-5",
+        "claude_cli/claude-opus-5-5",
     ]
     assert sum(1 for o in options if o.recommended) == 1
     assert all(

@@ -143,7 +143,7 @@ core/alembic/versions/
 ```
 core/pipeline/
 ├── orchestrator.py                 # _run_health_analysis(): builds community_label_map, runs analyzer
-└── persist.py                      # persist_pipeline_result(): writes findings/metrics/snapshot
+└── persist/                        # persist_pipeline_result(): writes findings/metrics/snapshot
 ```
 
 ### CLI
@@ -245,7 +245,7 @@ things:
    smaller repos run `analyze()` on a single thread.
 
 The returned report rides on `PipelineResult.health_report`. Then
-`core/pipeline/persist.py` writes it in one session: `save_health_metrics`,
+`core/pipeline/persist/` writes it in one session: `save_health_metrics`,
 `save_health_findings` (only when there are findings), and a
 `save_health_snapshot` carrying the three KPIs plus a `{path: score}` map for
 trend tracking (rolling 50-row window per repo), and a second
@@ -783,8 +783,8 @@ held-out sample and carries 0.7; SQLAlchemy, with under 30 held-out labels, stay
 0.4. `unbounded_read_reduced_in_memory` (Python) flags an unlimited query whose rows
 are deduplicated per key in code.
 
-**Dialects.** `perf/dialects/` registers 12 dialects over 18 language tags (TS/JS
-also serve Vue and Svelte script blocks; C# serves Razor). C shares the C++ grammar
+**Dialects.** `perf/dialects/` registers 12 dialects over 19 language tags (TS/JS
+also serve Vue, Svelte and Astro script blocks; C# serves Razor). C shares the C++ grammar
 but has no perf dialect. A language without one emits nothing.
 
 **Soundness.** Dynamic dispatch, monkeypatching and callbacks-as-values produce no

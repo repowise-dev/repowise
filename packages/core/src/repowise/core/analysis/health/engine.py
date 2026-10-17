@@ -42,17 +42,16 @@ from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ...installed_components import is_installed_component
-from ...test_paths import paired_test_names
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..execution_roles import ExecutionRoles
-from ..function_test_map import FunctionTests, function_test_map
 from ..graph_view import HasEdge, ImportEdgeView
-from ..test_reachability import files_reached_by_tests, files_with_paired_tests
 from .asserts.lexicon import AssertVocabulary
 from .asserts.oracle_reach import collect_cross_file_oracles
 from .biomarkers import FileContext, detect_all
+from .biomarkers.function_hotspot import refresh_replayed
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .complexity.languages import has_health_dialect
+from .crossfn_perf import CrossFunctionPerfStage
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
 from .duplication.detector import clone_ranges, union_line_count
@@ -63,16 +62,9 @@ from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
     CallGraphIndex,
-    PerfRanker,
-    apply_perf_promotions,
     build_performance_opportunities,
-    collect_blocking_io_under_lock,
-    collect_centrality_gated,
-    collect_crossfn_io_in_loop,
     link_performance_findings,
 )
-from .perf.lazy_load import collect_lazy_loads
-from .perf.unbounded_reduction import collect_unbounded_reductions
 from .ranking import deduction_by_path
 from .refactoring import (
     PerformancePlanPolicy,
@@ -83,6 +75,9 @@ from .refactoring import (
     rank_suggestions,
 )
 from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
+from .repo_tests import RepoTestIndex
+from .repo_tests import _has_paired_test_file as _has_paired_test_file
+from .repo_tests import _path_basenames as _path_basenames
 from .scope import scores_language
 from .scoring import (
     attach_impacts,
@@ -115,7 +110,11 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp (v40): an Extract Method plan names its helper with a placeholder
+# Current stamp (v41): parameter counts exclude every comment kind and discover
+# C/C++ declarators and Kotlin lists. Cached walks must refresh the total,
+# typed and scalar counts, enabling primitive_obsession in those languages.
+#
+# v40: an Extract Method plan names its helper with a placeholder
 # (``extracted_helper``, numbered when taken in scope) and asks the agent applying
 # it to rename it, so every stored plan's ``suggested_name``, header and call text
 # change. Plan ids do not depend on the name and hold.
@@ -697,23 +696,6 @@ def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | No
         return None
 
 
-def _path_basenames(all_paths: set[str]) -> set[str]:
-    """Final path components of *all_paths*, split on ``/`` only.
-
-    A path matches ``other.endswith("/" + c) or other == c`` for a
-    slash-free candidate filename ``c`` exactly when its ``/``-basename
-    equals ``c``, so one precomputed basename set answers every
-    ``_has_paired_test_file`` lookup. Splitting on ``/`` only (not ``\\``)
-    preserves that equivalence for any non-POSIX path that slips in.
-    """
-    return {p.rsplit("/", 1)[-1] for p in all_paths}
-
-
-def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
-    """Whether any analyzed file is named like a test for *rel_path*."""
-    return not paired_test_names(rel_path).isdisjoint(path_basenames)
-
-
 @dataclass(frozen=True, slots=True)
 class _RunConfig:
     """The analyzer config one pass reads, with its per-file overrides."""
@@ -841,8 +823,11 @@ class HealthAnalyzer:
         # centrality gate inside a partial graph is not read as a code change.
         self._file_dependents_override = file_dependents
         self._package_roots_cache: set[str] | None = None
-        self._tests_reach_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
+        self.test_index = RepoTestIndex(self.graph, self.parsed_files, self._execution_graph)
+        self.perf_stage = CrossFunctionPerfStage(
+            self.graph, self._execution_graph, self._origins, self.parsed_files, self.read_source
+        )
 
     def file_dependents(self) -> dict[str, int]:
         """Each analysed file's dependents count, as the centrality gates read it."""
@@ -869,46 +854,6 @@ class HealthAnalyzer:
         if self.graph is not None and self._execution_graph_cache is None:
             self._execution_graph_cache = CallGraphIndex(self.graph)
         return self._execution_graph_cache
-
-    def _files_reached_by_tests(self) -> set[str]:
-        """Non-test files that some test file can execute into, per the call graph.
-
-        The graph-backed half of "is this file tested". Computed once per
-        analyzer over the whole file set (one multi-source walk, not one per
-        file), because every ``_evaluate_file`` call asks the same question of
-        the same graph.
-
-        Inferred, and it over-claims: a call edge says control *can* reach the
-        file, not that a given run did. Consumers must use it only as a floor -
-        "something tests this" - never as a coverage quantity. See
-        ``analysis.test_reachability``.
-        """
-        if self._tests_reach_cache is None:
-            test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
-            index = self._execution_graph()
-            self._tests_reach_cache = files_reached_by_tests(index or CallGraphIndex(), test_files)
-        return self._tests_reach_cache
-
-    def _paired_tests(self, analyzed_paths: set[str]) -> set[str]:
-        """Analyzed files a test is paired with; see ``files_with_paired_tests``."""
-        return files_with_paired_tests(self.graph, analyzed_paths, self._all_test_files())
-
-    def _all_test_files(self) -> set[str]:
-        """Test files from this pass and the graph, so an incremental run that
-        re-parses only the changed files still sees every test."""
-        test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
-        if self.graph is not None:
-            test_files.update(
-                node
-                for node, data in self.graph.nodes(data=True)
-                if data.get("is_test") and data.get("node_type") != "symbol"
-            )
-        return test_files
-
-    def _function_tests(self) -> FunctionTests | None:
-        """Each function's nearest test functions, over the whole graph."""
-        index = self._execution_graph()
-        return None if index is None else function_test_map(index, self._all_test_files())
 
     def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
         """Package roots for this repo, decided once per analyzer.
@@ -1172,7 +1117,7 @@ class HealthAnalyzer:
         # and the Extract Method detector read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
         dataflow_cache = FileDataflowCache(self.read_source)
-        self._augment_perf_hits(walked, dataflow_cache, timings)
+        self.perf_stage.run(walked, dataflow_cache, timings)
         with timed(timings, "analysis.health.repo_stats"):
             inputs = self._repo_inputs(dup_report, fn_mod_p80, dataflow_cache)
         with timed(timings, "analysis.health.evaluate"):
@@ -1185,7 +1130,7 @@ class HealthAnalyzer:
             execution_roles = self._mark_perf_entry_reachability(findings)
             suggestions = self._with_performance_plans(run, findings, suggestions)
         with timed(timings, "analysis.health.function_tests"):
-            function_tests = self._function_tests()
+            function_tests = self.test_index.function_tests()
         return HealthReport(
             repo_id="",
             analyzed_at=datetime.now(UTC),
@@ -1215,7 +1160,7 @@ class HealthAnalyzer:
         # signal (cheap, deterministic, conservative).
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         return _RepoInputs(
-            paired_tests=self._paired_tests(analyzed_paths),
+            paired_tests=self.test_index.paired(analyzed_paths),
             package_roots=self._package_boundaries(analyzed_paths),
             graph_view=ImportEdgeView(self.graph) if self.graph is not None else None,
             dup_report=dup_report,
@@ -1337,67 +1282,6 @@ class HealthAnalyzer:
                     fcx.cross_file_oracles = resolved
         except Exception as exc:
             log.debug("health_cross_file_oracles_failed", error=str(exc))
-            return
-
-    def _augment_perf_hits(
-        self,
-        walked: list[tuple[Any, FileComplexity]],
-        dataflow: FileDataflowCache,
-        timings: Any | None,
-    ) -> None:
-        """Every post-walk perf pass, shared by ``analyze`` and ``analyze_async`` so
-        the two paths cannot drift apart again. Promotions read the crossfn hits,
-        so crossfn runs first."""
-        from repowise.core.pipeline.phase_timing import timed
-
-        with timed(timings, "analysis.health.crossfn"):
-            self._apply_crossfn_perf(walked)
-        with timed(timings, "analysis.health.promotions"):
-            apply_perf_promotions(walked, dataflow=dataflow)
-        with timed(timings, "analysis.health.unbounded_reduction"):
-            collect_unbounded_reductions(walked, read_source=self.read_source)
-        with timed(timings, "analysis.health.lazy_load"):
-            collect_lazy_loads(walked, self.parsed_files, read_source=self.read_source)
-
-    def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
-        """Run the graph-dependent perf passes over the walked files, in place.
-
-        Four sources of extra ``perf_hits``, all sharing one
-        :class:`CallGraphIndex` (built once over reliable execution edges):
-
-          1. cross-function ``io_in_loop`` / N+1 (PR4);
-          2. cross-function ``blocking_io_under_lock`` (Phase 7b) — the lock→I/O
-             reachability case;
-          3. the centrality-gated ``nested_loop_quadratic`` / ``hot_path_sync_io``
-             markers (Phase 7b), generated from the walker's per-function facts
-             ONLY for a hot function, via the :class:`PerfRanker`.
-
-        Each is appended onto the matching file's ``perf_hits`` in place so the
-        biomarkers handle every case through one path. Failure-isolated and never
-        blocks the report. The cross-function passes are a no-op without a graph;
-        the centrality-gated pass ALWAYS runs — without a graph nothing is
-        hot, so it emits nothing (precision-first: we never ship a
-        centrality-gated marker we cannot establish centrality for).
-        """
-        try:
-            index = self._execution_graph()
-            by_file: dict[str, list] = {}
-            if self.graph is not None and index is not None:
-                for src in (
-                    collect_crossfn_io_in_loop(walked, self.graph, index=index),
-                    collect_blocking_io_under_lock(walked, self.graph, index=index),
-                ):
-                    for path, hits in src.items():
-                        by_file.setdefault(path, []).extend(hits)
-            ranker = PerfRanker(index)
-            for path, hits in collect_centrality_gated(walked, ranker, self._origins).items():
-                by_file.setdefault(path, []).extend(hits)
-            for _pf, fcx in walked:
-                extra = by_file.get(_pf.file_info.path)
-                if extra:
-                    fcx.perf_hits = [*fcx.perf_hits, *extra]
-        except Exception as exc:
-            log.debug("health_crossfn_perf_failed", error=str(exc))
             return
 
     def _mark_perf_entry_reachability(
@@ -1692,7 +1576,7 @@ class HealthAnalyzer:
             # call graph records a test reaching this file". They disagree
             # often, and collapsing them would leave no way to say which signal
             # answered, or that one of them over-claims.
-            reached_by_tests=file_path in self._files_reached_by_tests(),
+            reached_by_tests=file_path in self.test_index.reached_files(),
             module=module,
             all_functions=fns,
             class_metrics=fcx.classes,
@@ -1721,8 +1605,11 @@ class HealthAnalyzer:
         if blame_index is None:
             for stored in self.stored_blame_findings.get(file_path, ()):
                 replayed = as_biomarker_result(stored)
-                if replayed.biomarker_type in BLAME_MARKERS and replayed.biomarker_type not in disabled:
-                    biomarker_results.append(replayed)
+                if replayed.biomarker_type not in BLAME_MARKERS or replayed.biomarker_type in disabled:
+                    continue
+                if replayed.biomarker_type == "function_hotspot" and not refresh_replayed(replayed, fns):
+                    continue
+                biomarker_results.append(replayed)
         biomarker_results = remap_severities(biomarker_results, severity_overrides)
         scores, deductions = score_file(biomarker_results)
         findings = attach_impacts(biomarker_results, deductions)

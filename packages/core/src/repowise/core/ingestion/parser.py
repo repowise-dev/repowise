@@ -65,6 +65,7 @@ from .extractors.bindings.ts_js import (
     dynamic_import_bindings,
 )
 from .extractors.synthetic_symbols import extract_synthetic_symbols
+from .extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
 from .extractors.visibility import (
     py_module_all_names,
     refine_cpp_visibility,
@@ -157,10 +158,10 @@ QUERIES_DIR = Path(__file__).parent / "queries"
 # it would misfire on the parent lexical_declaration kind mapping.
 _MODULE_ANCHORED_NODE_TYPES = frozenset({"assignment", "variable_declarator"})
 
-# Languages whose source reaches the parser as TypeScript/JavaScript. The two
+# Languages whose source reaches the parser as TypeScript/JavaScript. The
 # SFC tags are here because ``sfc_source`` projects their <script> blocks into
 # a TS buffer at identical offsets, so every TS/JS code path applies verbatim.
-_TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
+_TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue", "astro")
 
 # Languages whose query defines the ``@reference.*`` captures. Every other
 # language would only scan the whole match list to find nothing, so the check
@@ -263,7 +264,11 @@ def _dart_call_receiver(name: Node, src: str) -> CallReceiver | None:
     """
     if name.parent.type == "unconditional_assignable_selector":
         head = name.parent.parent
-        receiver: str | None = _node_text(head.prev_named_sibling, src).strip()
+        prev = head.prev_named_sibling
+        if prev is not None and any(c.type == "argument_part" for c in prev.named_children):
+            receiver = None
+        else:
+            receiver = _node_text(prev, src).strip() if prev is not None else None
     else:
         head, receiver = name, None
     return CallReceiver(
@@ -884,7 +889,37 @@ def _attribute_decorators(def_node: Node, language: str, src: str) -> list[str]:
     # (NOT a preceding sibling at translation_unit level).
     if language in ("cpp", "c"):
         return _leading_child_attributes(def_node, "attribute_declaration", "[[", "]]", src)
+    if language == "kotlin":
+        return _kotlin_detached_annotation(def_node, src)
     return []
+
+
+def _kotlin_detached_annotation(def_node: Node, src: str) -> list[str]:
+    """Kotlin: annotations the grammar split off a top-level declaration.
+
+    When the last annotation on its own line before a bare ``fun`` or
+    ``object`` takes one argument (``@Suppress("unused")``), the argument list
+    reads as a parenthesized expression: the annotations become an
+    ``annotated_expression`` chain beside a declaration with no modifiers.
+    """
+    if def_node.parent is None or def_node.parent.type != "source_file":
+        return []
+    sib = def_node.prev_sibling
+    while sib is not None and sib.type in ("line_comment", "block_comment"):
+        sib = sib.prev_sibling
+    return [_node_text(sib, src).strip()] if _is_split_annotation_chain(sib) else []
+
+
+def _is_split_annotation_chain(node: Node | None) -> bool:
+    """Nested ``annotated_expression`` nodes of annotations, the last one's argument at the tail."""
+    while node is not None and node.type == "annotated_expression":
+        kinds = [c.type for c in node.named_children]
+        if len(kinds) != 2 or kinds[0] != "annotation":
+            return False
+        if kinds[1] == "parenthesized_expression":
+            return True
+        node = node.named_children[1]
+    return False
 
 
 def _declared_modifiers(def_node: Node, node_types: frozenset[str], src: str) -> tuple[str, ...]:
@@ -1626,6 +1661,10 @@ class ASTParser:
             # another arity. A language without one dedupes on the id alone.
             existing = {(s.id, symbol_discriminator(s)) for s in symbols}
             symbols.extend(s for s in synthetic if (s.id, symbol_discriminator(s)) not in existing)
+        if lang == "csharp":
+            # The grammar reads a C# 14 extension block as a constructor
+            # named ``extension``; its members were added above instead.
+            symbols = drop_extension_block_symbols(symbols, root, src)
         # Before calls and references are extracted, so both attribute to the
         # final ids. Anonymous members go last, once the overloads holding them
         # carry their discriminators.

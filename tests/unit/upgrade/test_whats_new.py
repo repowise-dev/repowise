@@ -164,3 +164,38 @@ def test_advisory_silent_when_latest_unknown():
     buf = io.StringIO()
     console = Console(file=buf, width=100)
     assert wn.render_update_advisory(console, _check(None, latest=None)) is False
+
+
+def test_render_whats_new_leads_with_highlights_and_numbers(monkeypatch):
+    import io
+
+    text = (
+        "## [0.57.0] - 2026-10-20\n\nSummary.\n\n### Highlights\n\n"
+        "- **Charts in chat** · Any chart. → /repos/:id/chat\n\n"
+        "### Added\n\n- A feature.\n"
+    )
+    stats = {
+        "0.57.0": {
+            "since": "0.56.0",
+            "days": 3,
+            "prs": 205,
+            "contributors": 24,
+            "first_time_contributors": 11,
+            "files_changed": 1226,
+            "lines_added": 103206,
+            "lines_removed": 11127,
+        }
+    }
+    monkeypatch.setattr(wn, "load_release_stats", lambda: stats)
+    buf = io.StringIO()
+    console = Console(file=buf, width=200)
+    assert wn.render_whats_new(console, parse_changelog(text), since_version="0.56.0")
+    out = buf.getvalue()
+    assert out.index("Charts in chat") < out.index("205 pull requests") < out.index("A feature")
+    assert "24 contributors (11 first-time)" in out
+    assert "+103,206 / -11,127 lines" in out
+
+
+def test_numbers_line_tolerates_missing_figures():
+    assert wn.numbers_line(None) is None
+    assert wn.numbers_line({"prs": 1}) is None

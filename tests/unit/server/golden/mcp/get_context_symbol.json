@@ -1,0 +1,33 @@
+{
+  "targets": {
+    "AuthService": {
+      "type": "symbol",
+      "docs": {
+        "name": "AuthService",
+        "kind": "class",
+        "file_path": "src/auth/service.py",
+        "qualified_name": "auth.service.AuthService",
+        "signature": "class AuthService",
+        "docstring": "Main authentication service.",
+        "file_summary": "",
+        "used_by": [],
+        "used_by_basis": {
+          "language": "python",
+          "resolved_call_edges": 0,
+          "guessed_share": null,
+          "unresolved_call_sites": null,
+          "note": "No call edges were resolved for this language, so an empty list carries no information."
+        }
+      },
+      "hotspot": true,
+      "freshness": {
+        "confidence_score": 0.85,
+        "freshness_status": "fresh",
+        "is_stale": false
+      }
+    }
+  },
+  "_meta": {
+    "index_age_days": 7
+  }
+}

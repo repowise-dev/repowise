@@ -153,6 +153,41 @@ describe("NextActions", () => {
     const { container } = render(<NextActions data={null} hrefFor={() => null} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("renders open with the time frame in the header by default", () => {
+    const { container } = render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    expect(container.querySelector("details")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Do next" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /This quarter/ })).toBeInTheDocument();
+    expect(screen.queryByText(/suggested/)).toBeNull();
+  });
+
+  it("folds behind its heading with a count when defaultOpen is false", () => {
+    const now = action({ id: "act_now", tier: "act_now", horizons: ["week"], title: "Clean up `b.ts`" });
+    const { container } = render(
+      <NextActions
+        data={response([now], [action(), action({ id: "act_2" })])}
+        hrefFor={() => null}
+        defaultOpen={false}
+      />,
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    // The count is the default time frame's, the same one its chip shows.
+    expect(within(details!.querySelector("summary")!).getByText("1 suggested")).toBeInTheDocument();
+
+    details!.open = true;
+    fireEvent.click(within(details!).getByRole("radio", { name: /This quarter/ }));
+    expect(within(details!).getByRole("radio", { name: /This quarter/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByText("2 suggested")).toBeInTheDocument();
+    // React only writes `open` when the prop changes, so a rerender keeps a
+    // section the user opened open.
+    expect(details!.open).toBe(true);
+  });
 });
 
 describe("the action drawer", () => {

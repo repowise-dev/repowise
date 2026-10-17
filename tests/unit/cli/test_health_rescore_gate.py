@@ -149,7 +149,7 @@ class TestInitStampsTheCadence:
 @pytest.mark.parametrize(
     "module_name",
     [
-        "repowise.cli.commands.init_cmd.command",
+        "repowise.cli.commands.init_cmd._finish",
         "repowise.cli.commands.init_cmd.persistence",
     ],
 )

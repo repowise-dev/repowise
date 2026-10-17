@@ -132,9 +132,16 @@ export function fixLocation(item: Pick<FixItem, "target">): string {
   return line_start ? `${file_path}:${line_start}` : file_path;
 }
 
-/** What "Open plan" opens, named for the unit it lands on; null for a finding. */
-export function fixPlanLabel(item: Pick<FixItem, "kind">): string | null {
+/**
+ * What "Open plan" opens, named for the unit it lands on. A finding gets one
+ * only when it leads with a stored plan (`source.plan_ids` non-empty); a bare
+ * finding has nothing to open, so null.
+ */
+export function fixPlanLabel(item: Pick<FixItem, "kind" | "source">): string | null {
   if (item.kind === "refactor") return `Open the ${WORK_UNIT_LABEL.refactor}`;
   if (item.kind === "perf_fix") return `Open the ${WORK_UNIT_LABEL.perf_fix}`;
+  if (item.kind === "finding" && item.source.plan_ids.length > 0) {
+    return `Open the ${WORK_UNIT_LABEL.refactor}`;
+  }
   return null;
 }

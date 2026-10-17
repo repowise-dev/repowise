@@ -439,6 +439,28 @@ def test_a_path_git_does_not_have_raises():
         security_gate._read_blobs(".", ["HEAD:no/such/file-anywhere.py"])
 
 
+def test_read_blobs_missing_object_raises():
+    """security_gate._read_blobs fails closed with MissingObjectError on a missing object."""
+    with pytest.raises(security_gate.MissingObjectError, match=r"git has no object for 'HEAD:nope\.py'"):
+        security_gate._read_blobs(".", ["HEAD:nope.py"])
+
+
+def test_read_blobs_ambiguous_object_raises(monkeypatch: pytest.MonkeyPatch):
+    """security_gate._read_blobs fails closed with MissingObjectError on an ambiguous object."""
+    def _mock_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=b"deadbeef ambiguous\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    with pytest.raises(security_gate.MissingObjectError, match=r"unparseable header"):
+        security_gate._read_blobs(".", ["deadbeef"])
+
+
+
 def test_sarif_suppresses_the_baseline_and_drops_history_lines():
     head = _row()
     old = _row("aws_access_key", snippet="AWS = 'AKIA****'", commit="a" * 40)

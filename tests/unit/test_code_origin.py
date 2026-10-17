@@ -104,6 +104,11 @@ _OWN_HEADER = (
         ("x-pack/inference/src/main/java/org/x/external/http/Sender.java", "production"),
         ("src/pkg/external/client.py", "production"),
         ("sdk/llms/src/providers/vendors/openai.ts", "production"),
+        # the Dart SDK headers a Flutter FFI plugin vendors under dart-sdk/
+        ("pedometer/src/dart-sdk/include/dart_tools_api.h", "vendored"),
+        ("src/dart-sdk/include/internal/dart_api_dl_impl.h", "vendored"),
+        ("lib/dart_sdk_utils.dart", "production"),
+        ("src/dartsdk/x.c", "production"),
         # min/ needs a third-party banner (test below); the path alone is not enough
         ("src/min/app.js", "production"),
         ("lib/min/util.js", "production"),
@@ -177,6 +182,42 @@ def test_generated_banner_negatives() -> None:
     assert not is_generated_header("a = 1\nb = 2\n# DO NOT EDIT\n")
 
 
+@pytest.mark.parametrize("period", [".", ""])
+@pytest.mark.parametrize("path", ["src/modules/ZoomIt/ZoomIt/resource.h", "src/app/resource.h"])
+def test_visual_cpp_resource_header_is_generated_without_skipping_ingestion(
+    path: str, period: str
+) -> None:
+    text = (
+        "//{{NO_DEPENDENCIES}}\n"
+        f"// Microsoft Visual C++ generated include file{period}\n"
+        "// Used by ZoomIt.rc\n"
+        "//\n"
+        "//////////////////////////////\n"
+        "// Non-localizable\n"
+        "\n"
+        '#define FILE_DESCRIPTION "Sysinternals Screen Magnifier"\n'
+        '#define INTERNAL_NAME "ZoomIt"\n'
+        '#define ORIGINAL_FILENAME "PowerToys.ZoomIt.exe"\n'
+    )
+    assert code_origin(path, text) == "generated"
+    # The resource IDs must remain in the graph for their includers.
+    assert not is_generated_header(text)
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "Workaround for a Microsoft Visual C++ generated warning",
+        "Workaround for Microsoft Visual C++ generated include file.",
+        "Microsoft Visual C++ generated include file. See the workaround below.",
+    ],
+)
+def test_visual_cpp_banner_like_prose_stays_production(comment: str) -> None:
+    text = f"//{{{{NO_DEPENDENCIES}}}}\n// {comment}\n#define RESOURCE_ID 101\n"
+    assert code_origin("src/app/resource.h", text) == "production"
+    assert not is_generated_header(text)
+
+
 _ES_EVALUATOR = (
     "// Copyright Elasticsearch B.V. Licensed under the Elastic License 2.0.\n"
     "package org.elasticsearch.xpack.esql.expression;\n"
@@ -237,6 +278,8 @@ def test_reference_stub_needs_the_stub_body_and_the_ref_dir() -> None:
 def test_path_only_vendored_or_generated() -> None:
     assert is_vendored_or_generated_path("src/native/external/zlib/trees.c")
     assert is_vendored_or_generated_path("esql/src/main/generated/X.java")
+    assert is_vendored_or_generated_path("pedometer/src/dart-sdk/include/dart_api_dl.c")
+    assert not is_vendored_or_generated_path("pedometer/src/health_connect/foo.c")
     assert not is_vendored_or_generated_path("src/Monaco/monacoSRC/min/vs/loader.js")
     assert not is_vendored_or_generated_path("src/pkg/external/client.py")
     assert not is_vendored_or_generated_path("tests/test_app.py")
@@ -397,6 +440,11 @@ def test_reference_stub_markers_are_anchored() -> None:
         "noxfile.py",
         "magefile.go",
         "Package.swift",
+        "Package@swift-6.0.swift",
+        "Package@swift-5.10.swift",
+        "Package@swift-6.swift",
+        "Package@swift-6.0.1.swift",
+        "sub/Package@swift-6.0.swift",
         "webpack.config.js",
         "packages/app/vite.config.mts",
         "rollup.config.prod.mjs",
@@ -434,6 +482,9 @@ def test_build_files_by_type(path: str) -> None:
         ("src/vite.ts", "production"),
         ("cmd/build/main.go", "tooling"),
         ("src/BUILD.md", "production"),
+        ("PackageManager.swift", "production"),
+        ("Package+Extensions.swift", "production"),
+        ("Sources/Alamofire/PackageManager.swift", "production"),
     ],
 )
 def test_build_near_misses_are_not_build_files(path: str, expected: str) -> None:

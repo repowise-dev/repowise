@@ -17,14 +17,16 @@ import os
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from repowise.core.upgrade.changelog import (
+    UNRELEASED,
     ChangelogEntry,
     entries_between,
     parse_changelog,
 )
-from repowise.core.upgrade.release import BUNDLED_CHANGELOG_PATH
+from repowise.core.upgrade.release import BUNDLED_CHANGELOG_PATH, load_release_stats
 
 from .helpers import user_global_dir
 from .update_check import windows_upgrade_caveat
@@ -95,26 +97,60 @@ def write_last_seen_version(version: str) -> None:
 # --- rendering ------------------------------------------------------------
 
 
-def _format_entry(entry: ChangelogEntry, *, max_items: int) -> str:
+def numbers_line(stats: dict | None) -> str | None:
+    """One line of a release's "By the numbers", or ``None`` without figures."""
+    if not stats:
+        return None
+    try:
+        first = stats.get("first_time_contributors")
+        people = f"{stats['contributors']:,} contributors"
+        if first:
+            people += f" ({first:,} first-time)"
+        return (
+            f"{stats['prs']:,} pull requests from {people}, {stats['files_changed']:,} files, "
+            f"+{stats['lines_added']:,} / -{stats['lines_removed']:,} lines, "
+            f"{stats['days']:,} days since {stats['since']}"
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _format_entry(entry: ChangelogEntry, *, max_items: int, stats: dict | None = None) -> str:
+    # Highlights and the numbers lead and do not count toward the bullet cap:
+    # they are the part of the release a reader should not miss.
+    lines = _highlight_lines(entry)
+    numbers = numbers_line(stats)
+    if numbers:
+        lines.append(f"[dim]By the numbers: {numbers}[/dim]")
+    lines.extend(_section_lines(entry, max_items=max_items))
+    return "\n".join(lines)
+
+
+def _highlight_lines(entry: ChangelogEntry) -> list[str]:
+    if not entry.highlights:
+        return []
+    lines = ["[bold]Highlights[/bold]"]
+    for h in entry.highlights:
+        blurb = f": {escape(h.blurb)}" if h.blurb else ""
+        lines.append(f"  - [bold]{escape(h.title)}[/bold]{blurb}")
+    return lines
+
+
+def _section_lines(entry: ChangelogEntry, *, max_items: int) -> list[str]:
+    """Section bullets up to *max_items* in total, then an ellipsis."""
     lines: list[str] = []
-    shown = 0
-    truncated = False
+    budget = max_items
     for section in entry.sections:
-        if shown >= max_items:
-            truncated = True
-            break
         if not section.items:
             continue
+        if budget <= 0:
+            return [*lines, "  [dim]...[/dim]"]
         lines.append(f"[bold]{section.name}[/bold]")
-        for item in section.items:
-            if shown >= max_items:
-                truncated = True
-                break
-            lines.append(f"  - {_strip_markdown(item)}")
-            shown += 1
-    if truncated:
-        lines.append("  [dim]...[/dim]")
-    return "\n".join(lines)
+        lines.extend(f"  - {_strip_markdown(item)}" for item in section.items[:budget])
+        if len(section.items) > budget:
+            return [*lines, "  [dim]...[/dim]"]
+        budget -= len(section.items)
+    return lines
 
 
 def _strip_markdown(text: str) -> str:
@@ -146,11 +182,15 @@ def render_whats_new(
     if not selected:
         return False
 
+    stats = load_release_stats()
     blocks: list[str] = []
     for entry in selected[:max_versions]:
         label = f" [dim]({entry.label})[/dim]" if entry.label else ""
-        body = _format_entry(entry, max_items=max_items_per_version)
-        blocks.append(f"[bold cyan]v{entry.version}[/bold cyan]{label}\n{body}")
+        body = _format_entry(
+            entry, max_items=max_items_per_version, stats=stats.get(entry.version)
+        )
+        name = "Unreleased" if entry.version == UNRELEASED else f"v{entry.version}"
+        blocks.append(f"[bold cyan]{name}[/bold cyan]{label}\n{body}")
 
     extra = len(selected) - max_versions
     if extra > 0:
@@ -189,6 +229,7 @@ __all__ = [
     "RELEASES_URL",
     "find_changelog_path",
     "load_changelog_entries",
+    "numbers_line",
     "read_last_seen_version",
     "render_update_advisory",
     "render_whats_new",

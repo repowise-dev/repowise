@@ -5,6 +5,8 @@ import re
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
+from repowise.core.pyparse import parse_python
+
 from .base import DynamicEdge, DynamicHintExtractor
 
 #: Reads a module's syntax tree and returns the class names Django uses there.
@@ -90,7 +92,7 @@ def _used_names(path: Path, used_names: UsedNames | None) -> tuple[str, ...]:
     if used_names is None:
         return ()
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))
+        tree = parse_python(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))
     except (OSError, SyntaxError, ValueError):
         return ()
     return tuple(sorted(used_names(tree)))
@@ -209,7 +211,7 @@ def edge_strings(path: str, blob: bytes) -> list | None:
     if p.name != "settings.py" and not (p.parent.name == "settings" and p.suffix == ".py"):
         return []
     try:
-        return settings_entries(ast.parse(blob.decode("utf-8", "ignore")))
+        return settings_entries(parse_python(blob.decode("utf-8", "ignore")))
     except Exception:  # as in _scan_settings, which skips any file that will not parse
         return None
 
@@ -244,7 +246,7 @@ class DjangoDynamicHints(DynamicHintExtractor):
         for settings_file in settings_files:
             try:
                 source = settings_file.read_text(encoding="utf-8", errors="ignore")
-                tree = ast.parse(source, filename=str(settings_file))
+                tree = parse_python(source, filename=str(settings_file))
             except Exception:
                 continue
 

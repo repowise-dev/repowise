@@ -7,8 +7,9 @@ already computed:
     weighted by share of file commits.
   - Co-change: ownership of files that historically co-change with the
     touched paths (``co_change_partners_json``).
-  - Recency: weight commit count by the file's 90-day activity so people
-    who *just* worked here outrank people who touched the file in 2018.
+  - Recency: weight each author by their own share of the file's 90-day
+    commits (``recent_commit_count``), so people who *just* worked here
+    outrank people who touched the file in 2018.
 
 Rows may be dicts, dataclasses or ORM rows; JSON columns may be text or
 already decoded.
@@ -87,14 +88,16 @@ def suggest_reviewers(
         for m in rows:
             authors = json_field(m, "top_authors_json", [])
             total = sum(int(a.get("commit_count", 0)) for a in authors) or 1
-            commits_90d = field(m, "commit_count_90d") or 0
+            # Each author's own commits in the file's 90-day window, not the
+            # file-level count scaled by share: a row indexed before #2862's
+            # fix has no ``recent_commit_count`` key, and a missing signal
+            # scores zero recency rather than inventing one from an estimate.
+            recent_total = sum(int(a.get("recent_commit_count", 0)) for a in authors)
             for a in authors:
                 cnt = int(a.get("commit_count", 0))
                 share = cnt / total
-                # Recency: commits_90d weighted by share is a rough estimate
-                # of how much each author contributed recently.
-                recent = int(commits_90d * share)
-                score = weight * share + _W_RECENT * (recent / max(commits_90d, 1))
+                recent = int(a.get("recent_commit_count", 0))
+                score = weight * share + _W_RECENT * recent / max(recent_total, 1)
                 _bump(
                     a.get("name", ""),
                     a.get("email") or None,

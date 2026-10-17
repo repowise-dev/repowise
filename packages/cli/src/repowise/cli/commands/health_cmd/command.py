@@ -25,6 +25,7 @@ from repowise.cli.helpers import (
     run_async,
     silence_logs_for_machine_output_until_close,
 )
+from repowise.core.analysis.finding_registry import preview_lines
 from repowise.core.analysis.health.counts import (
     COUNTS,
     DEFAULT_COUNTS,
@@ -499,6 +500,8 @@ def health_command(
                 f"-{f.health_impact:.2f}",
             )
         console.print(f_table)
+        for line in preview_lines("health", findings[:30], kind="biomarker_type"):
+            console.print(f"[dim]{line}[/dim]")
 
 
 def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str], dict[str, str]]:

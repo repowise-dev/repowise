@@ -407,6 +407,9 @@ async def test_refresh_rebuilds_then_extends(tmp_path, history):
             assert (row.provenance, row.provenance_agent, row.provenance_known) == ("agent", 1, 1)
             assert (await get_change(session, repo_id, shas["f1"][:10])).change_id == "pr-13"
             assert (await get_change(session, repo_id, "pr-7")).approvals == 1
+            # The forge ref is what `changes list` prints, so `show` takes it too.
+            assert (await get_change(session, repo_id, "#13")).change_id == "pr-13"
+            assert await get_change(session, repo_id, "#999") is None
 
         newer = r.commit("z.py", "chore: z (#40)")
         async with get_session(factory) as session:

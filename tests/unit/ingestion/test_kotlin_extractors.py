@@ -132,3 +132,46 @@ class TestKotlinAliasImports:
         src = b"package x\nimport com.example.Foo as\nclass App\n"
         imp = parser.parse_file(_file(), src).imports[0]
         assert [(b.local_name, b.exported_name) for b in imp.bindings] == [("Foo", "Foo")]
+
+
+class TestKotlinDetachedAnnotation:
+    """A lone one-argument annotation the grammar reads as an expression.
+
+    At top level, ``@Suppress("unused")`` on its own line before a bare ``fun``
+    or ``object`` parses as an ``annotated_expression`` (the argument list read
+    as a parenthesized expression) beside a declaration with no modifiers.
+    """
+
+    @staticmethod
+    def _decorators(parser: ASTParser, src: bytes) -> dict[str, list[str]]:
+        return {s.name: s.decorators for s in parser.parse_file(_file(), src).symbols}
+
+    def test_function_keeps_its_annotation(self, parser: ASTParser) -> None:
+        src = b'package x\n\n@Suppress("unused")\nfun a(): Int = 1\n\nfun z() {}\n'
+        decorators = self._decorators(parser, src)
+        assert decorators["a"] == ['@Suppress("unused")']
+        assert decorators["z"] == []
+
+    def test_extension_function_keeps_its_annotation(self, parser: ASTParser) -> None:
+        src = b'package x\n\n@Deprecated("old")\nfun String.a(): String = this\n\nfun z() {}\n'
+        assert self._decorators(parser, src)["a"] == ['@Deprecated("old")']
+
+    def test_object_keeps_its_annotation(self, parser: ASTParser) -> None:
+        src = b'package x\n\n@Suppress("UNUSED")\nobject A\n\nfun z() {}\n'
+        assert self._decorators(parser, src)["A"] == ['@Suppress("UNUSED")']
+
+    def test_annotation_stack_ending_in_one_argument(self, parser: ASTParser) -> None:
+        src = b'package x\n\n@JvmStatic\n@Suppress("unused")\nfun a(x: Int) {}\n\nfun z() {}\n'
+        assert self._decorators(parser, src)["a"] == ['@JvmStatic\n@Suppress("unused")']
+
+    def test_comment_between_annotation_and_declaration(self, parser: ASTParser) -> None:
+        src = b'package x\n\n@JvmName("b")\n// kept for Java callers\nfun a() {}\n\nfun z() {}\n'
+        assert self._decorators(parser, src)["a"] == ['@JvmName("b")']
+
+    def test_annotation_inside_modifiers_is_not_doubled(self, parser: ASTParser) -> None:
+        src = b'package x\n\n@Suppress("unused", "X")\nfun a() {}\n\nfun z() {}\n'
+        assert self._decorators(parser, src)["a"] == ['@Suppress("unused", "X")']
+
+    def test_file_annotation_is_not_taken(self, parser: ASTParser) -> None:
+        src = b'@file:Suppress("unused")\npackage x\n\nfun a() {}\n\nfun z() {}\n'
+        assert self._decorators(parser, src)["a"] == []

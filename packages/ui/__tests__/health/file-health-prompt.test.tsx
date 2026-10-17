@@ -164,7 +164,17 @@ describe("the drawer's prompt affordance", () => {
   };
 
   it("opens a prompt built from the file the drawer is showing", () => {
-    render(<HealthFileDrawer open onClose={() => {}} metric={m} findings={[]} />);
+    const f = {
+      id: "f1",
+      biomarker_type: "brain_method",
+      severity: "high" as const,
+      function_name: "run",
+      line_start: 10,
+      line_end: 90,
+      health_impact: 1.2,
+      reason: "Oversized function.",
+    };
+    render(<HealthFileDrawer open onClose={() => {}} metric={m} findings={[f]} />);
     fireEvent.click(screen.getByRole("button", { name: /AI prompt/i }));
     expect(screen.getByText(/AI prompt for this file/i)).toBeInTheDocument();
   });
@@ -197,9 +207,10 @@ describe("the drawer's prompt affordance", () => {
     );
     const toggle = screen.getByRole("button", { name: /Why this score/i });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    // The hint says what is inside, so collapsing costs no information.
-    expect(toggle.textContent).toContain("−9.00");
-    expect(toggle.textContent).toMatch(/1 category/);
+    // The hint says what is inside without restating the total, which is the
+    // body's arithmetic line.
+    expect(toggle.textContent).not.toContain("−9.00");
+    expect(toggle.textContent).toMatch(/1 category, 1 at its limit/);
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");

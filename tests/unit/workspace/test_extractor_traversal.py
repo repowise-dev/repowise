@@ -112,3 +112,14 @@ def test_service_boundary_under_a_source_package_named_build(tmp_path: Path) -> 
 
     assert "services/build" in paths
     assert "services/dist" not in paths
+
+
+def test_src_layout_package_is_a_service_boundary(tmp_path):
+    from repowise.core.workspace.extractors.service_boundary import detect_service_boundaries
+
+    pkg = tmp_path / "packages" / "cli"
+    (pkg / "src" / "tool" / "cmds").mkdir(parents=True)
+    (pkg / "pyproject.toml").write_text("[project]\nname='cli'\n")
+    (pkg / "src" / "tool" / "cmds" / "run.py").write_text("x = 1\n")
+
+    assert [b.service_path for b in detect_service_boundaries(tmp_path)] == ["packages/cli"]

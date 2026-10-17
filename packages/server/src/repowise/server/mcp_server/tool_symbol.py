@@ -65,6 +65,7 @@ from repowise.server.mcp_server._helpers import (
     _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
+    clean_signature,
     is_excluded,
     read_repo_file_text,
 )
@@ -357,7 +358,7 @@ def _prepare_callee_entries(
                 "name": row.name,
                 "file": row.file_path,
                 "kind": row.kind,
-                "signature": _clean_symbol_signature(row.signature),
+                "signature": clean_signature(row.signature),
                 "depth": hop.number,
             }
             if row.file_path not in text_cache:
@@ -487,11 +488,6 @@ async def _expand_callees(
             "fetch one with its fetch_with range."
         )
     return block
-
-
-def _clean_symbol_signature(signature: str | None) -> str:
-    """Collapse a stored signature onto one line (CRLF indices keep the \\r\\n)."""
-    return " ".join((signature or "").split())
 
 
 def _extract_omission_ref(symbol_id: str) -> str | None:
@@ -843,7 +839,7 @@ async def _container_outline(
         entry: dict[str, Any] = {
             "symbol_id": symbol_identity(member.symbol_id),
             "kind": member.kind,
-            "signature": _clean_symbol_signature(member.signature),
+            "signature": clean_signature(member.signature),
             "start_line": check.start_line,
             "end_line": check.end_line,
         }
@@ -999,6 +995,412 @@ def _correct_ambiguity_note(result: dict[str, Any], _collector: Any) -> None:
 register_post_shed("get_symbol", _correct_ambiguity_note)
 
 
+def _elapsed_ms(t0: float) -> float:
+    return (time.perf_counter() - t0) * 1000
+
+
+def _reference_arguments(
+    reference: dict[str, Any] | None,
+    symbol_id: str | None,
+    id: str | None,
+    repo: str | None,
+) -> tuple[str | None, str | None]:
+    """``symbol_id`` and ``repo`` filled from a structured source reference."""
+    if not reference:
+        return symbol_id, repo
+    if not symbol_id and not id and isinstance(reference.get("id"), str):
+        symbol_id = reference["id"]
+    if repo is None and _is_workspace_mode() and isinstance(reference.get("repository"), str):
+        repo = reference["repository"]
+    return symbol_id, repo
+
+
+def _requested_id(
+    symbol_id: str | None, id: str | None, query: str | None
+) -> tuple[str | None, str | None]:
+    """The id asked for, from ``symbol_id``, its ``id`` alias, or a lone ``query``."""
+    # Agents call this tool as ``get_symbol(id)``; ``symbol_id`` wins when both are given.
+    if not symbol_id and id:
+        symbol_id = id
+    elif not symbol_id and query and query.strip():
+        # A lone ``query`` is a guessed id: the line filter needs an id to apply to.
+        symbol_id, query = query, None
+    return symbol_id, query
+
+
+async def _routed_read(
+    symbol_id: str, context_lines: int, query: str | None, depth: int
+) -> dict | None:
+    """The read served by the repo that owns *symbol_id*, or None to serve it here."""
+    routes = await route_targets([symbol_id.strip()])
+    if not needs_routing(routes):
+        return None
+    route = routes[0]
+    if route.repo is None:
+        return {"symbol_id": symbol_id, **route.card(), "_meta": _build_meta()}
+    routed = await get_symbol(
+        route.local, context_lines=context_lines, repo=route.repo, query=query, depth=depth
+    )
+    if route.routed:
+        routed = {"repo": route.repo, **routed}
+    hint_misses(routed, routes)
+    return routed
+
+
+async def _range_id_read(symbol_id: str, context_lines: int, ctx: Any, t0: float) -> dict | None:
+    """A live range read for a ``path:start-end`` id, else None."""
+    range_match = _RANGE_ID_RE.match(symbol_id.strip())
+    if not range_match or "::" in symbol_id:
+        return None
+    normalized_path = path_identity(range_match.group("path"))
+    range_start = int(range_match.group("start"))
+    range_end = int(range_match.group("end"))
+    if range_end < range_start:
+        range_start, range_end = range_end, range_start
+    normalized_id = f"{normalized_path}:{range_start}-{range_end}"
+    return await _resolve_range_read(
+        normalized_id,
+        normalized_path,
+        range_start,
+        range_end,
+        max(0, min(50, context_lines)),
+        ctx,
+        t0,
+    )
+
+
+async def _rows_in_scope(
+    ctx: Any, repository: Any, symbol_id: str, rows: list[Any], exclude_spec: Any
+) -> list[Any]:
+    """*rows* outside the exclusion spec; a bare name one symbol carries resolves to it."""
+    rows = [r for r in rows if not is_excluded(r.file_path, exclude_spec)]
+    if not rows and "::" not in symbol_id:
+        # A bare name one symbol carries is that symbol; several stay suggestions.
+        async with get_session(ctx.session_factory) as session:
+            named, complete = await _symbols_named(session, repository.id, symbol_id, exclude_spec)
+            if complete and len(named) == 1:
+                rows = await _resolve_symbol(session, repository.id, named[0])
+    return rows
+
+
+def _live_grep_response(
+    ctx: Any, repository: Any, symbol_id: str, exclude_spec: Any, t0: float
+) -> dict | None:
+    """Live-file lines naming a symbol the index lacks (a constant, import or alias), else None."""
+    file_part, name_part = _parse_symbol_id(symbol_id)
+    if not file_part or not name_part or is_excluded(file_part, exclude_spec):
+        return None
+    matches = _live_grep_fallback(Path(str(ctx.path)), file_part, name_part)
+    if not matches:
+        return None
+    likely = (
+        "defined here, so likely added after the last index; "
+        "run `repowise update` to index it"
+        if any(m.get("defines") for m in matches)
+        else "likely a constant, import, or alias"
+    )
+    return {
+        "symbol_id": symbol_id,
+        "file": file_part,
+        "resolution": "live_grep",
+        "fallback_lines": matches,
+        "verified": True,
+        "note": (
+            "Not an indexed symbol, but the name matches these "
+            f"live-file lines ({likely}). For surrounding source "
+            f'use a range read: "{file_part}:<start>-<end>".'
+        ),
+        "_meta": _build_meta(
+            timing_ms=_elapsed_ms(t0),
+            repository=repository,
+            targets=[file_part],
+        ),
+    }
+
+
+async def _not_found_response(
+    ctx: Any, repository: Any, symbol_id: str, exclude_spec: Any, t0: float
+) -> dict:
+    """Live lines, exact-id suggestions, or a not-found error for an index miss."""
+    if ctx.path:
+        live = _live_grep_response(ctx, repository, symbol_id, exclude_spec, t0)
+        if live is not None:
+            return live
+    async with get_session(ctx.session_factory) as session:
+        suggestions = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
+    if suggestions:
+        return {
+            "symbol_id": symbol_id,
+            "error": (
+                f"Symbol not found: {symbol_id!r}. A symbol with this name "
+                "exists at the path(s) below — retry with one of these "
+                "exact symbol_ids."
+            ),
+            "suggestions": suggestions,
+            "_meta": _build_meta(
+                timing_ms=_elapsed_ms(t0),
+                repository=repository,
+            ),
+        }
+    return {
+        "symbol_id": symbol_id,
+        "error": (
+            f"Symbol not found: {symbol_id!r}. Use get_context to list "
+            "available symbols in the file, then try again with the "
+            "exact symbol_id from that response."
+        ),
+        "_meta": _build_meta(
+            timing_ms=_elapsed_ms(t0),
+            repository=repository,
+        ),
+    }
+
+
+def _unreadable_source_response(row: Any, symbol_id: str, repository: Any, t0: float) -> dict:
+    return {
+        "symbol_id": symbol_id,
+        "file": row.file_path,
+        "name": row.name,
+        "kind": row.kind,
+        "signature": row.signature,
+        "error": (
+            "Symbol metadata exists but source file could not be read. "
+            "The file may have been moved or deleted since indexing."
+        ),
+        "_meta": _build_meta(
+            timing_ms=_elapsed_ms(t0),
+            repository=repository,
+        ),
+    }
+
+
+class _ServedBody(NamedTuple):
+    """The numbered lines served for one symbol, and the outline if it was outlined."""
+
+    numbered: str
+    start: int
+    end: int
+    truncated: bool
+    outline: tuple[list[dict], int, int] | None
+
+
+async def _outline_if_large(
+    ctx: Any, repository: Any, row: Any, text: str, check: Any
+) -> tuple[list[dict], int, int] | None:
+    """Members outline of a verified container body too large to serve whole."""
+    if row.kind not in _CONTAINER_KINDS or not check.verified:
+        return None
+    # Sized on the body alone, so context_lines never tips a class into an outline.
+    bare, bare_start, _e, _t = _slice_text(text, check.start_line, check.end_line, 0)
+    if len(_number_lines(bare, bare_start)) <= _OUTLINE_MIN_CHARS:
+        return None
+    return await _container_outline(
+        ctx.session_factory, repository.id, row, text, check.start_line, check.end_line
+    )
+
+
+async def _served_body(
+    ctx: Any, repository: Any, row: Any, text: str, check: Any, context_lines: int
+) -> _ServedBody:
+    """The body slice to serve: the whole body, a capped head, or a header plus outline."""
+    source, start, end, _total = _slice_text(text, check.start_line, check.end_line, context_lines)
+    numbered = _number_lines(source, start)
+
+    truncated = (end - start + 1) >= _MAX_SOURCE_LINES and (
+        check.end_line - check.start_line + 1 + 2 * context_lines
+    ) > _MAX_SOURCE_LINES
+
+    outline = await _outline_if_large(ctx, repository, row, text, check)
+    if outline is None:
+        return _ServedBody(numbered, start, end, truncated, None)
+    _members, first_member, _members_total = outline
+    header_end = min(first_member - 1, check.start_line + _OUTLINE_HEADER_LINES - 1, check.end_line)
+    # context_lines widens the header upward only; below it are the members.
+    source, start, end, _total = _slice_text(
+        text,
+        max(1, check.start_line - context_lines),
+        max(check.start_line, header_end),
+        0,
+    )
+    source = source.rstrip()
+    end = start + len(source.splitlines()) - 1 if source else start
+    return _ServedBody(_number_lines(source, start), start, end, False, outline)
+
+
+def _note_outline(
+    response: dict, outline: tuple[list[dict], int, int], row: Any, check: Any
+) -> None:
+    """Mark an outlined body and say how to fetch its members or the whole body."""
+    members, _first_member, members_total = outline
+    # An outline is not the body, so it never claims ``_meta.complete``.
+    response["outlined"] = True
+    response["members"] = members
+    response["note"] = (
+        f"Body ({check.start_line}-{check.end_line}) outlined: header plus "
+        f"{len(members)} members. Fetch one member with get_symbol on its "
+        f"symbol_id, or Read {row.file_path} lines "
+        f"{check.start_line}-{check.end_line} for the whole body."
+    )
+    if members_total > len(members):
+        response["members_total"] = members_total
+        last = members[-1]["end_line"] if members else check.start_line
+        response["note"] += (
+            f" {members_total - len(members)} more members are not listed;"
+            f" they start after line {last}."
+        )
+
+
+def _note_continuation(
+    response: dict, body: _ServedBody, row: Any, check: Any, alias: Any
+) -> None:
+    """Hand back the exact range read that fetches the rest of a capped body."""
+    continuation_reference = source_reference(
+        alias,
+        row.file_path,
+        lines=[body.end + 1, check.end_line],
+        verification_basis="live",
+        source_kind="source",
+    )
+    response["continuation"] = continuation_reference["id"]
+    response["continuation_reference"] = continuation_reference
+    response["note"] = (
+        f"Symbol body ({check.start_line}-{check.end_line}) exceeds the "
+        f"{_MAX_SOURCE_LINES}-line serve cap; served {body.start}-{body.end}. Fetch "
+        f"the remainder in one call: get_symbol({response['continuation']!r})."
+    )
+
+
+def _symbol_body_response(
+    row: Any, check: Any, body: _ServedBody, repository: Any, alias: Any, t0: float
+) -> dict:
+    """The served body with its outline, continuation and bounds notes."""
+    response = {
+        "symbol_id": symbol_identity(row.symbol_id),
+        "file": row.file_path,
+        "name": row.name,
+        "kind": row.kind,
+        "qualified_name": row.qualified_name,
+        "signature": row.signature,
+        "language": row.language,
+        "start_line": body.start,
+        "end_line": body.end,
+        "symbol_start_line": check.start_line,
+        "symbol_end_line": check.end_line,
+        "source": body.numbered,
+        "truncated": body.truncated,
+        "verified": check.verified,
+        "_meta": _build_meta(
+            timing_ms=_elapsed_ms(t0),
+            hint=_symbol_hint(row.symbol_id, check.end_line, check.start_line),
+            repository=repository,
+            # Served bytes are live-verified; only this file's drift matters.
+            targets=[row.file_path],
+        ),
+    }
+    if body.outline is not None:
+        _note_outline(response, body.outline, row, check)
+    elif not body.truncated and check.verified:
+        # The whole body was served against live bytes, so nothing is left to
+        # fetch for this symbol.
+        response["_meta"]["complete"] = _completeness_line(bodies=1)
+    if body.truncated and not check.approximate and body.end < check.end_line:
+        _note_continuation(response, body, row, check, alias)
+    if check.approximate:
+        response["bounds"] = "approximate"
+        response["note"] = (
+            "The live file no longer contains this symbol at its indexed "
+            "location and it could not be re-located by name — it may have "
+            "been renamed or removed since indexing. The served slice is "
+            "the indexed line range from the current file contents; verify "
+            "before citing."
+        )
+    return response
+
+
+async def _serve_symbol(
+    ctx: Any,
+    repository: Any,
+    row: Any,
+    symbol_id: str,
+    context_lines: int,
+    depth: int,
+    exclude_spec: Any,
+    t0: float,
+) -> dict:
+    """Live-verified body of one resolved symbol, with callee bodies past depth 1."""
+    repo_root = Path(str(ctx.path))
+    text = _read_file_text(repo_root, row.file_path)
+    if text is None:
+        return _unreadable_source_response(row, symbol_id, repository, t0)
+
+    from repowise.core.distill.budget import estimate_tokens
+
+    full_tokens = estimate_tokens(text)
+
+    # Stored bounds are checked against the live file first: stale ones are
+    # corrected and healed, unfindable ones served as approximate.
+    check = check_symbol_bounds(row, text)
+    if check.corrected:
+        await heal_symbol_row(ctx.session_factory, row, check.start_line, check.end_line)
+
+    body = await _served_body(ctx, repository, row, text, check, context_lines)
+    response = _symbol_body_response(row, check, body, repository, ctx.alias, t0)
+    # An outline answers for the shape; callee bodies would undo its size.
+    if depth > 1 and body.outline is None:
+        async with get_session(ctx.session_factory) as session:
+            callee_block = await _expand_callees(
+                session,
+                repository.id,
+                row,
+                repo_root,
+                depth,
+                exclude_spec,
+                ctx.alias,
+            )
+        if callee_block is not None:
+            response["callee_bodies"] = callee_block
+
+    # Serving one symbol replaced reading the whole file.
+    from repowise.server.mcp_server._savings import declare_replaced
+
+    declare_replaced(response, full_tokens)
+    return response
+
+
+async def _indexed_symbol_read(
+    ctx: Any, symbol_id: str, context_lines: int, depth: int, t0: float
+) -> dict:
+    """Resolve *symbol_id* in the index and serve it, its candidates, or a miss."""
+    context_lines = max(0, min(50, context_lines))
+    # Clamped, not rejected: the deepest walk we do is the useful reply.
+    depth = max(1, min(_MAX_CALLEE_DEPTH, depth))
+
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        rows = await _resolve_symbol(session, repository.id, symbol_id)
+
+    # Before the exclusion spec: it is built from the repo path.
+    if not ctx.path:
+        return {
+            "symbol_id": symbol_id,
+            "error": "MCP server has no repo path configured",
+            "_meta": _build_meta(
+                timing_ms=_elapsed_ms(t0),
+                repository=repository,
+            ),
+        }
+
+    exclude_spec = _get_exclude_spec(ctx.path)
+    rows = await _rows_in_scope(ctx, repository, symbol_id, rows, exclude_spec)
+    if not rows:
+        return await _not_found_response(ctx, repository, symbol_id, exclude_spec, t0)
+    if len(rows) > 1:
+        return await _render_ambiguous(rows, symbol_id, ctx, repository, t0, context_lines)
+    return await _serve_symbol(
+        ctx, repository, rows[0], symbol_id, context_lines, depth, exclude_spec, t0
+    )
+
+
 @mcp.tool(surface_order=30, artifact_type="source", presentation="source", evidence_basis="measured")
 async def get_symbol(
     symbol_id: str | None = None,
@@ -1034,37 +1436,18 @@ async def get_symbol(
         reference: structured source reference emitted by this tool. Its id
             and repository are accepted together without caller translation.
     """
-    if reference:
-        if not symbol_id and not id and isinstance(reference.get("id"), str):
-            symbol_id = reference["id"]
-        if (
-            repo is None
-            and _is_workspace_mode()
-            and isinstance(reference.get("repository"), str)
-        ):
-            repo = reference["repository"]
+    symbol_id, repo = _reference_arguments(reference, symbol_id, id, repo)
     if repo == "all":
         return _unsupported_repo_all("get_symbol")
     ctx = await _resolve_repo_context(repo)
 
     t0 = time.perf_counter()
-    # ``id`` is an alias for ``symbol_id``. The CLAUDE.md tool table and the
-    # tool description both refer to this tool as ``get_symbol(id)``, so agents
-    # naturally call it with ``id=`` and hit a pydantic "field required" error
-    # on ``symbol_id`` — one isError early teaches the agent to abandon the
-    # server (agent-context doctrine). Accept both; ``symbol_id`` wins when both
-    # are given.
-    if not symbol_id and id:
-        symbol_id = id
-    elif not symbol_id and query and query.strip():
-        # Hosts that defer tool schemas let a model guess ``query`` for the id.
-        # The line filter needs an id to apply to, so alone it is the id.
-        symbol_id, query = query, None
+    symbol_id, query = _requested_id(symbol_id, id, query)
     if not symbol_id or not symbol_id.strip():
         return {
             "symbol_id": symbol_id,
             "error": 'get_symbol requires `symbol_id`, e.g. "path/to/file.py::Name".',
-            "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+            "_meta": _build_meta(timing_ms=_elapsed_ms(t0)),
         }
 
     omission_ref = _extract_omission_ref(symbol_id)
@@ -1079,292 +1462,11 @@ async def get_symbol(
             other_repo_roots() if repo is None else (),
         )
 
-    routes = await route_targets([symbol_id.strip()]) if repo is None else None
-    if needs_routing(routes):
-        route = routes[0]
-        if route.repo is None:
-            return {"symbol_id": symbol_id, **route.card(), "_meta": _build_meta()}
-        routed = await get_symbol(
-            route.local, context_lines=context_lines, repo=route.repo, query=query, depth=depth
-        )
-        if route.routed:
-            routed = {"repo": route.repo, **routed}
-        hint_misses(routed, routes)
-        return routed
-
-    # Range read: "path/to/file.py:140-180" (single colon + numeric range —
-    # never collides with "{path}::{name}").
-    range_match = _RANGE_ID_RE.match(symbol_id.strip())
-    if range_match and "::" not in symbol_id:
-        normalized_path = path_identity(range_match.group("path"))
-        range_start = int(range_match.group("start"))
-        range_end = int(range_match.group("end"))
-        if range_end < range_start:
-            range_start, range_end = range_end, range_start
-        normalized_id = f"{normalized_path}:{range_start}-{range_end}"
-        return await _resolve_range_read(
-            normalized_id,
-            normalized_path,
-            range_start,
-            range_end,
-            max(0, min(50, context_lines)),
-            ctx,
-            t0,
-        )
-
-    repository = None
-    if context_lines < 0 or context_lines > 50:
-        # Bound context_lines to a sane range — runaway values would
-        # defeat the whole point of symbol-level retrieval.
-        context_lines = max(0, min(50, context_lines))
-    # Clamp rather than reject: an out-of-range depth is a caller reaching for
-    # more of the chain, and the useful reply is the deepest walk we will do.
-    depth = max(1, min(_MAX_CALLEE_DEPTH, depth))
-
-    async with get_session(ctx.session_factory) as session:
-        repository = await _get_repo(session)
-        rows = await _resolve_symbol(session, repository.id, symbol_id)
-
-    # Before the exclusion spec: it is built from the repo path.
-    if not ctx.path:
-        return {
-            "symbol_id": symbol_id,
-            "error": "MCP server has no repo path configured",
-            "_meta": _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                repository=repository,
-            ),
-        }
-
-    exclude_spec = _get_exclude_spec(ctx.path)
-    rows = [r for r in rows if not is_excluded(r.file_path, exclude_spec)]
-    if not rows and "::" not in symbol_id:
-        # A bare name one symbol carries is that symbol; several stay suggestions.
-        async with get_session(ctx.session_factory) as session:
-            named, complete = await _symbols_named(
-                session, repository.id, symbol_id, exclude_spec
-            )
-            if complete and len(named) == 1:
-                rows = await _resolve_symbol(session, repository.id, named[0])
-    if not rows:
-        # Dead-end recovery: constants/imports/aliases between indexed
-        # symbols miss the index but live in the file — grep the live file
-        # for the name and serve the matching lines instead of a pure error.
-        if ctx.path:
-            file_part, name_part = _parse_symbol_id(symbol_id)
-            if file_part and name_part and not is_excluded(file_part, exclude_spec):
-                matches = _live_grep_fallback(Path(str(ctx.path)), file_part, name_part)
-                if matches:
-                    likely = (
-                        "defined here, so likely added after the last index; "
-                        "run `repowise update` to index it"
-                        if any(m.get("defines") for m in matches)
-                        else "likely a constant, import, or alias"
-                    )
-                    return {
-                        "symbol_id": symbol_id,
-                        "file": file_part,
-                        "resolution": "live_grep",
-                        "fallback_lines": matches,
-                        "verified": True,
-                        "note": (
-                            "Not an indexed symbol, but the name matches these "
-                            f"live-file lines ({likely}). For surrounding source "
-                            f'use a range read: "{file_part}:<start>-<end>".'
-                        ),
-                        "_meta": _build_meta(
-                            timing_ms=(time.perf_counter() - t0) * 1000,
-                            repository=repository,
-                            targets=[file_part],
-                        ),
-                    }
-        async with get_session(ctx.session_factory) as session:
-            suggestions = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
-        if suggestions:
-            return {
-                "symbol_id": symbol_id,
-                "error": (
-                    f"Symbol not found: {symbol_id!r}. A symbol with this name "
-                    "exists at the path(s) below — retry with one of these "
-                    "exact symbol_ids."
-                ),
-                "suggestions": suggestions,
-                "_meta": _build_meta(
-                    timing_ms=(time.perf_counter() - t0) * 1000,
-                    repository=repository,
-                ),
-            }
-        return {
-            "symbol_id": symbol_id,
-            "error": (
-                f"Symbol not found: {symbol_id!r}. Use get_context to list "
-                "available symbols in the file, then try again with the "
-                "exact symbol_id from that response."
-            ),
-            "_meta": _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                repository=repository,
-            ),
-        }
-
-    if len(rows) > 1:
-        return await _render_ambiguous(rows, symbol_id, ctx, repository, t0, context_lines)
-
-    row = rows[0]
-    repo_root = Path(str(ctx.path))
-    text = _read_file_text(repo_root, row.file_path)
-
-    if text is None:
-        return {
-            "symbol_id": symbol_id,
-            "file": row.file_path,
-            "name": row.name,
-            "kind": row.kind,
-            "signature": row.signature,
-            "error": (
-                "Symbol metadata exists but source file could not be read. "
-                "The file may have been moved or deleted since indexing."
-            ),
-            "_meta": _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                repository=repository,
-            ),
-        }
-
-    from repowise.core.distill.budget import estimate_tokens
-
-    full_tokens = estimate_tokens(text)
-
-    # Trust contract: verify the stored bounds against the live file before
-    # serving a single byte. Stale bounds get corrected via a one-file
-    # re-parse (and healed in the DB); un-relocatable symbols are served as
-    # the indexed guess, explicitly tagged approximate.
-    check = check_symbol_bounds(row, text)
-    if check.corrected:
-        await heal_symbol_row(ctx.session_factory, row, check.start_line, check.end_line)
-
-    source, start, end, _total = _slice_text(text, check.start_line, check.end_line, context_lines)
-    numbered = _number_lines(source, start)
-
-    truncated = (end - start + 1) >= _MAX_SOURCE_LINES and (
-        check.end_line - check.start_line + 1 + 2 * context_lines
-    ) > _MAX_SOURCE_LINES
-
-    outline = None
-    if row.kind in _CONTAINER_KINDS and check.verified:
-        # Sized on the body alone, so context_lines never tips a class into an outline.
-        bare, bare_start, _e, _t = _slice_text(text, check.start_line, check.end_line, 0)
-        if len(_number_lines(bare, bare_start)) > _OUTLINE_MIN_CHARS:
-            outline = await _container_outline(
-                ctx.session_factory, repository.id, row, text, check.start_line, check.end_line
-            )
-    if outline is not None:
-        members, first_member, members_total = outline
-        header_end = min(
-            first_member - 1, check.start_line + _OUTLINE_HEADER_LINES - 1, check.end_line
-        )
-        # context_lines widens the header upward only; below it are the members.
-        source, start, end, _total = _slice_text(
-            text,
-            max(1, check.start_line - context_lines),
-            max(check.start_line, header_end),
-            0,
-        )
-        source = source.rstrip()
-        end = start + len(source.splitlines()) - 1 if source else start
-        numbered = _number_lines(source, start)
-        truncated = False
-
-    response = {
-        "symbol_id": symbol_identity(row.symbol_id),
-        "file": row.file_path,
-        "name": row.name,
-        "kind": row.kind,
-        "qualified_name": row.qualified_name,
-        "signature": row.signature,
-        "language": row.language,
-        "start_line": start,
-        "end_line": end,
-        "symbol_start_line": check.start_line,
-        "symbol_end_line": check.end_line,
-        "source": numbered,
-        "truncated": truncated,
-        "verified": check.verified,
-        "_meta": _build_meta(
-            timing_ms=(time.perf_counter() - t0) * 1000,
-            hint=_symbol_hint(row.symbol_id, check.end_line, check.start_line),
-            repository=repository,
-            # Served bytes are live-verified; only this file's drift matters.
-            targets=[row.file_path],
-        ),
-    }
-    if outline is not None:
-        # An outline is not the body, so it never claims ``_meta.complete``.
-        response["outlined"] = True
-        response["members"] = members
-        response["note"] = (
-            f"Body ({check.start_line}-{check.end_line}) outlined: header plus "
-            f"{len(members)} members. Fetch one member with get_symbol on its "
-            f"symbol_id, or Read {row.file_path} lines "
-            f"{check.start_line}-{check.end_line} for the whole body."
-        )
-        if members_total > len(members):
-            response["members_total"] = members_total
-            last = members[-1]["end_line"] if members else check.start_line
-            response["note"] += (
-                f" {members_total - len(members)} more members are not listed;"
-                f" they start after line {last}."
-            )
-    elif not truncated and check.verified:
-        # The whole body was served against live bytes, so nothing is left to
-        # fetch for this symbol.
-        response["_meta"]["complete"] = _completeness_line(bodies=1)
-    if truncated and not check.approximate and end < check.end_line:
-        # The body exceeds the serve cap. Hand back the exact range read that
-        # fetches the remainder so the agent never has to guess the next span
-        # (the S1 dogfood found it would otherwise grub-around with a guessed
-        # range, doubling the call cost).
-        continuation_reference = source_reference(
-            ctx.alias,
-            row.file_path,
-            lines=[end + 1, check.end_line],
-            verification_basis="live",
-            source_kind="source",
-        )
-        response["continuation"] = continuation_reference["id"]
-        response["continuation_reference"] = continuation_reference
-        response["note"] = (
-            f"Symbol body ({check.start_line}-{check.end_line}) exceeds the "
-            f"{_MAX_SOURCE_LINES}-line serve cap; served {start}-{end}. Fetch "
-            f"the remainder in one call: get_symbol({response['continuation']!r})."
-        )
-    if check.approximate:
-        response["bounds"] = "approximate"
-        response["note"] = (
-            "The live file no longer contains this symbol at its indexed "
-            "location and it could not be re-located by name — it may have "
-            "been renamed or removed since indexing. The served slice is "
-            "the indexed line range from the current file contents; verify "
-            "before citing."
-        )
-    # An outline answers for the shape; callee bodies would undo its size.
-    if depth > 1 and outline is None:
-        async with get_session(ctx.session_factory) as session:
-            callee_block = await _expand_callees(
-                session,
-                repository.id,
-                row,
-                repo_root,
-                depth,
-                exclude_spec,
-                ctx.alias,
-            )
-        if callee_block is not None:
-            response["callee_bodies"] = callee_block
-
-    # Declare the exact counterfactual: serving one symbol replaced Reading the
-    # whole file. The savings instrumentation prefers this over its estimator.
-    from repowise.server.mcp_server._savings import declare_replaced
-
-    declare_replaced(response, full_tokens)
-    return response
+    if repo is None:
+        routed = await _routed_read(symbol_id, context_lines, query, depth)
+        if routed is not None:
+            return routed
+    ranged = await _range_id_read(symbol_id, context_lines, ctx, t0)
+    if ranged is not None:
+        return ranged
+    return await _indexed_symbol_read(ctx, symbol_id, context_lines, depth, t0)

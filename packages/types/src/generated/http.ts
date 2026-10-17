@@ -97,6 +97,7 @@ export interface ActiveProviderSelection {
   model?: string | null;
   base_url?: string | null;
   provenance?: SelectionProvenance;
+  base_url_unconfirmed?: boolean;
   input_cost_per_1k?: number | null;
   output_cost_per_1k?: number | null;
   embedder?: string | null;
@@ -105,6 +106,7 @@ export interface ActiveProviderSelection {
 export interface AgentPromptResponse {
   flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
   text: string;
+  preview?: string | null;
 }
 
 /** One month of commits by attribution label. */
@@ -497,7 +499,17 @@ export interface ChangeRecord {
 export interface ChangelogEntryModel {
   version: string;
   label?: string | null;
+  summary?: string;
+  highlights?: ChangelogHighlightModel[];
+  stats?: ReleaseStatsModel | null;
   sections: ChangelogSectionModel[];
+}
+
+export interface ChangelogHighlightModel {
+  id: string;
+  title: string;
+  blurb: string;
+  href?: string | null;
 }
 
 export interface ChangelogResponse {
@@ -1132,6 +1144,7 @@ export interface DeadCodeFindingResponse {
   last_commit_at: string | null;
   commit_count_90d: number;
   verification?: string | null;
+  preview?: string | null;
 }
 
 export interface DeadCodeGraphNodeResponse {
@@ -1168,6 +1181,7 @@ export interface DeadCodeSummaryResponse {
   total_findings: number;
   confidence_summary: Record<string, unknown>;
   deletable_lines: number;
+  safe_to_delete_count?: number | null;
   total_lines: number;
   by_kind: Record<string, unknown>;
   analyzed_at?: string | null;
@@ -2183,6 +2197,7 @@ export interface HealthFindingResponse {
   dimension?: string;
   verification?: string | null;
   lower_priority?: string | null;
+  preview?: string | null;
 }
 
 /**
@@ -2206,6 +2221,7 @@ export interface HealthFindingWithSymbolResponse {
   dimension?: string;
   verification?: string | null;
   lower_priority?: string | null;
+  preview?: string | null;
   symbol_id?: string | null;
 }
 
@@ -2246,6 +2262,8 @@ export interface HealthTrendResponse {
   alerts?: HealthTrendAlert[];
   file_deltas?: HealthFileDelta[];
   file_deltas_total?: number;
+  file_deltas_worse?: number;
+  file_deltas_improved?: number;
   snapshot_count?: number;
   scope?: string;
 }
@@ -2282,6 +2300,7 @@ export interface HealthWorkItem {
   biomarkers?: string[];
   effort_bucket: string;
   impact_per_effort: number;
+  preview?: string | null;
 }
 
 export interface HealthWorkQueueResponse {
@@ -3011,8 +3030,28 @@ export interface ProviderEntry {
   default_model?: string | null;
   configured?: boolean;
   requires_key?: boolean;
+  accepts_base_url?: boolean;
+  local_server?: boolean;
   env_vars?: string[];
   setup_hint?: string;
+}
+
+export interface ProviderModelEntry {
+  id: string;
+  label?: string | null;
+}
+
+/**
+ * Models a provider offers, newest-looking first after the default.
+ *
+ * ``source`` is ``live`` when the provider listed them and ``catalog`` when
+ * the built-in list stands in, with ``error`` saying why.
+ */
+export interface ProviderModelsResponse {
+  models: ProviderModelEntry[];
+  source: "live" | "catalog";
+  default_model: string;
+  error?: string | null;
 }
 
 export interface ProviderStatusResponse {
@@ -3101,6 +3140,7 @@ export interface RefactoringOpportunityDetailResponse {
   next_actions?: Record<string, unknown>[];
   plans?: Record<string, unknown>[] | null;
   ordering_note?: string | null;
+  preview?: string | null;
 }
 
 /** What one opportunity-level triage decision wrote. */
@@ -3145,6 +3185,7 @@ export interface RefactoringPlanDetailResponse {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: Record<string, unknown>;
+  preview?: string | null;
   governed_by?: string[] | null;
   risks?: PlanRiskResponse[] | null;
   recipe?: Record<string, unknown> | null;
@@ -3178,6 +3219,7 @@ export interface RefactoringPlanResponse {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: Record<string, unknown>;
+  preview?: string | null;
 }
 
 /** What one plan-level triage decision wrote. */
@@ -3265,6 +3307,7 @@ export interface RelatedWorkItem {
 export interface RelatedWorkLens {
   items?: RelatedWorkItem[];
   total?: number;
+  preview?: string | null;
 }
 
 /** The files to look up, repo-relative. Validated by the route. */
@@ -3276,6 +3319,30 @@ export interface RelatedWorkRequest {
 export interface RelatedWorkResponse {
   files?: RelatedWorkFile[];
   per_lens_limit?: number;
+}
+
+/** A release's "By the numbers", from ``scripts/release_stats.py``. */
+export interface ReleaseStatsModel {
+  since: string;
+  days: number;
+  prs: number;
+  contributors: number;
+  first_time_contributors?: number | null;
+  files_changed: number;
+  lines_added: number;
+  lines_removed: number;
+  types: ReleaseTypeCountsModel;
+  test_files_touched: number;
+  test_files_new: number;
+  issues_closed: number;
+}
+
+export interface ReleaseTypeCountsModel {
+  fixes?: number;
+  features?: number;
+  perf?: number;
+  refactors?: number;
+  docs?: number;
 }
 
 export interface RepoCreate {
@@ -3843,6 +3910,8 @@ export interface VersionResponse {
   store_compatible?: boolean | null;
   reindex_recommended?: boolean;
   reindex_command?: string | null;
+  highlights?: ChangelogHighlightModel[];
+  latest_highlights?: string[];
 }
 
 export interface WebhookResponse {

@@ -89,6 +89,10 @@ async def list_health_findings(
     # The exclusion holds for the list that ranks the whole repository against
     # itself. See the docstring for the three ways out.
     ranks_everything = biomarker_type is None and not include_zero_impact
+    # A file's list is the set the work queue counted its row from, and that
+    # queue reads history markers (it counts history-only files itself), so
+    # one file's findings keep them; the repo-wide list holds them back.
+    hold_history = file_path is None
     findings = await crud.get_health_findings(
         session,
         repo_id,
@@ -102,6 +106,7 @@ async def list_health_findings(
             tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if ranks_everything else None
         ),
         include_unverified=include_unverified,
+        hold_history=hold_history,
     )
     # A finding carries a path, not ``is_test``, so narrowing it needs the
     # metric rows that do. Read them only when the answer depends on them:
@@ -117,7 +122,11 @@ async def list_health_findings(
     # The body is a list, so what a language gate or file hold left out rides
     # in a header: ``{key: {count, reason}}``, absent when nothing was held.
     gated = await crud.gated_health_counts(
-        session, repo_id, file_path=file_path, include_unverified=include_unverified
+        session,
+        repo_id,
+        file_path=file_path,
+        include_unverified=include_unverified,
+        hold_history=hold_history,
     )
     if gated:
         response.headers[GATED_HEADER] = json.dumps(gated, separators=(",", ":"))
