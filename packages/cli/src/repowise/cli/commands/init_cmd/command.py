@@ -567,7 +567,9 @@ def _apply_advanced_answers(run: InitRun, adv: dict[str, Any]) -> None:
         "follow_renames": adv["follow_renames"],
         "skip_tests": adv["skip_tests"],
         "skip_infra": adv["skip_infra"],
-        "exclude": adv["exclude"],
+        # Merge with the command-line -x patterns rather than replacing them,
+        # keeping order and dropping duplicates (same as the workspace path).
+        "exclude": tuple(dict.fromkeys((*opts.exclude, *adv["exclude"]))),
         "include_submodules": adv.get("include_submodules", opts.include_submodules),
         "run_mode": adv.get("run_mode", opts.run_mode),
         # Asked in both branches: an index-only run renders a wiki too, and
