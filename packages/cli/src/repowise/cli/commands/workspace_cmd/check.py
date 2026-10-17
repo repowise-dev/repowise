@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import click
 
 from repowise.cli.helpers import console, resolve_repo_path
@@ -9,6 +12,12 @@ from repowise.cli.output import emit_json, format_option, json_option, resolve_f
 
 from ._shared import _report_artifact_provenance, _require_workspace
 from .group import workspace_group
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.breaking_change import BreakingChange, BreakingChangeReport
+    from repowise.core.workspace.config import WorkspaceConfig
+    from repowise.core.workspace.conformance import ConformanceReport
+    from repowise.core.workspace.system_graph import SystemGraph
 
 
 @workspace_group.command("check")
@@ -37,12 +46,6 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
     """
     import sys
 
-    from rich.markup import escape
-
-    from repowise.core.workspace.breaking_change import (
-        SEVERITY_BREAKING,
-        load_breaking_change_report,
-    )
     from repowise.core.workspace.conformance import (
         build_conformance_report,
         tags_by_repo_from_config,
@@ -68,102 +71,23 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
 
     # Gate on wire-incompatible changes that endanger another repo. A warning
     # severity is source-compat only and must not fail a build.
-    bc_report = load_breaking_change_report(ws_root) if breaking else None
+    bc_report = _load_breaking_report(ws_root) if breaking else None
     bc_ran = bc_report is not None and bc_report.ran
-    breaking_changes = (
-        [
-            c
-            for c in bc_report.changes
-            if c.severity == SEVERITY_BREAKING
-            and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
-        ]
-        if bc_ran
-        else []
-    )
+    breaking_changes = _cross_repo_breaking_changes(bc_report) if bc_ran else []
 
     if fmt == "json":
-        payload = report.to_dict()
-        if breaking:
-            payload["breaking_changes"] = [c.to_dict() for c in breaking_changes]
-            # The conformance half is recomputed now; this half is an artifact
-            # of arbitrary age, so it carries its own stamp.
-            payload["breaking_changes_generated_at"] = (
-                bc_report.generated_at if bc_report is not None else None
-            )
-            # False = never detected, so the empty list above is not a pass.
-            payload["breaking_changes_available"] = bc_ran
-        emit_json(payload)
+        _emit_check_json(report, breaking, bc_report, bc_ran, breaking_changes)
         if report.has_findings or breaking_changes:
             sys.exit(1)
         return
 
-    # State the scope before the verdict. "No cycles" over an empty graph and
-    # "no cycles" over 7 services across 3 repos are the same sentence and very
-    # different results, and only one of them is a pass.
-    _report_artifact_provenance(
-        ws_root, ws_config, graph.generated_at, sorted({n.repo for n in graph.nodes})
-    )
-    console.print(
-        f"Checked [bold]{len(graph.nodes)}[/bold] service(s) across "
-        f"[bold]{len({n.repo for n in graph.nodes})}[/bold] repo(s) against "
-        f"[bold]{report.rules_evaluated}[/bold] declared rule(s)."
-    )
-
-    rule_count = report.rules_evaluated
-    if rule_count == 0:
-        console.print(
-            "[dim]No conformance rules declared.[/dim] Add a [bold]conformance:[/bold] "
-            "block to .repowise-workspace.yaml to enforce allowed dependencies."
-        )
-
-    # Rule violations
-    if report.violations:
-        console.print(f"\n[red]✗ {len(report.violations)} architecture rule violation(s):[/red]")
-        for v in report.violations:
-            rule = f"{v.rule_source} !-> {v.rule_target}"
-            console.print(
-                f"  [red]{v.source}[/red] -> [red]{v.target}[/red] "
-                f"([dim]{v.edge_kind}[/dim]) violates [yellow]{rule}[/yellow]"
-            )
-            if v.rule_description:
-                console.print(f"      [dim]{v.rule_description}[/dim]")
-
-    # Dependency cycles
-    if report.cycles:
-        console.print(f"\n[red]✗ {len(report.cycles)} dependency cycle(s):[/red]")
-        for c in report.cycles:
-            loop = " -> ".join([*c.nodes, c.nodes[0]]) if c.nodes else ""
-            console.print(f"  [red]{loop}[/red]")
-
-    # Breaking contract changes
-    if breaking_changes:
-        stamp = bc_report.generated_at if bc_report is not None else None
-        console.print(
-            f"\n[red]✗ {len(breaking_changes)} breaking contract change(s)[/red]"
-            + (f" [dim](detected {stamp})[/dim]" if stamp else "")
-            + "[red]:[/red]"
-        )
-        for c in breaking_changes:
-            cross = [ic for ic in c.impacted_consumers if ic.repo != c.provider_repo]
-            repos = sorted({ic.repo for ic in cross})
-            console.print(
-                f"  [red]{escape(c.contract_id)}[/red] ([dim]{escape(c.contract_type)}[/dim]) "
-                f"{escape(c.kind)}: {escape(c.detail)}"
-            )
-            console.print(
-                f"      [dim]{escape(c.provider_repo)}/{escape(c.provider_file)} -> "
-                f"{len(cross)} consumer(s) in {escape(', '.join(repos))}[/dim]"
-            )
+    _print_check_scope(ws_root, ws_config, graph, report)
+    _print_violations(report)
+    _print_cycles(report)
+    _print_breaking_changes(breaking_changes, bc_report)
 
     if not report.has_findings and not breaking_changes:
-        if rule_count:
-            console.print(
-                f"\n[green]✓[/green] No violations of {rule_count} rule(s); no dependency cycles."
-            )
-        else:
-            console.print("\n[green]✓[/green] No dependency cycles.")
-        if bc_ran:
-            console.print("[green]✓[/green] No breaking contract changes.")
+        _print_check_pass(report.rules_evaluated, bc_ran)
         return
 
     # Only claim a breaking-change count when a detection pass produced one.
@@ -173,3 +97,128 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
         f"{len(report.cycles)} cycle(s){tail}."
     )
     sys.exit(1)
+
+
+def _load_breaking_report(ws_root: Path) -> BreakingChangeReport | None:
+    from repowise.core.workspace.breaking_change import load_breaking_change_report
+
+    return load_breaking_change_report(ws_root)
+
+
+def _cross_repo_breaking_changes(bc_report: BreakingChangeReport) -> list[BreakingChange]:
+    """Breaking-severity changes with a consumer outside the provider's repo."""
+    from repowise.core.workspace.breaking_change import SEVERITY_BREAKING
+
+    return [
+        c
+        for c in bc_report.changes
+        if c.severity == SEVERITY_BREAKING
+        and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
+    ]
+
+
+def _emit_check_json(
+    report: ConformanceReport,
+    breaking: bool,
+    bc_report: BreakingChangeReport | None,
+    bc_ran: bool,
+    breaking_changes: list[BreakingChange],
+) -> None:
+    payload = report.to_dict()
+    if breaking:
+        payload["breaking_changes"] = [c.to_dict() for c in breaking_changes]
+        # The conformance half is recomputed now; this half is an artifact
+        # of arbitrary age, so it carries its own stamp.
+        payload["breaking_changes_generated_at"] = (
+            bc_report.generated_at if bc_report is not None else None
+        )
+        # False = never detected, so the empty list above is not a pass.
+        payload["breaking_changes_available"] = bc_ran
+    emit_json(payload)
+
+
+def _print_check_scope(
+    ws_root: Path,
+    ws_config: WorkspaceConfig,
+    graph: SystemGraph,
+    report: ConformanceReport,
+) -> None:
+    """State the scope before the verdict.
+
+    "No cycles" over an empty graph and "no cycles" over 7 services across 3
+    repos are the same sentence and very different results, and only one of
+    them is a pass.
+    """
+    _report_artifact_provenance(
+        ws_root, ws_config, graph.generated_at, sorted({n.repo for n in graph.nodes})
+    )
+    console.print(
+        f"Checked [bold]{len(graph.nodes)}[/bold] service(s) across "
+        f"[bold]{len({n.repo for n in graph.nodes})}[/bold] repo(s) against "
+        f"[bold]{report.rules_evaluated}[/bold] declared rule(s)."
+    )
+    if report.rules_evaluated == 0:
+        console.print(
+            "[dim]No conformance rules declared.[/dim] Add a [bold]conformance:[/bold] "
+            "block to .repowise-workspace.yaml to enforce allowed dependencies."
+        )
+
+
+def _print_violations(report: ConformanceReport) -> None:
+    if not report.violations:
+        return
+    console.print(f"\n[red]✗ {len(report.violations)} architecture rule violation(s):[/red]")
+    for v in report.violations:
+        rule = f"{v.rule_source} !-> {v.rule_target}"
+        console.print(
+            f"  [red]{v.source}[/red] -> [red]{v.target}[/red] "
+            f"([dim]{v.edge_kind}[/dim]) violates [yellow]{rule}[/yellow]"
+        )
+        if v.rule_description:
+            console.print(f"      [dim]{v.rule_description}[/dim]")
+
+
+def _print_cycles(report: ConformanceReport) -> None:
+    if not report.cycles:
+        return
+    console.print(f"\n[red]✗ {len(report.cycles)} dependency cycle(s):[/red]")
+    for c in report.cycles:
+        loop = " -> ".join([*c.nodes, c.nodes[0]]) if c.nodes else ""
+        console.print(f"  [red]{loop}[/red]")
+
+
+def _print_breaking_changes(
+    breaking_changes: list[BreakingChange], bc_report: BreakingChangeReport | None
+) -> None:
+    if not breaking_changes:
+        return
+    from rich.markup import escape
+
+    stamp = bc_report.generated_at if bc_report is not None else None
+    console.print(
+        f"\n[red]✗ {len(breaking_changes)} breaking contract change(s)[/red]"
+        + (f" [dim](detected {stamp})[/dim]" if stamp else "")
+        + "[red]:[/red]"
+    )
+    for c in breaking_changes:
+        cross = [ic for ic in c.impacted_consumers if ic.repo != c.provider_repo]
+        repos = sorted({ic.repo for ic in cross})
+        console.print(
+            f"  [red]{escape(c.contract_id)}[/red] ([dim]{escape(c.contract_type)}[/dim]) "
+            f"{escape(c.kind)}: {escape(c.detail)}"
+        )
+        console.print(
+            f"      [dim]{escape(c.provider_repo)}/{escape(c.provider_file)} -> "
+            f"{len(cross)} consumer(s) in {escape(', '.join(repos))}[/dim]"
+        )
+
+
+def _print_check_pass(rule_count: int, bc_ran: bool) -> None:
+    if rule_count:
+        console.print(
+            f"\n[green]✓[/green] No violations of {rule_count} rule(s); no dependency cycles."
+        )
+    else:
+        console.print("\n[green]✓[/green] No dependency cycles.")
+    if bc_ran:
+        console.print("[green]✓[/green] No breaking contract changes.")

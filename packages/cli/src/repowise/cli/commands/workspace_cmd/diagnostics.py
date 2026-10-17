@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import click
 from rich.table import Table
 
@@ -10,6 +12,15 @@ from repowise.cli.output import emit_json, format_option, json_option, resolve_f
 
 from ._shared import _report_artifact_provenance, _require_workspace
 from .group import workspace_group
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.diagnostics import (
+        ExtractionDiagnostics,
+        OrphanProvider,
+        RepoDiagnostics,
+        UnmatchedConsumer,
+    )
+    from repowise.core.workspace.system_graph import SystemGraph
 
 
 @workspace_group.command("diagnostics")
@@ -41,40 +52,72 @@ def workspace_diagnostics(
         )
 
     diag = graph.diagnostics
-    breakdown = diag.repo_breakdown
-    unmatched = diag.unmatched_consumers
-    orphans = diag.orphan_providers
-    if repo_alias:
-        breakdown = [r for r in breakdown if r.repo == repo_alias]
-        unmatched = [u for u in unmatched if u.repo == repo_alias]
-        orphans = [o for o in orphans if o.repo == repo_alias]
+    breakdown, unmatched, orphans = _filter_to_repo(diag, repo_alias)
 
     if fmt == "json":
-        emit_json(
-            {
-                "generated_at": graph.generated_at or None,
-                "total_providers": diag.total_providers,
-                "total_consumers": diag.total_consumers,
-                "total_links": diag.total_links,
-                "weak_link_count": diag.weak_link_count,
-                "repo_breakdown": [r.to_dict() for r in breakdown],
-                "unmatched_consumers": [u.to_dict() for u in unmatched],
-                "unmatched_by_reason": diag.unmatched_by_reason,
-                "orphan_providers": [o.to_dict() for o in orphans],
-                "providers_by_layer": diag.providers_by_layer,
-                "consumers_by_layer": diag.consumers_by_layer,
-                "http_consumers_unresolved": diag.http_consumers_unresolved,
-                "http_consumer_coverage": diag.http_consumer_coverage,
-            }
-        )
+        _emit_diagnostics_json(graph, breakdown, unmatched, orphans)
         return
 
     _report_artifact_provenance(
         ws_root, ws_config, graph.generated_at, [r.repo for r in diag.repo_breakdown]
     )
+    _print_breakdown_table(ws_root.name, breakdown)
+    _print_link_totals(diag)
+    _print_extraction_coverage(diag)
+    _print_unmatched(unmatched, diag.unmatched_by_reason)
+    _print_orphans(orphans)
 
-    # Per-repo provider/consumer breakdown
-    table = Table(title=f"Contract extraction — {ws_root.name}")
+    if not unmatched and not orphans:
+        console.print(
+            "\n  [green]✓[/green] Every consumer matched a provider; no orphan providers."
+        )
+
+
+def _filter_to_repo(
+    diag: ExtractionDiagnostics, repo_alias: str | None
+) -> tuple[list[RepoDiagnostics], list[UnmatchedConsumer], list[OrphanProvider]]:
+    """The per-repo lists, narrowed to *repo_alias* when one is given."""
+    breakdown = diag.repo_breakdown
+    unmatched = diag.unmatched_consumers
+    orphans = diag.orphan_providers
+    if not repo_alias:
+        return breakdown, unmatched, orphans
+    return (
+        [r for r in breakdown if r.repo == repo_alias],
+        [u for u in unmatched if u.repo == repo_alias],
+        [o for o in orphans if o.repo == repo_alias],
+    )
+
+
+def _emit_diagnostics_json(
+    graph: SystemGraph,
+    breakdown: list[RepoDiagnostics],
+    unmatched: list[UnmatchedConsumer],
+    orphans: list[OrphanProvider],
+) -> None:
+    diag = graph.diagnostics
+    emit_json(
+        {
+            "generated_at": graph.generated_at or None,
+            "total_providers": diag.total_providers,
+            "total_consumers": diag.total_consumers,
+            "total_links": diag.total_links,
+            "weak_link_count": diag.weak_link_count,
+            "repo_breakdown": [r.to_dict() for r in breakdown],
+            "unmatched_consumers": [u.to_dict() for u in unmatched],
+            "unmatched_by_reason": diag.unmatched_by_reason,
+            "orphan_providers": [o.to_dict() for o in orphans],
+            "providers_by_layer": diag.providers_by_layer,
+            "consumers_by_layer": diag.consumers_by_layer,
+            "http_consumers_unresolved": diag.http_consumers_unresolved,
+            "http_consumer_coverage": diag.http_consumer_coverage,
+        }
+    )
+
+
+def _print_breakdown_table(ws_name: str, breakdown: list[RepoDiagnostics]) -> None:
+    """Per-repo provider/consumer breakdown."""
+    table = Table(title=f"Contract extraction — {ws_name}")
     table.add_column("Repo", style="cyan")
     table.add_column("Providers", justify="right")
     table.add_column("Consumers", justify="right")
@@ -87,6 +130,8 @@ def workspace_diagnostics(
         table.add_row(r.repo, str(r.provider_count), str(r.consumer_count), by_type or "-")
     console.print(table)
 
+
+def _print_link_totals(diag: ExtractionDiagnostics) -> None:
     console.print(
         f"\n  [bold]{diag.total_links}[/bold] cross-repo link(s) matched "
         f"from {diag.total_providers} provider(s) and {diag.total_consumers} consumer(s)."
@@ -94,58 +139,65 @@ def workspace_diagnostics(
     if diag.weak_link_count:
         console.print(f"  [yellow]{diag.weak_link_count}[/yellow] weak (low-confidence) link(s).")
 
-    # Extraction coverage. Only two honest numbers exist here: which tier
-    # produced each contract, and how many client calls were located but not
-    # resolved. There is no count of route decorators nobody recognised, so no
-    # provider recall percentage is claimed.
-    def _layers(counts: dict[str, int]) -> str:
-        return ", ".join(f"{n} {layer}" for layer, n in sorted(counts.items()))
 
-    if diag.providers_by_layer or diag.consumers_by_layer:
-        console.print("\n  [bold]Extraction coverage[/bold]")
-        if diag.providers_by_layer:
-            layers = _layers(diag.providers_by_layer)
-            console.print(f"    Providers   {diag.total_providers} ({layers})")
-        if diag.consumers_by_layer:
-            layers = _layers(diag.consumers_by_layer)
-            console.print(f"    Consumers   {diag.total_consumers} ({layers})")
-        coverage = diag.http_consumer_coverage
-        if coverage is not None:
-            http_consumers = sum(r.consumers_by_type.get("http", 0) for r in diag.repo_breakdown)
-            console.print(
-                f"    HTTP calls  {http_consumers} of "
-                f"{http_consumers + diag.http_consumers_unresolved} resolved to an "
-                f"endpoint ([bold]{coverage * 100:.0f}%[/bold]); "
-                f"{diag.http_consumers_unresolved} located but not statically resolvable."
-            )
+def _layers(counts: dict[str, int]) -> str:
+    return ", ".join(f"{n} {layer}" for layer, n in sorted(counts.items()))
+
+
+def _print_extraction_coverage(diag: ExtractionDiagnostics) -> None:
+    """Extraction coverage.
+
+    Only two honest numbers exist here: which tier produced each contract, and
+    how many client calls were located but not resolved. There is no count of
+    route decorators nobody recognised, so no provider recall percentage is
+    claimed.
+    """
+    if not (diag.providers_by_layer or diag.consumers_by_layer):
+        return
+    console.print("\n  [bold]Extraction coverage[/bold]")
+    if diag.providers_by_layer:
+        layers = _layers(diag.providers_by_layer)
+        console.print(f"    Providers   {diag.total_providers} ({layers})")
+    if diag.consumers_by_layer:
+        layers = _layers(diag.consumers_by_layer)
+        console.print(f"    Consumers   {diag.total_consumers} ({layers})")
+    coverage = diag.http_consumer_coverage
+    if coverage is not None:
+        http_consumers = sum(r.consumers_by_type.get("http", 0) for r in diag.repo_breakdown)
         console.print(
-            "    [dim]'index' contracts come from the parsed symbol table, 'regex' "
-            "from a text dialect. Calls no dialect recognises are not counted here.[/dim]"
+            f"    HTTP calls  {http_consumers} of "
+            f"{http_consumers + diag.http_consumers_unresolved} resolved to an "
+            f"endpoint ([bold]{coverage * 100:.0f}%[/bold]); "
+            f"{diag.http_consumers_unresolved} located but not statically resolvable."
         )
+    console.print(
+        "    [dim]'index' contracts come from the parsed symbol table, 'regex' "
+        "from a text dialect. Calls no dialect recognises are not counted here.[/dim]"
+    )
 
-    # Unmatched consumers grouped by reason
-    if unmatched:
-        reason_labels = {
-            "no_provider": "no matching provider found",
-            "internal_only": "provider is same repo + service (intra-service)",
-            "unlinked": "matching provider exists but no link formed",
-        }
-        console.print(f"\n  [bold]{len(unmatched)}[/bold] unmatched consumer(s):")
-        for reason, count in sorted(diag.unmatched_by_reason.items()):
-            label = reason_labels.get(reason, reason)
-            console.print(f"    [yellow]{count}[/yellow] — {label}")
 
-    # Orphan providers
-    if orphans:
-        console.print(
-            f"\n  [bold]{len(orphans)}[/bold] orphan provider(s) (declared, never consumed):"
-        )
-        for o in orphans[:20]:
-            console.print(f"    [dim]{o.repo}[/dim] {o.contract_id} ([dim]{o.file_path}[/dim])")
-        if len(orphans) > 20:
-            console.print(f"    [dim]... and {len(orphans) - 20} more[/dim]")
+_REASON_LABELS = {
+    "no_provider": "no matching provider found",
+    "internal_only": "provider is same repo + service (intra-service)",
+    "unlinked": "matching provider exists but no link formed",
+}
 
-    if not unmatched and not orphans:
-        console.print(
-            "\n  [green]✓[/green] Every consumer matched a provider; no orphan providers."
-        )
+
+def _print_unmatched(unmatched: list[UnmatchedConsumer], by_reason: dict[str, int]) -> None:
+    """Unmatched consumers grouped by reason."""
+    if not unmatched:
+        return
+    console.print(f"\n  [bold]{len(unmatched)}[/bold] unmatched consumer(s):")
+    for reason, count in sorted(by_reason.items()):
+        label = _REASON_LABELS.get(reason, reason)
+        console.print(f"    [yellow]{count}[/yellow] — {label}")
+
+
+def _print_orphans(orphans: list[OrphanProvider]) -> None:
+    if not orphans:
+        return
+    console.print(f"\n  [bold]{len(orphans)}[/bold] orphan provider(s) (declared, never consumed):")
+    for o in orphans[:20]:
+        console.print(f"    [dim]{o.repo}[/dim] {o.contract_id} ([dim]{o.file_path}[/dim])")
+    if len(orphans) > 20:
+        console.print(f"    [dim]... and {len(orphans) - 20} more[/dim]")
