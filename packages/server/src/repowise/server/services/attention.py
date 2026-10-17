@@ -386,7 +386,7 @@ def _decision_source(decision_health: dict) -> SourceResult:
 
     def lane(key: str) -> list[DecisionAttentionInput]:
         return [
-            DecisionAttentionInput(id=d.id, title=d.title)
+            DecisionAttentionInput(id=d.id, title=d.title, source=getattr(d, "source", ""))
             for d in decision_health.get(key, []) or []
         ]
 
