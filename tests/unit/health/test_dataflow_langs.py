@@ -2939,3 +2939,39 @@ def test_csharp_lambda_writing_outer_local_records_def():
     assert any(occ.name == "tryCount" for occ in fn.def_use.captured.writes)
     extractions = find_extractions(fn, lmap)
     assert not any(x.start_line <= 4 and x.end_line >= 5 for x in extractions)
+
+
+def test_cpp_condition_declaration_records_use_of_initializer() -> None:
+    code = (
+        b"void f() {\n"
+        b"    if (auto v = settings.get(1)) {\n"
+        b"        use(v);\n"
+        b"    }\n"
+        b"    while (auto w = helper.next()) {\n"
+        b"        use(w);\n"
+        b"    }\n"
+        b"}\n"
+    )
+    import tree_sitter_cpp
+    from tree_sitter import Language, Parser
+
+    from repowise.core.analysis.health.complexity.languages import get_language_map
+    from repowise.core.analysis.health.dataflow.dialects.cpp import CppDefUseDialect
+
+    parser = Parser(Language(tree_sitter_cpp.language()))
+    tree = parser.parse(code)
+    fn = tree.root_node.children[0]
+    body = fn.child_by_field_name("body")
+    if_stmt = body.children[1]
+    while_stmt = body.children[2]
+
+    lmap = get_language_map("cpp")
+    dialect = CppDefUseDialect()
+
+    if_sdu = dialect.statement_def_use(if_stmt, lmap, head_only=True)
+    assert any(d.name == "v" for d in if_sdu.defs)
+    assert any(u.name == "settings" for u in if_sdu.uses)
+
+    while_sdu = dialect.statement_def_use(while_stmt, lmap, head_only=True)
+    assert any(d.name == "w" for d in while_sdu.defs)
+    assert any(u.name == "helper" for u in while_sdu.uses)
