@@ -23,11 +23,7 @@ class ConfigChanges:
 
 
 def classify_config_changes(repo_path: Path, state: dict, cfg: dict[str, Any]) -> ConfigChanges:
-    """Compare the config the index was built with against the current one.
-
-    A missing prior fingerprint is backfilled, not treated as a change.
-    ``changed`` gates every "nothing to do" path.
-    """
+    """Compare the stored config fingerprints with the live ones (missing = unchanged)."""
     from repowise.cli.helpers import config_fingerprint
     from repowise.core.repo_config import (
         changed_config_dependencies,

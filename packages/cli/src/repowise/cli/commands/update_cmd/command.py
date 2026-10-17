@@ -821,10 +821,7 @@ def _full_upgrade(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 
 def _prepare_repo(repo_path: Path) -> None:
     """Seed an unindexed worktree, create ``.repowise/``, inherit workspace verdicts."""
-    # An unindexed linked worktree seeds itself from its base checkout before
-    # updating, so post-commit hooks and agents running `update` in a fresh
-    # worktree get incremental catch-up instead of a "no previous sync" error.
-    # Best-effort: failed validation falls through to the normal flow.
+    # A fresh linked worktree seeds from its base checkout (best-effort).
     if not (repo_path / ".repowise" / "state.json").exists():
         from repowise.cli.worktree import (
             base_is_seedable,
@@ -842,9 +839,7 @@ def _prepare_repo(repo_path: Path) -> None:
 
     ensure_repowise_dir(repo_path)
 
-    # If this repo is a workspace member updated here for the first time,
-    # inherit the workspace's distill rewrite-hook verdict (best-effort,
-    # no-op outside a workspace or once a verdict exists).
+    # A workspace member inherits the workspace's distill verdict (best-effort).
     from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
 
     inherit_workspace_distill_verdict(repo_path)
@@ -853,13 +848,10 @@ def _prepare_repo(repo_path: Path) -> None:
 def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
     """Load state and settle the mode, the base ref and HEAD for this run."""
     repo_path = run.repo_path
-    # Truncate the hook-managed log if it has grown past the cap. The hook
-    # appends each run unconditionally — without this opportunistic rotation
-    # at the start of every CLI update, a busy repo's ``.update.log`` would
-    # balloon to MBs over time.
+    # The post-commit hook appends to .update.log on every run; cap it here.
     rotate_update_log_if_needed(repo_path)
 
-    # Load saved API keys from .repowise/.env (won't overwrite existing env vars)
+    # Saved API keys; existing env vars win.
     from repowise.cli.ui import load_dotenv
 
     load_dotenv(repo_path)
@@ -867,11 +859,7 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
     run.index_only = _resolve_index_only_mode(
         index_only=opts.index_only, docs_flag=opts.docs_flag, state=state
     )
-    # ``or``, not ``get``'s default: a repo that has never had a docs pass
-    # carries ``last_docs_commit`` as an explicit null rather than omitting it,
-    # and a default only applies to a missing key. Reading it with a default
-    # handed back that null and the update aborted with "No previous sync
-    # found" against a store holding a perfectly good ``last_sync_commit``.
+    # ``or``, not a ``get`` default: ``last_docs_commit`` can be an explicit null.
     run.base_ref = opts.since or (
         state.get("last_sync_commit")
         if run.index_only
@@ -882,26 +870,13 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
     if run.base_ref is None:
         _raise_no_sync_base(run)
 
-    # Re-cover a range a previous update failed to fully persist. The pointer
-    # advanced past it anyway (so every other reader stays current), and the
-    # marker is what stops that from stranding the range's data forever. An
-    # explicit --since is the user naming their own base and wins outright.
-    #
-    # Index-only only, because that is the pointer the marker is written
-    # against. In docs mode ``base_ref`` is ``last_docs_commit``, which
-    # normally trails ``last_sync_commit``, so the marker would read as a
-    # *descendant* of the base and be given up on as "no longer part of this
-    # branch's history" — dropping a valid repair and saying something untrue
-    # about why. Left alone here, it is repaired by the next index-only run.
+    # Re-cover a range an earlier update failed to persist. Index-only only: the
+    # repair marker is written against ``last_sync_commit``, and --since wins.
     if opts.since is None and run.index_only:
         _widen_to_pending_repair(run)
 
 
 def _raise_no_sync_base(run: UpdateRun) -> None:
-    # Helpful diagnostic when the user landed here from a workspace
-    # directory that was never indexed as a single repo. The auto-detect
-    # path normally catches this earlier, but --no-workspace or an
-    # explicit path can still route us here.
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
     if upstream_ws is not None:
@@ -927,11 +902,7 @@ def _widen_to_pending_repair(run: UpdateRun) -> None:
             f"[yellow]Dropping the pending repair of an earlier update: {give_up}. "
             "Run [bold]repowise init --force[/bold] to rebuild the index.[/yellow]"
         )
-        # Dropped in memory only. Writing it here would persist state on a
-        # --dry-run, and would do it before the single-flight lock below,
-        # where a concurrent update is exactly what the lock exists to
-        # stop. Every save_state past the lock carries the cleared marker
-        # because they all build on this dict.
+        # Dropped in memory only: every save_state past the lock builds on this dict.
         run.state.pop("pending_repair", None)
     elif repaired_ref != run.base_ref:
         console.print(
@@ -944,33 +915,16 @@ def _widen_to_pending_repair(run: UpdateRun) -> None:
 def _check_config_and_renderer(run: UpdateRun) -> None:
     """Compare the stored config and renderer fingerprints with the live ones."""
     repo_path = run.repo_path
-    # A config.yaml / health-rules.json change warrants a full health re-score
-    # even when git is unchanged. Use the CLI's tolerant loader once. A
-    # malformed file has historically warned and fallen back to defaults;
-    # semantic invalidation must not turn that established recovery path into
-    # an early hard crash.
+    # The tolerant loader: a malformed file warns and falls back to defaults.
     run.cfg = load_config(repo_path)
     run.config = classify_config_changes(repo_path, run.state, run.cfg)
 
-    # A structural renderer upgrade is not a code change and not a config
-    # change, but it still leaves every file page a release behind, because
-    # nothing rewrites a file page and a plain update only reaches files that
-    # changed. The renderer fingerprint is what makes a quiet repo notice: when
-    # it moves, the "already up to date" shortcut is retired for one run so the
-    # full reparse below happens and the per-page staleness sweep can pick up
-    # exactly the pages the old renderer wrote. Distinct from config_changed,
-    # which routes to a health re-score rather than to page regeneration.
-    #
-    # A missing stamp is a change: ``init`` stamps every index it builds, so an
-    # unstamped one was written by a release older than the stamp, whose pages
-    # quote that release's graph. Reading absence as current stamped it on the
-    # spot and left the whole wiki a release behind. An empty current value
-    # (the fingerprint failed) still disables the gate, and an index with no
-    # wiki has no page a renderer could have written.
+    # A renderer upgrade retires the "up to date" shortcut for one run so stale
+    # structural pages re-render. A missing stamp counts as a change; an empty
+    # current fingerprint (it failed) disables the gate.
     run.prev_renderer_fp = run.state.get("renderer_fingerprint")
     run.curr_renderer_fp = _current_renderer_fingerprint(repo_path)
-    # A model wiki on an index-only run waits for its next full update, which
-    # is the run that can re-render it.
+    # A model wiki waits for a full update, the run that can re-render it.
     docs_mode = resolve_docs_mode(run.state)
     run.renderer_changed = (
         bool(run.curr_renderer_fp)
@@ -981,12 +935,7 @@ def _check_config_and_renderer(run: UpdateRun) -> None:
 
 
 def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
-    """Uncommitted work, when the caller asked for it.
-
-    Computed before the "already up to date" gate, because on a watched repo
-    that gate is exactly what the change set has to get past: with no new
-    commits, ``head == base_ref`` is the normal state, not an idle one.
-    """
+    """Uncommitted work, when asked for; read before the "up to date" gate."""
     from repowise.core.ingestion import ChangeDetector
 
     run.detector = detector = ChangeDetector(run.repo_path)
@@ -994,15 +943,11 @@ def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
         return
     run.working_tree_diffs = detector.get_working_tree_changes()
     dirty_paths = {fd.path for fd in run.working_tree_diffs}
-    # Work the last working-tree run indexed that is no longer diverging
-    # from HEAD: a reverted edit, or a deleted file that was only ever
-    # untracked. Nothing else would ever mention those paths again, so
-    # without this the index keeps serving content that is gone.
+    # Paths the last working-tree run indexed that now match HEAD again.
     run.working_tree_diffs += detector.stale_working_tree_diffs(
         run.state.get("working_tree_paths") or [], dirty_paths
     )
-    # Carried on ``state`` from here so every save_state below persists it,
-    # including the early-return paths.
+    # On ``state`` so every later save_state, early exits included, persists it.
     run.state["working_tree_paths"] = sorted(dirty_paths)
     if run.working_tree_diffs:
         console.print(
@@ -1011,17 +956,11 @@ def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
 
 
 def _repair_before_detection(opts: UpdateOptions, run: UpdateRun) -> None:
-    """Fixes that must not wait for a code change; skipped on a dry run.
-
-    Before the early return, so a repo with no new commits still picks this
-    up. A module label is a pure function of the repo layout, so correcting
-    it must not wait on a re-score (7-day decay) or cost an indexing run.
-    """
+    """Repairs that must not wait for a new commit; skipped on a dry run."""
     if opts.dry_run:
         return
     _repair_module_attribution(run.repo_path)
-    # Opt-in edit capture: bind pending agent edits to the new commits
-    # before the git walk labels them. A no-op unless capture is on.
+    # Opt-in edit capture binds pending agent edits before the git walk.
     with contextlib.suppress(Exception):
         from repowise.core.edit_capture.binder import bind_repo
 
@@ -1032,9 +971,7 @@ def _assess_staleness(run: UpdateRun) -> None:
     """Decide whether git, the analyzers or the store leave anything to do."""
     state = run.state
     run.analyzer_changed = health_analyzer_changed(state)
-    # Stored per-file git rows written under older history rules. Only a full
-    # walk rewrites the rows of files no commit touched, so this forces one
-    # (and nothing else: no page is regenerated for it).
+    # Git rows written under older history rules force one full walk.
     run.history_stale = git_history_stale(state)
     run.git_is_current = bool(
         run.head
@@ -1045,26 +982,20 @@ def _assess_staleness(run: UpdateRun) -> None:
         and not run.analyzer_changed
         and not run.history_stale
     )
-    # The parse is read from the store, so it is asked only when git and the
-    # analyzer would otherwise let the run exit.
+    # A store read, so only asked when the run would otherwise exit.
     run.extraction_changed = run.git_is_current and parser_changed(run.repo_path)
     if run.extraction_changed:
         run.git_is_current = False
     _announce_rework(run)
-    # Deliberately not in ``git_is_current``: the rescan does its own full parse,
-    # so falling through to the re-parse below would parse the repo twice. Every
-    # exit that skips that path runs the rescan itself instead.
+    # Not in ``git_is_current``: the rescan parses on its own, and every exit that
+    # skips the re-parse runs it instead.
     run.scanner_changed = security_scanner_changed(state)
     if run.scanner_changed:
         console.print(
             "[yellow]Security scanner changed since this index was scanned; "
             "rescanning.[/yellow]"
         )
-    # A page can be stale for a reason no commit explains: a cascade that ran
-    # out of budget, an interrupted run, an expiry. Git says nothing changed,
-    # so the shortcut below is the only place such a page could be skipped
-    # forever, and the store is asked only once the git checks would otherwise
-    # have exited, so the common case stays free of a store read.
+    # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
         from repowise.core.persistence import load_stale_update_targets
 
@@ -1076,9 +1007,7 @@ def _assess_staleness(run: UpdateRun) -> None:
 def _announce_rework(run: UpdateRun) -> None:
     """Say why a run with no new commit still re-scores, re-parses or re-renders."""
     if run.analyzer_changed or run.extraction_changed:
-        # Not a code change, but every stored score or edge is a release behind.
-        # Falls through to the re-parse below, which re-scores from the graph it
-        # builds and writes no pages, so no model is called.
+        # Falls through to a re-parse that re-scores and writes no pages.
         console.print(
             "[yellow]Health analyzer changed since this index was scored; re-scoring.[/yellow]"
             if run.analyzer_changed
@@ -1102,10 +1031,7 @@ def _announce_rework(run: UpdateRun) -> None:
 def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     """Nothing changed: refresh stamps under the lock, show notices, exit NOOP."""
     console.print("[green]Already up to date.[/green]")
-    # D7: on a template (index-only) wiki, "up to date" is true of the code
-    # but the pages are still unwritten. Point at the command that writes
-    # them rather than leaving the user at a dead end, the way `update
-    # --docs` used to (it computed base_ref == head and stopped here).
+    # A template wiki is current but has no model-written pages yet.
     if resolve_docs_mode(run.state) == "deterministic":
         console.print(
             "[dim]The wiki is rendered from templates. "
@@ -1114,11 +1040,7 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
     repo_path = run.repo_path
-    # Up-to-date code does not mean an up-to-date store: a wiki indexed by an
-    # older release may still benefit from a re-index (concept tree, written
-    # prose). That is the common upgrade path, so surface the once-per-store
-    # recommendation here too rather than only on a content-changing update.
-    # Best-effort; a failure here must never turn a clean no-op into an error.
+    # Best-effort: a notice must never turn a clean no-op into an error.
     try:
         from repowise.cli.upgrade import assess_store
 
@@ -1127,10 +1049,7 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         )
     except Exception as exc:
         log.debug("reindex_notice_skipped", error=str(exc))
-    # Up-to-date code does not mean a complete wiki either. This path is
-    # where an orientation page registered after the index was built is
-    # most likely to go unmentioned forever: it returns before the
-    # generation code, so nothing else in the run can notice.
+    # This path skips generation, so it is the only place to name missing slots.
     from .commit_limit_notice import surface_pinned_commit_limit
     from .slot_notice import surface_missing_slots
 
@@ -1142,26 +1061,15 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
     """Backfill fingerprints and re-stamp the store on the "up to date" path."""
     repo_path, state, head = run.repo_path, run.state, run.head
-    # Backfill either fingerprint a pre-fingerprint index never wrote. Both
-    # are checked: a store indexed before the renderer fingerprint existed
-    # carries a config fingerprint but no renderer one, and leaving it unset
-    # would make the very next renderer upgrade look like the first stamp
-    # rather than a change, silently skipping the regeneration it should
-    # trigger.
+    # Backfill fingerprints an older index never wrote; an unset renderer stamp
+    # would hide the next renderer upgrade.
     needs_backfill = (
         run.config.prev_fingerprint is None
         or run.prev_renderer_fp is None
         or not isinstance(state.get("config_dependency_fingerprints"), dict)
     )
-    # Self-heal a row a pre-fix run left behind: state.json can already be
-    # current here while the DB head_commit is still the last full index.
-    #
-    # These state/DB writes must sit under the single-flight lock below
-    # just like a content-changing update, or two updates racing on the
-    # "already up to date" path could stomp each other's save_state — the
-    # exact race the lock exists to prevent. If another update holds the
-    # lock, its run will perform this heal; skip ours rather than write
-    # from outside the lock.
+    # Writes only under the single-flight lock; if another update holds it, that
+    # run heals instead.
     heal_lock = try_acquire_update_lock(repo_path, head)
     if heal_lock is not None:
         log.debug("self_heal_skipped", reason="another update holds the lock")
@@ -1183,14 +1091,9 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
                 },
             )
         stamp_head_commit(repo_path, head)
-        # A capture added after this repo was indexed would otherwise wait
-        # for the next commit to land, which on a quiet repo is never.
         heal_commit_offsets(repo_path)
         _finish_outcome(repo_path, opts.agents_md)
-        # The index is current, so any pending marker a bailed update left
-        # is by definition caught-up (or older); drop it here too rather
-        # than waiting for the next content-changing update. This is the
-        # quiescent state a stale marker was observed lingering in.
+        # Current index: any pending marker is caught up.
         consume_update_pending(repo_path, head)
     finally:
         release_update_lock(repo_path)
@@ -1206,10 +1109,8 @@ def _detect_changes(run: UpdateRun) -> None:
             run.working_tree_diffs,
         )
 
-    # The up-to-date gate loaded these already. A content-changing run still
-    # has to carry old structural debt forward: otherwise a fresh commit can
-    # repeatedly update file pages while an SCC stranded by an earlier
-    # budget-capped run remains stale forever.
+    # Loaded already when git is current; otherwise load now so old structural
+    # debt is carried forward.
     if not run.git_is_current:
         from repowise.core.persistence import load_stale_update_targets
 
@@ -1217,11 +1118,7 @@ def _detect_changes(run: UpdateRun) -> None:
             run.repo_path
         )
 
-    # A stale page whose file is gone is a deletion the diff walk never saw
-    # (the file left in a range an earlier run did not cover, or was never
-    # committed). Re-rendering cannot clear it, so hand it to the same
-    # tombstone and prune steps a diffed deletion goes through. The pages
-    # whose files still exist stay on the regeneration list below.
+    # A stale page whose file is gone goes through the deletion path.
     if run.stale_db_paths:
         _tombstone_missing_stale_pages(run)
 
