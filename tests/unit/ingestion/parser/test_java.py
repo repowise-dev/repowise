@@ -119,9 +119,9 @@ class TestJavaParser:
         fi = _make_file_info("java_pkg/Calculator.java", "java")
         result = parser.parse_file(fi, FIELD_RECEIVER_SOURCE)
         for target in ("size", "reset"):
-            assert all(
-                c.receiver_name is None for c in result.calls if c.target_name == target
-            ), target
+            assert all(c.receiver_name is None for c in result.calls if c.target_name == target), (
+                target
+            )
 
 
 TWIN_SOURCE = b"""package com.repowise.sample;
@@ -185,6 +185,25 @@ class TestReceiverlessTwin:
 
 def test_a_qualified_super_call_keeps_its_qualifier(parser: ASTParser) -> None:
     """``Sub.super.m()`` arrives as a ``super`` call scoped by ``Sub``, never as ``Sub.m()``."""
-    source = b"package b;\nclass Sub extends Base {\n  class In { void q() { Sub.super.m(); } }\n}\n"
+    source = (
+        b"package b;\nclass Sub extends Base {\n  class In { void q() { Sub.super.m(); } }\n}\n"
+    )
     calls = parser.parse_file(_make_file_info("b/Sub.java", "java"), source).calls
-    assert [(c.receiver_name, c.scope_name, c.target_name) for c in calls] == [("super", "Sub", "m")]
+    assert [(c.receiver_name, c.scope_name, c.target_name) for c in calls] == [
+        ("super", "Sub", "m")
+    ]
+
+
+def test_java_argument_names_records_nested_call_and_this_field(parser: ASTParser) -> None:
+    """Java argument expressions capture this.field and nested method invocations for overload resolution."""
+    source = b"""package b;
+class App {
+  int x;
+  void run() {
+    process(this.x, make(), Path.of("a", "b"));
+  }
+}
+"""
+    calls = parser.parse_file(_make_file_info("b/App.java", "java"), source).calls
+    process_call = next(c for c in calls if c.target_name == "process")
+    assert process_call.argument_names == ("this.x", "call::make:0", "call:Path:of:2")
