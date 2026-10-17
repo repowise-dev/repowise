@@ -23,7 +23,7 @@ from .records import _CommitRec
 if TYPE_CHECKING:
     from .indexer import GitIndexer
 
-# The indexer's logger, so these events keep the name they always had.
+# Logged under the indexer module's name.
 logger = structlog.get_logger("repowise.core.ingestion.git_indexer.indexer")
 
 
