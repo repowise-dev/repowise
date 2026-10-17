@@ -215,7 +215,8 @@ _KT_ANNOTATED = re.compile(
 # a `Builder`); `_PY_CONSTRUCTED` does not refuse one yet. Ceiling: `[^()]*`
 # cannot cross a nested call, so `Foo(bar(1)).baz()` is still typed.
 _KT_CONSTRUCTED = re.compile(
-    r"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\((?![^()]*\)\s*\.)"
+    r"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*(?P<closer>=)\s*(?P<type>[A-Z]\w*)\s*"
+    r"\((?![^()]*\)\s*\.)"
 )
 # `val x = Foo { ... }`: a constructor whose only argument is a trailing lambda.
 # The match ends at the `{`; `scan_declarations` keeps it only when the lambda
@@ -244,7 +245,8 @@ _SWIFT_ANNOTATED = re.compile(
 # `_KT_CONSTRUCTED` gives: `let x = Foo.bar()` is a call on a class, and
 # `let x = Builder().build()` makes `x` whatever `build()` returns.
 _SWIFT_CONSTRUCTED = re.compile(
-    r"(?<![\w.])(?:let|var)\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\((?![^()]*\)\s*\.)"
+    r"(?<![\w.])(?:let|var)\s+(?P<name>[a-z_]\w*)\s*(?P<closer>=)\s*(?P<type>[A-Z]\w*)\s*"
+    r"\((?![^()]*\)\s*\.)"
 )
 
 # Dart writes the C family's `Type name`, plus a nullable `Api? api` and a named
@@ -992,6 +994,60 @@ def _inside_parentheses(cleaned: str) -> Callable[[int], bool]:
     return inside
 
 
+# Kotlin and Swift run code at class scope that is not a function: an ``init``
+# block, a lambda or closure a property holds. A declaration there is a local
+# of that block, so only one directly in a type's body may be a field.
+_TYPE_BODY_SCOPED_LANGUAGES = frozenset({"kotlin", "swift"})
+_BRACE = re.compile(r"[{};]")
+# A function, accessor or initialiser declared after a bodiless type.
+_CODE_HEADER = re.compile(r"\b(?:fun|func|init|get|set)\b")
+_TYPE_HEADER = re.compile(r"\b(?:class|object|interface|struct|enum|extension|protocol|actor)\b")
+
+
+def _opens_type_body(header: str) -> bool:
+    """Does a ``{`` after *header* open a type's body?
+
+    The last type keyword decides, unless an expression leads into it:
+    ``val f = object : T {`` is an anonymous object, not a declared type.
+    """
+    keywords = list(_TYPE_HEADER.finditer(header))
+    if not keywords:
+        return False
+    before = header[: keywords[-1].start()].rstrip()
+    after = header[keywords[-1].end() :]
+    return not before.endswith(("=", "(", ",", "return")) and not _CODE_HEADER.search(after)
+
+
+def _in_type_body(cleaned: str) -> Callable[[int], bool]:
+    """Is the innermost ``{`` open at an offset of *cleaned* a type's body (or none)?
+
+    None counts: a primary constructor's ``val`` parameters sit before any brace.
+
+    A brace opens a type body when the text since the last ``{``, ``}`` or
+    ``;`` declares a type (see ``_opens_type_body``), so ``val f = {`` and
+    ``init {`` are not one. Strings are not skipped.
+    """
+    offsets: list[int] = []
+    innermost: list[bool] = []
+    stack: list[bool] = []
+    segment_start = 0
+    for match in _BRACE.finditer(cleaned):
+        char = match.group()
+        if char == "{":
+            stack.append(_opens_type_body(cleaned[segment_start : match.start()]))
+        elif char == "}" and stack:
+            stack.pop()
+        segment_start = match.end()
+        offsets.append(match.start())
+        innermost.append(stack[-1] if stack else True)
+
+    def inside(offset: int) -> bool:
+        index = bisect_left(offsets, offset) - 1
+        return index < 0 or innermost[index]
+
+    return inside
+
+
 def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     """Every declaration *text* makes, in line order."""
     patterns = _LANGUAGE_PATTERNS.get(language)
@@ -1008,6 +1064,7 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     resolved: dict[str, tuple[str | None, bool]] = {}
     found: list[Declaration] = []
     inside = _inside_parentheses(cleaned) if language in _PARAMETERS_AT_CLASS_SCOPE else None
+    in_type_body = _in_type_body(cleaned) if language in _TYPE_BODY_SCOPED_LANGUAGES else None
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
             if pattern is _KT_CONSTRUCTED_LAMBDA and not _ends_statement(
@@ -1029,6 +1086,8 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
             if "keyword" in groups and not groups["keyword"]:
                 closer = ""
             if inside is not None and inside(match.start()):
+                closer = ""
+            if in_type_body is not None and not in_type_body(match.start()):
                 closer = ""
             found.append(
                 Declaration(
