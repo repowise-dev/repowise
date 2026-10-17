@@ -1,4 +1,4 @@
-"""Full and resume ingestion return files in walk order.
+"""Full and resume ingestion share their stages and return files in walk order.
 
 Insertion order breaks ties in reference resolution, so the order files reach
 GraphBuilder is part of the graph's identity, and resumed and fresh runs must
@@ -75,3 +75,35 @@ async def test_resume_reparse_keeps_walk_order(repo, walk_order, single_worker_p
     assert [fi.path for fi in file_infos if fi.path in source_map] == expected
     assert [p.file_info.path for p in parsed] == expected
     assert list(source_map) == expected
+
+
+async def test_both_entry_points_use_the_shared_stages(repo, monkeypatch, single_worker_pool):
+    calls: list[tuple[str, str]] = []
+    real_traverse, real_parse = ing._traverse_stage, ing._parse_stage
+    current = ""
+
+    async def traverse(*args, **kwargs):
+        calls.append(("traverse", current))
+        return await real_traverse(*args, **kwargs)
+
+    async def parse(*args, **kwargs):
+        calls.append(("parse", current))
+        return await real_parse(*args, **kwargs)
+
+    monkeypatch.setattr(ing, "_traverse_stage", traverse)
+    monkeypatch.setattr(ing, "_parse_stage", parse)
+
+    current = "full"
+    full = await ing._run_ingestion(repo, **KW)
+    current = "resume"
+    resume = await ing.reparse_for_resume(repo, **KW)
+
+    assert calls == [
+        ("traverse", "full"),
+        ("parse", "full"),
+        ("traverse", "resume"),
+        ("parse", "resume"),
+    ]
+    # Same files, same order, same bytes from either entry point.
+    assert [p.file_info.path for p in full[0]] == [p.file_info.path for p in resume[0]]
+    assert full[3] == resume[3]
