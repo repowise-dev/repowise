@@ -57,6 +57,9 @@ _SCOPE = (
     _INGESTION / "lang_helpers",
     _INGESTION / "type_ref_resolution.py",
     _INGESTION / "call_resolver.py",
+    _INGESTION / "call_overload_selection.py",
+    _INGESTION / "call_barrel_forwarding.py",
+    _INGESTION / "call_inheritance.py",
     _INGESTION / "call_receiver_typing.py",
     _INGESTION / "heritage_resolver.py",
     # Holds the shared symbol-ID splitter both resolvers used to keep a copy
@@ -82,7 +85,9 @@ _KNOWN: dict[str, int] = {
     # segment is a variable or a field and none is discarded, and one that
     # reads the head of a go return type (`pkg.T`) to find the package the
     # callee's file imports as `pkg`; its tail comes from the shared helper.
-    _PREFIX + "call_resolver.py": 6,
+    _PREFIX + "call_resolver.py": 3,
+    # Symbol IDs: a type node's file and name, and a method's enclosing class.
+    _PREFIX + "call_inheritance.py": 3,
     _PREFIX + "call_receiver_typing.py": 4,
     _PREFIX + "models.py": 1,
     # Reads the head to decide whether taking a bare name is safe at all: a
