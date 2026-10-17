@@ -34,7 +34,7 @@ a path says otherwise.
 Related: `analysis/finding_registry.py` decides which finding kinds a default
 surface shows (`unused_internal` is `hidden`). Storage and triage live in
 `persistence/crud/analysis/dead_code.py`. The analyzer runs from
-`pipeline/phases/analysis.py` (init), `pipeline/incremental.py` (update), and
+`pipeline/phases/analysis.py` (init), `pipeline/incremental/analysis.py` (update), and
 the CLI's live path in `cli/commands/dead_code_cmd.py`.
 
 ## Flow

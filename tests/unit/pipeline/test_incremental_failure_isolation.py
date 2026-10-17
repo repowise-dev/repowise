@@ -131,7 +131,7 @@ def test_the_range_scoped_set_is_exactly_these_steps():
     import re
     from pathlib import Path
 
-    import repowise.core.pipeline.incremental as mod
+    import repowise.core.pipeline.incremental.persist_index as mod
 
     source = Path(mod.__file__).read_text(encoding="utf-8")
     tagged = set(re.findall(r'_skip\(\s*"([^"]+)",\s*exc,\s*range_scoped=True', source))

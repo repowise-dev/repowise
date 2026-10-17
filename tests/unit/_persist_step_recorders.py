@@ -90,6 +90,7 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     import repowise.core.persistence.search as search
     import repowise.core.pipeline.commit_health as commit_health
     import repowise.core.pipeline.incremental as incremental
+    import repowise.core.pipeline.incremental.persist_index as persist_index
     import repowise.core.pipeline.page_tree_sync as page_tree_sync
     import repowise.core.pipeline.persist as persist
     from repowise.core.persistence import crud
@@ -103,11 +104,14 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     rec.patch(persist, "mark_tombstone_pages", ret=[TOMBSTONED])
     rec.patch(page_tree_sync, "rebuild_page_tree")
     rec.patch(persist, "persist_git_refresh")
+    # The package for the CLI, which imports it at call time; the writer for core.
     rec.patch(incremental, "persist_incremental_commits")
+    rec.patch(persist_index, "persist_incremental_commits")
     rec.patch(crud, "replace_dead_code_findings")
     rec.patch(crud, "replace_doc_drift_guarded")
     rec.patch(persist, "persist_graph_nodes")
     rec.patch(incremental, "persist_partial_health")
+    rec.patch(persist_index, "persist_partial_health")
     rec.patch(persist, "persist_incremental_symbols")
     rec.patch(persist, "persist_incremental_security_findings")
     rec.patch(persist, "persist_incremental_edges")
@@ -115,6 +119,7 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     rec.patch(crud, "backfill_related_pages", ret=0)
     rec.patch(persist, "persist_kg")
     rec.patch(incremental, "refresh_external_systems")
+    rec.patch(persist_index, "refresh_external_systems")
     rec.patch(crud, "purge_proposed_decisions_by_source")
     rec.patch(persist, "prune_deleted_file_rows", ret=prune_ret)
     rec.patch(persist, "_analyzed_commit", ret="abc123")
