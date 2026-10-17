@@ -72,8 +72,8 @@ _PRICING: dict[str, dict[str, float]] = {
     "gemini-1.5-flash-lite": {"input": 0.075, "output": 0.30},
     "gemini-1.5-pro": {"input": 1.25, "output": 5.0},
     # Gemini preview / experimental models
-    "gemini-3.1-flash-lite-preview": {"input": 0.075, "output": 0.30},
-    "gemini-3-flash-preview": {"input": 0.075, "output": 0.30},
+    "gemini-3.1-flash-lite-preview": {"input": 0.25, "output": 1.50},
+    "gemini-3-flash-preview": {"input": 0.50, "output": 3.00},
     "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
     # Standard rates; introductory prices run until year end.
     "gemini-3.8-flash": {"input": 1.50, "output": 7.50},
