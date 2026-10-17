@@ -263,8 +263,8 @@ workspace overlays, MCP responses, and CLI output.
 | Answer payload | Cached `get_answer` result. | `get_answer()` | `{answer, citations, confidence, fallback_targets, retrieval}` |
 | Retrieval hit | Search hit hydrated with page metadata and summary. | `tool_answer.py` retrieval pipeline | `{target_path: "src/auth.py", score: 3.2, summary: "..."}` |
 | Retrieval dominance | Gating logic comparing top and second search scores. | `tool_answer.py` | Top score high enough to answer from dominant hit |
-| Federated RRF score | Reciprocal rank fusion score for workspace search across repos. | `tool_search.py` | `rrf_score: 0.0164` |
-| Confidence score | Normalized workspace search confidence. | `tool_search.py` | `confidence_score: 0.87` |
+| Federated RRF score | Reciprocal rank fusion score for workspace search across repos. | `tool_search/retrieval.py` | `rrf_score: 0.0164` |
+| Confidence score | Normalized workspace search confidence. | `tool_search/retrieval.py` | `confidence_score: 0.87` |
 
 ## Persistence Tables And Stored Entities
 
