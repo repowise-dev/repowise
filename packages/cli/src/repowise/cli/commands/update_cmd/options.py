@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from repowise.core.pipeline import PhaseTimings
+
+from .config_changes import ConfigChanges
 
 
 @dataclass(frozen=True)
@@ -44,3 +46,26 @@ class UpdateRun:
     timings: PhaseTimings
     emitter: Any = None
     repo_path: Path | None = None
+
+    # Preflight: stored state, the resolved mode and the commit range.
+    state: dict = field(default_factory=dict)
+    cfg: dict = field(default_factory=dict)
+    index_only: bool = False
+    base_ref: str | None = None
+    head: str | None = None
+    config: ConfigChanges | None = None
+    prev_renderer_fp: str | None = None
+    curr_renderer_fp: str = ""
+    renderer_changed: bool = False
+
+    # Change detection.
+    detector: Any = None
+    working_tree_diffs: list = field(default_factory=list)
+    analyzer_changed: bool = False
+    history_stale: bool = False
+    git_is_current: bool = False
+    extraction_changed: bool = False
+    scanner_changed: bool = False
+    stale_db_paths: list[str] = field(default_factory=list)
+    stale_deterministic_ids: set[str] = field(default_factory=set)
+    file_diffs: list = field(default_factory=list)
