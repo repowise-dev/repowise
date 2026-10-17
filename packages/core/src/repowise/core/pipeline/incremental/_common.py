@@ -6,11 +6,11 @@ from collections.abc import Callable
 
 import structlog
 
-# One logger for the whole package, named as before the split.
+from repowise.core.pipeline.step_runner import _noop_log
+
+# One logger for the whole package, under the package's name.
 logger = structlog.get_logger("repowise.core.pipeline.incremental")
 
 LogFn = Callable[[str], None]
 
-
-def _noop_log(message: str) -> None:  # pragma: no cover - trivial
-    return None
+__all__ = ["LogFn", "_noop_log", "logger"]
