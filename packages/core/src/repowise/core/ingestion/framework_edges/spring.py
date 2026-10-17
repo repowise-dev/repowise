@@ -108,6 +108,15 @@ _SPRING_DATA_BASES: frozenset[str] = frozenset({
     "JpaSpecificationExecutor",
 })
 
+# Spring base classes the servlet container instantiates without any source
+# naming the subclass: Spring Boot's WAR bootstrap, and the classic Spring MVC
+# ``WebApplicationInitializer`` implementations it finds on the classpath.
+_SERVLET_INITIALIZER_BASES: frozenset[str] = frozenset({
+    "SpringBootServletInitializer",
+    "AbstractAnnotationConfigDispatcherServletInitializer",
+    "AbstractDispatcherServletInitializer",
+})
+
 # Java field declaration with optional ``final`` modifier — used for
 # Lombok RAC ctor-param inference. Captures the type's head identifier.
 _JAVA_FINAL_FIELD_RE = re.compile(
@@ -127,16 +136,30 @@ def _has_spring_imports(parsed_files: dict[str, Any]) -> bool:
     return False
 
 
-def _is_spring_data_repo(parsed: Any) -> bool:
-    """True if *parsed* is a Java/Kotlin interface extending a Spring Data base."""
+def _extends_any(parsed: Any, bases: frozenset[str]) -> bool:
+    """True if a Java/Kotlin type in *parsed* extends or implements one of *bases*.
+
+    The parent is matched by its simple name, without generic arguments or a
+    package.
+    """
     if parsed.file_info.language not in ("java", "kotlin"):
         return False
     for rel in parsed.heritage:
         if rel.kind in ("extends", "implements"):
             base = rel.parent_name.split("<")[0].rsplit(".", 1)[-1].strip()
-            if base in _SPRING_DATA_BASES:
+            if base in bases:
                 return True
     return False
+
+
+def _is_spring_data_repo(parsed: Any) -> bool:
+    """True if *parsed* is a Java/Kotlin interface extending a Spring Data base."""
+    return _extends_any(parsed, _SPRING_DATA_BASES)
+
+
+def _is_servlet_initializer(parsed: Any) -> bool:
+    """True if *parsed* declares a class the servlet container bootstraps."""
+    return _extends_any(parsed, _SERVLET_INITIALIZER_BASES)
 
 
 def _owner_at_offset(parsed: Any, text: str, offset: int) -> str | None:
@@ -265,6 +288,17 @@ def _add_spring_edges(
             if node is not None:
                 node["is_entry_point"] = True
                 node["framework_role"] = "spring_data_repository"
+
+    # ---- 1b. Servlet initializers ----
+    # ``SpringBootServletInitializer`` (WAR deployment) and the Spring MVC
+    # dispatcher initializers are instantiated by the servlet container, so
+    # no source names them.
+    for path, parsed in parsed_files.items():
+        if _is_servlet_initializer(parsed):
+            node = graph.nodes.get(path)
+            if node is not None:
+                node["is_entry_point"] = True
+                node["framework_role"] = "spring_servlet_initializer"
 
     # ---- 2. Per-class DI + @Bean factory edges ----
     for path, parsed in parsed_files.items():
