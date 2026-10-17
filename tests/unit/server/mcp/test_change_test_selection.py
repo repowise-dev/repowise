@@ -355,7 +355,7 @@ async def test_a_path_the_checkout_lacks_fails_closed_and_backslashes_are_paths(
     assert missing["tests_run_all"] is True
     assert missing["tests_run_all_reasons"][0].startswith("src/nope.py was deleted")
 
-    windows = await _risk_directive(monkeypatch, repo, factory, ["src\status.py"])
+    windows = await _risk_directive(monkeypatch, repo, factory, [r"src\status.py"])
     assert windows["tests_run_all"] is False
     assert sorted(windows["tests_to_run"]) == ["tests/test_status.py", "tests/test_walks.py"]
 
