@@ -19,6 +19,8 @@ from repowise.core.analysis.test_reachability import (
     ReachDistance,
     call_graph_from_db,
     call_graph_from_graph,
+    direct_dependents,
+    direct_importers,
     imported_names_by_test,
     reach_into_symbols,
 )
@@ -722,3 +724,30 @@ async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path,
     assert found["src/core/Ky.ts"].tests == ["test/x.test.ts"]
     assert found["src/core/Ky.ts"].via == "import-graph"
     assert "src/retry.ts" not in found
+
+
+async def test_reads_over_more_files_than_one_statement_can_bind(async_session):
+    """A repository-wide read binds a variable per file or symbol, past what one
+    SQLite statement accepts (SQLITE_MAX_VARIABLE_NUMBER, 32766)."""
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_a.py": True, "src/a.py": False, "src/b.py": False},
+        edges=[
+            ("tests/test_a.py", "src/a.py", "imports"),
+            ("src/b.py", "src/a.py", "imports"),
+            *_calls("tests/test_a.py", "src/b.py"),
+        ],
+    )
+    files = [f"src/gone_{i}.py" for i in range(40_000)] + ["src/a.py", "src/b.py"]
+    assert await direct_importers(async_session, repo.id, files) == {
+        "tests/test_a.py",
+        "src/b.py",
+    }
+    assert await direct_dependents(async_session, repo.id, files) == {
+        "src/a.py": {"tests/test_a.py", "src/b.py"},
+        "src/b.py": {"tests/test_a.py"},
+    }
+    names = await imported_names_by_test(async_session, repo.id, files, {"tests/test_a.py"})
+    assert names == {"src/a.py": {"tests/test_a.py": frozenset()}}
