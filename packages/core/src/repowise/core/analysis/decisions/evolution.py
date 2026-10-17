@@ -623,6 +623,7 @@ def commits_in_range(repo_path: Any, base_ref: str, head: str | None) -> set[str
                 f"{base_ref}..{head or 'HEAD'}",
             ],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=60,
         )

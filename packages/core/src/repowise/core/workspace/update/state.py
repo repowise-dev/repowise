@@ -22,6 +22,7 @@ def get_head_commit(repo_path: Path) -> str | None:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=str(repo_path),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
@@ -39,6 +40,7 @@ def count_commits_between(repo_path: Path, base: str, head: str) -> int:
         result = subprocess.run(
             ["git", "rev-list", "--count", f"{base}..{head}"],
             cwd=str(repo_path),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
@@ -62,6 +64,7 @@ def commit_exists(repo_path: Path, sha: str) -> bool:
         result = subprocess.run(
             ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
             cwd=str(repo_path),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
         )
@@ -90,6 +93,7 @@ def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> Non
             ahead = subprocess.run(
                 ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
                 cwd=str(repo_path),
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=10,
             )
