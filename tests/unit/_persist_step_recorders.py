@@ -2,8 +2,9 @@
 
 Each step is replaced, in the module namespace it is looked up in at call
 time, by a stand-in that appends its label to one shared call log and can be
-told to raise. The persisters import their steps inside the function body, so
-patching the defining module is enough.
+told to raise. Most steps are imported inside the function body, so patching
+the defining module is enough; a step imported at module level is also patched
+at every module that re-exports it (``where=``).
 """
 
 from __future__ import annotations
@@ -36,7 +37,21 @@ class StepRecorder:
         # A fresh copy: callers extend returned lists in place.
         return list(ret) if isinstance(ret, list) else ret
 
-    def patch(self, module: Any, attr: str, *, ret: Any = None, sync: bool = False) -> None:
+    def assert_all_called(self, labels: Any) -> None:
+        """Fail on any label that never ran, i.e. a patch that missed its lookup site."""
+        missing = [label for label in labels if label not in self.order]
+        assert not missing, f"steps never called: {missing}"
+
+    def patch(
+        self,
+        module: Any,
+        attr: str,
+        *,
+        ret: Any = None,
+        sync: bool = False,
+        where: tuple[Any, ...] = (),
+    ) -> None:
+        """Replace ``attr`` on its defining ``module`` and on every module in ``where``."""
         if sync:
 
             def stand_in(*args, **kwargs):
@@ -47,7 +62,8 @@ class StepRecorder:
             async def stand_in(*args, **kwargs):
                 return self._record(attr, args, kwargs, ret)
 
-        self.monkeypatch.setattr(module, attr, stand_in)
+        for target in (module, *where):
+            self.monkeypatch.setattr(target, attr, stand_in)
 
     def fts_class(self) -> type:
         rec = self
@@ -90,6 +106,9 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     import repowise.core.persistence.search as search
     import repowise.core.pipeline.commit_health as commit_health
     import repowise.core.pipeline.incremental as incremental
+    import repowise.core.pipeline.incremental.commits as commits
+    import repowise.core.pipeline.incremental.external_systems as external_systems
+    import repowise.core.pipeline.incremental.health as health
     import repowise.core.pipeline.incremental.persist_index as persist_index
     import repowise.core.pipeline.page_tree_sync as page_tree_sync
     import repowise.core.pipeline.persist as persist
@@ -104,22 +123,20 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     rec.patch(persist, "mark_tombstone_pages", ret=[TOMBSTONED])
     rec.patch(page_tree_sync, "rebuild_page_tree")
     rec.patch(persist, "persist_git_refresh")
-    # The package for the CLI, which imports it at call time; the writer for core.
-    rec.patch(incremental, "persist_incremental_commits")
-    rec.patch(persist_index, "persist_incremental_commits")
+    # The CLI looks these up on the package at call time, the core writer on its own module.
+    reexported = (incremental, persist_index)
+    rec.patch(commits, "persist_incremental_commits", where=reexported)
     rec.patch(crud, "replace_dead_code_findings")
     rec.patch(crud, "replace_doc_drift_guarded")
     rec.patch(persist, "persist_graph_nodes")
-    rec.patch(incremental, "persist_partial_health")
-    rec.patch(persist_index, "persist_partial_health")
+    rec.patch(health, "persist_partial_health", where=reexported)
     rec.patch(persist, "persist_incremental_symbols")
     rec.patch(persist, "persist_incremental_security_findings")
     rec.patch(persist, "persist_incremental_edges")
     rec.patch(related_pages, "file_import_edges", ret={}, sync=True)
     rec.patch(crud, "backfill_related_pages", ret=0)
     rec.patch(persist, "persist_kg")
-    rec.patch(incremental, "refresh_external_systems")
-    rec.patch(persist_index, "refresh_external_systems")
+    rec.patch(external_systems, "refresh_external_systems", where=reexported)
     rec.patch(crud, "purge_proposed_decisions_by_source")
     rec.patch(persist, "prune_deleted_file_rows", ret=prune_ret)
     rec.patch(persist, "_analyzed_commit", ret="abc123")

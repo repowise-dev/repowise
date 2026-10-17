@@ -178,6 +178,7 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
 
     total = await _persist_full(repo, rec, _Inputs(), degraded)
 
+    rec.assert_all_called(HAPPY_ORDER)
     assert rec.order == HAPPY_ORDER
     assert degraded == []
     # The page upsert is a recorder, so the store holds no page to count.

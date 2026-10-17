@@ -101,6 +101,7 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
 
     degraded, failed_steps = await _persist(repo, rec)
 
+    rec.assert_all_called(HAPPY_ORDER)
     assert rec.order == HAPPY_ORDER
     assert degraded == []
     assert failed_steps == []
