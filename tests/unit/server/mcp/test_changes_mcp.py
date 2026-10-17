@@ -201,6 +201,7 @@ async def test_suspects_rank_recent_changes_against_the_targets(setup_mcp, sessi
     block = result["suspects"]
     assert block["window"]["since"].startswith("2026-03-02")
     assert block["candidates"] == 3  # pr-2, pr-3, pr-4; pr-1 is older than 14 days
+    assert block["candidates_capped"] is False
     top = block["suspects"][0]
     assert (top["id"], top["rank"]) == ("pr-2", 1)
     assert "text" in top["signals"] and "recency" in top["signals"]
