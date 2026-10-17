@@ -1067,3 +1067,31 @@ def test_catch_still_nests_its_body():
     assert fn.max_nesting == 1
     # The nesting locator names the except clause, not the try around it.
     assert fn.deepest_block == (4, 7)
+
+
+@pytest.mark.parametrize("language,filename", [("python", "deep.py"), ("typescript", "deep.ts")])
+@pytest.mark.parametrize("nested", [False, True], ids=["direct", "nested-function"])
+def test_deep_call_chain_keeps_file_complexity(language, filename, nested):
+    _require_language(language)
+    chain = "x" + ".f()" * 2000
+    if language == "python":
+        source = f"def g(x):\n    for i in {chain}:\n        pass\n    return 1\n"
+        if nested:
+            source = "def outer(x):\n" + "".join("    " + line for line in source.splitlines(True))
+    else:
+        source = f"function g(x) {{ for (const i of {chain}) {{}} return 1; }}\n"
+        if nested:
+            source = "function outer(x) {\n" + source + "}\n"
+    source += "\n" + ("def sibling():\n    return 2\n" if language == "python" else
+                       "function sibling() { return 2; }\n")
+
+    result = walk_file(filename, language, source.encode())
+    functions = {fn.name: fn for fn in result.functions}
+    assert set(functions) == ({"g", "outer", "sibling"} if nested else {"g", "sibling"})
+    fn = functions["g"]
+    assert (fn.ccn, fn.max_nesting, fn.cognitive, fn.bumps) == (2, 1, 1, 0)
+    assert "f" in fn.called_names
+    assert functions["sibling"].ccn == 1
+    if nested:
+        assert functions["outer"].ccn == 1
+        assert "f" in functions["outer"].called_names

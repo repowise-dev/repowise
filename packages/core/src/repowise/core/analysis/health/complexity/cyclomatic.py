@@ -1,6 +1,6 @@
 """The CCN / cognitive / max-nesting engine.
 
-``_walk_function_body`` is the recursive per-function walk: it accumulates
+``_walk_function_body`` is the per-function walk: it accumulates
 McCabe cyclomatic complexity, cognitive complexity, max nesting
 depth, ``bumps`` (independent heavy branches), and a side-channel of compound
 boolean conditions. The helpers above it classify branch / loop / case / catch
@@ -360,7 +360,7 @@ def _walk_function_body(
     deepest: list[int] | None = None,
     tally: BodyTally | None = None,
 ) -> tuple[int, int, int, int, list[ConditionComplexity]]:
-    """Recursive AST walk. Returns (ccn, max_nesting, cognitive, bumps,
+    """Iterative AST walk. Returns (ccn, max_nesting, cognitive, bumps,
     complex_conditions).
 
     Starts CCN at 1 (the entry path). Nested function bodies are
@@ -399,7 +399,7 @@ def _walk_function_body(
     deepest_depth = 0
     deepest_node: list[Node] = []
 
-    def _recurse(node: Node, depth: int, in_markup: bool = False, scope: int = 0) -> None:
+    def _visit(node: Node, depth: int, in_markup: bool, scope: int) -> tuple[int, bool, int] | None:
         nonlocal ccn, max_nesting, cognitive, deepest_depth
 
         # Don't descend into nested function bodies — they're walked
@@ -460,7 +460,7 @@ def _walk_function_body(
             # Side-channel: count compound boolean ops in this
             # construct's condition. Does not affect ccn/cognitive
             # (boolean operators are still tallied independently by
-            # the regular recursion below).
+            # the regular traversal below).
             op_count = 0
             op_kinds: set[str] = set()
             negated = False
@@ -519,8 +519,7 @@ def _walk_function_body(
             and node.type not in lmap.lambda_kinds
             and node.type not in _MARKUP_VALUE_KINDS
         )
-        for child in node.children:
-            _recurse(child, new_depth, child_markup, scope)
+        return new_depth, child_markup, scope
 
     root_scope = 0
     if (
@@ -535,7 +534,14 @@ def _walk_function_body(
         # can read just this child's contribution, then restore.
         outer_max = max_nesting
         max_nesting = 0
-        _recurse(child, 0, scope=root_scope)
+        stack = [(child, 0, False, root_scope)]
+        while stack:
+            node, depth, in_markup, scope = stack.pop()
+            state = _visit(node, depth, in_markup, scope)
+            if state is not None:
+                # LIFO reversal preserves pre-order, including the first
+                # deepest block, condition order and branch-local fact scope.
+                stack.extend((c, *state) for c in reversed(node.children))
         child_peak = max_nesting
         max_nesting = max(outer_max, child_peak)
         if child_peak >= 2:
