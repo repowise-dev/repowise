@@ -105,14 +105,21 @@ async def _semantic_concept_paths(question: str, ctx: Any) -> list[str]:
         return []
     out: list[str] = []
     for r in results:
-        if getattr(r, "page_type", "") in ("module_page", "layer_page"):
-            tp = getattr(r, "target_path", "") or ""
-            if not tp:
-                pid = getattr(r, "page_id", "") or ""
-                tp = pid.split(":", 1)[1] if ":" in pid else pid
-            if tp and tp not in out:
-                out.append(tp)
+        if getattr(r, "page_type", "") not in ("module_page", "layer_page"):
+            continue
+        tp = _result_target_path(r)
+        if tp and tp not in out:
+            out.append(tp)
     return out
+
+
+def _result_target_path(result: Any) -> str:
+    """A vector hit's target path, read from its page id when it carries none."""
+    tp = getattr(result, "target_path", "") or ""
+    if not tp:
+        pid = getattr(result, "page_id", "") or ""
+        tp = pid.split(":", 1)[1] if ":" in pid else pid
+    return tp
 
 
 def _cluster_parents(top: list[dict]) -> tuple[dict[str, int], dict[str, set[str]]]:
@@ -189,15 +196,15 @@ def _lead_with_parent(hits: list[dict], winner: Any) -> list[dict]:
     # it. Promote it to lead in place rather than adding a duplicate. The bump is
     # small (just past the top hit) so it never manufactures a dominant retrieval
     # that would read "high".
-    for h in hits:
-        if h.get("target_path") == best_tp:
-            if h.get("score", 0.0) < lead_score:
-                h["score"] = lead_score
-                src = h.get("_sources")
-                if isinstance(src, set):
-                    src.add("parent_promote")
-            hits.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-            return hits
+    retrieved = next((h for h in hits if h.get("target_path") == best_tp), None)
+    if retrieved is not None:
+        if retrieved.get("score", 0.0) < lead_score:
+            retrieved["score"] = lead_score
+            src = retrieved.get("_sources")
+            if isinstance(src, set):
+                src.add("parent_promote")
+        hits.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        return hits
 
     # Not retrieved at all: inject it as the leading hit.
     parent_hit = {
