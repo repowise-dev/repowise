@@ -21,6 +21,7 @@ import click
 import structlog
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.helpers import (
     clear_update_queued,
     console,
@@ -69,7 +70,6 @@ from .persistence import (
     heal_commit_offsets,
     health_analyzer_changed,
     parser_changed,
-    refresh_read_snapshots,
     rescan_security_if_changed,
     security_scanner_changed,
     stamp_head_commit,
@@ -160,35 +160,23 @@ def _record_update_outcome(
 ) -> None:
     """Attach an anonymous update-shape outcome to the ``command_run`` event.
 
-    Coarse buckets + enums only (changed-files bucket, docs mode, provider,
-    pages bucket). Best-effort; never breaks the command.
+    Changed-files bucket on top of the shared index shape.
     """
-    try:
-        from repowise.cli.platform import telemetry
-
-        # docs_mode carries the same three values as the state field of that
-        # name; it was a bool until an index-only update started re-rendering
-        # template pages, which that shape could not express. It comes from the
-        # repo's persisted mode, not from this run's page count: a commit that
-        # touched no source file re-renders nothing, and that is not the same
-        # as the repo having no wiki.
-        pages = generated_pages or []
-        if docs_mode is None:
-            docs_mode = "llm" if (not index_only and provider is not None) else "none"
-        outcome: dict[str, Any] = {
-            "outcome": "success",
-            "index_only": bool(index_only),
-            "docs_mode": docs_mode,
-            "changed_files_bucket": telemetry.bucket_count(changed_count),
-        }
-        if not index_only and provider is not None:
-            outcome["provider"] = getattr(provider, "provider_name", None)
-            outcome["model"] = getattr(provider, "model_name", None)
-        if pages:
-            outcome["pages_bucket"] = telemetry.bucket_count(len(pages))
-        telemetry.add_command_outcome(**{k: v for k, v in outcome.items() if v is not None})
-    except Exception:
-        return
+    # docs_mode carries the same three values as the state field of that
+    # name; it was a bool until an index-only update started re-rendering
+    # template pages, which that shape could not express. It comes from the
+    # repo's persisted mode, not from this run's page count: a commit that
+    # touched no source file re-renders nothing, and that is not the same
+    # as the repo having no wiki.
+    if docs_mode is None:
+        docs_mode = "llm" if (not index_only and provider is not None) else "none"
+    record_index_outcome(
+        index_only=index_only,
+        provider=provider,
+        docs_mode=docs_mode,
+        pages=generated_pages,
+        buckets={"changed_files": changed_count},
+    )
 
 
 def _finish_outcome(

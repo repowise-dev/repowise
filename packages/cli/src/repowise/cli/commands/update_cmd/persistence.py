@@ -18,6 +18,7 @@ from typing import Any
 
 import structlog
 
+from repowise.cli.commands._index_outcome import refresh_read_snapshots  # noqa: F401 (re-export)
 from repowise.cli.helpers import (
     as_commit_id,
     console,
@@ -282,48 +283,6 @@ def heal_commit_offsets(repo_path: Any) -> None:
 
     with contextlib.suppress(Exception):
         run_async(_run())
-
-
-def refresh_read_snapshots(repo_path: Any) -> None:
-    """Store the Fix first queue and the next-actions view for the next reader.
-
-    A named step at every outcome of ``repowise update`` and at the end of
-    ``repowise init``, once every store is final, so ``repowise next``, the
-    overview and the dashboard read one row instead of rebuilding in each new
-    process. A view no write has invalidated since is left as it is, so the
-    "already up to date" path costs one primary-key read per view.
-    Best-effort: without a snapshot a reader builds live, as before. A
-    snapshot that is not written is named with its error, here rather than in
-    the core log, which an update keeps at ERROR.
-    """
-    from repowise.cli.helpers import repo_index_session
-    from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
-
-    async def _run() -> list[tuple[str, Exception]]:
-        async with repo_index_session(Path(repo_path)) as opened:
-            return [] if opened is None else await write_read_snapshots(*opened)
-
-    try:
-        try:
-            failed = run_async(_run())
-        except Exception as exc:
-            failed = [("read snapshots", exc)]
-        for name, exc in failed:
-            log.debug("read_snapshot_not_written", snapshot=name, error=repr(exc))
-            console.print(f"[yellow]Snapshot not written: {_short_error(name, exc)}[/yellow]")
-    except Exception:  # reporting must never fail the update
-        log.debug("read_snapshot_report_failed", exc_info=True)
-
-
-def _short_error(name: str, exc: BaseException) -> str:
-    """``<snapshot>: <ErrorType>: <first line>``, cut to one line and escaped
-    for Rich: an error text can hold markup brackets or a whole traceback."""
-    from rich.markup import escape
-
-    first = (str(exc).strip().splitlines() or [""])[0]
-    if len(first) > 160:
-        first = first[:159] + "…"
-    return escape(f"{name}: {type(exc).__name__}" + (f": {first}" if first else ""))
 
 
 # A repair window that has grown past this many commits stopped being a repair

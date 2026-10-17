@@ -19,6 +19,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Table
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.editor_integrations.defaults import (
     get_default_disabled_project_files,
     get_default_integration_overrides,
@@ -142,48 +143,47 @@ def _record_init_outcome(
 ) -> None:
     """Attach an anonymous shape-of-the-index outcome to the ``command_run`` event.
 
-    Coarse buckets + enums only (file-count bucket, docs mode, run mode, top
-    language, provider/embedder names) — no repo names, paths, or exact counts.
-    Best-effort: never let telemetry break the command's happy path.
+    File and symbol buckets, run mode, top language and embedder on top of the
+    shared index shape. Best-effort: never let telemetry break the command.
     """
     try:
-        from repowise.cli.platform import telemetry
-
-        outcome: dict[str, Any] = {
-            "outcome": "success",
-            "index_only": bool(effective_index_only),
-            "run_mode": run_mode,
-            "file_count_bucket": telemetry.bucket_count(getattr(result, "file_count", 0) or 0),
-            "symbol_count_bucket": telemetry.bucket_count(getattr(result, "symbol_count", 0) or 0),
-        }
-
         lang_dist = getattr(
             getattr(result, "repo_structure", None), "root_language_distribution", None
         )
+        top_language = None
         if isinstance(lang_dist, dict) and lang_dist:
-            outcome["top_language"] = max(lang_dist.items(), key=lambda kv: kv[1])[0]
+            top_language = max(lang_dist.items(), key=lambda kv: kv[1])[0]
 
         # docs_mode carries the same three values as the state field of that
         # name. It used to be a bool, which collapsed "template wiki" and "no
         # wiki" into one number, and template runs are the ones worth counting.
         pages = getattr(result, "generated_pages", None) or []
-        det = sum(1 for p in pages if getattr(p, "provider_name", "") == "template")
         if not effective_index_only and provider is not None:
-            outcome["docs_mode"] = "llm"
-            outcome["provider"] = getattr(provider, "provider_name", None)
-            outcome["model"] = getattr(provider, "model_name", None)
+            docs_mode = "llm"
         else:
-            outcome["docs_mode"] = "deterministic" if pages else "none"
+            docs_mode = "deterministic" if pages else "none"
+        buckets = {
+            "file_count": getattr(result, "file_count", 0) or 0,
+            "symbol_count": getattr(result, "symbol_count", 0) or 0,
+        }
         if pages:
-            outcome["pages_bucket"] = telemetry.bucket_count(len(pages))
-            outcome["deterministic_pages_bucket"] = telemetry.bucket_count(det)
-
-        if embedder_name_resolved:
-            outcome["embedder"] = embedder_name_resolved
-
-        telemetry.add_command_outcome(**{k: v for k, v in outcome.items() if v is not None})
+            buckets["deterministic_pages"] = sum(
+                1 for p in pages if getattr(p, "provider_name", "") == "template"
+            )
     except Exception:
         return
+    record_index_outcome(
+        index_only=effective_index_only,
+        provider=provider,
+        docs_mode=docs_mode,
+        pages=pages,
+        buckets=buckets,
+        fields={
+            "run_mode": run_mode,
+            "top_language": top_language,
+            "embedder": embedder_name_resolved or None,
+        },
+    )
 
 
 def _print_structural_plan(
@@ -1988,8 +1988,6 @@ def init_command(
 
     # Every store is final: store the views ``repowise next`` and the
     # dashboard read, before the editor files quote Fix first from them.
-    from repowise.cli.commands.update_cmd.persistence import refresh_read_snapshots
-
     refresh_read_snapshots(repo_path)
     files_written = write_editor_project_files(
         console,
