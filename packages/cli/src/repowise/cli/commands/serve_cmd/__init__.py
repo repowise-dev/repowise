@@ -1,12 +1,12 @@
 """``repowise serve`` command package.
 
-* :mod:`.command` — the Click command
-* :mod:`._advisory` — periodic update advisory
-* :mod:`._lock` — discovery lockfile
-* :mod:`._embedder` — embedder and provider env setup
-* :mod:`._ports` — port probing
-* :mod:`._web_assets` — node/npm detection and web bundle resolution
-* :mod:`._frontend` — launching the web UI
+* :mod:`.command`: the Click command
+* :mod:`._advisory`: periodic update advisory
+* :mod:`._lock`: discovery lockfile
+* :mod:`._embedder`: embedder and provider env setup
+* :mod:`._ports`: port probing
+* :mod:`._web_assets`: node/npm detection and web bundle resolution
+* :mod:`._frontend`: launching the web UI
 
 Every name is re-exported so ``repowise.cli.commands.serve_cmd`` keeps its
 import surface. Patch a name on the submodule that defines it: a patch here
