@@ -31,6 +31,12 @@ from ._constants import (
     _FILE_INDEX_TIMEOUT_SECS,
     _MAX_PARTNERS_PER_FILE,
 )
+from ._full_index import (
+    CommitSample,
+    build_commit_tables,
+    history_coverage,
+    merge_code_signals,
+)
 from ._incremental import (
     IdleRefresh,
     SignalPass,
@@ -39,15 +45,12 @@ from ._incremental import (
     idle_refresh_paths,
     prior_defect_stage,
 )
-from ._incremental import apply_co_change as _apply_co_change
-from ._incremental import apply_prior_defects as _apply_prior_defects
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import DECAY_REFRESH_KEYS, _window_anchor, index_file
 from .function_blame import build_blame_index
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
 from .records import (
-    GitHistoryCoverage,
     GitIndexSummary,
     RepoTotals,
     _CommitRec,
@@ -327,51 +330,15 @@ class GitIndexer:
         workers = git_worker_count(len(indexable_files), requested=self.max_workers)
         loop = asyncio.get_event_loop()
 
-        # Build a repo-wide commit index in ONE git log subprocess when
-        # rename-tracking is off (the default). Each per-file worker then reads
-        # its commits from this shared dict instead of spawning its own
-        # ``git log -- <file>`` — turning O(files) process spawns into O(1).
-        commit_index: dict[str, list[_CommitRec]] = {}
         commit_sink: list[dict] = []
         prov_clf = self._provenance_classifier()
-        fallback_files = set(indexable_files) | history_files
-        recent_files: set[str] = set()
-        deep_files: set[str] = set()
-        global_commits = deep_commits = complete_through_depth = 0
-        # Agent-trace records read ONCE per index (one stat call for repos
-        # without a .agent-trace/ dir). Shared with both commit-index walks so
-        # the file isn't re-read per walk, and reused below for the per-file
-        # line-share merge — which is why it loads even in follow_renames mode,
-        # where neither commit-index walk runs.
+        # Agent-trace records, read once and shared with both commit-index walks
+        # and the line-share merge, so they load even when no walk runs.
         trace_index = self._load_trace_index(repo)
-        # Known limit: follow_renames skips this walk, so non-code files get no
-        # history rows in that mode (the history tier never walks per file).
-        if not self.follow_renames:
-            from ..git_commit_index import load_sampled_commit_index
-
-            with timed(timings, "git.commit_index"):
-                sample = load_sampled_commit_index(
-                    repo,
-                    self.commit_limit,
-                    set(indexable_files) | history_files,
-                    deep_limit=_DEEP_WALK_COMMIT_LIMIT,
-                    # A history-tier file the shared walks leave short has no
-                    # per-file walk to fall back on, so any one of them is
-                    # worth a deep walk.
-                    deep_threshold=1 if history_files else _DEEP_WALK_MIN_FALLBACK,
-                    commit_sink=commit_sink,
-                    provenance_classifier=prov_clf,
-                    trace_index=trace_index,
-                    cache_dir=self._window_cache_dir(),
-                    cache_writable=not self.read_only,
-                )
-            commit_index = sample.commits
-            fallback_files = sample.fallback_files
-            recent_files = sample.recent_files
-            deep_files = sample.deep_files
-            global_commits = sample.global_commits
-            deep_commits = sample.deep_commits
-            complete_through_depth = sample.history_complete_through_depth
+        sample = self._full_commit_index(
+            repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
+        )
+        commit_index, fallback_files = sample.commits, sample.fallback_files
 
         # A non-code file the shared walks could not prove complete gets no row
         # (its count stays unknown) rather than a per-file walk of its own.
@@ -465,43 +432,10 @@ class GitIndexer:
         with timed(timings, "git.episodes"):
             await asyncio.to_thread(self._record_git_episodes, fix_walk)
 
-        # Per-file AI line share from the agent-trace records. Keyed by path
-        # like the aggregates below, so it merges in the same pass and
-        # works regardless of which commit-index walk (if any) ran.
-        trace_line_shares = trace_index.line_shares() if trace_index else {}
-
-        # Merge co-change partners + change entropy + prior defects + AI line
-        # share into metadata.
-        # History-tier rows take none of these; they are code signals.
+        # History-tier rows take none of the code signals.
         code_results = [meta for meta in results if meta["file_path"] not in history_files]
-        _apply_co_change(code_results, walk)
-        _apply_prior_defects(code_results, prior_defects)
-        for meta in code_results:
-            share = trace_line_shares.get(meta["file_path"])
-            if share:
-                meta["agent_line_count"] = share[0]
-                meta["agent_line_model_json"] = json.dumps(share[1])
-
-        compute_percentiles(code_results)
-
-        # Per-commit rows + just-in-time change-risk, built in-memory from the
-        # commit-index walk's already-parsed diffs (no extra git pass). Empty
-        # in rename-tracking mode (no batched commit index) and failure-isolated
-        # so a change_risk hiccup never breaks file-level git metadata.
-        commit_rows: list[dict] = []
-        commit_file_rows: list[dict] = []
-        if commit_sink:
-            try:
-                from .commit_rows import build_commit_file_rows, build_commit_rows
-
-                built = build_commit_rows(commit_sink)
-                built_files = build_commit_file_rows(commit_sink)
-            except Exception as exc:
-                logger.debug("commit_rows_build_failed", error=str(exc))
-            else:
-                # Assigned together: a half-built pair would write commits
-                # whose file detail describes a different set.
-                commit_rows, commit_file_rows = built, built_files
+        merge_code_signals(code_results, walk, prior_defects, trace_index)
+        commit_rows, commit_file_rows = build_commit_tables(commit_sink)
 
         duration = time.monotonic() - start
         hotspots = sum(1 for m in results if m.get("is_hotspot", False))
@@ -517,26 +451,10 @@ class GitIndexer:
             fix_event_rows=fix_event_rows,
             fix_oldest_ts=fix_walk.oldest_fix_ts,
             fix_events_built=built_ok,
-            # Whole-history totals: true project age / commit / contributor
-            # counts for the stats page, which must not read them off the
-            # depth-capped sample (issue #730).
+            # Whole-history totals, never read off the depth-capped sample.
             repo_totals=repo_totals,
-            history_coverage=GitHistoryCoverage(
-                eligible_files=len(indexable_files),
-                files_with_history=sum(
-                    1 for row in code_results if int(row.get("commit_count_total", 0)) > 0
-                ),
-                unavailable_files=sum(1 for row in code_results if "commit_count_total" not in row),
-                retained_commits=sum(int(row.get("commit_count_total", 0)) for row in code_results),
-                per_file_limit=self.commit_limit,
-                global_commits=global_commits,
-                deep_commits=deep_commits,
-                # Coverage describes the code tier the per-file fallback serves.
-                recent_files=len(recent_files.intersection(indexable_files)),
-                deep_files=len(deep_files.intersection(indexable_files)),
-                fallback_files=len(fallback_files.intersection(indexable_files)),
-                complete_through_depth=complete_through_depth,
-                workers=workers,
+            history_coverage=history_coverage(
+                indexable_files, code_results, sample, self.commit_limit, workers
             ),
         )
         _release_repo(repo)
@@ -551,6 +469,52 @@ class GitIndexer:
             duration=f"{summary.duration_seconds:.1f}s",
         )
         return summary, results
+
+    def _full_commit_index(
+        self,
+        repo: Any,
+        indexable_files: list[str],
+        history_files: set[str],
+        commit_sink: list[dict],
+        prov_clf: Any,
+        trace_index: Any,
+        timings: Any,
+    ) -> CommitSample:
+        """One repo-wide ``git log`` that every per-file worker reads its commits from.
+
+        Turns O(files) process spawns into O(1). Rename tracking skips it, so
+        every file walks its own history and non-code files get no history rows.
+        """
+        if self.follow_renames:
+            return CommitSample({}, set(indexable_files) | history_files, set(), set(), 0, 0, 0)
+        from repowise.core.pipeline.phase_timing import timed
+
+        from ..git_commit_index import load_sampled_commit_index
+
+        with timed(timings, "git.commit_index"):
+            sample = load_sampled_commit_index(
+                repo,
+                self.commit_limit,
+                set(indexable_files) | history_files,
+                deep_limit=_DEEP_WALK_COMMIT_LIMIT,
+                # A short history-tier file has no per-file walk to fall back
+                # on, so any one of them is worth a deep walk.
+                deep_threshold=1 if history_files else _DEEP_WALK_MIN_FALLBACK,
+                commit_sink=commit_sink,
+                provenance_classifier=prov_clf,
+                trace_index=trace_index,
+                cache_dir=self._window_cache_dir(),
+                cache_writable=not self.read_only,
+            )
+        return CommitSample(
+            sample.commits,
+            sample.fallback_files,
+            sample.recent_files,
+            sample.deep_files,
+            sample.global_commits,
+            sample.deep_commits,
+            sample.history_complete_through_depth,
+        )
 
     def _window_cache_dir(self) -> Path | None:
         """Where the commit-window cache lives: the index directory, once it exists.
@@ -719,7 +683,12 @@ class GitIndexer:
                 code_results,
                 co_change_sink,
                 IdleRefresh(
-                    idle_decay_sink, idle_paths, commit_index, prov_clf, prior_defects, history_files
+                    idle_decay_sink,
+                    idle_paths,
+                    commit_index,
+                    prov_clf,
+                    prior_defects,
+                    history_files,
                 ),
             )
 
