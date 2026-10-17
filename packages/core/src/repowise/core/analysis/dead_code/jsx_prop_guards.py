@@ -1,10 +1,13 @@
-"""AST helper for extracting guarded JSX component renders."""
+"""Guarded JSX renders, and the walk that asks whether every route to a component is blocked."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from tree_sitter import Language, Parser
+
+from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 
 
 def extract_guarded_jsx_renders(
@@ -338,3 +341,107 @@ def extract_guarded_jsx_renders(
 
     _walk(tree.root_node)
     return results
+
+
+GuardedRenders = Callable[[str], list[tuple[str, str, str]]]
+
+
+def unsatisfied_prop_guard(
+    graph: Any,
+    guarded_renders: GuardedRenders,
+    sym_id: str,
+    sym_name: str,
+    visited: set[str] | None = None,
+    memo: dict[str, tuple[str, str] | None] | None = None,
+) -> tuple[str, str] | None:
+    """``(prop, parent)`` when every route to *sym_id* renders it behind a never-supplied prop.
+
+    One unguarded or satisfied route keeps the symbol reachable, so a guard is
+    reported only when every predecessor resolves to one, directly or through
+    its own callers. *guarded_renders* returns a file's guarded render triples.
+    """
+    if not graph.has_node(sym_id):
+        return None
+
+    if visited is None:
+        visited = set()
+    if memo is None:
+        memo = {}
+    if sym_id in memo:
+        return memo[sym_id]
+    if sym_id in visited:
+        return None
+    visited.add(sym_id)
+
+    predecessors = _use_predecessors(graph, sym_id)
+    if not predecessors:
+        memo[sym_id] = None
+        return None
+
+    resolved_guards: list[tuple[str, str]] = []
+    for pred in predecessors:
+        pred_file = pred.split("::")[0] if "::" in pred else pred
+        if not pred_file.endswith((".tsx", ".jsx", ".ts", ".js")):
+            continue
+        guard = _blocked_guard(graph, guarded_renders(pred_file), pred, sym_name)
+        if guard is not None:
+            resolved_guards.append(guard)
+            continue
+        parent_guard = unsatisfied_prop_guard(
+            graph, guarded_renders, pred, pred.split("::")[-1], set(visited), memo
+        )
+        if parent_guard is None:
+            memo[sym_id] = None
+            return None
+        resolved_guards.append(parent_guard)
+
+    result = (
+        resolved_guards[0]
+        if resolved_guards and len(resolved_guards) == len(predecessors)
+        else None
+    )
+    memo[sym_id] = result
+    return result
+
+
+def _use_predecessors(graph: Any, node: str) -> list[str]:
+    """Predecessors of *node* over a reachability-use edge."""
+    return [
+        pred
+        for pred in graph.predecessors(node)
+        if graph[pred][node].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
+    ]
+
+
+def _blocked_guard(
+    graph: Any, guarded: list[tuple[str, str, str]], pred: str, sym_name: str
+) -> tuple[str, str] | None:
+    """The guard *pred* renders *sym_name* behind, if no caller of *pred* supplies its prop."""
+    pred_parent = pred.split("::")[-1] if "::" in pred else None
+    found_guard = _matching_guard(guarded, sym_name, pred_parent)
+    if found_guard is None:
+        return None
+    prop_name, _ = found_guard
+    incoming = _use_predecessors(graph, pred)
+    if incoming and all(
+        _withholds(graph[caller][pred].get("supplied_props"), prop_name) for caller in incoming
+    ):
+        return found_guard
+    return None
+
+
+def _matching_guard(
+    guarded: list[tuple[str, str, str]], sym_name: str, pred_parent: str | None
+) -> tuple[str, str] | None:
+    """``(prop, parent)`` of the first guarded render of *sym_name* inside *pred_parent*."""
+    for parent_fn, child_comp, prop_name in guarded:
+        if child_comp == sym_name and (
+            pred_parent is None or parent_fn == pred_parent or parent_fn == "Anonymous"
+        ):
+            return (prop_name, parent_fn if parent_fn != "Anonymous" else (pred_parent or ""))
+    return None
+
+
+def _withholds(supplied: Any, prop_name: str) -> bool:
+    """Whether a call site's recorded props are known and omit *prop_name*."""
+    return supplied is not None and prop_name not in supplied
