@@ -54,8 +54,9 @@ _NODE_ATTR_KEYS = (
 # Symbol attributes ``graph_nodes`` has no column for. They come from the parse
 # alone, so a rehydrated graph takes them back from the re-parse
 # (:meth:`RehydrateMixin.restore_parse_only_attrs`); without them the
-# refactoring detectors lose the ``@Override`` / ``override`` exemptions.
-_PARSE_ONLY_SYMBOL_ATTRS = ("decorators", "modifiers")
+# refactoring detectors lose the ``@Override`` / ``override`` exemptions and
+# dead-code analysis loses synthetic ``generated`` markers.
+_PARSE_ONLY_SYMBOL_ATTRS = ("decorators", "modifiers", "generated")
 
 
 def _restore_spawn_lines(graph: Any, parsed: Any) -> None:

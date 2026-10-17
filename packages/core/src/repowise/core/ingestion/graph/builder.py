@@ -329,6 +329,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 modifiers=sym.modifiers,
                 is_exported_symbol=sym.is_exported_symbol,
                 is_declaration=sym.is_declaration,
+                generated=sym.generated,
                 docstring=sym.docstring,
             )
 

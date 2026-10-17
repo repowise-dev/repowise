@@ -79,6 +79,7 @@ def jvm_codegen_synthetic_symbols(
                 signature=f"public class {impl_name} implements {type_name}",
                 start_line=line, end_line=line,
                 file_info=file_info, parent_name=None,
+                generated=True,
             ))
         if _has_marker_annotation(node, "AutoValue", src):
             out.append(build_synthetic_symbol(
@@ -86,6 +87,7 @@ def jvm_codegen_synthetic_symbols(
                 signature=f"public class AutoValue_{type_name} extends {type_name}",
                 start_line=line, end_line=line,
                 file_info=file_info, parent_name=None,
+                generated=True,
             ))
         # Qualified marker only: a bare ``@Immutable`` is the unrelated
         # thread-safety annotation, which generates nothing. Ceiling: a file
@@ -97,6 +99,7 @@ def jvm_codegen_synthetic_symbols(
                 signature=f"public class Immutable{type_name} extends {type_name}",
                 start_line=line, end_line=line,
                 file_info=file_info, parent_name=None,
+                generated=True,
             ))
 
     return out

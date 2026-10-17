@@ -28,6 +28,7 @@ def build_synthetic_symbol(
     parent_name: str | None,
     decorators: list[str] | None = None,
     visibility: str = "public",
+    generated: bool = False,
 ) -> Symbol:
     """Construct a ``Symbol`` instance for a generator-synthesised name.
 
@@ -63,6 +64,7 @@ def build_synthetic_symbol(
         is_async=False,
         language=file_info.language,
         parent_name=parent_name,
+        generated=generated,
     )
 
 

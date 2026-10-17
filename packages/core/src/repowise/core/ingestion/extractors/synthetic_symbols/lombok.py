@@ -297,6 +297,7 @@ def _emit_for_class(
             signature=f"public static class {builder_class}",
             start_line=line, end_line=line,
             file_info=file_info, parent_name=class_name,
+            generated=True,
         ))
         # Static factory on the host class
         _add(out, file_info, name="builder", kind="method",
