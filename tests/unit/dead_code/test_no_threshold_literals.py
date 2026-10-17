@@ -50,6 +50,7 @@ _GUARDED = [
     "core/src/repowise/core/analysis/dead_code/passes/unreachable_files.py",
     "core/src/repowise/core/analysis/dead_code/passes/unused_exports.py",
     "core/src/repowise/core/analysis/dead_code/passes/unused_internals.py",
+    "core/src/repowise/core/analysis/dead_code/passes/zombie_packages.py",
     "core/src/repowise/core/analysis/dead_code/name_occurrences.py",
     "core/src/repowise/core/analysis/dead_code/entry_shape.py",
     "core/src/repowise/core/analysis/dead_code/risk_factors.py",

@@ -11,21 +11,17 @@ source-scan rules live in sibling modules under this package.
 
 from __future__ import annotations
 
-import contextlib
 import fnmatch
-import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from collections.abc import Set as AbstractSet
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from ...code_origin import code_origin, is_build_file
-from ...entry_candidacy import is_reachability_root
+from ...code_origin import code_origin
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
-from ...ingestion.package_roots import package_manifest_names
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
 from .c_name_uses import (
     DEFINITION_HEADER_LINES,
@@ -33,12 +29,8 @@ from .c_name_uses import (
     drop_preprocessed_named_elsewhere,
 )
 from .constants import (
-    _DEAD_CODE_EXEMPT_LANGUAGES,
     _DEFAULT_DYNAMIC_PATTERNS,
-    _NEVER_PACKAGE_DIRS,
     _PREPROCESSED_LANGUAGES,
-    _PROJECT_FILE_SUFFIXES,
-    _RUN_NOT_IMPORTED_LANGUAGES,
     never_flag_path,
 )
 from .csharp_reachability import (
@@ -64,17 +56,14 @@ from .dynamic_markers import (
 )
 from .entry_shape import (
     clamp_entry_shaped,
-    defines_main_function,
     drop_program_entries,
-    is_program,
 )
 from .file_reachability import (
-    _NON_DEPENDENCY_EDGES,
     PackageFileMap,
     ReachabilityRescues,
     build_package_file_map,
 )
-from .finding_helpers import (
+from .finding_helpers import (  # noqa: F401  (moved helpers re-exported)
     _LINES_UNKNOWN,
     _csharp_exports,
     _is_synthetic_node,
@@ -82,7 +71,6 @@ from .finding_helpers import (
     _symbol_span,
 )
 from .go_name_uses import drop_go_package_uses
-from .jvm_reachability import defines_main
 from .kotlin_multiplatform import settle_platform_declarations
 from .meta_annotations import MetaAnnotations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
@@ -101,10 +89,10 @@ from .name_occurrences import (
 from .passes.unreachable_files import UnreachableFilePass
 from .passes.unused_exports import UnusedExportPass
 from .passes.unused_internals import UnusedInternalPass
+from .passes.zombie_packages import ZombiePackagePass
 from .published_api import BuildFacts, demote_published_api
 from .risk_factors import (
     RISK_CAP_CONFIDENCE,
-    path_risk_factors,
 )
 from .source_prepasses import (  # noqa: F401  (moved scans re-exported)
     _BUNDLER_CONFIG_STEMS,
@@ -310,33 +298,50 @@ class DeadCodeAnalyzer:
         advance per-stage progress; safe to pass ``None``.
         """
         cfg = config or {}
-        findings: list[DeadCodeFindingData] = []
-
         dynamic_patterns = cfg.get("dynamic_patterns", _DEFAULT_DYNAMIC_PATTERNS)
         # Machine output known only by its content (a webpack chunk, a minified
         # bundle) joins the whitelist, which every pass already honours.
         whitelist = set(cfg.get("whitelist", [])) | self._content_machine_output()
 
-        if cfg.get("detect_unreachable_files", True):
-            findings.extend(self._detect_unreachable_files(whitelist))
-            if on_step:
-                on_step("unreachable_files")
+        findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
+        findings = self._settle(findings)
 
-        if cfg.get("detect_unused_exports", True):
-            findings.extend(self._detect_unused_exports(dynamic_patterns, whitelist))
-            if on_step:
-                on_step("unused_exports")
+        min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
+        hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
+        findings = [f for f in findings if f.confidence >= min_conf]
 
-        if cfg.get("detect_unused_internals", True):
-            findings.extend(self._detect_unused_internals(dynamic_patterns, whitelist))
-            if on_step:
-                on_step("unused_internals")
+        return DeadCodeReport.from_findings(
+            findings, hidden_below_threshold=hidden_below_threshold
+        )
 
-        if cfg.get("detect_zombie_packages", True):
-            findings.extend(self._detect_zombie_packages(whitelist))
-            if on_step:
-                on_step("zombie_packages")
+    def _run_passes(
+        self,
+        cfg: dict,
+        dynamic_patterns: tuple[str, ...],
+        whitelist: set[str],
+        on_step: Any | None,
+    ) -> list[DeadCodeFindingData]:
+        """Run each enabled detection pass in order, reporting each stage to *on_step*."""
+        passes: tuple[tuple[str, str, Callable[[], list[DeadCodeFindingData]]], ...] = (
+            ("detect_unreachable_files", "unreachable_files",
+             lambda: self._detect_unreachable_files(whitelist)),
+            ("detect_unused_exports", "unused_exports",
+             lambda: self._detect_unused_exports(dynamic_patterns, whitelist)),
+            ("detect_unused_internals", "unused_internals",
+             lambda: self._detect_unused_internals(dynamic_patterns, whitelist)),
+            ("detect_zombie_packages", "zombie_packages",
+             lambda: self._detect_zombie_packages(whitelist)),
+        )
+        findings: list[DeadCodeFindingData] = []
+        for flag, stage, run in passes:
+            if cfg.get(flag, True):
+                findings.extend(run())
+                if on_step:
+                    on_step(stage)
+        return findings
 
+    def _settle(self, findings: list[DeadCodeFindingData]) -> list[DeadCodeFindingData]:
+        """Drop, demote and clamp the pass findings on evidence the graph does not carry."""
         # First: a C# type another file in its scope names is used, and a
         # C/C++ name written outside its declaration is a use. Both settle the
         # finding before any clamp re-scores it.
@@ -357,9 +362,8 @@ class DeadCodeAnalyzer:
         # Before the name search: an ``expect``'s own ``actual`` files write its
         # name, which that search would read as a use elsewhere.
         findings = settle_platform_declarations(findings, self._source_map)
-        # Same position and for the same reason. This one asks the wider
-        # version of the same question â€” not "could an unread file explain
-        # this" but "did we look anywhere except the import graph".
+        # Same position and reason, asking the wider question: did we look
+        # anywhere except the import graph.
         findings = drop_bare_name_uses(findings, self._source_map)
         # Before the clamp, which would otherwise read a same-file use as
         # "named elsewhere" and leave the row in the default view.
@@ -382,15 +386,11 @@ class DeadCodeAnalyzer:
             BuildFacts(repo_root=self._repo_root, dotnet_index=self._dotnet_index),
         )
 
-        findings = apply_deletion_gate(findings, self.graph, self._repo_root)
+        return apply_deletion_gate(findings, self.graph, self._repo_root)
 
-        min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
-        hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
-        findings = [f for f in findings if f.confidence >= min_conf]
-
-        return DeadCodeReport.from_findings(
-            findings, hidden_below_threshold=hidden_below_threshold
-        )
+    def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
+        """Detect monorepo packages with no incoming inter_package edges."""
+        return ZombiePackagePass(self).run(whitelist)
 
     def _drop_csharp_named_exports(
         self, findings: list[DeadCodeFindingData]
@@ -739,175 +739,6 @@ class DeadCodeAnalyzer:
             and pred_span["end_line"] <= node_span["end_line"]
         )
 
-    def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
-        """Detect monorepo packages with no incoming inter_package edges.
-
-        ``framework:`` predecessors (synthetic anchors added by
-        ``framework_edges``) count as cross-package importers â€” TYPO3 / Django
-        / etc. wiring is a real cross-cutting dependency. ``external:``
-        predecessors do not count (they represent third-party imports).
-        """
-        findings = []
-
-        packages: dict[str, list[str]] = {}
-        for node in self.graph.nodes():
-            if _is_synthetic_node(str(node)):
-                continue
-            parts = Path(str(node)).parts
-            if len(parts) > 1:
-                pkg = parts[0]
-                packages.setdefault(pkg, []).append(str(node))
-
-        if len(packages) < 2:
-            return findings
-
-        for pkg, files in packages.items():
-            if not self._is_package_candidate(pkg, files, whitelist):
-                continue
-            if self._has_cross_package_importer(pkg, files):
-                continue
-
-            # A package total is only as known as its least-known file.
-            counts = [
-                self._file_line_count(f)
-                for f in files
-                if self.graph.nodes[f].get("node_type") != "symbol"
-            ]
-            known = [c for c in counts if c is not None]
-            total_lines = sum(known) if len(known) == len(counts) else None
-            evidence = [f"No inter-package imports into '{pkg}'"]
-            if total_lines is None:
-                evidence.append(_LINES_UNKNOWN)
-            activity = self._package_git_activity(files)
-            findings.append(
-                DeadCodeFindingData(
-                    kind=DeadCodeKind.ZOMBIE_PACKAGE,
-                    file_path=pkg,
-                    symbol_name=None,
-                    symbol_kind=None,
-                    confidence=0.5,
-                    reason=f"Package '{pkg}' has no importers from other packages",
-                    lines=total_lines,
-                    evidence=evidence,
-                    safe_to_delete=False,
-                    risk_factors=list(path_risk_factors(pkg)),
-                    **activity,
-                )
-            )
-
-        return findings
-
-    def _is_package_candidate(self, pkg: str, files: list[str], whitelist: set[str]) -> bool:
-        """Whether a top-level directory is a code package the zombie pass may judge."""
-        if pkg in whitelist:
-            return False
-        # Skip known non-package dirs (.github, .vscode, docs, ...)
-        # and any other dotfile directory at the repo root.
-        if pkg in _NEVER_PACKAGE_DIRS or pkg.startswith("."):
-            return False
-        # A folder is a package only when it declares itself one: a Next.js
-        # ``app/``, a ``benchmarks/`` folder or a Go ``cmd/`` has no manifest
-        # and nothing is meant to import it.
-        if not self._has_package_manifest(pkg, files):
-            return False
-        # Tests are run, never imported, and so is a package that ships a
-        # program: a CLI started by its shebang, a JVM ``main``, or a root
-        # with a top-level ``main`` (Dart ``lib/main.dart``). A root alone is
-        # not enough: a Rust ``lib.rs`` is a root and the library's surface.
-        # One program file is enough, even a stray script: this errs toward
-        # not calling a package dead. A build-run source set (``is_never_flag``)
-        # counts as a test. Files only: a test file's symbols carry no test flag.
-        files = [
-            f
-            for f in files
-            if (nd := self.graph.nodes.get(f, {})).get("node_type") != "symbol"
-            and not nd.get("is_test")
-            and not nd.get("is_never_flag")
-        ]
-        if any(
-            is_program(f, self._source_map.get(f, b""))
-            or defines_main(self.graph, f)
-            or (
-                is_reachability_root(self.graph.nodes[f])
-                and defines_main_function(self.graph, f)
-            )
-            for f in files
-        ):
-            return False
-        # A real package contains at least one source file something could
-        # import. Config and data (YAML, JSON, MD, TOML) is metadata, and a
-        # folder of Dockerfiles, shell scripts and build files is run, never
-        # imported.
-        return any(
-            self.graph.nodes.get(f, {}).get("language", "unknown")
-            not in _DEAD_CODE_EXEMPT_LANGUAGES | _RUN_NOT_IMPORTED_LANGUAGES
-            and not is_build_file(f)
-            for f in files
-        )
-
-    def _has_package_manifest(self, pkg: str, files: list[str]) -> bool:
-        """Whether *pkg* holds a package manifest of its own, on disk or indexed.
-
-        A top-level folder whose manifest sits at the repository root (a
-        Python package built by the root ``pyproject.toml``) is the repository
-        itself, not a package of it, so it is never a candidate.
-        """
-        names = {f.partition("/")[2] for f in files if f.count("/") == 1}
-        if self._repo_root is not None:
-            with contextlib.suppress(OSError):
-                names.update(os.listdir(Path(self._repo_root) / pkg))
-        manifests = package_manifest_names()
-        return any(n in manifests or n.endswith(_PROJECT_FILE_SUFFIXES) for n in names)
-
-    def _has_cross_package_importer(self, pkg: str, files: list[str]) -> bool:
-        """Whether anything outside *pkg* depends on a file inside it."""
-        for f in files:
-            for pred, _f, edge_data in self.graph.in_edges(f, data=True):
-                # Committed together is history, not a dependency.
-                if edge_data.get("edge_type") in _NON_DEPENDENCY_EDGES:
-                    continue
-                pred_str = str(pred)
-                if pred_str.startswith("external:"):
-                    # Third-party imports don't count as cross-package
-                    # importers; framework: synthetic anchors do.
-                    continue
-                pred_parts = Path(pred_str).parts
-                if len(pred_parts) > 0 and pred_parts[0] != pkg:
-                    return True
-        return False
-
-    def _package_git_activity(self, files: list[str]) -> dict[str, Any]:
-        """Latest commit, 90-day commits, most common owner and age across *files*."""
-        pkg_last_commit: datetime | None = None
-        pkg_total_commits_90d = 0
-        pkg_owner: str | None = None
-        owner_counts: dict[str, int] = {}
-        for f in files:
-            # git_meta_map values are plain dicts (see pipeline/phases/analysis.py);
-            # use .get() not getattr() â€” getattr on a dict never finds arbitrary
-            # string keys and always returns the default, silently zeroing all
-            # git-activity metadata on zombie-package findings.
-            gm = self.git_meta_map.get(f)
-            if gm is None:
-                continue
-            f_last = gm.get("last_commit_at")
-            if f_last and (pkg_last_commit is None or f_last > pkg_last_commit):
-                pkg_last_commit = f_last
-            pkg_total_commits_90d += gm.get("commit_count_90d", 0) or 0
-            f_owner = gm.get("primary_owner_name")
-            if f_owner:
-                owner_counts[f_owner] = owner_counts.get(f_owner, 0) + 1
-        if owner_counts:
-            pkg_owner = max(owner_counts, key=lambda k: owner_counts[k])
-        pkg_age_days: int | None = None
-        if pkg_last_commit:
-            pkg_age_days = (datetime.now(UTC) - pkg_last_commit).days
-        return {
-            "last_commit_at": pkg_last_commit,
-            "commit_count_90d": pkg_total_commits_90d,
-            "primary_owner": pkg_owner,
-            "age_days": pkg_age_days,
-        }
 
     # ------------------------------------------------------------------
     # Helpers
