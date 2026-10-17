@@ -83,9 +83,9 @@ from .sweeps import (
     sweep_superseded_generated_pages,
 )
 from .tombstones import (
-    _log,
     _SPOTLIGHT_PATHS_PER_QUERY,
     _STALE_ID_CHUNK,
+    _log,
     mark_page_ids_stale,
     mark_stale_pages,
     mark_tombstone_pages,
