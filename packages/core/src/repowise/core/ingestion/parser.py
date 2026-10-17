@@ -296,8 +296,13 @@ def _compile_query(lang: str, grammar_tag: str | None = None) -> tuple[object | 
     # The spec names the query file, so a language can reuse another's
     # queries wholesale (svelte -> typescript.scm). Every other spec declares
     # ``<tag>.scm``, which is what the default preserves.
-    spec = _LANG_REGISTRY.get(lang)
-    scm_name = (spec.scm_file if spec and spec.scm_file else None) or f"{lang}.scm"
+    query_lang = (
+        "typescript"
+        if grammar_tag in ("typescript", "tsx") and lang == "javascript"
+        else lang
+    )
+    spec = _LANG_REGISTRY.get(query_lang)
+    scm_name = (spec.scm_file if spec and spec.scm_file else None) or f"{query_lang}.scm"
     scm_path = QUERIES_DIR / scm_name
     if not scm_path.exists():
         log.debug("No .scm query file found", language=lang, path=str(scm_path))
@@ -307,7 +312,7 @@ def _compile_query(lang: str, grammar_tag: str | None = None) -> tuple[object | 
     # Grammar-variant-specific additions (e.g. JSX node captures that are
     # only valid against the ``tsx`` grammar but not the plain ``typescript``
     # one). Appended to the base SCM only when the variant scm file exists.
-    if grammar_tag and grammar_tag != lang:
+    if grammar_tag and grammar_tag != query_lang:
         extra_scm = QUERIES_DIR / f"{grammar_tag}.scm"
         if extra_scm.exists():
             scm_text = scm_text + "\n" + extra_scm.read_text(encoding="utf-8")
@@ -1412,9 +1417,20 @@ def _parse_tree(
     # FEWER errors than the first parse.
     if (
         parse_errors
-        and lang in ("typescript", "vue")
         and grammar_tag != "tsx"
-        and (b"/>" in source or b"</" in source)
+        and (
+            (lang in ("typescript", "vue") and (b"/>" in source or b"</" in source))
+            or (
+                lang == "javascript"
+                and (
+                    b"/>" in source
+                    or b"</" in source
+                    or b"@flow" in source
+                    or b":" in source
+                    or b"<" in source
+                )
+            )
+        )
     ):
         tsx_language = _get_language("tsx")
         if tsx_language is not None:
@@ -1609,6 +1625,8 @@ class ASTParser:
 
         root, parse_errors, grammar_tag, language = _parse_tree(lang, language, grammar_tag, source)
         src = source.decode("utf-8", errors="replace")
+        if grammar_tag == "tsx" and lang == "javascript":
+            config = LANGUAGE_CONFIGS.get("typescript", config)
 
         query = self._get_query(lang, language, grammar_tag)
 
