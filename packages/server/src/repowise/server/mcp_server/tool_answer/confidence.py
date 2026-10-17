@@ -14,6 +14,7 @@ gate reads live beside it.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from repowise.server.mcp_server._answer_context import (
@@ -710,6 +711,198 @@ class _Grade(NamedTuple):
     named_body_cut: dict | None
 
 
+@dataclass
+class _GradeState:
+    """One :func:`_grade_answer` pass: its inputs, running grade and findings."""
+
+    question: str
+    question_ids: set[str]
+    answer_text: str
+    hits: list[dict]
+    citations: list[str]
+    symbol_bodies: list[dict]
+    served_named_body: bool
+    dominant: bool
+    earn_high: bool
+    uncovered: list[str] | None
+    confidence: str
+    hedged: bool = False
+    ungrounded_values: list[str] = field(default_factory=list)
+    frame_unsupported: list[str] = field(default_factory=list)
+    exclusivity_over_truncated: bool = False
+    withheld_implicated: list[str] = field(default_factory=list)
+    lookup_body_truncated: bool = False
+    named_body_cut: dict | None = None
+    gap: list[str] = field(default_factory=list)
+
+
+def _earned_high(
+    question: str,
+    answer_text: str,
+    hits: list[dict],
+    citations: list[str],
+    served_named_body: bool,
+    top_score: float,
+) -> tuple[bool, bool]:
+    """``(earned_body, earned_grounding)``: the two routes to "high" on a weak retrieval.
+
+    ``earned_body``: the question-named symbol's live body is inlined, resolved
+    by exact name rather than ranking. ``earned_grounding``: every mechanism term
+    the answer names was in the material shown; that shows no fabrication, not
+    that retrieval found the right page, so it is opt-in. Demotion gates still
+    apply to an earned high.
+    """
+    if not (_flag_on(_EARN_HIGH_GROUNDING_ENV) and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR):
+        return False, False
+    earned_grounding = False
+    if _opt_in(_EARN_HIGH_ON_WEAK_RETRIEVAL_ENV):
+        cited = set(citations)
+        cited_has_body = any(h.get("symbols") for h in hits if h.get("target_path") in cited)
+        unsupported, grounded = _frame_term_grounding(answer_text, question, hits)
+        earned_grounding = cited_has_body and grounded >= 1 and not unsupported
+    return served_named_body, earned_grounding
+
+
+def _hedge_gate(s: _GradeState) -> None:
+    """Dominance says the right file was indexed, not that the prose is usable.
+
+    With the question-named body served the ground truth is in hand, so the
+    demotion stops at "medium" rather than sending the agent to Read.
+    """
+    s.hedged = _answer_is_hedged(s.answer_text)
+    if s.hedged:
+        s.confidence = "medium" if s.served_named_body else "low"
+
+
+def _identifier_gate(s: _GradeState) -> None:
+    """The question names identifiers but no top hit hydrates any of them."""
+    if s.confidence != "high" or not s.question_ids:
+        return
+    top_n = [h for h in s.hits[:_ENRICH_TOP_N_HITS] if h.get("symbols")]
+    if not any(sym.get("_matched") for h in top_n for sym in (h.get("symbols") or [])):
+        s.confidence = "medium"
+
+
+def _value_gate(s: _GradeState) -> None:
+    """On a value question every asserted number must appear in the retrieved material.
+
+    A value derived from grounded operands softens one notch, but only on a
+    dominant high with another asserted number grounded; a lone invented value
+    goes "low".
+    """
+    if s.hedged or not _is_value_question(s.question):
+        return
+    s.ungrounded_values = _ungrounded_numbers(s.answer_text, s.hits)
+    if not s.ungrounded_values:
+        return
+    grounded_sibling = len(_asserted_numbers(s.answer_text)) > len(s.ungrounded_values)
+    if grounded_sibling and s.confidence == "high" and s.dominant:
+        s.confidence = "medium"
+    else:
+        s.confidence = "low"
+
+
+def _citation_gate(s: _GradeState) -> None:
+    """A high answer must cite a page that contributed hydrated symbols."""
+    if s.confidence != "high":
+        return
+    cited = set(s.citations)
+    if not any(h.get("symbols") for h in s.hits if h.get("target_path") in cited):
+        s.confidence = "medium"
+
+
+def _claim_gate(s: _GradeState) -> None:
+    """A why/how answer naming a code-like mechanism term retrieval never showed.
+
+    That is the tell of a conflated mechanism (right file, wrong function).
+    Lookups are out of scope: they legitimately echo the named symbol.
+    """
+    in_scope = _is_why_question(s.question) or (
+        _flag_on(_CLAIM_SUPPORT_GATE_ENV) and _is_mechanism_question(s.question)
+    )
+    if s.confidence != "high" or s.hedged or not in_scope:
+        return
+    unsupported, grounded = _frame_term_grounding(s.answer_text, s.question, s.hits)
+    if unsupported and len(unsupported) >= grounded:
+        s.frame_unsupported = unsupported
+        s.confidence = "medium"
+
+
+def _exclusivity_gate(s: _GradeState) -> None:
+    """"The only" / "entirely" asserted over a truncated body."""
+    if s.confidence != "high" or s.hedged:
+        return
+    s.exclusivity_over_truncated = _has_unqualified_exclusivity_over_truncated(
+        s.answer_text, s.symbol_bodies
+    )
+    if s.exclusivity_over_truncated:
+        s.confidence = "medium"
+
+
+def _withheld_gate(s: _GradeState) -> None:
+    """A withheld symbol the question names or the answer references as code."""
+    s.withheld_implicated = implicated_withheld_symbols(
+        s.question, s.answer_text, s.symbol_bodies
+    )
+    if s.confidence == "high" and s.withheld_implicated:
+        s.confidence = "medium"
+
+
+def _lookup_gate(s: _GradeState) -> None:
+    """A bare-name lookup whose own single-definition body we cut.
+
+    The question names the served symbol, so the withheld gate cannot fire.
+    The entry is kept so the note can quote the real range.
+    """
+    s.named_body_cut = next(
+        (b for b in s.symbol_bodies if _is_question_named_body_cut_by_us(b, s.question_ids)),
+        None,
+    )
+    s.lookup_body_truncated = (
+        s.confidence == "high"
+        and s.named_body_cut is not None
+        and is_symbol_lookup_question(s.question, s.question_ids)
+    )
+    if s.lookup_body_truncated:
+        s.confidence = "medium"
+
+
+def _coverage_gate(s: _GradeState) -> None:
+    """The top hit leaves out question words that outweigh what it covers.
+
+    Dominance says the top hit beat the others, not that it is about the
+    question; a served body does not exempt it.
+    """
+    if s.confidence != "high":
+        return
+    s.gap = uncovered_terms(s.question, s.hits) if s.uncovered is None else s.uncovered
+    if s.gap:
+        s.confidence = "medium"
+
+
+def _non_dominant_ceiling(s: _GradeState) -> None:
+    """With no dominant page the answer stays below "high" unless it earned high."""
+    if not s.dominant and not s.earn_high and s.confidence == "high":
+        s.confidence = "medium"
+
+
+#: The demotion gates, in order. Several fire only while the answer is still
+#: high, so one problem never pushes a response down two levels. Coverage runs
+#: late so a more specific gate writes the note.
+_GRADE_GATES = (
+    _hedge_gate,
+    _identifier_gate,
+    _value_gate,
+    _citation_gate,
+    _claim_gate,
+    _exclusivity_gate,
+    _withheld_gate,
+    _lookup_gate,
+    _coverage_gate,
+    _non_dominant_ceiling,
+)
+
+
 def _grade_answer(
     *,
     question: str,
@@ -733,157 +926,47 @@ def _grade_answer(
     ``uncovered`` is :func:`uncovered_terms`, when the caller already has it.
     """
     dominant = dominance is not None
-    _ratio = _top_two_score_ratio(hits)
-    _top_score = _confidence_score(hits[0]) if hits else 0.0
-    _second_score = _confidence_score(hits[1]) if len(hits) >= 2 else 0.0
-
-    # Two routes EARN "high" on a non-dominant (weak) retrieval, tracked apart:
-    # * `earned_body`: the question-named symbol's live body is inlined, resolved
-    #   by exact name rather than ranking, so the source is in the response.
-    # * `earned_grounding`: every mechanism term the answer names was in the
-    #   material shown. Shows no fabrication, not that retrieval found the right
-    #   page, so it is off by default (see the env flag's comment).
-    # The demotion gates below still pull an earned high back down.
-    earned_body = False
-    earned_grounding = False
-    if _flag_on(_EARN_HIGH_GROUNDING_ENV) and _top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
-        earned_body = served_named_body
-        if _opt_in(_EARN_HIGH_ON_WEAK_RETRIEVAL_ENV):
-            _cited = set(citations)
-            _cited_has_body = any(h.get("symbols") for h in hits if h.get("target_path") in _cited)
-            _fu, _fg = _frame_term_grounding(answer_text, question, hits)
-            earned_grounding = _cited_has_body and _fg >= 1 and not _fu
+    top_score = _confidence_score(hits[0]) if hits else 0.0
+    earned_body, earned_grounding = _earned_high(
+        question, answer_text, hits, citations, served_named_body, top_score
+    )
     earn_high = earned_body or earned_grounding
-
-    if (dominant or earn_high) and _top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
-        confidence = "high"
-    elif dominant:
-        # Dominant but weak: right file relative to its siblings, but not
-        # strong enough to trust the synthesis without verification.
-        confidence = "medium"
-    else:
-        confidence = "medium"
-
-    # Hedge gate: dominance says we indexed the right file, not that the
-    # synthesised text is usable.
-    hedged = _answer_is_hedged(answer_text)
-    if hedged:
-        # When the question-named symbol's body is served, the ground truth is
-        # in hand; "low" would send the agent to Read for nothing.
-        confidence = "medium" if served_named_body else "low"
-
-    # Identifier-citation gate: the question names identifiers but no top hit
-    # hydrates any of them, so retrieval may be on plausible-but-wrong files.
-    if confidence == "high" and question_ids:
-        top_n = [h for h in hits[:_ENRICH_TOP_N_HITS] if h.get("symbols")]
-        has_match = any(s.get("_matched") for h in top_n for s in (h.get("symbols") or []))
-        if not has_match:
-            confidence = "medium"
-
-    # Value gate: on value-shaped questions every asserted number must appear in
-    # the retrieved material. An invented number delivered as "high" is the
-    # worst calibration failure, because the consumer was told not to verify.
-    ungrounded_values: list[str] = []
-    if not hedged and _is_value_question(question):
-        ungrounded_values = _ungrounded_numbers(answer_text, hits)
-        if ungrounded_values:
-            # A value derived from grounded operands softens one notch, but only
-            # on a dominant high and only when another asserted number is
-            # grounded; a lone invented value is what this gate exists to catch.
-            grounded_sibling = len(_asserted_numbers(answer_text)) > len(ungrounded_values)
-            if grounded_sibling and confidence == "high" and dominant:
-                confidence = "medium"
-            else:
-                confidence = "low"
-
-    # Citation-source gate: a high answer must cite a page that contributed
-    # hydrated symbols; summary-only grounding lets plausible-wrong prose through.
-    if confidence == "high":
-        cited = set(citations)
-        if not any(h.get("symbols") for h in hits if h.get("target_path") in cited):
-            confidence = "medium"
-
-    # Claim-support gate: a synthesis can conflate mechanisms (right file, wrong
-    # function) and still clear dominance. The tell is a code-like term the
-    # answer names as the mechanism that retrieval never showed. Covers why and
-    # how questions; lookups legitimately echo the named symbol.
-    frame_unsupported: list[str] = []
-    _claim_scope = _is_why_question(question) or (
-        _flag_on(_CLAIM_SUPPORT_GATE_ENV) and _is_mechanism_question(question)
+    # Dominant but under the score floor is "medium": the right file relative to
+    # its siblings, not strong enough to trust unverified.
+    strong = top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR
+    start = "high" if (dominant or earn_high) and strong else "medium"
+    s = _GradeState(
+        question=question,
+        question_ids=question_ids,
+        answer_text=answer_text,
+        hits=hits,
+        citations=citations,
+        symbol_bodies=symbol_bodies,
+        served_named_body=served_named_body,
+        dominant=dominant,
+        earn_high=earn_high,
+        uncovered=uncovered,
+        confidence=start,
     )
-    if confidence == "high" and not hedged and _claim_scope:
-        frame_unsupported, _grounded_terms = _frame_term_grounding(answer_text, question, hits)
-        if frame_unsupported and len(frame_unsupported) >= _grounded_terms:
-            confidence = "medium"
-        else:
-            frame_unsupported = []
-
-    # Exclusivity gate: "the only" / "entirely" asserted over a truncated body.
-    exclusivity_over_truncated = False
-    if confidence == "high" and not hedged:
-        exclusivity_over_truncated = _has_unqualified_exclusivity_over_truncated(
-            answer_text, symbol_bodies
-        )
-        if exclusivity_over_truncated:
-            confidence = "medium"
-
-    # Withheld-dependency gate: a withheld symbol is named by the question or
-    # referenced as code by the answer. Unlike the exclusivity gate it needs no
-    # prose token; truncation alone is deliberately not enough.
-    withheld_implicated = implicated_withheld_symbols(question, answer_text, symbol_bodies)
-    if confidence == "high" and withheld_implicated:
-        confidence = "medium"
-
-    # Lookup gate: on a bare-name lookup the question names the SERVED symbol,
-    # so the withheld-dependency gate can never fire. A multi-def name caps on
-    # truncation in the union path; a single-def name never reaches it, so it
-    # is capped here. Narrow on purpose: a symbol-lookup question whose own
-    # symbol was cut. Kept as the entry so the note can quote the real range.
-    named_body_cut = next(
-        (b for b in symbol_bodies if _is_question_named_body_cut_by_us(b, question_ids)),
-        None,
-    )
-    lookup_body_truncated = (
-        confidence == "high"
-        and named_body_cut is not None
-        and is_symbol_lookup_question(question, question_ids)
-    )
-    if lookup_body_truncated:
-        confidence = "medium"
-
-    # Coverage gate, last so a more specific gate writes the note: dominance
-    # says the top hit beat the others, not that it is about the question. A
-    # served body does not exempt it: a question can name a symbol in passing.
-    gap: list[str] = []
-    if confidence == "high":
-        gap = uncovered_terms(question, hits) if uncovered is None else uncovered
-        if gap:
-            confidence = "medium"
-
-    # Non-dominant ceiling: with no single dominant page the answer must not
-    # read "high" (cite without verifying) unless it EARNED high. Keyed on
-    # `earn_high`, not `earned_body`, so the grounding opt-in really restores
-    # the old behaviour. Usually a no-op; explicit so the contract is visible.
-    if not dominant and not earn_high and confidence == "high":
-        confidence = "medium"
-
+    for gate in _GRADE_GATES:
+        gate(s)
     # The specific dominance tier, not "dominant": gap and agreement fire near a
     # 1.0 ratio, so quoting the ratio would print a near tie as justification.
     high_reason = None
-    if confidence == "high":
+    if s.confidence == "high":
         high_reason = dominance or ("symbol_body" if earned_body else "grounding")
     return _Grade(
-        confidence=confidence,
+        confidence=s.confidence,
         high_reason=high_reason,
-        second_score=_second_score,
-        hedged=hedged,
-        ratio=_ratio,
-        top_score=_top_score,
-        ungrounded_values=ungrounded_values,
-        uncovered=gap,
-        frame_unsupported=frame_unsupported,
-        exclusivity_over_truncated=exclusivity_over_truncated,
-        withheld_implicated=withheld_implicated,
-        lookup_body_truncated=lookup_body_truncated,
-        named_body_cut=named_body_cut,
+        second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,
+        hedged=s.hedged,
+        ratio=_top_two_score_ratio(hits),
+        top_score=top_score,
+        ungrounded_values=s.ungrounded_values,
+        uncovered=s.gap,
+        frame_unsupported=s.frame_unsupported,
+        exclusivity_over_truncated=s.exclusivity_over_truncated,
+        withheld_implicated=s.withheld_implicated,
+        lookup_body_truncated=s.lookup_body_truncated,
+        named_body_cut=s.named_body_cut,
     )
