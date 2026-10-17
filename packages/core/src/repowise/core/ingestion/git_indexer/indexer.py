@@ -15,6 +15,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +169,54 @@ def git_worker_count(
         logger.warning("invalid_git_workers", value=raw_override or override)
         override = None
     return min(resource_ceiling, override) if override is not None else resource_ceiling
+
+
+@dataclass(frozen=True)
+class _FilePassInputs:
+    """What every per-file worker of one pass reads."""
+
+    commit_index: dict[str, list[_CommitRec]]
+    fallback_files: set[str]
+    history_only: set[str]
+    include_blame: bool
+    as_of_ts: float | None
+    provenance_classifier: Any
+    note_agents: dict[str, Any]
+    trace_index: Any
+
+
+def _successful_rows(raw: list[Any], failure_message: str) -> list[dict]:
+    """Keep the rows of a per-file pass; log each exception it returned."""
+    rows: list[dict] = []
+    for r in raw:
+        if isinstance(r, Exception):
+            logger.warning(failure_message, error=str(r))
+        else:
+            rows.append(r)
+    return rows
+
+
+def _apply_co_change(rows: list[dict], walk: CoChangeWalk) -> None:
+    """Overlay co-change partners and change entropy from *walk* onto *rows*."""
+    for meta in rows:
+        fp = meta["file_path"]
+        if fp in walk.partners:
+            meta["co_change_partners_json"] = json.dumps(walk.partners[fp])
+        if fp in walk.entropy:
+            meta["change_entropy"] = walk.entropy[fp]
+        if fp in walk.partner_count:
+            meta["co_change_partner_count"] = walk.partner_count[fp]
+            meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
+
+
+def _apply_prior_defects(rows: list[dict], prior_defects: PriorDefects) -> None:
+    """Overlay prior-defect counts onto *rows*."""
+    for meta in rows:
+        fp = meta["file_path"]
+        if fp in prior_defects.counts:
+            meta["prior_defect_count"] = prior_defects.counts[fp]
+        if fp in prior_defects.raw_counts:
+            meta["prior_defect_raw_count"] = prior_defects.raw_counts[fp]
 
 
 class GitIndexer:
@@ -339,65 +388,19 @@ class GitIndexer:
 
             fallback_note_agents = load_git_ai_note_agents(repo, None)
 
-        include_blame = self.tier.includes_blame
         as_of_ts = self._resolve_as_of_ts(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
-        semaphore = asyncio.Semaphore(workers)
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
-
-        def _index_one_sync(file_path: str) -> dict:
-            """Use a per-thread Repo to avoid shared-handle issues on Windows.
-
-            The Repo is created once per worker thread and reused across files
-            — constructing a fresh ``gitpython.Repo`` per file costs ~40 ms
-            each (config + ref resolution), which dominated the git phase on
-            repos with thousands of files.
-            """
-            try:
-                thread_repo = get_thread_repo()
-                precomputed = (
-                    None if file_path in fallback_files else commit_index.get(file_path, [])
-                )
-                return index_file(
-                    thread_repo,
-                    file_path,
-                    repo_path=self.repo_path,
-                    forge=self.forge,
-                    commit_limit=self.commit_limit,
-                    follow_renames=self.follow_renames,
-                    include_blame=include_blame,
-                    precomputed_commits=precomputed,
-                    as_of_ts=as_of_ts,
-                    provenance_classifier=prov_clf,
-                    note_agents=fallback_note_agents,
-                    trace_index=trace_index,
-                    history_only=file_path in history_files,
-                )
-            except Exception:
-                return {"file_path": file_path}
-
-        async def index_one(file_path: str) -> dict:
-            async with semaphore:
-                try:
-                    result = await asyncio.wait_for(
-                        loop.run_in_executor(executor, _index_one_sync, file_path),
-                        timeout=_FILE_INDEX_TIMEOUT_SECS,
-                    )
-                except TimeoutError:
-                    logger.debug(
-                        "Git indexing timed out for file — using partial data",
-                        path=file_path,
-                        timeout=_FILE_INDEX_TIMEOUT_SECS,
-                    )
-                    result = {"file_path": file_path}
-                except Exception as exc:
-                    logger.debug("Git indexing failed for file", path=file_path, error=str(exc))
-                    result = {"file_path": file_path}
-                if on_file_done is not None:
-                    on_file_done()
-                return result
-
-        file_tasks = [index_one(fp) for fp in [*indexable_files, *sorted(history_files)]]
+        inputs = _FilePassInputs(
+            commit_index=commit_index,
+            fallback_files=fallback_files,
+            history_only=history_files,
+            include_blame=self.tier.includes_blame,
+            as_of_ts=as_of_ts,
+            provenance_classifier=prov_clf,
+            note_agents=fallback_note_agents,
+            trace_index=trace_index,
+        )
 
         async def _co_change_task() -> CoChangeWalk:
             # ESSENTIAL tier defers co-change entirely (the expensive repo-wide
@@ -426,7 +429,16 @@ class GitIndexer:
 
         async def _file_pass() -> list[Any]:
             with timed(timings, "git.files"):
-                return await asyncio.gather(*file_tasks, return_exceptions=True)
+                return await self._run_per_file_pool(
+                    [*indexable_files, *sorted(history_files)],
+                    inputs,
+                    executor=executor,
+                    get_thread_repo=get_thread_repo,
+                    workers=workers,
+                    failure_event="Git indexing failed for file",
+                    timeout_event="Git indexing timed out for file — using partial data",
+                    on_file_done=on_file_done,
+                )
 
         # The fix-commit walk and the whole-history totals read nothing the
         # per-file pass produces, so they run beside it instead of after it:
@@ -444,12 +456,7 @@ class GitIndexer:
                 executor.shutdown(wait=False, cancel_futures=True)
                 close_thread_repos()
 
-        results: list[dict] = []
-        for r in metadata_list:
-            if isinstance(r, Exception):
-                logger.warning("Failed to index file", error=str(r))
-            else:
-                results.append(r)
+        results = _successful_rows(metadata_list, "Failed to index file")
 
         # Per-file fix events ride the fix walk: the diffs are already parsed.
         # Failure-isolated, so the prior-defect counts stand on their own.
@@ -470,20 +477,10 @@ class GitIndexer:
         # share into metadata.
         # History-tier rows take none of these; they are code signals.
         code_results = [meta for meta in results if meta["file_path"] not in history_files]
+        _apply_co_change(code_results, walk)
+        _apply_prior_defects(code_results, prior_defects)
         for meta in code_results:
-            fp = meta["file_path"]
-            if fp in walk.partners:
-                meta["co_change_partners_json"] = json.dumps(walk.partners[fp])
-            if fp in walk.entropy:
-                meta["change_entropy"] = walk.entropy[fp]
-            if fp in walk.partner_count:
-                meta["co_change_partner_count"] = walk.partner_count[fp]
-                meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
-            if fp in prior_defects.counts:
-                meta["prior_defect_count"] = prior_defects.counts[fp]
-            if fp in prior_defects.raw_counts:
-                meta["prior_defect_raw_count"] = prior_defects.raw_counts[fp]
-            share = trace_line_shares.get(fp)
+            share = trace_line_shares.get(meta["file_path"])
             if share:
                 meta["agent_line_count"] = share[0]
                 meta["agent_line_model_json"] = json.dumps(share[1])
@@ -645,7 +642,6 @@ class GitIndexer:
             all_files = {fp for fp in all_files if not _should_skip_index(fp)}
 
         loop = asyncio.get_event_loop()
-        include_blame = self.tier.includes_blame
 
         # Whether to refresh idle files' decay fields this run. Requires the
         # repo-wide commit index (rename-tracking mode has none) and the
@@ -701,7 +697,6 @@ class GitIndexer:
             fallback_note_agents = load_git_ai_note_agents(repo, None)
         as_of_ts = self._resolve_as_of_ts(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
-        semaphore = asyncio.Semaphore(workers)
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
         executor_closed = False
 
@@ -717,49 +712,26 @@ class GitIndexer:
         if owner_task is not None:
             owner_task.add_done_callback(_cleanup_executor)
 
-        def _index_one_sync(file_path: str) -> dict:
-            try:
-                thread_repo = get_thread_repo()
-                precomputed = (
-                    None if file_path in fallback_files else commit_index.get(file_path, [])
-                )
-                return index_file(
-                    thread_repo,
-                    file_path,
-                    repo_path=self.repo_path,
-                    forge=self.forge,
-                    commit_limit=self.commit_limit,
-                    follow_renames=self.follow_renames,
-                    include_blame=include_blame,
-                    precomputed_commits=precomputed,
-                    as_of_ts=as_of_ts,
-                    provenance_classifier=prov_clf,
-                    note_agents=fallback_note_agents,
-                    trace_index=trace_index,
-                    history_only=file_path in history_changed,
-                )
-            except Exception:
-                return {"file_path": file_path}
-
-        async def index_one(file_path: str) -> dict:
-            async with semaphore:
-                try:
-                    return await asyncio.wait_for(
-                        loop.run_in_executor(executor, _index_one_sync, file_path),
-                        timeout=_FILE_INDEX_TIMEOUT_SECS,
-                    )
-                except (TimeoutError, Exception) as exc:
-                    logger.debug(
-                        "Git indexing failed for changed file",
-                        path=file_path,
-                        error=str(exc),
-                    )
-                    return {"file_path": file_path}
-
-        tasks = [index_one(fp) for fp in [*changed_file_paths, *sorted(history_changed)]]
+        inputs = _FilePassInputs(
+            commit_index=commit_index,
+            fallback_files=fallback_files,
+            history_only=history_changed,
+            include_blame=self.tier.includes_blame,
+            as_of_ts=as_of_ts,
+            provenance_classifier=prov_clf,
+            note_agents=fallback_note_agents,
+            trace_index=trace_index,
+        )
         try:
             with timed(timings, "rebuild.git.changed_files"):
-                results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+                results_raw = await self._run_per_file_pool(
+                    [*changed_file_paths, *sorted(history_changed)],
+                    inputs,
+                    executor=executor,
+                    get_thread_repo=get_thread_repo,
+                    workers=workers,
+                    failure_event="Git indexing failed for changed file",
+                )
         except BaseException:
             # Cancellation is a BaseException on supported Python versions.
             # Release the private pool immediately even when the caller catches
@@ -769,12 +741,7 @@ class GitIndexer:
                 repo.close()
             raise
 
-        results: list[dict] = []
-        for r in results_raw:
-            if isinstance(r, Exception):
-                logger.warning("Failed to index changed file", error=str(r))
-            else:
-                results.append(r)
+        results = _successful_rows(results_raw, "Failed to index changed file")
 
         # Idle files (window commits, but not in this change set) whose decay
         # fields we will refresh — computed here so the prior-defect pass below
@@ -805,12 +772,7 @@ class GitIndexer:
                     | set(idle_paths).difference(history_files),
                     as_of_ts=as_of_ts,
                 )
-            for meta in code_results:
-                fp = meta["file_path"]
-                if fp in prior_defects.counts:
-                    meta["prior_defect_count"] = prior_defects.counts[fp]
-                if fp in prior_defects.raw_counts:
-                    meta["prior_defect_raw_count"] = prior_defects.raw_counts[fp]
+            _apply_prior_defects(code_results, prior_defects)
         except Exception as exc:
             logger.debug("prior_defect_pass_failed", error=str(exc))
             prior_defects = PriorDefects()
@@ -835,15 +797,7 @@ class GitIndexer:
                         None,
                         as_of_ts,
                     )
-                for meta in code_results:
-                    fp = meta["file_path"]
-                    if fp in walk.partners:
-                        meta["co_change_partners_json"] = json.dumps(walk.partners[fp])
-                    if fp in walk.entropy:
-                        meta["change_entropy"] = walk.entropy[fp]
-                    if fp in walk.partner_count:
-                        meta["co_change_partner_count"] = walk.partner_count[fp]
-                        meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
+                _apply_co_change(code_results, walk)
                 if co_change_sink is not None:
                     co_change_sink.update(walk.partners)
 
@@ -882,6 +836,90 @@ class GitIndexer:
         _cleanup_executor()
         _release_repo(repo)
         return results
+
+    def _index_one_file(
+        self, get_thread_repo: Callable[[], Any], file_path: str, inputs: _FilePassInputs
+    ) -> dict:
+        """Index one file on a worker thread; any failure yields a bare row.
+
+        Uses a per-thread Repo to avoid shared-handle issues on Windows. The
+        Repo is created once per worker thread and reused across files —
+        constructing a fresh ``gitpython.Repo`` per file costs ~40 ms each
+        (config + ref resolution), which dominated the git phase on repos
+        with thousands of files.
+        """
+        try:
+            thread_repo = get_thread_repo()
+            precomputed = (
+                None
+                if file_path in inputs.fallback_files
+                else inputs.commit_index.get(file_path, [])
+            )
+            return index_file(
+                thread_repo,
+                file_path,
+                repo_path=self.repo_path,
+                forge=self.forge,
+                commit_limit=self.commit_limit,
+                follow_renames=self.follow_renames,
+                include_blame=inputs.include_blame,
+                precomputed_commits=precomputed,
+                as_of_ts=inputs.as_of_ts,
+                provenance_classifier=inputs.provenance_classifier,
+                note_agents=inputs.note_agents,
+                trace_index=inputs.trace_index,
+                history_only=file_path in inputs.history_only,
+            )
+        except Exception:
+            return {"file_path": file_path}
+
+    async def _run_per_file_pool(
+        self,
+        files: list[str],
+        inputs: _FilePassInputs,
+        *,
+        executor: Any,
+        get_thread_repo: Callable[[], Any],
+        workers: int,
+        failure_event: str,
+        timeout_event: str | None = None,
+        on_file_done: Callable[[], None] | None = None,
+    ) -> list[Any]:
+        """Index *files* on *executor*, at most *workers* at a time.
+
+        Returns one entry per file in input order (``gather`` with
+        ``return_exceptions``). A file that times out or fails yields a bare
+        ``{"file_path": ...}`` row; a timeout logs *timeout_event* when given,
+        else *failure_event*.
+        """
+        loop = asyncio.get_event_loop()
+        semaphore = asyncio.Semaphore(workers)
+
+        async def index_one(file_path: str) -> dict:
+            async with semaphore:
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(
+                            executor, self._index_one_file, get_thread_repo, file_path, inputs
+                        ),
+                        timeout=_FILE_INDEX_TIMEOUT_SECS,
+                    )
+                except TimeoutError as exc:
+                    if timeout_event is None:
+                        logger.debug(failure_event, path=file_path, error=str(exc))
+                    else:
+                        logger.debug(
+                            timeout_event, path=file_path, timeout=_FILE_INDEX_TIMEOUT_SECS
+                        )
+                    result = {"file_path": file_path}
+                except Exception as exc:
+                    logger.debug(failure_event, path=file_path, error=str(exc))
+                    result = {"file_path": file_path}
+                if on_file_done is not None:
+                    on_file_done()
+                return result
+
+        return await asyncio.gather(*[index_one(fp) for fp in files], return_exceptions=True)
 
     def _compute_idle_decay(
         self,
