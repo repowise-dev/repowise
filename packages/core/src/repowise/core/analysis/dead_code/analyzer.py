@@ -35,15 +35,12 @@ from .c_name_uses import (
 from .constants import (
     _DEAD_CODE_EXEMPT_LANGUAGES,
     _DEFAULT_DYNAMIC_PATTERNS,
-    _NAMESPACE_IMPORT_LANGUAGES,
     _NEVER_PACKAGE_DIRS,
     _PREPROCESSED_LANGUAGES,
     _PROJECT_FILE_SUFFIXES,
     _RUN_NOT_IMPORTED_LANGUAGES,
-    _is_fixture_path,
     never_flag_path,
 )
-from .contract_methods import is_contract_method
 from .csharp_reachability import (
     build_csharp_named_files,
     build_csharp_named_types,
@@ -76,7 +73,6 @@ from .file_reachability import (
     PackageFileMap,
     ReachabilityRescues,
     build_package_file_map,
-    is_file_reachable,
 )
 from .finding_helpers import (
     _LINES_UNKNOWN,
@@ -102,13 +98,13 @@ from .name_occurrences import (
     drop_internals_used_in_own_file,
     drop_reference_assembly_api,
 )
+from .passes.unreachable_files import UnreachableFilePass
 from .passes.unused_exports import UnusedExportPass
+from .passes.unused_internals import UnusedInternalPass
 from .published_api import BuildFacts, demote_published_api
 from .risk_factors import (
-    NO_GIT_SIGNAL_CONFIDENCE,
     RISK_CAP_CONFIDENCE,
     path_risk_factors,
-    risk_evidence,
 )
 from .source_prepasses import (  # noqa: F401  (moved scans re-exported)
     _BUNDLER_CONFIG_STEMS,
@@ -165,13 +161,6 @@ _UNINDEXED_SCAN_TOTAL_BYTES = 32 * 1024 * 1024
 logger = structlog.get_logger(__name__)
 
 
-
-#: ``(days, confidence)`` rungs for a file with no commit in 90 days, oldest
-#: first. ``_is_old`` uses strict >, so days-1 gives >= semantics: a year or
-#: more untouched is 1.0, very likely dead.
-_GIT_AGE_RUNGS: tuple[tuple[int, float], ...] = ((364, 1.0), (179, 0.9), (89, 0.8))
-
-
 class DeadCodeAnalyzer:
     """Detects unreachable files, unused exports, unused internals, and
     zombie packages using the dependency graph and git metadata.
@@ -226,7 +215,7 @@ class DeadCodeAnalyzer:
         ) | find_dynamic_edge_files(graph)
         # Parent directories of the above, precomputed once.
         #
-        # ``_make_unreachable_finding`` asks "does any dynamic-import file sit
+        # the unreachable-file pass asks "does any dynamic-import file sit
         # in the same package as this node". That used to be a scan over
         # ``_dynamic_import_files`` constructing a ``Path`` per candidate, run
         # once per unreachable candidate: O(candidates x dynamic_files) with a
@@ -453,6 +442,21 @@ class DeadCodeAnalyzer:
     # Detection methods
     # ------------------------------------------------------------------
 
+    def _detect_unreachable_files(
+        self,
+        whitelist: set[str],
+    ) -> list[DeadCodeFindingData]:
+        """Detect files nothing can reach that are not tests, fixtures, or config."""
+        return UnreachableFilePass(self).run(whitelist)
+
+    def _detect_unused_internals(
+        self,
+        dynamic_patterns: tuple[str, ...],
+        whitelist: set[str],
+    ) -> list[DeadCodeFindingData]:
+        """Detect private symbols with zero incoming call edges."""
+        return UnusedInternalPass(self).run(dynamic_patterns, whitelist)
+
     def _detect_unused_exports(
         self,
         dynamic_patterns: tuple[str, ...],
@@ -460,46 +464,6 @@ class DeadCodeAnalyzer:
     ) -> list[DeadCodeFindingData]:
         """Detect public symbols with no incoming edges."""
         return UnusedExportPass(self).run(dynamic_patterns, whitelist)
-
-    def _detect_unreachable_files(
-        self,
-        whitelist: set[str],
-    ) -> list[DeadCodeFindingData]:
-        """Detect files nothing can reach that are not tests, fixtures, or config."""
-        findings = []
-
-        # One object for the whole pass rather than one per node: the rescues
-        # do not vary by candidate.
-        rescues = self._reachability_rescues(whitelist)
-
-        for node in self.graph.nodes():
-            if _is_synthetic_node(str(node)):
-                continue
-
-            node_data = self.graph.nodes[node]
-            # The three skips left here are *scoping*, not reachability: a test
-            # file is perfectly reachable, it is just not something this pass
-            # reports. Everything that answers "can anything get to this file"
-            # â€” entry points, API contracts, never-flag globs, the whitelist,
-            # barrels, bundler-alias shims and the package-granular languages
-            # (Go / JVM / C-C++) â€” lives in the predicate, which the overview
-            # assembler calls with the same state so the two cannot disagree.
-            # See :mod:`file_reachability`.
-            if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
-                continue
-            if node_data.get("is_test", False):
-                continue
-            if _is_fixture_path(str(node)):
-                continue
-
-            if is_file_reachable(str(node), self.graph, rescues):
-                continue
-
-            finding = self._make_unreachable_finding(str(node), node_data)
-            if finding:
-                findings.append(finding)
-
-        return findings
 
     def _preprocessed_declaration_sites(self) -> DeclarationSites:
         """Where each C/C++ symbol name is declared: a prototype's whole span, a
@@ -604,108 +568,6 @@ class DeadCodeAnalyzer:
             )
         return findings
 
-    def _make_unreachable_finding(
-        self,
-        node: str,
-        node_data: dict,
-    ) -> DeadCodeFindingData | None:
-        """Create an unreachable file finding with confidence scoring."""
-        git_meta = self.git_meta_map.get(node)
-        # No row at all is not "no commits in 90 days": that rung is for a
-        # file git has data on. Scored below the deletion-ready threshold and
-        # said so in the evidence, on every path that builds this map.
-        no_git_signal = not git_meta
-        git_meta = git_meta or {}
-        commit_90d = git_meta.get("commit_count_90d", 0)
-        last_commit = git_meta.get("last_commit_at")
-        age_days = git_meta.get("age_days")
-        primary_owner = git_meta.get("primary_owner_name")
-
-        confidence = (
-            NO_GIT_SIGNAL_CONFIDENCE
-            if no_git_signal
-            else self._git_age_confidence(commit_90d, last_commit, age_days)
-        )
-
-        # The ladder above is an evidence scale, not a tier boundary: its rungs
-        # stay literal so moving a threshold does not silently re-score how
-        # strong the git signal is. Everything below compares against or caps
-        # to a threshold, so it reads the constants.
-
-        # Reduce confidence when dynamic imports exist in the same package.
-        if self._dynamic_import_dirs and str(Path(node).parent) in self._dynamic_import_dirs:
-            confidence = min(confidence, RISK_CAP_CONFIDENCE)
-
-        # Runtime-load risk factors (config / bootstrap / database /
-        # environment / script / asset). These are files the never-flag allowlist
-        # didn't catch but that are commonly referenced outside static
-        # imports, so "in_degree=0" is weak evidence. Cap confidence below the
-        # deletion-ready threshold and surface the factors as evidence â€” the
-        # finding still shows up as a review candidate.
-        risk_factors = path_risk_factors(node)
-        if risk_factors:
-            confidence = min(confidence, RISK_CAP_CONFIDENCE)
-
-        # A namespace-imported file is reached without an edge (a same-namespace
-        # ``new T()``), so no edge says little and its age says nothing more.
-        namespace_imported = node_data.get("language") in _NAMESPACE_IMPORT_LANGUAGES
-        if namespace_imported:
-            confidence = min(confidence, RISK_CAP_CONFIDENCE)
-
-        # A whole file is a review candidate, never deletion-ready: see
-        # ``REVIEW_ONLY_KINDS``. Confidence still ranks it.
-        safe = False
-
-        evidence = ["in_degree=0 (no files import this)"]
-        if no_git_signal:
-            evidence.append("No git history recorded for this file")
-        elif commit_90d == 0:
-            evidence.append("No commits in last 90 days")
-        if self._dynamic_import_files and confidence <= RISK_CAP_CONFIDENCE:
-            evidence.append("Package uses dynamic imports or runtime-resolved edges")
-        risk_line = risk_evidence(risk_factors)
-        if risk_line:
-            evidence.append(risk_line)
-        if namespace_imported:
-            evidence.append(
-                "Imported by namespace, not by file, so having no importer is weak evidence"
-            )
-        lines = self._file_line_count(node)
-        if lines is None:
-            evidence.append(_LINES_UNKNOWN)
-
-        return DeadCodeFindingData(
-            kind=DeadCodeKind.UNREACHABLE_FILE,
-            file_path=node,
-            symbol_name=None,
-            symbol_kind=None,
-            confidence=confidence,
-            reason="File has no importers (in_degree=0)",
-            last_commit_at=last_commit if isinstance(last_commit, datetime) else None,
-            commit_count_90d=commit_90d,
-            lines=lines,
-            evidence=evidence,
-            safe_to_delete=safe,
-            primary_owner=primary_owner,
-            age_days=age_days,
-            risk_factors=list(risk_factors),
-        )
-
-    def _git_age_confidence(
-        self, commit_90d: int, last_commit: Any, age_days: int | None
-    ) -> float:
-        """The git-age evidence ladder for a file no edge reaches."""
-        if commit_90d != 0:
-            return 0.4
-        if last_commit:
-            for days, confidence in _GIT_AGE_RUNGS:
-                if self._is_old(last_commit, days=days):
-                    return confidence
-        if age_days is not None and age_days < 30:
-            return 0.55  # Recently created â€” may be WIP
-        return 0.7
-
-
     def _defined_symbols(self, node: Any) -> list[tuple[str, dict]]:
         """``(symbol_id, data)`` for each symbol *node* defines."""
         return [
@@ -729,7 +591,6 @@ class DeadCodeAnalyzer:
             if f.kind is DeadCodeKind.UNREACHABLE_FILE and self.graph.has_node(f.file_path)
         }
 
-
     def _imported_names_by_edge(
         self, node: Any, edge_types: tuple[str, ...] | None = ("imports",)
     ) -> Iterator[list[str]]:
@@ -739,7 +600,6 @@ class DeadCodeAnalyzer:
             if edge_types is not None and edge.get("edge_type") not in edge_types:
                 continue
             yield edge.get("imported_names", [])
-
 
     def _git_fields(self, file_path: str) -> dict[str, Any]:
         """The git-activity fields a symbol finding carries for *file_path*."""
@@ -813,77 +673,6 @@ class DeadCodeAnalyzer:
             logger.warning("read_file_text_failed", path=file_path, error=str(exc))
         return None
 
-    def _detect_unused_internals(
-        self,
-        dynamic_patterns: tuple[str, ...],
-        whitelist: set[str],
-    ) -> list[DeadCodeFindingData]:
-        """Detect private symbols with zero incoming call edges.
-
-        On by default. These carry a higher false-positive rate than the other
-        detectors, which is why they land at a lower confidence. Disable with
-        ``detect_unused_internals=False`` in the config dict.
-        """
-        findings: list[DeadCodeFindingData] = []
-
-        for node, node_data in self.graph.nodes(data=True):
-            if not self._is_internal_candidate(node_data, dynamic_patterns, whitelist):
-                continue
-            file_path = node_data.get("file_path", "")
-            sym_name = node_data.get("name", "")
-
-            # Any inbound use, not only a call. A base class that is subclassed
-            # rather than instantiated, a collaborator the container constructs,
-            # and a handler named as a value rather than invoked each carry a
-            # symbol-level edge of their own; reading only ``calls`` here
-            # reported all three as unused. The set is shared with the
-            # unused-export pass, so it also carries types this population can
-            # never hold â€” a method or an interface is filtered out above.
-            # ``new X(..)`` lands on X's constructor (``path::X::X``) when X
-            # declares one, and constructing a type uses it.
-            if self._has_inbound_use(node) or self._has_inbound_use(
-                f"{file_path}::{sym_name}::{sym_name}"
-            ):
-                continue
-
-            # Dispatch-table pattern: a private helper imported by name
-            # into a sibling module and stored in a lookup dict
-            # (``HANDLERS = {"python": _extract_python_heritage, ...}``).
-            # The function is reached at runtime via dict lookup, so no
-            # direct ``calls`` edge ever lands in the graph â€” but the
-            # ``imports`` edge into its file carries the symbol name. If
-            # any cross-file importer pulled this symbol by name,
-            # something is actively referencing it; do not flag.
-            if any(
-                sym_name in imported or "*" in imported
-                for imported in self._imported_names_by_edge(file_path)
-            ):
-                continue
-
-            # Private symbols keep the standard 0.65 base confidence even if deprecated.
-            # A private symbol has no external consumer by construction â€”
-            # deprecated + uncalled is the strongest possible delete signal and
-            # must not be buried below the default min_confidence floor.
-            # (0.3 is reserved for unused *exports*, where an invisible consumer
-            # outside the repo may still import it.)
-            findings.append(
-                DeadCodeFindingData(
-                    kind=DeadCodeKind.UNUSED_INTERNAL,
-                    file_path=file_path,
-                    symbol_name=sym_name,
-                    symbol_kind=node_data.get("kind"),
-                    confidence=0.65,
-                    reason=f"Private symbol '{sym_name}' is not used anywhere",
-                    evidence=[f"No call, reference or override reaches '{sym_name}'"],
-                    safe_to_delete=False,
-                    risk_factors=list(path_risk_factors(file_path)),
-                    **_symbol_span(node_data),
-                    **self._git_fields(file_path),
-                )
-            )
-
-        return findings
-
     def _overload_unit(self, node: str) -> list[str]:
         """The members of the overload set *node* belongs to or names, else ``[]``.
 
@@ -948,78 +737,6 @@ class DeadCodeAnalyzer:
         return (
             node_span["start_line"] <= pred_span["start_line"]
             and pred_span["end_line"] <= node_span["end_line"]
-        )
-
-    def _is_internal_candidate(
-        self, node_data: dict, dynamic_patterns: tuple[str, ...], whitelist: set[str]
-    ) -> bool:
-        """Whether a graph node is a private symbol the unused-internal pass may judge."""
-        if node_data.get("node_type") != "symbol":
-            return False
-        # Rust: rustc's own `dead_code` lint already reports unused
-        # private items, with the macro expansion and type information a
-        # static graph cannot match. Nothing here it would not find first.
-        if node_data.get("language") == "rust":
-            return False
-        # Go's call resolver now resolves same-package (sibling-file) and
-        # package-qualified calls (see call_resolver._resolve_go_*), so
-        # private symbols used across a package's files carry real
-        # ``calls`` edges and no longer read as universally uncalled. The
-        # blanket exemption that Phase 2 added has been lifted.
-        # ``internal`` is not narrow: assembly-wide in C#, module-wide in
-        # Swift and Kotlin, crate-wide in Rust. A legitimate user can sit
-        # anywhere in the module, so a missing inbound call edge is not
-        # evidence of deadness. Nothing else observes ``internal`` either,
-        # which drops an unmodified C# top-level type out of both passes.
-        if node_data.get("visibility") != "private":
-            return False
-        file_path = node_data.get("file_path", "")
-        if not file_path:
-            return False
-        file_data = self.graph.nodes.get(file_path, {})
-        if file_data.get("is_test", False):
-            return False
-        if _is_fixture_path(file_path):
-            return False
-        if self._should_never_flag(file_path, whitelist):
-            return False
-        return self._is_judgeable_internal(node_data, dynamic_patterns)
-
-    def _is_judgeable_internal(self, node_data: dict, dynamic_patterns: tuple[str, ...]) -> bool:
-        """Whether a missing call edge says anything about this private symbol."""
-        sym_name = node_data.get("name", "")
-        if sym_name.startswith("__") and sym_name.endswith("__"):
-            return False
-        if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
-            return False
-        # Namespace-path fragments (e.g. ``eShop.ClientApp``) and
-        # non-callable kinds bypass the call-edge pass by design.
-        if "." in sym_name:
-            return False
-        if node_data.get("kind") in _non_importable_kinds(node_data.get("language", "unknown")):
-            return False
-        # Non-callable type kinds can't have CALL edges; the call-graph
-        # check this pass performs is meaningless for them (see
-        # _UNCALLABLE_TYPE_KINDS). They remain covered by unused_export.
-        if node_data.get("kind") in _UNCALLABLE_TYPE_KINDS:
-            return False
-        if is_contract_method(
-            sym_name,
-            node_data.get("kind"),
-            node_data.get("language", "unknown"),
-            modifiers=node_data.get("modifiers"),
-        ):
-            return False
-        if self._name_matches_dynamic(sym_name, dynamic_patterns):
-            return False
-
-        # Framework-decorator skip â€” same shape as unused-export. A
-        # private ``@PostConstruct``/``@EventListener``/``@Scheduled``
-        # method is invoked by the container, not by a source call.
-        decorators = node_data.get("decorators") or []
-        meta = self._framework_meta_annotations(node_data.get("file_path", ""))
-        return not (
-            _is_framework_registered(decorators, meta) or _declared_deliberately_unused(decorators)
         )
 
     def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
@@ -1234,17 +951,5 @@ class DeadCodeAnalyzer:
         # __init__.py is a re-export barrel
         return Path(path).name == "__init__.py"
 
-
     def _name_matches_dynamic(self, name: str, patterns: tuple[str, ...]) -> bool:
         return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
-
-    def _is_old(self, dt: Any, days: int = 180) -> bool:
-        """Return True if datetime is older than `days` ago."""
-        if dt is None:
-            return False
-        now = datetime.now(UTC)
-        if isinstance(dt, datetime):
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=UTC)
-            return (now - dt).days > days
-        return False
