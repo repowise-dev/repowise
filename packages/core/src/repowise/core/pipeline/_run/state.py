@@ -69,6 +69,12 @@ class PipelineRun:
     tech_stack_dicts: list[dict] = field(default_factory=list)
     knowledge_graph_result: Any = None
 
+    # Generation phase outputs; see ``PipelineResult`` for the two page-id sets.
+    generated_pages: list[Any] | None = None
+    authoritative_page_types: set[str] = field(default_factory=set)
+    preserved_page_ids: set[str] = field(default_factory=set)
+    execution_flow_report: Any = None
+
 
 def hooked_progress(progress: Any) -> HookProgressCallback:
     """Wrap *progress* so registered pipeline hooks fire around each phase.
