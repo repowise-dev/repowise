@@ -29,6 +29,8 @@ import shlex
 import time
 from pathlib import Path
 
+from repowise.core.fsutils import repo_relative
+
 from ._shared import _find_repo_root, hook_flag_enabled
 from .fast_lookup import _DB_ENV_VARS
 
@@ -223,7 +225,7 @@ def _notice(tool_input: dict, cwd: str) -> str | None:
     # A mapped ``coverage.paths`` entry keeps its prefix as ``PATH=PREFIX``.
     spawn_coverage_add(repo, [f"{p}={pre}" if pre else p for p, _mtime, pre in reports])
     _write_queued(repo, newest)
-    names = ", ".join(_rel(repo, p) for p, _mtime, _prefix in reports)
+    names = ", ".join(repo_relative(p, repo) or p.as_posix() for p, _mtime, _prefix in reports)
     return (
         f"[repowise] Re-ingesting coverage from {names} in the background "
         f"(log: .repowise/{LOG_FILENAME}); get_change_risk reads it once the ingest finishes."
@@ -348,13 +350,6 @@ def _expand(repo: Path, rel: str) -> list[Path]:
     from repowise.core.analysis.health.coverage.discovery import expand_report_patterns
 
     return expand_report_patterns([rel], repo)
-
-
-def _rel(repo: Path, path: Path) -> str:
-    try:
-        return path.relative_to(repo).as_posix()
-    except ValueError:
-        return path.as_posix()
 
 
 def last_ingest_time(db: Path) -> float | None:

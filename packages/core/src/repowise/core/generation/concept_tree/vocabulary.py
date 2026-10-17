@@ -31,6 +31,7 @@ from typing import Any
 
 from repowise.core import fs_walk
 from repowise.core.exclusion import build_exclude_spec, is_excluded
+from repowise.core.fsutils import repo_relative
 from repowise.core.ingestion.traverser import is_output_dir
 
 from .grouping import ConceptGroup
@@ -296,10 +297,7 @@ class HouseTerm:
 
 def _rel(path: Path, repo_root: Path) -> str:
     """Repo-relative posix path, or the bare name when it is not under root."""
-    try:
-        return path.relative_to(repo_root).as_posix()
-    except ValueError:  # pragma: no cover — path came from repo_root
-        return path.name
+    return repo_relative(path, repo_root) or path.name
 
 
 def _exclude_spec(repo_root: Path) -> Any:
