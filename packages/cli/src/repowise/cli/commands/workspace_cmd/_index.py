@@ -136,79 +136,34 @@ def _run_index_for_repo(
     base commit), saves provider/model into ``config.yaml`` when docs ran,
     and re-runs cross-repo hooks so contracts/co-changes are fresh.
     """
-    from datetime import datetime
-
-    from repowise.cli.helpers import (
-        ensure_repowise_dir,
-        get_head_commit,
-        resolve_provider,
-        save_config,
-        save_state,
-    )
-    from repowise.core.workspace.update import run_cross_repo_hooks
+    from repowise.cli.helpers import ensure_repowise_dir, save_config
 
     console.print(f"  Indexing [cyan]{alias}[/cyan]…")
 
     # Reuse the primary repo's provider/embedder/exclude settings when the
     # caller hasn't overridden them.
-    primary = ws_config.get_primary()
-    primary_cfg: dict = {}
-    if primary is not None:
-        from repowise.cli.helpers import load_config as _load_cfg
-        from repowise.cli.ui import load_dotenv
-
-        primary_path = (ws_root / primary.path).resolve()
-        primary_cfg = _load_cfg(primary_path)
-        # The provider settings are inherited from the primary repo, so the
-        # credential that goes with them lives in the primary's ``.env`` —
-        # the new repo has none yet. Same call `init`'s workspace flow makes.
-        load_dotenv(primary_path)
-
-    effective_provider = provider_name or primary_cfg.get("provider")
-    effective_model = model or primary_cfg.get("model")
+    primary_cfg = _load_primary_config(ws_root, ws_config)
     embedder_name = primary_cfg.get("embedder", "mock")
     exclude_patterns = list(primary_cfg.get("exclude_patterns") or [])
     commit_limit = primary_cfg.get("commit_limit")
 
-    # Resolve the provider once. If docs were requested but provider
-    # resolution fails, fall back to index-only with a loud notice instead
-    # of silently producing an empty wiki.
+    # ``provider`` is None exactly when docs will not run, so it doubles as
+    # the docs-on flag from here on.
     provider = None
     if generate_docs:
-        try:
-            provider = resolve_provider(
-                effective_provider,
-                effective_model,
-                repo_path=repo_path,
-            )
-            console.print(
-                f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
-                f"Model: [cyan]{provider.model_name}[/cyan]"
-            )
-        except Exception as exc:
-            console.print(f"  [yellow]Provider unavailable ({exc}); skipping docs.[/yellow]")
-            generate_docs = False
-            docs_skip_reason = f"provider failure: {exc}"
+        provider, failure = _resolve_docs_provider(
+            repo_path,
+            provider_name or primary_cfg.get("provider"),
+            model or primary_cfg.get("model"),
+        )
+        if failure is not None:
+            docs_skip_reason = failure
 
     ensure_repowise_dir(repo_path)
     _inherit_distill_verdict(repo_path, primary_cfg)
 
-    async def _do_index() -> tuple[int, int, int]:
-        # Shared full-index step (run pipeline, persist, export the curated KG
-        # artifact so doc generation can load curated module grouping) — the
-        # same helper the workspace updater's first-time indexing uses.
-        from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
-        from repowise.core.pipeline.full_index import index_repo_full
-
-        result = await index_repo_full(
-            repo_path,
-            commit_depth=int(commit_limit) if commit_limit else _DEFAULT_COMMIT_LIMIT,
-            exclude_patterns=exclude_patterns,
-        )
-        return result.file_count, result.symbol_count, 0
-
     try:
-        file_count, symbol_count, _ = run_async(_do_index())
+        file_count, symbol_count = _index_added_repo(repo_path, commit_limit, exclude_patterns)
         console.print(f"  [green]✓[/green] {file_count} files, {symbol_count:,} symbols")
     except Exception as exc:
         warn(f"Indexing failed for '{alias}': {exc}")
@@ -218,7 +173,7 @@ def _run_index_for_repo(
     # so we get cost gating, cascading, and full parity with `repowise init`.
     generated_pages = 0
     resolved_reasoning = resolve_reasoning(config=primary_cfg)
-    if generate_docs and provider is not None:
+    if provider is not None:
         try:
             generated_pages = _generate_docs_for_added_repo(
                 repo_path=repo_path,
@@ -233,31 +188,11 @@ def _run_index_for_repo(
             console.print(f"  [yellow]Doc generation failed: {exc}[/yellow]")
             docs_skip_reason = f"generation error: {exc}"
 
-    # Persist state.json so `repowise update` has a baseline commit.
-    from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
-
-    head = get_head_commit(repo_path)
-    state: dict = {
-        "last_sync_commit": head,
-        "total_pages": generated_pages,
-        # No template fallback on this path: without a provider the added repo
-        # is indexed with no pages at all.
-        **docs_mode_state_fields("llm" if generate_docs and provider is not None else "none"),
-        # The full index just walked git under the current history rules.
-        GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION,
-    }
-    if generate_docs and provider is not None:
-        state["provider"] = provider.provider_name
-        state["model"] = provider.model_name
-    # `workspace add` freshly full-indexes the repo, so this from-scratch state
-    # is a current-format store, not one predating the concept tree. Stamp the
-    # terminal version rather than clamping to v1 and nagging a repo this run
-    # just built to re-index itself.
-    save_state(repo_path, state, full_index=True)
+    head, state = _save_added_repo_state(repo_path, provider, generated_pages)
 
     # Persist provider settings into the added repo's config.yaml so future
     # `repowise update` runs don't have to re-prompt.
-    if generate_docs and provider is not None:
+    if provider is not None:
         save_config(
             repo_path,
             provider.provider_name,
@@ -269,7 +204,126 @@ def _run_index_for_repo(
             save_key=save_key,
         )
 
-    # Update workspace config entry
+    _record_in_workspace(ws_root, ws_config, alias, head)
+
+    # Honest completion notice — exact remediation command for the
+    # docs-skipped case.
+    if resolve_docs_mode(state) == "none":
+        reason = docs_skip_reason or "docs disabled"
+        console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
+        console.print(
+            f"  Run [bold]repowise update --repo {alias} --docs[/bold] to generate documentation."
+        )
+
+
+def _load_primary_config(
+    ws_root: Path,
+    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
+) -> dict:
+    """The primary repo's ``config.yaml``, with its ``.env`` loaded, or ``{}``."""
+    primary = ws_config.get_primary()
+    if primary is None:
+        return {}
+    from repowise.cli.helpers import load_config as _load_cfg
+    from repowise.cli.ui import load_dotenv
+
+    primary_path = (ws_root / primary.path).resolve()
+    primary_cfg = _load_cfg(primary_path)
+    # The provider settings are inherited from the primary repo, so the
+    # credential that goes with them lives in the primary's ``.env`` —
+    # the new repo has none yet. Same call `init`'s workspace flow makes.
+    load_dotenv(primary_path)
+    return primary_cfg
+
+
+def _resolve_docs_provider(
+    repo_path: Path, provider_name: str | None, model: str | None
+) -> tuple[object | None, str | None]:
+    """Resolve the docs provider once, as ``(provider, failure_reason)``.
+
+    If docs were requested but provider resolution fails, fall back to
+    index-only with a loud notice instead of silently producing an empty wiki.
+    """
+    from repowise.cli.helpers import resolve_provider
+
+    try:
+        provider = resolve_provider(provider_name, model, repo_path=repo_path)
+    except Exception as exc:
+        console.print(f"  [yellow]Provider unavailable ({exc}); skipping docs.[/yellow]")
+        return None, f"provider failure: {exc}"
+    console.print(
+        f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
+        f"Model: [cyan]{provider.model_name}[/cyan]"
+    )
+    return provider, None
+
+
+def _index_added_repo(
+    repo_path: Path, commit_limit: object, exclude_patterns: list[str]
+) -> tuple[int, int]:
+    """Full-index the repo, returning ``(file_count, symbol_count)``.
+
+    Shared full-index step (run pipeline, persist, export the curated KG
+    artifact so doc generation can load curated module grouping) — the same
+    helper the workspace updater's first-time indexing uses.
+    """
+
+    async def _do_index() -> tuple[int, int]:
+        from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+        from repowise.core.pipeline.full_index import index_repo_full
+
+        result = await index_repo_full(
+            repo_path,
+            commit_depth=int(commit_limit) if commit_limit else _DEFAULT_COMMIT_LIMIT,
+            exclude_patterns=exclude_patterns,
+        )
+        return result.file_count, result.symbol_count
+
+    return run_async(_do_index())
+
+
+def _save_added_repo_state(
+    repo_path: Path, provider: object | None, generated_pages: int
+) -> tuple[str | None, dict]:
+    """Write ``state.json`` so `repowise update` has a baseline commit.
+
+    Returns ``(head, state)``.
+    """
+    from repowise.cli.helpers import get_head_commit, save_state
+    from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+
+    head = get_head_commit(repo_path)
+    state: dict = {
+        "last_sync_commit": head,
+        "total_pages": generated_pages,
+        # No template fallback on this path: without a provider the added repo
+        # is indexed with no pages at all.
+        **docs_mode_state_fields("llm" if provider is not None else "none"),
+        # The full index just walked git under the current history rules.
+        GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION,
+    }
+    if provider is not None:
+        state["provider"] = provider.provider_name
+        state["model"] = provider.model_name
+    # `workspace add` freshly full-indexes the repo, so this from-scratch state
+    # is a current-format store, not one predating the concept tree. Stamp the
+    # terminal version rather than clamping to v1 and nagging a repo this run
+    # just built to re-index itself.
+    save_state(repo_path, state, full_index=True)
+    return head, state
+
+
+def _record_in_workspace(
+    ws_root: Path,
+    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
+    alias: str,
+    head: str | None,
+) -> None:
+    """Stamp the workspace entry and refresh cross-repo hooks (best effort)."""
+    from datetime import datetime
+
+    from repowise.core.workspace.update import run_cross_repo_hooks
+
     entry = ws_config.get_repo(alias)
     if entry is not None:
         entry.indexed_at = datetime.now(UTC).isoformat()
@@ -281,15 +335,6 @@ def _run_index_for_repo(
         run_async(run_cross_repo_hooks(ws_config, ws_root, [alias]))
     except Exception as exc:
         console.print(f"[yellow]Cross-repo hook update skipped: {exc}[/yellow]")
-
-    # Honest completion notice — exact remediation command for the
-    # docs-skipped case.
-    if resolve_docs_mode(state) == "none":
-        reason = docs_skip_reason or "docs disabled"
-        console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
-        console.print(
-            f"  Run [bold]repowise update --repo {alias} --docs[/bold] to generate documentation."
-        )
 
 
 def _generate_docs_for_added_repo(
