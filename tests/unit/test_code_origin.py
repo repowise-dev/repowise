@@ -37,6 +37,90 @@ _OWN_HEADER = (
 )
 
 
+@pytest.mark.parametrize(("name", "header"), [
+    ("exprtk.hpp", "/* C++ Mathematical Expression Toolkit Library */"),
+    ("json.hpp", "// JSON for Modern C++\n// SPDX-License-Identifier: MIT\n"),
+    ("json.hpp", "// https://github.com/nlohmann/json\n"),
+    ("json.hpp", "/*\nJSON for Modern C++\n*/\n"),
+    ("json.hpp", "\ufeff// JSON for Modern C++\n"),
+    ("stb_image.h", "/* stb_image - public domain image loader */"),
+    ("stb_sprintf.h", "/* stb_sprintf by Sean Barrett */"),
+    ("doctest.h", "// doctest.h - C++ testing framework\n"),
+    ("catch.hpp", "// Catch v2.13.10\n"),
+    ("catch_amalgamated.hpp", "// Copyright Catch2 Authors\n// Catch v3.16.1\n"),
+    ("httplib.h", "// cpp-httplib\n"),
+    ("httplib.h", "// Copyright (c) Yuji Hirose\n#ifndef CPPHTTPLIB_HTTPLIB_H\n"),
+    ("CLI11.hpp", "// CLI11: Version 2.5.0\n"),
+])
+@pytest.mark.parametrize("as_bytes", [False, True])
+def test_single_header_libraries_outside_vendor_directories(name, header, as_bytes):
+    text = header.encode() if as_bytes else header
+    assert code_origin(f"src/common/{name}", text, project="PowerToys") == "vendored"
+
+
+@pytest.mark.parametrize(("path", "header"), [
+    ("src/common/CalculatorEngineCommon/exprtk.hpp", "/* C++ Mathematical Expression Toolkit */"),
+    ("backend/include/nlohmann/json.hpp", "// JSON for Modern C++\n"),
+])
+def test_single_header_library_at_the_reported_project_paths(path, header):
+    assert code_origin(path, header, project="PowerToys") == "vendored"
+
+
+@pytest.mark.parametrize("name", [
+    "exprtk.hpp", "json.hpp", "stb_image.h", "doctest.h", "catch.hpp",
+    "catch_amalgamated.hpp", "httplib.h", "CLI11.hpp", "CalculatorEngine.h",
+])
+def test_single_header_names_with_first_party_license_stay_production(name):
+    header = "// Copyright (c) Microsoft Corporation.\n// Licensed under the MIT license.\n"
+    assert code_origin(f"src/common/{name}", header, project="PowerToys") == "production"
+
+
+@pytest.mark.parametrize(("path", "header"), [
+    ("src/calc.hpp", "/* C++ Mathematical Expression Toolkit Library */"),
+    ("src/json_wrapper.hpp", "// JSON for Modern C++\n"),
+    ("src/json.py", "# JSON for Modern C++\n"),
+    ("src/stb_mine.h", "/* My own public domain image loader */"),
+    ("src/stb_mine.h", "/* stb_mine implements an image loader */"),
+])
+def test_single_header_library_signature_requires_a_matching_name(path, header):
+    assert code_origin(path, header) == "production"
+
+
+@pytest.mark.parametrize(("name", "code"), [
+    ("doctest.h", 'const char *name = "doctest";'),
+    ("doctest.h", 'const char *name = "// doctest";'),
+    ("json.hpp", 'const char *name = "JSON for Modern C++";'),
+    ("json.hpp", 'const char *name = R"(\n// JSON for Modern C++\n)";'),
+    ("doctest.h", "*doctest = 1;"),
+    ("doctest.h", "int own = 0;\n// doctest is supported by our adapter"),
+    ("CLI11.hpp", "int CLI11_options = 0;"),
+    ("catch.hpp", "#define catch_exception 1"),
+    ("doctest.h", "int doctest = 1;\n--doctest;"),
+    ("stb_image.h", "// My own public domain library\n#define stb_image_enabled 1"),
+    ("httplib.h", 'const char *author = "Yuji Hirose";\n#ifndef CPPHTTPLIB_HTTPLIB_H'),
+    ("httplib.h", '// Copyright (c) Yuji Hirose\nconst char *guard = "CPPHTTPLIB_HTTPLIB_H";'),
+])
+def test_single_header_library_markers_in_code_are_not_producer_banners(name, code):
+    assert code_origin(f"src/{name}", code, project="Acme") == "production"
+
+
+@pytest.mark.parametrize(("name", "header", "project"), [
+    ("exprtk.hpp", "/* C++ Mathematical Expression Toolkit Library - exprtk */", "exprtk"),
+    ("json.hpp", "// JSON for Modern C++\n", "json"),
+    ("CLI11.hpp", "// CLI11: Version 2.5.0\n", "CLI11"),
+])
+def test_single_header_library_is_not_vendored_in_its_own_project(name, header, project):
+    assert code_origin(f"include/{name}", header, project=project) == "production"
+
+
+def test_single_header_library_keeps_generated_precedence_and_bounded_header_read():
+    banner = "// DO NOT EDIT\n// JSON for Modern C++\n"
+    assert code_origin("src/json.hpp", banner) == "generated"
+    assert code_origin("src/json.hpp", "// padding\n" * 400 + "// JSON for Modern C++") == "production"
+    assert code_origin("src/json.hpp") == "production"
+    assert code_origin("vendor/json.hpp", "// JSON for Modern C++", project="json") == "vendored"
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
