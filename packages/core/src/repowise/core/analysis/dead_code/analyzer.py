@@ -5,8 +5,8 @@ All analysis is graph traversal + SQL. No LLM calls. Must complete in
 
 The four detection passes (unreachable files, unused exports, unused
 internals, zombie packages) live as methods on this class. Constants,
-data models, and dynamic-import markers live in sibling modules under
-this package.
+data models, dynamic-import markers and the symbol, decorator and
+source-scan rules live in sibling modules under this package.
 """
 
 from __future__ import annotations
@@ -14,8 +14,7 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import os
-import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,7 +25,6 @@ import structlog
 
 from ...code_origin import code_origin, is_build_file
 from ...entry_candidacy import is_reachability_root
-from ...ingestion.decorator_names import decorator_base as _decorator_base
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ...ingestion.package_roots import package_manifest_names
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
@@ -39,16 +37,10 @@ from .constants import (
     _CONTAINER_USE_LANGUAGES,
     _DEAD_CODE_EXEMPT_LANGUAGES,
     _DEFAULT_DYNAMIC_PATTERNS,
-    _DELIBERATELY_UNUSED_ANNOTATIONS,
-    _FRAMEWORK_DECORATOR_SUFFIXES,
-    _FRAMEWORK_DECORATORS,
-    _FRAMEWORK_INNER_CLASS_NAMES,
     _NAMESPACE_IMPORT_LANGUAGES,
     _NEVER_PACKAGE_DIRS,
     _PREPROCESSED_LANGUAGES,
     _PROJECT_FILE_SUFFIXES,
-    _PURE_WRAPPER_DECORATOR_ATTRS,
-    _PURE_WRAPPER_DECORATOR_MODULES,
     _RUN_NOT_IMPORTED_LANGUAGES,
     _is_fixture_path,
     never_flag_path,
@@ -58,6 +50,16 @@ from .csharp_reachability import (
     build_csharp_named_files,
     build_csharp_named_types,
     scanned_implementations,
+)
+from .decorator_rules import (  # noqa: F401  (moved rules re-exported)
+    _DEPRECATED_DECORATOR_BASES,
+    _QUOTED_STR_RE,
+    _carries_argument,
+    _declared_deliberately_unused,
+    _decorator_bases,
+    _is_framework_registered,
+    _is_receiver_registration,
+    _is_symbol_deprecated,
 )
 from .deletion_gate import apply_deletion_gate
 from .dynamic_markers import (
@@ -73,11 +75,17 @@ from .entry_shape import (
 )
 from .file_reachability import (
     _NON_DEPENDENCY_EDGES,
-    CSHARP_SUFFIX,
     PackageFileMap,
     ReachabilityRescues,
     build_package_file_map,
     is_file_reachable,
+)
+from .finding_helpers import (
+    _LINES_UNKNOWN,
+    _csharp_exports,
+    _is_synthetic_node,
+    _names_by_file,
+    _symbol_span,
 )
 from .go_name_uses import drop_go_package_uses
 from .jvm_reachability import defines_main
@@ -105,7 +113,34 @@ from .risk_factors import (
     path_risk_factors,
     risk_evidence,
 )
+from .source_prepasses import (  # noqa: F401  (moved scans re-exported)
+    _BUNDLER_CONFIG_STEMS,
+    _RELATIVE_PATH_STRING_RE,
+    _TS_PROBE_SUFFIXES,
+    _find_bundler_alias_targets,
+    _find_jsx_namespace_files,
+    _find_ts_export_aliases,
+    _posix_normpath,
+)
 from .swift_reachability import build_swift_named_files
+from .symbol_rules import (  # noqa: F401  (moved rules re-exported)
+    _CPP_BUILTIN_MACROS,
+    _CPP_TYPE_DECLARATION_KINDS,
+    _ENTRY_POINT_SYMBOL_NAMES,
+    _LANGUAGE_NON_IMPORTABLE,
+    _NON_IMPORTABLE_SYMBOL_KINDS,
+    _SFC_LANGUAGES,
+    _SFC_NON_IMPORTABLE_KINDS,
+    _TS_JS_IMPORTABLE_KINDS,
+    _TYPE_DECLARATION_KINDS,
+    _UNCALLABLE_TYPE_KINDS,
+    _UNIVERSAL_NON_IMPORTABLE,
+    _is_compiler_invoked,
+    _is_declaration_only,
+    _is_public_top_level,
+    _nested_class_used,
+    _non_importable_kinds,
+)
 from .vbnet_modules import vbnet_module_names
 
 #: The unindexed scan below and the repo-wide absence check ask the same
@@ -130,634 +165,8 @@ _IDENTIFIER_RE = IDENTIFIER_RE
 _UNINDEXED_SCAN_PER_FILE_BYTES = 4 * 1024 * 1024
 _UNINDEXED_SCAN_TOTAL_BYTES = 32 * 1024 * 1024
 
-# ---------------------------------------------------------------------------
-# Deprecation detection
-# ---------------------------------------------------------------------------
-
-#: Normalised decorator/annotation bases (after stripping leading ``@`` and
-#: any call-argument ``(â€¦)`` tail) that signal a symbol is deprecated.
-#:
-#: Rust inner-attr form (``deprecated``), C# stripped form (``Obsolete``), and
-#: C++ stripped form (``deprecated``) are included verbatim because the
-#: respective sibling-walk extractors in ``parser.py`` already strip the
-#: language-specific bracket pairs before storing.
-_DEPRECATED_DECORATOR_BASES: frozenset[str] = frozenset(
-    {
-        # Python / TypeScript / Scala / Swift
-        "deprecated",
-        "typing.deprecated",
-        "warnings.deprecated",
-        # Java / Kotlin (case-sensitive annotation names)
-        "Deprecated",
-        "kotlin.Deprecated",
-        "java.lang.Deprecated",
-        # C# (inner attr text after stripping [ ])
-        "Obsolete",
-        "System.Obsolete",
-        "System.ObsoleteAttribute",
-    }
-)
-
-
-#: Regex that strips quoted string literals from a decorator/annotation text
-#: before splitting on ``@`` boundaries.  Without this,
-#: ``@app.route("/deprecated")`` would produce a token whose paren-stripped
-#: base is ``app.route`` (correct), but a hypothetical annotation whose
-#: *argument* contains ``@something`` would create a spurious token.
-_QUOTED_STR_RE: re.Pattern[str] = re.compile(r'"[^"]*"')
-
-
-def _declared_deliberately_unused(decorators: Iterable[str]) -> bool:
-    """True when the author has written that the symbol is deliberately uncalled.
-
-    Distinct from the framework lists, which infer a caller we cannot see. Here
-    there may be no caller at all and the annotation says so, which is a
-    stronger signal than any heuristic. Read from the raw token because the
-    base name is shared with every other use of the same annotation.
-    """
-    for blob in decorators:
-        # A Java/Kotlin modifiers node delivers every annotation concatenated,
-        # so the blob is split the way ``_is_symbol_deprecated`` splits it â€”
-        # without this, ``@Named("unused-legacy-bean")`` beside an unrelated
-        # ``@SuppressWarnings`` reads as the author's statement.
-        for token in str(blob).split("@"):
-            if not token.strip():
-                continue
-            base = _decorator_base(token)
-            if any(
-                base == name and _carries_argument(token, argument, whole)
-                for name, argument, whole in _DELIBERATELY_UNUSED_ANNOTATIONS
-            ):
-                return True
-    return False
-
-
-def _carries_argument(token: str, argument: str, whole: bool) -> bool:
-    """*argument* in the annotation *token*: a substring, or one whole quoted argument."""
-    if not whole:
-        return argument in token
-    return argument in (q[1:-1].lower() for q in _QUOTED_STR_RE.findall(token))
-
-
-def _is_framework_registered(
-    decorators: list[str], meta_annotations: frozenset[str] = frozenset()
-) -> bool:
-    """Whether any decorator wires the symbol into a framework dispatcher.
-
-    Both dead-code passes ask this question, and both asked it with the same
-    lines copy-pasted. It lives here once because a registration rule that
-    drifts between the export pass and the internals pass is a bug nobody goes
-    looking for.
-
-    Four spellings of one fact:
-
-    * a known base name or dotted prefix (``@Component``, ``@app.route``);
-    * a known trailing attribute, for a receiver the prefix list cannot
-      anticipate because it is named locally (``@my_group.command``);
-    * any other attribute of a receiver that is not a pure wrapper
-      (``@nox.session``), see :func:`_is_receiver_registration`;
-    * a registration verb in the final path segment. Every suffix entry begins
-      with a dot, so that list can only ever see a *dotted* decorator, and
-      celery's ``@register_drainer('eventlet')`` is bare â€” invisible to all of
-      them. Reading the final segment covers both spellings at once:
-      ``@register``, ``@register_drainer``, ``@Field.register_lookup``. Held to
-      ``register`` exactly or a ``register_`` stem so that a past participle
-      guarding a handler (``@registered_only``) is not read as one.
-
-    A qualified annotation (``@androidx.compose.ui.tooling.preview.Preview``)
-    is also matched by its type name, and *meta_annotations* names the repo's
-    own annotation classes that carry one of these (a Compose multipreview):
-    an unqualified use by its in-scope local name, a qualified use by its
-    fully qualified name.
-    """
-    bases = _decorator_bases(decorators)
-    type_names = [n for n in (b.rsplit(".", 1)[-1] for b in bases) if n[:1].isupper()]
-    if any(b.startswith(_FRAMEWORK_DECORATORS) for b in (*bases, *type_names)):
-        return True
-    if not meta_annotations.isdisjoint(bases):
-        return True
-    if any(b.endswith(_FRAMEWORK_DECORATOR_SUFFIXES) for b in bases):
-        return True
-    if any(_is_receiver_registration(b) for b in bases):
-        return True
-    return any(
-        segment == "register" or segment.startswith("register_")
-        for segment in (b.rsplit(".", 1)[-1] for b in bases)
-    )
-
-
-def _decorator_bases(decorators: Iterable[str]) -> list[str]:
-    """The base name of every annotation in *decorators*.
-
-    A Java or Kotlin modifiers blob carries all of a declaration's annotations
-    (``@Fork(1) @State(Scope.Thread) public``), so each blob is split on
-    ``@`` once its quoted arguments are blanked, the way
-    :func:`_is_symbol_deprecated` reads it. Reading only the blob's first
-    annotation missed every one after it.
-    """
-    return [
-        _decorator_base(token)
-        for blob in decorators
-        for token in _QUOTED_STR_RE.sub('""', str(blob)).split("@")
-        if token.strip()
-    ]
-
-
-def _is_receiver_registration(base: str) -> bool:
-    """Whether a dotted decorator hands the symbol to a receiver object.
-
-    ``@nox.session``, ``@mcp.tool()`` and ``@sub.handle(...)`` are the shape:
-    an attribute of some object, called later by that object. The lists above
-    can only name receivers someone thought of, so the rule is inverted: any
-    ``recv.attr`` is a registration unless it is a pure wrapper (functools,
-    typing, contextlib, ``@x.setter`` and the like), which returns the function
-    for an ordinary caller to call.
-
-    Held to a lowercase attribute. A capitalised last segment is a qualified
-    type name (``@java.lang.Deprecated``, ``[System.Obsolete]``), an annotation
-    rather than a method on a receiver.
-
-    Ceiling: matched on the text, so an aliased wrapper module
-    (``import functools as ft``) reads as a registration. That only ever hides
-    a finding.
-    """
-    receiver, _, attr = base.rpartition(".")
-    if not receiver or not (attr[:1].islower() or attr.startswith("_")):
-        return False
-    if receiver.split(".", 1)[0] in _PURE_WRAPPER_DECORATOR_MODULES:
-        return False
-    return attr not in _PURE_WRAPPER_DECORATOR_ATTRS
-
-
-def _is_symbol_deprecated(sym_name: str, decorators: list[str]) -> bool:
-    """Return True when the symbol is marked deprecated by name suffix or annotation.
-
-    Two mechanisms are checked in order:
-
-    1. **Name suffix**: the name ends with ``_DEPRECATED``, ``_LEGACY``, or
-       ``_COMPAT`` (original naming-convention check, preserved for backward
-       compatibility).
-
-    2. **Decorator / annotation**: each entry in *decorators* is treated as a
-       possibly multi-annotation modifier blob (Java/Kotlin ``modifiers`` node
-       delivers all annotations concatenated with whitespace in a single
-       string).  Each entry is first cleaned of quoted substrings (to avoid
-       matching paths like ``"/deprecated"`` inside ``@app.route("/deprecated")``),
-       then split on ``@`` boundaries so every individual annotation is checked
-       independently.  Each token is normalised via :func:`_decorator_base` and
-       tested against ``_DEPRECATED_DECORATOR_BASES`` and the lower-cased
-       ``"deprecated"`` catch-all.
-
-    The *decorators* list is produced by ``parser.py`` ``_extract_symbols``:
-    - Python / Scala / Swift: full decorator text with leading ``@``
-      (e.g. ``"@deprecated"``, ``"@typing.deprecated"``).
-    - Java / Kotlin: full modifier-node text â€” one blob per declaration that
-      may contain several annotations plus visibility keywords
-      (e.g. ``"@Deprecated\n    public"``,
-      ``"@Override\n  @Deprecated\n  public"``).
-    - Rust: inner attribute content stripped of ``#[â€¦]``
-      (e.g. ``"deprecated"`` from ``#[deprecated]``).
-    - C#: inner attribute content stripped of ``[â€¦]``
-      (e.g. ``"Obsolete"`` from ``[Obsolete]``).
-    - C++: inner attribute content stripped of ``[[â€¦]]``
-      (e.g. ``"deprecated"`` from ``[[deprecated]]``).
-    """
-    # 1. Name suffix
-    if any(sym_name.endswith(s) for s in ("_DEPRECATED", "_LEGACY", "_COMPAT")):
-        return True
-    # 2. Decorator / annotation
-    for raw in decorators:
-        # Strip quoted strings first so path arguments like "/deprecated"
-        # inside ``@app.route("/deprecated")`` do not create false tokens.
-        cleaned = _QUOTED_STR_RE.sub('""', raw)
-        # Split on '@' to tokenize modifier blobs.  A leading '@' produces
-        # an empty first element which the ``if not token`` guard discards.
-        # No-'@' forms (Rust/C#/C++ inner attrs: "deprecated", "Obsolete")
-        # yield a single token equal to the whole string.
-        for token in cleaned.split("@"):
-            token = token.strip()
-            if not token:
-                continue
-            base = _decorator_base(token)
-            if base in _DEPRECATED_DECORATOR_BASES or base.lower() == "deprecated":
-                return True
-    return False
-
-# Symbol kinds that cannot be independently imported by name in any
-# supported language. Flagging them as "unused exports" is a guaranteed
-# false-positive â€” they're always accessed through an enclosing class /
-# namespace. C# auto-properties land in the graph as ``variable``;
-# fields / enum members / type aliases / namespace anchors share the
-# same property.
-_UNIVERSAL_NON_IMPORTABLE: frozenset[str] = frozenset(
-    {
-        "method",
-        "variable",
-        "field",
-        "property",
-        "enum_member",
-        "constant",
-        "type_alias",
-        "namespace",
-        "module",
-        "impl",
-    }
-)
-
-# Additional kinds skipped only for languages where the graph cannot yet
-# observe interface usage. In practice these are DI-heavy languages
-# whose canonical interface-consumption path is constructor injection â€”
-# resolved by the type-use edge pass (see
-# ``ingestion/type_ref_resolution.py``). Once a language emits
-# ``via=type_use`` edges, its entry here can be removed.
-#
-# C# already has type-use coverage (ctor + method + delegate +
-# primary-ctor param.type captures), so ``interface`` is *not* skipped
-# for C# â€” a genuinely unused C# interface is now observable.
-#
-# TS / Python / JS interfaces were always imported by name and never
-# needed the skip; treating them uniformly produced false negatives.
-_LANGUAGE_NON_IMPORTABLE: dict[str, frozenset[str]] = {
-    "java": frozenset({"interface"}),
-    "kotlin": frozenset({"interface"}),
-    "scala": frozenset({"interface"}),
-}
-
-
-# Kinds allowed as top-level imports in TS/JS (top-level `export const` literals/objects)
-_TS_JS_IMPORTABLE_KINDS: frozenset[str] = frozenset({"constant", "variable"})
-
-# Single-file-component languages: the whole file is one component, so their
-# exports behave unlike an ordinary module's â€” see _non_importable_kinds.
-_SFC_LANGUAGES: frozenset[str] = frozenset({"svelte", "vue", "astro"})
-
-# Every kind an SFC component prop can take, plus "class" for the synthetic
-# component symbol itself â€” see _non_importable_kinds.
-_SFC_NON_IMPORTABLE_KINDS: frozenset[str] = frozenset(
-    {"constant", "variable", "function", "class", "interface", "type_alias"}
-)
-
-
-def _non_importable_kinds(language: str) -> frozenset[str]:
-    """Per-language set of symbol kinds excluded from unused-export passes.
-
-    Returns the union of the universal set and any language-specific
-    additions. Cheap to call â€” short lookup, no per-call allocation
-    when the language has no additions.
-    """
-    # An SFC's top-level exports are its props: Svelte's ``export let x`` is
-    # set by the PARENT as a markup attribute (``<Foo x={1} />``), never by an
-    # ``import { x }``. repowise models component instantiation as a call edge
-    # on the component, not as symbol-level edges on each prop, so every prop
-    # would read as an unused export.
-    #
-    # The component symbol itself needs the same treatment, which is why
-    # "class" is in the set. A component is reached as a whole module â€” by a
-    # markup tag, or by a router's ``import('@/views/profile')``, which binds
-    # no name at all â€” so it never carries the symbol-level inbound edge the
-    # unused-export pass looks for. On vue-element-admin that alone accounted
-    # for 45 of 53 findings, every one of them a false positive.
-    #
-    # Suppressing the whole pass is the honest ceiling: it costs the
-    # genuinely-dead named exports of a Svelte ``<script context="module">``
-    # or a Vue non-setup ``<script>``, which cannot be told apart from props
-    # without modelling attribute-to-prop binding across files.
-    if language in _SFC_LANGUAGES:
-        return _UNIVERSAL_NON_IMPORTABLE | _SFC_NON_IMPORTABLE_KINDS
-
-    extra = _LANGUAGE_NON_IMPORTABLE.get(language)
-    if extra is None:
-        if language in ("typescript", "javascript"):
-            return _UNIVERSAL_NON_IMPORTABLE - _TS_JS_IMPORTABLE_KINDS
-        return _UNIVERSAL_NON_IMPORTABLE
-    return _UNIVERSAL_NON_IMPORTABLE | extra
-
-# Preserved for tests / external callers that imported the old name.
-# New code should prefer ``_non_importable_kinds(language)``.
-_NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = _UNIVERSAL_NON_IMPORTABLE | frozenset({"interface"})
-
-# Aggregate *type* kinds that are never call targets. The unused-internal
-# pass is a call-graph check ("private symbol with no incoming CALL edges"),
-# which is meaningful for functions/methods but not for types: a struct or
-# interface used only as a field/parameter/return type â€” especially within
-# its own file â€” has no call edge and no observable symbol-level type edge,
-# so "no callers" is not evidence of deadness. Such types are still subject
-# to the *unused-export* pass (which reasons over import names / type_use),
-# so genuinely-dead exported types are still surfaced there.
-_UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
-    {
-        "struct",
-        "interface",
-        "enum",
-        "type_alias",
-        "impl",
-    }
-)
-
-
-#: C/C++ symbol kinds a bare ``class Env;`` / ``struct Options;`` can carry.
-#: Paired with ``is_declaration`` this identifies a type forward declaration,
-#: which is never a deletable unit â€” see the guard in ``_detect_unused_exports``.
-#: Kinds that declare a type, which Java and C# use from their own package or
-#: namespace without an import.
-_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
-    {"class", "interface", "struct", "enum", "record", "trait", "object"}
-)
-
-_CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
-    {
-        "class",
-        "struct",
-        "enum",
-    }
-)
-
-# Symbol names that are language-runtime entry points or compiler-implicit
-# anchors â€” never invoked by user-authored callers, never dead.
-_ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
-    {
-        "Main",  # C#, Java, Kotlin, Go, Rust, Swift, Scala
-        "main",  # most others
-        # ---- Go runtime / test conventions ------------------------------
-        # ``func init`` is run by the Go runtime when the package is linked â€”
-        # never called by name, so it has no inbound call edge. ``TestMain``
-        # is the test-binary entry the ``go test`` runner invokes by reflection.
-        "init",
-        "TestMain",
-        "MauiProgram",  # .NET MAUI
-        "Program",  # C# top-level / classic console
-        "Startup",  # ASP.NET Core legacy
-        "__module__",  # synthetic per-file module anchor
-        "_start",  # C runtime
-        # ---- Python WSGI / ASGI / app-factory conventions ---------------
-        # Loaded by external servers (uvicorn / gunicorn / hypercorn /
-        # Tornado / aiohttp / Django) via dotted-path string such as
-        # ``module:create_app`` or ``module:application``. The graph never
-        # sees a call edge from the launching server, so without this
-        # allowlist every web entry point shows up as an unused public
-        # symbol with 1.0 confidence.
-        "create_app",
-        "make_app",
-        "create_application",
-        "make_application",
-        "application",
-        "asgi_app",
-        "wsgi_app",
-        "asgi_application",
-        "wsgi_application",
-        "get_asgi_application",
-        "get_wsgi_application",
-        # ---- Windows DLL / COM entry points -----------------------------
-        # Invoked by the Windows loader or COM runtime; never referenced
-        # statically from user code.
-        "DllMain",
-        "DllGetClassObject",
-        "DllCanUnloadNow",
-        "DllRegisterServer",
-        "DllUnregisterServer",
-        "DllGetActivationFactory",
-        "DllInstall",  # legacy MSI custom-action entry
-        # ---- Win32 GUI / console entry points ---------------------------
-        "wWinMain",  # Unicode WinMain
-        "WinMain",  # ANSI WinMain
-        "wmain",  # Unicode console main
-        "ServiceMain",  # Win32 service entry
-        # Screen savers: scrnsave.lib calls these three by name.
-        "ScreenSaverProc",
-        "ScreenSaverConfigureDialog",
-        "RegisterDialogClasses",
-        # ---- libFuzzer / Honggfuzz / AFL fuzz harness entries ------------
-        # The fuzzer driver invokes these by name via dlsym; no static
-        # caller will ever exist.
-        "LLVMFuzzerTestOneInput",
-        "LLVMFuzzerInitialize",
-        # ---- Windows hook / ETW callbacks invoked by macros / runtime ----
-        "LowLevelKeyboardProc",
-        "LowLevelMouseProc",
-        "RegisterProvider",  # ETW provider registration (macro-invoked)
-        # ---- MSTest unit-test macro --------------------------------------
-        # ``TEST_METHOD(Name)`` expands into a public static function with
-        # ``TEST_METHOD`` as the captured symbol name; the runner finds it
-        # by attribute reflection. Same shape on every C++ unit test file.
-        "TEST_METHOD",
-        "TEST_CLASS",
-        "TEST_METHOD_INITIALIZE",
-        "TEST_METHOD_CLEANUP",
-        "TEST_CLASS_INITIALIZE",
-        "TEST_CLASS_CLEANUP",
-        "BEGIN_TEST_METHOD_PROPERTIES",
-        "END_TEST_METHOD_PROPERTIES",
-        # ---- Next.js (app + pages router) convention exports -------------
-        # Loaded by the Next.js runtime by name; never appear as user-code
-        # imports. The convention file globs already cover ``page.tsx``/
-        # ``route.ts``/``layout.tsx``, so this set only catches the long
-        # tail of route exports that escape file-glob protection (e.g.
-        # routes placed in non-standard paths). Limited to names that are
-        # distinctive enough not to risk masking dead code in unrelated
-        # files; common identifiers (``load``, ``action``, ``metadata``,
-        # ``config``, ``headers``, ``meta``, ``links``, ``runtime``) are
-        # deliberately omitted â€” they get file-level protection via the
-        # convention globs in :data:`_NEVER_FLAG_PATTERNS`.
-        "generateStaticParams",
-        "generateMetadata",
-        "generateViewport",
-        "generateImageMetadata",
-        "generateSitemaps",
-        "dynamicParams",
-        "fetchCache",
-        "preferredRegion",
-        "maxDuration",
-        "getStaticProps",
-        "getStaticPaths",
-        "getServerSideProps",
-        "getInitialProps",
-        "reportWebVitals",
-        # ---- Remix route module exports (distinctive names only) ---------
-        "shouldRevalidate",
-        "ErrorBoundary",
-        "CatchBoundary",
-        "HydrateFallback",
-        "clientLoader",
-        "clientAction",
-        # ---- SvelteKit page/layout module exports (distinctive names) ----
-        "trailingSlash",
-        # ---- JVM (Java + Kotlin) runtime / serialization / contract anchors ----
-        # ``main`` is already covered above; these are the rest of the names
-        # the JVM resolves through reflection / serialization / Lombok-equivalent
-        # generation, never through static call edges. ``INSTANCE`` is the
-        # Kotlin ``object Foo`` singleton field; the JVM accesses it directly.
-        "serialVersionUID",
-        "readObject",
-        "writeObject",
-        "readObjectNoData",
-        "readResolve",
-        "writeReplace",
-        "canEqual",  # Lombok-equivalent generated method
-        "INSTANCE",  # Kotlin object singleton field
-        "Companion",  # Kotlin companion-object accessor
-    }
-)
-
-
-# Compiler-intrinsic preprocessor macros C/C++ libraries redefine as a
-# fallback for compilers that don't ship them (``#if !defined(__has_include)
-# \n#define __has_include(h) 0``). The tree-sitter cpp grammar extracts the
-# ``#define`` as a ``preproc_function_def`` symbol, but the call sites are
-# preprocessor ``#if __has_include(...)`` directives, which the static
-# graph cannot observe â€” so without this skip every such fallback flags
-# as an unused export.
-_CPP_BUILTIN_MACROS: frozenset[str] = frozenset(
-    {
-        "__has_include",
-        "__has_include_next",
-        "__has_feature",
-        "__has_extension",
-        "__has_attribute",
-        "__has_cpp_attribute",
-        "__has_c_attribute",
-        "__has_declspec_attribute",
-        "__has_builtin",
-        "__has_warning",
-        "__builtin_expect",
-        "__builtin_unreachable",
-        "__builtin_assume",
-        "__builtin_constant_p",
-        "__is_identifier",
-        "__FILE__",
-        "__LINE__",
-        "__DATE__",
-        "__TIME__",
-        "__func__",
-        "__FUNCTION__",
-        "__PRETTY_FUNCTION__",
-    }
-)
 
 logger = structlog.get_logger(__name__)
-
-
-def _find_jsx_namespace_files(
-    parsed_files: dict,
-    source_map: dict[str, bytes] | None = None,
-) -> set[str]:
-    """Return repo-relative paths of TS/TSX files that declare ``namespace JSX``.
-
-    Symbols whose name is in :data:`_TS_JSX_NAMESPACE_TYPES` and whose
-    defining file lives in this set are integration points with the JSX
-    transformer â€” referenced implicitly by every JSX expression, never
-    imported by name. The scan is a cheap substring check; tree-sitter
-    grammar work for a richer signal would be wasted effort.
-    """
-    matches: set[str] = set()
-    for path, pf in parsed_files.items():
-        try:
-            file_info = getattr(pf, "file_info", None)
-            if file_info is None:
-                continue
-            src_path = Path(file_info.abs_path)
-            if src_path.suffix not in (".ts", ".tsx", ".d.ts"):
-                continue
-            source = read_source_text(path, file_info.abs_path, source_map)
-            # Match ``namespace JSX`` and ``declare namespace JSX`` â€” both
-            # are JSX transformer integration points in practice.
-            if "namespace JSX" in source:
-                matches.add(path)
-        except Exception:
-            continue
-    return matches
-
-
-_BUNDLER_CONFIG_STEMS = ("vite.config", "webpack.config", "rollup.config", "rspack.config")
-
-# Any quoted slash-containing path-ish string. Bundler configs reference
-# alias targets both as ``'./src/shims/x.ts'`` and as bare segments fed to
-# ``path.resolve(here, 'src/shims/x.ts')``; the parsed-files membership
-# probe below keeps loose matches harmless.
-_RELATIVE_PATH_STRING_RE = re.compile(r"""['"]((?:\.\.?/)?[\w@.-]+(?:/[\w@.-]+)+)['"]""")
-
-_TS_PROBE_SUFFIXES = ("", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
-
-
-def _find_bundler_alias_targets(
-    parsed_files: dict,
-    source_map: dict[str, bytes] | None = None,
-) -> set[str]:
-    """Repo-relative paths referenced from bundler config files.
-
-    Vite/webpack ``resolve.alias`` entries substitute a bare package import
-    with a local file (``shiki`` â†’ ``src/shims/shiki.ts``): no source file
-    ever imports the shim path, only the config names it, so the shim reads
-    as unreachable. Any relative path string inside a bundler config that
-    resolves to an indexed file marks that file reachable.
-    """
-    targets: set[str] = set()
-    configs = [
-        (path, pf)
-        for path, pf in parsed_files.items()
-        if Path(path).name.startswith(_BUNDLER_CONFIG_STEMS)
-    ]
-    for path, pf in configs:
-        try:
-            file_info = getattr(pf, "file_info", None)
-            if file_info is None:
-                continue
-            source = read_source_text(path, file_info.abs_path, source_map)
-        except Exception:
-            continue
-        config_dir = Path(path).parent
-        for match in _RELATIVE_PATH_STRING_RE.finditer(source):
-            base = _posix_normpath(config_dir, match.group(1))
-            for suffix in _TS_PROBE_SUFFIXES:
-                candidate = base + suffix
-                if candidate in parsed_files:
-                    targets.add(candidate)
-                    break
-    return targets
-
-
-def _posix_normpath(config_dir: Path, raw: str) -> str:
-    """Join *raw* onto *config_dir* and normalise ``.``/``..`` as POSIX."""
-    import posixpath
-
-    return posixpath.normpath(posixpath.join(config_dir.as_posix(), raw))
-
-
-def _find_ts_export_aliases(parsed_files: dict) -> dict[str, dict[str, str]]:
-    """Per-file ``{local_name: exported_alias}`` maps for TS/JS alias exports.
-
-    ``export { ConversationHistoryWrapper as ConversationHistory }`` publishes
-    the symbol under the alias, so importers pull ``ConversationHistory`` and
-    the local name never appears in any ``imported_names`` edge. The unused-
-    export pass consults this map to match the alias as well.
-
-    Inverted from what the parser already recorded, rather than scanned again.
-    This pass used to own a second regex over the same clause and a second read
-    of every TS/JS file; the parser now reads the clause once, with comments
-    stripped, and the two answers can no longer disagree.
-    """
-    aliases: dict[str, dict[str, str]] = {}
-    for path, pf in parsed_files.items():
-        published = getattr(pf, "export_aliases", None)
-        if not published:
-            continue
-        aliases[path] = {local: exported for exported, local in published.items()}
-    return aliases
-
-
-def _is_synthetic_node(node: str) -> bool:
-    """True for non-file graph nodes that should be skipped in 'is this dead?' passes.
-
-    Two synthetic prefixes exist:
-      - ``external:`` â€” third-party / unresolved imports.
-      - ``framework:`` â€” anchors added by ``framework_edges`` to model
-        convention-based loading (e.g. TYPO3 core loading ``ext_localconf.php``).
-
-    Both are skipped when the analyzer asks "is this node itself dead?",
-    but they are treated differently in the zombie-package pass: ``framework:``
-    predecessors *do* count as cross-package importers (real framework-
-    mediated dependencies), whereas ``external:`` predecessors do not.
-    """
-    return node.startswith("external:") or node.startswith("framework:")
 
 
 @dataclass
@@ -779,97 +188,10 @@ class _ExportFile:
     enclosing_ranges: list[tuple[int, int]]
 
 
-def _is_compiler_invoked(sym: dict, sym_name: str) -> bool:
-    """Symbols the compiler or linker calls, which no graph edge can show."""
-    # Fallback definitions of compiler intrinsics (``__has_include``) are only
-    # ever used from preprocessor directives.
-    if sym.get("language") in ("cpp", "c") and sym_name in _CPP_BUILTIN_MACROS:
-        return True
-    # Rust proc-macro entry points are invoked by the compiler.
-    if sym.get("language") == "rust":
-        decorators = sym.get("decorators") or []
-        if any(d.startswith("proc_macro") for d in decorators):
-            return True
-    # Explicit export markers (``dllexport``, ``visibility("default")``) mean
-    # callers outside this binary.
-    return bool(sym.get("is_exported_symbol"))
-
-
-def _is_declaration_only(sym: dict) -> bool:
-    """C/C++ declarations that are not a deletable unit of their own."""
-    # A prototype whose definition was found: the definition carries the
-    # finding. An unmatched prototype is still reported.
-    if sym.get("is_declaration") and sym.get("defined_by"):
-        return True
-    # A type forward declaration (``class Env;``) exists so its own file can
-    # name the type, which makes that file its user.
-    return bool(
-        sym.get("is_declaration")
-        and sym.get("language") in ("cpp", "c")
-        and sym.get("kind") in _CPP_TYPE_DECLARATION_KINDS
-    )
-
-
-# Evidence line for a finding whose ``lines`` is ``None``: the count is
-# omitted rather than estimated.
-_LINES_UNKNOWN = "Line count unavailable: source was not read"
-
-
 #: ``(days, confidence)`` rungs for a file with no commit in 90 days, oldest
 #: first. ``_is_old`` uses strict >, so days-1 gives >= semantics: a year or
 #: more untouched is 1.0, very likely dead.
 _GIT_AGE_RUNGS: tuple[tuple[int, float], ...] = ((364, 1.0), (179, 0.9), (89, 0.8))
-
-
-def _is_public_top_level(sym: dict, kinds: AbstractSet[str] | None) -> bool:
-    if sym.get("visibility") != "public" or sym.get("parent_name"):
-        return False
-    return kinds is None or sym.get("kind") in kinds
-
-
-def _nested_class_used(node_data: dict, sym: dict) -> bool:
-    """Whether a nested class is one a framework reads or its module names.
-
-    ``ingestion/python_local_refs.py`` records a nested class its module reaches
-    (``Outer.Inner``, or ``Inner`` inside ``Outer``) under its ``Outer.Inner``
-    name, since a bare inner name like ``ErrorModel`` repeats across classes.
-    """
-    parent = sym.get("parent_name")
-    if not parent:
-        return False
-    name = sym.get("name", "")
-    if name in _FRAMEWORK_INNER_CLASS_NAMES.get(sym.get("language", ""), ()):
-        return True
-    return f"{parent}.{name}" in (node_data.get("local_refs") or ())
-
-
-def _csharp_exports(findings: list[DeadCodeFindingData]) -> list[DeadCodeFindingData]:
-    """The unused-export findings in ``.cs`` files."""
-    return [
-        f
-        for f in findings
-        if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path.endswith(CSHARP_SUFFIX)
-    ]
-
-
-def _names_by_file(findings: list[DeadCodeFindingData]) -> dict[str, set[str]]:
-    """File -> the symbol names *findings* report there."""
-    out: dict[str, set[str]] = {}
-    for f in findings:
-        out.setdefault(f.file_path, set()).add(f.symbol_name or "")
-    return out
-
-
-def _symbol_span(data: dict) -> dict[str, int | None]:
-    """``lines``/``start_line``/``end_line`` for a symbol finding.
-
-    Both-or-neither: a half-known span is worse than none. Spans are
-    inclusive, so a one-line symbol is 1 line; an unknown span is ``None``.
-    """
-    start, end = data.get("start_line") or None, data.get("end_line") or None
-    if start is None or end is None or end < start:
-        return {"lines": None, "start_line": None, "end_line": None}
-    return {"lines": end - start + 1, "start_line": start, "end_line": end}
 
 
 class DeadCodeAnalyzer:
