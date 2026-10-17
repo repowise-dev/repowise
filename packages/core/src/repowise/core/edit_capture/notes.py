@@ -37,7 +37,7 @@ FETCH_REFSPEC = f"+{NOTES_REF}:{NOTES_REF}"
 
 
 def _git(repo: Path, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
-    # Ceiling: no timeout, as before; a wedged git blocks this call.
+    # Ceiling: no timeout; a wedged git blocks this call.
     return run_git(args, repo, input=stdin, timeout=None)
 
 

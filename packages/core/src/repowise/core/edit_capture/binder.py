@@ -87,7 +87,7 @@ def event_rows(
 
 
 def _git(repo: Path, *args: str) -> str:
-    # Ceiling: no timeout, as before; a wedged git blocks this call.
+    # Ceiling: no timeout; a wedged git blocks this call.
     result = run_git(["-c", "core.quotepath=false", *args], repo, timeout=None)
     return result.stdout if result.returncode == 0 else ""
 
