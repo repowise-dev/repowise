@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -77,18 +78,7 @@ def _workspace_update(
     under ``repowise update`` run inside the repo); the rest take the fast
     parallel index-only path. See :func:`_workspace_docs_update`.
     """
-    from repowise.cli.helpers import load_state
-    from repowise.core.docs_mode import resolve_docs_mode
-    from repowise.core.ingestion.change_detector import has_working_tree_changes
-    from repowise.core.repo_config import config_fingerprint
-    from repowise.core.workspace import (
-        check_repo_staleness,
-        reconcile_repo_head_commit,
-        update_workspace,
-    )
     from repowise.core.workspace.update import sync_workspace_state_from_disk
-
-    from .mode import _resolve_index_only_mode
 
     start = time.monotonic()
     started_at = datetime.now(UTC)
@@ -100,7 +90,6 @@ def _workspace_update(
         # but guard against misuse so the error message is clear.
         raise click.ClickException("_workspace_update called without a workspace target.")
 
-    # Show staleness summary first
     console.print(f"[bold]repowise update[/bold] \u2014 workspace: {ws_root.name}")
     console.print()
 
@@ -109,90 +98,19 @@ def _workspace_update(
     # update_workspace does, so a config ahead of state.json cannot stamp the
     # row past the commit state.json names.
     sync_workspace_state_from_disk(ws_root, ws_config)
-    stale_count = 0
-    up_to_date_count = 0
-    up_to_date_repos: list[tuple[Path, str]] = []
-    # Aliases of stale repos whose effective mode is docs (indexed + docs
-    # wanted). Everything else stale takes the fast index-only path, including
-    # never-indexed repos, which can only be first-time indexed index-only, and
-    # a follow-up ``--docs`` run generates their pages once they have an index.
-    docs_aliases: set[str] = set()
-    for entry in ws_config.repos:
-        if repo_alias and entry.alias != repo_alias:
-            continue
-        abs_path = (ws_root / entry.path).resolve()
-        stored = entry.last_commit_at_index
-        is_stale, head, behind = check_repo_staleness(abs_path, stored)
-        indexed = (abs_path / ".repowise").is_dir()
-        repo_state = load_state(abs_path) if indexed else {}
-        config_stale = bool(
-            indexed
-            and (
-                repo_state.get("config_fingerprint") is None
-                or repo_state.get("config_fingerprint") != config_fingerprint(abs_path)
-            )
-        )
-        is_stale = is_stale or config_stale
-        dirty = bool(
-            indexed and not is_stale and include_working_tree and has_working_tree_changes(abs_path)
-        )
-        is_stale = is_stale or dirty
-        if not indexed:
-            status = "[dim]not indexed[/dim]"
-        elif config_stale and not behind:
-            status = "[yellow]config changed[/yellow]"
-        elif dirty:
-            status = "[yellow]uncommitted changes[/yellow]"
-        elif is_stale:
-            status = f"[yellow]{behind} new commit(s)[/yellow]"
-        else:
-            status = "[green]up to date[/green]"
-        # Default to a focused list (stale + not-indexed); up-to-date repos
-        # collapse into a single count line unless -v lists everything.
-        if is_stale:
-            stale_count += 1
-            if indexed:
-                if not _resolve_index_only_mode(
-                    index_only=index_only, docs_flag=docs_flag, state=repo_state
-                ):
-                    # LLM docs wanted: full single-repo docs regen.
-                    docs_aliases.add(entry.alias)
-                elif resolve_docs_mode(repo_state) == "deterministic":
-                    # A template wiki has pages too. The single-repo update path
-                    # re-renders the changed files' template pages for free
-                    # (file_pages_only), so route it there rather than the core
-                    # index-only path, which would freeze the wiki. Model-written
-                    # pages a user upgraded stay put; only the templates refresh.
-                    docs_aliases.add(entry.alias)
-        if indexed and not is_stale:
-            up_to_date_count += 1
-            if head:
-                up_to_date_repos.append((abs_path, head))
-            if not verbose:
-                continue
-        console.print(f"  {entry.alias:<20} {status}")
+    scan = _scan_workspace(
+        ws_root,
+        ws_config,
+        repo_alias,
+        index_only=index_only,
+        docs_flag=docs_flag,
+        include_working_tree=include_working_tree,
+        verbose=verbose,
+    )
+    if not dry_run and scan.up_to_date_repos:
+        _reconcile_up_to_date(scan.up_to_date_repos)
 
-    if up_to_date_count and not verbose:
-        console.print(f"  [dim]{up_to_date_count} repo(s) up to date[/dim]")
-
-    console.print()
-
-    # Reconcile the DB freshness stamp for up-to-date repos even when nothing
-    # needs regenerating. Staleness above is measured against the workspace
-    # config's last_commit_at_index, but the server's /api/repos endpoint and
-    # the MCP _meta check read repositories.head_commit from each repo's DB — a
-    # row left behind by an older build keeps "index behind checkout" stuck
-    # here, since the all-up-to-date path returns without calling
-    # update_workspace. reconcile_repo_head_commit only writes on drift.
-    if not dry_run and up_to_date_repos:
-
-        async def _reconcile_up_to_date() -> None:
-            for repo_path, head in up_to_date_repos:
-                await reconcile_repo_head_commit(repo_path, head)
-
-        run_async(_reconcile_up_to_date())
-
-    if stale_count == 0:
+    if scan.stale_count == 0:
         console.print("[green]All repos are up to date.[/green]")
         if not dry_run:
             _refresh_workspace_editor_project_files(
@@ -204,20 +122,19 @@ def _workspace_update(
         return
 
     if dry_run:
-        console.print(f"[yellow]Dry run \u2014 {stale_count} repo(s) would be updated.[/yellow]")
+        console.print(
+            f"[yellow]Dry run \u2014 {scan.stale_count} repo(s) would be updated.[/yellow]"
+        )
         return
 
-    # Repos that want docs go through the full single-repo docs path so their
-    # wiki (pages, diagrams, decisions) stays as fresh as a single-repo update
-    # would keep it; everything else stale takes the fast parallel index-only
-    # path below. Branching here keeps the common all-index-only workspace
-    # update byte-for-byte on its original path with no behavior change.
-    if docs_aliases:
+    # Repos that want docs take the full single-repo docs path; an all
+    # index-only workspace stays on the fast parallel path below.
+    if scan.docs_aliases:
         _workspace_docs_update(
             ws_root=ws_root,
             ws_config=ws_config,
             repo_filter=repo_alias,
-            docs_aliases=docs_aliases,
+            docs_aliases=scan.docs_aliases,
             start=start,
             started_at=started_at,
             agents_md=agents_md,
@@ -235,11 +152,159 @@ def _workspace_update(
             include_working_tree=include_working_tree,
         )
         return
+    _workspace_index_only_update(
+        ws_root,
+        ws_config,
+        repo_alias,
+        start=start,
+        started_at=started_at,
+        agents_md=agents_md,
+        include_working_tree=include_working_tree,
+    )
 
-    # Run the updates
+
+@dataclass
+class _WorkspaceScan:
+    """Which workspace repos need an update, and how."""
+
+    stale_count: int = 0
+    up_to_date_count: int = 0
+    #: (path, HEAD) of indexed, up-to-date repos whose DB stamp is reconciled.
+    up_to_date_repos: list[tuple[Path, str]] = field(default_factory=list)
+    #: Stale, indexed repos whose effective mode is docs. Everything else stale,
+    #: never-indexed repos included, takes the fast index-only path.
+    docs_aliases: set[str] = field(default_factory=set)
+
+
+@dataclass
+class _RepoStaleness:
+    indexed: bool
+    is_stale: bool
+    head: str | None
+    status: str
+    state: dict[str, Any]
+
+
+def _scan_workspace(
+    ws_root: Path,
+    ws_config: Any,
+    repo_alias: str | None,
+    *,
+    index_only: bool,
+    docs_flag: bool | None,
+    include_working_tree: bool,
+    verbose: bool,
+) -> _WorkspaceScan:
+    """Print each repo's staleness and sort the stale ones into docs and index-only."""
+    scan = _WorkspaceScan()
+    for entry in ws_config.repos:
+        if repo_alias and entry.alias != repo_alias:
+            continue
+        abs_path = (ws_root / entry.path).resolve()
+        repo = _repo_staleness(abs_path, entry.last_commit_at_index, include_working_tree)
+        if repo.is_stale:
+            scan.stale_count += 1
+            if repo.indexed and _wants_docs_update(repo.state, index_only, docs_flag):
+                scan.docs_aliases.add(entry.alias)
+        # Up-to-date repos collapse into one count line unless -v lists them.
+        if repo.indexed and not repo.is_stale:
+            scan.up_to_date_count += 1
+            if repo.head:
+                scan.up_to_date_repos.append((abs_path, repo.head))
+            if not verbose:
+                continue
+        console.print(f"  {entry.alias:<20} {repo.status}")
+
+    if scan.up_to_date_count and not verbose:
+        console.print(f"  [dim]{scan.up_to_date_count} repo(s) up to date[/dim]")
+    console.print()
+    return scan
+
+
+def _repo_staleness(
+    abs_path: Path, stored: str | None, include_working_tree: bool
+) -> _RepoStaleness:
+    """Whether one repo is behind its index, its config or its working tree."""
+    from repowise.cli.helpers import load_state
+    from repowise.core.ingestion.change_detector import has_working_tree_changes
+    from repowise.core.repo_config import config_fingerprint
+    from repowise.core.workspace import check_repo_staleness
+
+    is_stale, head, behind = check_repo_staleness(abs_path, stored)
+    indexed = (abs_path / ".repowise").is_dir()
+    repo_state = load_state(abs_path) if indexed else {}
+    config_stale = bool(
+        indexed
+        and (
+            repo_state.get("config_fingerprint") is None
+            or repo_state.get("config_fingerprint") != config_fingerprint(abs_path)
+        )
+    )
+    is_stale = is_stale or config_stale
+    dirty = bool(
+        indexed and not is_stale and include_working_tree and has_working_tree_changes(abs_path)
+    )
+    is_stale = is_stale or dirty
+    if not indexed:
+        status = "[dim]not indexed[/dim]"
+    elif config_stale and not behind:
+        status = "[yellow]config changed[/yellow]"
+    elif dirty:
+        status = "[yellow]uncommitted changes[/yellow]"
+    elif is_stale:
+        status = f"[yellow]{behind} new commit(s)[/yellow]"
+    else:
+        status = "[green]up to date[/green]"
+    return _RepoStaleness(indexed, is_stale, head, status, repo_state)
+
+
+def _wants_docs_update(
+    repo_state: dict[str, Any], index_only: bool, docs_flag: bool | None
+) -> bool:
+    """Whether a stale, indexed repo takes the single-repo docs path."""
+    from repowise.core.docs_mode import resolve_docs_mode
+
+    from .mode import _resolve_index_only_mode
+
+    if not _resolve_index_only_mode(index_only=index_only, docs_flag=docs_flag, state=repo_state):
+        return True
+    # A template wiki re-renders the changed files' pages for free on the
+    # single-repo path; the core index-only path would freeze it. Model-written
+    # pages a user upgraded stay put.
+    return resolve_docs_mode(repo_state) == "deterministic"
+
+
+def _reconcile_up_to_date(up_to_date_repos: list[tuple[Path, str]]) -> None:
+    """Reconcile the DB freshness stamp of up-to-date repos.
+
+    Staleness is measured against the workspace config, but the server and the
+    MCP freshness check read each repo DB's head_commit, which the all-up-to-date
+    path would otherwise never touch. Only writes on drift.
+    """
+    from repowise.core.workspace import reconcile_repo_head_commit
+
+    async def _reconcile() -> None:
+        for repo_path, head in up_to_date_repos:
+            await reconcile_repo_head_commit(repo_path, head)
+
+    run_async(_reconcile())
+
+
+def _workspace_index_only_update(
+    ws_root: Path,
+    ws_config: Any,
+    repo_alias: str | None,
+    *,
+    start: float,
+    started_at: datetime,
+    agents_md: bool | None,
+    include_working_tree: bool,
+) -> None:
+    """Update every stale repo on the fast parallel index-only path."""
+    from repowise.core.workspace import update_workspace
+
     def _on_start(alias: str) -> None:
         console.print(f"  Updating [bold]{alias}[/bold]...")
-
 
     results = run_async(
         update_workspace(
@@ -253,9 +318,9 @@ def _workspace_update(
         )
     )
 
-    # Backfill the distill rewrite-hook verdict for members that were just
-    # indexed for the first time (e.g. added with --no-index) \u2014 they would
-    # otherwise default to enabled despite a workspace-wide decline at init.
+    # Members indexed for the first time (e.g. added with --no-index) would
+    # otherwise default the distill rewrite hook to enabled despite a
+    # workspace-wide decline at init.
     from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
 
     for entry in ws_config.repos:
@@ -263,7 +328,6 @@ def _workspace_update(
             continue
         inherit_workspace_distill_verdict((ws_root / entry.path).resolve())
 
-    # Summary
     updated = sum(1 for r in results if r.updated)
     errors = sum(1 for r in results if r.error)
     skipped = sum(1 for r in results if r.skipped_reason)
@@ -304,26 +368,12 @@ def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
     """
     from rich.markup import escape
 
-    from repowise.core.workspace.breaking_change import (
-        SEVERITY_BREAKING,
-        load_breaking_change_report,
-    )
+    from repowise.core.workspace.breaking_change import load_breaking_change_report
 
     report = load_breaking_change_report(ws_root)
-    if report is None or not report.ran or not report.changes:
+    if not _report_is_ours(report, started_at):
         return
-    try:
-        if datetime.fromisoformat(report.generated_at or "") < started_at:
-            return
-    except (TypeError, ValueError):
-        return
-    # Counted the way `workspace check` gates, so the two never contradict.
-    gating = [
-        c
-        for c in report.changes
-        if c.severity == SEVERITY_BREAKING
-        and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
-    ]
+    gating = _gating_changes(report)
     repos = sorted(
         {ic.repo for c in gating for ic in c.impacted_consumers if ic.repo != c.provider_repo}
     )
@@ -352,6 +402,40 @@ def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
         )
     if len(gating) > _BREAKING_DETAIL_LINES:
         console.print(f"  [dim]and {len(gating) - _BREAKING_DETAIL_LINES} more[/dim]")
+
+
+def _report_is_ours(report: Any, started_at: datetime) -> bool:
+    """A report with changes, stamped by this run's cross-repo hooks."""
+    if report is None or not report.ran or not report.changes:
+        return False
+    try:
+        return not datetime.fromisoformat(report.generated_at or "") < started_at
+    except (TypeError, ValueError):
+        return False
+
+
+def _gating_changes(report: Any) -> list[Any]:
+    """Counted the way `workspace check` gates, so the two never contradict."""
+    from repowise.core.workspace.breaking_change import SEVERITY_BREAKING
+
+    return [
+        c
+        for c in report.changes
+        if c.severity == SEVERITY_BREAKING
+        and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
+    ]
+
+
+@dataclass
+class _DocsTally:
+    """How the docs members' single-repo updates ended."""
+
+    updated: int = 0
+    failed: int = 0
+    deferred: int = 0  # bailed on another update's single-flight lock
+    noop: int = 0  # already current / nothing to regenerate
+    #: Members that really regenerated, for the cross-repo pass.
+    changed: list[str] = field(default_factory=list)
 
 
 def _workspace_docs_update(
@@ -389,109 +473,52 @@ def _workspace_docs_update(
     from contextlib import suppress
 
     from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
-    from repowise.core.workspace import RepoUpdateResult, update_workspace
     from repowise.core.workspace.update import (
         run_cross_repo_hooks,
         sync_workspace_state_from_disk,
     )
 
-    from .command import UpdateOutcome, run_update
+    core_results = _update_core_members(
+        ws_root, ws_config, repo_filter, docs_aliases, include_working_tree=include_working_tree
+    )
+    changed_aliases: list[str] = [r.alias for r in core_results if r.updated]
+    docs = _update_docs_members(
+        ws_root,
+        ws_config,
+        docs_aliases,
+        dict(
+            provider_name=provider_name,
+            model=model,
+            since=since,
+            reasoning=reasoning,
+            cascade_budget=cascade_budget,
+            dry_run=False,
+            workspace=False,
+            no_workspace=True,
+            repo_alias=None,
+            index_only=index_only,
+            docs_flag=docs_flag,
+            full=False,
+            agents_md=agents_md,
+            concurrency=concurrency,
+            no_cost_tracking=no_cost_tracking,
+            verbose=verbose,
+            # rich even under --progress json: the parent owns the single
+            # stdout JSON stream and already sent the console to stderr.
+            progress="rich",
+            skip_cross_repo_hooks=True,
+            include_working_tree=include_working_tree,
+        ),
+    )
+    changed_aliases.extend(docs.changed)
 
-    changed_aliases: list[str] = []
-    docs_updated = 0
-    docs_failed = 0
-    docs_deferred = 0  # bailed on another update's single-flight lock
-    docs_noop = 0  # already current / nothing to regenerate
-
-    # --- Index-only + first-time members: fast parallel core path ----------
-    # only_aliases bounds the candidate set; update_workspace still re-checks
-    # staleness, so any up-to-date member in the set simply no-ops.
-    core_aliases = {
-        entry.alias
-        for entry in ws_config.repos
-        if (repo_filter is None or entry.alias == repo_filter) and entry.alias not in docs_aliases
-    }
-    core_results: list[RepoUpdateResult] = []
-    if core_aliases:
-
-        def _on_start(alias: str) -> None:
-            console.print(f"  Updating [bold]{alias}[/bold]...")
-
-        core_results = run_async(
-            update_workspace(
-                ws_root,
-                ws_config,
-                only_aliases=core_aliases,
-                run_hooks=False,
-                dry_run=False,
-                include_working_tree=include_working_tree,
-                on_repo_start=_on_start,
-                on_repo_done=_print_repo_result,
-            )
-        )
-        changed_aliases.extend(r.alias for r in core_results if r.updated)
-
-    # --- Docs members: full single-repo docs update, one at a time ---------
-    for entry in ws_config.repos:
-        if entry.alias not in docs_aliases:
-            continue
-        repo_path = (ws_root / entry.path).resolve()
-        console.print(f"  Updating [bold]{entry.alias}[/bold] (docs)...")
-        try:
-            outcome = run_update(
-                path=str(repo_path),
-                provider_name=provider_name,
-                model=model,
-                since=since,
-                reasoning=reasoning,
-                cascade_budget=cascade_budget,
-                dry_run=False,
-                workspace=False,
-                no_workspace=True,
-                repo_alias=None,
-                index_only=index_only,
-                docs_flag=docs_flag,
-                full=False,
-                agents_md=agents_md,
-                concurrency=concurrency,
-                no_cost_tracking=no_cost_tracking,
-                verbose=verbose,
-                # rich even when the outer run is --progress json: the parent
-                # already redirected the console to stderr and owns the single
-                # stdout JSON event stream, so a nested json emitter would
-                # corrupt it. The per-repo rich output goes to stderr there.
-                progress="rich",
-                skip_cross_repo_hooks=True,
-                include_working_tree=include_working_tree,
-            )
-        except Exception as exc:
-            docs_failed += 1
-            console.print(f"    [red]✗ {entry.alias}: {exc}[/red]")
-            continue
-        # Count what actually happened. A run that bailed on another update's
-        # single-flight lock (DEFERRED) regenerated nothing — folding it into
-        # ``docs_updated`` was the "N with docs regenerated" lie the user saw
-        # while a background post-commit-hook update was still in flight.
-        # run_update already printed the "another update is in flight" note for
-        # the deferred case, so don't re-announce it here.
-        if outcome == UpdateOutcome.DEFERRED:
-            docs_deferred += 1
-        elif outcome == UpdateOutcome.REGENERATED:
-            docs_updated += 1
-            # Only a real regeneration feeds the cross-repo pass; a no-op or a
-            # deferral leaves the cross-repo layer untouched.
-            changed_aliases.append(entry.alias)
-        else:  # NOOP / DRY_RUN
-            docs_noop += 1
-
-    # The single-repo path only writes each repo's state.json, not the
-    # workspace config, so re-sync it: the docs repos' advanced last_sync_commit
-    # then lands in last_commit_at_index and the next run sees them up to date.
+    # The single-repo path only writes each repo's state.json, so re-sync the
+    # workspace config: the next run then sees the docs repos up to date.
     with suppress(Exception):
         sync_workspace_state_from_disk(ws_root, ws_config)
 
-    # Backfill the distill rewrite-hook verdict for any first-time member the
-    # core path just indexed (matches the index-only workspace path).
+    # First-time members the core path just indexed inherit the workspace's
+    # distill rewrite-hook verdict, as on the index-only workspace path.
     for entry in ws_config.repos:
         if repo_filter and entry.alias != repo_filter:
             continue
@@ -505,58 +532,120 @@ def _workspace_docs_update(
             run_async(run_cross_repo_hooks(ws_config, ws_root, changed_aliases))
         console.print("[green]Cross-repo analysis updated.[/green]")
 
-    # Editor files: re-stamp every member. Docs repos were already stamped by
-    # their single-repo run; the core repos need it here. Idempotent.
+    # Every member, idempotently: docs repos were stamped by their own run.
     _refresh_workspace_editor_project_files(
         ws_root=ws_root,
         ws_config=ws_config,
         repo_filter=repo_filter,
         agents_md=agents_md,
     )
+    _print_docs_update_summary(core_results, docs, ws_root, start=start, started_at=started_at)
 
-    core_updated = sum(1 for r in core_results if r.updated)
-    core_deferred = sum(1 for r in core_results if r.skipped_reason == "in_flight")
-    deferred = docs_deferred + core_deferred
+
+def _update_core_members(
+    ws_root: Path,
+    ws_config: Any,
+    repo_filter: str | None,
+    docs_aliases: set[str],
+    *,
+    include_working_tree: bool,
+) -> list[Any]:
+    """Index-only and first-time members, on the fast parallel core path.
+
+    ``only_aliases`` bounds the candidate set; update_workspace still re-checks
+    staleness, so an up-to-date member in it simply no-ops.
+    """
+    from repowise.core.workspace import update_workspace
+
+    core_aliases = {
+        entry.alias
+        for entry in ws_config.repos
+        if (repo_filter is None or entry.alias == repo_filter) and entry.alias not in docs_aliases
+    }
+    if not core_aliases:
+        return []
+
+    def _on_start(alias: str) -> None:
+        console.print(f"  Updating [bold]{alias}[/bold]...")
+
+    return run_async(
+        update_workspace(
+            ws_root,
+            ws_config,
+            only_aliases=core_aliases,
+            run_hooks=False,
+            dry_run=False,
+            include_working_tree=include_working_tree,
+            on_repo_start=_on_start,
+            on_repo_done=_print_repo_result,
+        )
+    )
+
+
+def _update_docs_members(
+    ws_root: Path, ws_config: Any, docs_aliases: set[str], update_kwargs: dict[str, Any]
+) -> _DocsTally:
+    """Docs members, one at a time, through the full single-repo update."""
+    from .command import UpdateOutcome, run_update
+
+    tally = _DocsTally()
+    for entry in ws_config.repos:
+        if entry.alias not in docs_aliases:
+            continue
+        repo_path = (ws_root / entry.path).resolve()
+        console.print(f"  Updating [bold]{entry.alias}[/bold] (docs)...")
+        try:
+            outcome = run_update(path=str(repo_path), **update_kwargs)
+        except Exception as exc:
+            tally.failed += 1
+            console.print(f"    [red]✗ {entry.alias}: {exc}[/red]")
+            continue
+        # A deferred run regenerated nothing, and run_update already printed
+        # its in-flight note. Only a real regeneration feeds the cross-repo pass.
+        if outcome == UpdateOutcome.DEFERRED:
+            tally.deferred += 1
+        elif outcome == UpdateOutcome.REGENERATED:
+            tally.updated += 1
+            tally.changed.append(entry.alias)
+        else:  # NOOP / DRY_RUN
+            tally.noop += 1
+    return tally
+
+
+def _docs_update_summary(core_updated: int, deferred: int, docs: _DocsTally) -> str:
     parts: list[str] = []
-    if docs_updated:
-        parts.append(f"{docs_updated} with docs regenerated")
+    if docs.updated:
+        parts.append(f"{docs.updated} with docs regenerated")
     if core_updated:
         parts.append(f"{core_updated} re-indexed")
     if deferred:
         parts.append(f"{deferred} deferred to an in-flight update")
-    if docs_noop:
-        parts.append(f"{docs_noop} already current")
-    if docs_failed:
-        parts.append(f"[red]{docs_failed} failed[/red]")
-    summary = ", ".join(parts) if parts else "nothing to update"
-    console.print()
-    # When every stale repo only deferred (a background update already owns the
-    # work), "complete" would overclaim — the real regeneration is still
-    # running elsewhere. Say so, and point at the log the hook writes.
-    if deferred and not (docs_updated or core_updated):
-        from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+    if docs.noop:
+        parts.append(f"{docs.noop} already current")
+    if docs.failed:
+        parts.append(f"[red]{docs.failed} failed[/red]")
+    return ", ".join(parts) if parts else "nothing to update"
 
-        # The oldest lock is the one worth naming: it is the run most likely to
-        # have stopped progressing, and "still running" with no age attached is
-        # exactly the message that leaves a wedged update looking healthy.
-        ages = [r.lock_age_seconds for r in core_results if r.lock_age_seconds is not None]
-        oldest = max(ages) if ages else None
-        if oldest is not None and oldest > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
-            tail = (
-                f"An update has held the lock {format_lock_age(oldest)}, which is "
-                "longer than an update normally takes. Check "
-                "[bold].repowise/.update.log[/bold]: if it has not been written to "
-                "in that time, that update is stuck and can be stopped."
-            )
-        elif oldest is not None:
-            tail = (
-                f"A background update has been running {format_lock_age(oldest)}; "
-                "watch [bold].repowise/.update.log[/bold]."
-            )
-        else:
-            tail = "A background update is still running; watch [bold].repowise/.update.log[/bold]."
+
+def _print_docs_update_summary(
+    core_results: list[Any],
+    docs: _DocsTally,
+    ws_root: Path,
+    *,
+    start: float,
+    started_at: datetime,
+) -> None:
+    """The closing line: complete, or deferred when every stale repo only deferred."""
+    core_updated = sum(1 for r in core_results if r.updated)
+    core_deferred = sum(1 for r in core_results if r.skipped_reason == "in_flight")
+    deferred = docs.deferred + core_deferred
+    summary = _docs_update_summary(core_updated, deferred, docs)
+    console.print()
+    # "Complete" would overclaim while the real regeneration runs elsewhere.
+    if deferred and not (docs.updated or core_updated):
         console.print(
-            f"[yellow]Workspace update deferred[/yellow]: {summary}. {tail} "
+            f"[yellow]Workspace update deferred[/yellow]: {summary}. "
+            f"{_deferred_tail(core_results)} "
             f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
         )
     else:
@@ -565,6 +654,31 @@ def _workspace_docs_update(
             f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
         )
         _print_breaking_changes(ws_root, started_at)
+
+
+def _deferred_tail(core_results: list[Any]) -> str:
+    """Where the deferred work is, named by the oldest lock's age.
+
+    The oldest lock is the run most likely to have stopped progressing; "still
+    running" with no age is what leaves a wedged update looking healthy.
+    """
+    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+
+    ages = [r.lock_age_seconds for r in core_results if r.lock_age_seconds is not None]
+    oldest = max(ages) if ages else None
+    if oldest is not None and oldest > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
+        return (
+            f"An update has held the lock {format_lock_age(oldest)}, which is "
+            "longer than an update normally takes. Check "
+            "[bold].repowise/.update.log[/bold]: if it has not been written to "
+            "in that time, that update is stuck and can be stopped."
+        )
+    if oldest is not None:
+        return (
+            f"A background update has been running {format_lock_age(oldest)}; "
+            "watch [bold].repowise/.update.log[/bold]."
+        )
+    return "A background update is still running; watch [bold].repowise/.update.log[/bold]."
 
 
 def _refresh_workspace_editor_project_files(
