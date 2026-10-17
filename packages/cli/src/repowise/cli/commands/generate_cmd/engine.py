@@ -16,7 +16,12 @@ from typing import Any
 from repowise.cli.helpers import console, load_state
 from repowise.core.generation.cascade import CascadeMode
 from repowise.core.generation.page_selection import PageSelectionIntent
-from repowise.core.generation.scope import ScopePlan, build_cost_plans, resolve_scope
+from repowise.core.generation.scope import (
+    ScopePlan,
+    build_cost_plans,
+    load_page_records,
+    resolve_scope,
+)
 
 # The page types a model writes. Everything else is structural and refreshes on
 # `repowise update`, so `generate` never writes one: it works on the concept
@@ -251,7 +256,8 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
     Structural pages are permanently ``template`` by design, so counting them
     would mean ``docs_mode`` could never flip to ``llm`` no matter how much
     prose was written. The remaining-stub count is scoped to the concept layer
-    for exactly that reason.
+    for exactly that reason. A ``model_free`` page is not a stub either: no
+    model is ever going to write it.
     """
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select
@@ -269,19 +275,19 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
                 )
             ).scalar_one()
         )
-        stubs = int(
-            (
-                await session.execute(
-                    sa_select(sa_func.count())
-                    .select_from(Page)
-                    .where(
-                        Page.repository_id == repo_id,
-                        Page.provider_name == "template",
-                        Page.page_type.in_(list(_MODEL_WRITTEN_PAGE_TYPES)),
-                    )
+        stub_rows = (
+            await session.execute(
+                sa_select(Page).where(
+                    Page.repository_id == repo_id,
+                    Page.provider_name == "template",
+                    Page.page_type.in_(list(_MODEL_WRITTEN_PAGE_TYPES)),
                 )
-            ).scalar_one()
-        )
+            )
+        ).scalars()
+        # The planner's own predicate, so a ``model_free`` page (written by a
+        # deterministic subkind) is not reported as unwritten when ``generate
+        # --unwritten`` would never select it.
+        stubs = sum(1 for record in load_page_records(list(stub_rows)) if record.is_template)
         stale_ids = set(
             (
                 await session.execute(
