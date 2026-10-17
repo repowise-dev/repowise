@@ -815,10 +815,7 @@ def _generate_with_model(run: InitRun) -> bool:
         skip_tests=opts.skip_tests,
         skip_infra=opts.skip_infra,
         embedder_name_resolved=run.embedder_name_resolved,
-        # Resume seeds "already done" from the page ids in the vector store,
-        # and a completed template wiki put one there for every file. Resuming
-        # against it would skip the entire model run and say nothing, so a
-        # template wiki is never a run to continue.
+        # A template wiki fills the store resume reads, so never resume over it.
         resume=opts.resume and run.prior_docs_mode != "deterministic",
         warnings=run.run_warnings,
         test_run=opts.test_run,
@@ -827,23 +824,19 @@ def _generate_with_model(run: InitRun) -> bool:
     if gen_stop:
         return True
     if cost_declined and run.prior_docs_mode == "llm":
-        # The repo already has written pages. Declining the price of new ones
-        # is not a request to replace the old ones with templates.
+        # Declining new pages is no request to replace the written ones.
         console.print(
             "  [dim]Keeping the wiki this repo already has. Nothing was "
             "generated and nothing was replaced.[/dim]"
         )
     elif cost_declined:
-        # Declining the gate only ever meant "not at that price", so fall back
-        # to the free renderer rather than to nothing.
         run.cost_declined = True
         console.print(
             "  [dim]Building the wiki from structure instead. Run "
             "[bold]repowise update --full[/bold] to write it with a "
             "model later.[/dim]"
         )
-        # The user has a provider and just declined a bill, not the embedder
-        # they configured, so honour it either way.
+        # Declining the bill keeps the configured embedder.
         _render_template_wiki(run, embedder_was_requested=True)
     return False
 
@@ -851,13 +844,9 @@ def _generate_with_model(run: InitRun) -> bool:
 def _generate(run: InitRun) -> bool:
     """Phase 3. True when init should stop here (a dry run)."""
     opts = run.opts
-    # The priced branch has its own dry-run return; the template branches
-    # would render the wiki and fall through to persistence, overwriting a
-    # model-written one.
+    # The priced branch has its own dry-run exit.
     if opts.dry_run and (opts.index_only or run.no_provider):
         if opts.run_mode == "fast":
-            # Fast skips generation outright, so promising a wiki here would
-            # preview the opposite of what the real run does.
             console.print("\n  Dry run: fast mode indexes graph and git only. No wiki written.")
         else:
             _print_structural_plan(
@@ -873,10 +862,7 @@ def _generate(run: InitRun) -> bool:
             )
         return True
 
-    # Fast mode exists to get a very large repo indexed quickly, so rendering
-    # and embedding a page per file is the cost it was chosen to avoid, and its
-    # ESSENTIAL git would leave the pages' git sections thin. Fast stays a
-    # graph-and-git index; `repowise update --full` is the way out of it.
+    # Fast mode is a graph-and-git index only.
     if opts.index_only and opts.run_mode == "fast":
         console.print(
             "  [dim]Skipping wiki generation in fast mode. Run "
@@ -886,8 +872,6 @@ def _generate(run: InitRun) -> bool:
         )
         return False
     if opts.index_only or run.no_provider:
-        # ``no_provider`` reaches here the same way ``--index-only`` does: a
-        # full run that found no key still gets the whole template wiki.
         _render_template_wiki(run, embedder_was_requested=run.embedder_was_requested)
         return False
     return _generate_with_model(run)
@@ -1253,14 +1237,11 @@ def init_command(**params: Any) -> None:
     if run is None or not index_repository(run):
         return
 
-    # Shown between analysis and generation.
     show_analysis_summary(run.result)
     if _generate(run):
         return
 
-    # `cost_declined` short-circuits any further LLM work for the rest of this
-    # run, so persistence and state treat it as index-only. So does
-    # `no_provider`: there is no model to do the work either way.
+    # A declined cost gate or a missing provider persists like index-only.
     run.effective_index_only = run.opts.index_only or run.cost_declined or run.no_provider
     persist_index(run)
     catch_up_savings(run.repo_path)

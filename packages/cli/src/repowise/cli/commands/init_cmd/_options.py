@@ -97,13 +97,11 @@ class InitRun:
     no_provider: bool = False
     total_phases: int = 4
     result: Any = None
-    # The pipeline's PhaseTimingRecorder; persistence and generation record
-    # into its table too.
+    # PhaseTimingRecorder shared by every stage.
     recorder: Any = None
     run_warnings: list[str] = field(default_factory=list)
-    # The embedder a template wiki was built with; None when none was rendered.
+    # Embedder of the template wiki, None when none was rendered.
     index_only_embedder: str | None = None
-    # The user declined the model's cost gate.
     cost_declined: bool = False
     effective_index_only: bool = False
     phase_timings: dict[str, float] = field(default_factory=dict)
