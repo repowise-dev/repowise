@@ -849,6 +849,111 @@ class TestWorkspaceCheckBreaking:
             root,
         )
 
+    def test_format_json_matches_the_legacy_flag(self, runner, tmp_path):
+        import json
+
+        self._write_config_with_rule_and_violation(tmp_path)
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--format", "json"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["violation_count"] == 1
+        assert data["breaking_changes"] == []
+        assert data["breaking_changes_available"] is False
+
+
+# ---------------------------------------------------------------------------
+# workspace metrics
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceMetrics:
+    def _write(self, root: Path, edges: list[tuple[str, str]], rules: list[dict]) -> None:
+        from repowise.core.workspace.system_graph import (
+            SystemEdge,
+            SystemGraph,
+            SystemNode,
+            save_system_graph,
+        )
+
+        names = sorted({n for e in edges for n in e})
+        data = {
+            "version": 1,
+            "default_repo": names[0] if names else None,
+            "repos": [{"path": n, "alias": n} for n in names],
+            "conformance": {"rules": rules},
+        }
+        (root / WORKSPACE_CONFIG_FILENAME).write_text(
+            yaml.dump(data, default_flow_style=False), encoding="utf-8"
+        )
+        save_system_graph(
+            SystemGraph(
+                nodes=[SystemNode(id=n, repo=n, service_path=None, name=n) for n in names],
+                edges=[
+                    SystemEdge(
+                        id=f"{s}->{t}:http",
+                        source=s,
+                        target=t,
+                        kind="http",
+                        match_type="exact",
+                        confidence=1.0,
+                        weight=1,
+                        structural=True,
+                    )
+                    for s, t in edges
+                ],
+            ),
+            root,
+        )
+
+    def test_metrics_table_reports_core_and_violations(self, runner, tmp_path):
+        self._write(
+            tmp_path,
+            [("frontend", "db"), ("db", "frontend"), ("api", "db")],
+            [{"source": "frontend", "target": "db"}],
+        )
+        result = runner.invoke(cli, ["workspace", "metrics", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Architecture score" in result.output
+        assert "Propagation cost" in result.output
+        assert "Cyclic core" in result.output
+        assert "Rule violations" in result.output
+        assert "Service roles:" in result.output
+
+    def test_metrics_table_acyclic(self, runner, tmp_path):
+        self._write(tmp_path, [("frontend", "api"), ("api", "db")], [])
+        result = runner.invoke(cli, ["workspace", "metrics", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "acyclic structure" in result.output
+        assert "Rule violations" not in result.output
+
+    def test_metrics_format_json(self, runner, tmp_path):
+        import json
+
+        self._write(
+            tmp_path,
+            [("frontend", "db"), ("db", "frontend")],
+            [{"source": "frontend", "target": "db"}],
+        )
+        result = runner.invoke(cli, ["workspace", "metrics", str(tmp_path), "--format", "json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["node_count"] == 2
+        assert data["core_size"] == 2
+        assert data["conformance_violations"] == 1
+        assert set(data["role_breakdown"]) >= {"core", "shared", "control", "peripheral"}
+
+    def test_metrics_empty_graph(self, runner, tmp_path):
+        self._write(tmp_path, [], [])
+        result = runner.invoke(cli, ["workspace", "metrics", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "No services in the system graph yet" in result.output
+
+    def test_metrics_missing_graph(self, runner, tmp_path):
+        _write_workspace_config(tmp_path, [{"path": "a", "alias": "a"}])
+        result = runner.invoke(cli, ["workspace", "metrics", str(tmp_path)])
+        assert result.exit_code != 0
+        assert "No system graph found" in result.output
+
 
 # ---------------------------------------------------------------------------
 # workspace impacted-tests
