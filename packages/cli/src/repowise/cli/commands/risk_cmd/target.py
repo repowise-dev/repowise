@@ -14,7 +14,7 @@ from .records import _DIRECTIVE_RECORD_BLOCKS, _print_records
 
 #: Per-target keys the trim drops, and nothing else. A denylist on purpose: its
 #: failure mode is a slightly larger payload, an allowlist's is a lost answer.
-#: ``impact_surface`` is the one unbounded block; its counts survive elsewhere.
+#: ``impact_surface`` is opt-in on the tool; the entry stays for hand-built payloads.
 _DROPPED_TARGET_KEYS = ("_base_dep_count", "impact_surface")
 
 
