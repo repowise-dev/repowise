@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from repowise.cli._helpers.console import warn
 from repowise.cli._helpers.paths import ensure_repowise_dir, get_repowise_dir
 from repowise.cli.errors import reasoned_error
 from repowise.core.reasoning import (
@@ -138,7 +137,7 @@ def _persist_provider_key(repo_path: Path, provider: str) -> None:
         try:
             save_repo_env_key(repo_path, env_var, value)
         except (OSError, ValueError) as exc:
-            warn(
+            _facade.warn(
                 f"could not save {env_var} to "
                 f".repowise/.env ({exc}). The index is complete, but "
                 f"`repowise mcp` will need {env_var} in its environment."

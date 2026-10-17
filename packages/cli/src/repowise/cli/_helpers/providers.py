@@ -10,7 +10,6 @@ from typing import Any
 import click
 
 from repowise.cli._helpers.config import save_config_partial
-from repowise.cli._helpers.console import warn
 from repowise.cli.errors import reasoned_error
 
 # ---------------------------------------------------------------------------
@@ -56,7 +55,7 @@ def _provider_kwargs_or_error(selection: Any, repo_path: Path | None) -> dict[st
         # A configured provider whose key is nowhere still gets built: the
         # constructor says what it needs. Agent CLIs are checked for install.
         for warning in _facade.validate_provider_config(selection.provider):
-            warn(warning)
+            _facade.warn(warning)
     return kwargs
 
 
