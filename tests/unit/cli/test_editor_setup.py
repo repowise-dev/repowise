@@ -1225,7 +1225,7 @@ def test_claude_refresh_project_files_skips_when_options_disable_file(
 def test_update_command_uses_editor_refresh_abstraction() -> None:
     from repowise.cli.commands.update_cmd.command import _finish_outcome, _refresh_editor_stamp
 
-    command_source = inspect.getsource(run_update)
+    command_source = inspect.getsource(inspect.getmodule(run_update))
     finish_source = inspect.getsource(_finish_outcome)
     stamp_source = inspect.getsource(_refresh_editor_stamp)
 

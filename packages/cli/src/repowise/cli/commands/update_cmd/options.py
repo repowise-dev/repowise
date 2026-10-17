@@ -91,3 +91,21 @@ class UpdateRun:
     doc_drift_report: Any = None
     persisted_git_meta: Any = None
     knowledge_graph_result: Any = None
+
+
+@dataclass
+class DocsPass:
+    """State of the model-backed half of a docs update."""
+
+    config: Any
+    provider: Any
+    cost_tracker: Any
+    new_decision_markers: list = field(default_factory=list)
+    session_decisions: list = field(default_factory=list)
+    # Decision records touched by evolution, surfaced in the completion panel.
+    decisions_evolved: int = 0
+    decision_vector_store: Any = None
+    prior_pages: dict = field(default_factory=dict)
+    generated_pages: list = field(default_factory=list)
+    full_stats: dict = field(default_factory=dict)
+    db_total_pages: int = 0
