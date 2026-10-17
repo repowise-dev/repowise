@@ -26,6 +26,15 @@
   name: (type_identifier) @symbol.name
 ) @symbol.def
 
+; Interface method spec: type Reader interface { Peek() byte }
+; A bodiless declaration parented by its interface (see parser._find_parent).
+; Methods of an anonymous interface (a field or parameter type) have no named
+; owner and are dropped there.
+(method_elem
+  name: (field_identifier) @symbol.name
+  parameters: (parameter_list) @symbol.params
+) @symbol.def
+
 ; Package-level const: const MaxRetries = 3
 (const_spec
   name: (identifier) @symbol.name

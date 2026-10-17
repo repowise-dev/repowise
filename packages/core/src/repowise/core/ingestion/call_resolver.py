@@ -798,7 +798,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             index_id = representatives.get(sym.id, sym.id)
             decl_key = (sym.parent_name, sym.name)
             if sym.is_declaration:
-                declarations.append((path, index_id, decl_key))
+                # A Go interface method spec is not a prototype: its body is
+                # never defined, and the structural implementers that carry one
+                # differ from the interface by name or package. Pairing on
+                # ``(parent, name)`` would redirect the spec onto an unrelated
+                # type's method, so it stays unlinked.
+                if sym.language != "go":
+                    declarations.append((path, index_id, decl_key))
             else:
                 definitions[decl_key].append((path, index_id))
             _index_bare_name(sym, index_id, file_syms, top_level)
@@ -2188,8 +2194,29 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         # Every strategy below ends in a lookup keyed on the method name, so a
         # name the repo declares nowhere cannot resolve.
-        if method_name not in self._global_symbols:
+        # A Go interface method spec is bodiless, so ``_global_symbols`` leaves it
+        # out; the method index holds it, and it is what an interface-typed
+        # receiver binds to.
+        if method_name not in self._global_symbols and not (
+            self._language_of(file_path) == "go" and method_name in self._method_names()
+        ):
             return False, None
+
+        # A Go local, parameter or ``var`` the body declares is read through its
+        # declared type, never as a type name: ``reader.Peek()`` on a
+        # ``reader text.Reader`` is the interface's method, not the unexported
+        # struct ``reader``'s. Go has no method call on a type name outside a
+        # method expression, so the variable reading is the right one.
+        if self._go_receiver_is_variable(file_path, call, caller_id):
+            hit = self._first_strategy_hit(
+                self._strategies_for(file_path).member, file_path, call, caller_id
+            )
+            if hit is not None:
+                return True, hit
+            hit = self._unclassed_receiver_call(file_path, call, caller_id)
+            if hit is None and self._receiver_type_is_external(file_path, call, caller_id):
+                return True, None
+            return hit is not None, hit
 
         # The caller's own file first, ahead of the language strategies: a
         # private inner class here outranks a same-named package sibling.
@@ -2218,6 +2245,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             # The method is the external type's: refused, not left to a name match.
             return True, None
         return hit is not None, hit
+
+    def _go_receiver_is_variable(self, file_path: str, call: CallSite, caller_id: str) -> bool:
+        """Whether a Go call's receiver is a typed local, parameter or ``var`` of the caller."""
+        receiver_name = call.receiver_name or ""
+        if "." in receiver_name or self._language_of(file_path) != "go":
+            return False
+        return receiver_name in self._declared_types_in(file_path, caller_id, "go")
 
     def _unclassed_receiver_call(
         self,

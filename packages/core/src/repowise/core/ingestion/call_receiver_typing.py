@@ -12,6 +12,7 @@ from typing import NamedTuple, TypeVar
 
 from .decorator_names import is_property_accessor, is_property_getter
 from .lang_helpers.anonymous_classes import is_anonymous_member
+from .languages.go_interface_satisfaction import go_embedded_interfaces
 from .languages.receiver_types import (
     BINDING_LANGUAGES,
     CALL_SHADOW_LANGUAGES,
@@ -386,6 +387,10 @@ class ReceiverTypingMixin:
         found = self._typed_receiver_lookup(file_path, call, caller_id, bare, type_name)
         if found is None and self._strategies_for(file_path).inherited_typed_receiver:
             return self._inherited_typed_target(file_path, call, caller_id, bare)
+        if found is None and self._language_of(file_path) == "go":
+            promoted = self._go_embedded_method(file_path, bare, call.target_name)
+            if promoted is not None and promoted[1] != caller_id:
+                return promoted[1], "import"
         return found
 
     def _inherited_typed_target(
@@ -1658,6 +1663,81 @@ class ReceiverTypingMixin:
         if hit is None or hit[1] == caller_id:
             return None
         return self._body_typed_call(caller_id, hit[1], hit[2], call.line)
+
+    def _go_embedded_method(
+        self,
+        file_path: str,
+        type_name: str,
+        method_name: str,
+    ) -> tuple[str, str] | None:
+        """``(file, method id)`` a Go interface named *type_name* promotes from an embed.
+
+        Only for an interface that is the one visible to *file_path* by that name
+        and only through embedded interfaces the repository declares: an
+        external one (``io.RuneReader``) has no symbol, so the call binds nothing.
+        """
+        type_id = self._go_visible_interface(file_path, type_name)
+        if type_id is None:
+            return None
+        return self._embedded_interface_method(type_id, method_name, set(), 0)
+
+    def _go_visible_interface(self, file_path: str, name: str) -> str | None:
+        """The one repository Go interface *name* that *file_path* can see, or None."""
+        parsed = self._parsed_files.get(file_path)
+        visible = {posixpath.dirname(file_path)}
+        for imp in parsed.imports if parsed else ():
+            if imp.resolved_file and not imp.resolved_file.startswith("external:"):
+                visible.add(posixpath.dirname(imp.resolved_file))
+        ids = {
+            identity[0]
+            for path, identity, _ in self._declared_types_named(name)
+            if posixpath.dirname(path) in visible
+            and self._symbols_by_id[identity[0]].kind == "interface"
+            and self._symbols_by_id[identity[0]].language == "go"
+        }
+        return next(iter(ids)) if len(ids) == 1 else None
+
+    def _embedded_interface_method(
+        self, type_id: str, method_name: str, seen: set[str], depth: int
+    ) -> tuple[str, str] | None:
+        """Walk the interfaces embedded in *type_id* for *method_name*; a cycle or depth ends it."""
+        if type_id in seen or depth > 6:
+            return None
+        seen.add(type_id)
+        symbol = self._symbols_by_id[type_id]
+        path = self._symbol_paths_by_id[type_id]
+        lines = self._lines_of(path)[symbol.start_line - 1 : symbol.end_line]
+        embeds = go_embedded_interfaces("\n".join(lines))
+        if not embeds:
+            return None
+        package = posixpath.dirname(path)
+        parsed = self._parsed_files.get(path)
+        for qualifier, name in embeds:
+            target_package = package
+            if qualifier is not None:
+                target_package = None
+                for imp in parsed.imports if parsed else ():
+                    if qualifier in imp.local_names and imp.resolved_file:
+                        if not imp.resolved_file.startswith("external:"):
+                            target_package = posixpath.dirname(imp.resolved_file)
+                        break
+                if target_package is None:
+                    continue  # external package: nothing in the repo to bind
+            ids = {
+                identity[0]
+                for p, identity, _ in self._declared_types_named(name)
+                if posixpath.dirname(p) == target_package
+                and self._symbols_by_id[identity[0]].kind == "interface"
+            }
+            if len(ids) != 1:
+                continue
+            embedded_id = next(iter(ids))
+            hit = self._package_method(embedded_id, method_name) or self._embedded_interface_method(
+                embedded_id, method_name, seen, depth + 1
+            )
+            if hit is not None:
+                return hit
+        return None
 
     def _package_method(self, type_id: str, method_name: str) -> tuple[str, str] | None:
         """``(file, method id)`` for the one go method of *type_id* in its package."""

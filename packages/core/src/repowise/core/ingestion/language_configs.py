@@ -167,6 +167,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         symbol_node_types={
             "function_declaration": "function",
             "method_declaration": "method",
+            "method_elem": "method",  # interface method spec; bodiless
             "type_spec": "struct",  # refined in post-processing
             "const_spec": "variable",  # const MaxRetries = 3
             "var_spec": "variable",  # var ErrNotFound = errors.New(...)
@@ -176,6 +177,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=go_visibility,
         parent_extraction="receiver",
         parent_class_types=frozenset(),
+        # An interface method spec promises a body it does not carry; keep it
+        # out of the definition indexes, as Rust trait signatures are.
+        declaration_node_types=frozenset({"method_elem"}),
     ),
     "rust": LanguageConfig(
         symbol_node_types={

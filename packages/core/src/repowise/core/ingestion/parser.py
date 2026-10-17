@@ -633,6 +633,22 @@ def _drop_swift_extensions_of_local_types(symbols: list[Symbol]) -> list[Symbol]
     return [s for s in symbols if s.kind != "impl" or s.id not in declared]
 
 
+def _go_interface_owner(def_node: Node, src: str) -> str | None:
+    """Name of the interface ``type_spec`` that directly declares *def_node*.
+
+    ``None`` for a method of an anonymous interface, whose parent is not a
+    ``type_spec``.
+    """
+    iface = def_node.parent
+    if iface is None or iface.type != "interface_type":
+        return None
+    spec = iface.parent
+    if spec is None or spec.type != "type_spec":
+        return None
+    name = spec.child_by_field_name("name")
+    return _node_text(name, src).strip() if name is not None else None
+
+
 def _is_declaration(
     def_node: Node,
     config: LanguageConfig,
@@ -1857,6 +1873,11 @@ class ASTParser:
         if node_type == "function_declarator" and parent_name is None:
             return None
 
+        # Go: a ``method_elem`` of an anonymous interface (a field or parameter
+        # type) has no named owner to parent it, so it is not a symbol.
+        if node_type == "method_elem" and parent_name is None:
+            return None
+
         # Upgrade function → method when a parent class is detected.
         # F#: a nested module is a parent too (for id uniqueness), but it
         # is not a type, so a `let` inside one stays a function.
@@ -1991,6 +2012,8 @@ class ASTParser:
     ) -> str | None:
         """Determine the parent class/type for a symbol."""
         if config.parent_extraction == "receiver":
+            if def_node.type == "method_elem":
+                return _go_interface_owner(def_node, src)
             # Go: extract type name from receiver parameter list
             if receiver_nodes:
                 return extract_go_receiver_type(_node_text(receiver_nodes[0], src))
