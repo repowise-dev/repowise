@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import structlog
 
@@ -31,6 +31,16 @@ from ._constants import (
     _FILE_INDEX_TIMEOUT_SECS,
     _MAX_PARTNERS_PER_FILE,
 )
+from ._incremental import (
+    IdleRefresh,
+    SignalPass,
+    co_change_stage,
+    fallback_note_agents_for,
+    idle_refresh_paths,
+    prior_defect_stage,
+)
+from ._incremental import apply_co_change as _apply_co_change
+from ._incremental import apply_prior_defects as _apply_prior_defects
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import DECAY_REFRESH_KEYS, _window_anchor, index_file
@@ -185,6 +195,16 @@ class _FilePassInputs:
     trace_index: Any
 
 
+class _ChangedScope(NamedTuple):
+    """An update's file sets after the allowlist and the history tier."""
+
+    changed: list[str]
+    all_files: set[str] | None
+    history_files: set[str]
+    history_changed: set[str]
+    co_change_files: set[str] | None
+
+
 def _successful_rows(raw: list[Any], failure_message: str) -> list[dict]:
     """Keep the rows of a per-file pass; log each exception it returned."""
     rows: list[dict] = []
@@ -194,29 +214,6 @@ def _successful_rows(raw: list[Any], failure_message: str) -> list[dict]:
         else:
             rows.append(r)
     return rows
-
-
-def _apply_co_change(rows: list[dict], walk: CoChangeWalk) -> None:
-    """Overlay co-change partners and change entropy from *walk* onto *rows*."""
-    for meta in rows:
-        fp = meta["file_path"]
-        if fp in walk.partners:
-            meta["co_change_partners_json"] = json.dumps(walk.partners[fp])
-        if fp in walk.entropy:
-            meta["change_entropy"] = walk.entropy[fp]
-        if fp in walk.partner_count:
-            meta["co_change_partner_count"] = walk.partner_count[fp]
-            meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
-
-
-def _apply_prior_defects(rows: list[dict], prior_defects: PriorDefects) -> None:
-    """Overlay prior-defect counts onto *rows*."""
-    for meta in rows:
-        fp = meta["file_path"]
-        if fp in prior_defects.counts:
-            meta["prior_defect_count"] = prior_defects.counts[fp]
-        if fp in prior_defects.raw_counts:
-            meta["prior_defect_raw_count"] = prior_defects.raw_counts[fp]
 
 
 class GitIndexer:
@@ -578,8 +575,8 @@ class GitIndexer:
         Mirrors ``index_repo``'s batched shape: one repo-wide commit-index
         walk feeds every per-file worker (instead of one ``git log -- <file>``
         subprocess per changed file), so the metadata an update produces is
-        identical to what a fresh full index would produce — including the
-        agent-provenance rollup, which the old per-file path never classified.
+        identical to what a fresh full index would produce, including the
+        agent-provenance rollup.
 
         ``all_files`` is the repo's full tracked-file set. When provided (and
         the tier includes co-change), the repo-wide co-change/entropy walk
@@ -599,24 +596,18 @@ class GitIndexer:
         otherwise re-score only the changed files, so idle files never get
         their time-decayed history fields (``temporal_hotspot_score``, the 90d
         churn/commit windows, ``prior_defect_count``, ``change_entropy``,
-        ``co_change_partners_json``) rewritten as the anchor advances — their
-        scores can only ratchet downward and never recover (issue #728). This
-        recomputes just those fields off the walks already loaded here; the
-        persist path upserts them field-by-field so ownership / age / authorship
-        (correct only from the full init walk) are left intact. Idle
-        history-tier files get their complete row instead (see
-        ``_compute_idle_decay``).
+        ``co_change_partners_json``) rewritten as the anchor advances, and
+        their scores could never recover. This recomputes just those fields
+        off the walks already loaded here; the persist path upserts them
+        field-by-field so ownership / age / authorship (correct only from the
+        full init walk) are left intact. Idle history-tier files get their
+        complete row instead (see ``_compute_idle_decay``).
 
         ``timings`` is the run's phase table; each walk below records a
         ``rebuild.git.*`` row so a slow git step names itself.
         """
         from repowise.core.pipeline.phase_timing import timed
 
-        # The same allowlist the full index applies to the tracked-file set.
-        # Without it an update wrote rows for a changed workflow file, and the
-        # idle refresh minted rows for every tracked config and markup file,
-        # which the health pass then scored: a store grew rows a fresh index
-        # never has.
         repo = self._get_repo()
         if repo is None:
             return []
@@ -624,35 +615,11 @@ class GitIndexer:
             with contextlib.suppress(Exception):
                 repo.close()
             return []
-        # Non-code files get the same history tier the full index gives them,
-        # drawn from the same tracked-file set: the parsed files miss .rst,
-        # LICENSE and the like.
-        tier_paths = (self._get_tracked_files(repo) or all_files) if all_files else None
-        history_files = _history_tier_files(
-            self.repo_path,
-            tier_paths or changed_file_paths,
-            extra_exclude_patterns=self._exclude_patterns,
-        )
-        history_changed = history_files.intersection(changed_file_paths)
-        changed_file_paths = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
-        # The co-change walk reads the same tracked-file set the full index
-        # hands it, so a template or stylesheet stays a partner after an update.
-        co_change_files = set(tier_paths) if tier_paths else None
-        if all_files:
-            all_files = {fp for fp in all_files if not _should_skip_index(fp)}
+        scope = self._changed_scope(repo, changed_file_paths, all_files)
+        changed_file_paths, all_files = scope.changed, scope.all_files
+        history_files, history_changed = scope.history_files, scope.history_changed
 
-        loop = asyncio.get_event_loop()
-
-        # Whether to refresh idle files' decay fields this run. Requires the
-        # repo-wide commit index (rename-tracking mode has none) and the
-        # co-change walk (which supplies idle files' fresh partners/entropy —
-        # skipping it would blank those fields on ESSENTIAL-tier repos).
-        refresh_idle = bool(
-            idle_decay_sink is not None
-            and all_files
-            and not self.follow_renames
-            and self.tier.includes_co_change
-        )
+        refresh_idle = self._wants_idle_refresh(idle_decay_sink, all_files)
         target_files = (
             set(all_files) | history_files
             if refresh_idle
@@ -663,38 +630,18 @@ class GitIndexer:
 
         prov_clf = self._provenance_classifier()
         trace_index = self._load_trace_index(repo)
-        commit_index: dict[str, list[_CommitRec]] = {}
-        fallback_files = set(target_files)
-        if not self.follow_renames:
-            from ..git_commit_index import load_sampled_commit_index
-
-            # Bucket every tracked file (not just the changed ones) when an idle
-            # refresh is due, so idle files carry their own precomputed commits.
-            # The git subprocess is identical either way — only the in-memory
-            # bucketing set widens.
-            with timed(timings, "rebuild.git.commit_index"):
-                sample = load_sampled_commit_index(
-                    repo,
-                    self.commit_limit,
-                    target_files,
-                    deep_limit=_DEEP_WALK_COMMIT_LIMIT,
-                    deep_threshold=(
-                        1 if refresh_idle or history_changed else _DEEP_WALK_MIN_FALLBACK
-                    ),
-                    provenance_classifier=prov_clf,
-                    trace_index=trace_index,
-                    cache_dir=self._window_cache_dir(),
-                    cache_writable=not self.read_only,
-                )
-                commit_index = sample.commits
-                fallback_files = sample.fallback_files
+        commit_index, fallback_files = self._changed_commit_index(
+            repo,
+            target_files,
+            refresh_idle,
+            history_changed,
+            prov_clf,
+            trace_index,
+            timings,
+        )
         history_files -= fallback_files
         history_changed -= fallback_files
-        fallback_note_agents: dict[str, Any] = {}
-        if fallback_files.intersection(changed_file_paths):
-            from ..git_commit_index import load_git_ai_note_agents
-
-            fallback_note_agents = load_git_ai_note_agents(repo, None)
+        fallback_note_agents = fallback_note_agents_for(repo, fallback_files, changed_file_paths)
         as_of_ts = self._resolve_as_of_ts(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
@@ -707,6 +654,11 @@ class GitIndexer:
             executor_closed = True
             executor.shutdown(wait=False, cancel_futures=True)
             close_thread_repos()
+
+        def _abort() -> None:
+            _cleanup_executor()
+            with contextlib.suppress(Exception):
+                repo.close()
 
         owner_task = asyncio.current_task()
         if owner_task is not None:
@@ -733,109 +685,125 @@ class GitIndexer:
                     failure_event="Git indexing failed for changed file",
                 )
         except BaseException:
-            # Cancellation is a BaseException on supported Python versions.
-            # Release the private pool immediately even when the caller catches
-            # the cancellation and keeps its own task alive.
-            _cleanup_executor()
-            with contextlib.suppress(Exception):
-                repo.close()
+            # Cancellation is a BaseException: release the private pool even
+            # when the caller catches it and keeps its own task alive.
+            _abort()
             raise
 
         results = _successful_rows(results_raw, "Failed to index changed file")
 
-        # Idle files (window commits, but not in this change set) whose decay
-        # fields we will refresh — computed here so the prior-defect pass below
-        # covers them in its single windowed walk.
-        changed_set = set(changed_file_paths) | history_changed
+        # Computed before the prior-defect pass so its one walk covers them too.
         idle_paths = (
-            [
-                fp
-                for fp, commits in commit_index.items()
-                if commits and fp not in changed_set and fp not in fallback_files
-            ]
+            idle_refresh_paths(
+                commit_index, set(changed_file_paths) | history_changed, fallback_files
+            )
             if refresh_idle
             else []
         )
         # The code signals below (prior defects, co-change) skip history-tier rows.
         code_results = [m for m in results if m["file_path"] not in history_changed]
 
-        # Recompute prior-defect counts (same dedicated windowed pass as the
-        # full index — the per-file commit list can't carry this signal
-        # accurately on busy repos). Widen the counted set to the idle files
-        # too: the walk is one subprocess regardless, and an idle file whose
-        # only fix aged past the window must drop to 0 (handled below).
-        try:
-            with timed(timings, "rebuild.git.prior_defects"):
-                prior_defects = compute_prior_defects(
-                    repo,
-                    {m["file_path"] for m in code_results}
-                    | set(idle_paths).difference(history_files),
-                    as_of_ts=as_of_ts,
-                )
-            _apply_prior_defects(code_results, prior_defects)
-        except Exception as exc:
-            logger.debug("prior_defect_pass_failed", error=str(exc))
-            prior_defects = PriorDefects()
-
-        # Co-change partners + change entropy ride a repo-wide walk the
-        # per-file pass cannot produce. ``index_file`` resets both fields to
-        # empty defaults and the upsert overwrites rows field-by-field, so
-        # skipping this walk wiped the init-computed partners for every file
-        # an update touched. One ``git log --name-only`` subprocess, same as
-        # the full-index path.
+        sp = SignalPass(repo=repo, as_of_ts=as_of_ts, timings=timings, abort=_abort)
+        # Idle files are counted too, so one whose only fix aged out drops to 0.
+        prior_defects = prior_defect_stage(
+            sp,
+            code_results,
+            {m["file_path"] for m in code_results} | set(idle_paths).difference(history_files),
+        )
         if self.tier.includes_co_change and all_files:
-            try:
-                with timed(timings, "rebuild.git.co_change"):
-                    walk = await loop.run_in_executor(
-                        executor,
-                        compute_co_changes_and_entropy,
-                        repo,
-                        co_change_files or set(all_files),
-                        max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
-                        _MAX_PARTNERS_PER_FILE,
-                        None,
-                        None,
-                        as_of_ts,
-                    )
-                _apply_co_change(code_results, walk)
-                if co_change_sink is not None:
-                    co_change_sink.update(walk.partners)
-
-                # Idle-file decay refresh (#728): recompute only the
-                # anchor-dependent window/decay fields for every idle file with
-                # recent-window commits, reusing the walks already loaded above.
-                # index_file with precomputed commits + blame off does no git
-                # subprocess and no file I/O, so this is pure timestamp
-                # arithmetic; strip to the decay keys so the field-wise upsert
-                # never clobbers full-history columns (ownership, age, authors).
-                if refresh_idle and idle_paths:
-                    with timed(timings, "rebuild.git.idle_decay"):
-                        idle_decay_sink.update(
-                            await asyncio.to_thread(
-                                self._compute_idle_decay,
-                                repo,
-                                idle_paths,
-                                commit_index,
-                                as_of_ts,
-                                prov_clf,
-                                walk,
-                                prior_defects,
-                                history_files,
-                            )
-                        )
-            except Exception as exc:
-                logger.debug("co_change_pass_failed", error=str(exc))
-            except BaseException:
-                _cleanup_executor()
-                with contextlib.suppress(Exception):
-                    repo.close()
-                raise
+            await co_change_stage(
+                self,
+                sp,
+                executor,
+                scope.co_change_files or set(all_files),
+                code_results,
+                co_change_sink,
+                IdleRefresh(
+                    idle_decay_sink, idle_paths, commit_index, prov_clf, prior_defects, history_files
+                ),
+            )
 
         if owner_task is not None:
             owner_task.remove_done_callback(_cleanup_executor)
         _cleanup_executor()
         _release_repo(repo)
         return results
+
+    def _wants_idle_refresh(
+        self, idle_decay_sink: dict[str, dict] | None, all_files: set[str] | None
+    ) -> bool:
+        """Whether this update refreshes idle files' decay fields.
+
+        Needs the repo-wide commit index (rename tracking has none) and the
+        co-change walk, which supplies idle files' fresh partners and entropy.
+        """
+        return bool(
+            idle_decay_sink is not None
+            and all_files
+            and not self.follow_renames
+            and self.tier.includes_co_change
+        )
+
+    def _changed_commit_index(
+        self,
+        repo: Any,
+        target_files: set[str],
+        refresh_idle: bool,
+        history_changed: set[str],
+        prov_clf: Any,
+        trace_index: Any,
+        timings: Any,
+    ) -> tuple[dict[str, list[_CommitRec]], set[str]]:
+        """Bucket *target_files*' window commits; ``(commit_index, fallback_files)``.
+
+        Rename tracking has no repo-wide index, so every file walks its own
+        history then. An idle refresh widens *target_files* to every tracked
+        file; the git subprocess is the same, only the bucketing set widens.
+        """
+        deep_threshold = 1 if refresh_idle or history_changed else _DEEP_WALK_MIN_FALLBACK
+        if self.follow_renames:
+            return {}, set(target_files)
+        from repowise.core.pipeline.phase_timing import timed
+
+        from ..git_commit_index import load_sampled_commit_index
+
+        with timed(timings, "rebuild.git.commit_index"):
+            sample = load_sampled_commit_index(
+                repo,
+                self.commit_limit,
+                target_files,
+                deep_limit=_DEEP_WALK_COMMIT_LIMIT,
+                deep_threshold=deep_threshold,
+                provenance_classifier=prov_clf,
+                trace_index=trace_index,
+                cache_dir=self._window_cache_dir(),
+                cache_writable=not self.read_only,
+            )
+            return sample.commits, sample.fallback_files
+
+    def _changed_scope(
+        self, repo: Any, changed_file_paths: list[str], all_files: set[str] | None
+    ) -> _ChangedScope:
+        """Apply the full index's allowlist and history tier to an update's file sets.
+
+        Without the allowlist an update wrote rows for a changed workflow file
+        and the idle refresh minted rows for every tracked config and markup
+        file. Non-code files get the history tier the full index gives them,
+        drawn from the same tracked-file set (the parsed files miss .rst,
+        LICENSE and the like), and the co-change walk reads that set too.
+        """
+        tier_paths = (self._get_tracked_files(repo) or all_files) if all_files else None
+        history_files = _history_tier_files(
+            self.repo_path,
+            tier_paths or changed_file_paths,
+            extra_exclude_patterns=self._exclude_patterns,
+        )
+        history_changed = history_files.intersection(changed_file_paths)
+        changed = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
+        co_change_files = set(tier_paths) if tier_paths else None
+        if all_files:
+            all_files = {fp for fp in all_files if not _should_skip_index(fp)}
+        return _ChangedScope(changed, all_files, history_files, history_changed, co_change_files)
 
     def _index_one_file(
         self, get_thread_repo: Callable[[], Any], file_path: str, inputs: _FilePassInputs

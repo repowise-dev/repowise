@@ -7,7 +7,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from ...ingestion.git_indexer import git_history_stale
 from ...ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
@@ -33,55 +33,72 @@ async def _merged_repo_excludes(
     from ...persistence.database import get_configured_db_url
 
     configured_url = get_configured_db_url()
-    settings_json: str | None = None
-
     if configured_url is None:
-        db_path = repo_path / ".repowise" / "wiki.db"
-        if db_path.is_file():
-            try:
-                with sqlite3.connect(str(db_path)) as conn:
-                    row = conn.execute("SELECT settings_json FROM repositories LIMIT 1").fetchone()
-                if row and row[0]:
-                    settings_json = row[0]
-            except Exception:
-                pass
+        settings_json = _local_settings_json(repo_path)
     else:
-        from ...persistence import (
-            create_engine,
-            create_session_factory,
-            get_session,
-            init_db,
-        )
-        from ...persistence.crud import get_repository_by_path
-
-        try:
-            engine = create_engine(configured_url)
-            try:
-                await init_db(engine)
-                sf = create_session_factory(engine)
-                async with get_session(sf) as session:
-                    repo = await get_repository_by_path(session, str(repo_path))
-                    if repo is not None and repo.settings_json:
-                        settings_json = repo.settings_json
-            finally:
-                await engine.dispose()
-        except Exception:
-            pass
+        settings_json = await _configured_settings_json(configured_url, repo_path)
 
     if settings_json:
-        try:
-            settings = _json.loads(settings_json)
-            if isinstance(settings, dict):
-                for value in settings.get("exclude_patterns") or []:
-                    if isinstance(value, str) and value not in patterns:
-                        patterns.append(value)
-        except Exception:
-            pass
+        _merge_settings_excludes(patterns, settings_json)
 
     for pattern in extra_exclude_patterns or []:
         if pattern not in patterns:
             patterns.append(pattern)
     return patterns
+
+
+def _local_settings_json(repo_path: Path) -> str | None:
+    """``settings_json`` from the repo-local ``wiki.db``, or ``None``."""
+    db_path = repo_path / ".repowise" / "wiki.db"
+    if not db_path.is_file():
+        return None
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute("SELECT settings_json FROM repositories LIMIT 1").fetchone()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass
+    return None
+
+
+async def _configured_settings_json(configured_url: str, repo_path: Path) -> str | None:
+    """``settings_json`` of this repo's row in the configured database, or ``None``."""
+    from ...persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+    )
+    from ...persistence.crud import get_repository_by_path
+
+    settings_json: str | None = None
+    try:
+        engine = create_engine(configured_url)
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is not None and repo.settings_json:
+                    settings_json = repo.settings_json
+        finally:
+            await engine.dispose()
+    except Exception:
+        pass
+    return settings_json
+
+
+def _merge_settings_excludes(patterns: list[str], settings_json: str) -> None:
+    """Append the string ``exclude_patterns`` of *settings_json* not already in *patterns*."""
+    try:
+        settings = _json.loads(settings_json)
+        if isinstance(settings, dict):
+            for value in settings.get("exclude_patterns") or []:
+                if isinstance(value, str) and value not in patterns:
+                    patterns.append(value)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -135,45 +152,19 @@ async def _incremental_repo_update(
 
     Raises on failure — the caller falls back to the full pipeline.
     """
-    from ...ingestion.change_detector import ChangeDetector, merge_file_diffs
-    from ...pipeline.incremental import (
-        DocDriftUpdate,
-        persist_incremental_index,
-        rebuild_graph_and_git,
-        run_doc_drift_partial,
-        run_partial_analysis,
-    )
+    from ...pipeline.incremental import persist_incremental_index, rebuild_graph_and_git
     from ...pipeline.phases.git import drop_transient_git_signals
 
     alias = repo_path.name
-    head = get_head_commit(repo_path) or "HEAD"
-
-    detector = ChangeDetector(repo_path)
-    working_tree_diffs: list = []
-    working_tree_paths: list[str] | None = None
-    if include_working_tree:
-        working_tree_diffs = detector.get_working_tree_changes()
-        dirty = {fd.path for fd in working_tree_diffs}
-        # Re-diff anything the last run indexed from the working tree that no
-        # longer diverges from HEAD, so a reverted edit or a deleted untracked
-        # file stops being served. See ``stale_working_tree_diffs``.
-        working_tree_diffs += detector.stale_working_tree_diffs(
-            state.get("working_tree_paths") or [], dirty
-        )
-        working_tree_paths = sorted(dirty)
-
-    file_diffs = merge_file_diffs(
-        detector.get_changed_files(base_ref, head),
-        working_tree_diffs,
+    file_diffs, working_tree_paths = _changed_file_diffs(
+        repo_path, state, base_ref, include_working_tree
     )
     if not file_diffs and not force_full_git:
-        # New commits but nothing the index cares about changed (merge/empty
-        # commits, or every change excluded). Report success so the caller
+        # Nothing the index cares about changed: report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever.
         return RepoUpdateResult(alias=alias, updated=True, working_tree_paths=working_tree_paths)
 
-    # Per-repo config, like the single-repo update path. The workspace-level
-    # ``exclude_patterns`` (when provided) apply on top.
+    # Per-repo config; workspace-level ``exclude_patterns`` apply on top.
     from ...repo_config import load_repo_config
 
     cfg = load_repo_config(repo_path)
@@ -204,47 +195,8 @@ async def _incremental_repo_update(
         log=_log.info,
     )
 
-    # Stored per-file git fields: ``git_meta_map`` covers only the changed files,
-    # and an empty dict reads as "no commits in 90 days" to the dead-code analyzer.
-    from ...pipeline.incremental import (
-        load_stored_coverage_map,
-        load_stored_function_mod_p80,
-        load_stored_git_meta,
-        load_stored_performance_callers,
-    )
-
-    stored_git_meta = await load_stored_git_meta(repo_path, log=_log.info)
-    # Repo-wide p80, so the Function Hotspot gate scores against the full repo.
-    stored_function_mod_p80 = await load_stored_function_mod_p80(repo_path, log=_log.info)
-    performance_changed_paths = {diff.path for diff in file_diffs}
-    performance_changed_paths.update(
-        diff.old_path for diff in file_diffs if getattr(diff, "old_path", None)
-    )
-    stored_performance_callers = await load_stored_performance_callers(
-        repo_path, performance_changed_paths, log=_log.info
-    )
-    # Without a coverage_map the changed files would lose their stored coverage.
-    stored_coverage_map = await load_stored_coverage_map(repo_path, log=_log.info)
-
-    partial_health_report, dead_code_report = run_partial_analysis(
-        repo_path,
-        graph_builder,
-        git_meta_map,
-        parsed_files,
-        file_diffs,
-        source_map=source_map,
-        stored_git_meta=stored_git_meta,
-        stored_performance_callers=stored_performance_callers,
-        repo_function_mod_p80=stored_function_mod_p80,
-        coverage_map=stored_coverage_map,
-        log=_log.info,
-    )
-    doc_drift_report = run_doc_drift_partial(
-        graph_builder,
-        source_map,
-        repo_path=repo_path,
-        log=_log.info,
-        update=DocDriftUpdate.from_file_diffs(base_ref, file_diffs),
+    partial_health_report, dead_code_report, doc_drift_report = await _partial_analysis(
+        repo_path, base_ref, file_diffs, parsed_files, source_map, graph_builder, git_meta_map
     )
 
     # Drop the transient, non-serializable ``BlameIndex`` before persistence.
@@ -286,25 +238,122 @@ async def _incremental_repo_update(
         log=_log.info,
     )
 
-    kg_state: dict[str, Any] | None = None
-    if kg is not None:
-        from ...analysis.knowledge_graph import build_kg_state, save_knowledge_graph_json
-
-        try:
-            save_knowledge_graph_json(repo_path, kg)
-            kg_state = build_kg_state(kg)
-        except Exception:
-            _log.warning("knowledge-graph.json export failed for %s", alias, exc_info=True)
-
     return RepoUpdateResult(
         alias=alias,
         updated=True,
         file_count=file_count,
         symbol_count=sum(len(pf.symbols) for pf in parsed_files),
-        kg_state=kg_state,
+        kg_state=_export_kg_state(repo_path, alias, kg),
         working_tree_paths=working_tree_paths,
         git_history_refreshed=bool(full_git_summaries) and "Git persist" not in failed_steps,
     )
+
+
+def _changed_file_diffs(
+    repo_path: Path, state: dict[str, Any], base_ref: str, include_working_tree: bool
+) -> tuple[list, list[str] | None]:
+    """The ``base_ref..HEAD`` diffs, plus working-tree ones when asked.
+
+    Returns ``(file_diffs, working_tree_paths)``; the paths are ``None`` on the
+    commit-anchored path.
+    """
+    from ...ingestion.change_detector import ChangeDetector, merge_file_diffs
+
+    head = get_head_commit(repo_path) or "HEAD"
+
+    detector = ChangeDetector(repo_path)
+    working_tree_diffs: list = []
+    working_tree_paths: list[str] | None = None
+    if include_working_tree:
+        working_tree_diffs = detector.get_working_tree_changes()
+        dirty = {fd.path for fd in working_tree_diffs}
+        # Re-diff what the last run indexed from the working tree that no longer
+        # diverges from HEAD, so a reverted edit or deleted untracked file drops.
+        working_tree_diffs += detector.stale_working_tree_diffs(
+            state.get("working_tree_paths") or [], dirty
+        )
+        working_tree_paths = sorted(dirty)
+
+    file_diffs = merge_file_diffs(
+        detector.get_changed_files(base_ref, head),
+        working_tree_diffs,
+    )
+    return file_diffs, working_tree_paths
+
+
+async def _partial_analysis(
+    repo_path: Path,
+    base_ref: str,
+    file_diffs: list,
+    parsed_files: list,
+    source_map: dict,
+    graph_builder: Any,
+    git_meta_map: dict,
+) -> tuple[Any, Any, Any]:
+    """Partial health, dead-code and doc-drift reports over the changed files.
+
+    Returns ``(partial_health_report, dead_code_report, doc_drift_report)``.
+    """
+    from ...pipeline.incremental import (
+        DocDriftUpdate,
+        load_stored_coverage_map,
+        load_stored_function_mod_p80,
+        load_stored_git_meta,
+        load_stored_performance_callers,
+        run_doc_drift_partial,
+        run_partial_analysis,
+    )
+
+    # Stored per-file git fields: ``git_meta_map`` covers only the changed files,
+    # and an empty dict reads as "no commits in 90 days" to the dead-code analyzer.
+    stored_git_meta = await load_stored_git_meta(repo_path, log=_log.info)
+    # Repo-wide p80, so the Function Hotspot gate scores against the full repo.
+    stored_function_mod_p80 = await load_stored_function_mod_p80(repo_path, log=_log.info)
+    performance_changed_paths = {diff.path for diff in file_diffs}
+    performance_changed_paths.update(
+        diff.old_path for diff in file_diffs if getattr(diff, "old_path", None)
+    )
+    stored_performance_callers = await load_stored_performance_callers(
+        repo_path, performance_changed_paths, log=_log.info
+    )
+    # Without a coverage_map the changed files would lose their stored coverage.
+    stored_coverage_map = await load_stored_coverage_map(repo_path, log=_log.info)
+
+    partial_health_report, dead_code_report = run_partial_analysis(
+        repo_path,
+        graph_builder,
+        git_meta_map,
+        parsed_files,
+        file_diffs,
+        source_map=source_map,
+        stored_git_meta=stored_git_meta,
+        stored_performance_callers=stored_performance_callers,
+        repo_function_mod_p80=stored_function_mod_p80,
+        coverage_map=stored_coverage_map,
+        log=_log.info,
+    )
+    doc_drift_report = run_doc_drift_partial(
+        graph_builder,
+        source_map,
+        repo_path=repo_path,
+        log=_log.info,
+        update=DocDriftUpdate.from_file_diffs(base_ref, file_diffs),
+    )
+    return partial_health_report, dead_code_report, doc_drift_report
+
+
+def _export_kg_state(repo_path: Path, alias: str, kg: Any) -> dict[str, Any] | None:
+    """Write ``knowledge-graph.json`` and return its state.json block, or ``None``."""
+    if kg is None:
+        return None
+    from ...analysis.knowledge_graph import build_kg_state, save_knowledge_graph_json
+
+    try:
+        save_knowledge_graph_json(repo_path, kg)
+        return build_kg_state(kg)
+    except Exception:
+        _log.warning("knowledge-graph.json export failed for %s", alias, exc_info=True)
+    return None
 
 
 async def _has_persisted_repo_index(repo_path: Path) -> bool:
@@ -355,12 +404,7 @@ async def update_single_repo_index(
     incremental failure run the full ingestion pipeline instead (index-only —
     no wiki pages).
     """
-    from ...repo_config import (
-        changed_config_dependencies,
-        config_dependency_fingerprints,
-        config_fingerprint,
-        load_repo_config,
-    )
+    from ...repo_config import load_repo_config
 
     alias = repo_path.name
     state = read_repo_state(repo_path)
@@ -370,14 +414,60 @@ async def update_single_repo_index(
     repo_commit_depth = int(repo_config.get("commit_limit", commit_depth))
     repo_follow_renames = bool(repo_config.get("follow_renames", False))
 
-    # Config drift check, mirroring the single-repo update path: a changed
-    # config.yaml / health-rules.json invalidates persisted health scores and
-    # exclude handling, so the incremental (changed-files-only) path must not
-    # run. The full pipeline below re-derives everything under the new config;
-    # the workspace pass stamps the new fingerprint into state.json afterwards.
-    # A missing stored fingerprint (legacy state) is NOT drift — same as the
-    # single-repo path, which only stamps it — so legacy repos don't pay a
-    # surprise full re-index.
+    drift = _drift_requirements(*_config_changes(repo_path, state, repo_config))
+    has_persisted_index = await _has_persisted_repo_index(repo_path)
+    if drift.requires_full_reindex and has_persisted_index:
+        _log.info(
+            "workspace_update: %s config fingerprint drifted — full re-index "
+            "so health scores reflect the new config",
+            alias,
+        )
+
+    if (
+        not drift.requires_full_reindex
+        and base_ref
+        and has_persisted_index
+        and commit_exists(repo_path, str(base_ref))
+    ):
+        incremental_result = await _try_incremental_update(
+            repo_path, state, str(base_ref), exclude_patterns, include_working_tree
+        )
+        if incremental_result is not None:
+            return incremental_result
+
+    return await _full_index_update(
+        repo_path,
+        state,
+        merged_excludes,
+        repo_commit_depth,
+        repo_follow_renames,
+        drift,
+        progress,
+    )
+
+
+class _ConfigDrift(NamedTuple):
+    """What a config change demands of this update."""
+
+    requires_full_reindex: bool
+    require_git_success: bool
+    require_health_success: bool
+
+
+def _config_changes(
+    repo_path: Path, state: dict[str, Any], repo_config: dict[str, Any]
+) -> tuple[bool, set[str] | None]:
+    """Return ``(config_changed, changed_dependencies)`` against the stored fingerprints.
+
+    A missing stored fingerprint (legacy state) is not drift: the single-repo
+    path only stamps it, so legacy repos do not pay a surprise full re-index.
+    """
+    from ...repo_config import (
+        changed_config_dependencies,
+        config_dependency_fingerprints,
+        config_fingerprint,
+    )
+
     stored_fp = state.get("config_fingerprint")
     config_changed = stored_fp is not None and stored_fp != config_fingerprint(repo_path)
     current_dependency_fps = config_dependency_fingerprints(repo_path, config=repo_config)
@@ -388,9 +478,17 @@ async def update_single_repo_index(
         if config_changed
         else set()
     )
-    # Workspace indexing has no generation layer. Only settings that affect
-    # its persisted graph/history/health stores require a full re-index;
-    # formatting, distill/MCP, and generation-only edits are state updates.
+    return config_changed, changed_dependencies
+
+
+def _drift_requirements(
+    config_changed: bool, changed_dependencies: set[str] | None
+) -> _ConfigDrift:
+    """Which persisted stores a config change invalidates.
+
+    Workspace indexing has no generation layer, so formatting, distill/MCP and
+    generation-only edits are state updates, not a full re-index.
+    """
     requires_full_reindex = config_changed and (
         changed_dependencies is None
         or bool((changed_dependencies or set()) - {"state_only", "generation"})
@@ -406,50 +504,58 @@ async def update_single_repo_index(
             & (changed_dependencies or set())
         )
     )
-    has_persisted_index = await _has_persisted_repo_index(repo_path)
-    if requires_full_reindex and has_persisted_index:
-        _log.info(
-            "workspace_update: %s config fingerprint drifted — full re-index "
-            "so health scores reflect the new config",
-            alias,
+    return _ConfigDrift(requires_full_reindex, require_git_success, require_health_success)
+
+
+async def _try_incremental_update(
+    repo_path: Path,
+    state: dict[str, Any],
+    base_ref: str,
+    exclude_patterns: list[str] | None,
+    include_working_tree: bool,
+) -> RepoUpdateResult | None:
+    """The incremental update's result, or ``None`` to fall back to the full pipeline."""
+    try:
+        return await _incremental_repo_update(
+            repo_path,
+            state=state,
+            base_ref=base_ref,
+            exclude_patterns=exclude_patterns,
+            include_working_tree=include_working_tree,
+            force_full_git=git_history_stale(state),
         )
+    except Exception:
+        _log.warning(
+            "Incremental update failed for %s — falling back to the full pipeline",
+            repo_path,
+            exc_info=True,
+        )
+    return None
 
-    if (
-        not requires_full_reindex
-        and base_ref
-        and has_persisted_index
-        and commit_exists(repo_path, str(base_ref))
-    ):
-        try:
-            incremental_result = await _incremental_repo_update(
-                repo_path,
-                state=state,
-                base_ref=str(base_ref),
-                exclude_patterns=exclude_patterns,
-                include_working_tree=include_working_tree,
-                force_full_git=git_history_stale(state),
-            )
-            if incremental_result is not None:
-                return incremental_result
-        except Exception:
-            _log.warning(
-                "Incremental update failed for %s — falling back to the full pipeline",
-                repo_path,
-                exc_info=True,
-            )
 
+async def _full_index_update(
+    repo_path: Path,
+    state: dict[str, Any],
+    merged_excludes: list[str],
+    commit_depth: int,
+    follow_renames: bool,
+    drift: _ConfigDrift,
+    progress: Any | None,
+) -> RepoUpdateResult:
+    """Run the full index-only pipeline; a failure becomes an error result."""
+    alias = repo_path.name
     try:
         from ...pipeline.full_index import index_repo_full
 
         result = await index_repo_full(
             repo_path,
-            commit_depth=repo_commit_depth,
+            commit_depth=commit_depth,
             exclude_patterns=merged_excludes,
             include_submodules=bool(state.get("include_submodules", False)),
             include_nested_repos=bool(state.get("include_nested_repos", False)),
-            follow_renames=repo_follow_renames,
-            require_git_success=require_git_success,
-            require_health_success=require_health_success,
+            follow_renames=follow_renames,
+            require_git_success=drift.require_git_success,
+            require_health_success=drift.require_health_success,
             progress=progress,
         )
 
