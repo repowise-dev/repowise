@@ -1071,15 +1071,8 @@ async def _repo_is_stale(abs_path: Path, include_working_tree: bool) -> tuple[bo
     from ..repo_config import config_fingerprint
 
     # Check staleness against stored commit in state.json
-    state_path = abs_path / ".repowise" / "state.json"
-    stored_commit = None
-    state: dict[str, Any] = {}
-    if state_path.is_file():
-        try:
-            state = _json.loads(state_path.read_text(encoding="utf-8"))
-            stored_commit = state.get("last_sync_commit")
-        except Exception:
-            pass
+    state = read_repo_state(abs_path)
+    stored_commit = state.get("last_sync_commit")
 
     is_stale, current_head, _commits_behind = check_repo_staleness(
         abs_path,
@@ -1226,10 +1219,7 @@ def _write_repo_state(
 ) -> None:
     """Advance ``state.json`` to *new_head* after a successful repo update."""
     state_path = path / ".repowise" / "state.json"
-    state: dict[str, Any] = {}
-    if state_path.is_file():
-        with suppress(Exception):
-            state = _json.loads(state_path.read_text(encoding="utf-8"))
+    state = read_repo_state(path)
 
     # Falsy, not absent: an explicit null survives a
     # membership test and strands the pointer permanently.
