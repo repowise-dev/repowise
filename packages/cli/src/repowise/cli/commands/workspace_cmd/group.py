@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC
 from pathlib import Path
 
 import click
 from rich.table import Table
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.commands.status_cmd import _format_relative_time
 from repowise.cli.helpers import console, resolve_repo_path, run_async
 
 from ._index import _resolve_docs_flag, _run_index_for_repo
@@ -155,30 +155,6 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
         return run_async(_query())
     except Exception:
         return 0, 0
-
-
-def _format_relative_time(iso_timestamp: str | None) -> str:
-    """Format an ISO 8601 timestamp as a human-readable relative string."""
-    if not iso_timestamp:
-        return "-"
-    try:
-        from datetime import datetime
-
-        dt = datetime.fromisoformat(iso_timestamp)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        now = datetime.now(UTC)
-        delta = now - dt
-        seconds = int(delta.total_seconds())
-        if seconds < 60:
-            return f"{seconds}s ago"
-        if seconds < 3600:
-            return f"{seconds // 60}m ago"
-        if seconds < 86400:
-            return f"{seconds // 3600}h ago"
-        return f"{seconds // 86400}d ago"
-    except Exception:
-        return iso_timestamp[:10] if len(iso_timestamp) >= 10 else iso_timestamp
 
 
 # ---------------------------------------------------------------------------
