@@ -423,15 +423,6 @@ def _record_opportunity(
         return
 
 
-def _relativize(file_path: str, repo_path: Path) -> str | None:
-    """Repo-relative POSIX path for *file_path*, or None when outside it."""
-    try:
-        rel = Path(file_path).resolve().relative_to(Path(repo_path).resolve())
-    except (ValueError, OSError):
-        return None
-    return rel.as_posix()
-
-
 @lru_cache(maxsize=8)
 def _find_repo_root(cwd: Path) -> Path | None:
     """Walk up from cwd to find a directory with .repowise/.

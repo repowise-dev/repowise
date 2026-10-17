@@ -97,6 +97,21 @@ against real bug history. The same machinery judges a change before it merges.
 | Tests and coverage gates | Impacted tests, patch coverage, untested hotspots | [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md), [CI.md](../start/CI.md) |
 | Security signals | Secrets and risky calls, with a pre-commit check and a CI gate | [SECURITY.md](SECURITY.md) |
 
+## Changes and components: where the layers roll up
+
+Two units collect the layers into things an organisation names. A Change Record is one
+merged change with its evidence from every layer: owners, reaching tests, contracts,
+decisions crossed, provenance and later outcome. A component is a declared or derived
+part of the codebase that health, hotspots, bus factor, test reach and dead code roll up
+to. Change policy and evidence reports are built on both.
+
+| Built on it | What you get | Read more |
+|---|---|---|
+| Change Records | Each merged change with its evidence checklist and outcomes, and suspects for a symptom | [CHANGES.md](CHANGES.md) |
+| Components | Backstage-shaped components, declared owners against recent activity, events, package usage | [COMPONENTS.md](COMPONENTS.md) |
+| Change policy | Rules over a change's evidence, checked locally or in CI | [POLICY.md](POLICY.md) |
+| Evidence reports | Assessment, change evidence and inventory packs | [REPORTS.md](REPORTS.md) |
+
 ## Where the layers meet
 
 The most useful answers cross layers. A few examples:

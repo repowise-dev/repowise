@@ -30,6 +30,11 @@ from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 STALE_STATUSES = frozenset({"stale", "expired"})
 
 
+def is_stale_status(status: str | None) -> bool:
+    """Whether a page's ``freshness_status`` counts as stale."""
+    return status in STALE_STATUSES
+
+
 @dataclass(frozen=True)
 class PageRecord:
     """A minimal view of one persisted wiki page.
@@ -47,7 +52,7 @@ class PageRecord:
 
     @property
     def is_stale(self) -> bool:
-        return self.freshness_status in STALE_STATUSES
+        return is_stale_status(self.freshness_status)
 
 
 @dataclass(frozen=True)

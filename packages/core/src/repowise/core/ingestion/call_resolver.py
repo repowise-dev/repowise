@@ -81,6 +81,7 @@ from .type_names import (
     bare_type_name,
     csharp_extension_receiver,
     is_resolvable_type_name,
+    strip_type_arguments,
 )
 
 log = structlog.get_logger(__name__)
@@ -1410,6 +1411,23 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # --- Free function call: function() ---
         return self._with_props(self._resolve_bare_call(file_path, call, caller_id), call)
 
+    def _through_kotlin_alias(
+        self, alias: Symbol, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
+        """The repo class a Kotlin ``typealias`` names, as a call in its file would reach it."""
+        _, _, target = (alias.signature or "").partition(" = ")
+        head = strip_type_arguments(target).rstrip("? ").strip()
+        alias_file = self._symbol_paths_by_id.get(alias.id)
+        # A function type, a qualified (possibly external) name or the alias's own
+        # name gives no repo class to construct.
+        if alias_file is None or not head.isidentifier() or head == alias.name:
+            return None
+        hit = self._resolve_free_call(alias_file, replace(call, target_name=head), alias.id)
+        target_sym = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
+        if target_sym is None or target_sym.kind != "class" or target_sym.name == alias.name:
+            return None
+        return replace(hit, caller_id=caller_id)
+
     def _resolve_bare_call(
         self,
         file_path: str,
@@ -1418,17 +1436,19 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> ResolvedCall | None:
         """A receiver-less call, refused where it lands on an extension it has no receiver for.
 
-        Also refused on a Kotlin ``typealias``: ``IOException(..)`` through
-        ``actual typealias IOException = java.io.IOException`` constructs the
-        aliased type, which the alias is not. Ceiling: an alias of a repo class
-        draws no edge to that class.
+        A Kotlin ``typealias`` is followed to the class it names, resolved from
+        the alias's own file, and refused when that is not a repo class:
+        ``IOException(..)`` through ``actual typealias IOException =
+        java.io.IOException`` constructs the external type, which the alias is
+        not. Ceiling: a qualified target (``= app.data.Repo``) is refused too.
         """
         invoked = self._operator_invoke_call(file_path, call, caller_id)
         if invoked is not None:
             return invoked
         hit = self._resolve_free_call(file_path, call, caller_id)
-        if hit is not None and _is_kotlin_alias(self._symbols_by_id.get(hit.callee_id)):
-            return None
+        alias = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
+        if _is_kotlin_alias(alias):
+            return self._through_kotlin_alias(alias, call, caller_id)
         if hit is None or call.receiver_call is not None:
             return hit
         return None if self._lacks_extension_receiver(file_path, call, hit.callee_id) else hit

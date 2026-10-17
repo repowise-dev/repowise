@@ -44,6 +44,11 @@ export interface NextActionsProps {
   unavailableHint?: ReactNode | null;
   /** Show each command's CLI line in the drawer. Set false for a host with no CLI. */
   showCliCommands?: boolean;
+  /**
+   * Set false to start folded behind its heading, for a page where the list
+   * would push everything else below the fold. Defaults to open.
+   */
+  defaultOpen?: boolean;
   LinkComponent?: ElementType | undefined;
 }
 
@@ -112,6 +117,7 @@ export function NextActions({
   loadPrompt,
   unavailableHint,
   showCliCommands,
+  defaultOpen = true,
   LinkComponent,
 }: NextActionsProps) {
   // Open on the week unless it holds no work and the quarter does: a lone
@@ -166,26 +172,34 @@ export function NextActions({
     );
   };
 
+  const timeFrame = (
+    <Segmented
+      label="Time frame"
+      value={horizon}
+      options={[
+        { value: "week", label: "This week", count: String(work("week")), hint: "What the last 7 days of commits changed" },
+        { value: "quarter", label: "This quarter", count: String(work("quarter")), hint: "What the last 90 days say is worth planning" },
+      ]}
+      onChange={(v) => {
+        setHorizon(v);
+        setExpanded(false);
+      }}
+    />
+  );
 
   return (
     <OverviewSection
       title="Do next"
       description={data.summary?.[horizon] ?? fallbackSummary(data, horizon)}
-      action={
-        <Segmented
-          label="Time frame"
-          value={horizon}
-          options={[
-            { value: "week", label: "This week", count: String(work("week")), hint: "What the last 7 days of commits changed" },
-            { value: "quarter", label: "This quarter", count: String(work("quarter")), hint: "What the last 90 days say is worth planning" },
-          ]}
-          onChange={(v) => {
-            setHorizon(v);
-            setExpanded(false);
-          }}
-        />
-      }
+      // A folded section has no header action slot, so the time frame sits
+      // under the summary, above the list it filters, and the toggle carries
+      // the count.
+      action={defaultOpen ? timeFrame : undefined}
+      collapsible={!defaultOpen}
+      defaultOpen={defaultOpen}
+      hint={defaultOpen ? undefined : `${work(horizon).toLocaleString("en-US")} suggested`}
     >
+      {!defaultOpen && timeFrame}
       {shown.length === 0 && [...answered.values()].some((a) => a.horizons.includes(horizon)) ? (
         <p className="py-2 text-sm text-[var(--color-text-secondary)]">
           You have answered everything listed here. Answers are kept until the facts change.

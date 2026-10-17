@@ -65,6 +65,7 @@ from .extractors.bindings.ts_js import (
     dynamic_import_bindings,
 )
 from .extractors.synthetic_symbols import extract_synthetic_symbols
+from .extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
 from .extractors.visibility import (
     py_module_all_names,
     refine_cpp_visibility,
@@ -1660,6 +1661,10 @@ class ASTParser:
             # another arity. A language without one dedupes on the id alone.
             existing = {(s.id, symbol_discriminator(s)) for s in symbols}
             symbols.extend(s for s in synthetic if (s.id, symbol_discriminator(s)) not in existing)
+        if lang == "csharp":
+            # The grammar reads a C# 14 extension block as a constructor
+            # named ``extension``; its members were added above instead.
+            symbols = drop_extension_block_symbols(symbols, root, src)
         # Before calls and references are extracted, so both attribute to the
         # final ids. Anonymous members go last, once the overloads holding them
         # carry their discriminators.

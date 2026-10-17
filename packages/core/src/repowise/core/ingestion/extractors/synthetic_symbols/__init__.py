@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from ...models import FileInfo, Symbol
 from .cpp_macros import cpp_macro_synthetic_symbols
+from .csharp_extension_blocks import csharp_extension_block_symbols
 from .csharp_mvvm import csharp_synthetic_symbols
 from .java_records import java_record_synthetic_symbols
 from .jvm_codegen import jvm_codegen_synthetic_symbols
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
 _Provider = Callable[["Node", str, FileInfo], list[Symbol]]
 
 _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
-    "csharp": [csharp_synthetic_symbols],
+    "csharp": [csharp_synthetic_symbols, csharp_extension_block_symbols],
     "java": [
         lombok_synthetic_symbols,
         java_record_synthetic_symbols,

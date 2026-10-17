@@ -29,12 +29,12 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from ..analysis.git_cli import run_git
 from .edits import CapturedCall, FileEdit
 from .hashing import is_substantive, line_hash, opaque_id
 from .store import (
@@ -87,16 +87,8 @@ def event_rows(
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-c", "core.quotepath=false", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        check=False,
-    )
+    # Ceiling: no timeout; a wedged git blocks this call.
+    result = run_git(["-c", "core.quotepath=false", *args], repo, timeout=None)
     return result.stdout if result.returncode == 0 else ""
 
 

@@ -40,6 +40,7 @@ from repowise.core.analysis.prior_fix_impact import (
     unavailable_prior_fixes,
     unsupported_prior_fixes,
 )
+from repowise.core.fsutils import comparable_path
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._budget.contracts import response_budget_shed_order
@@ -70,7 +71,6 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._test_impact import (
-    _norm,
     cross_repo_tests,
     tests_block_for,
 )
@@ -403,9 +403,19 @@ async def get_change_risk(
         )
     )
     try:
-        await _attach_change_blocks(
-            ctx, payload, result, revspec, extensions, (changed, changed_error), collector, includes
-        )
+        # A drill-down returns one finding and nothing else, so the tests,
+        # coverage, fix and cross-repo blocks would never reach the caller.
+        if finding_id is None:
+            await _attach_change_blocks(
+                ctx,
+                payload,
+                result,
+                revspec,
+                extensions,
+                (changed, changed_error),
+                collector,
+                includes,
+            )
         independent = await _attach_branch_blocks(
             ctx, payload, changed, collector, revspec, finding_id
         )
@@ -896,7 +906,7 @@ def _cross_repo_block(
             keys = {
                 (
                     row.get("repo") or "",
-                    _norm(row.get("file") or ""),
+                    comparable_path(row.get("file") or ""),
                     row.get("contract_id") or "",
                 )
                 for row in shown

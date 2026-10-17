@@ -21,6 +21,7 @@ import click
 import structlog
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.helpers import (
     clear_update_queued,
     console,
@@ -62,6 +63,7 @@ from .incremental import (
     _run_partial_analysis,
 )
 from .mode import _resolve_index_only_mode
+from .options import UpdateOptions, UpdateRun
 from .persistence import (
     _persist_index_only_update,
     _repair_module_attribution,
@@ -69,7 +71,6 @@ from .persistence import (
     heal_commit_offsets,
     health_analyzer_changed,
     parser_changed,
-    refresh_read_snapshots,
     rescan_security_if_changed,
     security_scanner_changed,
     stamp_head_commit,
@@ -160,35 +161,23 @@ def _record_update_outcome(
 ) -> None:
     """Attach an anonymous update-shape outcome to the ``command_run`` event.
 
-    Coarse buckets + enums only (changed-files bucket, docs mode, provider,
-    pages bucket). Best-effort; never breaks the command.
+    Changed-files bucket on top of the shared index shape.
     """
-    try:
-        from repowise.cli.platform import telemetry
-
-        # docs_mode carries the same three values as the state field of that
-        # name; it was a bool until an index-only update started re-rendering
-        # template pages, which that shape could not express. It comes from the
-        # repo's persisted mode, not from this run's page count: a commit that
-        # touched no source file re-renders nothing, and that is not the same
-        # as the repo having no wiki.
-        pages = generated_pages or []
-        if docs_mode is None:
-            docs_mode = "llm" if (not index_only and provider is not None) else "none"
-        outcome: dict[str, Any] = {
-            "outcome": "success",
-            "index_only": bool(index_only),
-            "docs_mode": docs_mode,
-            "changed_files_bucket": telemetry.bucket_count(changed_count),
-        }
-        if not index_only and provider is not None:
-            outcome["provider"] = getattr(provider, "provider_name", None)
-            outcome["model"] = getattr(provider, "model_name", None)
-        if pages:
-            outcome["pages_bucket"] = telemetry.bucket_count(len(pages))
-        telemetry.add_command_outcome(**{k: v for k, v in outcome.items() if v is not None})
-    except Exception:
-        return
+    # docs_mode carries the same three values as the state field of that
+    # name; it was a bool until an index-only update started re-rendering
+    # template pages, which that shape could not express. It comes from the
+    # repo's persisted mode, not from this run's page count: a commit that
+    # touched no source file re-renders nothing, and that is not the same
+    # as the repo having no wiki.
+    if docs_mode is None:
+        docs_mode = "llm" if (not index_only and provider is not None) else "none"
+    record_index_outcome(
+        index_only=index_only,
+        provider=provider,
+        docs_mode=docs_mode,
+        pages=generated_pages,
+        buckets={"changed_files": changed_count},
+    )
 
 
 def _finish_outcome(
@@ -705,6 +694,130 @@ def _run_decision_evolution(
         return run_async(_run())
 
 
+def _start_run(opts: UpdateOptions) -> UpdateRun:
+    """Start the run clock and pick the progress output (rich or JSON events)."""
+    # ``run`` is the denominator of every stage row; stages nest and overlap.
+    run = UpdateRun(start=time.monotonic(), timings=PhaseTimings())
+    run.timings.start("run")
+
+    if opts.progress == "json":
+        # stdout carries only JSON events; the shared console moves to stderr
+        # until the click context closes.
+        silence_logs_for_machine_output_until_close()
+        console.file = sys.stderr
+        # None, not a captured file: the console then follows sys.stdout again.
+        click.get_current_context().call_on_close(lambda: setattr(console, "file", None))
+        run.emitter = JsonProgressEmitter()
+        run.emitter.start(repo=str(opts.path or "."), since=opts.since)
+    else:
+        # Quiet library logs so they do not interleave with the progress bar.
+        configure_cli_logging(verbose=opts.verbose)
+    return run
+
+
+def _emit_done(
+    run: UpdateRun,
+    outcome: UpdateOutcome,
+    *,
+    pages_generated: int = 0,
+    cost_usd: float = 0.0,
+    duration_s: float | None = None,
+    degraded: list[str] | None = None,
+) -> UpdateOutcome:
+    """Send the JSON ``done`` event (when one is wanted) and hand back *outcome*."""
+    if run.emitter is not None:
+        extra = {} if degraded is None else {"degraded": degraded}
+        run.emitter.done(
+            ok=True,
+            pages_generated=pages_generated,
+            cost_usd=cost_usd,
+            duration_s=time.monotonic() - run.start if duration_s is None else duration_s,
+            **extra,
+            outcome=outcome.value,
+        )
+    return outcome
+
+
+@contextlib.contextmanager
+def _errors_reported(run: UpdateRun):
+    """Report an escaping error as a JSON ``error`` event, then re-raise it."""
+    try:
+        yield
+    except Exception as exc:
+        if run.emitter is not None:
+            run.emitter.error(str(exc))
+        raise
+
+
+def _stage(run: UpdateRun, name: str) -> None:
+    if run.emitter is not None:
+        run.emitter.stage(name)
+
+
+def _resolve_target(opts: UpdateOptions):
+    """Resolve the target up front (single repo or workspace) and announce it."""
+    target = resolve_command_target(
+        path=opts.path,
+        workspace_flag=opts.workspace,
+        no_workspace_flag=opts.no_workspace,
+        repo_alias=opts.repo_alias,
+    )
+    target.notice(console, command="update")
+    return target
+
+
+def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> UpdateOutcome:
+    if opts.full:
+        raise click.ClickException(
+            "--full is single-repo only. Run it inside a specific repo "
+            "(or pass --no-workspace / --repo <alias>)."
+        )
+    with _errors_reported(run):
+        _workspace_update(
+            target,
+            dry_run=opts.dry_run,
+            agents_md=opts.agents_md,
+            verbose=opts.verbose,
+            docs_flag=opts.docs_flag,
+            index_only=opts.index_only,
+            since=opts.since,
+            provider_name=opts.provider_name,
+            model=opts.model,
+            reasoning=opts.reasoning,
+            cascade_budget=opts.cascade_budget,
+            concurrency=opts.concurrency,
+            no_cost_tracking=opts.no_cost_tracking,
+            progress=opts.progress,
+            include_working_tree=opts.include_working_tree,
+        )
+    return _emit_done(run, UpdateOutcome.REGENERATED)
+
+
+def _full_upgrade(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
+    """``--full``: upgrade the index in place from the persisted graph."""
+    if opts.dry_run:
+        _render_full_upgrade_dry_run(
+            run.repo_path,
+            provider_name=opts.provider_name,
+            model=opts.model,
+        )
+        return _emit_done(run, UpdateOutcome.DRY_RUN)
+
+    from repowise.cli.commands.upgrade_flow import upgrade_to_full
+
+    _stage(run, "full_upgrade")
+    with _errors_reported(run):
+        upgrade_to_full(
+            run.repo_path,
+            provider_name=opts.provider_name,
+            model=opts.model,
+            reasoning=opts.reasoning,
+            concurrency=opts.concurrency,
+            yes=opts.yes,
+        )
+    return _emit_done(run, UpdateOutcome.REGENERATED)
+
+
 def run_update(
     path: str | None,
     provider_name: str | None,
@@ -745,91 +858,41 @@ def run_update(
     a no-op until you committed. ``repowise update --working-tree`` sets it on
     request.
     """
-    start = time.monotonic()
-    # Per-stage wall clock for this run, written to ``state.json`` by every path
-    # that mutates state. ``run`` is the denominator; stages nest and overlap,
-    # so compare each against it and never against their sum. Retaining an older
-    # run's table makes a cheap config/no-op update claim work it did not do.
-    timings = PhaseTimings()
-    timings.start("run")
-
-    # --- Machine-readable progress (--progress json) --------------------
-    # Silence structlog/stdlib logging and redirect the shared Rich console
-    # (used throughout this module and its sibling helpers via `log=console.print`
-    # callbacks) to stderr, so stdout carries nothing but the JSON event
-    # stream below. Emitter is None in the default 'rich' mode, so every call
-    # site below is a no-op there. The redirect is undone when the command's
-    # click context closes (success or error), since `console` is a
-    # process-wide singleton and leaving it pointed at stderr would bleed
-    # into whatever runs next in the same process.
-    emitter: JsonProgressEmitter | None = None
-    if progress == "json":
-        silence_logs_for_machine_output_until_close()
-        console.file = sys.stderr
-        # Restore to None (rather than a captured file object) so `console`
-        # goes back to resolving sys.stdout dynamically on each print, its
-        # default behavior. Capturing `console.file` here would instead
-        # snapshot whatever stdout happens to be at this instant (e.g. a
-        # test runner's isolated buffer) and pin the shared console to it.
-        click.get_current_context().call_on_close(lambda: setattr(console, "file", None))
-        emitter = JsonProgressEmitter()
-        emitter.start(repo=str(path or "."), since=since)
-    else:
-        # Human console mode: quiet library/structlog output so it doesn't
-        # interleave with the live progress bar (issue #922); `-v` lets
-        # repowise's debug lines through for troubleshooting.
-        configure_cli_logging(verbose=verbose)
-
-    # --- Resolve target up front (single repo or workspace) ---
-    target = resolve_command_target(
+    opts = UpdateOptions(
         path=path,
-        workspace_flag=workspace,
-        no_workspace_flag=no_workspace,
+        provider_name=provider_name,
+        model=model,
+        since=since,
+        reasoning=reasoning,
+        cascade_budget=cascade_budget,
+        dry_run=dry_run,
+        workspace=workspace,
+        no_workspace=no_workspace,
         repo_alias=repo_alias,
+        index_only=index_only,
+        docs_flag=docs_flag,
+        full=full,
+        yes=yes,
+        agents_md=agents_md,
+        concurrency=concurrency,
+        no_cost_tracking=no_cost_tracking,
+        verbose=verbose,
+        progress=progress,
+        skip_cross_repo_hooks=skip_cross_repo_hooks,
+        include_working_tree=include_working_tree,
     )
-    target.notice(console, command="update")
-
+    run = _start_run(opts)
+    target = _resolve_target(opts)
     if target.is_workspace:
-        if full:
-            raise click.ClickException(
-                "--full is single-repo only. Run it inside a specific repo "
-                "(or pass --no-workspace / --repo <alias>)."
-            )
-        try:
-            _workspace_update(
-                target,
-                dry_run=dry_run,
-                agents_md=agents_md,
-                verbose=verbose,
-                docs_flag=docs_flag,
-                index_only=index_only,
-                since=since,
-                provider_name=provider_name,
-                model=model,
-                reasoning=reasoning,
-                cascade_budget=cascade_budget,
-                concurrency=concurrency,
-                no_cost_tracking=no_cost_tracking,
-                progress=progress,
-                include_working_tree=include_working_tree,
-            )
-        except Exception as exc:
-            if emitter is not None:
-                emitter.error(str(exc))
-            raise
-        if emitter is not None:
-            emitter.done(
-                ok=True,
-                pages_generated=0,
-                cost_usd=0.0,
-                duration_s=time.monotonic() - start,
-                outcome=UpdateOutcome.REGENERATED.value,
-            )
-        return UpdateOutcome.REGENERATED
+        return _update_workspace_target(opts, run, target)
 
     # --- Single-repo path from here on. ---
-    repo_path = target.repo_path
-    assert repo_path is not None  # single mode always sets repo_path
+    run.repo_path = target.repo_path
+    assert run.repo_path is not None  # single mode always sets repo_path
+    repo_path = run.repo_path
+    start = run.start
+    timings = run.timings
+    emitter = run.emitter
 
     # An unindexed linked worktree seeds itself from its base checkout before
     # updating, so post-commit hooks and agents running `update` in a fresh
@@ -864,48 +927,7 @@ def run_update(
     # incremental change-detection so the normal `repowise update` flow below
     # is byte-for-byte unchanged. ---
     if full:
-        if dry_run:
-            _render_full_upgrade_dry_run(
-                repo_path,
-                provider_name=provider_name,
-                model=model,
-            )
-            if emitter is not None:
-                emitter.done(
-                    ok=True,
-                    pages_generated=0,
-                    cost_usd=0.0,
-                    duration_s=time.monotonic() - start,
-                    outcome=UpdateOutcome.DRY_RUN.value,
-                )
-            return UpdateOutcome.DRY_RUN
-
-        from repowise.cli.commands.upgrade_flow import upgrade_to_full
-
-        if emitter is not None:
-            emitter.stage("full_upgrade")
-        try:
-            upgrade_to_full(
-                repo_path,
-                provider_name=provider_name,
-                model=model,
-                reasoning=reasoning,
-                concurrency=concurrency,
-                yes=yes,
-            )
-        except Exception as exc:
-            if emitter is not None:
-                emitter.error(str(exc))
-            raise
-        if emitter is not None:
-            emitter.done(
-                ok=True,
-                pages_generated=0,
-                cost_usd=0.0,
-                duration_s=time.monotonic() - start,
-                outcome=UpdateOutcome.REGENERATED.value,
-            )
-        return UpdateOutcome.REGENERATED
+        return _full_upgrade(opts, run)
     # Truncate the hook-managed log if it has grown past the cap. The hook
     # appends each run unconditionally — without this opportunistic rotation
     # at the start of every CLI update, a busy repo's ``.update.log`` would
@@ -1249,15 +1271,7 @@ def run_update(
 
         surface_missing_slots(repo_path, emitter=emitter, dry_run=dry_run)
         surface_pinned_commit_limit(repo_path, emitter=emitter, dry_run=dry_run)
-        if emitter is not None:
-            emitter.done(
-                ok=True,
-                pages_generated=0,
-                cost_usd=0.0,
-                duration_s=time.monotonic() - start,
-                outcome=UpdateOutcome.NOOP.value,
-            )
-        return UpdateOutcome.NOOP
+        return _emit_done(run, UpdateOutcome.NOOP)
 
     # --- Single-flight lock ---------------------------------------------
     # A live lock from another process means a `repowise update` is already
@@ -1302,15 +1316,7 @@ def run_update(
             "nothing; watch [bold].repowise/.update.log[/bold] for the one in "
             "flight.[/dim]"
         )
-        if emitter is not None:
-            emitter.done(
-                ok=True,
-                pages_generated=0,
-                cost_usd=0.0,
-                duration_s=time.monotonic() - start,
-                outcome=UpdateOutcome.DEFERRED.value,
-            )
-        return UpdateOutcome.DEFERRED
+        return _emit_done(run, UpdateOutcome.DEFERRED)
 
     # We own the lock from here on: the augment hook suppresses its
     # stale-wiki warning while this run is in flight (typical case: the
@@ -1382,8 +1388,7 @@ def run_update(
 
     render_header(repo_path, base_ref, head)
 
-    if emitter is not None:
-        emitter.stage("detect_changes")
+    _stage(run, "detect_changes")
 
     from repowise.core.ingestion.change_detector import merge_file_diffs
 
@@ -1474,15 +1479,7 @@ def run_update(
         # We hold the lock and have advanced to head; drop any stale pending
         # marker a bailed update left behind.
         consume_update_pending(repo_path, head)
-        if emitter is not None:
-            emitter.done(
-                ok=True,
-                pages_generated=0,
-                cost_usd=0.0,
-                duration_s=time.monotonic() - start,
-                outcome=UpdateOutcome.NOOP.value,
-            )
-        return UpdateOutcome.NOOP
+        return _emit_done(run, UpdateOutcome.NOOP)
 
     if health_config_changed:
         # Full re-score (not the partial update) so unchanged files pick up the
@@ -1510,20 +1507,11 @@ def run_update(
                 "health would be re-scored" if health_config_changed else "state would be updated"
             )
             console.print(f"[yellow]Dry run — {action}. No changes made.[/yellow]")
-            if emitter is not None:
-                emitter.done(
-                    ok=True,
-                    pages_generated=0,
-                    cost_usd=0.0,
-                    duration_s=time.monotonic() - start,
-                    outcome=UpdateOutcome.DRY_RUN.value,
-                )
-            return UpdateOutcome.DRY_RUN
+            return _emit_done(run, UpdateOutcome.DRY_RUN)
         if health_config_changed:
             cfg = load_config(repo_path)
             exclude_patterns = list(cfg.get("exclude_patterns") or [])
-            if emitter is not None:
-                emitter.stage("rescore_health")
+            _stage(run, "rescore_health")
             try:
                 _run_full_health_rescore(
                     repo_path,
@@ -1552,15 +1540,7 @@ def run_update(
         stamp_head_commit(repo_path, head)
         _finish_outcome(repo_path, agents_md)
         consume_update_pending(repo_path, head)
-        if emitter is not None:
-            emitter.done(
-                ok=True,
-                pages_generated=0,
-                cost_usd=0.0,
-                duration_s=time.monotonic() - start,
-                outcome=UpdateOutcome.REGENERATED.value,
-            )
-        return UpdateOutcome.REGENERATED
+        return _emit_done(run, UpdateOutcome.REGENERATED)
 
     render_changed_files(file_diffs, verbose=verbose)
 
@@ -1573,8 +1553,7 @@ def run_update(
     # Read exclude patterns from config (set during init or via web UI)
     exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
 
-    if emitter is not None:
-        emitter.stage("rebuild_graph")
+    _stage(run, "rebuild_graph")
 
     # Decay-only rows for idle files whose time-decayed history the anchor
     # advance recovered (#728). Filled by the git re-index, persisted alongside
@@ -1618,8 +1597,7 @@ def run_update(
         )
     )
 
-    if emitter is not None:
-        emitter.stage("plan_pages")
+    _stage(run, "plan_pages")
 
     timings.start("plan_pages")
     # Determine affected pages (auto-scale budget if not explicitly set)
@@ -1707,15 +1685,7 @@ def run_update(
 
     if dry_run:
         console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
-        if emitter is not None:
-            emitter.done(
-                ok=True,
-                pages_generated=0,
-                cost_usd=0.0,
-                duration_s=time.monotonic() - start,
-                outcome=UpdateOutcome.DRY_RUN.value,
-            )
-        return UpdateOutcome.DRY_RUN
+        return _emit_done(run, UpdateOutcome.DRY_RUN)
 
     # Pages re-rendered for files this run did not change need the complexity
     # the last full health run measured, which only the store still holds.
@@ -1832,8 +1802,7 @@ def run_update(
                 regenerate_deterministic_pages,
             )
 
-            if emitter is not None:
-                emitter.stage("generate")
+            _stage(run, "generate")
             prior_ids = load_prior_page_ids(repo_path)
 
             # Every file page is structural, so the changed files' pages
@@ -1907,8 +1876,7 @@ def run_update(
                     f"  [green]✓[/green] Re-rendered [bold]{len(det_pages)}[/bold] "
                     "wiki pages from structure"
                 )
-        if emitter is not None:
-            emitter.stage("persist")
+        _stage(run, "persist")
         try:
             persisted_changed_paths = (
                 [pf.file_info.path for pf in parsed_files]
@@ -2415,8 +2383,7 @@ def run_update(
     )
     repo_name = repo_path.name
 
-    if emitter is not None:
-        emitter.stage("generate")
+    _stage(run, "generate")
 
     # Drive a live progress bar (owl spinner + running cost) off generate_all's
     # page callbacks, matching init's generation phase. Cost is read from the
@@ -2580,8 +2547,7 @@ def run_update(
     # layers degrade into the collected list) — see _persist_full_update.
     from .persistence import _persist_full_update
 
-    if emitter is not None:
-        emitter.stage("persist")
+    _stage(run, "persist")
     try:
         with timed(timings, "persist"):
             db_total_pages = _persist_full_update(

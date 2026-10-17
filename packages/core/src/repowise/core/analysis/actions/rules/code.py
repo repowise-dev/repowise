@@ -81,6 +81,18 @@ def fresh_regressions(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     )
 
 
+def _regression_value(critical: int) -> int:
+    """The value a regression ranks on: a week with critical findings still
+    outranks one without, as it did when the action itself read critical.
+
+    The action's severity tops out at high. Health detectors tag a long method
+    critical, and a routine week of feature work leaves dozens of those, so a
+    critical label here would read as an emergency most weeks. Critical on an
+    action is kept for a live credential (``live_secret``).
+    """
+    return 4 if critical else 3
+
+
 def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) -> Action:
     symbols = sorted({f.symbol for f in found if f.symbol})
     critical = sum(f.severity == "critical" for f in found)
@@ -97,7 +109,7 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         rule="fresh_regressions",
         tier="act_now",
         horizons=("week",),
-        severity="critical" if critical else "high",
+        severity="high",
         title=title,
         impact=(
             f"{plural(len(commits), 'commit')} in the last 7 days added or worsened "
@@ -106,7 +118,7 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         ),
         why=(
             WhyFact("serious findings", str(len(found))),
-            WhyFact("critical", str(critical)),
+            WhyFact("critical findings", str(critical)),
             WhyFact("latest commit", latest.subject[:72] or latest.sha[:7]),
         ),
         target_kind="symbol" if len(symbols) == 1 else "file",
@@ -118,6 +130,7 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         done_when="The findings close on the next update.",
         marker=lead.biomarker,
         weight=weight,
+        value=_regression_value(critical),
         evidence_ids=tuple(sorted(commits)),
         evidence_total=len(found),
         fingerprint=fingerprint(len(found), critical),
@@ -176,7 +189,7 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         rule="fresh_regressions",
         tier="act_now",
         horizons=("week",),
-        severity="critical" if critical else "high",
+        severity="high",
         title=(
             f"Clean up what this week's commits left: {plural(len(found), 'serious finding')} "
             f"in {len(ranked):,} files"
@@ -188,7 +201,7 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         ),
         why=(
             WhyFact("serious findings", str(len(found))),
-            WhyFact("critical", str(critical)),
+            WhyFact("critical findings", str(critical)),
             WhyFact("files", str(len(ranked))),
         ),
         target_kind="repo",
@@ -198,6 +211,7 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         confidence="high",
         done_when="The findings close on the next update.",
         weight=float(critical * 10 + len(found)),
+        value=_regression_value(critical),
         evidence_ids=tuple(sorted(commits)),
         evidence_total=len(found),
         includes=tuple(path for path, _ in ranked[:10]),

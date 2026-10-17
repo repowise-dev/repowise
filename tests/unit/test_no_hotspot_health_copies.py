@@ -40,7 +40,7 @@ _PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
 _PLUMBING: dict[str, str] = {
     # --- storage and schema: the value arrives already computed --------------
     "repowise/core/persistence/models.py": "the column",
-    "repowise/core/persistence/crud/analysis/health.py": "writes/reads the column",
+    "repowise/core/persistence/crud/analysis/health/snapshots.py": "writes/reads the column",
     "repowise/core/persistence/crud/git.py": "supplies the hotspot path set, not the score",
     "repowise/core/persistence/stores/_sql_analysis.py": "passthrough to the crud writer",
     "repowise/core/workspace/store.py": "copies the latest snapshot column into the workspace store",

@@ -137,7 +137,7 @@ repowise/
 │   │   │   │       └── claude_md.py    # ClaudeMdGenerator subclass
 │   │   │   ├── pipeline/
 │   │   │   │   ├── orchestrator.py     # run_pipeline(), PipelineResult
-│   │   │   │   ├── persist.py          # persist_pipeline_result(): shared by CLI + server
+│   │   │   │   ├── persist/            # persist_pipeline_result(): shared by CLI + server
 │   │   │   │   └── progress.py         # ProgressCallback protocol + LoggingProgressCallback
 │   │   │   ├── persistence/
 │   │   │   │   ├── models.py           # SQLAlchemy ORM models
@@ -696,13 +696,14 @@ sweep does not mistake "deliberately kept" for "no longer produced".
 `repowise init` is fully idempotent. Running it twice produces the same result.
 Running it after a partial previous run completes only the remaining pages.
 
-### 5.7 Shared Persistence (`pipeline/persist.py`)
+### 5.7 Shared Persistence (`pipeline/persist/`)
 
 The persistence logic for storing a `PipelineResult` into the database (graph nodes,
 edges, symbols, pages, git metadata, dead code findings, decision records) was
-extracted from the CLI's `init_cmd.py` into `core/pipeline/persist.py`. Both the
+extracted from the CLI's `init_cmd.py` into the `core/pipeline/persist/` package. Both the
 CLI and the server's background job executor call `persist_pipeline_result()`, zero
-duplication.
+duplication. The package splits the writers by area (graph, prune, tombstones,
+sweeps, security, git, health, analysis, generation) and re-exports them all.
 
 FTS indexing is intentionally excluded from this function. Callers must run it
 separately after the session closes to avoid SQLite write-lock conflicts.

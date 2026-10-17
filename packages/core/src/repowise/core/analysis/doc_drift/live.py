@@ -17,13 +17,13 @@ from pathlib import Path
 
 from repowise.core.ingestion.traverser import REPOWISE_IGNORE_FILENAME, load_extra_ignore_spec
 
+from ..git_cli import run_git
 from .analyzer import DocDriftAnalyzer
 from .constants import MANIFEST_NAMES, MAX_DOC_BYTES
 from .extractor import is_checkable_document
 from .models import DocDriftReport
 from .symbols import SymbolOptions
 
-_GIT_TIMEOUT_SECONDS = 60
 _GITLINK_MODE = "160000"
 
 
@@ -46,13 +46,7 @@ class LiveInputs:
 def _git(root: Path, *args: str) -> bytes:
     """stdout of one git call; :class:`LiveTreeError` on any failure."""
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            timeout=_GIT_TIMEOUT_SECONDS,
-            check=False,
-        )
+        proc = run_git(["-C", str(root), *args], text=False)
     except OSError as exc:
         raise LiveTreeError(f"git is not available: {exc}") from exc
     except subprocess.TimeoutExpired as exc:

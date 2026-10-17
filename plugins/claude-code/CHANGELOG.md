@@ -2,6 +2,16 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.57.0
+
+### Changed
+- `/repowise:risk` and the change-review skill lead with the change's size
+  percentile ("size and spread, not a bug predictor"), then the touched files'
+  bug-fix record (#3664).
+- The codebase-exploration skill reads `confidence` as whether the top hit
+  covers the question, with `retrieval_quality` behind
+  `include=["diagnostics"]` (#3716).
+
 ## 0.56.0
 
 ### Changed

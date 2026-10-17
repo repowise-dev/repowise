@@ -65,6 +65,7 @@ from repowise.server.mcp_server._helpers import (
     _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
+    clean_signature,
     is_excluded,
     read_repo_file_text,
 )
@@ -357,7 +358,7 @@ def _prepare_callee_entries(
                 "name": row.name,
                 "file": row.file_path,
                 "kind": row.kind,
-                "signature": _clean_symbol_signature(row.signature),
+                "signature": clean_signature(row.signature),
                 "depth": hop.number,
             }
             if row.file_path not in text_cache:
@@ -487,11 +488,6 @@ async def _expand_callees(
             "fetch one with its fetch_with range."
         )
     return block
-
-
-def _clean_symbol_signature(signature: str | None) -> str:
-    """Collapse a stored signature onto one line (CRLF indices keep the \\r\\n)."""
-    return " ".join((signature or "").split())
 
 
 def _extract_omission_ref(symbol_id: str) -> str | None:
@@ -843,7 +839,7 @@ async def _container_outline(
         entry: dict[str, Any] = {
             "symbol_id": symbol_identity(member.symbol_id),
             "kind": member.kind,
-            "signature": _clean_symbol_signature(member.signature),
+            "signature": clean_signature(member.signature),
             "start_line": check.start_line,
             "end_line": check.end_line,
         }

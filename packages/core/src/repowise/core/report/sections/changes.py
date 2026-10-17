@@ -14,7 +14,7 @@ changes export`` uses too, which builds and keeps any missing checklist.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from repowise.core.report.change_answers import ANSWERS, EntryContext, entry
@@ -31,10 +31,13 @@ _METHOD = (
 # -- the pass -----------------------------------------------------------------
 
 
-def _request(ctx: ReportContext) -> Any:
+async def _request(ctx: ReportContext) -> Any:
+    """The period the report covers, its start fixed (by default the
+    :data:`~repowise.core.changes.period.DEFAULT_WINDOW_DAYS` before the newest
+    indexed commit)."""
     from repowise.core.changes.period import PeriodRequest
 
-    return ctx.period or PeriodRequest()
+    return await (ctx.period or PeriodRequest()).resolved(ctx.session, ctx.repository_id)
 
 
 async def _period(ctx: ReportContext) -> dict[str, Any]:
@@ -59,9 +62,10 @@ async def _read_period(ctx: ReportContext) -> dict[str, Any]:
 
     policy, policy_error = _load_policy(ctx)
     on = attribution_enabled(ctx.repo_root)
+    request = await _request(ctx)
     pairs = []
     async for row, evidence in period_evidence(
-        ctx.session, ctx.repository_id, ctx.repo_root, _request(ctx)
+        ctx.session, ctx.repository_id, ctx.repo_root, request
     ):
         pairs.append((change_record(row, attribution=on), evidence and evidence.to_dict()))
     wanted = {s for rec, _ in pairs for s in rec["commits"]}
@@ -78,7 +82,8 @@ async def _read_period(ctx: ReportContext) -> dict[str, Any]:
         "policy_error": policy_error,
         "attribution": on,
         "metadata_source": resolve_source()[0],
-        "window": await _window(ctx),
+        "request": request,
+        "window": await _window(ctx, request),
     }
 
 
@@ -121,13 +126,13 @@ def _utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
-async def _oldest_gap(ctx: ReportContext, oldest: Any) -> str | None:
+async def _oldest_gap(ctx: ReportContext, request: Any, oldest: Any) -> str | None:
     """Why the period starts before the oldest change the index holds, if it does."""
     import asyncio
 
     from repowise.core.git_refs import resolve
 
-    since = _request(ctx).since
+    since = request.since
     oldest_at = _utc(oldest[0])
     if since is not None and since >= oldest_at:
         return None
@@ -139,13 +144,13 @@ async def _oldest_gap(ctx: ReportContext, oldest: Any) -> str | None:
     )
 
 
-async def _head_gap(ctx: ReportContext, newest: datetime | None) -> str | None:
+async def _head_gap(ctx: ReportContext, request: Any, newest: datetime | None) -> str | None:
     """Why changes after the indexed commit are missing, if the period reaches them."""
     import asyncio
 
     from repowise.core.git_refs import resolve
 
-    until = _request(ctx).until
+    until = request.until
     if until is not None and newest is not None and until <= _utc(newest):
         return None
     head = await asyncio.to_thread(resolve, str(ctx.repo_root), "HEAD")
@@ -157,7 +162,7 @@ async def _head_gap(ctx: ReportContext, newest: datetime | None) -> str | None:
     )
 
 
-async def _window(ctx: ReportContext) -> dict[str, Any]:
+async def _window(ctx: ReportContext, request: Any) -> dict[str, Any]:
     """Whether the index holds every change the period asks for.
 
     The index keeps the newest ``commit_limit`` main-line commits, and only up
@@ -180,8 +185,8 @@ async def _window(ctx: ReportContext) -> dict[str, Any]:
     gaps = [
         gap
         for gap in (
-            await _oldest_gap(ctx, oldest) if oldest is not None else None,
-            await _head_gap(ctx, newest),
+            await _oldest_gap(ctx, request, oldest) if oldest is not None else None,
+            await _head_gap(ctx, request, newest),
         )
         if gap
     ]
@@ -260,21 +265,44 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
-def _period_check(ctx: ReportContext, entries: list[dict[str, Any]]) -> dict[str, Any]:
-    request = _request(ctx)
+def _span(request: Any) -> str:
     since = request.since.date().isoformat() if request.since else "the oldest indexed change"
     until = f"before {request.until.date().isoformat()}" if request.until else "to the newest"
+    return f"from {since} {until}"
+
+
+def _window_words(request: Any) -> str:
+    """How the period's start was chosen, in words."""
+    if request.window_days:
+        anchor = request.since + timedelta(days=request.window_days)
+        to = "--until" if anchor == request.until else "the newest indexed commit"
+        return (
+            f"the {request.window_days} days before {anchor.date().isoformat()} ({to}), the "
+            "default without --since; --since DATE sets the start and --since all covers "
+            "every indexed change"
+        )
+    if request.since is not None:
+        return "the start --since gave"
+    return "every indexed change (--since all)"
+
+
+def _period_check(period: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any]:
+    request = period["request"]
     by_category: dict[str, int] = {}
     for e in entries:
         by_category[e["category"]] = by_category.get(e["category"], 0) + 1
     return check(
         "changes-in-period",
-        reason=f"{len(entries)} change(s) merged from {since} {until}",
-        details=[f"{k}: {v}" for k, v in sorted(by_category.items())],
+        reason=f"{len(entries)} change(s) merged {_span(request)}",
+        details=[
+            f"period: {_window_words(request)}",
+            *(f"{k}: {v}" for k, v in sorted(by_category.items())),
+        ],
         method=_METHOD,
         basis="measured",
         data={"changes": len(entries), "by_category": by_category,
-              "since": _iso(request.since), "until": _iso(request.until)},
+              "since": _iso(request.since), "until": _iso(request.until),
+              "window_days": request.window_days},
     )
 
 
@@ -448,7 +476,7 @@ async def _collect_summary(ctx: ReportContext) -> list[dict[str, Any]]:
     period = await _period(ctx)
     entries: list[dict[str, Any]] = period["entries"]
     return [
-        _period_check(ctx, entries),
+        _period_check(period, entries),
         _window_check(period["window"]),
         _checklists_check(entries),
         _review_check(period, entries),
@@ -523,6 +551,13 @@ def _policy_reason(period: dict[str, Any]) -> str:
     )
 
 
+def _period_reason(request: Any) -> str:
+    return (
+        f"The period runs {_span(request)}: {_window_words(request)}. A change counts "
+        "in it by the date it was merged (UTC)."
+    )
+
+
 def _snapshot_reason(ctx: ReportContext) -> str:
     head = (ctx.head_commit or "")[:12] or "the indexed commit"
     return (
@@ -536,6 +571,7 @@ async def _collect_method(ctx: ReportContext) -> list[dict[str, Any]]:
     period = await _period(ctx)
     entries = period["entries"]
     items = [
+        ("period", _period_reason(period["request"]), "measured"),
         ("review", _review_reason(period["metadata_source"]),
          "declared" if any(e["review"]["status"] == "known" for e in entries) else "unresolved"),
         ("tests", _STATED["tests"],

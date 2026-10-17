@@ -6,7 +6,7 @@ import os
 import tempfile
 import time
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 
@@ -93,3 +93,38 @@ def relative_files(files: Iterable[str], repo_root: Any) -> list[str]:
             continue
         out.append(path)
     return list(dict.fromkeys(out))
+
+
+def repo_relative(
+    path: str | os.PathLike[str], root: str | os.PathLike[str], *, resolve: bool = False
+) -> str | None:
+    """POSIX spelling of *path* under *root*, or None when it lies outside.
+
+    Lexical (``Path.relative_to``) by default, so both sides must already be
+    in the same form. *resolve* resolves both first, which follows symlinks
+    and reads a relative *path* against the working directory. *root* itself
+    reads as ".". Separators are the host's: on POSIX a backslash stays a
+    character.
+    """
+    try:
+        if resolve:
+            return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+        p = path if isinstance(path, PurePath) else Path(path)
+        return p.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def strip_dir_prefix(path: str, base: str) -> str:
+    """POSIX *path* relative to directory *base*; unchanged outside it or when *base* is empty."""
+    if base and path.startswith(base + "/"):
+        return path[len(base) + 1 :]
+    return path
+
+
+def comparable_path(path: str | None) -> str:
+    """*path* with forward slashes and no leading "./"; None reads as ""."""
+    cleaned = (path or "").replace("\\", "/")
+    while cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return cleaned

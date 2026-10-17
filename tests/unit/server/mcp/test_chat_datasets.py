@@ -358,3 +358,85 @@ async def test_a_failed_load_is_not_cached_and_the_tool_says_so(chart_index, pro
     state["fail"] = False
     assert "error" not in await run_chart({"dataset": "probe", "x": "k"}, None, TurnViews())
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Row builders over plain records
+# ---------------------------------------------------------------------------
+
+
+def _record(obj) -> dict:
+    """An ORM entity or named tuple as a plain dict, the shape a consumer may hold."""
+    from sqlalchemy import inspect
+
+    if hasattr(obj, "_asdict"):
+        return obj._asdict()
+    return {a.key: getattr(obj, a.key) for a in inspect(obj).mapper.column_attrs}
+
+
+async def _entities(session, model, *where) -> list[dict]:
+    from sqlalchemy import select
+
+    return [_record(o) for o in (await session.execute(select(model).where(*where))).scalars()]
+
+
+async def test_row_builders_match_the_loaders_over_the_same_records(chart_index, session):
+    from repowise.core.persistence.crud.analysis.dead_code import get_dead_code_findings
+    from repowise.core.persistence.crud.analysis.health import (
+        get_file_language_map,
+        get_health_snapshot_headline,
+    )
+    from repowise.core.persistence.crud.analysis.shown import shown
+    from repowise.core.persistence.crud.git import code_file_rows
+    from repowise.core.persistence.crud.knowledge_graph import get_kg_layers
+    from repowise.core.persistence.models import GitMetadata, HealthFinding
+    from repowise.server.chat_datasets.architecture import layers_rows
+    from repowise.server.chat_datasets.files import coverage_rows, files_rows
+    from repowise.server.chat_datasets.findings import dead_code_rows, findings_rows
+    from repowise.server.chat_datasets.history import changes_rows, health_trend_rows
+
+    rid = chart_index
+    coverage = await _entities(session, CoverageFile, CoverageFile.repository_id == rid)
+    files = files_rows(
+        await _entities(session, HealthFileMetric, HealthFileMetric.repository_id == rid),
+        await _entities(session, GitMetadata, code_file_rows(rid)),
+        coverage,
+        await get_file_language_map(session, rid),
+    )
+    assert files and files == await _rows("files")
+    assert coverage_rows(coverage, files) == await _rows("coverage")
+    found = await _entities(
+        session,
+        HealthFinding,
+        HealthFinding.repository_id == rid,
+        HealthFinding.status == "open",
+        shown("health", HealthFinding.biomarker_type, HealthFinding.file_path),
+    )
+    assert findings_rows(found, files) == await _rows("findings")
+    dead = [_record(f) for f in await get_dead_code_findings(session, rid)]
+    assert dead_code_rows(dead, files) == await _rows("dead_code")
+    changes = await _entities(session, Change, Change.repository_id == rid)
+    assert changes_rows(changes) == await _rows("changes")
+    headline = await get_health_snapshot_headline(session, rid, recent=50)
+    assert health_trend_rows([_record(s) for s in headline.recent]) == await _rows("health_trend")
+    layers = [_record(layer) for layer in await get_kg_layers(session, rid)]
+    assert layers_rows(layers) == await _rows("layers")
+
+
+def test_dependency_rows_label_edges_and_drop_unknown_boxes():
+    from repowise.server.chat_datasets.architecture import dependencies_rows
+
+    containers = [{"id": "a", "path": "packages/a"}, {"id": "root", "path": ""}]
+    relations = [
+        {"source_id": "a", "target_id": "root", "edge_count": 3, "coupling": "loose"},
+        {"source_id": "a", "target_id": "gone", "edge_count": 9, "coupling": "tight"},
+    ]
+    assert dependencies_rows(containers, relations) == [
+        {
+            "edge": f"packages/a {chat_datasets.ARROW} .",
+            "from_package": "packages/a",
+            "to_package": ".",
+            "weight": 3,
+            "coupling": "loose",
+        }
+    ]
