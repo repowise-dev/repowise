@@ -51,6 +51,7 @@ from .biomarkers import FileContext, detect_all
 from .biomarkers.function_hotspot import refresh_replayed
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .complexity.languages import has_health_dialect
+from .crossfn_perf import CrossFunctionPerfStage
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
 from .duplication.detector import clone_ranges, union_line_count
@@ -61,16 +62,9 @@ from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
     CallGraphIndex,
-    PerfRanker,
-    apply_perf_promotions,
     build_performance_opportunities,
-    collect_blocking_io_under_lock,
-    collect_centrality_gated,
-    collect_crossfn_io_in_loop,
     link_performance_findings,
 )
-from .perf.lazy_load import collect_lazy_loads
-from .perf.unbounded_reduction import collect_unbounded_reductions
 from .ranking import deduction_by_path
 from .refactoring import (
     PerformancePlanPolicy,
@@ -831,6 +825,9 @@ class HealthAnalyzer:
         self._package_roots_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
         self.test_index = RepoTestIndex(self.graph, self.parsed_files, self._execution_graph)
+        self.perf_stage = CrossFunctionPerfStage(
+            self.graph, self._execution_graph, self._origins, self.parsed_files, self.read_source
+        )
 
     def file_dependents(self) -> dict[str, int]:
         """Each analysed file's dependents count, as the centrality gates read it."""
@@ -1120,7 +1117,7 @@ class HealthAnalyzer:
         # and the Extract Method detector read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
         dataflow_cache = FileDataflowCache(self.read_source)
-        self._augment_perf_hits(walked, dataflow_cache, timings)
+        self.perf_stage.run(walked, dataflow_cache, timings)
         with timed(timings, "analysis.health.repo_stats"):
             inputs = self._repo_inputs(dup_report, fn_mod_p80, dataflow_cache)
         with timed(timings, "analysis.health.evaluate"):
@@ -1285,67 +1282,6 @@ class HealthAnalyzer:
                     fcx.cross_file_oracles = resolved
         except Exception as exc:
             log.debug("health_cross_file_oracles_failed", error=str(exc))
-            return
-
-    def _augment_perf_hits(
-        self,
-        walked: list[tuple[Any, FileComplexity]],
-        dataflow: FileDataflowCache,
-        timings: Any | None,
-    ) -> None:
-        """Every post-walk perf pass, shared by ``analyze`` and ``analyze_async`` so
-        the two paths cannot drift apart again. Promotions read the crossfn hits,
-        so crossfn runs first."""
-        from repowise.core.pipeline.phase_timing import timed
-
-        with timed(timings, "analysis.health.crossfn"):
-            self._apply_crossfn_perf(walked)
-        with timed(timings, "analysis.health.promotions"):
-            apply_perf_promotions(walked, dataflow=dataflow)
-        with timed(timings, "analysis.health.unbounded_reduction"):
-            collect_unbounded_reductions(walked, read_source=self.read_source)
-        with timed(timings, "analysis.health.lazy_load"):
-            collect_lazy_loads(walked, self.parsed_files, read_source=self.read_source)
-
-    def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
-        """Run the graph-dependent perf passes over the walked files, in place.
-
-        Four sources of extra ``perf_hits``, all sharing one
-        :class:`CallGraphIndex` (built once over reliable execution edges):
-
-          1. cross-function ``io_in_loop`` / N+1 (PR4);
-          2. cross-function ``blocking_io_under_lock`` (Phase 7b) — the lock→I/O
-             reachability case;
-          3. the centrality-gated ``nested_loop_quadratic`` / ``hot_path_sync_io``
-             markers (Phase 7b), generated from the walker's per-function facts
-             ONLY for a hot function, via the :class:`PerfRanker`.
-
-        Each is appended onto the matching file's ``perf_hits`` in place so the
-        biomarkers handle every case through one path. Failure-isolated and never
-        blocks the report. The cross-function passes are a no-op without a graph;
-        the centrality-gated pass ALWAYS runs — without a graph nothing is
-        hot, so it emits nothing (precision-first: we never ship a
-        centrality-gated marker we cannot establish centrality for).
-        """
-        try:
-            index = self._execution_graph()
-            by_file: dict[str, list] = {}
-            if self.graph is not None and index is not None:
-                for src in (
-                    collect_crossfn_io_in_loop(walked, self.graph, index=index),
-                    collect_blocking_io_under_lock(walked, self.graph, index=index),
-                ):
-                    for path, hits in src.items():
-                        by_file.setdefault(path, []).extend(hits)
-            ranker = PerfRanker(index)
-            for path, hits in collect_centrality_gated(walked, ranker, self._origins).items():
-                by_file.setdefault(path, []).extend(hits)
-            for _pf, fcx in walked:
-                extra = by_file.get(_pf.file_info.path)
-                if extra:
-                    fcx.perf_hits = [*fcx.perf_hits, *extra]
-        except Exception as exc:
-            log.debug("health_crossfn_perf_failed", error=str(exc))
             return
 
     def _mark_perf_entry_reachability(

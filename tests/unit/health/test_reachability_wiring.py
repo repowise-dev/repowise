@@ -138,7 +138,7 @@ def test_test_and_performance_passes_share_one_execution_index(tmp_path):
 
     first = analyzer._execution_graph()
     analyzer.test_index.reached_files()
-    analyzer._apply_crossfn_perf([])
+    analyzer.perf_stage.apply_crossfn([])
 
     assert first is not None
     assert analyzer._execution_graph() is first
