@@ -558,7 +558,7 @@ _WALK_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # Sizes .repowise/ only — repowise-owned, cannot contain junk trees.
     ("cli", "commands/status_cmd.py"): frozenset({"rglob"}),
     # Scans repowise's own packaged web/ui source dirs, not the user repo.
-    ("cli", "commands/serve_cmd.py"): frozenset({"rglob"}),
+    ("cli", "commands/serve_cmd/_web_assets.py"): frozenset({"rglob"}),
     # Sizes .repowise/ only — repowise-owned, cannot contain junk trees.
     ("server", "services/overview_payload.py"): frozenset({"rglob"}),
 }

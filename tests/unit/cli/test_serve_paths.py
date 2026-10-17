@@ -1,4 +1,4 @@
-"""Safety net for `repowise serve` before the module is split.
+"""Safety net for `repowise serve`.
 
 Pins the embedder prompt, port fallback, web asset resolution (download,
 local build, staleness), frontend launch and the command's branch order.
@@ -22,6 +22,13 @@ import pytest
 from click.testing import CliRunner
 
 from repowise.cli.commands import serve_cmd
+from repowise.cli.commands.serve_cmd import (
+    _advisory,
+    _embedder,
+    _frontend,
+    _ports,
+    _web_assets,
+)
 
 from ._real_call_guard import guard_real_calls
 
@@ -57,15 +64,15 @@ _EMBED_ENV = (
 def embed_env(monkeypatch, tmp_path) -> dict:
     """Clean embedder env, a tmp global config dir and a scripted prompt."""
     _own_env(monkeypatch, *_EMBED_ENV)
-    monkeypatch.setattr(serve_cmd, "_GLOBAL_CONFIG_DIR", tmp_path / "global")
+    monkeypatch.setattr(_embedder, "_GLOBAL_CONFIG_DIR", tmp_path / "global")
     state: dict = {"config": {}, "answers": [], "prompts": []}
-    monkeypatch.setattr(serve_cmd, "load_config", lambda _p: state["config"])
+    monkeypatch.setattr(_embedder, "load_config", lambda _p: state["config"])
 
     def fake_prompt(text, default=None, **_kw):
         state["prompts"].append((text.strip(), default))
         return state["answers"].pop(0)
 
-    monkeypatch.setattr(serve_cmd.click, "prompt", fake_prompt)
+    monkeypatch.setattr(_embedder.click, "prompt", fake_prompt)
     return state
 
 
@@ -234,7 +241,7 @@ def test_find_free_port_scans_upward(monkeypatch) -> None:
         probed.append(port)
         return port == 3002
 
-    monkeypatch.setattr(serve_cmd, "_is_port_free", fake_free)
+    monkeypatch.setattr(_ports, "_is_port_free", fake_free)
     assert serve_cmd._find_free_port("127.0.0.1", 3000, "web UI") == 3002
     assert probed == [3000, 3001, 3002]
 
@@ -246,7 +253,7 @@ def test_find_free_port_respects_max_attempts(monkeypatch) -> None:
         probed.append(port)
         return False
 
-    monkeypatch.setattr(serve_cmd, "_is_port_free", fake_free)
+    monkeypatch.setattr(_ports, "_is_port_free", fake_free)
     serve_cmd._find_free_port("127.0.0.1", 4000, "API server", max_attempts=3)
     assert probed == [4000, 4001, 4002, 4003]
 
@@ -258,7 +265,7 @@ def test_find_free_port_stops_scanning_at_65535(monkeypatch) -> None:
         probed.append(port)
         return False
 
-    monkeypatch.setattr(serve_cmd, "_is_port_free", fake_free)
+    monkeypatch.setattr(_ports, "_is_port_free", fake_free)
     chosen = serve_cmd._find_free_port("127.0.0.1", 65534, "API server")
     assert probed == [65534, 65535]
     assert isinstance(chosen, int) and chosen > 0
@@ -272,8 +279,8 @@ def test_find_free_port_stops_scanning_at_65535(monkeypatch) -> None:
 @pytest.fixture
 def web_cache(monkeypatch, tmp_path) -> Path:
     cache = tmp_path / "web-cache"
-    monkeypatch.setattr(serve_cmd, "_WEB_CACHE_DIR", cache)
-    monkeypatch.setattr(serve_cmd, "_MARKER_FILE", cache / ".version")
+    monkeypatch.setattr(_web_assets, "_WEB_CACHE_DIR", cache)
+    monkeypatch.setattr(_web_assets, "_MARKER_FILE", cache / ".version")
     return cache
 
 
@@ -294,16 +301,14 @@ def test_find_local_web_walks_up_from_cwd(monkeypatch, tmp_path) -> None:
     (repo / "packages" / "web" / "package.json").write_text("{}")
     deep = repo / "a" / "b"
     deep.mkdir(parents=True)
-    # Retarget to the submodule that reads __file__ once serve_cmd is a package.
-    monkeypatch.setattr(serve_cmd, "__file__", str(tmp_path / "x" / "y" / "serve_cmd.py"))
+    monkeypatch.setattr(_web_assets, "__file__", str(tmp_path / "x" / "y" / "serve_cmd.py"))
     monkeypatch.chdir(deep)
     assert serve_cmd._find_local_web() == (repo / "packages" / "web").resolve()
 
 
 def test_find_local_web_none_without_package_json(monkeypatch, tmp_path) -> None:
     (tmp_path / "packages" / "web").mkdir(parents=True)  # no package.json
-    # Retarget to the submodule that reads __file__ once serve_cmd is a package.
-    monkeypatch.setattr(serve_cmd, "__file__", str(tmp_path / "x" / "serve_cmd.py"))
+    monkeypatch.setattr(_web_assets, "__file__", str(tmp_path / "x" / "serve_cmd.py"))
     monkeypatch.chdir(tmp_path)
     assert serve_cmd._find_local_web() is None
 
@@ -440,7 +445,7 @@ def fake_run(monkeypatch) -> dict:
         if len(st["calls"]) == st["fail_at"]:
             raise subprocess.CalledProcessError(1, cmd)
 
-    monkeypatch.setattr(serve_cmd.subprocess, "run", _run)
+    monkeypatch.setattr(_web_assets.subprocess, "run", _run)
     return st
 
 
@@ -478,7 +483,7 @@ def fake_popen(monkeypatch) -> list:
         calls.append((cmd, kw))
         return "proc"
 
-    monkeypatch.setattr(serve_cmd.subprocess, "Popen", _popen)
+    monkeypatch.setattr(_frontend.subprocess, "Popen", _popen)
     return calls
 
 
@@ -579,30 +584,30 @@ def serve(monkeypatch, tmp_path) -> dict:
 
         return _f
 
-    monkeypatch.setattr(serve_cmd, "_update_advisory_tick", lambda _a: None)
-    monkeypatch.setattr(serve_cmd, "_start_update_advisory_loop", lambda _a: None)
-    monkeypatch.setattr(serve_cmd, "_load_local_provider_config", rec("load_local"))
-    monkeypatch.setattr(serve_cmd, "_setup_embedder", rec("setup_embedder"))
+    monkeypatch.setattr(_advisory, "_update_advisory_tick", lambda _a: None)
+    monkeypatch.setattr(_advisory, "_start_update_advisory_loop", lambda _a: None)
+    monkeypatch.setattr(_embedder, "_load_local_provider_config", rec("load_local"))
+    monkeypatch.setattr(_embedder, "_setup_embedder", rec("setup_embedder"))
 
     def free_port(host, port, label):
         ev.append(("port", host, port, label))
         return port + 1
 
-    monkeypatch.setattr(serve_cmd, "_find_free_port", free_port)
-    monkeypatch.setattr(serve_cmd, "_node_available", lambda: st["node"])
-    monkeypatch.setattr(serve_cmd, "_npm_available", lambda: st["npm"])
-    monkeypatch.setattr(serve_cmd, "_node_major_version", lambda _n: st["node_major"])
-    monkeypatch.setattr(serve_cmd, "_find_local_web", rec("find_local", "local_web"))
-    monkeypatch.setattr(serve_cmd, "_local_build_is_stale", rec("stale", "stale"))
-    monkeypatch.setattr(serve_cmd, "_build_local_web", rec("build", "build_ok"))
-    monkeypatch.setattr(serve_cmd, "_web_is_cached", rec("cached", "cached"))
-    monkeypatch.setattr(serve_cmd, "_download_web", rec("download", "download_ok"))
+    monkeypatch.setattr(_ports, "_find_free_port", free_port)
+    monkeypatch.setattr(_web_assets, "_node_available", lambda: st["node"])
+    monkeypatch.setattr(_web_assets, "_npm_available", lambda: st["npm"])
+    monkeypatch.setattr(_web_assets, "_node_major_version", lambda _n: st["node_major"])
+    monkeypatch.setattr(_web_assets, "_find_local_web", rec("find_local", "local_web"))
+    monkeypatch.setattr(_web_assets, "_local_build_is_stale", rec("stale", "stale"))
+    monkeypatch.setattr(_web_assets, "_build_local_web", rec("build", "build_ok"))
+    monkeypatch.setattr(_web_assets, "_web_is_cached", rec("cached", "cached"))
+    monkeypatch.setattr(_web_assets, "_download_web", rec("download", "download_ok"))
 
     def start(node, port, ui_port, local_web=None, host=None):
         ev.append(("start", node, port, ui_port, local_web, host))
         return _Proc(ev) if st["proc"] else None
 
-    monkeypatch.setattr(serve_cmd, "_start_frontend", start)
+    monkeypatch.setattr(_frontend, "_start_frontend", start)
 
     def fake_uvicorn(app, **kw):
         lock = serve_cmd._serve_lock_path()
@@ -767,12 +772,12 @@ def test_serve_missing_uvicorn_exits_1(serve, monkeypatch) -> None:
 
 def test_serve_advisory_runs_only_on_a_terminal(serve, monkeypatch) -> None:
     ticks: list = []
-    monkeypatch.setattr(serve_cmd, "_update_advisory_tick", lambda a: ticks.append("tick"))
-    monkeypatch.setattr(serve_cmd, "_start_update_advisory_loop", lambda a: ticks.append("loop"))
-    monkeypatch.setattr(type(serve_cmd.console), "is_terminal", property(lambda _s: False))
+    monkeypatch.setattr(_advisory, "_update_advisory_tick", lambda a: ticks.append("tick"))
+    monkeypatch.setattr(_advisory, "_start_update_advisory_loop", lambda a: ticks.append("loop"))
+    monkeypatch.setattr(type(_advisory.console), "is_terminal", property(lambda _s: False))
     _invoke("--no-ui")
     assert ticks == []
-    monkeypatch.setattr(type(serve_cmd.console), "is_terminal", property(lambda _s: True))
+    monkeypatch.setattr(type(_advisory.console), "is_terminal", property(lambda _s: True))
     _invoke("--no-ui")
     assert ticks == ["tick", "loop"]
 

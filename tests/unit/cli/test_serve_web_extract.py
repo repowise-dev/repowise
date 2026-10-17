@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from repowise.cli.commands import serve_cmd
+from repowise.cli.commands.serve_cmd import _web_assets
 
 
 def _make_tar(path: Path, members: list[tuple[str, str | None, bytes]]) -> Path:
@@ -106,8 +107,8 @@ def test_download_web_reports_failure_on_tampered_archive(
 
     monkeypatch.setattr(httpx, "stream", lambda *_a, **_k: _Resp())
     dest = _dest(tmp_path)
-    monkeypatch.setattr(serve_cmd, "_WEB_CACHE_DIR", dest)
-    monkeypatch.setattr(serve_cmd, "_MARKER_FILE", dest / ".version")
+    monkeypatch.setattr(_web_assets, "_WEB_CACHE_DIR", dest)
+    monkeypatch.setattr(_web_assets, "_MARKER_FILE", dest / ".version")
 
     assert serve_cmd._download_web("0.0.0") is False
     assert not (dest / ".version").exists()

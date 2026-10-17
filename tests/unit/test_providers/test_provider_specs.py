@@ -103,7 +103,7 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "core/src/repowise/core/providers/embedding/resolve.py": _EMBEDDERS,
     "cli/src/repowise/cli/commands/init_cmd/command.py": _EMBEDDERS,
     "cli/src/repowise/cli/commands/reindex_cmd.py": _EMBEDDERS,
-    "cli/src/repowise/cli/commands/serve_cmd.py": _EMBEDDERS,
+    "cli/src/repowise/cli/commands/serve_cmd/_embedder.py": _EMBEDDERS,
     "cli/src/repowise/cli/commands/update_cmd/deterministic.py": _EMBEDDERS,
     "cli/src/repowise/cli/providers/embedders.py": _EMBEDDERS,
     "cli/src/repowise/cli/ui/mode_selection.py": _EMBEDDERS,
