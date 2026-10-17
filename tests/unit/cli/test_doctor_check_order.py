@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from repowise.cli.commands.doctor_cmd import repo_checks
+from repowise.cli.commands.doctor_cmd import _render, repo_checks
+from repowise.cli.commands.doctor_cmd._checks import core, integrations, providers
 from repowise.cli.commands.doctor_cmd._types import _check
 
 from ._real_call_guard import guard_real_calls
@@ -100,23 +101,23 @@ async def _build(
 def env(monkeypatch) -> dict:
     """Stub machine-dependent rows and record console output in order."""
     st: dict = {"printed": [], "wedged": False, "refresh": False}
-    monkeypatch.setattr(repo_checks, "_autosync_hook_check", lambda _p: _check("<hook>", True, ""))
-    monkeypatch.setattr(repo_checks, "_attribution_notes_check", lambda _p: None)
-    monkeypatch.setattr(repo_checks, "_events_config_check", lambda _p: None)
-    monkeypatch.setattr(repo_checks, "_provider_checks", lambda _p: [_check("<provider>", True, "")])
-    monkeypatch.setattr(repo_checks, "_distill_checks", lambda _p: [_check("<distill>", True, "")])
+    monkeypatch.setattr(core, "_autosync_hook_check", lambda _p: _check("<hook>", True, ""))
+    monkeypatch.setattr(core, "_attribution_notes_check", lambda _p: None)
+    monkeypatch.setattr(core, "_events_config_check", lambda _p: None)
+    monkeypatch.setattr(providers, "_provider_checks", lambda _p: [_check("<provider>", True, "")])
+    monkeypatch.setattr(integrations, "_distill_checks", lambda _p: [_check("<distill>", True, "")])
     monkeypatch.setattr(
-        repo_checks,
+        integrations,
         "_claude_registration_check",
         lambda _p: (_check("<registration>", not st["wedged"], ""), st["wedged"]),
     )
-    monkeypatch.setattr(repo_checks, "_mcp_responds_check", lambda: _check("<mcp>", True, ""))
+    monkeypatch.setattr(integrations, "_mcp_responds_check", lambda: _check("<mcp>", True, ""))
     monkeypatch.setattr(
-        repo_checks,
+        integrations,
         "_agent_target_checks",
         lambda _p: ([_check("<agent>", not st["refresh"], "")], st["refresh"]),
     )
-    monkeypatch.setattr(repo_checks, "_advise_claude_md_stamp", lambda *_a: st["printed"].append("<stamp>"))
+    monkeypatch.setattr(_render, "_advise_claude_md_stamp", lambda *_a: st["printed"].append("<stamp>"))
     monkeypatch.setattr("repowise.cli.platform.credentials.load", lambda: None)
     monkeypatch.setattr(
         repo_checks.console, "print", lambda *a, **_k: st["printed"].append(" ".join(map(str, a)))
@@ -173,10 +174,10 @@ def test_healthy_store_rows_and_order(env, tmp_path) -> None:
 
 def test_optional_rows_slot_in_after_the_hook(env, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        repo_checks, "_attribution_notes_check", lambda _p: _check("<notes>", True, "")
+        core, "_attribution_notes_check", lambda _p: _check("<notes>", True, "")
     )
     monkeypatch.setattr(
-        repo_checks, "_events_config_check", lambda _p: _check("<events>", False, "")
+        core, "_events_config_check", lambda _p: _check("<events>", False, "")
     )
     repo = asyncio.run(_build(tmp_path))
     names = [r[0] for r in _rows(repo)]
@@ -186,7 +187,7 @@ def test_optional_rows_slot_in_after_the_hook(env, monkeypatch, tmp_path) -> Non
 def test_unindexed_repo_rows(env, monkeypatch, tmp_path) -> None:
     import git as gitpython
 
-    monkeypatch.setattr(repo_checks, "db_configured", lambda: False)
+    monkeypatch.setattr(core, "db_configured", lambda: False)
     repo = tmp_path / "bare"
     repo.mkdir()
     gitpython.Repo.init(repo)
@@ -241,7 +242,7 @@ def test_stale_pages_row(env, monkeypatch, tmp_path) -> None:
     async def _stale(_s, _r):
         return {"file_page": 2}
 
-    monkeypatch.setattr(repo_checks, "_stale_page_counts", _stale)
+    monkeypatch.setattr(providers, "_stale_page_counts", _stale)
     repo = asyncio.run(_build(tmp_path))
     ok, detail = _by_name(_rows(repo))["Stale pages"]
     assert ok is False
@@ -308,7 +309,7 @@ def test_repair_without_drift_names_stale_pages(env, monkeypatch, tmp_path) -> N
     async def _stale(_s, _r):
         return {"file_page": 1}
 
-    monkeypatch.setattr(repo_checks, "_stale_page_counts", _stale)
+    monkeypatch.setattr(providers, "_stale_page_counts", _stale)
     repo = asyncio.run(_build(tmp_path))
     _repair(repo)
     assert _texts(env)[-1].startswith("[yellow]No store drift to repair. 1 stale")
@@ -341,7 +342,7 @@ def test_repair_reports_stale_after_store_repair(env, monkeypatch, tmp_path) -> 
     async def _stale(_s, _r):
         return {"file_page": 1}
 
-    monkeypatch.setattr(repo_checks, "_stale_page_counts", _stale)
+    monkeypatch.setattr(providers, "_stale_page_counts", _stale)
     repo = asyncio.run(_build(tmp_path, fts=(KEPT, GHOST)))
     _repair(repo)
     out = _texts(env)
