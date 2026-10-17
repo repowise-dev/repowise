@@ -160,6 +160,93 @@ def test_a_change_text_is_read_from_git_once(monkeypatch, tmp_path):
     assert asked == [[sha_b], [sha_b]]
 
 
+def _fresh_text_cache(monkeypatch, git_text):
+    monkeypatch.setattr(git_text, "_TEXTS", type(git_text._TEXTS)())
+    monkeypatch.setattr(git_text, "_INFLIGHT", {})
+
+
+def test_concurrent_cold_reads_run_git_once(monkeypatch, tmp_path):
+    """Two calls that miss the same changes together read each change once."""
+    import threading
+    import time
+
+    from repowise.core.suspects import git_text
+
+    shas = [c * 40 for c in "abc"]
+    heads = [(s, 1) for s in shas]
+    calls: list[int] = []
+
+    def slow(repo, batch):
+        calls.append(len(batch))
+        time.sleep(0.3)
+        return {s: (f"body {s[0]}", ()) for s, _ in batch}
+
+    monkeypatch.setattr(git_text, "_read_change_texts", slow)
+    _fresh_text_cache(monkeypatch, git_text)
+    barrier = threading.Barrier(2)
+    results: list[dict] = []
+
+    def worker():
+        barrier.wait()
+        results.append(git_text.read_change_texts(tmp_path, heads))
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    [t.start() for t in threads]
+    [t.join(timeout=10) for t in threads]
+    assert not any(t.is_alive() for t in threads)
+    assert sum(calls) == len(heads)
+    assert len(results) == 2 and results[0] == results[1]
+    assert set(results[0]) == set(shas)
+    assert git_text._INFLIGHT == {}
+
+
+def test_failed_read_releases_waiters(monkeypatch, tmp_path):
+    """A claimed read that raises still wakes its waiter; the next call retries."""
+    import threading
+    import time
+
+    from repowise.core.suspects import git_text
+
+    sha = "a" * 40
+    heads = [(sha, 1)]
+    state = {"calls": 0, "fail": True}
+    started = threading.Event()
+
+    def flaky(repo, batch):
+        state["calls"] += 1
+        if state["fail"]:
+            started.set()
+            time.sleep(0.3)
+            raise RuntimeError("git exploded")
+        return {s: ("body", ()) for s, _ in batch}
+
+    monkeypatch.setattr(git_text, "_read_change_texts", flaky)
+    _fresh_text_cache(monkeypatch, git_text)
+    errors: list[BaseException] = []
+    waiter_result: list[dict] = []
+
+    def leader():
+        try:
+            git_text.read_change_texts(tmp_path, heads)
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    def waiter():
+        started.wait(timeout=5)
+        waiter_result.append(git_text.read_change_texts(tmp_path, heads))
+
+    threads = [threading.Thread(target=leader), threading.Thread(target=waiter)]
+    [t.start() for t in threads]
+    [t.join(timeout=10) for t in threads]
+    assert not any(t.is_alive() for t in threads)
+    assert len(errors) == 1
+    assert waiter_result == [{}]
+    assert state["calls"] == 1
+    state["fail"] = False
+    assert git_text.read_change_texts(tmp_path, heads) == {sha: ("body", ())}
+    assert state["calls"] == 2
+
+
 def test_git_never_inherits_stdin_and_cannot_hang(monkeypatch, tmp_path):
     # Under the stdio MCP server on Windows an inherited stdin pipe blocks git.
     import subprocess
