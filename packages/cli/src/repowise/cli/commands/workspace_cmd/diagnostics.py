@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 import click
@@ -64,7 +65,7 @@ def workspace_diagnostics(
     _print_breakdown_table(ws_root.name, breakdown)
     _print_link_totals(diag)
     _print_extraction_coverage(diag)
-    _print_unmatched(unmatched, diag.unmatched_by_reason)
+    _print_unmatched(unmatched)
     _print_orphans(orphans)
 
     if not unmatched and not orphans:
@@ -183,10 +184,14 @@ _REASON_LABELS = {
 }
 
 
-def _print_unmatched(unmatched: list[UnmatchedConsumer], by_reason: dict[str, int]) -> None:
-    """Unmatched consumers grouped by reason."""
+def _print_unmatched(unmatched: list[UnmatchedConsumer]) -> None:
+    """Unmatched consumers grouped by reason.
+
+    Counts come from the (possibly filtered) list, so they agree with the total.
+    """
     if not unmatched:
         return
+    by_reason = Counter(u.reason for u in unmatched)
     console.print(f"\n  [bold]{len(unmatched)}[/bold] unmatched consumer(s):")
     for reason, count in sorted(by_reason.items()):
         label = _REASON_LABELS.get(reason, reason)

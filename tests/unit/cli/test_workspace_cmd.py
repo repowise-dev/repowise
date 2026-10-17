@@ -636,6 +636,27 @@ class TestWorkspaceDiagnosticsReport:
         assert data["http_consumer_coverage"] == 0.75
         assert data["generated_at"] == "not-a-date"
 
+    def test_repo_filter_text_reason_counts(self, runner, tmp_path):
+        from repowise.core.workspace.diagnostics import UnmatchedConsumer
+        from repowise.core.workspace.system_graph import load_system_graph, save_system_graph
+
+        self._save(tmp_path)
+        graph = load_system_graph(tmp_path)
+        diag = graph.diagnostics
+        diag.unmatched_consumers.append(
+            UnmatchedConsumer("api", "c.py", "http::GET::/z", "http", "internal_only")
+        )
+        diag.unmatched_by_reason["internal_only"] = 1
+        save_system_graph(graph, tmp_path)
+
+        result = runner.invoke(
+            cli, ["workspace", "diagnostics", str(tmp_path), "--repo", "web"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "2 unmatched consumer(s)" in result.output
+        # Reason counts follow the filtered list, not the workspace roll-up.
+        assert "intra-service" not in result.output
+
 
 # ---------------------------------------------------------------------------
 # workspace check
