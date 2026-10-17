@@ -60,7 +60,7 @@ _FILES = {
     "Providers/TmdbEpisodeProvider.cs": (
         "namespace Providers;\nusing Model;\n"
         "public class TmdbEpisodeProvider : IRemoteMetadataProvider<Episode, EpisodeInfo>\n"
-        "{\n    public string Name => \"Tmdb\";\n}\n"
+        '{\n    public string Name => "Tmdb";\n}\n'
     ),
     "Plugins/Scan.cs": (
         "namespace Plugins;\n"
@@ -115,8 +115,12 @@ _FILES = {
 }
 
 
-def _report(root: Path):
-    source_map = {rel: text.encode() for rel, text in _FILES.items()}
+def _report(root: Path, custom_sources: dict[str, bytes] | None = None):
+    source_map = (
+        custom_sources
+        if custom_sources is not None
+        else {rel: text.encode() for rel, text in _FILES.items()}
+    )
     for rel, source in source_map.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,3 +189,36 @@ def test_scans_over_framework_types_and_assertions_name_nothing() -> None:
         b"x.Should().BeAssignableTo<IPlugin>();\n"
     )
     assert _scanned_type_names(nx.DiGraph(), {"Host.cs": blob}) == set()
+
+
+def test_custom_export_attributes_reach_mef_roots(tmp_path: Path) -> None:
+    sources = {
+        "App.csproj": b'<Project Sdk="Microsoft.NET.Sdk" />\n',
+        "Contracts.cs": (
+            b"public interface IContextMenuEntry { void Execute(); }\n"
+            b"[MetadataAttribute]\n"
+            b"[AttributeUsage(AttributeTargets.Class, AllowMultiple = false)]\n"
+            b"public sealed class ExportContextMenuEntryAttribute : ExportAttribute {\n"
+            b'    public ExportContextMenuEntryAttribute() : base("ContextMenuEntry", typeof(IContextMenuEntry)) { }\n'
+            b"}\n"
+            b"[AttributeUsage(AttributeTargets.Class)]\n"
+            b"public class ExportSubContextMenuEntryAttribute : ExportContextMenuEntryAttribute { }\n"
+            b"public class PlainAttribute : Attribute { }\n"
+        ),
+        "SaveCodeContextMenuEntry.cs": (
+            b'[ExportContextMenuEntry(Header = "Save code")]\n'
+            b"public sealed class SaveCodeContextMenuEntry : IContextMenuEntry { public void Execute() { } }\n"
+        ),
+        "SubContextMenuEntry.cs": (
+            b"[ExportSubContextMenuEntry]\n"
+            b"public sealed class SubContextMenuEntry : IContextMenuEntry { public void Execute() { } }\n"
+        ),
+        "PlainDecorated.cs": (b"[Plain]\npublic sealed class PlainDecorated { }\n"),
+        "CSharpLanguage.cs": (b"[Export(typeof(Language))]\npublic class CSharpLanguage { }\n"),
+    }
+
+    flagged = _flagged(_report(tmp_path, sources))
+    assert "SaveCodeContextMenuEntry.cs" not in flagged
+    assert "SubContextMenuEntry.cs" not in flagged
+    assert "CSharpLanguage.cs" not in flagged
+    assert "PlainDecorated.cs" in flagged
