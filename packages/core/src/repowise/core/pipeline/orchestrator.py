@@ -25,18 +25,16 @@ import structlog
 
 from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 from repowise.core.pipeline.modes import OrchestratorMode
-from repowise.core.pipeline.progress import (
-    STAGE_ANALYSIS,
-    STAGE_INGESTION,
-    ProgressCallback,
-    emit_stage,
-    emit_warning,
-)
-from repowise.core.registry import HookProgressCallback
-from repowise.core.registry.plugins import load_plugins
+from repowise.core.pipeline.progress import ProgressCallback, emit_warning
 
-from .phase_timing import timed
-from .phases._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
+from ._run.analysis import run_analysis_phase
+from ._run.index import run_index_phase
+from ._run.state import PipelineRun, attach_cost_tracker, hooked_progress, start_checkpointer
+from .phases._common import _phase_done
+
+# The ``_run`` stage modules call these phase functions through this module
+# (``_orch.<name>``), so imports and patches on the orchestrator keep reaching them.
+# ruff: noqa: F401
 from .phases.analysis import (
     _run_dead_code_analysis,
     _run_decision_extraction,
@@ -50,7 +48,6 @@ from .phases.git import (
     label_co_change_structure,
 )
 from .phases.ingestion import _run_ingestion, reparse_for_resume
-from .resume import ResumePhase
 from .resume.controller import ResumeController
 
 logger = structlog.get_logger(__name__)
@@ -270,457 +267,66 @@ async def run_pipeline(
     """
     repo_path = Path(repo_path).resolve()
     start = time.monotonic()
-
-    commit_depth = max(1, min(commit_depth, 10000))
-
-    # Mode policy: FAST forces ESSENTIAL git indexing and disables doc
-    # generation (and therefore all LLM calls). DETERMINISTIC generates every
-    # page from a template and supplies its own null provider, so a caller
-    # with no API key still gets a wiki. STANDARD preserves the caller's flags
-    # exactly. This is the single switch point: the rest of the pipeline
-    # reads ``generate_docs`` / the git tier, not ``mode``.
-    git_tier = mode.git_tier
-    generate_docs = generate_docs and mode.allows_doc_generation
-
-    # Wrap the incoming progress callback so registered pipeline hooks fire
-    # around each phase transition. Zero-op when no hooks are registered.
-    # Plugins load first so the hooks they register are among them.
-    load_plugins()
-    progress = HookProgressCallback(progress)
-
-    # Optional crash-resume checkpointing. When a JobStore is supplied, a
-    # checkpointer records each major phase's lifecycle (via the same hook
-    # seam) so a re-run can detect completed phases. No-op otherwise — the
-    # default (None) preserves existing behaviour exactly.
-    _checkpointer = None
-    if job_store is not None:
-        from repowise.core.pipeline.checkpoint import PhaseCheckpointer
-
-        _checkpointer = PhaseCheckpointer(job_store, str(repo_path))
-        await _checkpointer.start()
-
-    # Attach cost tracker to provider if supplied
-    if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
-        llm_client._cost_tracker = cost_tracker
-
-    # ---- Phase 1: Ingestion ------------------------------------------------
-    emit_stage(progress, STAGE_INGESTION)
-
-    # Launch git indexing as a background task immediately — it is independent
-    # of parsing and graph-build, so the two stages can run concurrently.
-    # _run_ingestion does: traverse → ProcessPool parse → graph build → dynamic hints.
-    # _run_git_indexing does: git log → co-change accumulation (I/O bound, own executor).
-
-    async def _git_stage() -> tuple:
-        return await _run_git_indexing(
-            repo_path,
-            commit_depth=commit_depth,
-            follow_renames=follow_renames,
-            tier=git_tier,
-            exclude_patterns=exclude_patterns,
-            progress=progress,
-        )
-
-    async def _ingestion_stage() -> tuple:
-        return await _run_ingestion(
-            repo_path,
-            exclude_patterns=exclude_patterns,
-            include_submodules=include_submodules,
-            include_nested_repos=include_nested_repos,
-            skip_tests=skip_tests,
-            skip_infra=skip_infra,
-            progress=progress,
-            derive_environment_facts=derive_environment_facts,
-        )
-
-    # Resume fast-path: when a prior run already persisted the INDEX phase
-    # (graph + git), rehydrate it from the DB and only re-parse source files —
-    # skipping the git history walk and the graph centrality kernels, which
-    # are the minutes-long work that makes a first index slow. Falls back to a
-    # full compute if rehydration yields no graph (nothing was persisted).
-    skip_index = bool(resume_controller and await resume_controller.can_skip(ResumePhase.INDEX))
-    git_summary = None
-    if skip_index:
-        try:
-            graph_builder, git_meta_map = await resume_controller.rehydrate_index(repo_path)
-            if progress:
-                progress.on_message("info", "  ↳ Resuming — reusing persisted graph + git index")
-            (
-                parsed_files,
-                file_infos,
-                repo_structure,
-                source_map,
-                tech_items,
-            ) = await reparse_for_resume(
-                repo_path,
-                exclude_patterns=exclude_patterns,
-                include_submodules=include_submodules,
-                include_nested_repos=include_nested_repos,
-                skip_tests=skip_tests,
-                skip_infra=skip_infra,
-                progress=progress,
-                derive_environment_facts=derive_environment_facts,
-            )
-            traversal_stats = None
-            graph_builder.restore_parse_only_attrs(parsed_files)
-            # Rehydrated rows can predate the structural label, and nothing
-            # else on this path recomputes it.
-            label_co_change_structure(graph_builder, git_meta_map)
-            git_metadata_list = list(git_meta_map.values())
-        except Exception as exc:
-            logger.warning("resume_rehydrate_failed_recomputing", error=str(exc))
-            skip_index = False
-
-    if not skip_index:
-        (
-            (
-                parsed_files,
-                file_infos,
-                repo_structure,
-                source_map,
-                graph_builder,
-                traversal_stats,
-                tech_items,
-            ),
-            (
-                git_summary,
-                git_metadata_list,
-                git_meta_map,
-            ),
-        ) = await asyncio.gather(_ingestion_stage(), _git_stage())
-
-        # Add co-change edges to the graph (rehydrated graphs already carry them)
-        if git_meta_map:
-            label_co_change_structure(graph_builder, git_meta_map)
-            graph_builder.add_co_change_edges(git_meta_map)
-
-    # ---- External systems (C4 L1) ------------------------------------------
-    # Parse repo manifests for declared third-party dependencies. Failure here
-    # must not break the pipeline — log and continue with an empty list.
-    external_systems: list[dict] = []
-    if progress:
-        progress.on_phase_start("external_systems", None)
-    try:
-        from repowise.core.ingestion.external_systems import extract_external_systems
-
-        records = await asyncio.to_thread(extract_external_systems, repo_path)
-        external_systems = [
-            {
-                "name": r.name,
-                "display_name": r.display_name,
-                "ecosystem": r.ecosystem,
-                "category": r.category,
-                "io_kind": r.io_kind,
-                "version": r.version,
-                "declared_in": r.declared_in,
-                "is_dev_dep": r.is_dev_dep,
-            }
-            for r in records
-        ]
-        if progress and external_systems:
-            progress.on_message(
-                "info",
-                f"→ External systems: {len(external_systems):,} declared deps across manifests",
-            )
-    except Exception as _ext_err:
-        logger.warning("external_systems_extraction_failed", error=str(_ext_err))
-        emit_warning(
-            progress,
-            f"External dependency manifests not parsed ({_ext_err}); "
-            "pages will not name this repo's third-party systems.",
-        )
-    _phase_done(progress, "external_systems")
-
-    # ---- Checkpoint: INDEX -------------------------------------------------
-    # Persist the freshly-computed graph + git + symbols now so an interrupt
-    # during the analysis phase below can resume without redoing the expensive
-    # index. Skipped when we rehydrated (already persisted) — best-effort.
-    if resume_controller is not None and not skip_index:
-        await resume_controller.checkpoint_index(
-            parsed_files=parsed_files,
-            graph_builder=graph_builder,
-            git_metadata_list=git_metadata_list,
-            git_summary=git_summary,
-            external_systems=external_systems,
-            source_map=source_map,
-            progress=progress,
-        )
-
-    # Emit rich insight summary for the ingestion phase
-    if progress:
-        _g = graph_builder.graph()
-        _n_nodes = _g.number_of_nodes()
-        _n_edges = _g.number_of_edges()
-        progress.on_message(
-            "info",
-            f"→ {len(parsed_files):,} files parsed · "
-            f"{sum(len(pf.symbols) for pf in parsed_files):,} symbols extracted",
-        )
-        progress.on_message(
-            "info",
-            f"→ Graph: {_n_nodes:,} nodes · {_n_edges:,} edges",
-        )
-        if git_summary and git_summary.files_indexed:
-            _hotspot_msg = ""
-            if hasattr(git_summary, "hotspots") and git_summary.hotspots:
-                _hotspot_msg = f" · {git_summary.hotspots} hotspots"
-            progress.on_message(
-                "info",
-                f"→ Git: {git_summary.files_indexed:,} files indexed{_hotspot_msg}",
-            )
-
-    # Test-run: limit to top 10 files by PageRank (shared helper with
-    # ``run_generation`` so the two paths cannot drift).
-    if test_run and generate_docs:
-        parsed_files = limit_to_top_pagerank(
-            parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT
-        )
-        if progress:
-            progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
-
-    # ---- Phase 2: Analysis --------------------------------------------------
-    emit_stage(progress, STAGE_ANALYSIS)
-
-    # Resume fast-path: when a prior run already completed (and persisted) the
-    # ANALYSIS phase, skip recomputing dead code / health / decisions — the
-    # last is the costly one (LLM-backed, minutes on large repos). We rehydrate
-    # only the thin views generation reads; the persisted rows stay
-    # authoritative and are never re-written from these. ``health_report`` is
-    # not a generation input, so it stays None on this path (its persisted rows
-    # are untouched). Falls back to a full recompute if rehydration errors.
-    skip_analysis = bool(
-        resume_controller and await resume_controller.can_skip(ResumePhase.ANALYSIS)
+    progress = hooked_progress(progress)
+    checkpointer = await start_checkpointer(job_store, repo_path)
+    attach_cost_tracker(llm_client, cost_tracker)
+    run = PipelineRun(
+        repo_path=repo_path,
+        start=start,
+        mode=mode,
+        # Mode policy, the single switch point: FAST forces ESSENTIAL git indexing and
+        # disables doc generation (so every LLM call); DETERMINISTIC renders pages from
+        # templates; STANDARD keeps the caller's flags. Later stages read these, not mode.
+        generate_docs=generate_docs and mode.allows_doc_generation,
+        git_tier=mode.git_tier,
+        progress=progress,
+        checkpointer=checkpointer,
+        commit_depth=max(1, min(commit_depth, 10000)),
+        follow_renames=follow_renames,
+        skip_tests=skip_tests,
+        skip_infra=skip_infra,
+        exclude_patterns=exclude_patterns,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+        derive_environment_facts=derive_environment_facts,
+        llm_client=llm_client,
+        embedder=embedder,
+        vector_store=vector_store,
+        concurrency=concurrency,
+        test_run=test_run,
+        resume=resume,
+        generation_config=generation_config,
+        wiki_style=wiki_style,
+        existing_kg_fingerprint=existing_kg_fingerprint,
+        on_page_ready=on_page_ready,
+        resume_controller=resume_controller,
+        coverage_report_paths=coverage_report_paths,
     )
-    dead_code_report = None
-    health_report = None
-    decision_report = None
-    doc_drift_report = None
-    # Reports actually fed to generation + KG — rehydrated on the skip path,
-    # the freshly computed ones otherwise.
-    gen_dead_code_report = None
-    gen_decision_report = None
-    if skip_analysis:
-        try:
-            (
-                gen_dead_code_report,
-                gen_decision_report,
-            ) = await resume_controller.rehydrate_analysis()
-            if progress:
-                progress.on_message("info", "  ↳ Resuming — reusing persisted analysis")
-        except Exception as exc:
-            logger.warning("resume_rehydrate_analysis_failed_recomputing", error=str(exc))
-            skip_analysis = False
+    generate_docs = run.generate_docs
 
-        # If analysis was skipped, but decision extraction never completed (e.g. earlier
-        # run was interrupted during decision extraction or returned None), re-run decision
-        # extraction specifically so that decisions are backfilled without re-running dead code / health.
-        if (
-            skip_analysis
-            and resume_controller
-            and not await resume_controller.has_completed_decision_extraction()
-        ):
-            if progress:
-                progress.on_message(
-                    "info",
-                    "  ↳ Resumed analysis missing decision extraction — running extraction",
-                )
-            decision_report = await _run_decision_extraction(
-                repo_path,
-                llm_client=llm_client,
-                graph_builder=graph_builder,
-                git_meta_map=git_meta_map,
-                parsed_files=parsed_files,
-                source_map=source_map,
-                progress=progress,
-            )
-            if decision_report is not None:
-                gen_decision_report = decision_report
-                await resume_controller.checkpoint_decision_backfill(
-                    decision_report, progress=progress
-                )
+    await run_index_phase(run)
+    parsed_files = run.parsed_files
+    file_infos = run.file_infos
+    repo_structure = run.repo_structure
+    source_map = run.source_map
+    graph_builder = run.graph_builder
+    traversal_stats = run.traversal_stats
+    tech_items = run.tech_items
+    git_summary = run.git_summary
+    git_metadata_list = run.git_metadata_list
+    git_meta_map = run.git_meta_map
+    external_systems = run.external_systems
 
-    if not skip_analysis:
-        # The four analyses share read-only inputs (graph, git_meta_map,
-        # parsed_files; the lazy metric caches were warmed during ingestion)
-        # and have no data dependency on each other, so run them concurrently:
-        # decision extraction is I/O/LLM-bound and its wall clock hides
-        # entirely behind the CPU-bound dead-code + health work.
-        (
-            dead_code_report,
-            health_report,
-            decision_report,
-            doc_drift_report,
-        ) = await asyncio.gather(
-            _run_dead_code_analysis(
-                graph_builder,
-                git_meta_map,
-                source_map=source_map,
-                repo_path=repo_path,
-                traversal_stats=traversal_stats,
-                progress=progress,
-            ),
-            _run_health_analysis(
-                graph_builder,
-                git_meta_map,
-                parsed_files,
-                repo_path=repo_path,
-                coverage_report_paths=coverage_report_paths,
-                progress=progress,
-            ),
-            _run_decision_extraction(
-                repo_path,
-                llm_client=llm_client,
-                graph_builder=graph_builder,
-                git_meta_map=git_meta_map,
-                parsed_files=parsed_files,
-                source_map=source_map,
-                progress=progress,
-            ),
-            _run_doc_drift_analysis(
-                source_map,
-                file_infos=file_infos,
-                graph_builder=graph_builder,
-                repo_path=repo_path,
-                progress=progress,
-            ),
-        )
-
-        # Drop the in-memory-only ``BlameIndex`` now that the health biomarkers
-        # have consumed it — before it can leak into ``PipelineResult`` and the
-        # downstream JSON artifact writers / DB persistence. ``git_meta_map``
-        # shares these dict objects, so this cleans both views. Must stay after
-        # the gather: health reads the blame index while it runs (decision
-        # extraction never does).
-        drop_transient_git_signals(git_metadata_list)
-        gen_dead_code_report = dead_code_report
-        gen_decision_report = decision_report
-
-    # ---- Knowledge Graph skeleton (deterministic, no LLM) ----------------
-    knowledge_graph_result = None
-    try:
-        from repowise.core.analysis.knowledge_graph import (
-            KnowledgeGraphResult,
-            build_knowledge_graph_skeleton,
-            compute_kg_fingerprint,
-            should_skip_kg_rebuild,
-        )
-
-        new_fingerprint = compute_kg_fingerprint(graph_builder)
-
-        kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
-        if should_skip_kg_rebuild(existing_kg_fingerprint, new_fingerprint, kg_json_path):
-            knowledge_graph_result = KnowledgeGraphResult.from_file(kg_json_path)
-            if knowledge_graph_result is not None:
-                knowledge_graph_result.fingerprint = new_fingerprint
-                logger.info(
-                    "knowledge_graph.skip",
-                    reason="fingerprint_unchanged",
-                    fingerprint=new_fingerprint,
-                )
-                if progress:
-                    progress.on_message(
-                        "info",
-                        f"  ↳ KG unchanged (fingerprint {new_fingerprint[:8]}…), reusing",
-                    )
-            else:
-                # The fingerprint said the file was reusable but the reader
-                # refused it — unreadable, or written by an older schema. The
-                # rebuild below is correct either way, but it used to happen
-                # in total silence, so a user whose hand-edited file was
-                # rejected got no signal at all.
-                logger.info(
-                    "knowledge_graph.reuse_failed",
-                    reason="artifact_unreadable_or_outdated",
-                    path=str(kg_json_path),
-                )
-                if progress:
-                    progress.on_message(
-                        "info",
-                        "  ↳ knowledge-graph.json could not be reused, rebuilding it",
-                    )
-
-        tech_stack_dicts = [
-            {"name": t.name, "version": t.version, "category": t.category} for t in tech_items
-        ]
-
-        if knowledge_graph_result is None:
-            if progress:
-                progress.on_phase_start("knowledge_graph.skeleton", None)
-            knowledge_graph_result = build_knowledge_graph_skeleton(
-                parsed_files=parsed_files,
-                graph_builder=graph_builder,
-                repo_structure=repo_structure,
-                tech_stack=tech_stack_dicts,
-                external_systems=external_systems,
-                git_meta_map=git_meta_map,
-                dead_code_report=gen_dead_code_report,
-                repo_path=repo_path,
-            )
-            knowledge_graph_result.fingerprint = new_fingerprint
-            if progress:
-                progress.on_message(
-                    "info",
-                    f"  ↳ KG skeleton: {len(knowledge_graph_result.nodes)} nodes, "
-                    f"{len(knowledge_graph_result.edges)} edges, "
-                    f"{len(knowledge_graph_result.layers)} layers",
-                )
-        _phase_done(progress, "knowledge_graph.skeleton")
-
-        # ---- KG curation/presentation pass (flagged, default on) ---------
-        # Reshapes only the exported KG (layers/tour/entry-points/summaries);
-        # never touches the AST graph, communities, or centrality. No-op when
-        # REPOWISE_KG_CURATION is set to a falsy value (the raw uncurated
-        # export). Runs in BOTH FAST and STANDARD (before the generate branch).
-        if knowledge_graph_result is not None:
-            from repowise.core.analysis.kg_curation import (
-                curate_knowledge_graph,
-                curation_enabled,
-            )
-
-            try:
-                # In generate mode the summary floor is deferred to run after
-                # the wiki-page backfill (in ``finalize_knowledge_graph``), so
-                # rich page summaries win; FAST mode floors here.
-                will_generate = generate_docs and llm_client is not None
-                with timed(getattr(progress, "table", None), "knowledge_graph.curate"):
-                    knowledge_graph_result = curate_knowledge_graph(
-                        knowledge_graph_result,
-                        parsed_files=parsed_files,
-                        graph_builder=graph_builder,
-                        repo_structure=repo_structure,
-                        community_info=graph_builder.community_info(),
-                        git_meta_map=git_meta_map,
-                        enabled=curation_enabled(),
-                        defer_summary_floor=will_generate,
-                    )
-            except (ValueError, KeyError, RuntimeError) as cur_err:
-                logger.error("kg_curation_failed", error=str(cur_err), exc_info=True)
-    except (ValueError, KeyError, OSError, RuntimeError) as kg_err:
-        logger.error("kg_skeleton_building_failed", error=str(kg_err), exc_info=True)
-
-    # ---- Checkpoint: ANALYSIS ----------------------------------------------
-    # Persist dead code + health + decisions now that the analysis phase is
-    # complete, so an interrupt during the long generation phase below can
-    # resume past analysis instead of recomputing it. Skipped when we already
-    # rehydrated analysis (it's by definition persisted) — best-effort.
-    #
-    # The store goes with them: this is where a decision record is first
-    # written, so it is the only pass that can fold a paraphrase into an
-    # existing one. By the end-of-run persist every group matches on title.
-    if resume_controller is not None and not skip_analysis:
-        # No progress phase covers this write either; time it like the INDEX
-        # checkpoint so it shows in the totals.
-        with timed(getattr(progress, "table", None), "persist.checkpoint_analysis"):
-            await resume_controller.checkpoint_analysis(
-                parsed_files=parsed_files,
-                dead_code_report=dead_code_report,
-                health_report=health_report,
-                decision_report=decision_report,
-                doc_drift_report=doc_drift_report,
-                git_metadata_list=git_metadata_list,
-                vector_store=vector_store,
-                progress=progress,
-            )
+    await run_analysis_phase(run)
+    parsed_files = run.parsed_files
+    dead_code_report = run.dead_code_report
+    health_report = run.health_report
+    decision_report = run.decision_report
+    doc_drift_report = run.doc_drift_report
+    gen_dead_code_report = run.gen_dead_code_report
+    gen_decision_report = run.gen_decision_report
+    tech_stack_dicts = run.tech_stack_dicts
+    knowledge_graph_result = run.knowledge_graph_result
 
     # ---- Phase 3: Generation (optional) ------------------------------------
     generated_pages: list[Any] | None = None
@@ -963,8 +569,8 @@ async def run_pipeline(
     # Flush checkpoints on the success path; on an exception above this point
     # the checkpointer is intentionally not closed so interrupted phases stay
     # RUNNING for a resumable re-run.
-    if _checkpointer is not None:
-        await _checkpointer.aclose()
+    if checkpointer is not None:
+        await checkpointer.aclose()
 
     elapsed = time.monotonic() - start
     languages = {fi.language for fi in file_infos if hasattr(fi, "language") and fi.language}
