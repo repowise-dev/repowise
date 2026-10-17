@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -723,6 +723,41 @@ def _run_cross_repo_analysis(ws_config: Any, root: Any, selected: list[Any], err
             console.print(f"  [{WARN}]⚠ Cross-repo analysis failed: {exc}[/]")
 
 
+@dataclass
+class _WorkspaceAnswers:
+    """The run settings the mode menu, advanced config and provider setup may change."""
+
+    index_only: bool
+    provider_name: str | None
+    model: str | None
+    reasoning: str | None
+    commit_limit: int | None
+    follow_renames: bool
+    skip_tests: bool
+    skip_infra: bool
+    concurrency: int
+    exclude_patterns: list[str]
+    test_run: bool
+    onboarding: bool
+    wiki_style: str
+    language: str | None
+    embedder_name_resolved: str
+
+
+@dataclass
+class _WorkspaceTotals:
+    """What the per-repo loop indexed, and what failed."""
+
+    total_files: int = 0
+    total_symbols: int = 0
+    total_pages: int = 0
+    errors: list[tuple[str, str]] = field(default_factory=list)
+    #: alias -> (generated_count, skip_reason | None), shown in the completion
+    #: panel so the user never has to guess why a repo has no pages.
+    docs_outcomes: dict[str, tuple[int, str | None]] = field(default_factory=dict)
+    embed_failures: dict[str, int] = field(default_factory=dict)
+
+
 def _workspace_init(
     *,
     scan: Any,
@@ -766,142 +801,253 @@ def _workspace_init(
     """
     setup_logging_silence()
 
-    from repowise.core.workspace import RepoEntry, WorkspaceConfig
-
     start = time.monotonic()
     root = scan.root
 
     print_banner(console, repo_name=f"Workspace: {root.name}")
     console.print(f"  Detected [bold]{len(scan.repos)}[/bold] repositories in {root}\n")
 
-    # Step 1: Select repos to index
-    # --yes or --all: take every detected repo without prompting. So does a
-    # non-terminal stdin: this is the first prompt in the workspace flow, it
-    # runs before any indexing, and asking a pipe would end the run with an
-    # EOFError before the tool had done anything at all. Agents drive init
-    # this way routinely. "Every repo the scan found" is also what --all
-    # means, so the fallback matches the flag a human would have passed.
-    select_all = init_all or yes or not sys.stdin.isatty()
-    selected = (
-        list(scan.repos) if select_all else interactive_repo_select(console, scan.repos, root)
-    )
-
-    if not selected:
-        console.print(f"[{WARN}]No repositories selected. Aborting.[/]")
+    # --yes, --all or a non-terminal stdin take every detected repo (and the
+    # first as primary) without prompting: asking a pipe would end the run with
+    # an EOFError before anything was done, and "every repo" is what --all means.
+    picked = _select_workspace_repos(scan, select_all=init_all or yes or not sys.stdin.isatty())
+    if picked is None:
         return
-
-    # Step 2: Select primary repo
-    # --yes or --all: auto-pick the first repo as primary without prompting.
-    primary_alias = (
-        selected[0].alias if select_all else interactive_primary_select(console, selected)
-    )
-
-    # Determine root path (for provider resolution + dotenv)
-    primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
+    selected, primary_alias, primary_repo = picked
     load_dotenv(primary_repo.path)
 
-    # Step 2b: Mode selection + provider setup
-    # When running interactively with no explicit flags, present the mode menu.
-    # --yes suppresses all interactive prompts: treat as non-interactive.
+    # --yes suppresses every prompt, so it means non-interactive.
     is_interactive = sys.stdin.isatty() and provider_name is None and not index_only and not yes
-
-    embedder_name_resolved = resolve_embedder(embedder_name)
-    # Whether the user actually asked for this embedder, as opposed to
-    # resolve_embedder inferring one from an LLM key in the environment. The
-    # deterministic (index-only) path needs the distinction: it advertises
-    # itself as costing nothing, so it will not put a hosted embedder on the
-    # user's bill unless they named it.
+    answers = _WorkspaceAnswers(
+        index_only=index_only,
+        provider_name=provider_name,
+        model=model,
+        reasoning=reasoning,
+        commit_limit=commit_limit,
+        follow_renames=follow_renames,
+        skip_tests=skip_tests,
+        skip_infra=skip_infra,
+        concurrency=concurrency,
+        exclude_patterns=exclude_patterns,
+        test_run=test_run,
+        onboarding=onboarding,
+        wiki_style=wiki_style,
+        language=language,
+        embedder_name_resolved=resolve_embedder(embedder_name),
+    )
+    # Whether the user named this embedder, rather than resolve_embedder
+    # inferring one from an LLM key: the free template path will not put a
+    # hosted embedder on the user's bill unless they named it.
     embedder_was_requested = bool(embedder_name) or bool(
         os.environ.get("REPOWISE_EMBEDDER", "").strip()
     )
-
     if is_interactive:
-        mode = interactive_mode_select(
-            console,
-            title=f"How much should repowise write for these {len(selected)} repos?",
-        )
-        if mode == "index_only":
-            index_only = True
-        elif mode == "advanced":
-            selection = interactive_provider_config_select(
-                console,
-                model,
-                reasoning,
-                repo_path=primary_repo.path,
-                save_key=save_key,
-            )
-            provider_name = selection.provider_name
-            model = selection.model
-            reasoning = selection.reasoning
-            # Pass the resolved style so the advanced generation section doesn't
-            # add a per-workspace wiki-style prompt (the workspace flow applies
-            # one style uniformly); onboarding still applies.
-            adv = interactive_advanced_config(
-                console, prompt_reasoning=False, wiki_style=wiki_style, language=language
-            )
-            commit_limit = adv.get("commit_limit") or commit_limit
-            follow_renames = adv.get("follow_renames", follow_renames)
-            skip_tests = adv.get("skip_tests", skip_tests)
-            skip_infra = adv.get("skip_infra", skip_infra)
-            concurrency = adv.get("concurrency", concurrency)
-            if adv.get("exclude"):
-                exclude_patterns = list(exclude_patterns) + list(adv["exclude"])
-            test_run = adv.get("test_run", test_run)
-            reasoning = adv.get("reasoning") or reasoning
-            embedder_name_resolved = resolve_embedder(adv.get("embedder") or embedder_name)
-            onboarding = adv.get("onboarding", onboarding)
-            if adv.get("wiki_style"):
-                wiki_style = adv["wiki_style"]
-            if adv.get("language"):
-                language = adv["language"]
-        elif not index_only:
-            # "full" mode
-            selection = interactive_provider_config_select(
-                console,
-                model,
-                reasoning,
-                repo_path=primary_repo.path,
-                save_key=save_key,
-            )
-            provider_name = selection.provider_name
-            model = selection.model
-            reasoning = selection.reasoning
+        _ask_workspace_mode(answers, selected, primary_repo, embedder_name, save_key=save_key)
+    provider, resolved_reasoning = _resolve_workspace_provider(
+        answers, primary_repo, embedder_name, yes=yes, save_key=save_key
+    )
+    ws_config = _workspace_config(selected, root, primary_alias, dry_run=dry_run)
 
-    # Resolve provider once (shared across all repos for generation)
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+
+    ctx = _WorkspaceCtx(
+        provider=provider,
+        ws_config=ws_config,
+        editor_options=_workspace_editor_options(no_claude_md, agents_md, codex_setup),
+        editor_setup=editor_setup,
+        save_key=save_key,
+        index_only=answers.index_only,
+        dry_run=dry_run,
+        force=force,
+        follow_renames=answers.follow_renames,
+        include_submodules=include_submodules,
+        exclude_patterns=answers.exclude_patterns,
+        skip_tests=answers.skip_tests,
+        skip_infra=answers.skip_infra,
+        concurrency=answers.concurrency,
+        test_run=answers.test_run,
+        yes=yes,
+        resume=resume,
+        onboarding=answers.onboarding,
+        wiki_style=answers.wiki_style,
+        language=answers.language or "en",
+        resolved_reasoning=resolved_reasoning,
+        embedder_name_resolved=answers.embedder_name_resolved,
+        embedder_was_requested=embedder_was_requested,
+        resolved_commit_limit=max(1, min(answers.commit_limit or _DEFAULT_COMMIT_LIMIT, 10000)),
+        run_mode=run_mode,
+    )
+    totals = _index_workspace_repos(selected, ctx)
+
+    # A dry run writes nothing for any repo, so nothing at the workspace level.
+    if not dry_run:
+        _save_workspace(ws_config, root, selected, totals.errors, editor_setup=editor_setup)
+
+    show_workspace_completion(
+        selected=selected,
+        errors=totals.errors,
+        total_files=totals.total_files,
+        total_symbols=totals.total_symbols,
+        total_pages=totals.total_pages,
+        primary_alias=primary_alias,
+        elapsed=time.monotonic() - start,
+        index_only=answers.index_only,
+        provider=provider,
+        docs_outcomes=totals.docs_outcomes,
+    )
+    if not dry_run:
+        _offer_workspace_hooks(
+            selected,
+            totals.errors,
+            hook=hook,
+            distill_hook=distill_hook,
+            yes=yes,
+            editor_setup=editor_setup,
+        )
+    console.print()
+    _raise_on_embed_failures(totals.embed_failures)
+
+
+def _select_workspace_repos(scan: Any, *, select_all: bool) -> tuple[list[Any], str, Any] | None:
+    """The repos to index, the primary alias and repo; None when none were selected."""
+    root = scan.root
+    selected = (
+        list(scan.repos) if select_all else interactive_repo_select(console, scan.repos, root)
+    )
+    if not selected:
+        console.print(f"[{WARN}]No repositories selected. Aborting.[/]")
+        return None
+    primary_alias = (
+        selected[0].alias if select_all else interactive_primary_select(console, selected)
+    )
+    primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
+    return selected, primary_alias, primary_repo
+
+
+def _save_workspace(
+    ws_config: Any, root: Path, selected: list[Any], errors: list, *, editor_setup: bool
+) -> None:
+    """Save the indexed timestamps, run cross-repo analysis, register the primary."""
+    ws_config.save(root)
+    _run_cross_repo_analysis(ws_config, root, selected, errors)
+    primary_entry = ws_config.get_primary()
+    if primary_entry:
+        primary_path = (root / primary_entry.path).resolve()
+        register_editor_clients(console, primary_path, no_editor_setup=not editor_setup)
+
+
+def _ask_workspace_mode(
+    answers: _WorkspaceAnswers,
+    selected: list[Any],
+    primary_repo: Any,
+    embedder_name: str | None,
+    *,
+    save_key: bool,
+) -> None:
+    """The mode menu, then the provider (and advanced config) it calls for."""
+    mode = interactive_mode_select(
+        console,
+        title=f"How much should repowise write for these {len(selected)} repos?",
+    )
+    if mode == "index_only":
+        answers.index_only = True
+    elif mode == "advanced":
+        _ask_workspace_provider(answers, primary_repo, save_key=save_key)
+        # The resolved style keeps the advanced section from asking per
+        # workspace: one style applies to every repo.
+        adv = interactive_advanced_config(
+            console,
+            prompt_reasoning=False,
+            wiki_style=answers.wiki_style,
+            language=answers.language,
+        )
+        _apply_workspace_advanced(answers, adv, embedder_name)
+    elif not answers.index_only:
+        _ask_workspace_provider(answers, primary_repo, save_key=save_key)
+
+
+def _ask_workspace_provider(
+    answers: _WorkspaceAnswers, primary_repo: Any, *, save_key: bool
+) -> None:
+    selection = interactive_provider_config_select(
+        console,
+        answers.model,
+        answers.reasoning,
+        repo_path=primary_repo.path,
+        save_key=save_key,
+    )
+    answers.provider_name = selection.provider_name
+    answers.model = selection.model
+    answers.reasoning = selection.reasoning
+
+
+def _apply_workspace_advanced(
+    answers: _WorkspaceAnswers, adv: dict[str, Any], embedder_name: str | None
+) -> None:
+    """Fold the advanced-config answers into the workspace run."""
+    answers.commit_limit = adv.get("commit_limit") or answers.commit_limit
+    answers.follow_renames = adv.get("follow_renames", answers.follow_renames)
+    answers.skip_tests = adv.get("skip_tests", answers.skip_tests)
+    answers.skip_infra = adv.get("skip_infra", answers.skip_infra)
+    answers.concurrency = adv.get("concurrency", answers.concurrency)
+    if adv.get("exclude"):
+        answers.exclude_patterns = list(answers.exclude_patterns) + list(adv["exclude"])
+    answers.test_run = adv.get("test_run", answers.test_run)
+    answers.reasoning = adv.get("reasoning") or answers.reasoning
+    answers.embedder_name_resolved = resolve_embedder(adv.get("embedder") or embedder_name)
+    answers.onboarding = adv.get("onboarding", answers.onboarding)
+    if adv.get("wiki_style"):
+        answers.wiki_style = adv["wiki_style"]
+    if adv.get("language"):
+        answers.language = adv["language"]
+
+
+def _resolve_workspace_provider(
+    answers: _WorkspaceAnswers,
+    primary_repo: Any,
+    embedder_name: str | None,
+    *,
+    yes: bool,
+    save_key: bool,
+) -> tuple[Any, str]:
+    """Resolve the provider once for every repo; index-only when setup fails."""
     primary_cfg = load_config(primary_repo.path)
-    resolved_reasoning = resolve_reasoning(reasoning, primary_cfg)
+    resolved_reasoning = resolve_reasoning(answers.reasoning, primary_cfg)
     provider = None
-    if not index_only:
+    if not answers.index_only:
         try:
             provider = resolve_explicit_provider_or_prompt(
-                provider_name,
-                model,
+                answers.provider_name,
+                answers.model,
                 primary_repo.path,
-                interactive=sys.stdin.isatty() and not yes and not index_only,
+                interactive=sys.stdin.isatty() and not yes and not answers.index_only,
                 save_key=save_key,
             )
-            # Re-resolve the embedder now that interactive provider selection
-            # may have set the provider's API key in os.environ. Without
-            # this, full-mode runs would display "mock" forever because
-            # the initial resolution happened before the key was available.
-            embedder_name_resolved = resolve_embedder(embedder_name)
+            # Re-resolve: interactive provider selection may just have set the
+            # provider's API key in os.environ.
+            answers.embedder_name_resolved = resolve_embedder(embedder_name)
             console.print(
                 f"  Provider: [{VALUE}]{provider.provider_name}[/] / "
                 f"Model: [{VALUE}]{provider.model_name}[/]"
             )
-            console.print(f"  Embedder: [{VALUE}]{embedder_name_resolved}[/]\n")
+            console.print(f"  Embedder: [{VALUE}]{answers.embedder_name_resolved}[/]\n")
             if resolved_reasoning != "auto":
                 console.print(f"  Reasoning: [{VALUE}]{resolved_reasoning}[/]\n")
         except Exception as exc:
-            if provider_name is not None:
+            if answers.provider_name is not None:
                 raise
             console.print(
                 f"  [{WARN}]Provider setup failed ({exc}); falling back to index-only.[/]"
             )
-            index_only = True
+            answers.index_only = True
             provider = None
+    return provider, resolved_reasoning
 
-    # Step 3: Create workspace config
+
+def _workspace_config(selected: list[Any], root: Path, primary_alias: str, *, dry_run: bool) -> Any:
+    """The workspace config for the selected repos, saved unless this is a dry run."""
+    from repowise.core.workspace import RepoEntry, WorkspaceConfig
+
     entries = [
         RepoEntry(
             path=repo.path.relative_to(root).as_posix(),
@@ -916,9 +1062,8 @@ def _workspace_init(
         default_repo=primary_alias,
     )
     if dry_run:
-        # ensure_repowise_dir still creates `.repowise/` per repo (needed so a
-        # later distill-hook decline can gate every selected path); dry-run
-        # only means nothing is *written* into those directories or the workspace.
+        # `.repowise/` is still created per repo, so a later distill-hook
+        # decline can gate every selected path; nothing is written into it.
         console.print(
             f"  [{WARN}]Dry run — `.repowise/` directories are created, "
             "but no config, index, or pages are written.[/]"
@@ -927,24 +1072,18 @@ def _workspace_init(
         config_path = ws_config.save(root)
         console.print(f"  [{OK}]✓[/] Created {config_path.name}")
     console.print()
+    return ws_config
 
-    # Step 4: Index each selected repo (always generate_docs=False; generation is separate)
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 
-    resolved_commit_limit = max(1, min(commit_limit or _DEFAULT_COMMIT_LIMIT, 10000))
-    total_files = 0
-    total_symbols = 0
-    total_pages = 0
-    errors: list[tuple[str, str]] = []
-    # Per-repo docs outcome, surfaced in the completion panel so the user
-    # never has to guess why the web UI is missing pages for some repos.
-    # Maps alias -> (generated_count, skip_reason | None)
-    docs_outcomes: dict[str, tuple[int, str | None]] = {}
-    # No agent checklist in workspace mode: the question is per repo and this
-    # path indexes many, so asking once would apply one answer everywhere and
-    # asking per repo would be a prompt per repo. Workspace init takes the
-    # defaults and the flags; `repowise agents add` covers the rest.
-    editor_options = resolve_editor_setup_options(
+def _workspace_editor_options(
+    no_claude_md: bool, agents_md: bool | None, codex_setup: bool | None
+) -> Any:
+    """Editor files from the defaults and flags.
+
+    No agent checklist here: the question is per repo, so asking once would
+    apply one answer everywhere. `repowise agents add` covers the rest.
+    """
+    return resolve_editor_setup_options(
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
         ),
@@ -956,81 +1095,36 @@ def _workspace_init(
         ),
     )
 
-    ctx = _WorkspaceCtx(
-        provider=provider,
-        ws_config=ws_config,
-        editor_options=editor_options,
-        editor_setup=editor_setup,
-        save_key=save_key,
-        index_only=index_only,
-        dry_run=dry_run,
-        force=force,
-        follow_renames=follow_renames,
-        include_submodules=include_submodules,
-        exclude_patterns=exclude_patterns,
-        skip_tests=skip_tests,
-        skip_infra=skip_infra,
-        concurrency=concurrency,
-        test_run=test_run,
-        yes=yes,
-        resume=resume,
-        onboarding=onboarding,
-        wiki_style=wiki_style,
-        language=language or "en",
-        resolved_reasoning=resolved_reasoning,
-        embedder_name_resolved=embedder_name_resolved,
-        embedder_was_requested=embedder_was_requested,
-        resolved_commit_limit=resolved_commit_limit,
-        run_mode=run_mode,
-    )
 
-    embed_failures: dict[str, int] = {}
+def _index_workspace_repos(selected: list[Any], ctx: _WorkspaceCtx) -> _WorkspaceTotals:
+    """Index (always generate_docs=False; generation is separate) each selected repo."""
+    totals = _WorkspaceTotals()
     for i, repo in enumerate(selected, 1):
         outcome = _ingest_and_generate_repo(repo, i, len(selected), ctx)
         if outcome.error:
-            errors.append((repo.alias, outcome.error))
+            totals.errors.append((repo.alias, outcome.error))
             continue
-        total_files += outcome.file_count
-        total_symbols += outcome.symbol_count
-        total_pages += outcome.pages_generated
-        docs_outcomes[repo.alias] = outcome.docs_outcome
+        totals.total_files += outcome.file_count
+        totals.total_symbols += outcome.symbol_count
+        totals.total_pages += outcome.pages_generated
+        totals.docs_outcomes[repo.alias] = outcome.docs_outcome
         if outcome.embed_failed_pages:
-            embed_failures[repo.alias] = outcome.embed_failed_pages
+            totals.embed_failures[repo.alias] = outcome.embed_failed_pages
+    return totals
 
-    # Save workspace config with updated timestamps. On a dry run nothing is
-    # written for any repo (see _ingest_and_generate_repo), so nothing is
-    # written at the workspace level either.
-    if not dry_run:
-        ws_config.save(root)
 
-        # Step 5: Cross-repo analysis (co-changes, package deps, contracts)
-        _run_cross_repo_analysis(ws_config, root, selected, errors)
-
-        # Step 6: Register primary repo with configured editor clients
-        primary_entry = ws_config.get_primary()
-        if primary_entry:
-            primary_path = (root / primary_entry.path).resolve()
-            register_editor_clients(console, primary_path, no_editor_setup=not editor_setup)
-
-    # Step 7: Completion summary
-    elapsed = time.monotonic() - start
-    show_workspace_completion(
-        selected=selected,
-        errors=errors,
-        total_files=total_files,
-        total_symbols=total_symbols,
-        total_pages=total_pages,
-        primary_alias=primary_alias,
-        elapsed=elapsed,
-        index_only=index_only,
-        provider=provider,
-        docs_outcomes=docs_outcomes,
-    )
-
-    # Post-commit auto-sync hooks, the same default for every indexed repo.
-    # Skipped on a dry run, which must not write anything.
+def _offer_workspace_hooks(
+    selected: list[Any],
+    errors: list[tuple[str, str]],
+    *,
+    hook: bool | None,
+    distill_hook: bool | None,
+    yes: bool,
+    editor_setup: bool,
+) -> None:
+    """Post-commit hooks for the indexed repos, then the distill rewrite hook."""
     indexed_repos = [repo for repo in selected if repo.alias not in [e[0] for e in errors]]
-    if indexed_repos and not dry_run:
+    if indexed_repos:
         offer_hook_install(
             console,
             [r.path for r in indexed_repos],
@@ -1039,24 +1133,22 @@ def _workspace_init(
             yes=yes,
             no_editor_setup=not editor_setup,
         )
-    # Opt-in distill command-rewrite hook for Claude Code: one user-level
-    # install, with the verdict recorded per repo. Applied to *all* selected
-    # repos (not just successfully indexed ones, and even when every repo
-    # failed) because ensure_repowise_dir already created `.repowise/` in
-    # each, and the hook treats any repo with `.repowise/` and no recorded
-    # verdict as enabled — a decline must gate every one of them off.
-    if not dry_run:
-        offer_distill_rewrite_hook(
-            console,
-            [r.path for r in selected],
-            distill_hook,
-            yes=yes,
-            no_editor_setup=not editor_setup,
-        )
-    console.print()
-    # Raised after every repo is persisted, as single-repo init does: the
-    # other repos and full-text search are fine, but a scripted run must see
-    # that these semantic indexes were not built.
+    # Every selected repo, even a failed one: each already has `.repowise/`, and
+    # the hook treats a `.repowise/` with no recorded verdict as enabled.
+    offer_distill_rewrite_hook(
+        console,
+        [r.path for r in selected],
+        distill_hook,
+        yes=yes,
+        no_editor_setup=not editor_setup,
+    )
+
+
+def _raise_on_embed_failures(embed_failures: dict[str, int]) -> None:
+    """Fail a scripted run whose semantic indexes were not built.
+
+    Raised after every repo is persisted, as single-repo init does.
+    """
     if embed_failures:
         import click
 
