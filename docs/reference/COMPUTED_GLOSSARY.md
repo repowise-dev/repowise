@@ -11,7 +11,7 @@ workspace overlays, MCP responses, and CLI output.
 
 | Area | Main code paths | What gets computed |
 | --- | --- | --- |
-| Traversal and parsing | `packages/core/src/repowise/core/ingestion/traverser.py`, `packages/core/src/repowise/core/ingestion/parser.py`, `packages/core/src/repowise/core/ingestion/models.py` | Files, languages, entry points, symbols, imports, exports, calls, inheritance, parse errors, content hashes |
+| Traversal and parsing | `packages/core/src/repowise/core/ingestion/traverser.py`, `packages/core/src/repowise/core/ingestion/parser/`, `packages/core/src/repowise/core/ingestion/models.py` | Files, languages, entry points, symbols, imports, exports, calls, inheritance, parse errors, content hashes |
 | Graph construction | `packages/core/src/repowise/core/ingestion/graph.py`, `call_resolver.py`, `heritage_resolver.py`, `framework_edges.py`, `dynamic_hints/` | File and symbol nodes, import/call/heritage/framework/dynamic/co-change edges, centrality, SCCs, communities, execution flows |
 | Git intelligence | `packages/core/src/repowise/core/ingestion/git_indexer/` | Churn, ownership, hotspots, bus factor, co-change partners, significant commits, temporal scores, rename and merge signals |
 | Analysis | `packages/core/src/repowise/core/analysis/` | Dead-code findings, decision records, decision staleness, security findings, PR blast radius, execution flows, communities |
@@ -24,7 +24,7 @@ workspace overlays, MCP responses, and CLI output.
 
 | Term | Definition | Computed by | Example |
 | --- | --- | --- | --- |
-| Includable source file | A file that survives ignore rules, blocked patterns, size limit, binary detection, generated-file detection, and language detection. | `FileTraverser._build_file_info()` | `packages/core/src/repowise/core/ingestion/parser.py` |
+| Includable source file | A file that survives ignore rules, blocked patterns, size limit, binary detection, generated-file detection, and language detection. | `FileTraverser._build_file_info()` | `packages/core/src/repowise/core/ingestion/traverser.py` |
 | `FileInfo` | Per-file metadata used by the parser and graph builder. | `FileTraverser.traverse()` | `{path: "src/app.py", language: "python", is_test: false, is_entry_point: true}` |
 | Language tag | Canonical language value from file extension, special filename, or shebang. | `ingestion/models.py`, `traverser.py`, `languages/registry.py` | `python`, `typescript`, `go`, `terraform`, `openapi`, `unknown` |
 | Test file flag | Whether a file looks like a test/spec/fixture file. | `FileTraverser._build_file_info()` and community/test-gap helpers | `tests/test_auth.py -> is_test=true` |
