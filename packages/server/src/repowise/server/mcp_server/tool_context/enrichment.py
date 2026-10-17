@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from sqlalchemy import func, select
@@ -184,6 +184,26 @@ async def _count_neighbors_by_edge_type(
     return {edge_type: int(n or 0) for edge_type, n in await session.execute(stmt)}
 
 
+@dataclass
+class _CallGraphRun:
+    """One symbol's call-graph request plus the neighbour nodes fetched for it."""
+
+    session: AsyncSession
+    repository: Repository
+    target: str
+    node: GraphNode
+    result_data: dict[str, Any]
+    want_callers: bool
+    want_callees: bool
+    exclude_spec: Any
+    collector: OmissionCollector | None
+    repo_root: Any
+    node_map: dict[str, Any] = field(default_factory=dict)
+
+    def wants(self, direction: str) -> bool:
+        return self.want_callers if direction == "in" else self.want_callees
+
+
 async def _resolve_call_graph(
     session: AsyncSession,
     repository: Repository,
@@ -202,55 +222,36 @@ async def _resolve_call_graph(
     Served call rows carry ``call_line`` and, read from *repo_root*, its ``text``.
     """
     repo_id = repository.id
-    # 99.56% of symbols have <=50 callers (p99=31); the rare hub gets an
-    # explicit `*_truncated` + `*_total` signal below rather than a silent cut.
-    limit = _SYMBOL_NEIGHBOR_LIMIT
-
-    # Resolve to a graph node (symbol)
-    node = await get_graph_node(session, repo_id, target)
-    if node is None and "::" in target:
-        # Fuzzy: try bare name
-        bare_name = id_segment_name(target.split("::")[-1])
-        res = await session.execute(
-            select(GraphNode).where(
-                GraphNode.repository_id == repo_id,
-                GraphNode.node_type == "symbol",
-                GraphNode.name == bare_name,
-            )
-        )
-        rows = list(res.scalars().all())
-        if rows:
-            file_hint = target.split("::")[0]
-            node = next((r for r in rows if r.file_path == file_hint), rows[0])
-
+    node = await _call_graph_node(session, repo_id, target)
     if node is None or node.node_type != "symbol":
-        # File targets get the rolled-up view instead of an empty block —
-        # an empty callers list forced a second round-trip per orientation
-        # pass for no reason; the graph has the answer at file granularity.
-        if node is not None and node.node_type == "file" and want_callers:
-            await _resolve_file_level_callers(
-                session, repo_id, node, result_data, exclude_spec, collector, repository=repository
-            )
-            if want_callees:
-                result_data["callees"] = []
-                result_data["callees_basis"] = await call_resolution_basis(
-                    session, repo_id, node.language, cache_key=index_state_key(repository)
-                )
-            return
-        if want_callers:
-            result_data["callers"] = []
-        if want_callees:
-            result_data["callees"] = []
-        if node is not None and node.node_type != "symbol":
-            result_data["_call_graph_note"] = (
-                "callers/callees require a symbol target (function/class/method), "
-                f"but '{target}' is a {node.node_type}. Pass a symbol name or file::Symbol."
-            )
+        await _resolve_non_symbol_call_graph(
+            session,
+            repository,
+            target,
+            node,
+            result_data,
+            want_callers=want_callers,
+            want_callees=want_callees,
+            exclude_spec=exclude_spec,
+            collector=collector,
+        )
         return
+    run = _CallGraphRun(
+        session=session,
+        repository=repository,
+        target=target,
+        node=node,
+        result_data=result_data,
+        want_callers=want_callers,
+        want_callees=want_callees,
+        exclude_spec=exclude_spec,
+        collector=collector,
+        repo_root=repo_root,
+    )
 
-    # Totals per edge type, per direction, before any rows. They say which
-    # relation kinds exist at all, so nothing is fetched speculatively, and
-    # they are the numbers reported — the rows are cut from the same rule.
+    # Totals per edge type and direction come first: they say which relation
+    # kinds exist, so nothing is fetched speculatively, and the rows are cut by
+    # the same rule.
     row_counts_in = (
         await _count_neighbors_by_edge_type(session, repo_id, node.node_id, inbound=True)
         if want_callers
@@ -261,60 +262,9 @@ async def _resolve_call_graph(
         if want_callees
         else {}
     )
-
-    def _entry(edge: GraphEdge, other_id: str, *, with_edge_type: bool) -> dict[str, Any]:
-        other_node = node_map.get(other_id)
-        entry: dict[str, Any] = {
-            "symbol_id": other_id,
-            "name": other_node.name
-            if other_node
-            else (other_id.split("::")[-1] if "::" in other_id else other_id),
-            "kind": other_node.kind if other_node else None,
-            "file": other_node.file_path
-            if other_node
-            else (other_id.split("::")[0] if "::" in other_id else other_id),
-            # Definition line of the other symbol — lets the agent jump
-            # straight to the call-site neighbourhood instead of grepping
-            # for it (the S1 dogfood's most common follow-up).
-            "line": other_node.start_line if other_node else None,
-            "confidence": edge.confidence,
-        }
-        # Omitted on a relation row: the group above it names the edge type
-        # once, so repeating it per row is `"method_implements"` five times for
-        # nothing. Kept on callers/callees, which have no group to carry it.
-        if with_edge_type:
-            entry["edge_type"] = edge.edge_type
-        # Which resolution strategy produced the edge. Absent on an index built
-        # before origins were stamped, so it is added only when present.
-        if edge.resolution_origin:
-            entry["via"] = edge.resolution_origin
-        return entry
-
-    # One fetch per edge type present, each capped on its own. A single fetch
-    # over every use edge type shared one confidence-ranked cap, so the
-    # commonest kind could evict the rest — the failure #1660 measured on
-    # django, where `Model` served 39 subclasses and 1 of its 8 callers. It is
-    # mild on this repo (6 rows lost, all where `extends` ties `calls` at 0.9)
-    # but it is the same mechanism and it is repo-dependent.
-    present = sorted(set(row_counts_in) | set(row_counts_out))
-    edges_by_type: dict[str, list[GraphEdge]] = {}
-    for edge_type in present:
-        want_in = want_callers and edge_type in row_counts_in
-        want_out = want_callees and edge_type in row_counts_out
-        if not (want_in or want_out):
-            continue
-        edges_by_type[edge_type] = await get_graph_edges_for_node(
-            session,
-            repo_id,
-            node.node_id,
-            direction=("both" if want_in and want_out else ("callers" if want_in else "callees")),
-            edge_types=[edge_type],
-            limit=max(row_counts_in.get(edge_type, 0), row_counts_out.get(edge_type, 0), 1),
-        )
-
-    # Hydrated once for every edge type at once: the neighbour lookup is the
-    # expensive half and it does not care which relation asked.
-    node_map = await get_graph_nodes_by_ids(
+    edges_by_type = await _fetch_edges_by_type(run, row_counts_in, row_counts_out)
+    # Hydrated once for every edge type: the neighbour lookup is the expensive half.
+    run.node_map = await get_graph_nodes_by_ids(
         session,
         repo_id,
         list(
@@ -328,137 +278,273 @@ async def _resolve_call_graph(
 
     relations: list[dict[str, Any]] = []
     for edge_type, edges in edges_by_type.items():
-        inbound: list[dict[str, Any]] = []
-        outbound: list[dict[str, Any]] = []
-        # A self-edge — a recursive call — matches both direction queries, so
-        # it comes back twice. Dedupe on the edge, then place it on every side
-        # it touches: it used to be appended to `callers` twice and to
-        # `callees` never, and only `_unique_by_symbol` hid the duplicate.
-        for e in {edge.id: edge for edge in edges}.values():
-            # Low-confidence edges are false positives from Tier 3 global
-            # resolution, and the totals above exclude them too.
-            if (e.confidence or 0) < _MIN_CALL_CONFIDENCE:
-                continue
-            is_call = edge_type == "calls"
-            if e.target_node_id == node.node_id:
-                row = _entry(e, e.source_node_id, with_edge_type=is_call)
-                # ``line`` is where the caller is defined; this is where it calls.
-                if is_call and (call_line := first_call_line(e.call_lines_json)):
-                    row["call_line"] = call_line
-                inbound.append(row)
-            if e.source_node_id == node.node_id:
-                outbound.append(_entry(e, e.target_node_id, with_edge_type=is_call))
+        inbound, outbound = _split_edges(run, edge_type, edges)
+        for direction, rows in (("in", inbound), ("out", outbound)):
+            await _place_rows(run, edge_type, direction, rows, relations)
 
-        for direction, rows in (
-            ("in", inbound),
-            ("out", outbound),
-        ):
-            rows = filter_dicts_by_key(rows, "file", exclude_spec)
-            rows.sort(key=lambda x: -(x.get("confidence") or 0))
-            # One entry per neighbouring symbol, highest-confidence edge kept;
-            # this post-policy list is the source of the public true total.
-            rows = _unique_by_symbol(rows)
-            total = len(rows)
-
-            if edge_type == "calls":
-                key = "callers" if direction == "in" else "callees"
-                if (direction == "in" and not want_callers) or (
-                    direction == "out" and not want_callees
-                ):
-                    continue
-                visible = cap_collection(
-                    result_data,
-                    key,
-                    rows,
-                    limit,
-                    collector,
-                    label=f"{target} :: {key} beyond cap={limit}",
-                )
-                if total > len(visible) and direction == "in":
-                    result_data["_callers_note"] = (
-                        f"Showing top {len(visible)} of {total} callers by confidence. "
-                        "Recover the omitted rows with get_symbol on the response's "
-                        "repowise omission reference; grep remains useful when graph "
-                        "coverage itself may be incomplete."
-                    )
-                elif direction == "in":
-                    # Appended after the direct rows and only under the cap, so
-                    # the callers_* counts keep meaning direct callers.
-                    hop = await forwarding_wrapper_callers(
-                        session,
-                        repo_id,
-                        node,
-                        [r["symbol_id"] for r in visible],
-                        known_nodes=node_map,
-                    )
-                    hop = filter_dicts_by_key(hop, "file", exclude_spec)
-                    if hop:
-                        result_data[key] = visible + hop
-                if direction == "in":
-                    await attach_call_text(repo_root, result_data[key], node.node_id)
-                    # Unserved rows are never checked against the live file.
-                    for row in rows[len(visible) :]:
-                        row.pop("call_line", None)
-                continue
-
-            if not total:
-                continue
-            # Keyed per edge type, not per group: "extends" and "implements"
-            # are different sentences and an agent needs to know which it is
-            # in. `group` is the shared vocabulary #1660 pinned, imported
-            # rather than re-listed so a new edge type cannot land unnamed.
-            relation = {
-                "edge_type": edge_type,
-                "group": SYMBOL_RELATION_GROUP_OF[edge_type],
-                "direction": direction,
-                "total": total,
-            }
-            cap_collection(
-                relation,
-                "rows",
-                rows,
-                _RELATION_ROW_CAP,
-                collector,
-                label=(
-                    f"{target} :: relations.{edge_type}.{direction} "
-                    f"beyond cap={_RELATION_ROW_CAP}"
-                ),
-            )
-            relations.append(relation)
-
-    # `calls` may be absent entirely, and an omitted key reads as "not asked
-    # for" rather than "none" — the distinction an agent needs before deciding
-    # nothing calls this.
+    # An omitted key reads as "not asked for" rather than "none".
     if want_callers:
         result_data.setdefault("callers", [])
     if want_callees:
         result_data.setdefault("callees", [])
-    # A zero only earns a basis. A populated list is already its own evidence,
-    # and the basis would just repeat what the rows show.
+    await _attach_empty_bases(run)
+    _attach_relations(run, relations, row_counts_in)
+
+
+async def _call_graph_node(session: AsyncSession, repo_id: str, target: str) -> GraphNode | None:
+    """Graph node for *target*, falling back to the bare name for ``file::Name``."""
+    node = await get_graph_node(session, repo_id, target)
+    if node is not None or "::" not in target:
+        return node
+    bare_name = id_segment_name(target.split("::")[-1])
+    res = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "symbol",
+            GraphNode.name == bare_name,
+        )
+    )
+    rows = list(res.scalars().all())
+    if not rows:
+        return None
+    file_hint = target.split("::")[0]
+    return next((r for r in rows if r.file_path == file_hint), rows[0])
+
+
+async def _resolve_non_symbol_call_graph(
+    session: AsyncSession,
+    repository: Repository,
+    target: str,
+    node: GraphNode | None,
+    result_data: dict[str, Any],
+    *,
+    want_callers: bool,
+    want_callees: bool,
+    exclude_spec: Any,
+    collector: OmissionCollector | None,
+) -> None:
+    """File targets get the file-level rollup; anything else gets empty lists and a note."""
+    repo_id = repository.id
+    if node is not None and node.node_type == "file" and want_callers:
+        await _resolve_file_level_callers(
+            session, repo_id, node, result_data, exclude_spec, collector, repository=repository
+        )
+        if want_callees:
+            result_data["callees"] = []
+            result_data["callees_basis"] = await call_resolution_basis(
+                session, repo_id, node.language, cache_key=index_state_key(repository)
+            )
+        return
+    if want_callers:
+        result_data["callers"] = []
+    if want_callees:
+        result_data["callees"] = []
+    if node is not None and node.node_type != "symbol":
+        result_data["_call_graph_note"] = (
+            "callers/callees require a symbol target (function/class/method), "
+            f"but '{target}' is a {node.node_type}. Pass a symbol name or file::Symbol."
+        )
+
+
+async def _fetch_edges_by_type(
+    run: _CallGraphRun, row_counts_in: dict[str, int], row_counts_out: dict[str, int]
+) -> dict[str, list[GraphEdge]]:
+    """One fetch per edge type present, each capped on its own.
+
+    One fetch over every use edge type would share a confidence-ranked cap,
+    so the commonest kind could evict the rest.
+    """
+    edges_by_type: dict[str, list[GraphEdge]] = {}
+    for edge_type in sorted(set(row_counts_in) | set(row_counts_out)):
+        want_in = run.want_callers and edge_type in row_counts_in
+        want_out = run.want_callees and edge_type in row_counts_out
+        if not (want_in or want_out):
+            continue
+        edges_by_type[edge_type] = await get_graph_edges_for_node(
+            run.session,
+            run.repository.id,
+            run.node.node_id,
+            direction=("both" if want_in and want_out else ("callers" if want_in else "callees")),
+            edge_types=[edge_type],
+            limit=max(row_counts_in.get(edge_type, 0), row_counts_out.get(edge_type, 0), 1),
+        )
+    return edges_by_type
+
+
+def _neighbor_entry(
+    edge: GraphEdge, other_id: str, node_map: dict[str, Any], *, with_edge_type: bool
+) -> dict[str, Any]:
+    """One row for the symbol at the other end of *edge*."""
+    other_node = node_map.get(other_id)
+    entry: dict[str, Any] = {
+        "symbol_id": other_id,
+        "name": other_node.name
+        if other_node
+        else (other_id.split("::")[-1] if "::" in other_id else other_id),
+        "kind": other_node.kind if other_node else None,
+        "file": other_node.file_path
+        if other_node
+        else (other_id.split("::")[0] if "::" in other_id else other_id),
+        # Definition line of the other symbol.
+        "line": other_node.start_line if other_node else None,
+        "confidence": edge.confidence,
+    }
+    # A relation row's group already names the edge type once.
+    if with_edge_type:
+        entry["edge_type"] = edge.edge_type
+    # Absent on an index built before origins were stamped.
+    if edge.resolution_origin:
+        entry["via"] = edge.resolution_origin
+    return entry
+
+
+def _split_edges(
+    run: _CallGraphRun, edge_type: str, edges: list[GraphEdge]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Inbound and outbound rows for one edge type, above the confidence floor.
+
+    A self-edge (a recursive call) matches both direction queries, so it is
+    deduped on the edge and then placed on every side it touches.
+    """
+    node_id = run.node.node_id
+    is_call = edge_type == "calls"
+    inbound: list[dict[str, Any]] = []
+    outbound: list[dict[str, Any]] = []
+    for e in {edge.id: edge for edge in edges}.values():
+        if (e.confidence or 0) < _MIN_CALL_CONFIDENCE:
+            continue
+        if e.target_node_id == node_id:
+            row = _neighbor_entry(e, e.source_node_id, run.node_map, with_edge_type=is_call)
+            # ``line`` is where the caller is defined; this is where it calls.
+            if is_call and (call_line := first_call_line(e.call_lines_json)):
+                row["call_line"] = call_line
+            inbound.append(row)
+        if e.source_node_id == node_id:
+            outbound.append(
+                _neighbor_entry(e, e.target_node_id, run.node_map, with_edge_type=is_call)
+            )
+    return inbound, outbound
+
+
+async def _place_rows(
+    run: _CallGraphRun,
+    edge_type: str,
+    direction: str,
+    rows: list[dict[str, Any]],
+    relations: list[dict[str, Any]],
+) -> None:
+    """Rank and dedupe one direction's rows, then serve them as calls or a relation."""
+    rows = filter_dicts_by_key(rows, "file", run.exclude_spec)
+    rows.sort(key=lambda x: -(x.get("confidence") or 0))
+    # One entry per neighbouring symbol; this list is the public true total.
+    rows = _unique_by_symbol(rows)
+    if edge_type == "calls":
+        if run.wants(direction):
+            await _serve_call_rows(run, direction, rows)
+        return
+    relation = _relation_block(run, edge_type, direction, rows)
+    if relation is not None:
+        relations.append(relation)
+
+
+async def _serve_call_rows(run: _CallGraphRun, direction: str, rows: list[dict[str, Any]]) -> None:
+    """Cap ``callers``/``callees``; callers also get wrapper hops and call text."""
+    key = "callers" if direction == "in" else "callees"
+    result_data = run.result_data
+    total = len(rows)
+    # Nearly every symbol fits under the cap; a hub gets explicit truncation counts.
+    limit = _SYMBOL_NEIGHBOR_LIMIT
+    visible = cap_collection(
+        result_data,
+        key,
+        rows,
+        limit,
+        run.collector,
+        label=f"{run.target} :: {key} beyond cap={limit}",
+    )
+    if direction != "in":
+        return
+    if total > len(visible):
+        result_data["_callers_note"] = (
+            f"Showing top {len(visible)} of {total} callers by confidence. "
+            "Recover the omitted rows with get_symbol on the response's "
+            "repowise omission reference; grep remains useful when graph "
+            "coverage itself may be incomplete."
+        )
+    else:
+        # Appended after the direct rows and only under the cap, so the
+        # callers_* counts keep meaning direct callers.
+        hop = await forwarding_wrapper_callers(
+            run.session,
+            run.repository.id,
+            run.node,
+            [r["symbol_id"] for r in visible],
+            known_nodes=run.node_map,
+        )
+        hop = filter_dicts_by_key(hop, "file", run.exclude_spec)
+        if hop:
+            result_data[key] = visible + hop
+    await attach_call_text(run.repo_root, result_data[key], run.node.node_id)
+    # Unserved rows are never checked against the live file.
+    for row in rows[len(visible) :]:
+        row.pop("call_line", None)
+
+
+def _relation_block(
+    run: _CallGraphRun, edge_type: str, direction: str, rows: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """A non-call edge type's capped rows, or None when there are none."""
+    total = len(rows)
+    if not total:
+        return None
+    relation: dict[str, Any] = {
+        "edge_type": edge_type,
+        "group": SYMBOL_RELATION_GROUP_OF[edge_type],
+        "direction": direction,
+        "total": total,
+    }
+    cap_collection(
+        relation,
+        "rows",
+        rows,
+        _RELATION_ROW_CAP,
+        run.collector,
+        label=f"{run.target} :: relations.{edge_type}.{direction} beyond cap={_RELATION_ROW_CAP}",
+    )
+    return relation
+
+
+async def _attach_empty_bases(run: _CallGraphRun) -> None:
+    """An empty ``callers``/``callees`` list earns a basis; a populated one is its own evidence."""
+    result_data = run.result_data
     for key in ("callers", "callees"):
         if key in result_data and not result_data[key]:
             result_data[f"{key}_basis"] = await call_resolution_basis(
-                session, repo_id, node.language, cache_key=index_state_key(repository)
+                run.session,
+                run.repository.id,
+                run.node.language,
+                cache_key=index_state_key(run.repository),
             )
 
-    if relations:
-        relations.sort(key=lambda r: (r["direction"], -r["total"], r["edge_type"]))
-        result_data["relations"] = relations
-        # Without this an empty `callers` beside a populated `relations` reads
-        # as a graph failure rather than the answer. This is the 705-symbol
-        # case on our own index: the old code answered it with 50 rows of
-        # framework wiring under "callers" and a note saying to grep for a
-        # call site that does not exist.
-        # Keyed on the *count*, not on `callers` being empty: an exclusion spec
-        # can filter every row while callers still exist, and then "Nothing
-        # calls X" would contradict the `_callers_note` telling the agent to go
-        # and grep for them.
-        inbound_kinds = [r for r in relations if r["direction"] == "in"]
-        if want_callers and not row_counts_in.get("calls") and inbound_kinds:
-            reached = ", ".join(f"{r['total']} {r['edge_type']}" for r in inbound_kinds)
-            result_data["_call_graph_note"] = (
-                f"Nothing calls '{node.name}'; it is reached by {reached}. See `relations`."
-            )
+
+def _attach_relations(
+    run: _CallGraphRun, relations: list[dict[str, Any]], row_counts_in: dict[str, int]
+) -> None:
+    """Attach sorted ``relations`` and say so when nothing calls the symbol.
+
+    Keyed on the inbound ``calls`` count, not on ``callers`` being empty: an
+    exclusion spec can filter every row while callers still exist.
+    """
+    if not relations:
+        return
+    relations.sort(key=lambda r: (r["direction"], -r["total"], r["edge_type"]))
+    run.result_data["relations"] = relations
+    inbound_kinds = [r for r in relations if r["direction"] == "in"]
+    if run.want_callers and not row_counts_in.get("calls") and inbound_kinds:
+        reached = ", ".join(f"{r['total']} {r['edge_type']}" for r in inbound_kinds)
+        run.result_data["_call_graph_note"] = (
+            f"Nothing calls '{run.node.name}'; it is reached by {reached}. See `relations`."
+        )
 
 
 async def _resolve_file_level_callers(
@@ -477,59 +563,8 @@ async def _resolve_file_level_callers(
     file imports this one, ``inbound_calls`` counting cross-file call edges
     into any symbol defined here.
     """
-    from repowise.core.persistence.models import GraphEdge
-
-    # Who imports this file (file-node inbound import edges).
-    import_res = await session.execute(
-        select(GraphEdge).where(
-            GraphEdge.repository_id == repo_id,
-            GraphEdge.target_node_id == node.node_id,
-            GraphEdge.edge_type == "imports",
-        )
-    )
-    import_edges = list(import_res.scalars().all())
-    importer_ids = [e.source_node_id for e in import_edges if e.target_node_id == node.node_id]
-    importer_nodes = await get_graph_nodes_by_ids(session, repo_id, importer_ids)
-    # For file nodes the node_id IS the path; file_path may be unset.
-    importer_files = {
-        (n.file_path or n.node_id)
-        for n in importer_nodes.values()
-        if n is not None and (n.file_path or n.node_id)
-    }
-
-    # Cross-file calls into any symbol defined in this file, rolled up by
-    # the calling file.
-    target_file = node.file_path or node.node_id
-    sym_res = await session.execute(
-        select(GraphNode.node_id).where(
-            GraphNode.repository_id == repo_id,
-            GraphNode.node_type == "symbol",
-            GraphNode.file_path == target_file,
-        )
-    )
-    sym_ids = [row[0] for row in sym_res.all()]
-    calls_by_file: dict[str, int] = {}
-    if sym_ids:
-        edge_res = await session.execute(
-            select(GraphEdge.source_node_id, GraphEdge.confidence).where(
-                GraphEdge.repository_id == repo_id,
-                GraphEdge.target_node_id.in_(sym_ids),
-                GraphEdge.edge_type == "calls",
-            )
-        )
-        # One rule for every calls-projected-onto-files surface. This rollup
-        # used to hand-roll a 0.7 floor and the self-loop drop and had no
-        # cross-extension guard at all, so the same edge was kept by the zoom
-        # map and dropped here (1,436 of 45,755 reliable execution edges, 3.1%,
-        # across 8 indexed repos; 24.8% on eShopOnWeb). The shared helper
-        # replaces all three checks. Its same-extension guard does drop genuine
-        # cross-language calls -- that is the known ceiling on the shared
-        # helper, not debt introduced here.
-        for src_id, confidence in edge_res.all():
-            src_file = node_to_file(src_id)
-            if not keep_projected_edge(src_file, target_file, "calls", confidence):
-                continue
-            calls_by_file[src_file] = calls_by_file.get(src_file, 0) + 1
+    importer_files = await _file_importers(session, repo_id, node)
+    calls_by_file = await _file_inbound_calls(session, repo_id, node)
 
     entries: list[dict[str, Any]] = []
     for f in sorted(importer_files | set(calls_by_file)):
@@ -558,6 +593,59 @@ async def _resolve_file_level_callers(
         result_data["callers_basis"] = await call_resolution_basis(
             session, repo_id, node.language, cache_key=index_state_key(repository)
         )
+
+
+async def _file_importers(session: AsyncSession, repo_id: str, node: GraphNode) -> set[str]:
+    """Files whose inbound ``imports`` edge points at this file node."""
+    import_res = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.target_node_id == node.node_id,
+            GraphEdge.edge_type == "imports",
+        )
+    )
+    import_edges = list(import_res.scalars().all())
+    importer_ids = [e.source_node_id for e in import_edges if e.target_node_id == node.node_id]
+    importer_nodes = await get_graph_nodes_by_ids(session, repo_id, importer_ids)
+    # For file nodes the node_id IS the path; file_path may be unset.
+    return {
+        (n.file_path or n.node_id)
+        for n in importer_nodes.values()
+        if n is not None and (n.file_path or n.node_id)
+    }
+
+
+async def _file_inbound_calls(
+    session: AsyncSession, repo_id: str, node: GraphNode
+) -> dict[str, int]:
+    """Cross-file calls into any symbol defined in this file, counted per calling file."""
+    target_file = node.file_path or node.node_id
+    sym_res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "symbol",
+            GraphNode.file_path == target_file,
+        )
+    )
+    sym_ids = [row[0] for row in sym_res.all()]
+    calls_by_file: dict[str, int] = {}
+    if not sym_ids:
+        return calls_by_file
+    edge_res = await session.execute(
+        select(GraphEdge.source_node_id, GraphEdge.confidence).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.target_node_id.in_(sym_ids),
+            GraphEdge.edge_type == "calls",
+        )
+    )
+    # The shared projection rule every calls-onto-files surface uses. Its
+    # same-extension guard drops genuine cross-language calls: a known ceiling.
+    for src_id, confidence in edge_res.all():
+        src_file = node_to_file(src_id)
+        if not keep_projected_edge(src_file, target_file, "calls", confidence):
+            continue
+        calls_by_file[src_file] = calls_by_file.get(src_file, 0) + 1
+    return calls_by_file
 
 
 async def _resolve_metrics(
