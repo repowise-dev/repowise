@@ -1,0 +1,21 @@
+{
+  "results": [
+    {
+      "type": "file",
+      "page_id": "file_page:src/auth/service.py",
+      "title": "Auth Service",
+      "score": 119.981,
+      "next": "get_context",
+      "path": "src/auth/service.py"
+    }
+  ],
+  "mode": "path",
+  "_meta": {
+    "index_age_days": 7
+  },
+  "candidates": [
+    {
+      "path": "src/auth/service.py"
+    }
+  ]
+}

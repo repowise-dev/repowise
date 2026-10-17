@@ -1,0 +1,35 @@
+{
+  "targets": {
+    "src/auth/service.py": {
+      "type": "file",
+      "path": "src/auth/service.py",
+      "docs": {
+        "title": "Auth Service",
+        "summary": "service.py: defines AuthService; function login.",
+        "symbols": [
+          {
+            "name": "AuthService",
+            "kind": "class",
+            "signature": "class AuthService",
+            "line": 10
+          },
+          {
+            "name": "login",
+            "kind": "method",
+            "signature": "async def login(self, username: str, password: str) -> Token",
+            "line": 20
+          }
+        ]
+      },
+      "hotspot": true,
+      "freshness": {
+        "confidence_score": 0.85,
+        "freshness_status": "fresh",
+        "is_stale": false
+      }
+    }
+  },
+  "_meta": {
+    "index_age_days": 7
+  }
+}
