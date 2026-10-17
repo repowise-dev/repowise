@@ -235,7 +235,7 @@ def assert_payload_golden(path: Path, payload: Any) -> None:
     intended behaviour change.
     """
     text = json.dumps(payload, indent=2, sort_keys=False) + "\n"
-    if os.environ.get("REPOWISE_REWRITE_GOLDEN"):
+    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8", newline="\n")
         pytest.skip("golden rewritten")

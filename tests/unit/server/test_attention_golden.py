@@ -194,7 +194,7 @@ async def test_build_attention_matches_the_golden(
             knowledge_silos=_SILOS,
         )
 
-    if os.environ.get("REPOWISE_REWRITE_GOLDEN"):
+    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
         GOLDEN.parent.mkdir(exist_ok=True)
         GOLDEN.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
         pytest.skip("golden rewritten")
