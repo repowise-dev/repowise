@@ -8,7 +8,6 @@ checks out, resets, or writes to the caller's tree.
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +15,7 @@ from typing import Protocol
 
 from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff, untracked_diffs
 from ..git_cat_file import cat_file_batch
-from ..git_cli import path_filter, split_revspec, untracked_paths
+from ..git_cli import path_filter, run_git, split_revspec, untracked_paths
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -130,15 +129,7 @@ class RevisionSource(Protocol):
 
 
 def _git(args: list[str], repo_path: str, *, check: bool = True) -> str:
-    proc = subprocess.run(
-        ["git", "-C", repo_path, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
+    proc = run_git(["-C", repo_path, *args], timeout=GIT_TIMEOUT_SECONDS)
     if check and proc.returncode != 0:
         raise ValueError((proc.stderr or "").strip() or f"git {args[0]} failed")
     return proc.stdout

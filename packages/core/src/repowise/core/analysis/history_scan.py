@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.git_cat_file import cat_file_batch
+from repowise.core.analysis.git_cli import run_git
 from repowise.core.analysis.secret_allowlist import secret_path_allowlist
 from repowise.core.analysis.security_gate import _KEY_SHAPE_KINDS, fingerprint_of
 from repowise.core.analysis.security_scan import (
@@ -59,21 +60,7 @@ def _run_git(repo_path: Path, args: list[str], *, timeout: float = 30.0) -> str:
     scan rather than a crash).
     """
     try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=str(repo_path),
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            # git writes utf-8. ``text=True`` alone decodes with the locale
-            # codec, so on a default Windows install a commit subject holding
-            # an em dash raised UnicodeDecodeError. That is a ValueError, which
-            # the handler below does not catch, so the scan died rather than
-            # degrading to "".
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        result = run_git(args, str(repo_path), timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return ""
     if result.returncode != 0:
