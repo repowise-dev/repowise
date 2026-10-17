@@ -605,6 +605,21 @@ _SIGNATURE_BLOCK = [
     ")",
 ]
 
+# `detect_clones` in duplication/detector.py, lines 192-201: the clone window
+# it shares with `detect_clones_with_isolation` stops before `) -> ...:`.
+_OPEN_SIGNATURE_BLOCK = [
+    "def detect_clones(",
+    "    parsed_files: Iterable[Any],",
+    "    git_meta_map: dict[str, dict[str, Any]] | None = None,",
+    "    *,",
+    "    window_tokens: int = DEFAULT_WINDOW_TOKENS,",
+    "    min_lines: int = DEFAULT_MIN_LINES,",
+    "    limits: DuplicationLimits | None = None,",
+    "    cache_dir: Path | None = None,",
+    "    changed_files: set[str] | None = None,",
+    "    source_reader: Any | None = None,",
+]
+
 _FIELD_BLOCK = [
     "    name: str = ''",
     "    items: list[str] = field(default_factory=list)",
@@ -649,6 +664,12 @@ def test_import_block_clone_emits_no_plan():
 def test_function_signature_clone_emits_no_plan():
     """Two functions whose parameter lists agree are not duplicated behaviour."""
     assert _plans_for(_SIGNATURE_BLOCK) == []
+
+
+def test_open_function_signature_clone_emits_no_plan():
+    """A clone window that ends inside a parameter list is still only a
+    signature, so it has nothing to extract either."""
+    assert _plans_for(_OPEN_SIGNATURE_BLOCK) == []
 
 
 def test_dataclass_field_run_emits_no_plan():
@@ -728,6 +749,26 @@ def test_declaration_only_unit_cases():
     assert not _is_declaration_only(["    continue", "    continue"])
     assert not _is_declaration_only(["    break", "    break"])
     assert not _is_declaration_only(["    defer f.Close()", "    defer g.Close()"])
+
+    # A signature cut off before its closing line is still only a signature,
+    # and so is a stub whose whole body is `...`.
+    assert _is_declaration_only(_OPEN_SIGNATURE_BLOCK)
+    assert _is_declaration_only(
+        ["    async def get_repository(self, repo_id: str) -> Repository | None: ..."]
+    )
+    assert _is_declaration_only(
+        ["    def a(self) -> int: ...", "    def b(self, x: str) -> None: ..."]
+    )
+    assert _is_declaration_only(["function render(", "  node: Node,", "  opts?: Options,"])
+    assert _is_declaration_only(["func Detect(", "\tfiles []File,", "\twindow int,"])
+    # A comma in a string default or a trailing comment separates no parameters.
+    assert _is_declaration_only(["def f(", '    label: str = "a,b",', "    x: int = 1,"])
+    assert _is_declaration_only(["def f(", "    x: int,  # rows, not bytes", "    y: int,"])
+    assert _is_declaration_only(["def f(", "    sep: str = '#',", "    y: int,"])
+    # An open head followed by a statement is not a signature.
+    assert not _is_declaration_only(["def f(", "    emit(a),  # one, two", "    y: int,"])
+    assert not _is_declaration_only(["def f(", "    x: int,", "    return g(x)"])
+    assert not _is_declaration_only(["def f(", "    emit(a)", "    emit(b)"])
 
 
 # ---- symbol-boundary gating ----------------------------------------------
