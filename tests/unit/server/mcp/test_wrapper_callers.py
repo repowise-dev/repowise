@@ -13,7 +13,7 @@ import pytest
 
 from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
 from repowise.server.mcp_server import _basis, _wrapper_callers
-from repowise.server.mcp_server.tool_context import enrichment
+from repowise.server.mcp_server.tool_context import call_graph, enrichment
 
 _NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
 
@@ -284,6 +284,6 @@ async def test_output_is_byte_identical_when_no_caller_is_a_wrapper(
     async def _none(*_a, **_k):
         return []
 
-    monkeypatch.setattr(enrichment, "forwarding_wrapper_callers", _none)
+    monkeypatch.setattr(call_graph, "forwarding_wrapper_callers", _none)
     without = await _callers(session, rid, "x.py::target")
     assert json.dumps(with_hop, sort_keys=False) == json.dumps(without, sort_keys=False)
