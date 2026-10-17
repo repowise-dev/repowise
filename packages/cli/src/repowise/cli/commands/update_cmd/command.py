@@ -696,37 +696,21 @@ def _run_decision_evolution(
 
 def _start_run(opts: UpdateOptions) -> UpdateRun:
     """Start the run clock and pick the progress output (rich or JSON events)."""
-    # Per-stage wall clock for this run, written to ``state.json`` by every path
-    # that mutates state. ``run`` is the denominator; stages nest and overlap,
-    # so compare each against it and never against their sum. Retaining an older
-    # run's table makes a cheap config/no-op update claim work it did not do.
+    # ``run`` is the denominator of every stage row; stages nest and overlap.
     run = UpdateRun(start=time.monotonic(), timings=PhaseTimings())
     run.timings.start("run")
 
-    # --- Machine-readable progress (--progress json) --------------------
-    # Silence structlog/stdlib logging and redirect the shared Rich console
-    # (used throughout this module and its sibling helpers via `log=console.print`
-    # callbacks) to stderr, so stdout carries nothing but the JSON event
-    # stream below. Emitter is None in the default 'rich' mode, so every call
-    # site below is a no-op there. The redirect is undone when the command's
-    # click context closes (success or error), since `console` is a
-    # process-wide singleton and leaving it pointed at stderr would bleed
-    # into whatever runs next in the same process.
     if opts.progress == "json":
+        # stdout carries only JSON events; the shared console moves to stderr
+        # until the click context closes.
         silence_logs_for_machine_output_until_close()
         console.file = sys.stderr
-        # Restore to None (rather than a captured file object) so `console`
-        # goes back to resolving sys.stdout dynamically on each print, its
-        # default behavior. Capturing `console.file` here would instead
-        # snapshot whatever stdout happens to be at this instant (e.g. a
-        # test runner's isolated buffer) and pin the shared console to it.
+        # None, not a captured file: the console then follows sys.stdout again.
         click.get_current_context().call_on_close(lambda: setattr(console, "file", None))
         run.emitter = JsonProgressEmitter()
         run.emitter.start(repo=str(opts.path or "."), since=opts.since)
     else:
-        # Human console mode: quiet library/structlog output so it doesn't
-        # interleave with the live progress bar (issue #922); `-v` lets
-        # repowise's debug lines through for troubleshooting.
+        # Quiet library logs so they do not interleave with the progress bar.
         configure_cli_logging(verbose=opts.verbose)
     return run
 
