@@ -20,6 +20,11 @@ import structlog
 from .analysis import (
     persist_analysis,
 )
+from .decisions import (
+    apply_decision_lifecycle,
+    repair_decision_store,
+    store_decisions,
+)
 from .generation import (
     persist_generation,
     persist_kg,
