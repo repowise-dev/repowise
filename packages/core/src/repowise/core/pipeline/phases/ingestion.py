@@ -788,21 +788,21 @@ async def reparse_for_resume(
     if progress:
         progress.on_phase_start("traverse", None)
 
-    file_infos: list[Any] = []
+    # Walk order, as in _run_ingestion: resumed and fresh runs must hand
+    # analysis the same file order. Progress still ticks per completion.
     io_pool = ThreadPoolExecutor(max_workers=8)
     try:
         aws = [
             asyncio.wrap_future(io_pool.submit(traverser._build_file_info, p)) for p in all_paths
         ]
-        for coro in asyncio.as_completed(aws):
-            try:
-                result = await coro
-            except Exception:
-                result = None
-            if result is not None:
-                file_infos.append(result)
-            if progress:
-                progress.on_item_done("traverse")
+        if progress is not None:
+            _traverse_tick = lambda _fut: progress.on_item_done("traverse")  # noqa: E731
+            for fut in aws:
+                fut.add_done_callback(_traverse_tick)
+        ordered = await asyncio.gather(*aws, return_exceptions=True)
+        file_infos: list[Any] = [
+            r for r in ordered if r is not None and not isinstance(r, BaseException)
+        ]
     finally:
         await asyncio.to_thread(io_pool.shutdown, wait=True)
 
