@@ -95,7 +95,7 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "server/src/repowise/server/chat_errors.py": frozenset({"anthropic", "openai", "ollama"}),
     # Behaviour only the OpenAI adapter has: the custom-gateway row and base-url
     # prompt, and its reasoning budget. Ollama's readiness is a TCP probe.
-    "cli/src/repowise/cli/helpers.py": frozenset({"openai"}),
+    "cli/src/repowise/cli/_helpers/providers.py": frozenset({"openai"}),
     "cli/src/repowise/cli/ui/provider_selection.py": frozenset({"openai", "ollama"}),
     "server/src/repowise/server/mcp_server/tool_answer/synthesis.py": frozenset({"openai"}),
     # Embedder surfaces: these literals name embedders, which share spellings.
