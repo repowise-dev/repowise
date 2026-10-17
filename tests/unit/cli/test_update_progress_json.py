@@ -13,12 +13,15 @@ import json
 import os
 import tempfile
 
+import pytest
 from click.testing import CliRunner
 
 from repowise.cli.commands.update_cmd.reporting import JsonProgressEmitter
 from repowise.cli.helpers import save_state
 from repowise.cli.main import cli
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+
+from ._real_call_guard import guard_real_calls
 
 # An index written by this build: its git rows follow the current rules.
 CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
@@ -260,6 +263,11 @@ def _events(result) -> list[dict]:
 
 
 class TestRunUpdateSequence:
+    @pytest.fixture(autouse=True)
+    def _no_real_calls(self, monkeypatch) -> None:
+        # git stays real: the update reads an actual repository.
+        guard_real_calls(monkeypatch, allow_git=True)
+
     def test_no_changed_files_path_order(self, monkeypatch):
         """The --since early return persists state, then stamps, then finishes."""
         calls = _spy_calls(monkeypatch)

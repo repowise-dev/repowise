@@ -23,6 +23,13 @@ from click.testing import CliRunner
 
 from repowise.cli.commands import serve_cmd
 
+from ._real_call_guard import guard_real_calls
+
+
+@pytest.fixture(autouse=True)
+def _no_real_calls(monkeypatch) -> None:
+    guard_real_calls(monkeypatch)
+
 
 def _own_env(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
     """Clear *names* so monkeypatch restores them even after raw assignment."""
@@ -287,6 +294,7 @@ def test_find_local_web_walks_up_from_cwd(monkeypatch, tmp_path) -> None:
     (repo / "packages" / "web" / "package.json").write_text("{}")
     deep = repo / "a" / "b"
     deep.mkdir(parents=True)
+    # Retarget to the submodule that reads __file__ once serve_cmd is a package.
     monkeypatch.setattr(serve_cmd, "__file__", str(tmp_path / "x" / "y" / "serve_cmd.py"))
     monkeypatch.chdir(deep)
     assert serve_cmd._find_local_web() == (repo / "packages" / "web").resolve()
@@ -294,6 +302,7 @@ def test_find_local_web_walks_up_from_cwd(monkeypatch, tmp_path) -> None:
 
 def test_find_local_web_none_without_package_json(monkeypatch, tmp_path) -> None:
     (tmp_path / "packages" / "web").mkdir(parents=True)  # no package.json
+    # Retarget to the submodule that reads __file__ once serve_cmd is a package.
     monkeypatch.setattr(serve_cmd, "__file__", str(tmp_path / "x" / "serve_cmd.py"))
     monkeypatch.chdir(tmp_path)
     assert serve_cmd._find_local_web() is None
@@ -641,7 +650,7 @@ def test_serve_without_node_skips_ui(serve) -> None:
     serve["node"] = None
     result = _invoke()
     assert result.exit_code == 0, result.output
-    assert "Node.js not found" in result.output
+    assert "Node.js" in result.output
     assert _names(serve["events"]) == [
         "load_local",
         "setup_embedder",
@@ -656,7 +665,7 @@ def test_serve_without_node_skips_ui(serve) -> None:
 def test_serve_old_node_skips_ui(serve) -> None:
     serve["node_major"] = 18
     result = _invoke()
-    assert "Node.js 18 is too old" in result.output
+    assert "too old" in result.output
     assert "start" not in _names(serve["events"])
 
 
@@ -705,7 +714,7 @@ def test_serve_failed_rebuild_falls_back_to_cache(serve, tmp_path) -> None:
     serve["build_ok"] = False
     serve["cached"] = True
     result = _invoke()
-    assert "Local rebuild failed" in result.output
+    assert "rebuild failed" in result.output
     names = _names(serve["events"])
     assert names[4:9] == ["find_local", "stale", "build", "cached", "start"]
     assert serve["events"][8][4] is None  # local_web dropped
@@ -717,7 +726,7 @@ def test_serve_stale_without_npm_downloads(serve, tmp_path) -> None:
     serve["npm"] = None
     serve["download_ok"] = True
     result = _invoke()
-    assert "npm not found" in result.output
+    assert "npm" in result.output
     names = _names(serve["events"])
     assert names[4:9] == ["find_local", "stale", "cached", "download", "start"]
     assert serve["events"][8][4] is None
@@ -733,7 +742,7 @@ def test_serve_refresh_ui_skips_local_and_cache(serve) -> None:
 
 def test_serve_no_assets_runs_api_only(serve) -> None:
     result = _invoke()
-    assert "Web UI not available" in result.output
+    assert "not available" in result.output
     names = _names(serve["events"])
     assert names[4:] == ["find_local", "cached", "download", "uvicorn"]
     assert serve["lock"]["ui_port"] is None

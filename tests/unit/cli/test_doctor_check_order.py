@@ -19,6 +19,14 @@ import pytest
 from repowise.cli.commands.doctor_cmd import repo_checks
 from repowise.cli.commands.doctor_cmd._types import _check
 
+from ._real_call_guard import guard_real_calls
+
+
+@pytest.fixture(autouse=True)
+def _no_real_calls(monkeypatch) -> None:
+    # git stays real: the fixtures build actual repositories.
+    guard_real_calls(monkeypatch, allow_git=True)
+
 KEPT = "file_page:kept.py"
 ALSO = "file_page:also.py"
 GHOST = "file_page:ghost.py"
