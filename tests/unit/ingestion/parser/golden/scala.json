@@ -32,7 +32,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/assertions.scala::AssertionsSpec::testManyAsserts",
@@ -54,7 +55,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/assertions.scala::AssertionsSpec::testFewAsserts",
@@ -76,7 +78,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/assertions.scala::AssertionsSpec::compute",
@@ -100,7 +103,8 @@
         "written_receiver": null,
         "modifiers": [
           "private"
-        ]
+        ],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/assertions.scala::AssertionsSpec::assertEquals",
@@ -124,7 +128,8 @@
         "written_receiver": null,
         "modifiers": [
           "private"
-        ]
+        ],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/assertions.scala::AssertionsSpec::assertNotEquals",
@@ -148,7 +153,8 @@
         "written_receiver": null,
         "modifiers": [
           "private"
-        ]
+        ],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -260,7 +266,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Cohesive::total",
@@ -282,7 +289,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Cohesive::count",
@@ -304,7 +312,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Cohesive::add",
@@ -326,7 +335,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Cohesive::average",
@@ -348,7 +358,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Cohesive::reset",
@@ -370,7 +381,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Cohesive::describe",
@@ -392,7 +404,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Splintered",
@@ -414,7 +427,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Splintered::a",
@@ -436,7 +450,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Splintered::b",
@@ -458,7 +473,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Splintered::setA",
@@ -480,7 +496,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Splintered::getA",
@@ -502,7 +519,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Splintered::setB",
@@ -524,7 +542,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Splintered::getB",
@@ -546,7 +565,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Splintered::loner",
@@ -568,7 +588,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Registry",
@@ -590,7 +611,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Registry::lookup",
@@ -612,7 +634,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Registry::register",
@@ -634,7 +657,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Shape",
@@ -656,7 +680,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/classes.scala::Shape::area",
@@ -678,7 +703,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -732,7 +758,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/nested.scala::Nested::deeplyNested",
@@ -754,7 +781,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/nested.scala::Nested::manyBranches",
@@ -776,7 +804,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/nested.scala::Nested::matchGuards",
@@ -798,7 +827,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/nested.scala::Nested::flatMatch",
@@ -820,7 +850,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/nested.scala::Nested::forGuard",
@@ -842,7 +873,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/nested.scala::Nested::shallow",
@@ -864,7 +896,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -915,7 +948,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::readAll",
@@ -937,7 +971,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::matrix",
@@ -959,7 +994,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::regexInLoop",
@@ -981,7 +1017,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::hoistedRegex",
@@ -1003,7 +1040,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::concat",
@@ -1025,7 +1063,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::bufferAppend",
@@ -1047,7 +1086,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::slow",
@@ -1069,7 +1109,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::constantBound",
@@ -1091,7 +1132,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::locked",
@@ -1113,7 +1155,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::helperInLoop",
@@ -1135,7 +1178,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/scala/perf_io_in_loop.scala::PerfIoInLoop::process",
@@ -1159,7 +1203,8 @@
         "written_receiver": null,
         "modifiers": [
           "private"
-        ]
+        ],
+        "alias_of": null
       }
     ],
     "imports": [
