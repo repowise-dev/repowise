@@ -262,27 +262,47 @@ class ReceiverTypingMixin:
         Kotlin has no global one: see ``_kotlin_extension_scope``.
         """
         type_name, method_name = key
-        if self._reaches_a_member(type_name, method_name):
-            return None
-        own = self._file_extension_methods.get(file_path, {})
-        if key in own:
-            return own[key], "same_file"
         lang = self._language_of(file_path)
         if lang == "dart":
+            if self._reaches_a_member(type_name, method_name):
+                return None
+            repo_types = [
+                path
+                for path, _, _ in self._declared_types_named(type_name)
+                if self._language_of(path) == "dart"
+            ]
+            if len(repo_types) > 1:
+                return None
+            own = getattr(self, "_dart_file_extension_methods", {}).get(file_path, {})
+            if key in own:
+                ext_path, sym_id = file_path, own[key]
+                if not self._writes_one_type(file_path, ext_path, type_name):
+                    return None
+                return sym_id, "same_file"
             visible = self._visible_files(file_path)
             matches = [
                 (p, sym_id)
                 for p in visible
-                if (sym_id := self._file_extension_methods.get(p, {}).get(key)) is not None
+                if (sym_id := getattr(self, "_dart_file_extension_methods", {}).get(p, {}).get(key))
+                is not None
             ]
             if len(matches) == 1:
-                return matches[0][1], "import"
+                ext_path, sym_id = matches[0]
+                if not self._writes_one_type(file_path, ext_path, type_name):
+                    return None
+                return sym_id, "import"
             return None
+
         site = self._extension_methods.get(key)
         if site is None:
             return None
         if not self._writes_one_type(file_path, site[0], type_name):
             return None
+        if self._reaches_a_member(type_name, method_name):
+            return None
+        own = self._file_extension_methods.get(file_path, {})
+        if key in own:
+            return own[key], "same_file"
         if lang == "kotlin":
             return self._kotlin_extension_scope(file_path, site, method_name)
         merged = self._merged_extension_methods_for(file_path)
@@ -523,8 +543,10 @@ class ReceiverTypingMixin:
         An accessible one that is not private: private members are not inherited.
         """
         symbol = self._symbols_by_id.get(member_id)
-        return symbol is not None and symbol.visibility != "private" and (
-            self._accessible_type(member_id, from_file)
+        return (
+            symbol is not None
+            and symbol.visibility != "private"
+            and (self._accessible_type(member_id, from_file))
         )
 
     def _accessible_type(self, type_id: str, from_file: str) -> bool:
@@ -634,9 +656,7 @@ class ReceiverTypingMixin:
 
         return self._receiver_pair_match(file_path, key, spelled)
 
-    def _import_bound_method(
-        self, file_path: str, bound: str, key: tuple[str, str]
-    ) -> str | None:
+    def _import_bound_method(self, file_path: str, bound: str, key: tuple[str, str]) -> str | None:
         """The method *key* names on a type an import bound to the file *bound*."""
         sym_id = self._file_methods.get(bound, {}).get(key)
         if sym_id is not None:
@@ -762,7 +782,9 @@ class ReceiverTypingMixin:
         fields = self._field_types_in(file_path, language).get(class_id, {})
         if name in fields:
             field = fields[name]
-            return None if builtin_local and external_type_name(field) else (field, "field", file_path)
+            return (
+                None if builtin_local and external_type_name(field) else (field, "field", file_path)
+            )
         if builtin_local:
             return None
         inherited = self._inherited_field(file_path, caller_id, class_id, name, language)
@@ -933,13 +955,17 @@ class ReceiverTypingMixin:
         marks = scan_scope_marks(text, language)
         chains = {}
         open_functions: list[tuple[Symbol, _Scope]] = []
-        symbols = sorted(parsed.symbols if parsed else (), key=lambda s: (s.start_line, -s.end_line))
+        symbols = sorted(
+            parsed.symbols if parsed else (), key=lambda s: (s.start_line, -s.end_line)
+        )
         for symbol in symbols:
             while open_functions and open_functions[-1][0].end_line < symbol.start_line:
                 open_functions.pop()
             own = _scope_of(symbol, bindings, marks)
             enclosing = tuple(
-                scope for outer, scope in reversed(open_functions) if symbol.end_line <= outer.end_line
+                scope
+                for outer, scope in reversed(open_functions)
+                if symbol.end_line <= outer.end_line
             )
             chains[symbol.id] = (own, *enclosing)
             if symbol.kind in _FUNCTION_KINDS:
@@ -1098,8 +1124,9 @@ class ReceiverTypingMixin:
         host = self._capture_host(file_path, caller_id, language, receiver_name, body_types)
         while host is not None:
             body_types = self._captured_types(file_path, host, caller_id, language)
-            caller_id, host = host, self._capture_host(
-                file_path, host, language, receiver_name, body_types
+            caller_id, host = (
+                host,
+                self._capture_host(file_path, host, language, receiver_name, body_types),
             )
         return caller_id, body_types
 

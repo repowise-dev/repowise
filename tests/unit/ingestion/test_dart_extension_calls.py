@@ -392,3 +392,52 @@ class App {
     assert edges == []
 
 
+def test_dart_extension_binds_nothing_when_receiver_type_ambiguous_across_repo(
+    tmp_path: Path,
+) -> None:
+    foo1_src = "class Foo {}"
+    foo2_src = "class Foo {}"
+    ext_src = """\
+import \x27foo1.dart\x27;
+extension FooExt on Foo {
+  void doWork() {}
+}
+"""
+    app_src = """\
+import \x27foo1.dart\x27;
+import \x27ext.dart\x27;
+class App {
+  void run(Foo f) {
+    f.doWork();
+  }
+}
+"""
+    p_foo1 = _parse(tmp_path, "foo1.dart", foo1_src)
+    p_foo2 = _parse(tmp_path, "foo2.dart", foo2_src)
+    p_ext = _parse(tmp_path, "ext.dart", ext_src)
+    for imp in p_ext.imports:
+        imp.resolved_file = "foo1.dart"
+    p_app = _parse(tmp_path, "app.dart", app_src)
+    for imp in p_app.imports:
+        if "foo1" in imp.module_path:
+            imp.resolved_file = "foo1.dart"
+        elif "ext" in imp.module_path:
+            imp.resolved_file = "ext.dart"
+
+    parsed = {"foo1.dart": p_foo1, "foo2.dart": p_foo2, "ext.dart": p_ext, "app.dart": p_app}
+    resolver = CallResolver(
+        parsed,
+        {
+            "app.dart": {"foo1.dart", "ext.dart"},
+            "ext.dart": {"foo1.dart"},
+            "foo1.dart": set(),
+            "foo2.dart": set(),
+        },
+        repo_path=str(tmp_path),
+    )
+    edges = [
+        rc
+        for rc in resolver.resolve_file("app.dart", p_app.calls)
+        if rc.caller_id == "app.dart::App::run"
+    ]
+    assert edges == []

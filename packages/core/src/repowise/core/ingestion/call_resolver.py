@@ -197,15 +197,11 @@ def _overload_return_types(
     parsed_files: dict[str, ParsedFile],
 ) -> dict[tuple[str, str | None, str | None, str, int | None], set[str]]:
     """``{(path, parent, extension receiver, name, parameter count): normalised return types}``."""
-    found: dict[tuple[str, str | None, str | None, str, int | None], set[str]] = defaultdict(
-        set
-    )
+    found: dict[tuple[str, str | None, str | None, str, int | None], set[str]] = defaultdict(set)
     for path, parsed in parsed_files.items():
         for symbol in parsed.symbols:
             raw_return = declared_return_type(symbol.signature or "")
-            normalized = (
-                normalize_return_type(raw_return, symbol.language) if raw_return else None
-            )
+            normalized = normalize_return_type(raw_return, symbol.language) if raw_return else None
             if normalized is None:
                 continue
             key = (
@@ -250,8 +246,14 @@ _JAVA_WIDENING: dict[str, tuple[str, ...]] = {
     "double": ("double",),
 }
 _JAVA_BOXES = {
-    "boolean": "Boolean", "byte": "Byte", "short": "Short", "char": "Character",
-    "int": "Integer", "long": "Long", "float": "Float", "double": "Double",
+    "boolean": "Boolean",
+    "byte": "Byte",
+    "short": "Short",
+    "char": "Character",
+    "int": "Integer",
+    "long": "Long",
+    "float": "Float",
+    "double": "Double",
 }
 _JAVA_UNBOXED = {box: primitive for primitive, box in _JAVA_BOXES.items()}
 _JAVA_PRIMITIVES = frozenset(_JAVA_WIDENING)
@@ -398,7 +400,9 @@ def _java_method_refusing(symbol: Symbol | None, argument_count: int | None) -> 
     """Whether *symbol* is a Java method whose parameters cannot take *argument_count*."""
     if symbol is None or argument_count is None:
         return False
-    return symbol.language == "java" and symbol.kind == "method" and not _takes(symbol, argument_count)
+    return (
+        symbol.language == "java" and symbol.kind == "method" and not _takes(symbol, argument_count)
+    )
 
 
 def _kotlin_function_refusing(symbol: Symbol | None, argument_count: int | None) -> bool:
@@ -470,10 +474,7 @@ def _same_translation_unit(decl_file: str, def_file: str) -> bool:
     include relation would be the better test, but a C++ include binds to the
     path as written and usually is not a file key.
     """
-    return (
-        decl_file == def_file
-        or PurePosixPath(decl_file).stem == PurePosixPath(def_file).stem
-    )
+    return decl_file == def_file or PurePosixPath(decl_file).stem == PurePosixPath(def_file).stem
 
 
 class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
@@ -538,6 +539,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # site the instance method the language dispatches to should own.
         self._extension_methods: dict[tuple[str, str], tuple[str, str]] = {}
         self._file_extension_methods: dict[str, dict[tuple[str, str], str]] = {}
+        self._dart_file_extension_methods: dict[str, dict[tuple[str, str], str]] = {}
         self._merged_import_extensions: dict[str, dict[tuple[str, str], str]] = {}
 
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
@@ -557,9 +559,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         }
         self._symbol_paths_by_id = {
-            symbol.id: path
-            for path, parsed in parsed_files.items()
-            for symbol in parsed.symbols
+            symbol.id: path for path, parsed in parsed_files.items() for symbol in parsed.symbols
         }
         self._overload_return_types = _overload_return_types(parsed_files)
         self._known_type_names = frozenset(
@@ -677,15 +677,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 self._forward_published_names(path, resolved, file_syms)
         return wildcard_sources
 
-    def _forward_published_names(
-        self, path: str, resolved: str, file_syms: dict[str, str]
-    ) -> None:
+    def _forward_published_names(self, path: str, resolved: str, file_syms: dict[str, str]) -> None:
         source_syms = self._file_symbols.get(resolved, {})
         source_parsed = self._parsed_files.get(resolved)
         published = (
-            (*source_syms, *source_parsed.export_aliases)
-            if source_parsed
-            else tuple(source_syms)
+            (*source_syms, *source_parsed.export_aliases) if source_parsed else tuple(source_syms)
         )
         for sym_name in published:
             if sym_name not in file_syms:
@@ -993,10 +989,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """
         for key, sites in candidates.items():
             for path, sym_id in sites:
-                self._file_extension_methods.setdefault(path, {})[key] = sym_id
-            if len({sym_id for _, sym_id in sites}) == 1:
-                path, sym_id = next(iter(sites))
-                self._extension_methods[key] = (path, sym_id)
+                if self._language_of(path) == "dart":
+                    self._dart_file_extension_methods.setdefault(path, {})[key] = sym_id
+            if len({sym_id for _, sym_id in sites}) != 1:
+                continue
+            path, sym_id = next(iter(sites))
+            self._extension_methods[key] = (path, sym_id)
+            self._file_extension_methods.setdefault(path, {})[key] = sym_id
 
     def _link_declarations(
         self,
@@ -1147,8 +1146,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         return {
             imp.resolved_file
             for imp in parsed.imports
-            if imp.resolved_file in targets
-            and list(imp.imported_names) == _WILDCARD_IMPORTED_NAMES
+            if imp.resolved_file in targets and list(imp.imported_names) == _WILDCARD_IMPORTED_NAMES
         }
 
     def _merged_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
@@ -1232,7 +1230,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if not _java_method_refusing(callee, call.argument_count):
             return resolved
         assert callee is not None
-        target = None if callee.name == callee.parent_name else self._inherited_taker(resolved, call)
+        target = (
+            None if callee.name == callee.parent_name else self._inherited_taker(resolved, call)
+        )
         return None if target in (None, resolved.caller_id) else replace(resolved, callee_id=target)
 
     def _inherited_taker(self, resolved: ResolvedCall, call: CallSite) -> str | None:
@@ -1405,8 +1405,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # A language with an `external_return_types` table reaches the tier for
         # that table alone; only the constant above admits the full lane.
         if receiver_call is not None and (
-            language in self._return_type_chain_languages
-            or get_external_return_types(language)
+            language in self._return_type_chain_languages or get_external_return_types(language)
         ):
             handled, resolved = self._resolve_return_typed_chain(
                 file_path, call, caller_id, language
@@ -2109,9 +2108,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             if self._reachable_by_name(file_path, sym_id)
         ]
         if len(candidates) == 1 and candidates[0] != caller_id:
-            return self._global_unique_match(
-                file_path, call, caller_id, target_name, candidates[0]
-            )
+            return self._global_unique_match(file_path, call, caller_id, target_name, candidates[0])
 
         # An overload set is several declarations under one id, not an ambiguity.
         collapsed = self._collapse_declarations(candidates)
@@ -2439,6 +2436,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         ``S`` names an enclosing class, whose superclass is meant, or a direct
         superinterface of the caller's class, whose own ``m`` is.
         """
+
         def named(type_id: str) -> bool:
             return getattr(self._symbols_by_id.get(type_id), "name", None) == qualifier
 
@@ -2499,7 +2497,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             binding = bindings.get(relation.parent_name)
             names = {relation.parent_name, binding.exported_name if binding else None}
             hits = [
-                p for p in parents if (s := self._symbols_by_id.get(p)) is not None and s.name in names
+                p
+                for p in parents
+                if (s := self._symbols_by_id.get(p)) is not None and s.name in names
             ]
             if len(hits) > 1:
                 return None
@@ -2692,9 +2692,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         bind to it. The narrower tiers are grounded in the caller's own file or
         its imports and are left alone.
         """
-        if receiver_name not in get_external_receiver_types(
-            self._language_of(file_path) or ""
-        ):
+        if receiver_name not in get_external_receiver_types(self._language_of(file_path) or ""):
             return False
         return receiver_name not in self._names_rebound_from_a_repo_package(file_path)
 
