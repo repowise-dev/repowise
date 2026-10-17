@@ -8,9 +8,9 @@ respectively, and are shared by both flows.
 
 from __future__ import annotations
 
-import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,6 @@ from repowise.cli.helpers import (
     head_commit_ts,
     load_config,
     load_state,
-    resolve_explicit_provider_or_prompt,
     resolve_max_file_pages,
     resolve_provider,
     resolve_reasoning,
@@ -71,7 +70,6 @@ from repowise.cli.ui import (
     interactive_provider_config_select,
     load_dotenv,
     print_banner,
-    print_index_only_intro,
     print_phase_header,
     print_scan_summary,
     prompt_wiki_style,
@@ -88,6 +86,9 @@ from repowise.core.reasoning import REASONING_MODES
 from repowise.core.repo_config import config_dependency_fingerprints
 
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._options import InitOptions, InitRun, resolve_structural_flags
+from ._provider import announce_index_only, decision_key_in_env, resolve_docs_provider
+from ._seed import delegate_to_seeded_update
 from .generation import (
     concept_page_count,
     cost_gate_declined,
@@ -509,6 +510,363 @@ def _interactive_gate(
     return isatty and provider_name is None and not index_only and not yes and not resume
 
 
+def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
+    """Hand a directory holding several repos to the multi-repo flow."""
+    _workspace_init(
+        scan=scan,
+        init_all=opts.init_all,
+        exclude_patterns=list(opts.exclude),
+        commit_limit=opts.commit_limit,
+        follow_renames=opts.follow_renames,
+        no_claude_md=opts.no_claude_md,
+        agents_md=opts.agents_md,
+        codex_setup=opts.codex_setup,
+        distill_hook=opts.distill_hook,
+        hook=opts.hook,
+        editor_setup=opts.editor_setup,
+        save_key=opts.save_key,
+        include_submodules=opts.include_submodules,
+        provider_name=opts.provider_name,
+        model=opts.model,
+        embedder_name=opts.embedder_name,
+        index_only=opts.index_only,
+        skip_tests=opts.skip_tests,
+        skip_infra=opts.skip_infra,
+        concurrency=opts.concurrency,
+        reasoning=opts.reasoning,
+        test_run=opts.test_run,
+        yes=opts.yes,
+        dry_run=opts.dry_run,
+        resume=opts.resume,
+        force=opts.force,
+        onboarding=opts.onboarding,
+        # Apply the chosen style uniformly across the workspace's repos
+        # (no per-repo interactive prompt in the multi-repo flow).
+        wiki_style=resolve_style(opts.wiki_style).name,
+        language=opts.language_opt,
+        run_mode=opts.run_mode,
+    )
+
+
+def _start_run(opts: InitOptions, repo_path: Path, start: float) -> InitRun:
+    """Prepare ``.repowise/``, logging and the resume mode, then open the run."""
+    ensure_repowise_dir(repo_path)
+    load_dotenv(repo_path)
+
+    # Quiet library/structlog output so the progress bars are the only output;
+    # `-v` lets repowise's debug lines through for troubleshooting.
+    configure_cli_logging(verbose=opts.verbose)
+
+    # On --resume, continue the prior run's git tier so a resumed fast index
+    # doesn't silently fall back to the expensive FULL tier (issue #341). Done
+    # before the interactive gate so a resume never re-prompts for the mode.
+    run_mode = effective_run_mode_for_resume(repo_path, opts.run_mode, opts.resume)
+    opts = replace(opts, run_mode=run_mode, index_only=opts.index_only or run_mode == "fast")
+
+    # --yes forces non-interactive even on a TTY (mirrors the workspace path),
+    # so a scripted `init -y` never blocks on the mode-selection menu.
+    is_interactive = _interactive_gate(
+        isatty=sys.stdin.isatty(),
+        provider_name=opts.provider_name,
+        index_only=opts.index_only,
+        yes=opts.yes,
+        resume=opts.resume,
+    )
+
+    if opts.resume:
+        console.print(
+            f"[bold]Resuming[/] the previous run in {repo_path}, "
+            "reusing the answers it already saved to config.yaml."
+        )
+    return InitRun(
+        opts=opts,
+        repo_path=repo_path,
+        start=start,
+        is_interactive=is_interactive,
+        generate_docs=not opts.index_only,
+    )
+
+
+def _ask_mode(run: InitRun) -> None:
+    """The mode menu, mapped onto the two axes (docs on/off, customize yes/no).
+
+    ``sys.stdin.isatty()`` is not a reliable answer to "can I read from
+    stdin". On Windows under Git Bash, ``repowise init < /dev/null`` reports a
+    TTY and then reads EOF on the first question; the same goes for some pty
+    wrappers and ``docker run -t`` without -i. Agents drive init through
+    exactly those shapes, so the first prompt is the probe: if it cannot be
+    answered, drop to the non-interactive path rather than dying on a question
+    nobody can hear. Only EOFError is caught. A real Ctrl-C raises
+    KeyboardInterrupt/Abort and must still stop the run.
+    """
+    try:
+        mode = interactive_mode_select(console)
+    except EOFError:
+        run.is_interactive = False
+        console.print(
+            f"\n[{WARN}]No answer available on stdin[/] "
+            "[dim]- continuing with defaults. Pass --yes to skip the "
+            "questions, or --prose / --no-prose to choose directly.[/dim]"
+        )
+        return
+
+    #   full       -> docs on,  optional customize
+    #   index_only -> docs off, optional customize
+    #   advanced   -> docs toggle, always customize
+    if mode == "index_only":
+        run.generate_docs = False
+        run.customize = interactive_customize_offer(console, generate_docs=False)
+    elif mode == "advanced":
+        run.generate_docs = interactive_generate_docs_toggle(console)
+        run.customize = True
+    elif mode is not None:  # full
+        run.generate_docs = True
+        run.customize = interactive_customize_offer(console, generate_docs=True)
+    if mode is not None:
+        run.opts = replace(run.opts, index_only=not run.generate_docs)
+
+
+def _ask_provider(run: InitRun) -> None:
+    """Provider selection, only when docs will be generated.
+
+    Index-only runs auto-detect a decision-extraction provider later without
+    prompting.
+    """
+    opts = run.opts
+    selection = interactive_provider_config_select(
+        console,
+        opts.model,
+        opts.reasoning,
+        repo_path=run.repo_path,
+        save_key=opts.save_key,
+        prefer=agent_providers_set_up(run.repo_path),
+    )
+    run.opts = replace(
+        opts,
+        provider_name=selection.provider_name,
+        model=selection.model,
+        reasoning=selection.reasoning,
+    )
+
+
+def _apply_advanced_answers(run: InitRun, adv: dict[str, Any]) -> None:
+    """Fold the advanced-config answers into the run."""
+    opts = run.opts
+    # Indexing knobs (always present).
+    changes: dict[str, Any] = {
+        "commit_limit": adv["commit_limit"],
+        "follow_renames": adv["follow_renames"],
+        "skip_tests": adv["skip_tests"],
+        "skip_infra": adv["skip_infra"],
+        "exclude": adv["exclude"],
+        "include_submodules": adv.get("include_submodules", opts.include_submodules),
+        "run_mode": adv.get("run_mode", opts.run_mode),
+        # Asked in both branches: an index-only run renders a wiki too, and
+        # those pages embed like any other, so the answer applies either way.
+        "embedder_name": adv.get("embedder") or opts.embedder_name,
+    }
+    # Asked in both branches for the same reason: an index-only run renders
+    # file pages too.
+    run.max_file_pages_choice = adv.get("max_file_pages")
+    # Generation knobs (only gathered when docs are on).
+    if run.generate_docs:
+        changes["concurrency"] = adv["concurrency"]
+        changes["reasoning"] = adv.get("reasoning") or opts.reasoning
+        changes["test_run"] = adv["test_run"]
+        changes["onboarding"] = adv.get("onboarding", opts.onboarding)
+        if adv.get("wiki_style"):
+            changes["wiki_style"] = adv["wiki_style"]
+        if adv.get("language"):
+            run.language_choice = adv["language"]
+    # Fast mode (picked in the indexing section) is a no-LLM index, so it
+    # forces index-only even if the user had asked for docs.
+    if changes["run_mode"] == "fast":
+        changes["index_only"] = True
+        run.generate_docs = False
+    run.opts = replace(opts, **changes)
+
+
+def _offer_fast_mode(run: InitRun, scan_info: Any) -> None:
+    """No customization: still offer the fast first-index on large repos.
+
+    Default yes for an index-only run (docs already opted out), no for a full
+    run (the user explicitly asked for docs).
+    """
+    if (
+        run.opts.run_mode != "fast"
+        and should_offer_fast_mode(scan_info)
+        and interactive_fast_mode_offer(console, scan_info, default_fast=not run.generate_docs)
+    ):
+        run.opts = replace(run.opts, run_mode="fast", index_only=True)
+        run.generate_docs = False
+
+
+def _ask_questions(run: InitRun) -> None:
+    """The interactive questionnaire (TTY, no explicit flags)."""
+    print_banner(console, repo_name=run.repo_path.name)
+    with console.status("  Scanning repository…", spinner=OWL_SPINNER):
+        scan_info = quick_repo_scan(run.repo_path)
+    print_scan_summary(console, scan_info)
+
+    _ask_mode(run)
+    # ``is_interactive`` can have been cleared by an unanswerable menu, in
+    # which case every remaining question here is unanswerable too.
+    if run.generate_docs and run.is_interactive:
+        _ask_provider(run)
+
+    if run.customize:
+        adv = interactive_advanced_config(
+            console,
+            scan=scan_info,
+            allow_fast=True,
+            prompt_reasoning=False,
+            generate_docs=run.generate_docs,
+            wiki_style=run.opts.wiki_style,
+            language=run.opts.language_opt,
+        )
+        _apply_advanced_answers(run, adv)
+    elif run.is_interactive:
+        _offer_fast_mode(run, scan_info)
+
+    # Wiki style: prompt for a docs run when not already chosen (via the
+    # --wiki-style flag or the advanced generation section). Index-only runs
+    # generate no pages, so the question is skipped. --yes uses the default.
+    if (
+        run.generate_docs
+        and run.opts.wiki_style is None
+        and not run.opts.yes
+        and run.is_interactive
+    ):
+        run.opts = replace(run.opts, wiki_style=prompt_wiki_style(console))
+
+
+def _editor_options(run: InitRun) -> Any:
+    """Which editor files and integrations this run writes."""
+    opts = run.opts
+    editor_options = resolve_editor_setup_options(
+        disabled_project_files=get_default_disabled_project_files(
+            no_claude_md=opts.no_claude_md,
+        ),
+        project_file_overrides=get_default_project_file_overrides(
+            agents_md=opts.agents_md,
+        ),
+        integration_overrides=get_default_integration_overrides(
+            codex_setup=opts.codex_setup,
+        ),
+    )
+    # Ask which agents to wire up whenever the user is engaging interactively:
+    # either generating docs or customizing an index-only run. Not asked when
+    # editor setup is off: every answer would be discarded by
+    # `write_editor_project_files`.
+    if opts.editor_setup and run.is_interactive and (run.generate_docs or run.customize):
+        editor_options = select_agents_interactively(console, run.repo_path, editor_options)
+    return editor_options
+
+
+def _resolve_settings(run: InitRun) -> None:
+    """Resolve each setting from its flag, the interactive answer and config.yaml."""
+    opts = run.opts
+    config = load_config(run.repo_path)
+    run.config = config
+    # Output language: CLI flag > advanced-mode choice > config.yaml > English.
+    run.language = opts.language_opt or run.language_choice or config.get("language", "en")
+    # File-page cap: flag > advanced-mode answer > config.yaml > unset (policy).
+    file_pages = opts.max_file_pages_opt
+    if file_pages is None:
+        file_pages = run.max_file_pages_choice
+    run.max_file_pages = resolve_max_file_pages(file_pages, config)
+    run.resolved_reasoning = resolve_reasoning(opts.reasoning, config)
+    # Merge exclude_patterns from config.yaml and --exclude/-x flags.
+    run.exclude_patterns = list(config.get("exclude_patterns") or []) + list(opts.exclude)
+
+    # Commit limit: CLI flag → config.yaml → default.
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+
+    commit_limit = opts.commit_limit or config.get("commit_limit") or _DEFAULT_COMMIT_LIMIT
+    run.resolved_commit_limit = max(1, min(commit_limit, 10000))
+    if opts.commit_limit is not None:
+        config["commit_limit"] = run.resolved_commit_limit
+
+    # follow_renames: CLI flag → config.yaml.
+    run.resolved_follow_renames = opts.follow_renames or config.get("follow_renames", False)
+    if opts.follow_renames:
+        config["follow_renames"] = True
+
+    run.embedder_name_resolved = resolve_embedder(opts.embedder_name)
+    run.embedder_was_requested = _embedder_was_requested(opts.embedder_name, config.get("embedder"))
+
+
+def _confirm_wiki_overwrite(run: InitRun) -> bool:
+    """Read the prior state; False when the user keeps a model-written wiki.
+
+    A template wiki overwrites a model-written one page for page: the upsert
+    replaces content and stamps provider_name="template", keeping the old text
+    only as a version snapshot. Fine when the user meant it, a bad surprise
+    when they were reaching for a re-index, so ask. Non-interactive runs refuse
+    rather than guess. ``--yes`` and ``--force`` both mean "do not ask me".
+    """
+    prior_state = load_state(run.repo_path)
+    # Whether this repo has ever been indexed, captured before the run writes
+    # its own state. A first index tells the user to restart Claude Code to
+    # load the tools; a re-index does not.
+    run.first_index = not prior_state.get("last_sync_commit")
+    run.prior_docs_mode = resolve_docs_mode(prior_state)
+    opts = run.opts
+    if not opts.index_only or run.prior_docs_mode != "llm" or opts.force or opts.yes:
+        return True
+    console.print(
+        f"\n[{WARN}]This repo already has a model-written wiki.[/] "
+        "Indexing without a model\nrewrites every page from templates; the "
+        "written versions stay in page history."
+    )
+    if not sys.stdin.isatty():
+        raise reasoned_error(
+            "Refusing to replace a model-written wiki with template pages. "
+            "Re-run with --yes to confirm, or drop --index-only.",
+            reason="wiki_overwrite_unconfirmed",
+        )
+    if not click.confirm("  Replace the written wiki with template pages?", default=False):
+        console.print("[dim]Nothing changed.[/dim]")
+        return False
+    return True
+
+
+def _resolve_decision_provider(run: InitRun) -> None:
+    """Index-only: a decision-extraction provider when one is named or keyed."""
+    opts = run.opts
+    try:
+        if opts.provider_name or decision_key_in_env():
+            run.decision_provider = resolve_provider(opts.provider_name, opts.model, run.repo_path)
+    except Exception:
+        pass
+
+
+def _resolve_provider_stage(run: InitRun) -> None:
+    """Which model this run calls: none, a decision extractor, or the docs model."""
+    if run.opts.index_only:
+        _resolve_decision_provider(run)
+        announce_index_only(run)
+    else:
+        resolve_docs_provider(run)
+
+
+def _prepare_single_repo(opts: InitOptions, repo_path: Path, start: float) -> InitRun | None:
+    """Everything a single-repo run settles before indexing. None to stop."""
+    run = _start_run(opts, repo_path, start)
+    if run.is_interactive:
+        _ask_questions(run)
+
+    # Resolve the effective style (CLI flag > interactive prompt > default) and
+    # canonicalize it. Used by generation and persisted so update/restyle honor it.
+    run.opts = replace(run.opts, wiki_style=resolve_style(run.opts.wiki_style).name)
+    run.editor_options = _editor_options(run)
+    _resolve_settings(run)
+    if not _confirm_wiki_overwrite(run):
+        return None
+    _resolve_provider_stage(run)
+    return run
+
+
 @click.command("init")
 @click.argument("path", required=False, default=None)
 @click.option(
@@ -830,48 +1188,7 @@ def _interactive_gate(
     default="rich",
     help="Progress output style.",
 )
-def init_command(
-    path: str | None,
-    provider_name: str | None,
-    model: str | None,
-    embedder_name: str | None,
-    skip_tests: bool,
-    skip_infra: bool,
-    dry_run: bool,
-    yes: bool,
-    resume: bool,
-    force: bool,
-    concurrency: int,
-    reasoning: str | None,
-    test_run: bool,
-    prose: bool | None,
-    index_only: bool,
-    docs_opt: str | None,
-    run_mode: str,
-    exclude: tuple[str, ...],
-    commit_limit: int | None,
-    follow_renames: bool,
-    no_claude_md: bool,
-    seed_from: str | None,
-    no_seed: bool,
-    agents_md: bool | None,
-    codex_setup: bool | None,
-    distill_hook: bool | None,
-    hook: bool | None,
-    editor_setup: bool,
-    save_key: bool,
-    include_submodules: bool,
-    no_workspace: bool,
-    init_all: bool,
-    onboarding: bool,
-    max_file_pages_opt: int | None,
-    coverage_report: tuple[str, ...],
-    wiki_style: str | None,
-    language_opt: str | None,
-    no_cost_tracking: bool,
-    verbose: bool,
-    progress: str,
-) -> None:
+def init_command(**params: Any) -> None:
     """Generate wiki documentation for a codebase.
 
     PATH defaults to the current directory.
@@ -880,42 +1197,9 @@ def init_command(
     structural either way.
     Use --mode fast for a quick graph + essential-git index of a very large repo.
     """
-    # ``--prose / --no-prose`` is the one switch: prose on the concept pages, or
-    # the whole wiki from structure. ``--index-only`` and ``--docs`` are the
-    # previous spellings, kept working for one release as deprecated aliases so a
-    # scripted ``--index-only`` does not break. ``index_only`` stays the internal
-    # variable every downstream branch reads.
-    if index_only or docs_opt is not None:
-        console.print(
-            "[dim]--index-only and --docs are deprecated; use --no-prose "
-            "(structural, no key) or --prose (model-written). They still work "
-            "this release.[/dim]"
-        )
-    # Each of the three sources votes for "structural" (True) or "prose" (False).
-    # --index-only always means structural; --docs maps deterministic->structural,
-    # llm->prose; --prose/--no-prose is the direct switch. Two votes that disagree
-    # is a contradiction rather than a silent last-one-wins.
-    _structural_votes = []
-    if index_only:
-        _structural_votes.append(True)
-    if docs_opt is not None:
-        _structural_votes.append(docs_opt == "deterministic")
-    if prose is not None:
-        _structural_votes.append(not prose)
-    if len(set(_structural_votes)) > 1:
-        raise click.UsageError(
-            "This mix of --prose / --no-prose, --index-only and --docs contradicts "
-            "itself. Pass one."
-        )
-    if _structural_votes:
-        index_only = _structural_votes[0]
-    # --mode fast is a graph + essential-git index with no LLM work, so it
-    # implies index-only on the CLI side; the orchestrator mode below switches
-    # the git tier to ESSENTIAL.
-    if run_mode == "fast":
-        index_only = True
+    opts = resolve_structural_flags(InitOptions(**params))
     start = time.monotonic()
-    repo_path = resolve_repo_path(path)
+    repo_path = resolve_repo_path(opts.path)
 
     if not repo_path.is_dir():
         raise reasoned_error(f"Not a directory: {repo_path}", reason="invalid_path")
@@ -926,150 +1210,12 @@ def init_command(
     # entirely and forces single-repo mode regardless of what scan finds.
     from repowise.core.workspace import scan_for_repos
 
-    scan = scan_for_repos(repo_path, include_submodules=include_submodules)
+    scan = scan_for_repos(repo_path, include_submodules=opts.include_submodules)
 
-    # ---- Worktree seeding ----
-    # Explicit --seed-from wins. Otherwise, an unindexed linked worktree
-    # auto-seeds from its base checkout (derived via --git-common-dir, no
-    # path needed) when that base holds a healthy index. --no-seed forces a
-    # cold init; any failed validation falls back to full init with a notice.
-    from repowise.cli.worktree import (
-        base_is_seedable,
-        detect_worktree_base,
-        seed_index_from_base,
-    )
-
-    seed_base: Path | None = None
-    if seed_from:
-        seed_base = Path(seed_from).resolve()
-        if seed_base == repo_path.resolve():
-            raise reasoned_error(
-                "--seed-from cannot be the same as the target directory.",
-                reason="seed_from_is_target",
-            )
-    elif not no_seed and not (repo_path / ".repowise" / "state.json").exists():
-        detected = detect_worktree_base(repo_path)
-        if detected is not None and base_is_seedable(detected):
-            seed_base = detected
-            if not force:
-                console.print(
-                    f"[dim]\\[worktree][/dim] Linked worktree of {detected} detected; "
-                    f"seeding its index."
-                )
-
-    # ``--force`` asks for the re-index seeding exists to avoid, so the two do
-    # not combine. The block below delegates to ``run_update`` and used to hand
-    # it ``full=force``, but ``full`` is not "re-index": it is ``update --full``,
-    # the fast -> full upgrade that resolves a provider and regenerates the
-    # whole wiki with a model. So ``init --force`` in a seedable worktree either
-    # died with "No provider configured" or spent money the user never asked for
-    # (#1482), and ``--index-only --force`` was swallowed the same way. Dropping
-    # the seed lets the ordinary init path below run, which is exactly what
-    # ``init --force`` does outside a worktree: re-index and regenerate every
-    # page in the mode the user invoked, free when that mode is structural.
-    # ``update --full`` stays the only paid path.
-    if seed_base is not None and force:
-        requested = "the index at" if not seed_from else "the requested seed"
-        console.print(
-            f"[dim]\\[worktree][/dim] --force re-indexes this checkout from "
-            f"scratch, so {requested} {seed_base} is not used."
-        )
-        seed_base = None
-
-    if seed_base is not None:
-        seed_root = scan.root if getattr(scan, "root", None) else repo_path
-        seeded = seed_index_from_base(
-            root=seed_root,
-            repo_paths=[r.path for r in scan.repos],
-            seed_base=seed_base,
-            include_submodules=include_submodules,
-            dry_run=dry_run,
-        )
-        if seeded:
-            if dry_run:
-                console.print(
-                    "[dim]Dry run: Would seed worktree index and delegate to update.[/dim]"
-                )
-                return
-
-            console.print(f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]")
-            from repowise.cli.commands.update_cmd.command import run_update
-
-            is_workspace = len(scan.repos) > 1 and not no_workspace
-
-            from repowise.core.persistence.database import DB_ENV_VARS
-
-            # Strip db-pin env vars to enforce worktree DB resolution (note: potential process-global race condition).
-            old_db_urls = {}
-            for env_key in DB_ENV_VARS:
-                if env_key in os.environ:
-                    old_db_urls[env_key] = os.environ.pop(env_key)
-
-            try:
-                # Delegate to update
-                run_update(
-                    path=str(repo_path),
-                    provider_name=provider_name,
-                    model=model,
-                    since=None,
-                    reasoning=reasoning,
-                    cascade_budget=None,
-                    dry_run=dry_run,
-                    workspace=is_workspace,
-                    no_workspace=no_workspace,
-                    repo_alias=None,
-                    index_only=index_only,
-                    docs_flag=None,
-                    # Never ``force``. This delegate is the worktree *seed*
-                    # catch-up, and ``full`` means ``update --full``: provider
-                    # resolution plus whole-repo model regeneration. A
-                    # ``--force`` run never reaches this block (the seed is
-                    # dropped above), so this is a constant, not a pass-through.
-                    full=False,
-                    agents_md=agents_md,
-                    concurrency=concurrency,
-                    no_cost_tracking=no_cost_tracking,
-                    verbose=verbose,
-                    progress=progress,
-                )
-            finally:
-                os.environ.update(old_db_urls)
-            return
-    if len(scan.repos) > 1 and not no_workspace:
-        _workspace_init(
-            scan=scan,
-            init_all=init_all,
-            exclude_patterns=list(exclude),
-            commit_limit=commit_limit,
-            follow_renames=follow_renames,
-            no_claude_md=no_claude_md,
-            agents_md=agents_md,
-            codex_setup=codex_setup,
-            distill_hook=distill_hook,
-            hook=hook,
-            editor_setup=editor_setup,
-            save_key=save_key,
-            include_submodules=include_submodules,
-            provider_name=provider_name,
-            model=model,
-            embedder_name=embedder_name,
-            index_only=index_only,
-            skip_tests=skip_tests,
-            skip_infra=skip_infra,
-            concurrency=concurrency,
-            reasoning=reasoning,
-            test_run=test_run,
-            yes=yes,
-            dry_run=dry_run,
-            resume=resume,
-            force=force,
-            onboarding=onboarding,
-            # Apply the chosen style uniformly across the workspace's repos
-            # (no per-repo interactive prompt in the multi-repo flow).
-            wiki_style=resolve_style(wiki_style).name,
-            language=language_opt,
-            run_mode=run_mode,
-        )
+    if delegate_to_seeded_update(opts, repo_path, scan):
+        return
+    if len(scan.repos) > 1 and not opts.no_workspace:
+        _run_workspace_init(opts, scan)
         return
 
     # If a single repo was found inside the given directory (not at root),
@@ -1077,377 +1223,44 @@ def init_command(
     if len(scan.repos) == 1 and scan.repos[0].path != repo_path:
         repo_path = scan.repos[0].path
 
-    ensure_repowise_dir(repo_path)
-    load_dotenv(repo_path)
-
-    # Quiet library/structlog output so the progress bars are the only output;
-    # `-v` lets repowise's debug lines through for troubleshooting.
-    configure_cli_logging(verbose=verbose)
-
-    # On --resume, continue the prior run's git tier so a resumed fast index
-    # doesn't silently fall back to the expensive FULL tier (issue #341). Done
-    # before the interactive gate so a resume never re-prompts for the mode.
-    run_mode = effective_run_mode_for_resume(repo_path, run_mode, resume)
-    if run_mode == "fast":
-        index_only = True
-
-    # ---- Interactive mode (TTY, no explicit flags) ----
-    # --yes forces non-interactive even on a TTY (mirrors the workspace path),
-    # so a scripted `init -y` never blocks on the mode-selection menu.
-    # --resume skips the gate too: the prior run already answered every
-    # question, and those answers are on disk (config.yaml), so re-asking
-    # would let a resumed run diverge from the pages already written with
-    # them (issue #2098).
-    is_interactive = _interactive_gate(
-        isatty=sys.stdin.isatty(),
-        provider_name=provider_name,
-        index_only=index_only,
-        yes=yes,
-        resume=resume,
-    )
-
-    if resume:
-        console.print(
-            f"[bold]Resuming[/] the previous run in {repo_path}, "
-            "reusing the answers it already saved to config.yaml."
-        )
-
-    # Output language picked in the advanced-mode generation section; None
-    # until chosen. Resolved below: flag > this > config.yaml > English.
-    language_choice: str | None = None
-
-    # File-page cap picked in the advanced-mode page-volume question; None until
-    # chosen. Resolved below: --max-file-pages > advanced-mode answer >
-    # config.yaml > unset, and unset leaves the size policy in charge.
-    max_file_pages_choice: int | None = None
-
-    # The two orthogonal axes the interactive menu resolves: whether docs are
-    # generated and whether we entered the advanced-config prompts. Initialized
-    # for the non-interactive path (where the menu never runs); the menu
-    # overrides them below. They gate the editor-files prompt further down.
-    generate_docs = not index_only
-    customize = False
-
-    # Pre-scan for interactive mode — fast stats to inform choices
-    scan_info = None
-    if is_interactive:
-        print_banner(console, repo_name=repo_path.name)
-        with console.status("  Scanning repository…", spinner=OWL_SPINNER):
-            scan_info = quick_repo_scan(repo_path)
-        print_scan_summary(console, scan_info)
-
-        # ``sys.stdin.isatty()`` is not a reliable answer to "can I read from
-        # stdin". On Windows under Git Bash, ``repowise init < /dev/null``
-        # reports a TTY and then reads EOF on the first question; the same goes
-        # for some pty wrappers and ``docker run -t`` without -i. Agents drive
-        # init through exactly those shapes, so the first prompt is treated as
-        # the probe: if it cannot be answered, drop to the non-interactive path
-        # and carry on rather than dying on a question nobody can hear. Only
-        # EOFError is caught. A real Ctrl-C raises KeyboardInterrupt/Abort and
-        # must still stop the run.
-        mode = None
-        try:
-            mode = interactive_mode_select(console)
-        except EOFError:
-            is_interactive = False
-            console.print(
-                f"\n[{WARN}]No answer available on stdin[/] "
-                "[dim]- continuing with defaults. Pass --yes to skip the "
-                "questions, or --prose / --no-prose to choose directly.[/dim]"
-            )
-
-        # Map the menu onto the two axes (docs on/off, customize yes/no):
-        #   full       -> docs on,  optional customize
-        #   index_only -> docs off, optional customize
-        #   advanced   -> docs toggle, always customize
-        if mode == "index_only":
-            generate_docs = False
-            customize = interactive_customize_offer(console, generate_docs=False)
-        elif mode == "advanced":
-            generate_docs = interactive_generate_docs_toggle(console)
-            customize = True
-        elif mode is not None:  # full
-            generate_docs = True
-            customize = interactive_customize_offer(console, generate_docs=True)
-        if mode is not None:
-            index_only = not generate_docs
-
-        # Provider selection only when docs will be generated. Index-only runs
-        # auto-detect a decision-extraction provider later without prompting.
-        # ``is_interactive`` can have been cleared just above by an unanswerable
-        # menu, in which case every remaining question here is unanswerable too.
-        if generate_docs and is_interactive:
-            selection = interactive_provider_config_select(
-                console,
-                model,
-                reasoning,
-                repo_path=repo_path,
-                save_key=save_key,
-                prefer=agent_providers_set_up(repo_path),
-            )
-            provider_name = selection.provider_name
-            model = selection.model
-            reasoning = selection.reasoning
-
-        if customize:
-            adv = interactive_advanced_config(
-                console,
-                scan=scan_info,
-                allow_fast=True,
-                prompt_reasoning=False,
-                generate_docs=generate_docs,
-                wiki_style=wiki_style,
-                language=language_opt,
-            )
-            # Indexing knobs (always present).
-            commit_limit = adv["commit_limit"]
-            follow_renames = adv["follow_renames"]
-            skip_tests = adv["skip_tests"]
-            skip_infra = adv["skip_infra"]
-            exclude = adv["exclude"]
-            include_submodules = adv.get("include_submodules", include_submodules)
-            run_mode = adv.get("run_mode", run_mode)
-            # Asked in both branches for the same reason the embedder is: an
-            # index-only run renders file pages too.
-            max_file_pages_choice = adv.get("max_file_pages")
-            # Asked in both branches: an index-only run renders a wiki too,
-            # and those pages embed like any other, so the answer applies
-            # either way. Read outside the docs-only block or the index-only
-            # run would show the user their choice and then ignore it.
-            embedder_name = adv.get("embedder") or embedder_name
-            # Generation knobs (only gathered when docs are on).
-            if generate_docs:
-                concurrency = adv["concurrency"]
-                reasoning = adv.get("reasoning") or reasoning
-                test_run = adv["test_run"]
-                onboarding = adv.get("onboarding", onboarding)
-                if adv.get("wiki_style"):
-                    wiki_style = adv["wiki_style"]
-                if adv.get("language"):
-                    language_choice = adv["language"]
-            # Fast mode (picked in the indexing section) is a no-LLM index, so it
-            # forces index-only even if the user had asked for docs.
-            if run_mode == "fast":
-                index_only = True
-                generate_docs = False
-        elif is_interactive:
-            # No customization: still offer the fast first-index on large repos.
-            # Default yes for an index-only run (docs already opted out), no for a
-            # full run (the user explicitly asked for docs).
-            if (
-                run_mode != "fast"
-                and should_offer_fast_mode(scan_info)
-                and interactive_fast_mode_offer(console, scan_info, default_fast=not generate_docs)
-            ):
-                run_mode = "fast"
-                index_only = True
-                generate_docs = False
-
-        # Wiki style: prompt for a docs run when not already chosen (via the
-        # --wiki-style flag or the advanced generation section). Index-only runs
-        # generate no pages, so the question is skipped. --yes uses the default.
-        if generate_docs and wiki_style is None and not yes and is_interactive:
-            wiki_style = prompt_wiki_style(console)
-
-    # Resolve the effective style (CLI flag > interactive prompt > default) and
-    # canonicalize it. Used by generation and persisted so update/restyle honor it.
-    wiki_style = resolve_style(wiki_style).name
-
-    editor_options = resolve_editor_setup_options(
-        disabled_project_files=get_default_disabled_project_files(
-            no_claude_md=no_claude_md,
-        ),
-        project_file_overrides=get_default_project_file_overrides(
-            agents_md=agents_md,
-        ),
-        integration_overrides=get_default_integration_overrides(
-            codex_setup=codex_setup,
-        ),
-    )
-    # Ask which agents to wire up whenever the user is engaging interactively —
-    # either generating docs or customizing an index-only run (the latter
-    # previously got no say). One checklist, pre-ticked from detection, in
-    # place of the three sequential yes/no prompts each integration used to own.
-    # Not asked when editor setup is off: every answer would be discarded by
-    # `write_editor_project_files`, and a checklist whose result cannot act is
-    # worse than no checklist.
-    if editor_setup and is_interactive and (generate_docs or customize):
-        editor_options = select_agents_interactively(console, repo_path, editor_options)
-
-    # Merge exclude_patterns from config.yaml and --exclude/-x flags
-    config = load_config(repo_path)
-    # Output language: CLI flag > advanced-mode choice > config.yaml > English.
-    language = language_opt or language_choice or config.get("language", "en")
-    # File-page cap: flag > advanced-mode answer > config.yaml > unset (policy).
-    max_file_pages = resolve_max_file_pages(
-        max_file_pages_opt if max_file_pages_opt is not None else max_file_pages_choice,
-        config,
-    )
-    resolved_reasoning = resolve_reasoning(reasoning, config)
-    exclude_patterns: list[str] = list(config.get("exclude_patterns") or []) + list(exclude)
-
-    # Resolve commit limit: CLI flag → config.yaml → default
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
-
-    resolved_commit_limit: int = (
-        commit_limit or config.get("commit_limit") or _DEFAULT_COMMIT_LIMIT
-    )
-    resolved_commit_limit = max(1, min(resolved_commit_limit, 10000))
-    if commit_limit is not None:
-        config["commit_limit"] = resolved_commit_limit
-
-    # Resolve follow_renames: CLI flag → config.yaml
-    resolved_follow_renames: bool = follow_renames or config.get("follow_renames", False)
-    if follow_renames:
-        config["follow_renames"] = True
-
-    embedder_name_resolved = resolve_embedder(embedder_name)
-    embedder_was_requested = _embedder_was_requested(embedder_name, config.get("embedder"))
-
-    # A template wiki overwrites a model-written one page for page: the upsert
-    # replaces content and stamps provider_name="template", keeping the old
-    # text only as a version snapshot. That is a fine outcome when it is what
-    # the user meant and a bad surprise when they were reaching for a re-index,
-    # so ask. Non-interactive runs refuse rather than guess.
-    # ``--yes`` and ``--force`` both mean "do not ask me", which is the answer
-    # here as much as at the cost gate.
-    _prior_state = load_state(repo_path)
-    # Whether this repo has ever been indexed, captured before the run writes
-    # its own state. Drives the completion panel's MCP note (a first index tells
-    # the user to restart Claude Code to load the tools; a re-index does not).
-    _first_index = not _prior_state.get("last_sync_commit")
-    _prior_docs_mode = resolve_docs_mode(_prior_state)
-    if index_only and _prior_docs_mode == "llm" and not (force or yes):
-        console.print(
-            f"\n[{WARN}]This repo already has a model-written wiki.[/] "
-            "Indexing without a model\nrewrites every page from templates; the "
-            "written versions stay in page history."
-        )
-        if not sys.stdin.isatty():
-            raise reasoned_error(
-                "Refusing to replace a model-written wiki with template pages. "
-                "Re-run with --yes to confirm, or drop --index-only.",
-                reason="wiki_overwrite_unconfirmed",
-            )
-        if not click.confirm("  Replace the written wiki with template pages?", default=False):
-            console.print("[dim]Nothing changed.[/dim]")
-            return
-
-    # ---- Resolve provider ----
-    provider = None
-    decision_provider = None
-    # Set when a full run found no provider at all and fell back to the
-    # template renderer. Treated exactly like ``--index-only`` from the
-    # generation phase onward.
-    no_provider = False
-
-    if index_only:
-        try:
-            if (
-                provider_name
-                or any(
-                    os.environ.get(k)
-                    for k in (
-                        "GEMINI_API_KEY",
-                        "GOOGLE_API_KEY",
-                        "OPENAI_API_KEY",
-                        "ANTHROPIC_API_KEY",
-                    )
-                )
-            ):
-                decision_provider = resolve_provider(provider_name, model, repo_path)
-        except Exception:
-            pass
-
-        has_provider = decision_provider is not None
-        if is_interactive:
-            print_index_only_intro(console, has_provider=has_provider)
-        else:
-            console.print(f"[bold]repowise index-only[/bold] — {repo_path}")
-            console.print("Building the wiki from structure [dim]— no model, no spend.[/dim]")
-            if decision_provider:
-                console.print(
-                    f"Decision extraction provider: [{VALUE}]{decision_provider.provider_name}[/]"
-                )
-    else:
-        # An explicit provider may onboard its missing key (and, for the
-        # OpenAI-compatible adapter, its endpoint) here when stdin is a real
-        # terminal. Auto-detection and scripted runs remain non-interactive:
-        # a --yes run with no key lands in the template wiki below rather than
-        # in a question or a crash.
-        try:
-            provider = resolve_explicit_provider_or_prompt(
-                provider_name,
-                model,
-                repo_path,
-                interactive=sys.stdin.isatty() and not yes and not index_only,
-                save_key=save_key,
-            )
-        except click.ClickException as exc:
-            # Nothing configured anywhere. Workspace init, workspace update
-            # and the OSS server all render a template wiki in this exact
-            # situation rather than refusing to run (#999); single-repo init
-            # was the last path that still died on it. An explicitly named
-            # --provider is a different question: the user asked for that
-            # provider by name, so the resolution failure is the real answer.
-            if provider_name is not None:
-                raise
-            no_provider = True
-            if not is_interactive:
-                console.print(f"[bold]repowise init[/bold] — {repo_path}")
-            console.print(
-                f"[{WARN}]No model configured.[/] Building the wiki from "
-                "structure instead — no key, no spend.\n"
-                "[dim]Set a key (or pass --provider) and run [bold]repowise "
-                "update --full[/bold] to have a model write it.[/dim]"
-            )
-            # A provider that was configured but could not be built is a
-            # different problem from none being configured at all, and the
-            # message above would otherwise send the user to set a key they
-            # have already set.
-            if "Could not set up" in str(exc):
-                console.print(f"  [dim]{exc}[/dim]")
-        # resolve_provider / interactive provider selection may have just set
-        # the API key in os.environ. Re-resolve the embedder so the
-        # display (and the embed path below) honors the key the user just
-        # pasted, rather than the pre-prompt "mock" fallback.
-        embedder_name_resolved = resolve_embedder(embedder_name)
-        if not is_interactive and not no_provider:
-            console.print(f"[bold]repowise init[/bold] — {repo_path}")
-        if provider is not None:
-            console.print(
-                f"  Provider: [{VALUE}]{provider.provider_name}[/] / Model: [{VALUE}]{provider.model_name}[/]"
-            )
-        console.print(f"  Embedder: [{VALUE}]{embedder_name_resolved}[/]")
-        if language != "en":
-            console.print(f"  Language: [{VALUE}]{language}[/]")
-        if resolved_reasoning != "auto":
-            console.print(f"  Reasoning: [{VALUE}]{resolved_reasoning}[/]")
-
-        # Validate provider connection. Nothing to verify when there is no
-        # provider: this run renders from templates and never calls a model.
-        if provider is not None:
-            from repowise.core.providers.llm.base import ProviderError
-
-            with console.status("  Verifying provider connection…", spinner=OWL_SPINNER):
-                try:
-                    run_async(
-                        provider.generate(
-                            "You are a test.",
-                            "Reply with OK.",
-                            max_tokens=50,
-                            reasoning=resolved_reasoning,
-                        )
-                    )
-                except ProviderError as exc:
-                    from repowise.cli.hints import maybe_hint
-
-                    maybe_hint("provider_fail")
-                    raise reasoned_error(
-                        f"Provider validation failed: {exc}",
-                        reason="provider_validation_failed",
-                    ) from exc
-            console.print(f"  [{OK}]✓[/] Provider connection verified")
+    run = _prepare_single_repo(opts, repo_path, start)
+    if run is None:
+        return
+    opts = run.opts
+    index_only = opts.index_only
+    run_mode = opts.run_mode
+    dry_run = opts.dry_run
+    force = opts.force
+    yes = opts.yes
+    resume = opts.resume
+    skip_tests = opts.skip_tests
+    skip_infra = opts.skip_infra
+    include_submodules = opts.include_submodules
+    concurrency = opts.concurrency
+    test_run = opts.test_run
+    coverage_report = opts.coverage_report
+    onboarding = opts.onboarding
+    wiki_style = opts.wiki_style
+    commit_limit = opts.commit_limit
+    editor_setup = opts.editor_setup
+    save_key = opts.save_key
+    hook = opts.hook
+    distill_hook = opts.distill_hook
+    editor_options = run.editor_options
+    config = run.config
+    language = run.language
+    max_file_pages = run.max_file_pages
+    resolved_reasoning = run.resolved_reasoning
+    exclude_patterns = run.exclude_patterns
+    resolved_commit_limit = run.resolved_commit_limit
+    resolved_follow_renames = run.resolved_follow_renames
+    embedder_name_resolved = run.embedder_name_resolved
+    embedder_was_requested = run.embedder_was_requested
+    _first_index = run.first_index
+    _prior_docs_mode = run.prior_docs_mode
+    provider = run.provider
+    decision_provider = run.decision_provider
+    no_provider = run.no_provider
 
     # ---- Phase 1 & 2: Ingestion + Analysis (always) ----
     # Index-only generates too, it just renders templates instead of prompting
