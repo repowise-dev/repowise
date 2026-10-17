@@ -11,6 +11,7 @@ import inspect
 
 import pytest
 
+from repowise.cli.commands.update_cmd import full_persist
 from repowise.cli.commands.update_cmd import persistence as cli_update
 from repowise.core.pipeline.incremental import persist_index
 
@@ -18,7 +19,6 @@ from repowise.core.pipeline.incremental import persist_index
 @pytest.mark.parametrize(
     ("function", "health_call"),
     [
-        (cli_update._persist_full_update_async, "await _persist_partial_health("),
         (cli_update._rescore_health_from_db, "await save_full_health_report("),
     ],
 )
@@ -28,9 +28,12 @@ def test_graph_nodes_persist_before_health(function, health_call: str) -> None:
     assert source.index("await persist_graph_nodes(") < source.index(health_call)
 
 
-def test_incremental_steps_persist_graph_nodes_before_health() -> None:
-    names = [step.name for step in persist_index.INCREMENTAL_STEPS]
+@pytest.mark.parametrize(
+    "steps", [persist_index.INCREMENTAL_STEPS, full_persist.FULL_UPDATE_STEPS]
+)
+def test_update_steps_persist_graph_nodes_before_health(steps) -> None:
+    names = [step.name for step in steps]
     assert names.index("Graph nodes persist") < names.index("Health persist")
-    by_name = {step.name: step.run for step in persist_index.INCREMENTAL_STEPS}
+    by_name = {step.name: step.run for step in steps}
     assert "await persist_graph_nodes(" in inspect.getsource(by_name["Graph nodes persist"])
     assert "await persist_partial_health(" in inspect.getsource(by_name["Health persist"])

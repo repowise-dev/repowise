@@ -6,7 +6,7 @@ Shared steps of every path that persists decision records.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import structlog
@@ -180,10 +180,17 @@ async def store_decisions(
     return touched_ids
 
 
-async def apply_decision_lifecycle(session: Any, repo_id: str, repo_path: Any) -> None:
+async def apply_decision_lifecycle(
+    session: Any,
+    repo_id: str,
+    repo_path: Any,
+    *,
+    skip: Callable[[str, Exception], None] | None = None,
+) -> None:
     """Retire decisions whose commits were reverted or whose HEAD artifacts are gone.
 
-    Every run, whether or not it stored decisions. Each pass is best-effort.
+    Every run, whether or not it stored decisions. Each pass is best-effort: a
+    failure goes to ``skip(step, exc)`` when given, else to the debug log.
     """
     # Retire records whose commits were reverted. Not tied to new records: a
     # new revert retires a decision stored by an earlier run just as well.
@@ -192,10 +199,16 @@ async def apply_decision_lifecycle(session: Any, repo_id: str, repo_path: Any) -
 
         await apply_revert_supersession(session, repo_id, repo_path)
     except Exception as _revert_err:
-        logger.debug("revert_supersession_skipped", error=str(_revert_err))
+        if skip is not None:
+            skip("Revert supersession", _revert_err)
+        else:
+            logger.debug("revert_supersession_skipped", error=str(_revert_err))
     try:
         from repowise.core.analysis.decisions.head_artifacts import apply_head_artifact_check
 
         await apply_head_artifact_check(session, repo_id, repo_path)
     except Exception as _artifact_err:
-        logger.debug("head_artifact_check_skipped", error=str(_artifact_err))
+        if skip is not None:
+            skip("Decision HEAD artifact check", _artifact_err)
+        else:
+            logger.debug("head_artifact_check_skipped", error=str(_artifact_err))

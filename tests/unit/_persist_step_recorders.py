@@ -123,7 +123,7 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     rec.patch(persist, "mark_tombstone_pages", ret=[TOMBSTONED])
     rec.patch(page_tree_sync, "rebuild_page_tree")
     rec.patch(persist, "persist_git_refresh")
-    # The CLI looks these up on the package at call time, the core writer on its own module.
+    # Package callers look these up at call time, the core writer on its own module.
     reexported = (incremental, persist_index)
     rec.patch(commits, "persist_incremental_commits", where=reexported)
     rec.patch(crud, "replace_dead_code_findings")
