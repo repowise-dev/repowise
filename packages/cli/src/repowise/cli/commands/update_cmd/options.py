@@ -109,3 +109,5 @@ class DocsPass:
     generated_pages: list = field(default_factory=list)
     full_stats: dict = field(default_factory=dict)
     db_total_pages: int = 0
+    # Range-scoped persist steps that failed; they become the repair marker.
+    failed_steps: list[str] = field(default_factory=list)

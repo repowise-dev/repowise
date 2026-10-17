@@ -1835,6 +1835,7 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
             require_config_rebuild_success=config.rebuild_required,
             require_decision_persist_success=config.git_changed,
             history_window_changed=config.git_changed,
+            failed_steps=docs.failed_steps,
             timings=run.timings,
         )
 
@@ -1872,6 +1873,17 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
     if run.knowledge_graph_result is not None:
         _export_knowledge_graph(run)
 
+    # Before the pointer moves: the marker keeps the old one. A clean run leaves
+    # an earlier marker for the index-only update that widens to it.
+    if docs.failed_steps:
+        from .persistence import record_repair_marker
+
+        record_repair_marker(state, dict(state), docs.failed_steps)
+        console.print(
+            "[yellow]Some data for this commit range was not persisted; "
+            "the next update will re-cover it.[/yellow]"
+        )
+
     # Never write a null pointer: the next update would refuse to run.
     if head:
         state["last_sync_commit"] = head
@@ -1890,8 +1902,10 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
             state["git_history_coverage"] = coverage.to_dict()
         else:
             state.pop("git_history_coverage", None)
-        # Every row was rewritten under the current rules.
-        state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+        # Every row was rewritten under the current rules, unless they never
+        # reached the store; then the next update walks again.
+        if "Git persist" not in docs.failed_steps:
+            state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     save_state(repo_path, state)
 
 
