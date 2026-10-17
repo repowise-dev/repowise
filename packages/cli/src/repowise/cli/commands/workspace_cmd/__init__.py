@@ -1,12 +1,12 @@
 """``repowise workspace`` — manage multi-repo workspaces.
 
-Split out of a single 1.6k-line module into cohesive parts:
+Modules:
 
-* :mod:`.group` — the Click group plus list/add/remove/scan/set-default
-* :mod:`._index` — indexing (and optional docs) for a freshly added repo
-* :mod:`.diagnostics`, :mod:`.check`, :mod:`.metrics`, :mod:`.impacted` —
+* :mod:`.group`: the Click group plus list/add/remove/scan/set-default
+* :mod:`._index`: indexing (and optional docs) for a freshly added repo
+* :mod:`.diagnostics`, :mod:`.check`, :mod:`.metrics`, :mod:`.impacted`:
   the read-only reports over the system graph
-* :mod:`._shared` — workspace loading and artifact provenance
+* :mod:`._shared`: workspace loading and artifact provenance
 
 Importing the report modules registers their subcommands on the group. The
 names other commands and the test-suite import from
