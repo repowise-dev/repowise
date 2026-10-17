@@ -42,12 +42,9 @@ from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ...installed_components import is_installed_component
-from ...test_paths import paired_test_names
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..execution_roles import ExecutionRoles
-from ..function_test_map import FunctionTests, function_test_map
 from ..graph_view import HasEdge, ImportEdgeView
-from ..test_reachability import files_reached_by_tests, files_with_paired_tests
 from .asserts.lexicon import AssertVocabulary
 from .asserts.oracle_reach import collect_cross_file_oracles
 from .biomarkers import FileContext, detect_all
@@ -84,6 +81,9 @@ from .refactoring import (
     rank_suggestions,
 )
 from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
+from .repo_tests import RepoTestIndex
+from .repo_tests import _has_paired_test_file as _has_paired_test_file
+from .repo_tests import _path_basenames as _path_basenames
 from .scope import scores_language
 from .scoring import (
     attach_impacts,
@@ -702,23 +702,6 @@ def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | No
         return None
 
 
-def _path_basenames(all_paths: set[str]) -> set[str]:
-    """Final path components of *all_paths*, split on ``/`` only.
-
-    A path matches ``other.endswith("/" + c) or other == c`` for a
-    slash-free candidate filename ``c`` exactly when its ``/``-basename
-    equals ``c``, so one precomputed basename set answers every
-    ``_has_paired_test_file`` lookup. Splitting on ``/`` only (not ``\\``)
-    preserves that equivalence for any non-POSIX path that slips in.
-    """
-    return {p.rsplit("/", 1)[-1] for p in all_paths}
-
-
-def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
-    """Whether any analyzed file is named like a test for *rel_path*."""
-    return not paired_test_names(rel_path).isdisjoint(path_basenames)
-
-
 @dataclass(frozen=True, slots=True)
 class _RunConfig:
     """The analyzer config one pass reads, with its per-file overrides."""
@@ -846,8 +829,8 @@ class HealthAnalyzer:
         # centrality gate inside a partial graph is not read as a code change.
         self._file_dependents_override = file_dependents
         self._package_roots_cache: set[str] | None = None
-        self._tests_reach_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
+        self.test_index = RepoTestIndex(self.graph, self.parsed_files, self._execution_graph)
 
     def file_dependents(self) -> dict[str, int]:
         """Each analysed file's dependents count, as the centrality gates read it."""
@@ -874,46 +857,6 @@ class HealthAnalyzer:
         if self.graph is not None and self._execution_graph_cache is None:
             self._execution_graph_cache = CallGraphIndex(self.graph)
         return self._execution_graph_cache
-
-    def _files_reached_by_tests(self) -> set[str]:
-        """Non-test files that some test file can execute into, per the call graph.
-
-        The graph-backed half of "is this file tested". Computed once per
-        analyzer over the whole file set (one multi-source walk, not one per
-        file), because every ``_evaluate_file`` call asks the same question of
-        the same graph.
-
-        Inferred, and it over-claims: a call edge says control *can* reach the
-        file, not that a given run did. Consumers must use it only as a floor -
-        "something tests this" - never as a coverage quantity. See
-        ``analysis.test_reachability``.
-        """
-        if self._tests_reach_cache is None:
-            test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
-            index = self._execution_graph()
-            self._tests_reach_cache = files_reached_by_tests(index or CallGraphIndex(), test_files)
-        return self._tests_reach_cache
-
-    def _paired_tests(self, analyzed_paths: set[str]) -> set[str]:
-        """Analyzed files a test is paired with; see ``files_with_paired_tests``."""
-        return files_with_paired_tests(self.graph, analyzed_paths, self._all_test_files())
-
-    def _all_test_files(self) -> set[str]:
-        """Test files from this pass and the graph, so an incremental run that
-        re-parses only the changed files still sees every test."""
-        test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
-        if self.graph is not None:
-            test_files.update(
-                node
-                for node, data in self.graph.nodes(data=True)
-                if data.get("is_test") and data.get("node_type") != "symbol"
-            )
-        return test_files
-
-    def _function_tests(self) -> FunctionTests | None:
-        """Each function's nearest test functions, over the whole graph."""
-        index = self._execution_graph()
-        return None if index is None else function_test_map(index, self._all_test_files())
 
     def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
         """Package roots for this repo, decided once per analyzer.
@@ -1190,7 +1133,7 @@ class HealthAnalyzer:
             execution_roles = self._mark_perf_entry_reachability(findings)
             suggestions = self._with_performance_plans(run, findings, suggestions)
         with timed(timings, "analysis.health.function_tests"):
-            function_tests = self._function_tests()
+            function_tests = self.test_index.function_tests()
         return HealthReport(
             repo_id="",
             analyzed_at=datetime.now(UTC),
@@ -1220,7 +1163,7 @@ class HealthAnalyzer:
         # signal (cheap, deterministic, conservative).
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         return _RepoInputs(
-            paired_tests=self._paired_tests(analyzed_paths),
+            paired_tests=self.test_index.paired(analyzed_paths),
             package_roots=self._package_boundaries(analyzed_paths),
             graph_view=ImportEdgeView(self.graph) if self.graph is not None else None,
             dup_report=dup_report,
@@ -1697,7 +1640,7 @@ class HealthAnalyzer:
             # call graph records a test reaching this file". They disagree
             # often, and collapsing them would leave no way to say which signal
             # answered, or that one of them over-claims.
-            reached_by_tests=file_path in self._files_reached_by_tests(),
+            reached_by_tests=file_path in self.test_index.reached_files(),
             module=module,
             all_functions=fns,
             class_metrics=fcx.classes,

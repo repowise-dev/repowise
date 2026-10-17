@@ -433,7 +433,7 @@ async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
 # request reads the test files once whoever asks: Fix first's validation and
 # Do next both walk from them. Ceiling: Do next's per-file reach is still
 # walked once per index; persisting it at index time (the engine's
-# ``_files_reached_by_tests`` set, stored as a per-file bool) is the upgrade path.
+# ``RepoTestIndex.reached_files`` set, stored as a per-file bool) is the upgrade path.
 _CACHE_SIZE = 32
 _cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
 
