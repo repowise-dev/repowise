@@ -119,6 +119,7 @@ class HelperShape:
     out_written_before: bool = False
     out_rebound: bool = False
     typed_host: bool = False
+    throws_clause: str | None = None
 
 
 class Rendered(NamedTuple):
@@ -334,7 +335,8 @@ def _java_sig(s: HelperShape) -> str:
     out = _single_out(s)
     ret = _type(out, "java") if out else "void"
     static = "" if _method(s) else "static "
-    return f"private {static}{ret} {_name(s)}({_type_first(s, 'java')}) {{"
+    throws = f" {s.throws_clause}" if s.throws_clause else ""
+    return f"private {static}{ret} {_name(s)}({_type_first(s, 'java')}){throws} {{"
 
 
 def _java_call(s: HelperShape) -> str:
