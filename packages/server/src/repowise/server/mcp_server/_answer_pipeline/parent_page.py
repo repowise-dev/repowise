@@ -1,4 +1,11 @@
-"""Parent-concept surfacing: a subsystem-shaped question leads with its concept page."""
+"""Parent-concept surfacing: a subsystem-shaped question leads with its concept page.
+
+Retrieval ranks a subsystem's member files and child pages above the concept
+page for the whole subsystem, because they match the question's noun more
+tightly. Two signals pick the page, neither tuned to a repository: a tight
+cluster of hits in one directory (structural), else a concept-restricted vector
+search (semantic). Every other question keeps its ranking.
+"""
 
 from __future__ import annotations
 
@@ -13,25 +20,8 @@ from repowise.core.persistence.models import Page
 from repowise.server.mcp_server._answer_pipeline.vectors import question_vector, vector_search
 from repowise.server.mcp_server._helpers import vector_search_timeout_s
 
-# ---------------------------------------------------------------------------
-# Stage: parent-concept surfacing (subsystem-shaped questions)
-# ---------------------------------------------------------------------------
-
-# A subsystem-shaped question asks about a part of the system as a whole:
-# "overview of X", "main parts of X", "what subsystem does Y belong to",
-# "where would I add a Z". For these the best answer is the concept page that
-# documents the whole subsystem, not one of its member files or a more specific
-# child concept page. Retrieval ranks the specific children above the parent (a
-# child's embedding matches the query's noun more tightly than the broader
-# parent), so the parent concept/rollup page never surfaces even though it
-# exists. This gate is purely on the query's natural-language shape — no
-# repo-specific vocabulary — so it generalises across codebases.
-# Kept deliberately high-precision: bare fragments like "parts of", "belongs to",
-# "structure of", or "which module" appear constantly inside ordinary how/where
-# questions ("what parts of the code touch this", "which module imports config"),
-# so each phrase is anchored to an unambiguous subsystem-overview intent. Better
-# to miss an oddly-worded subsystem question (it just keeps today's ranking) than
-# to reorder an implementation question's file hits.
+# High precision on purpose: each phrase is anchored to an overview intent,
+# because fragments like "parts of" or "which module" fill ordinary questions.
 _SUBSYSTEM_QUERY_RE = re.compile(
     r"\boverview of\b|\bgive me an overview\b|\bhigh[- ]level\b|"
     r"\bmain parts of\b|\bwhat (?:are|is) the (?:main )?(?:parts|pieces|components) of\b|"
@@ -42,29 +32,18 @@ _SUBSYSTEM_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# How many of the strongest real (non-noise) hits to cluster when looking for
-# their shared subsystem. Decision records and pages without a path are skipped
-# so a query whose top slots are crowded by decision noise still clusters on its
-# real member files.
+# Strongest real hits (no decision records, no pathless pages) to cluster.
 _PARENT_EXPAND_TOP_N = 8
-# A directory is a tight structural cluster when it is the immediate parent of at
-# least this many surfaced hits. A lone surfaced file is not enough structural
-# signal on its own; that case is left to the semantic concept lookup.
+# Hits a directory must directly hold to count as a tight cluster.
 _PARENT_MIN_SHARE = 2
-# The injected parent leads the surface (it is the answer) but only just: a
-# small multiplier over the current top score keeps it first without
-# manufacturing a dominant retrieval that would inflate confidence to "high".
+# Just past the top score: leads without reading as a dominant retrieval.
 _PARENT_EXPAND_BOOST = 1.02
-# How deep to look in a concept-restricted vector search for the subsystem page
-# a query is semantically about. The window is wide because concept pages are a
-# small minority of the corpus, so the right one can sit below many file/symbol
-# hits before this filter drops those away.
+# Wide, since concept pages are a small minority of the vector store.
 _CONCEPT_FETCH_LIMIT = 60
 
 
 def is_subsystem_query(question: str) -> bool:
-    """True when the question asks about a subsystem/module as a whole, so the
-    concept page for that subsystem should lead rather than its member files."""
+    """True when the question asks about a subsystem as a whole."""
     return bool(_SUBSYSTEM_QUERY_RE.search(question or ""))
 
 
@@ -81,16 +60,7 @@ def _common_ancestor(paths: set[str]) -> str:
 
 
 async def _semantic_concept_paths(question: str, ctx: Any) -> list[str]:
-    """Target paths of the concept/layer pages a concept-restricted vector search
-    ranks highest for the question, best-first.
-
-    This is the "guaranteed concept-page candidate": when a subsystem query's
-    file hits land in the wrong neighborhood (a UI consumer of the subsystem
-    rather than the subsystem itself), the subsystem's own concept page still
-    matches the query semantically and surfaces here even though it never
-    entered the file-dominated main fetch. Best-effort: returns [] on any error
-    so the caller degrades to the structural path.
-    """
+    """Concept/layer page paths a concept-restricted vector search ranks first; [] on error."""
     vs = getattr(ctx, "vector_store", None)
     if vs is None:
         return []
@@ -123,13 +93,7 @@ def _result_target_path(result: Any) -> str:
 
 
 def _cluster_parents(top: list[dict]) -> tuple[dict[str, int], dict[str, set[str]]]:
-    """Each directory's count of hits directly in it, and the hits under each ancestor."""
-    # For each surfaced hit, count its immediate parent directory and credit
-    # every strict ancestor with covering it. A dir that is the immediate parent
-    # of two or more surfaced hits is a TIGHT cluster: the query's own member
-    # files sit directly in it. Coverage by a distant ancestor (a broad root that
-    # merely contains scattered hits) is deliberately not enough — that is what
-    # separates a real subsystem from the repository root.
+    """Hits directly in each directory, and the hits under each ancestor."""
     imm_count: dict[str, int] = {}
     covers: dict[str, set[str]] = {}
     for h in top:
@@ -163,7 +127,7 @@ def _tight_cluster_page(
     imm_count: dict[str, int],
     covers: dict[str, set[str]],
 ) -> Any:
-    """The page for the tightest structural cluster, rolled up over split siblings."""
+    """The tightest cluster's page; sibling clusters roll up to their common ancestor."""
     rollup = _common_ancestor(tight_pages)
     if len(tight_pages) > 1 and rollup in by_path and rollup in covers:
         return by_path[rollup]
@@ -174,9 +138,7 @@ def _tight_cluster_page(
 def _semantic_or_cover_page(
     semantic_paths: list[str], by_path: dict[str, Any], covers: dict[str, set[str]]
 ) -> Any:
-    """The semantically-closest concept page, else the deepest covering ancestor."""
-    # No tight cluster: the semantically-closest concept page (best-first),
-    # then any weak cover ancestor as a last resort.
+    """The semantically closest concept page, else the deepest covering ancestor."""
     winner = next((by_path[tp] for tp in semantic_paths if tp in by_path), None)
     if winner is None:
         cov_pages = [a for a in covers if a in by_path]
@@ -191,11 +153,6 @@ def _lead_with_parent(hits: list[dict], winner: Any) -> list[dict]:
     top_score = max((h.get("score", 0.0) for h in hits), default=0.0) or 1.0
     lead_score = top_score * _PARENT_EXPAND_BOOST
 
-    # Already in the candidate set but ranked below its own children (they embed
-    # tighter to the query noun than the broader parent), so the top-5 cap drops
-    # it. Promote it to lead in place rather than adding a duplicate. The bump is
-    # small (just past the top hit) so it never manufactures a dominant retrieval
-    # that would read "high".
     retrieved = next((h for h in hits if h.get("target_path") == best_tp), None)
     if retrieved is not None:
         if retrieved.get("score", 0.0) < lead_score:
@@ -206,7 +163,6 @@ def _lead_with_parent(hits: list[dict], winner: Any) -> list[dict]:
         hits.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return hits
 
-    # Not retrieved at all: inject it as the leading hit.
     parent_hit = {
         "page_id": f"{best_pt}:{best_tp}",
         "target_path": best_tp,
@@ -226,29 +182,11 @@ def _lead_with_parent(hits: list[dict], winner: Any) -> list[dict]:
 async def expand_via_parent_page(hits: list[dict], question: str, ctx: Any) -> list[dict]:
     """Lead a subsystem-shaped question with the concept page for its subsystem.
 
-    Two complementary signals pick that page, neither tuned to any repository:
-
-    * Structural — when the surfaced file hits cluster under an ancestor
-      directory that has a concept/rollup page, that ancestor IS the subsystem.
-      Ancestors are found by walking each hit's target_path up the tree (the
-      same relationship the generator uses to mint rollups). The tightest
-      (deepest) ancestor covering >=2 hits wins, never a catch-all near the root.
-    * Semantic — when the file hits land in the wrong neighborhood (a consumer
-      of the subsystem, not the subsystem), the subsystem's own concept page
-      still matches the query and is recovered by a concept-restricted vector
-      search. Used only when no structural cluster is found, so a strong file
-      cluster is never overridden by a semantic guess.
-
-    The chosen page is promoted in place if already retrieved (its children
-    out-embed it, so the cap drops it) or injected as the leading hit otherwise.
-    A no-op on every non-subsystem question, so file/implementation queries keep
-    today's ranking untouched.
+    A tight structural cluster wins over the semantic guess. The page is
+    promoted in place when already retrieved, else injected as the lead.
     """
     if not hits or not is_subsystem_query(question):
         return hits
-    # Cluster on the strongest real hits: skip decision records and any hit
-    # without a path so decision noise crowding the top slots can't starve the
-    # clustering of the member files that reveal the subsystem.
     top = [h for h in hits if h.get("target_path") and h.get("page_type") != "decision_record"][
         :_PARENT_EXPAND_TOP_N
     ]
@@ -267,12 +205,6 @@ async def expand_via_parent_page(hits: list[dict], question: str, ctx: Any) -> l
         return hits
     by_path = {r[0]: r for r in rows}
 
-    # A tight structural cluster is the query's own files agreeing on a subsystem,
-    # so it outranks the semantic guess. When several sibling dirs each cluster
-    # (a subsystem split into subdirectories), roll up to their common ancestor
-    # page so the answer is the subsystem, not one arbitrary half of it. With no
-    # tight cluster the file hits landed in the wrong neighborhood, so the concept
-    # page the query is semantically about wins instead.
     tight_pages = tight_clusters & by_path.keys()
     if tight_pages:
         winner = _tight_cluster_page(tight_pages, by_path, imm_count, covers)

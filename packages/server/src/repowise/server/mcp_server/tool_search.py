@@ -1087,20 +1087,14 @@ def _symbol_query_for(
     query: str, mode: str, names: Container[str] | None, canonical_symbol: Any
 ) -> str:
     """The text the symbol scorer ranks on."""
-    # A hybrid query is prose wrapped around an identifier ("where is X
-    # defined"). The symbol scorer ranks on token overlap, so handing it the
-    # raw prose lets stopword-ish tokens ("is" -> is_ci, "filter" ->
-    # FilterRegistry) outrank the identifier the question is actually about,
-    # which then never reaches _has_exact_symbol and the response claims the
-    # symbol is unindexed. Score symbols on the extracted identifiers instead.
+    # Scored on the identifiers, not the prose: words like "is" would match
+    # ``is_ci`` and bury the symbol the question names.
     symbol_query = query
     if canonical_symbol:
         symbol_query = canonical_symbol[1]
     if mode == "hybrid":
         _idents = _embedded_identifiers(query, names)
-        # Without an identifier, score on the content words so stopwords such
-        # as "on" can't match symbols like ``test_basic_auth_on_session``. A
-        # query made only of stopwords keeps the raw text.
+        # No identifier: content words, else the raw text.
         symbol_query = (
             " ".join(_idents) if _idents else " ".join(content_terms(query)) or query
         )
@@ -1109,9 +1103,8 @@ def _symbol_query_for(
 
 def _symbol_fetch(mode: str, limit: int) -> int:
     """How many symbol rows each repo fetches."""
-    # Only the hybrid window collapses symbol rows, so only it over-fetches
-    # them; path hits are file pages, already one row per file. Symbol mode
-    # takes every candidate so ``fuzzy_omitted`` counts the names an exact hit hides.
+    # Hybrid collapses rows per file, so it over-fetches; symbol mode takes every
+    # candidate so ``fuzzy_omitted`` can count what an exact hit hides.
     fetch = limit * _FILE_WINDOW_OVERFETCH if mode == "hybrid" else limit
     if mode == "symbol":
         fetch = _MAX_CANDIDATES
@@ -1150,13 +1143,10 @@ def _merge_pools(answered: list[tuple[Any, Any]], limit: int) -> _Pools:
     return _Pools(
         contexts=[ctx for ctx, _ in answered],
         symbols=merge_ranked((p[0] for p in parts), _neg_score("score"), per_repo_cap=limit),
-        # Symbol rows past each repo's ``limit``: they only backfill slots that
-        # collapsing same-file rows frees, and never steer the exact-match signal.
+        # Rows past each repo's limit only backfill slots that collapsing frees.
         spare=merge_ranked((p[0][limit:] for p in parts), _neg_score("score")),
         files=merge_ranked((p[1] for p in parts), _neg_score("score")),
         indexed_paths=[path for p in parts for path in p[2]],
-        # Re-ranked by relevance so a strong page in repo B isn't buried under
-        # repo A's weak ones.
         concepts=merge_ranked((p[3] for p in parts), _neg_score("relevance_score")),
     )
 
@@ -1175,8 +1165,7 @@ def _symbol_mode_results(
     plan: _SearchPlan, pools: _Pools, candidates: list[str], exact: bool
 ) -> tuple[list[dict], int]:
     """Symbol mode rows, and how many fuzzy names an exact hit hides."""
-    # An exact hit is the answer; its fuzzy neighbours only cost bytes.
-    # Summed over repos when federated, and a floor past the candidate cap.
+    # An exact hit is the answer; its fuzzy neighbours are only counted.
     fuzzy_omitted = 0
     pool = pools.symbols + pools.spare
     named = [s for s in pool if _has_exact_symbol(candidates, [s])] if exact else []
@@ -1195,20 +1184,14 @@ def _hybrid_mode_results(plan: _SearchPlan, pools: _Pools, exact: bool) -> list[
     window = _hybrid_window(
         plan.query, pools.symbols, pools.concepts, plan.limit, exact, plan.names
     )
-    # One row per file, so ``limit`` buys distinct files (mode "symbol"
-    # stays row-per-symbol: overloads there are the answer). Collapsing
-    # keeps the window's order and frees the slots same-file rows took;
-    # the next pages, then the next symbols, fill them.
+    # One row per file; freed slots fill with the next pages, then symbols.
     served = {id(item) for item in window}
     rest = [
         item for item in pools.concepts + pools.symbols + pools.spare if id(item) not in served
     ]
     results = _collapse_by_file(window + rest)[: plan.limit]
-    # A code-location query wants files to open, so a module, onboarding
-    # or decision page is dropped from the window. Its slot is not
-    # refilled: on the retrieval guard a refill bought +0.01 coverage at
-    # limit 5 for -0.01 precision at limit 10. Kept when the caller asked
-    # for pages by type or kind="doc".
+    # Non-file pages leave the window unrefilled unless the caller asked for
+    # pages by type or kind="doc".
     if not plan.page_type and plan.kind != "doc":
         results = [item for item in results if hit_file_path(item)]
     return results
@@ -1222,7 +1205,6 @@ def _select_results(
         return _symbol_mode_results(plan, pools, candidates, exact)
     if plan.mode == "path":
         return pools.files[: plan.limit], 0
-    # hybrid: interleave symbol matches and concept pages for new files
     return _hybrid_mode_results(plan, pools, exact), 0
 
 
@@ -1245,8 +1227,7 @@ def _exact_match_note(
     """The note qualifying an identifier query's results, if one is owed."""
     if missing:
         shown = ", ".join(repr(c) for c in missing[:3])
-        # An empty window has no page to qualify, and its grep_hint
-        # already carries the sweep advice.
+        # An empty window's grep_hint already carries the sweep advice.
         pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if has_results else ""
         sweep = "" if (grep_hint and not has_results) else " " + EXHAUSTIVE_SWEEP_HINT
         return (
@@ -1277,9 +1258,6 @@ def _match_named(
 
     Missing names leave only exact symbols in *pools*.
     """
-    # Whether any returned symbol matches the query's identifier(s) exactly.
-    # Computed once here so the hybrid interleave and the exact-match note below
-    # agree on the same signal.
     exact = _has_exact_symbol(candidates, pools.symbols) if candidates else False
     missing = _missing_named_symbols(
         candidates, pools.symbols, bool(plan.canonical_symbol), pools.concepts
@@ -1299,12 +1277,7 @@ def _attach_match_notes(
 ) -> None:
     """Exact-match flag, its note, and the grep fallback for an empty window."""
     results = response["results"]
-    # Exact-match honesty: an identifier-shaped query whose target names no
-    # indexed symbol still returns fuzzy neighbours. Say so, or the agent
-    # anchors on a wrong hit that looks authoritative (their Alamofire
-    # 44-overload read-spiral). Emit the boolean either way; a note only when
-    # there is no exact hit to distinguish from the fuzz. ``candidates`` /
-    # ``exact`` are the ones the ranking used, so ordering and this note agree.
+    # Fuzzy neighbours of a missing name look authoritative, so say so.
     if candidates:
         response["exact_match"] = exact and not missing
         note = _exact_match_note(
@@ -1333,12 +1306,9 @@ async def _structured_search(
     names: Container[str] | None = None,
     fed: Federation | None = None,
 ) -> dict:
-    """Run symbol / path / hybrid search and shape the response.
+    """Run symbol / path / hybrid search, across repos when federated, and shape the response.
 
-    Honours ``repo="all"`` (federates across contexts, then re-ranks by score),
-    per-repo ``exclude_patterns`` and tombstones (enforced inside the
-    single-repo helpers). The grep_hint is attached only as a fallback — when
-    the structural index produced nothing, the agent still has a path forward.
+    ``grep_hint`` is attached only when nothing was found.
     """
     multi = fed is not None and fed.multi
     canonical_symbol = _canonical_symbol_query(query)
@@ -1374,23 +1344,13 @@ async def _structured_search(
     }
     if fuzzy_omitted:
         response["fuzzy_omitted"] = fuzzy_omitted
-    # Symbols first, then everything else the window holds: in symbol and
-    # hybrid modes the ranked pool leads with symbol hits, and those are the
-    # entries most likely to collapse onto one another (several symbols of one
-    # file). Deduping them is the point.
-    #
-    # Bound to its own name, NOT to ``candidates``: that one holds the query's
-    # identifiers, which the exact-match note below quotes. Rebinding it here
-    # made the note quote file paths as if they were the identifiers asked for,
-    # and — worse — made its gate true for any query with results at all, so a
-    # prose query that names no identifier was told no symbol matched it.
+    # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands
     _attach_match_notes(response, candidates, exact, missing, grep_hint)
     if fed is not None:
         fed.annotate(response, results)
-    # Last, so nothing above has to know the field is on its way out. Paths
-    # first, so a page whose target_path is dropped keeps its page_id.
+    # Last: slims fields the steps above still read.
     _slim_served_rows(
         results,
         {(ctx.alias if multi else None): _page_language(ctx) for ctx in pools.contexts},

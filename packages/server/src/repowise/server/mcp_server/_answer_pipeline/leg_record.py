@@ -4,20 +4,9 @@ from __future__ import annotations
 
 import contextvars
 
-# Which retrieval legs actually ran for the current question (finding A18).
-#
-# Every leg here is best-effort by design: a slow vector store must not be able
-# to block an answer. The defect was that the fallback was *silent*. An embed
-# that times out returns no vector, retrieval quietly continues lexical-only,
-# and every health signal still reports green — ``embedder_live`` included,
-# because a configured embedder is live whether or not this particular call
-# beat the clock. Five queries in one bake-off run were answered without their
-# vector leg and nothing in the response, the logs' structured fields, or the
-# per-cell record said so.
-#
-# So the leg outcome travels with the answer. ``embedder_live`` says the
-# embedder exists; this says whether it was used. Those are different claims
-# and only one of them is about the answer the caller is holding.
+# How each leg ended for the current question. Legs fail soft, so without
+# this a lexical-only answer looks like a whole one; ``embedder_live`` says an
+# embedder exists, this says whether it was used.
 _LEG_RECORD: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
     "repowise_retrieval_legs", default=None
 )
@@ -33,9 +22,8 @@ def _record_leg(leg: str, outcome: str) -> None:
 def begin_leg_record() -> dict[str, str]:
     """Start collecting leg outcomes for one question. Returns the record.
 
-    The legs run under ``asyncio.gather``, which copies the context into each
-    task. Copying rebinds names, not objects, so the tasks all mutate this one
-    dict and the caller sees what they wrote.
+    ``asyncio.gather`` copies the context, not the dict, so every leg task
+    writes into this one record.
     """
     record: dict[str, str] = {}
     _LEG_RECORD.set(record)
@@ -43,22 +31,13 @@ def begin_leg_record() -> dict[str, str]:
 
 
 def retrieval_legs() -> dict[str, str]:
-    """How each retrieval leg ended for the question just answered.
+    """Leg outcomes for the last question, e.g. ``{"fts": "ok", "vector": "timeout"}``.
 
-    ``{"fts": "ok", "vector": "timeout", "symbol": "ok"}`` and so on, plus an
-    ``embed`` key when embedding the question is what failed. Empty before any
-    retrieval has run.
+    Holds an ``embed`` key when embedding the question failed.
     """
     return dict(_LEG_RECORD.get() or {})
 
 
 def degraded_legs(legs: dict[str, str]) -> list[str]:
-    """The legs that *broke*, named. Empty when retrieval was whole.
-
-    ``keyless`` is not degradation and is deliberately excluded. A keyless index
-    has no semantic vectors by construction, so its vector leg is permanently
-    absent rather than transiently broken, and naming it here would put a
-    failure marker on every answer the mode ever produces. The configuration
-    itself is reported once per response by ``_meta`` instead.
-    """
+    """The legs that broke, sorted. ``keyless`` is configuration, not breakage."""
     return sorted(leg for leg, outcome in legs.items() if outcome not in ("ok", "keyless"))

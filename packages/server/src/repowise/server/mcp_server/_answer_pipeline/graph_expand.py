@@ -17,32 +17,17 @@ from repowise.server.mcp_server._graph_files import (
 )
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
 
-# Cap how many extra files graph expansion can add. Without a cap, a hub
-# file (many importers) would flood the candidate set and dilute the LLM's
-# context budget on tangential neighbors.
+# Seeds to expand from, and the most files expansion may add.
 _GRAPH_EXPAND_TOP_N = 2
 _GRAPH_EXPAND_MAX_NEW = 3
 
-# Degree above which a neighbour is treated as a hub and dropped from the
-# expansion set. A file that half the repo imports is a near-neighbour of
-# everything, so it says nothing about *this* question; it is also exactly the
-# file PageRank ranks first, which is why the ordering below needs a guard
-# rather than trusting centrality on its own. Floor plus percentile, so a small
-# repo where every file has a handful of edges excludes nothing.
+# A neighbour above max(floor, p99) degree is a hub: near everything, so it
+# says nothing about this question, yet PageRank would rank it first.
 _HUB_DEGREE_FLOOR = 50
 _HUB_DEGREE_PERCENTILE = 0.99
 
-# Damping factor for graph-expanded hits. They didn't surface in retrieval,
-# so we trust them less than direct hits — but enough to outrank the bottom
-# of the top-5 if the parent was strong. 0.7 keeps a strong parent's child
-# (e.g. parent at 4.5, expanded child at 3.15) competitive with a real
-# rank-3/4 hit (~3.0-3.5).
+# Expanded hits score below their parent but can pass the tail of the top 5.
 _GRAPH_EXPAND_DAMPING = 0.7
-
-
-# ---------------------------------------------------------------------------
-# Stage 4: Graph expansion (1-hop neighbors of top hits)
-# ---------------------------------------------------------------------------
 
 
 def _projected_pair(
@@ -50,10 +35,8 @@ def _projected_pair(
 ) -> tuple[str | None, str | None]:
     """An edge's two endpoints as file paths, or ``(None, None)`` to drop it.
 
-    Only the symbol layer gets the guards; the file layer is already
-    file-to-file and keeps today's behaviour. The asymmetry is deliberate — the
-    guards refuse cross-extension pairs, and a ``co_changes`` edge between a
-    module and its docs is a "read this too" expansion has always served.
+    Only symbol-layer edges are guarded; file-layer edges such as a module's
+    ``co_changes`` with its docs pass as they are.
     """
     src = src or ""
     tgt = tgt or ""
@@ -68,12 +51,8 @@ def _projected_pair(
 async def _projected_edges(session: Any, repo_id: str) -> list[tuple[str, str]]:
     """Every non-containment edge for *repo_id*, as a pair of file paths.
 
-    One scan, projected in Python. A prefix match on the symbol layer cannot use
-    the node-id index (SQLite disables the LIKE optimisation under an ESCAPE
-    clause), so per-candidate queries were a scan each; this is one.
-
-    Containment is excluded because both its endpoints describe the same file,
-    so a projected containment edge is always a self-loop.
+    One scan projected in Python: a symbol-layer prefix match cannot use the
+    node-id index. Containment always projects to a self-loop.
     """
     res = await session.execute(
         select(
@@ -95,12 +74,7 @@ async def _projected_edges(session: Any, repo_id: str) -> list[tuple[str, str]]:
 
 
 def _hub_degree_cutoff(degree: dict[str, int]) -> int:
-    """Degree at which a candidate counts as a hub, for this candidate set.
-
-    ``max(floor, p99)``. The floor keeps a small or sparsely-linked repo from
-    excluding ordinary files, and the percentile keeps a densely-linked one
-    from excluding nothing.
-    """
+    """Degree at which a candidate counts as a hub: ``max(floor, p99)`` of the set."""
     if not degree:
         return 1 << 30
     values = sorted(degree.values())
@@ -127,8 +101,6 @@ async def _neighbor_pages(
     session: Any, neighbors: set[str]
 ) -> tuple[list[Any], dict[str, float]]:
     """File-page rows of *neighbors*, and each neighbour's PageRank."""
-    # Only fold in neighbors that have a wiki page — otherwise the LLM
-    # context block can't carry a useful excerpt for them.
     page_res = await session.execute(
         select(Page.target_path, Page.summary, Page.page_type).where(
             Page.target_path.in_(sorted(neighbors)),
@@ -137,7 +109,6 @@ async def _neighbor_pages(
     )
     page_rows = list(page_res.all())
 
-    # Also load PageRank for the neighbors so we can rank them.
     pr_res = await session.execute(
         select(GraphNode.node_id, GraphNode.pagerank).where(
             GraphNode.node_id.in_(sorted(neighbors)),
@@ -150,12 +121,7 @@ async def _neighbor_pages(
 
 def _drop_hubs(page_rows: list[Any], degree: dict[str, int]) -> list[Any]:
     """*page_rows* without hubs, or all of them when every row is a hub."""
-    # Drop hubs before ranking. Ranking by PageRank alone actively prefers
-    # them, which is the wrong instinct here: expansion is trying to name the
-    # specific file the question is about, and the most-imported file in the
-    # repo is the least specific candidate available.
-    # Scoped to the candidate set, not the repo: the cutoff answers "is this
-    # neighbour a hub among the ones on offer".
+    # Cutoff over the candidates on offer, not the whole repo.
     cutoff = _hub_degree_cutoff({row[0]: degree.get(row[0], 0) for row in page_rows})
     non_hub = [row for row in page_rows if degree.get(row[0], 0) <= cutoff]
     return non_hub or page_rows
@@ -165,9 +131,6 @@ def _expansion_candidates(
     seeds: list[dict], page_rows: list[Any], pr_by_path: dict[str, float]
 ) -> list[dict]:
     """One damped hit per neighbour page, most central first."""
-    # Damp parent score by _GRAPH_EXPAND_DAMPING for child candidates; pick
-    # the strongest parent each child connects to (taking the max parent
-    # score is conservative — favors well-connected neighbors).
     strongest_parent = max(
         seeds, key=lambda hit: hit.get("score", 0.0), default={}
     )
@@ -191,31 +154,21 @@ def _expansion_candidates(
             candidate["_confidence_score_factor"] = confidence_factor
         candidates.append(candidate)
 
-    # Rank candidates by PageRank within the expansion set so we pick the
-    # most central neighbor first when we have multiple plausible ones.
-    # Path breaks ties, so which neighbour is picked cannot move with the
-    # database's row order between runs on identical data.
+    # Path breaks PageRank ties so the pick does not follow database row order.
     candidates.sort(key=lambda c: (-c.get("_pagerank", 0.0), c["target_path"]))
     return candidates
 
 
 async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dict]:
-    """Add up to ``_GRAPH_EXPAND_MAX_NEW`` graph-neighbor files to ``hits``.
+    """Add up to ``_GRAPH_EXPAND_MAX_NEW`` one-hop neighbours of the top hits.
 
-    Rescues near-misses where the top retrieved file is in the right
-    neighborhood but isn't the actual answer (a consumer instead of the
-    orchestrator, a wrapper instead of the implementation). Expansion walks
-    one hop through GraphEdges in both directions from the top-N candidates,
-    then folds in any neighbor that:
-      * has a wiki page (otherwise the LLM has nothing to read)
-      * is not already in the candidate set
-
-    Expanded hits carry an ``_expanded_from`` marker and a damped score so
-    the gate / confidence calibration knows they're indirect.
+    Recovers the right file when retrieval landed next to it (a consumer
+    instead of the implementation). Only neighbours with a file page that are
+    not yet candidates join, marked ``_expanded_from`` with a damped score.
     """
     if not hits:
         return hits
-    # Seeded from pages only, so a file with no page cannot change what pages add.
+    # Seeded from pages only, so a pageless file cannot change what pages add.
     seeds = [h for h in hits if h.get("page_type") != PAGELESS_FILE][:_GRAPH_EXPAND_TOP_N]
     seed_paths = [h.get("target_path") for h in seeds if h.get("target_path")]
     if not seed_paths:
@@ -223,15 +176,8 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     existing = {h.get("target_path") for h in hits}
 
     async with get_session(ctx.session_factory) as session:
-        # Not import edges only, despite the naming this code used to carry:
-        # ``co_changes`` neighbours stay in on purpose, because "this file moves
-        # with yours" is a genuine read-this-too signal, and expansion surfaces
-        # what it adds neutrally as ``[graph-expanded]`` rather than as an import
-        # claim.
-        #
-        # The scan reaches the symbol layer as well as the file layer: ``calls``
-        # and its siblings join ``path::Name`` nodes, so an equality test against
-        # a seed path matched none of them and the call graph was invisible here.
+        # Every edge type, co-changes included, projected from the symbol layer
+        # too so call edges reach the seeds.
         pairs = await per_index(
             session, repo_id, "projected_edges", lambda: _projected_edges(session, repo_id)
         )

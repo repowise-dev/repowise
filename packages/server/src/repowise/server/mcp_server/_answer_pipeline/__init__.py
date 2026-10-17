@@ -1,48 +1,21 @@
-"""Retrieval pipeline for ``get_answer``.
+"""Retrieval pipeline for ``get_answer``: question in, ranked wiki hits out.
 
-This module owns everything that turns a developer question into a ranked
-list of candidate wiki hits — but emphatically not the LLM step, the cache,
-or the response shape (those live in ``tool_answer``). Separation of concerns
-lets us iterate on retrieval quality without rereading the orchestrator and
-vice versa.
+The LLM step, cache and response shape live in ``tool_answer``. Stages, each a
+function over hit dicts:
 
-Pipeline (each stage is a pure function over hit dicts):
+1. ``hybrid_retrieve``: FTS, vector, symbol and filename legs in parallel,
+   fused by Reciprocal Rank Fusion. The page legs only see what a generated
+   page spells out; the symbol and filename legs recover private helpers and
+   local names.
+2. ``hydrate_hits`` (``hydrate``): attach path, summary and page type.
+3. ``apply_pagerank_bias`` (``hydrate``): central files win near-ties.
+4. ``expand_via_graph`` (``graph_expand``): add 1-hop neighbours of the top hits.
+5. ``expand_via_parent_page`` (``parent_page``): a subsystem question leads with
+   its concept page.
 
-    1. ``hybrid_retrieve``      : FTS, vector store and the structural symbol
-                                  index in parallel, merged via Reciprocal
-                                  Rank Fusion. Single retrieval modes
-                                  systematically miss either token matches
-                                  (vectors drift) or conceptual matches (FTS
-                                  is literal), and both page-shaped modes miss
-                                  anything a generated file page does not
-                                  spell out: its public-symbol table is all
-                                  they can index, so a private helper or a
-                                  local name is invisible to them. The symbol
-                                  leg covers that third class, for the cost of
-                                  one more coroutine.
-    2. ``hydrate_hits``         — attach target_path, summary, page_type from
-                                  the Page table to each hit.
-    3. ``apply_pagerank_bias``  — multiply scores by a damped PageRank factor
-                                  so architecturally central files outrank
-                                  peripheral ones at similar retrieval score.
-                                  This is what rescues "how does X work"
-                                  questions from peripheral consumers of X.
-    4. ``expand_via_graph``     — for top-N hits, walk 1 hop through the graph
-                                  and pull in neighbors that have a wiki
-                                  page. Rescues near-misses where retrieval
-                                  landed in the right module but on a wrong
-                                  file (consumer vs. orchestrator). Reference
-                                  and co-change edges both qualify; see the
-                                  note on the queries for why.
-
-Stages downstream of this module (term coverage, intersection boost, domain
-penalty) live in ``tool_answer`` for now — they're tightly coupled to the
-existing question-aware symbol promotion code and not worth duplicating.
-
-Stage modules: ``hydrate`` (2, 3), ``graph_expand`` (4), ``parent_page``,
-``noise``, plus ``vectors`` and ``leg_record`` shared by the legs. The legs and
-their merge stay here, so a leg replaced on this module is the one
-``hybrid_retrieve`` calls.
+``noise`` demotes decision and test pages; ``vectors`` and ``leg_record`` are
+shared by the legs. The legs and their merge live here, so a leg replaced on
+this module is the one ``hybrid_retrieve`` calls.
 """
 
 from __future__ import annotations
@@ -101,92 +74,45 @@ from repowise.server.mcp_server._prose_symbols import filename_backed_pages, sym
 
 _log = logging.getLogger("repowise.mcp.answer")
 
-# How many candidates each retriever fetches before merging. Both modes
-# tend to put the right answer in their top ~10, so 15 gives RRF room to
-# resolve ties without dragging weak tail hits into the merge.
+# Candidates each leg fetches before fusion.
 _RETRIEVAL_FETCH_LIMIT = 15
 
-# Page-id namespace decision vectors live under in the shared page store. Read
-# from the module that writes them so the two cannot drift apart.
+# Decision vectors share the page store under this page-id prefix.
 _DECISION_PREFIX = DECISION_VECTOR_PREFIX
 
-# Decision records share the page vector store under this page-id namespace, so
-# a page fetch has to ask for more rows than it needs and drop them. Over-fetch
-# rather than post-filter a fixed window: a query whose nearest neighbours are
-# all decisions would otherwise return a candidate set short by however many
-# happened to rank high, which reads downstream as thin retrieval rather than as
-# a filtered one. The margin is generous because decision rows cluster on the
-# question-shaped text that also retrieves well.
+# Extra rows the vector leg fetches so dropping decision rows still leaves a
+# full window; decision rows rank well on question-shaped text.
 _DECISION_OVERFETCH = 15
 
-# RRF constant. The standard k=60 from the original RRF paper — large enough
-# that rank-1 (1/61) and rank-2 (1/62) are close, small enough that rank-10
-# (1/70) still contributes meaningfully when a hit only shows up in one mode.
+# Standard RRF k: adjacent ranks score close, a one-leg rank-10 hit still counts.
 _RRF_K = 60
 
-# Multiplier applied to RRF scores so they land in roughly the same numeric
-# range as the BM25 raw scores the downstream gates/thresholds (dominance
-# ratio, high-confidence score floor, absolute-gap branch) were tuned for.
-#
-# Top-1 RRF with both modes hitting at rank 0 is 1/60 + 1/60 ≈ 0.033.
-# Scaling by 180 puts it at ~6, matching the upper end of observed BM25
-# scores on this corpus. Pure ordering preservation — never changes
-# *which* hit ranks where, only the absolute numbers the gates compare.
+# Scales fused scores into the BM25 range the downstream confidence gates were
+# tuned on (top RRF 1/60 + 1/60 ~ 0.033 -> ~6). Never changes the order.
 _RRF_SCORE_SCALE = 180.0
 
-# Third retrieval leg: the structural symbol index. FTS and the vector store
-# both read the generated wiki page, which by construction carries an overview
-# sentence, the *public* symbol table and dependency paths, with no function
-# bodies, no private helpers, no local names. A question about something a page
-# does not spell out therefore has nothing to match on, however well it is
-# phrased. The symbol index does carry those names, and it is keyed on the
-# words a symbol is built from, so it recovers exactly that class of miss.
-#
-# How many symbols the leg ranks, and how many distinct files they may
-# contribute. Deliberately smaller than the other two legs' 15: this leg is
-# there to add pool members the page legs cannot see, not to outvote them.
+# Symbol leg size: fewer than the page legs, it adds what they cannot see.
 _SYMBOL_LEG_FETCH_LIMIT = 20
 _SYMBOL_LEG_MAX_PAGES = 8
 
-# The symbol leg's own RRF constant, larger than the page legs' so its
-# contribution is smaller at every rank. Fusing it at k=60 like the others gave
-# one lexical symbol match the same weight as a page two independent retrievers
-# ranked first, which is not what a name match is worth: measured on the
-# 99-question eval it pushed the correct ``distill/skeleton.py`` out of the
-# served five in favour of a same-named React component. At k=180 the leg can
-# lift a file the page retrievers already liked and can add one they never saw,
-# but it cannot outvote them.
+# A larger k for name-match legs: they can lift or add a file, never outvote
+# two page legs that agree.
 _SYMBOL_LEG_RRF_K = 180
 
-# The filename leg is a name match too, weighted like the symbol leg. A name the
-# question spells in full (``full_cover``, see ``_prose_symbols``) is fused at the
-# page legs' k.
+# A name the question spells in full (``full_cover``) fuses at the page legs' k.
 _FILENAME_LEG_RRF_K = _SYMBOL_LEG_RRF_K
 
 
-# ---------------------------------------------------------------------------
-# Stage 1: Hybrid retrieval (FTS + vector → RRF merge)
-# ---------------------------------------------------------------------------
-
-
 async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
-    """Run FTS, vector, symbol and filename retrieval in parallel and merge via RRF.
+    """Run the four legs in parallel and fuse them by RRF, best first.
 
-    Returns a list of dicts shaped ``{page_id, title, score, snippet,
-    page_type, _sources: set[str]}``. ``_sources`` names which retrievers
-    found the hit — useful for ranking signal ("hit by both modes" is a
-    stronger ground-truth signal than "hit by one"). Score is the RRF-fused
-    score; downstream stages may multiply it further.
-
-    Both retrievers are best-effort with timeouts so one slow path can never
-    block the call. An empty result from one mode just means the other mode
-    fully drives ranking, which matches the pre-hybrid behaviour.
-
-    The symbol and filename legs also name indexed files that have no page, as
-    ``page_type: "file"`` hits, the same rows ``search_codebase`` serves.
+    Hits are ``{page_id, title, score, snippet, page_type, _sources}`` plus each
+    leg's rank (``_fts_rank``, ``_vec_rank``, ``_sym_rank``): RRF compresses
+    scores, and confidence reads leg agreement from the ranks. A leg that fails
+    or times out contributes nothing. Pageless files come back as
+    ``page_type: "file"`` hits.
     """
-    # Reset before the legs run so the record describes this question and not
-    # a previous one that happened to share the task context.
+    # Reset so the record describes this question, not one sharing the context.
     begin_leg_record()
     fts_task = _safe_fts_search(ctx, question)
     vec_task = _safe_vector_search(ctx, question)
@@ -196,13 +122,6 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
         fts_task, vec_task, sym_task, name_task
     )
 
-    # RRF merge. Each hit's contribution from a source is 1/(rank + k);
-    # hits appearing in both sources sum their contributions naturally.
-    # Per-source rank is preserved alongside the fused score: RRF *compresses*
-    # scores (rank-0-in-both barely outscores rank-1-in-both), so the summed
-    # number loses the "both retrievers independently ranked this #1" signal.
-    # Downstream confidence uses these ranks to recover retriever *agreement*
-    # as a dominance signal the numeric ratio can't see.
     fused: dict[str, dict] = {}
     for rank, h in enumerate(fts_results):
         entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
@@ -220,9 +139,7 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
         entry["_sources"].add("symbol")
         entry["_sym_rank"] = rank
         entry["_symbol_names"] = h.symbol_names
-    # Adds files the other legs missed and never reorders a page they found.
-    # Search fuses the same rows into its own entry shape, crediting a symbol
-    # page of the file; here every leg is keyed by page id, as above.
+    # Adds files the other legs missed; never reorders a page they found.
     for rank, (h, full) in leg_ranks(name_results):
         if h.page_id in fused and h.page_type != PAGELESS_FILE:
             continue
@@ -232,10 +149,6 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
         )
         entry["_sources"].add("filename")
 
-    # Scale to BM25-range so downstream confidence/dominance gates (tuned
-    # against the prior single-mode BM25 retrieval) keep behaving sanely.
-    # Ordering is unchanged — multiplying by a positive constant is a
-    # no-op for ranking.
     for entry in fused.values():
         entry["score"] = entry["score"] * _RRF_SCORE_SCALE
 
@@ -247,10 +160,8 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
 def stamp_hybrid_rank(hits: list[dict]) -> None:
     """Record each hit's 0-based file rank in the fused order, before any rerank.
 
-    This is the order ``search_codebase`` serves; confidence reads it to tell
-    when the reranked lead left it. Symbol pages share their file's rank. Files
-    are ranked among pages: a file with no page shares the rank of the page
-    below it, so it never pushes a page down.
+    Symbol pages share their file's rank; a pageless file shares the rank of the
+    page below it, so it never pushes a page down.
     """
     files: dict[str, int] = {}
     for h in hits:
@@ -262,7 +173,7 @@ def stamp_hybrid_rank(hits: list[dict]) -> None:
 
 
 async def _safe_fts_search(ctx: Any, question: str) -> list[Any]:
-    """FTS search wrapped in timeout + suppression. Returns [] on any failure."""
+    """FTS leg; [] on timeout or failure."""
     if ctx.fts is None:
         _record_leg("fts", "absent")
         return []
@@ -281,18 +192,10 @@ async def _safe_fts_search(ctx: Any, question: str) -> list[Any]:
 
 
 def _pages_only(results: list[Any], limit: int) -> list[Any]:
-    """Best-first *results* with decision vectors removed, capped at *limit*.
+    """Best-first *results* without decision vectors, capped at *limit*.
 
-    Decision records live in the page store under their own page-id namespace so
-    dedup can match a paraphrase and ``search_codebase`` can surface a decision
-    directly. Neither is true of answering: a decision row has no ``wiki_pages``
-    row, so hydration leaves it pathless — and a pathless hit skips the tombstone
-    check and the scope filter, can only be reordered by noise demotion rather
-    than dropped, and cannot be cited by the answer it helped write.
-
-    A why-shaped question still gets its decisions. They are injected from a
-    path-overlap query over ``decision_records``, which does not involve this
-    store at all.
+    A decision row has no page, so it could not be cited, scoped or tombstoned.
+    Why-shaped questions get decisions from ``decision_records`` instead.
     """
     kept = [r for r in results if not str(getattr(r, "page_id", "")).startswith(_DECISION_PREFIX)]
     dropped = len(results) - len(kept)
@@ -303,9 +206,7 @@ def _pages_only(results: list[Any], limit: int) -> list[Any]:
             len(results),
         )
     if len(kept) < limit and dropped:
-        # The over-fetch margin was not enough. Reported because the visible
-        # symptom is a short candidate set, which otherwise reads as a corpus
-        # too small or a query too narrow.
+        # A short window would otherwise read as thin retrieval.
         _log.warning(
             "get_answer page retrieval kept only %d of a requested %d candidates: %d "
             "decision vector(s) filled the window. Decisions may be over-represented "
@@ -318,16 +219,10 @@ def _pages_only(results: list[Any], limit: int) -> list[Any]:
 
 
 async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
-    """Vector search wrapped in timeout + suppression. Returns [] on any failure.
+    """Vector leg; [] on a keyless store, timeout or failure.
 
-    Also waits for vector-store readiness when the lifespan event is set —
-    skipping the wait would race a background-loading store on cold start.
-
-    Returns nothing on a keyless index, before the readiness wait and before the
-    question is embedded: there is no vector worth computing when there is
-    nothing discriminative to compare it against. See
-    ``store_has_semantic_vectors``. This leg is the only entry to vector
-    retrieval here, so guarding it covers every caller.
+    Waits for a store still loading at startup, and checks for a keyless store
+    before embedding anything.
     """
     if ctx.vector_store is None:
         _record_leg("vector", "absent")
@@ -339,8 +234,6 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
     if ready is not None:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(ready.wait(), timeout=30.0)
-    # Embedded here, before the store is asked anything: this is the first stage
-    # to need the vector, and every later stage reads the same one back.
     vector = await question_vector(ctx, question)
     try:
         results = await asyncio.wait_for(
@@ -369,12 +262,7 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
 
 
 class _SymbolLegResult:
-    """A file page reached through the symbol index, in retriever result shape.
-
-    The RRF merge is keyed on page ids and reads four attributes off whatever
-    the retrievers hand it, so the symbol leg presents its file pages the same
-    way FTS and the vector store present theirs.
-    """
+    """A file page from a name leg, in the shape FTS and vector results have."""
 
     __slots__ = ("page_id", "page_type", "snippet", "symbol_names", "title")
 
@@ -391,18 +279,10 @@ class _SymbolLegResult:
 async def _safe_symbol_search(
     ctx: Any, question: str, *, pageless: bool = False
 ) -> list[_SymbolLegResult]:
-    """File pages whose symbols the question's words name. [] on any failure.
+    """File pages whose symbols the question's words name; [] on any failure.
 
-    Ungated: it runs on every question, not only on ones that happen to carry
-    an identifier-shaped token. Which indexes get read is not something the
-    grammar of the sentence should decide. "How does an incremental update
-    persist symbols" and ``_persist_symbols`` are after the same file, and
-    before this leg only the second one reached the symbol index.
-
-    Best-effort with a timeout, like the other two legs: a slow or missing
-    symbol index degrades ``get_answer`` to its previous behaviour rather than
-    failing the call. ``pageless`` keeps files that have no page, as pageless
-    rows, for a caller that can serve them.
+    Runs on every question, not only identifier-shaped ones. ``pageless`` keeps
+    files with no page for a caller that can serve them.
     """
     try:
         pages = await asyncio.wait_for(
@@ -437,8 +317,7 @@ async def _safe_symbol_search(
 
 
 async def _safe_filename_search(ctx: Any, question: str) -> list[tuple[_SymbolLegResult, bool]]:
-    """Files whose file name the question spells, each with whether it spells all
-    of the name. [] on any failure, like the other legs."""
+    """Files the question names, each with whether it spells the whole name; [] on failure."""
     try:
         pages = await asyncio.wait_for(
             filename_backed_pages(ctx, question, max_files=_SYMBOL_LEG_MAX_PAGES), timeout=5.0
@@ -461,11 +340,10 @@ async def _safe_filename_search(ctx: Any, question: str) -> list[tuple[_SymbolLe
 
 
 def leg_ranks(results: list[Any]) -> list[tuple[int, Any]]:
-    """Each result of a leg with its rank among that leg's pages.
+    """Each leg result with its rank among the leg's pages.
 
-    A file with no page takes the rank of the page below it, so it never costs
-    a page its place in the leg: the pages fuse exactly as they would without it.
-    Items may be results or ``(result, extra)`` pairs.
+    A pageless file takes the rank of the page below it, so pages fuse as they
+    would without it. Items may be results or ``(result, extra)`` pairs.
     """
     ranked: list[tuple[int, Any]] = []
     pages = 0

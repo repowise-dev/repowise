@@ -13,41 +13,23 @@ from repowise.server.mcp_server._helpers import _EMBED_TIMEOUT_ENV, embed_timeou
 
 _log = logging.getLogger("repowise.mcp.answer")
 
-# Budget for embedding the question is resolved live by embed_timeout_s()
-# (see _helpers.py) — REPOWISE_EMBED_TIMEOUT_S, falling back to the 8s a warm
-# hosted endpoint needs. The searches that used to embed inline were bounded
-# at that same 8s including the embed, so the round-trip keeps that ceiling
-# now that it happens on its own.
-
-# Answering one question used to embed its text up to three times: once for the
-# main fetch, once for the concept lookup on a subsystem-shaped question, once
-# for the neighbourhood re-rank on a flow-shaped one. Each is a network
-# round-trip to the embedding provider, billed, for a vector that cannot differ
-# between them.
-#
-# Keyed by ``(id(store), question)`` and holding the store in the value, so an
-# id can never be recycled onto a different store while its entries are live.
-# Capacity is a handful of entries rather than one: concurrent calls with
-# different questions would otherwise evict each other and re-embed. An entry is
-# a pure function of (embedder, text), so a hit across calls is as correct as a
-# hit within one.
+# One embedding per (store, question), shared by every stage that needs it.
+# The key holds the store in its value so a recycled id cannot match. A few
+# entries so concurrent questions do not evict each other.
 _QUESTION_VECTOR_CACHE_MAX = 4
 _QUESTION_VECTORS: OrderedDict[tuple[int, str], tuple[Any, list[float]]] = OrderedDict()
 
 
 async def question_vector(ctx: Any, question: str) -> list[float] | None:
-    """The question's embedding, computed at most once per store and question.
+    """The question's embedding, cached per store and question.
 
-    Returns None when there is no store, the backend holds no embedder of its
-    own, or the embed failed — callers then fall back to the store's own
-    ``search(text)``, which embeds inline. That fallback is a cost regression,
-    never a correctness one, so it warns rather than raising.
+    None when there is no store or embedder, or the embed failed; callers then
+    search by text, which costs an embed but is still correct.
     """
     store = getattr(ctx, "vector_store", None)
     if store is None or not question:
         return None
     if not store_has_semantic_vectors(store):
-        # Nothing will consume it, so do not pay to compute it.
         return None
 
     key = (id(store), question)
@@ -60,10 +42,7 @@ async def question_vector(ctx: Any, question: str) -> list[float] | None:
     try:
         vectors = await asyncio.wait_for(store.embed_texts([question]), timeout=timeout_s)
     except TimeoutError:
-        # The A18 case, and the one worth naming separately: the embedder is
-        # configured, reachable and healthy, and simply did not answer inside
-        # the budget. Nothing downstream fails, so without this the answer is
-        # lexical-only and indistinguishable from one that was not.
+        # Recorded so a lexical-only answer is visible as one.
         _record_leg("embed", "timeout")
         _log.warning(
             "get_answer could not embed the question within %.1fs; retrieval "
@@ -81,8 +60,7 @@ async def question_vector(ctx: Any, question: str) -> list[float] | None:
         )
         return None
     if not vectors:
-        # Backend without an embedder of its own. Not an error — but it means
-        # every stage pays for its own round-trip, so it is worth seeing.
+        # Backend without its own embedder: each stage embeds the text itself.
         _log.debug("Vector store cannot embed directly; per-stage embedding stands")
         return None
 
@@ -96,16 +74,10 @@ async def question_vector(ctx: Any, question: str) -> list[float] | None:
 async def vector_search(
     store: Any, question: str, limit: int, *, vector: list[float] | None
 ) -> list[Any]:
-    """Nearest pages to *question*, reusing *vector* when the backend allows it.
+    """Nearest pages to *question*, by *vector* when the backend supports it.
 
-    Every backend that can search by raw vector is spared a second embedding of
-    text it has already embedded; one that cannot returns None from
-    ``search_by_vector`` and is asked to search the text as before.
-
-    Returns nothing on a keyless store. Guarded here rather than only at the
-    callers because this is the shared floor under every vector read in the
-    answer pipeline, and the text fallback on the last line would otherwise
-    route a keyless store straight back into the embedder this is avoiding.
+    [] on a keyless store; checked here because every vector read in the
+    pipeline goes through this, and the text fallback would embed.
     """
     if not store_has_semantic_vectors(store):
         return []
