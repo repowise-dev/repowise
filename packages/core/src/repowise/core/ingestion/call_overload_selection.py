@@ -1,4 +1,4 @@
-"""Overload sets mixed into ``CallResolver``: indexing them and choosing the member a call means.
+"""Overload sets mixed into ``CallResolver``: indexing them and choosing a member.
 
 Every tier answers with a set's representative; ``_narrow_overload`` picks the
 member by argument count, then by the typed arguments (Java's most-specific rule).

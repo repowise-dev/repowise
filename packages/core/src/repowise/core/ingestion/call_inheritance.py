@@ -1,4 +1,4 @@
-"""Class-hierarchy lookups mixed into ``CallResolver``: ancestors, superclass chains, MRO and ``super`` calls."""
+"""Class-hierarchy lookups mixed into ``CallResolver``: ancestors, MRO and ``super`` calls."""
 
 from __future__ import annotations
 
@@ -232,8 +232,8 @@ class InheritanceMixin:
 
         Splitting on the *first* separator, not the last: a nested class is
         ``path::Outer::Inner`` and ``_file_methods`` keys it under ``Inner``
-        in ``path``. A missed lookup would hide an ancestor from the ambiguity
-        check above and let a wrong single candidate through.
+        in ``path``. A missed lookup would hide an ancestor from
+        ``_ancestor_method``'s ambiguity check and let a wrong single candidate through.
         """
         file_path, _, name = class_id.partition("::")
         return self._file_methods.get(file_path, {}).get((name.rpartition("::")[2], method_name))
