@@ -150,6 +150,28 @@ async def test_seed_linked_decision_injected(tmp_path, monkeypatch):
     assert "Batch the embed calls" not in block
 
 
+async def test_dot_directory_seed_preserves_leading_dot_and_strips_dot_slash(
+    tmp_path, monkeypatch
+):
+    ci_decision = {
+        "id": "d-ci",
+        "title": "Pin CI actions by SHA",
+        "decision": "Every GitHub Actions workflow pins actions by full commit SHA",
+        "links": [(".github/workflows/ci.yml", "file")],
+    }
+    await _build_wiki_db(tmp_path, [ci_decision, _AUTH_DECISION])
+
+    _quiet_git(monkeypatch, dirty=[".github/workflows/ci.yml"])
+    block = decision_inject._session_decision_block(tmp_path, "sess-dot")
+    assert block is not None
+    assert "Pin CI actions by SHA" in block
+
+    _quiet_git(monkeypatch, dirty=["./src/core/auth.py"])
+    block_rel = decision_inject._session_decision_block(tmp_path, "sess-rel")
+    assert block_rel is not None
+    assert "Use JWT auth" in block_rel
+
+
 async def test_silence_when_nothing_relevant(tmp_path, monkeypatch):
     await _build_wiki_db(tmp_path, [_UNRELATED_DECISION])
     _quiet_git(monkeypatch, dirty=["src/core/auth.py"])

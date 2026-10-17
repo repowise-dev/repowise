@@ -98,7 +98,7 @@ def matching_paths(repo_path: Path, pattern: str, limit: int = _MAX_LISTED) -> t
     ``total`` is the full match count, so the caller can say how many it is
     not showing. Any failure answers ``([], 0)`` — silence, never a guess.
     """
-    matcher = _translate(pattern.replace("\\", "/").lstrip("./"))
+    matcher = _translate(pattern.replace("\\", "/").removeprefix("./"))
     if matcher is None:
         return [], 0
     from . import fast_lookup
