@@ -760,6 +760,7 @@ def _persist_full_update(
     require_config_rebuild_success: bool = False,
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
+    failed_steps: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
@@ -776,6 +777,9 @@ def _persist_full_update(
     can stamp ``state["total_pages"]`` with the real DB total (regeneration
     upserts existing pages, so accumulating ``len(generated_pages)`` inflates
     the count forever).
+
+    ``failed_steps`` (when supplied) collects the range-scoped failed steps,
+    as :func:`~repowise.core.pipeline.incremental.persist_incremental_index` does.
     """
     return run_async(
         _persist_full_update_async(
@@ -803,6 +807,7 @@ def _persist_full_update(
             require_config_rebuild_success=require_config_rebuild_success,
             require_decision_persist_success=require_decision_persist_success,
             history_window_changed=history_window_changed,
+            failed_steps=failed_steps,
             timings=timings,
         )
     )
@@ -834,6 +839,7 @@ async def _persist_full_update_async(
     require_config_rebuild_success: bool = False,
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
+    failed_steps: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
     from .full_persist import FullUpdatePersist, write_full_update
@@ -873,6 +879,7 @@ async def _persist_full_update_async(
         ),
         log=console.print,
         degraded=degraded,
+        failed_steps=failed_steps,
         timings=timings,
     )
     return await write_full_update(ctx)

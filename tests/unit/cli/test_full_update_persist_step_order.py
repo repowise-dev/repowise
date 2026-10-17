@@ -148,7 +148,13 @@ class _Inputs:
         self.pages = [_page("file_page:src/a.py")]
 
 
-async def _persist_full(repo: Path, rec: StepRecorder, inputs: _Inputs, degraded: list[str]) -> int:
+async def _persist_full(
+    repo: Path,
+    rec: StepRecorder,
+    inputs: _Inputs,
+    degraded: list[str],
+    failed_steps: list[str] | None = None,
+) -> int:
     return await _persist_full_update_async(
         repo_path=repo,
         repo_name=repo.name,
@@ -168,6 +174,7 @@ async def _persist_full(repo: Path, rec: StepRecorder, inputs: _Inputs, degraded
         parsed_files=inputs.parsed_files,
         reconcile_full_scope=True,
         reconcile_full_generation=True,
+        failed_steps=failed_steps,
     )
 
 
@@ -192,23 +199,24 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
     assert rec.args_of("fts.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
 
 
+# Steps left working when every other one fails.
+_SURVIVORS = {
+    # Pages have no net: a failure here fails the update.
+    "upsert_pages_from_generated",
+    "tombstone_candidates",
+    "file_import_edges",
+    "prune_deleted_file_rows",
+    "_analyzed_commit",
+    "refresh_commit_health_after_update",
+}
+
+
 async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
     from repowise.core.pipeline.cleanup_debt import record_cleanup_debt
 
     # Seeded debt is what reaches the vector tail once tombstoning has failed.
     record_cleanup_debt(repo, "vectors", {"file_page:src/old.py"})
-    survivors = {
-        # Pages have no net: a failure here fails the update.
-        "upsert_pages_from_generated",
-        "tombstone_candidates",
-        "file_import_edges",
-        "prune_deleted_file_rows",
-        "_analyzed_commit",
-        "refresh_commit_health_after_update",
-    }
-    rec = StepRecorder(
-        monkeypatch, fail=frozenset(label for label in HAPPY_ORDER if label not in survivors)
-    )
+    rec = StepRecorder(monkeypatch, fail=frozenset(HAPPY_ORDER) - _SURVIVORS)
     _install(rec, prune_ret=(1, [REFUSAL]))
     degraded: list[str] = []
 
@@ -294,6 +302,26 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
         f"Generation job record: {FAILURE}",
         f"Full-text search indexing: {FAILURE}",
         f"Deferred vector cleanup: {FAILURE}",
+    ]
+
+
+async def test_range_scoped_failures_are_recorded_for_repair(repo, monkeypatch):
+    rec = StepRecorder(monkeypatch, fail=frozenset(HAPPY_ORDER) - _SURVIVORS)
+    _install(rec)
+    failed_steps: list[str] = []
+
+    await _persist_full(repo, rec, _Inputs(), [], failed_steps)
+
+    assert failed_steps == [
+        "Tombstone marking",
+        "Git persist",
+        "Health persist",
+        "Dead-code persist",
+        "Symbol persist",
+        "Security persist",
+        "Graph edges persist",
+        "External systems refresh",
+        "Full-text search indexing",
     ]
 
 
