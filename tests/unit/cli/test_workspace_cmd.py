@@ -87,6 +87,25 @@ class TestWorkspaceList:
         # Summary line: "X/Y repos indexed"
         assert "repos indexed" in result.output
 
+    def test_list_counts_from_configured_db_url(self, runner, tmp_path, monkeypatch):
+        # A configured DB URL with no local wiki.db still has counts to show.
+        from repowise.cli.commands import status_cmd
+
+        repo = tmp_path / "svc"
+        (repo / ".repowise").mkdir(parents=True)
+        _write_workspace_config(tmp_path, repos=[{"path": "svc", "alias": "svc"}])
+        monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'shared.db'}")
+
+        def _fake_run_async(coro):
+            coro.close()
+            return 7, 4321
+
+        monkeypatch.setattr(status_cmd, "run_async", _fake_run_async)
+
+        result = runner.invoke(cli, ["workspace", "list", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "4,321" in result.output
+
     def test_list_marks_primary_repo(self, runner, tmp_path):
         repo_a = tmp_path / "main-svc"
         repo_a.mkdir()
