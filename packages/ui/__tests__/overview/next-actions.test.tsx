@@ -184,6 +184,9 @@ describe("NextActions", () => {
       "true",
     );
     expect(screen.getByText("2 suggested")).toBeInTheDocument();
+    // React only writes `open` when the prop changes, so a rerender keeps a
+    // section the user opened open.
+    expect(details!.open).toBe(true);
   });
 });
 

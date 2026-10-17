@@ -191,8 +191,9 @@ export function NextActions({
     <OverviewSection
       title="Do next"
       description={data.summary?.[horizon] ?? fallbackSummary(data, horizon)}
-      // A folded section has no header action slot, so the time frame leads
-      // the body and the toggle carries the count.
+      // A folded section has no header action slot, so the time frame sits
+      // under the summary, above the list it filters, and the toggle carries
+      // the count.
       action={defaultOpen ? timeFrame : undefined}
       collapsible={!defaultOpen}
       defaultOpen={defaultOpen}
