@@ -115,8 +115,6 @@ async def _semantic_concept_paths(question: str, ctx: Any) -> list[str]:
     return out
 
 
-
-
 def _cluster_parents(top: list[dict]) -> tuple[dict[str, int], dict[str, set[str]]]:
     """Each directory's count of hits directly in it, and the hits under each ancestor."""
     # For each surfaced hit, count its immediate parent directory and credit

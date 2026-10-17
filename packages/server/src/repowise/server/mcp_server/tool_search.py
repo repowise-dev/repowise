@@ -1304,7 +1304,7 @@ def _attach_match_notes(
     # anchors on a wrong hit that looks authoritative (their Alamofire
     # 44-overload read-spiral). Emit the boolean either way; a note only when
     # there is no exact hit to distinguish from the fuzz. ``candidates`` /
-    # ``exact`` were computed above so ordering and this note stay consistent.
+    # ``exact`` are the ones the ranking used, so ordering and this note agree.
     if candidates:
         response["exact_match"] = exact and not missing
         note = _exact_match_note(
