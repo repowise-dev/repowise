@@ -1777,6 +1777,8 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
 
 def _enrich_knowledge_graph(run: UpdateRun, docs: DocsPass) -> None:
     """Model enrichment of a refreshed KG (layer names, summaries), as init does."""
+    # Also runs on a builder-version bump with an unchanged graph: restored layer
+    # names were written against the old layers.
     kg = run.knowledge_graph_result
     if kg is None:
         return

@@ -190,6 +190,9 @@ def _discover_session_decisions(
 
 def _apply_injection_feedback(opts: UpdateOptions, run: UpdateRun, policy: Any) -> None:
     """Judge injected decisions against their sessions' corrections (no model)."""
+    # Gated on the session lane: its mined corrections are the only evidence, and
+    # an evaluation is terminal, so judging with the lane off would settle every
+    # row as unjudgeable for good.
     try:
         from repowise.core.sessions.miners.decisions import apply_injection_feedback
 
@@ -228,6 +231,8 @@ async def _injection_feedback(repo_path: Path, apply_injection_feedback) -> dict
 
 def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun, policy: Any) -> None:
     """Classify hook firings by what the agent did next (reads transcripts)."""
+    # The session lane is the privacy boundary for reading transcripts, so this
+    # fails closed; `repowise hook backfill` fills the columns on demand.
     try:
         from repowise.core.sessions.efficacy import ingest_transcript_efficacy
 
