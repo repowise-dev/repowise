@@ -57,6 +57,18 @@ class PipelineRun:
     git_meta_map: dict[str, dict] = field(default_factory=dict)
     external_systems: list[dict] = field(default_factory=list)
 
+    # Analysis phase outputs. The ``gen_`` reports feed generation and the KG:
+    # rehydrated on a resumed run, the freshly computed ones otherwise.
+    skip_analysis: bool = False
+    dead_code_report: Any = None
+    health_report: Any = None
+    decision_report: Any = None
+    doc_drift_report: Any = None
+    gen_dead_code_report: Any = None
+    gen_decision_report: Any = None
+    tech_stack_dicts: list[dict] = field(default_factory=list)
+    knowledge_graph_result: Any = None
+
 
 def hooked_progress(progress: Any) -> HookProgressCallback:
     """Wrap *progress* so registered pipeline hooks fire around each phase.
