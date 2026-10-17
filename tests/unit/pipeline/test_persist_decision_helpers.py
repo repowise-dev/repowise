@@ -99,3 +99,26 @@ async def test_lifecycle_passes_are_isolated(monkeypatch):
 
     assert rec.order == ["apply_revert_supersession", "apply_head_artifact_check"]
     assert rec.args_of("apply_head_artifact_check")[0][0][2] == "/repo"
+
+
+async def test_failing_passes_after_the_upsert_are_swallowed(monkeypatch):
+    rec = StepRecorder(
+        monkeypatch,
+        fail=frozenset({"detect_supersessions_and_conflicts", "recompute_decision_staleness"}),
+    )
+    install_decision_chain(rec)
+
+    touched = await store_decisions(
+        object(),
+        "repo-1",
+        [{"title": "t"}],
+        vector_store=_STORE,
+        git_metadata=[{"file_path": "src/a.py"}],
+    )
+
+    assert touched == ["decision-1"]
+    assert rec.order == [
+        "bulk_upsert_decisions",
+        "detect_supersessions_and_conflicts",
+        "recompute_decision_staleness",
+    ]
