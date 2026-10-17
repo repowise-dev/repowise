@@ -13,6 +13,17 @@ a patch on this package does not reach lookups inside the submodules.
 
 from __future__ import annotations
 
+import contextlib
+import json
+import posixpath
+import re
+import subprocess
+from collections.abc import Container
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from ..pnpm_workspace import read_pnpm_workspace_patterns
 from .builds import (
     _BUILD_OUTPUT_JS,
     _BUILD_SOURCE_EXTENSIONS,
