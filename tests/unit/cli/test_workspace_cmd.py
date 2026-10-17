@@ -527,6 +527,116 @@ class TestWorkspaceDiagnostics:
         assert "--json" not in result.output
 
 
+class TestWorkspaceDiagnosticsReport:
+    """Every section of the text report, over hand-built diagnostics."""
+
+    def _save(self, root: Path, *, clean: bool = False, orphans: int = 23) -> None:
+        from repowise.core.workspace.diagnostics import (
+            ExtractionDiagnostics,
+            OrphanProvider,
+            RepoDiagnostics,
+            UnmatchedConsumer,
+        )
+        from repowise.core.workspace.system_graph import SystemGraph, save_system_graph
+
+        _write_workspace_config(
+            root,
+            repos=[{"path": "api", "alias": "api"}, {"path": "web", "alias": "web"}],
+        )
+        diag = ExtractionDiagnostics(
+            total_providers=30,
+            total_consumers=12,
+            total_links=4,
+            weak_link_count=0 if clean else 2,
+            repo_breakdown=[
+                RepoDiagnostics(
+                    repo="api", providers_by_type={"http": 30}, provider_count=30
+                ),
+                RepoDiagnostics(
+                    repo="web",
+                    consumers_by_type={"http": 9, "topic": 3},
+                    consumer_count=12,
+                ),
+                RepoDiagnostics(repo="gone"),
+            ],
+            providers_by_layer={} if clean else {"index": 20, "regex": 10},
+            consumers_by_layer={} if clean else {"regex": 12},
+            http_consumers_unresolved=3,
+        )
+        if not clean:
+            diag.unmatched_consumers = [
+                UnmatchedConsumer("web", "a.ts", "http::GET::/x", "http", "no_provider"),
+                UnmatchedConsumer("web", "b.ts", "http::GET::/y", "http", "mystery"),
+            ]
+            diag.unmatched_by_reason = {"no_provider": 1, "mystery": 1}
+            diag.orphan_providers = [
+                OrphanProvider("api", f"r{i}.py", f"http::GET::/o{i}", "http")
+                for i in range(orphans)
+            ]
+        save_system_graph(SystemGraph(diagnostics=diag, generated_at="not-a-date"), root)
+
+    def test_every_section_renders(self, runner, tmp_path):
+        self._save(tmp_path)
+        result = runner.invoke(cli, ["workspace", "diagnostics", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        out = result.output
+        assert "stamped not-a-date" in out
+        assert "Covers gone, which is no longer in" in out
+        assert "http:30/0" in out
+        assert "4 cross-repo link(s) matched from 30 provider(s) and 12 consumer(s)" in out
+        assert "2 weak (low-confidence) link(s)" in out
+        assert "Extraction coverage" in out
+        assert "Providers   30 (20 index, 10 regex)" in out
+        assert "Consumers   12 (12 regex)" in out
+        assert "HTTP calls  9 of 12 resolved" in out
+        assert "75%" in out
+        assert "2 unmatched consumer(s)" in out
+        assert "no matching provider found" in out
+        assert "mystery" in out
+        assert "23 orphan provider(s)" in out
+        assert "http::GET::/o19" in out
+        assert "http::GET::/o20" not in out
+        assert "... and 3 more" in out
+        assert "Every consumer matched" not in out
+
+    def test_clean_report(self, runner, tmp_path):
+        self._save(tmp_path, clean=True)
+        result = runner.invoke(cli, ["workspace", "diagnostics", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Extraction coverage" not in result.output
+        assert "weak" not in result.output
+        assert "Every consumer matched a provider; no orphan providers." in result.output
+
+    def test_repo_filter_text(self, runner, tmp_path):
+        self._save(tmp_path, orphans=2)
+        result = runner.invoke(
+            cli, ["workspace", "diagnostics", str(tmp_path), "--repo", "api"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "unmatched consumer" not in result.output
+        assert "2 orphan provider(s)" in result.output
+        assert "... and" not in result.output
+
+    def test_repo_filter_json(self, runner, tmp_path):
+        import json
+
+        self._save(tmp_path)
+        result = runner.invoke(
+            cli,
+            ["workspace", "diagnostics", str(tmp_path), "--repo", "web", "--format", "json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert [r["repo"] for r in data["repo_breakdown"]] == ["web"]
+        assert len(data["unmatched_consumers"]) == 2
+        assert data["orphan_providers"] == []
+        # Totals and roll-ups are workspace-wide, not filtered.
+        assert data["total_providers"] == 30
+        assert data["unmatched_by_reason"] == {"no_provider": 1, "mystery": 1}
+        assert data["http_consumer_coverage"] == 0.75
+        assert data["generated_at"] == "not-a-date"
+
+
 # ---------------------------------------------------------------------------
 # workspace check
 # ---------------------------------------------------------------------------
@@ -859,6 +969,52 @@ class TestWorkspaceCheckBreaking:
         assert data["violation_count"] == 1
         assert data["breaking_changes"] == []
         assert data["breaking_changes_available"] is False
+
+    def test_no_rules_and_no_cycles_text(self, runner, tmp_path):
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Checked 2 service(s) across 2 repo(s) against 0 declared rule(s)." in result.output
+        assert "No conformance rules declared." in result.output
+        assert "No dependency cycles." in result.output
+        assert "No violations" not in result.output
+
+    def test_no_breaking_json_omits_the_breaking_half(self, runner, tmp_path):
+        import json
+
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend")
+        result = runner.invoke(
+            cli, ["workspace", "check", str(tmp_path), "--no-breaking", "--format", "json"]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert "breaking_changes" not in data
+        assert "breaking_changes_available" not in data
+
+    def test_failure_line_counts_violations_and_breaking_changes(self, runner, tmp_path):
+        self._write_config_with_rule_and_violation(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "1 architecture rule violation(s)" in result.output
+        assert "(detected 2026-08-23T00:00:00+00:00)" in result.output
+        assert (
+            "Architecture check failed: 1 violation(s), 0 cycle(s), "
+            "1 breaking contract change(s)."
+        ) in result.output
+
+    def test_rule_description_is_printed_under_the_violation(self, runner, tmp_path):
+        self._write_config_with_rule_and_violation(tmp_path)
+        cfg_path = tmp_path / WORKSPACE_CONFIG_FILENAME
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        data["conformance"]["rules"][0]["description"] = "UI talks to the gateway only"
+        cfg_path.write_text(yaml.dump(data), encoding="utf-8")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "UI talks to the gateway only" in result.output
 
 
 # ---------------------------------------------------------------------------
