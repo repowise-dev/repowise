@@ -155,46 +155,22 @@ async def decay_stale_pages(ctx: FullUpdatePersist) -> None:
         )
 
 
-async def decision_chain(ctx: FullUpdatePersist) -> None:
-    # The store repairs the full-index path runs, in the same order. A user
-    # whose workflow is ``repowise update`` never takes that path.
-    from repowise.core.analysis.decision_provenance import RETIRED_SOURCES
-    from repowise.core.persistence.crud import (
-        purge_proposed_decisions_by_source,
-        reconcile_decision_confidence,
-        reconcile_source_ranks,
-        unretire_auto_superseded,
-    )
-    from repowise.core.persistence.decision_id_migration import apply_id_migration
-    from repowise.core.persistence.decision_migration import (
-        apply_migration,
-        backfill_decision_node_links,
-        backfill_scope_basis,
-        backfill_session_scope_basis,
-        prune_unindexed_scope_files,
+async def repair_decisions(ctx: FullUpdatePersist) -> None:
+    # The store repairs the full-index path runs, each failure its own
+    # degraded step; a required persist fails the update on the first one.
+    from repowise.core.pipeline.persist import repair_decision_store
+
+    def skip(step: str, exc: Exception) -> None:
+        ctx.skip(step, exc)
+        if ctx.require_decision_persist_success:
+            raise exc
+
+    await repair_decision_store(
+        ctx.session, ctx.repo_id, vector_store=ctx.decision_vector_store, skip=skip
     )
 
-    session, repo_id = ctx.session, ctx.repo_id
-    # Before the purge: restoring lands a row at ``proposed``, which is what
-    # the purge deletes.
-    await unretire_auto_superseded(session)
-    for retired in RETIRED_SOURCES:
-        await purge_proposed_decisions_by_source(session, repo_id, retired)
-    await reconcile_source_ranks(session)
-    await reconcile_decision_confidence(session)
-    # Derived ids first, so everything after reads a record by the id it keeps.
-    await apply_id_migration(session, repo_id, vector_store=ctx.decision_vector_store)
-    # The entity split is only coherent once legacy rows are classified; the
-    # prune runs first so the basis repairs judge the file list they leave.
-    await apply_migration(session, repo_id)
-    await prune_unindexed_scope_files(session, repo_id)
-    await backfill_scope_basis(session, repo_id)
-    await backfill_session_scope_basis(session, repo_id)
-    await backfill_decision_node_links(session, repo_id)
-    await _upsert_decisions(ctx)
 
-
-async def _upsert_decisions(ctx: FullUpdatePersist) -> None:
+async def upsert_decisions(ctx: FullUpdatePersist) -> None:
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
         purge_proposed_decisions_by_source,
@@ -226,9 +202,11 @@ async def _upsert_decisions(ctx: FullUpdatePersist) -> None:
 
 
 DECISION_STEPS: tuple[Step, ...] = (
+    # Reports its own failures, one repair at a time.
+    Step("Decision store repairs", repair_decisions, guarded=False),
     Step(
         "Decision persist",
-        decision_chain,
+        upsert_decisions,
         reraise=lambda ctx: ctx.require_decision_persist_success,
     ),
 )

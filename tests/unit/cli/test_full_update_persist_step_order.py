@@ -228,8 +228,14 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
         "persist_kg",
         "persist_git_refresh",
         "persist_incremental_commits",
-        # One try around the whole chain: the first repair ends it.
+        # Each repair fails on its own; the upsert still runs.
         "unretire_auto_superseded",
+        "purge_proposed_decisions_by_source",
+        "reconcile_source_ranks",
+        "reconcile_decision_confidence",
+        "apply_id_migration",
+        "apply_migration",
+        "bulk_upsert_decisions",
         "apply_revert_supersession",
         "apply_head_artifact_check",
         "refresh_governance_findings",
@@ -263,6 +269,12 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
                 "Knowledge-graph persist",
                 "Git persist",
                 "Commit capture",
+                "Decision unretire",
+                "Retired-source decision purge",
+                "Decision source-rank repair",
+                "Decision confidence repair",
+                "Decision id migration",
+                "Decision entity migration",
                 "Decision persist",
                 "Revert supersession",
                 "Decision HEAD artifact check",
@@ -283,6 +295,47 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
         f"Full-text search indexing: {FAILURE}",
         f"Deferred vector cleanup: {FAILURE}",
     ]
+
+
+async def test_a_failing_decision_repair_skips_only_itself(repo, monkeypatch):
+    rec = StepRecorder(monkeypatch, fail=frozenset({"unretire_auto_superseded"}))
+    _install(rec)
+    degraded: list[str] = []
+
+    await _persist_full(repo, rec, _Inputs(), degraded)
+
+    rec.assert_all_called(HAPPY_ORDER)
+    assert rec.order == HAPPY_ORDER
+    assert degraded == [f"Decision unretire: {FAILURE}"]
+
+
+async def test_a_failing_repair_fails_a_required_decision_persist(repo, monkeypatch):
+    rec = StepRecorder(monkeypatch, fail=frozenset({"unretire_auto_superseded"}))
+    _install(rec)
+    degraded: list[str] = []
+    inputs = _Inputs()
+
+    with pytest.raises(RuntimeError, match=FAILURE):
+        await _persist_full_update_async(
+            repo_path=repo,
+            repo_name=repo.name,
+            generated_pages=inputs.pages,
+            file_diffs=inputs.file_diffs,
+            git_meta_map=dict(GIT_META),
+            new_decision_markers=[],
+            decision_vector_store=rec.vector_store(),
+            provider=None,
+            partial_health_report=None,
+            dead_code_report=None,
+            graph_builder=inputs.graph_builder,
+            knowledge_graph_result=None,
+            degraded=degraded,
+            parsed_files=inputs.parsed_files,
+            require_decision_persist_success=True,
+        )
+
+    assert degraded == [f"Decision unretire: {FAILURE}"]
+    assert "purge_proposed_decisions_by_source" not in rec.order
 
 
 # ---------------------------------------------------------------------------

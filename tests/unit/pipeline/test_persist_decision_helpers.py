@@ -122,3 +122,21 @@ async def test_failing_passes_after_the_upsert_are_swallowed(monkeypatch):
         "detect_supersessions_and_conflicts",
         "recompute_decision_staleness",
     ]
+
+
+async def test_repair_failures_go_to_skip_one_repair_at_a_time(monkeypatch):
+    rec = StepRecorder(
+        monkeypatch, fail=frozenset({"unretire_auto_superseded", "apply_migration"})
+    )
+    install_decision_chain(rec)
+    skipped: list[tuple[str, str]] = []
+
+    await repair_decision_store(
+        object(), "repo-1", skip=lambda step, exc: skipped.append((step, str(exc)))
+    )
+
+    assert skipped == [
+        ("Decision unretire", FAILURE),
+        ("Decision entity migration", FAILURE),
+    ]
+    assert "reconcile_source_ranks" in rec.order
