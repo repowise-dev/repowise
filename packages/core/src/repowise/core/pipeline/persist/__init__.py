@@ -6,6 +6,8 @@ can persist a ``PipelineResult`` without duplicating the upsert recipe.
 
 # The steps live in the submodules; every name they define, private ones
 # included, is re-exported here so imports and patches on this module keep working.
+# A submodule calls a step that callers patch here through the package
+# (``_persist.<name>``), never by bare name, or the patch stops reaching it.
 # ruff: noqa: F401
 
 from __future__ import annotations

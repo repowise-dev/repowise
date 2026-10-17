@@ -137,7 +137,7 @@ repowise/
 │   │   │   │       └── claude_md.py    # ClaudeMdGenerator subclass
 │   │   │   ├── pipeline/
 │   │   │   │   ├── orchestrator.py     # run_pipeline(), PipelineResult
-│   │   │   │   ├── persist.py          # persist_pipeline_result(): shared by CLI + server
+│   │   │   │   ├── persist/            # persist_pipeline_result(): shared by CLI + server
 │   │   │   │   └── progress.py         # ProgressCallback protocol + LoggingProgressCallback
 │   │   │   ├── persistence/
 │   │   │   │   ├── models.py           # SQLAlchemy ORM models
