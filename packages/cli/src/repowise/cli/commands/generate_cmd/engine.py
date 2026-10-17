@@ -251,7 +251,8 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
     Structural pages are permanently ``template`` by design, so counting them
     would mean ``docs_mode`` could never flip to ``llm`` no matter how much
     prose was written. The remaining-stub count is scoped to the concept layer
-    for exactly that reason.
+    for exactly that reason. Tombstones are excluded because generation never
+    schedules retired pages.
     """
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select
@@ -277,6 +278,7 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
                     .where(
                         Page.repository_id == repo_id,
                         Page.provider_name == "template",
+                        Page.freshness_status != "tombstone",
                         Page.page_type.in_(list(_MODEL_WRITTEN_PAGE_TYPES)),
                     )
                 )
