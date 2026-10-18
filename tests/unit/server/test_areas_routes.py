@@ -160,3 +160,65 @@ async def test_a_warmed_model_serves_the_next_read_without_a_build(app, client, 
     monkeypatch.setattr(service, "_build", no_build)
     tree = await client.get(f"/api/repos/{repo_id}/areas/tree")
     assert tree.status_code == 200
+
+
+async def _seed_origins(app, client: AsyncClient) -> str:
+    """Production code beside tests, a build file and a generated file."""
+    repo_id = (await create_test_repo(client))["id"]
+    rows = [
+        {**_metric("src/a.py", 4.0, 100), "code_origin": "production"},
+        {**_metric("src/b.py", 8.0, 300), "code_origin": "production"},
+        {**_metric("tests/test_a.py", 10.0, 200), "code_origin": "test", "is_test": True},
+        {**_metric("setup.py", 2.0, 40), "code_origin": "build"},
+        {**_metric("src/gen_pb2.py", 1.0, 400), "code_origin": "generated"},
+    ]
+    async with app.state.session_factory() as session:
+        await crud.save_health_metrics(session, repo_id, rows)
+        await session.commit()
+    return repo_id
+
+
+async def test_hold_map_leaves_the_held_origins_out_of_every_figure(app, client):
+    repo_id = await _seed_origins(app, client)
+    tree = (await client.get(f"/api/repos/{repo_id}/areas/tree", params={"hold": "map", "depth": 2})).json()
+    root = tree["root"]
+    # Only the two production files: (4*100 + 8*300) / 400 = 7.0.
+    assert root["file_count"] == 2
+    assert root["health"] == 7.0
+    # A folder holding only tests is simply not there.
+    assert "tests" not in {n["path"] for n in tree["nodes"]}
+    held = tree["held"]
+    assert held["excluded"] == sorted(held["default"])
+    assert held["counts"]["test"] == 1 and held["counts"]["build"] == 1 and held["counts"]["generated"] == 1
+    feed = (await client.get(f"/api/repos/{repo_id}/health/map", params={"hold": "map"})).json()
+    assert {f["file_path"] for f in feed["files"]} == {"src/a.py", "src/b.py"}
+
+
+async def test_include_brings_one_held_origin_back(app, client):
+    repo_id = await _seed_origins(app, client)
+    params = {"hold": "map", "include": "test", "depth": 2}
+    tree = (await client.get(f"/api/repos/{repo_id}/areas/tree", params=params)).json()
+    assert tree["root"]["file_count"] == 3
+    assert "test" not in tree["held"]["excluded"]
+    detail = (await client.get(f"/api/repos/{repo_id}/areas/tests", params=params)).json()
+    assert detail["area"]["file_count"] == 1
+
+
+async def test_without_hold_the_root_equals_the_page_headline(app, client):
+    # The page's "All code" scope and the map's everything-included view are
+    # the same files, so the root and the headline are one number.
+    repo_id = await _seed_origins(app, client)
+    tree = (await client.get(f"/api/repos/{repo_id}/areas/tree")).json()
+    overview = (await client.get(f"/api/repos/{repo_id}/health/overview", params={"limit": 1})).json()
+    assert tree["root"]["health"] == overview["summary"]["average_health"]
+    assert tree["held"]["excluded"] == []
+
+
+async def test_bringing_every_held_group_back_is_the_whole_repository(app, client):
+    repo_id = await _seed_origins(app, client)
+    whole = (await client.get(f"/api/repos/{repo_id}/areas/tree")).json()
+    params = {"hold": "map", "include": ",".join(whole["held"]["default"])}
+    back = (await client.get(f"/api/repos/{repo_id}/areas/tree", params=params)).json()
+    overview = (await client.get(f"/api/repos/{repo_id}/health/overview", params={"limit": 1})).json()
+    assert back["root"]["health"] == whole["root"]["health"] == overview["summary"]["average_health"]
+    assert back["held"]["excluded"] == []

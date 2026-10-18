@@ -85,12 +85,25 @@ class AreaDeltaWindow(BaseModel):
     baseline_at: str | None
 
 
+class AreaHeld(BaseModel):
+    """The origins the map holds out by default, and what this answer left out."""
+
+    #: ``MAP_HELD_ORIGINS``, in order: what ``hold=map`` leaves out.
+    default: list[str]
+    #: Origins left out of every figure in this answer; empty with ``hold=none``.
+    excluded: list[str]
+    #: Files per held origin, repository-wide, for a toggle's count.
+    counts: dict[str, int]
+
+
 class AreaTreeResponse(BaseModel):
     root: AreaNode
     depth: int
     #: Every area up to ``depth`` levels below the root, sorted by path.
     nodes: list[AreaNode]
     delta_window: AreaDeltaWindow
+    #: Absent on older servers.
+    held: AreaHeld | None = None
 
 
 class AreaBandShare(BaseModel):

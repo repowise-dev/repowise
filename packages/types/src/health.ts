@@ -994,6 +994,10 @@ export interface HealthMapQuery {
   q?: string;
   /** Narrow the field to this directory; the cap and every count then describe it. */
   area?: string;
+  /** `map` leaves out the origins the area map holds by default. */
+  hold?: "none" | "map";
+  /** With `hold: "map"`, held origins to bring back. */
+  include?: readonly string[];
 }
 
 /* ------------------------------------------------------------------ *

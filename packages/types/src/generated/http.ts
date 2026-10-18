@@ -319,6 +319,13 @@ export interface AreaFinding {
   reason: string | null;
 }
 
+/** The origins the map holds out by default, and what this answer left out. */
+export interface AreaHeld {
+  default: string[];
+  excluded: string[];
+  counts: Record<string, number>;
+}
+
 export interface AreaHotspots {
   total: number;
   files: AreaFileRow[];
@@ -378,6 +385,7 @@ export interface AreaTreeResponse {
   depth: number;
   nodes: AreaNode[];
   delta_window: AreaDeltaWindow;
+  held?: AreaHeld | null;
 }
 
 export interface AreaTrendPoint {

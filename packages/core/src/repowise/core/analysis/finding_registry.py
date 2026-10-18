@@ -212,6 +212,23 @@ FILE_HOLDS: dict[str, str] = {
 #: The stored ``code_origin`` values a health finding is never served on.
 HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
 
+#: The stored ``code_origin`` values the area map leaves out until the reader
+#: brings them back: tests, docs examples and build files, plus everything no
+#: health finding is served on. Prose docs have no health row, so never appear.
+MAP_HELD_ORIGINS: tuple[str, ...] = ("test", "docs_example", "build", *HELD_ORIGINS)
+
+
+def stored_origin(code_origin: Any, is_test: Any) -> str:
+    """A row's origin, reading a row stamped before ``code_origin`` off ``is_test``."""
+    if isinstance(code_origin, str) and code_origin:
+        return code_origin
+    return "test" if is_test is True else "production"
+
+
+def map_held(include: Iterable[str]) -> frozenset[str]:
+    """The origins the map holds out when the reader has brought back *include*."""
+    return frozenset(MAP_HELD_ORIGINS) - frozenset(include)
+
 
 def history_kinds() -> frozenset[str]:
     """The health markers read from git history alone (the history holds)."""
@@ -519,6 +536,7 @@ __all__ = [
     "FILE_HOLDS",
     "HELD_ORIGINS",
     "LANGUAGE_GATES",
+    "MAP_HELD_ORIGINS",
     "REGISTRY",
     "UNVERIFIED_LABEL",
     "FindingStatus",
@@ -537,6 +555,7 @@ __all__ = [
     "is_shown",
     "label_previews",
     "language_of",
+    "map_held",
     "preview_for",
     "preview_label",
     "preview_lines",
@@ -547,6 +566,7 @@ __all__ = [
     "split_gated",
     "split_held",
     "status_of",
+    "stored_origin",
     "verification_label",
     "withheld_summary",
 ]

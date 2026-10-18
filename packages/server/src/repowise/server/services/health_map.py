@@ -27,7 +27,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.areas import in_area
-from repowise.core.analysis.finding_registry import HELD_ORIGINS
+from repowise.core.analysis.finding_registry import HELD_ORIGINS, stored_origin
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.perf.coverage import supported_perf_languages
@@ -149,6 +149,7 @@ class HealthMapService:
         include_held: bool = False,
         query: str | None = None,
         area: str | None = None,
+        held: frozenset[str] = frozenset(),
     ) -> HealthMapFeed:
         session, repo_id = self._session, self._repository_id
         metrics = await crud.get_health_metrics(session, repo_id)
@@ -158,6 +159,12 @@ class HealthMapService:
             # performance totals below describe the area, never the repository.
             metrics = [m for m in metrics if in_area(m.file_path, area)]
             rollups = [r for r in rollups if in_area(r.file_path, area)]
+        if held:
+            # The area map's held origins (``hold=map``) leave the field before
+            # any count, as they leave the area rollups beside it; the held set
+            # then decides vendored and generated too.
+            metrics = [m for m in metrics if stored_origin(m.code_origin, m.is_test) not in held]
+            include_held = True
         languages = await crud.get_file_language_map(session, repo_id)
         # The same set ``hotspot_health`` averages over, so the hotspot lens
         # and that KPI can never disagree about which files are hotspots.
