@@ -100,6 +100,11 @@ async def narrow_by_health(
     Both are judged on the rollup, so the matching ids are fixed here and the
     caller's own listing (plain or needs-attention) still orders and pages.
     A change no commit of which was scanned passes no delta filter.
+
+    Reads every matching change's commits and files, then binds the kept ids
+    as one ``IN`` list. Bounded by the change window (``commit_limit``); the
+    ceiling is the driver's bind limit (32k on SQLite, 65k on PostgreSQL),
+    past which this would move into SQL over a stored per-change rollup.
     """
     if not delta and not touches_hotspot:
         return where

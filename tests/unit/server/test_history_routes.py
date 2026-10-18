@@ -189,6 +189,8 @@ async def test_commit_rows_lead_with_their_health_delta(client: AsyncClient, app
         ({"area": "src/core"}, ["b", "a"]),
         ({"area": "src/core/a.py"}, ["a"]),
         ({"since": "2026-10-02T00:00:00Z", "until": "2026-10-04T00:00:00Z"}, ["c", "b"]),
+        # 13:00 at +05:30 is 07:30 UTC on the 2nd, before b's noon: b stays in.
+        ({"since": "2026-10-02T13:00:00+05:30"}, ["d", "c", "b"]),
     ],
 )
 async def test_commit_history_filters_narrow_the_repository(

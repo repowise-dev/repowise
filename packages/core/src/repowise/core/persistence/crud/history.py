@@ -178,18 +178,20 @@ async def get_commit_findings_bulk(
     Each commit's ``position`` is its own worst-first rank, so ordering by it
     interleaves the commits' worst findings before anyone's minor ones.
     """
-    if not shas:
-        return []
-    rows = await session.execute(
-        select(GitCommitHealthFinding)
-        .where(
-            GitCommitHealthFinding.repository_id == repository_id,
-            GitCommitHealthFinding.sha.in_(list(dict.fromkeys(shas))[:_CHUNK]),
+    found: list[GitCommitHealthFinding] = []
+    for chunk in _chunks(shas):
+        rows = await session.execute(
+            select(GitCommitHealthFinding)
+            .where(
+                GitCommitHealthFinding.repository_id == repository_id,
+                GitCommitHealthFinding.sha.in_(chunk),
+            )
+            .order_by(GitCommitHealthFinding.position, GitCommitHealthFinding.sha)
+            .limit(limit)
         )
-        .order_by(GitCommitHealthFinding.position, GitCommitHealthFinding.sha)
-        .limit(limit)
-    )
-    return list(rows.scalars())
+        found.extend(rows.scalars())
+    found.sort(key=lambda f: (f.position, f.sha))
+    return found[:limit]
 
 
 async def count_hotspot_files_bulk(

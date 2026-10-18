@@ -76,7 +76,8 @@ class ChangeFilter:
     keeps changes whose kept checklist may flag attention (a prefilter; the
     caller confirms on the parsed evidence). *change_ids* keeps only those.
     *author* matches the author email (any case) or exact name; *area* keeps
-    changes with a stored file at or under that path.
+    changes with a stored file at or under that path (a floor: a record stores
+    at most ``MAX_STORED_FILES`` files).
     """
 
     category: str | None = None

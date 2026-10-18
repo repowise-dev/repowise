@@ -14,10 +14,13 @@ _DELTA_PATTERN = f"^({'|'.join(DELTA_FILTERS)})$"
 
 
 def utc(moment: datetime | None) -> datetime | None:
-    """*moment* with UTC assumed when it names no zone."""
-    if moment is None or moment.tzinfo is not None:
-        return moment
-    return moment.replace(tzinfo=UTC)
+    """*moment* in UTC, assumed UTC when it names no zone. Converted rather than
+    kept as given: SQLite stores wall-clock UTC and drops a bound value's zone."""
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
 
 
 @dataclass(frozen=True)
