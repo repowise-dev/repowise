@@ -136,7 +136,7 @@ export function CommitList({
   const cols = useMemo(() => commitColumns(healthLabels, hotspotLabel), [healthLabels, hotspotLabel]);
   const shown = useMemo(() => filterCommits(commits, search), [commits, search]);
 
-  if (commits.length === 0 && !narrowed && !search) {
+  if (commits.length === 0 && !narrowed && !search.trim()) {
     return (
       <EmptyState
         title="No commits indexed"

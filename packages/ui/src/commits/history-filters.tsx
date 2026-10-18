@@ -84,9 +84,9 @@ export interface HistoryFiltersProps {
 /**
  * The quick filters over a history list: health impact, hotspots and the
  * time window in one row; author, area and the host's secondary controls
- * behind "More filters", each active one a removable chip. Controlled and server-driven: the host
- * writes each change to the URL and refetches, so the counts and the list
- * always describe the same set.
+ * behind "More filters", each active one a removable chip. Controlled and
+ * server-driven: the host writes each change to the URL and refetches, so the
+ * counts and the list always describe the same set.
  */
 export function HistoryFilters({
   value,

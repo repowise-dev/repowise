@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, X } from "lucide-react";
 
 /**
@@ -19,19 +19,28 @@ export function MoreFilters({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const panelId = useId();
   return (
     <div className="min-w-0">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
+        aria-controls={panelId}
         className="inline-flex items-center gap-1 rounded text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
       >
         <ChevronRight aria-hidden="true" className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-90" : ""}`} />
         {label}
-        {active > 0 ? <span className="tabular-nums text-[var(--color-text-tertiary)]">({active})</span> : null}
+        {active > 0 ? (
+          <span className="tabular-nums text-[var(--color-text-tertiary)]">
+            <span aria-hidden="true">({active})</span>
+            <span className="sr-only">, {active} active</span>
+          </span>
+        ) : null}
       </button>
-      {open ? <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-3">{children}</div> : null}
+      <div id={panelId} hidden={!open} className={open ? "mt-3 flex flex-wrap items-center gap-x-5 gap-y-3" : "hidden"}>
+        {open ? children : null}
+      </div>
     </div>
   );
 }
@@ -56,14 +65,21 @@ export function ActiveFilterChips({
   listLabel?: string;
   removeLabel?: (label: string) => string;
 }) {
+  const list = useRef<HTMLUListElement>(null);
+  // Removing a chip unmounts the focused button; keep keyboard focus in the
+  // list rather than dropping it to the page.
+  const remove = (chip: ActiveFilterChip) => {
+    chip.onRemove();
+    requestAnimationFrame(() => list.current?.querySelector("button")?.focus());
+  };
   if (chips.length === 0) return null;
   return (
-    <ul aria-label={listLabel} className="flex flex-wrap items-center gap-2">
+    <ul ref={list} aria-label={listLabel} className="flex flex-wrap items-center gap-2">
       {chips.map((chip) => (
         <li key={chip.key}>
           <button
             type="button"
-            onClick={chip.onRemove}
+            onClick={() => remove(chip)}
             aria-label={removeLabel(chip.label)}
             className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-0.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
           >
