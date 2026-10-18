@@ -3,8 +3,8 @@
 The fold itself lives in :mod:`repowise.core.analysis.areas`; this module reads
 the stored analysis, keeps the folded index per (database, repository, index
 stamp, area stamp), and shapes the tree and detail answers. The area stamp
-covers what can move without an index run: findings triage, a git-only
-refresh, a snapshot written after the scores.
+covers what can move without an index run: findings triage and a snapshot
+written after the scores.
 """
 
 from __future__ import annotations
@@ -77,12 +77,13 @@ class AreaReadModel:
 
 
 async def _area_stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
-    """What moves the model between index runs: a finding triaged, a git-only
-    refresh, a snapshot recorded. One statement, beside the index stamp."""
+    """What moves the model between index runs: a finding triaged, a snapshot
+    recorded after the scores. One statement, beside the index stamp. Git rows
+    are rewritten with the health rows (the index stamp sees those), so they
+    are not scanned here: on this repository that scan was most of a warm read."""
     columns = []
     for model, moved in (
         (HealthFinding, HealthFinding.updated_at),
-        (GitMetadata, GitMetadata.updated_at),
         (HealthSnapshot, HealthSnapshot.taken_at),
     ):
         mine = model.repository_id == repo_id
