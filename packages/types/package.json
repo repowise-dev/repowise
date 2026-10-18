@@ -36,6 +36,7 @@
     "./files": "./src/files.ts",
     "./external-systems": "./src/external-systems.ts",
     "./health": "./src/health.ts",
+    "./areas": "./src/areas.ts",
     "./coupling": "./src/coupling.ts",
     "./stats": "./src/stats.ts",
     "./refactoring": "./src/refactoring.ts",

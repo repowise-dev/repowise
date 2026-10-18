@@ -35,6 +35,7 @@ export * from "./repos.js";
 export * from "./files.js";
 export * from "./external-systems.js";
 export * from "./health.js";
+export * from "./areas.js";
 export * from "./coupling.js";
 export * from "./stats.js";
 export * from "./refactoring.js";

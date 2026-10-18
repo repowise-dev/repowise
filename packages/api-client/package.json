@@ -39,6 +39,7 @@
     "./modules": "./src/modules.ts",
     "./overview": "./src/overview.ts",
     "./actions": "./src/actions.ts",
+    "./areas": "./src/areas.ts",
     "./pagination": "./src/pagination.ts",
     "./owners": "./src/owners.ts",
     "./pages": "./src/pages.ts",

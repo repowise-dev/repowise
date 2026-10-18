@@ -38,6 +38,7 @@ from repowise.core.providers.embedding.registry import DEFAULT_EMBEDDER
 from repowise.server import __version__
 from repowise.server.routers import (
     actions,
+    areas,
     blast_radius,
     c4,
     changes,
@@ -348,6 +349,7 @@ _ROUTERS = (
     workspace,
     owners,
     modules,
+    areas,
     overview,
     stats,
     files,

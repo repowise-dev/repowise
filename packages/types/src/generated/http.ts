@@ -254,6 +254,142 @@ export interface ArchitectureViewResponse {
   entry_candidates?: string[];
 }
 
+export interface AreaBandCounts {
+  at_risk: number;
+  needs_work: number;
+  fair: number;
+  good: number;
+  excellent: number;
+}
+
+export interface AreaBandShare {
+  files: number;
+  nloc: number;
+  pct: number;
+}
+
+export interface AreaBandShares {
+  at_risk: AreaBandShare;
+  needs_work: AreaBandShare;
+  fair: AreaBandShare;
+  good: AreaBandShare;
+  excellent: AreaBandShare;
+}
+
+/** The snapshots behind ``health_delta_30d``; the baseline may be nearer than 30 days. */
+export interface AreaDeltaWindow {
+  target_days: number;
+  latest_at: string | null;
+  baseline_at: string | null;
+}
+
+export interface AreaDetailResponse {
+  area: AreaNode;
+  distribution: AreaDistribution;
+  worst_files: AreaFileRow[];
+  hotspots: AreaHotspots;
+  owners: AreaOwners;
+  trend: AreaTrendPoint[];
+  top_findings: AreaFinding[];
+  test_reach: AreaTestReach;
+  delta_window: AreaDeltaWindow;
+}
+
+export interface AreaDistribution {
+  total_files: number;
+  total_nloc: number;
+  bands: AreaBandShares;
+}
+
+export interface AreaFileRow {
+  path: string;
+  score: number;
+  band: "at_risk" | "needs_work" | "fair" | "good" | "excellent";
+  nloc: number;
+}
+
+export interface AreaFinding {
+  id: string;
+  file_path: string;
+  biomarker_type: string;
+  severity: string;
+  function_name: string | null;
+  line_start: number | null;
+  health_impact: number | null;
+  reason: string | null;
+}
+
+export interface AreaHotspots {
+  total: number;
+  files: AreaFileRow[];
+}
+
+export interface AreaNode {
+  path: string;
+  name: string;
+  depth: number;
+  parent: string | null;
+  has_children: boolean;
+  direct_file_count: number;
+  file_count: number;
+  nloc: number;
+  health: number;
+  band: "at_risk" | "needs_work" | "fair" | "good" | "excellent";
+  band_counts: AreaBandCounts;
+  worst_file: AreaWorstFile;
+  hotspot_count: number;
+  bus_factor_1_count: number;
+  primary_owner: AreaOwner | null;
+  line_coverage_pct: number | null;
+  coverage_file_count: number;
+  findings: AreaSeverityCounts;
+  health_delta_30d: number | null;
+}
+
+export interface AreaOwner {
+  key: string;
+  name: string;
+  kind: "human" | "agent" | "bot";
+  files: number;
+  share: number;
+}
+
+export interface AreaOwners {
+  total: number;
+  top: AreaOwner[];
+}
+
+export interface AreaSeverityCounts {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface AreaTestReach {
+  files: number;
+  with_test_file: number;
+  measured_files: number;
+  line_coverage_pct: number | null;
+}
+
+export interface AreaTreeResponse {
+  root: AreaNode;
+  depth: number;
+  nodes: AreaNode[];
+  delta_window: AreaDeltaWindow;
+}
+
+export interface AreaTrendPoint {
+  taken_at: string | null;
+  health: number;
+}
+
+export interface AreaWorstFile {
+  path: string | null;
+  score: number;
+}
+
 export interface ArtifactUpdateRequest {
   pinned: boolean;
 }
