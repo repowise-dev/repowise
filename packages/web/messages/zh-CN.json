@@ -275,11 +275,9 @@
       "emptyTitle": "尚无已评分的提交",
       "emptyAction": "前往概览",
       "title": "提交",
-      "description": "每个提交都针对该仓库自身的历史评定了变更风险，因此「偏高」是相对本仓库偏高，而不是套用某条全局曲线。",
+      "description": "每个提交都以它对代码健康的影响为先。根据 diff 形态得出的审查优先级作为背景信息一并保留。",
       "emptyDescription": "每个提交都针对该仓库自身的历史评定了变更风险。",
       "emptyHint": "每次提交的变更风险会在下一次完整索引时记录。在概览页运行一次同步，审查队列就会随之填充。",
-      "reviewQueueTitle": "评审队列",
-      "reviewQueueDescription": "默认按最新排序。优先级取自本仓库自身分布的三分位，因此按它排序只会显示前三分之一——筛选条件收窄的是整个仓库，而不是当前这一页。",
       "scoreBehaviourTitle": "分数在这个仓库里的表现",
       "scoreBehaviourDescription": "同一个模型的两种视角：分档线落在哪里，以及什么样的提交形态能让你高于这些线。",
       "changeRisk": "变更风险",
@@ -289,8 +287,67 @@
       "viewByChange": "按变更",
       "viewByCommit": "按提交",
       "viewEvents": "事件",
-      "viewReview": "审查变更",
-      "reviewDescription": "选择一次变更涉及的文件，查看依赖它们的代码、常与它们一起变更的文件，以及合适的审查者。"
+      "listTitle": "提交",
+      "listDescription": "最新的在前，每行先显示它对代码健康的影响。筛选作用于整个仓库，而不仅是当前页。",
+      "hotspotMark": "热点",
+      "period": {
+        "week": "过去一周",
+        "month": "过去一个月",
+        "quarter": "过去一个季度",
+        "all": "全部时间",
+        "custom": "自定义范围"
+      },
+      "headline": {
+        "unit": "个提交改善了代码健康",
+        "good": "没有任何提交让健康变差。{better} 个提交改善了健康，解决了 {resolved} 个问题。",
+        "mixed": "{better} 个提交改善了健康，{worse} 个让健康变差（其中 {both} 个两者兼有）。{neutral} 个对健康没有影响。",
+        "quiet": "已分析的 {analysed} 个提交都没有改变任何健康问题。",
+        "empty": "这里的 {total} 个提交还没有进行健康分析。",
+        "unscanned": "{n} 个尚未分析。"
+      },
+      "wins": {
+        "title": "近期成果",
+        "wholeRepo": "整个仓库",
+        "findingsLabel": "已解决的问题",
+        "findingsUnit": "分布在 {commits} 个提交中",
+        "findingsWhy": "单个提交解决最多：{subject}（{resolved}）。",
+        "filesLabel": "变得更健康的文件",
+        "filesUnit": "分数上升",
+        "filesWhy": "提升最大：{path}，从 {before} 到 {after}。",
+        "refactorsLabel": "已完成的重构",
+        "refactorsUnit": "按计划完成",
+        "refactorsWhy": "{symbol}：复杂度从 {before} 降到 {after}。",
+        "refactorsWhyPlain": "{symbol} 已按计划完成重构。",
+        "none": "此时间范围内还没有记录到成果。已解决的问题、变得更健康的文件和完成的重构会在发生时显示在这里。"
+      },
+      "health": {
+        "improved": "变好",
+        "worsened": "变差",
+        "mixed": "有好有坏",
+        "neutral": "无变化",
+        "notAnalysed": "尚未分析",
+        "partial": "此提交有部分内容未比较",
+        "stale": "由较早的分析得出：方向可信，数量不予显示",
+        "staleMark": "较早"
+      },
+      "filters": {
+        "impactLabel": "健康影响",
+        "all": "全部",
+        "better": "让情况变好",
+        "worse": "让情况变差",
+        "none": "对健康无影响",
+        "hotspots": "涉及热点",
+        "windowLabel": "时间范围",
+        "week": "过去一周",
+        "month": "过去一个月",
+        "quarter": "过去一个季度",
+        "allTime": "全部时间",
+        "custom": "自定义",
+        "from": "从",
+        "to": "到",
+        "author": "作者邮箱或姓名",
+        "area": "区域，例如 packages/core"
+      }
     },
     "changes": {
       "description": "主线上每个已合并的变更，均从 git 历史读取：拉取请求、合并请求、Gerrit 变更和单独提交，以及每个变更带入的文件。",
@@ -1034,9 +1091,12 @@
   "commits": {
     "detail": {
       "title": "审阅这次提交",
-      "promptLabel": "AI 审阅提示词",
-      "promptTitle": "AI 提交审阅",
-      "promptDescription": "一段可直接粘贴的提示词，让 AI 智能体审阅这次提交的变更风险、标出需要重点核查之处，并推荐审阅人。"
+      "fixPromptLabel": "复制提示词，修复此提交带来的问题",
+      "fixPromptTitle": "修复此提交带来的问题",
+      "fixPromptDescription": "一段可直接粘贴的提示词，让你的 AI 智能体在对应的文件和行修复此提交引入或加重的问题，而不撤销该提交。",
+      "reviewPromptLabel": "复制审查提示词给你的智能体",
+      "reviewPromptTitle": "AI 提交审查",
+      "reviewPromptDescription": "一段可直接粘贴的提示词，让你的 AI 智能体审查此提交的变更风险，指出需要仔细检查的地方，并推荐审查者。"
     }
   },
   "coupling": {

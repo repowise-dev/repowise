@@ -275,11 +275,9 @@
       "emptyTitle": "No scored commits yet",
       "emptyAction": "Go to overview",
       "title": "Commits",
-      "description": "Every commit scored for change-risk against this repo's own history, so 'elevated' means elevated here rather than on some global curve.",
+      "description": "Every commit, led by what it did to code health. Review priority from the diff's shape stays alongside as context.",
       "emptyDescription": "Every commit scored for change-risk against this repo's own history.",
       "emptyHint": "Per-commit change risk is captured on the next full index. Run a sync from the overview and the review queue fills in behind it.",
-      "reviewQueueTitle": "Review queue",
-      "reviewQueueDescription": "Newest first by default. Priority is a tercile of this repo's own distribution, so sorting by it shows only the top third — the filters narrow the whole repository, not the page.",
       "scoreBehaviourTitle": "How the score behaves here",
       "scoreBehaviourDescription": "Two views of the same model: where the cuts fall, and what commit shape lands you above them.",
       "changeRisk": "Change risk",
@@ -289,8 +287,67 @@
       "viewByChange": "By change",
       "viewByCommit": "By commit",
       "viewEvents": "Events",
-      "viewReview": "Review a change",
-      "reviewDescription": "Pick the files a change touches to see what depends on them, what tends to change with them, and who should review."
+      "listTitle": "Commits",
+      "listDescription": "Newest first, each led by what it did to code health. The filters narrow the whole repository, not the page.",
+      "hotspotMark": "Hotspot",
+      "period": {
+        "week": "Past week",
+        "month": "Past month",
+        "quarter": "Past quarter",
+        "all": "All time",
+        "custom": "Custom range"
+      },
+      "headline": {
+        "unit": "{n, plural, one {commit made health better} other {commits made health better}}",
+        "good": "Nothing made health worse. {better, plural, one {# commit made it better} other {# commits made it better}}, resolving {resolved, plural, one {# finding} other {# findings}}.",
+        "mixed": "{better, plural, one {# commit made health better} other {# commits made health better}} and {worse, plural, one {# made it worse} other {# made it worse}} ({both} did both). {neutral} had no health impact.",
+        "quiet": "None of the {analysed, plural, one {# analysed commit} other {# analysed commits}} changed a health finding.",
+        "empty": "None of the {total, plural, one {# commit} other {# commits}} here has been analysed for health yet.",
+        "unscanned": "{n} not yet analysed."
+      },
+      "wins": {
+        "title": "Recent wins",
+        "wholeRepo": "whole repository",
+        "findingsLabel": "Findings resolved",
+        "findingsUnit": "across {commits, plural, one {# commit} other {# commits}}",
+        "findingsWhy": "Most in one commit: {subject} ({resolved}).",
+        "filesLabel": "Files got healthier",
+        "filesUnit": "score rose",
+        "filesWhy": "Biggest gain: {path}, {before} to {after}.",
+        "refactorsLabel": "Refactorings landed",
+        "refactorsUnit": "planned and done",
+        "refactorsWhy": "{symbol}: complexity {before} to {after}.",
+        "refactorsWhyPlain": "{symbol} was refactored as planned.",
+        "none": "No wins recorded in this window yet. Resolved findings, healthier files and landed refactorings show up here as they happen."
+      },
+      "health": {
+        "improved": "Better",
+        "worsened": "Worse",
+        "mixed": "Mixed",
+        "neutral": "No change",
+        "notAnalysed": "Not yet analysed",
+        "partial": "Part of this commit was not compared",
+        "stale": "Read by an earlier analysis: the direction holds, the counts are not shown",
+        "staleMark": "earlier"
+      },
+      "filters": {
+        "impactLabel": "Health impact",
+        "all": "All",
+        "better": "Made things better",
+        "worse": "Made things worse",
+        "none": "No health impact",
+        "hotspots": "Touched hotspots",
+        "windowLabel": "Time window",
+        "week": "Past week",
+        "month": "Past month",
+        "quarter": "Past quarter",
+        "allTime": "All time",
+        "custom": "Custom",
+        "from": "From",
+        "to": "To",
+        "author": "Author email or name",
+        "area": "Area, e.g. packages/core"
+      }
     },
     "changes": {
       "description": "Every merged change on the main line, read back from git: pull and merge requests, Gerrit changes and lone commits, with the files each one landed.",
@@ -1034,9 +1091,12 @@
   "commits": {
     "detail": {
       "title": "Review this commit",
-      "promptLabel": "AI review prompt",
-      "promptTitle": "AI commit review",
-      "promptDescription": "A ready-to-paste prompt that has your AI agent review this commit's change-risk, flag what to scrutinize, and suggest reviewers."
+      "fixPromptLabel": "Copy prompt to fix what this commit made worse",
+      "fixPromptTitle": "Fix what this commit made worse",
+      "fixPromptDescription": "A ready-to-paste prompt that has your AI agent fix the findings this commit introduced or made more severe, at their files and lines, without undoing the commit.",
+      "reviewPromptLabel": "Copy review prompt for your agent",
+      "reviewPromptTitle": "AI commit review",
+      "reviewPromptDescription": "A ready-to-paste prompt that has your AI agent review this commit's change-risk, flag what to scrutinize, and suggest reviewers."
     }
   },
   "coupling": {
