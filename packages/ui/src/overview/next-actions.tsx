@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState, type ElementType, type ReactNode } from "react";
+import { Fragment, useCallback, useMemo, useState, type ElementType, type ReactNode } from "react";
 import { BellOff, Check, PanelRight, X } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -14,6 +14,7 @@ import {
 } from "@repowise-dev/types/actions";
 
 import { useAiPromptAction } from "../health/ai-prompt-action";
+import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { EFFORT_LABEL } from "../health/labels";
 import { RowPromptAction } from "../health/row-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
@@ -52,6 +53,29 @@ export interface NextActionsProps {
    */
   defaultOpen?: boolean;
   LinkComponent?: ElementType | undefined;
+}
+
+type ActionPromptLoader = (action: NextAction, flavor: AiPromptFlavor) => Promise<string>;
+
+/**
+ * The row-level "Copy prompt for your agent": opens the shared prompt modal on
+ * one action's prompt. Render `promptModal` once beside the rows.
+ */
+export function useActionPrompt(): {
+  openActionPrompt: (action: NextAction, load: ActionPromptLoader) => void;
+  promptModal: ReactNode;
+} {
+  const { openPrompt, promptModal } = useAiPromptAction();
+  const openActionPrompt = useCallback(
+    (action: NextAction, load: ActionPromptLoader) =>
+      openPrompt({
+        title: action.title.replace(/`/g, ""),
+        filePath: action.target.path || null,
+        promptSource: (flavor) => load(action, flavor),
+      }),
+    [openPrompt],
+  );
+  return { openActionPrompt, promptModal };
 }
 
 /** Split a title on backticks so paths and symbols set in mono. */
@@ -135,7 +159,7 @@ export function NextActions({
   // knows its time frame once a re-read drops the row.
   const [answered, setAnswered] = useState<ReadonlyMap<string, NextAction>>(new Map());
   const [opened, setOpened] = useState<NextAction | null>(null);
-  const { openPrompt, promptModal } = useAiPromptAction();
+  const { openActionPrompt, promptModal } = useActionPrompt();
 
   const rows = useMemo(
     () => (data ? data.horizons[horizon].actions.filter((a) => !answered.has(a.id)) : []),
@@ -222,16 +246,7 @@ export function NextActions({
                     action={action}
                     selected={opened?.id === action.id}
                     onOpen={() => setOpened(action)}
-                    onPrompt={
-                      loadPrompt
-                        ? () =>
-                            openPrompt({
-                              title: action.title.replace(/`/g, ""),
-                              filePath: action.target.path || null,
-                              promptSource: (flavor) => loadPrompt(action, flavor),
-                            })
-                        : undefined
-                    }
+                    onPrompt={loadPrompt ? () => openActionPrompt(action, loadPrompt) : undefined}
                     onAnswer={onSetState ? (state, message) => answer(action, state, message) : undefined}
                   />
                 ))}
