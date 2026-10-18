@@ -13,6 +13,7 @@
 
 import type { ReactNode } from "react";
 import type { MapScope } from "./types";
+import type { MapCanvasLabels } from "./canvas-labels";
 
 const ACTION =
   "pointer-events-auto rounded px-1 text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:cursor-wait disabled:opacity-60";
@@ -168,15 +169,60 @@ export function MapScopeNote({
  * the repository, and how to see the rest. Every area is complete once loaded,
  * so the only thing to say is how far the reader has zoomed in.
  */
+/**
+ * The groups the map holds out by default (tests, build files, ...), each a
+ * toggle that brings it back. The server names the groups and counts them;
+ * the host keeps which are brought back in the URL.
+ */
+export interface HeldGroups {
+  /** The held origins, in the server's order. */
+  default: readonly string[];
+  /** Files per held origin, repository-wide. */
+  counts: Readonly<Record<string, number>>;
+  /** Origins brought back. */
+  include: readonly string[];
+  onChange: (include: string[]) => void;
+}
+
+function HeldToggles({ groups, labels }: { groups: HeldGroups; labels: MapCanvasLabels }) {
+  const present = groups.default.filter((o) => (groups.counts[o] ?? 0) > 0);
+  if (present.length === 0) return null;
+  return (
+    <span role="group" aria-label="Files held out of the map" className="contents">
+      {present.map((origin) => {
+        const on = groups.include.includes(origin);
+        const name = labels.originName(origin);
+        const next = on ? groups.include.filter((o) => o !== origin) : [...groups.include, origin];
+        return (
+          <Part key={origin}>
+            <button
+              type="button"
+              aria-pressed={on}
+              onClick={() => groups.onChange(next)}
+              className={ACTION}
+            >
+              {on ? labels.hideHeld(name) : labels.showHeld(name, groups.counts[origin] ?? 0)}
+            </button>
+          </Part>
+        );
+      })}
+    </span>
+  );
+}
+
 export function LoadedNote({
   loaded,
   total,
   matches,
+  held,
+  labels,
 }: {
   loaded: number;
   total: number;
   /** Search matches among the loaded files, or null with no search. */
   matches: number | null;
+  held?: HeldGroups | undefined;
+  labels: MapCanvasLabels;
 }) {
   return (
     <div
@@ -193,7 +239,7 @@ export function LoadedNote({
           <span className="font-mono tabular-nums">
             {loaded.toLocaleString()} of {total.toLocaleString()}
           </span>{" "}
-          files loaded · zoom in for more
+          files loaded{loaded < total ? " · zoom in for more" : ""}
         </>
       )}
       {matches !== null ? (
@@ -202,6 +248,7 @@ export function LoadedNote({
           {plural(matches, "match", "matches")} loaded
         </Part>
       ) : null}
+      {held ? <HeldToggles groups={held} labels={labels} /> : null}
     </div>
   );
 }

@@ -492,7 +492,21 @@
         "directFiles": "Files directly in {folder}",
         "notLoaded": "Files not loaded yet · zoom in to read them",
         "analysedFiles": "{analysed} of {loaded} files analysed",
-        "flaggedFiles": "{flagged} of {analysed} analysed files flagged"
+        "flaggedFiles": "{flagged} of {analysed} analysed files flagged",
+        "scopeProduction": "Production code",
+        "scopeAll": "All code",
+        "scopeWith": "Production code and {names}",
+        "origin": {
+          "test": "test files",
+          "docs_example": "docs examples",
+          "build": "build files",
+          "vendored": "vendored files",
+          "generated": "generated files",
+          "tooling": "tooling files",
+          "production": "production files"
+        },
+        "showHeld": "Show {name} ({count})",
+        "hideHeld": "Hide {name}"
       }
     },
     "knowledgeGraph": {

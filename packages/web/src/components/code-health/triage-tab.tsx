@@ -69,6 +69,30 @@ function useAreaParam() {
   return [area, setArea] as const;
 }
 
+/**
+ * Held-out groups brought back into the map, in `?include=` (e.g.
+ * `test,build`). Replaced rather than pushed: it is a view setting, not a
+ * place to go back to.
+ */
+function useIncludeParam() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const raw = searchParams.get("include") ?? "";
+  const include = useMemo(() => raw.split(",").filter(Boolean), [raw]);
+  const setInclude = useCallback(
+    (next: string[]) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (next.length) sp.set("include", next.join(","));
+      else sp.delete("include");
+      const qs = sp.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [router, pathname, searchParams],
+  );
+  return [include, setInclude] as const;
+}
+
 /** Churn percentiles by path, fetched only while the churn lens is on. */
 function useChurnExtras(repoId: string, wanted: boolean) {
   const { data, isLoading } = useSWR<ChurnComplexityResponse>(
@@ -128,6 +152,10 @@ export function TriageTab({
 }) {
   const router = useRouter();
   const [area, setArea] = useAreaParam();
+  const [include, setInclude] = useIncludeParam();
+  // The map holds tests, docs examples, build, vendored and generated files
+  // out by default (the server names the set); `include` brings some back.
+  const hold = { hold: "map" as const, include };
   const railLabels = useAreaRailLabels();
   const churn = useChurnExtras(id, overlay === "churn");
 
@@ -149,11 +177,17 @@ export function TriageTab({
     updateFindingStatus: (findingId, status) =>
       updateFindingStatus(id, findingId, status),
     getCoverage: (opts) => getHealthCoverage(id, opts),
-    getAreaTree: (root, depth) => getAreaTree(id, { root, depth }),
-    getAreaDetail: (path) => getAreaDetail(id, path),
+    getAreaTree: (root, depth) => getAreaTree(id, { root, depth, ...hold }),
+    getAreaDetail: (path) => getAreaDetail(id, path, hold),
     // The area's complete list: the server's cap is the most it serves.
     getAreaFiles: (path) =>
-      getHealthMap(id, { area: path, cap: 8000, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
+      getHealthMap(id, {
+        area: path,
+        cap: 8000,
+        ...hold,
+        ...(scope ? { scope } : {}),
+        ...(counts ? { counts } : {}),
+      }),
     // No area links yet: neither the Findings tab nor the Contributors page
     // reads `?area=`, and a link must not claim a scope its page drops.
     fileHref: (path) => fileEntityPath(prefix, path),
@@ -190,6 +224,8 @@ export function TriageTab({
       onAreaChange={setArea}
       fileExtras={churn.extras}
       railLabels={railLabels}
+      include={include}
+      onIncludeChange={setInclude}
     />
   );
 }

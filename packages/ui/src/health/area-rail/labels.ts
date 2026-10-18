@@ -11,6 +11,12 @@ export interface AreaRailLabels extends MapCanvasLabels {
   mapLoadError: string;
   /** The canvas's accessible name and key help, for the active lens. */
   mapAriaLabel: (lens: string) => string;
+  /** What the map and rail cover: nothing held back in. */
+  scopeProduction: string;
+  /** Every held group brought back. */
+  scopeAll: string;
+  /** Some held groups brought back: "Production code and test files". */
+  scopeWith: (names: string) => string;
   /** The lens switcher's menu of further lenses. */
   moreLenses: string;
   /** A lens's name in the switcher; `undefined` keeps the built-in English. */
@@ -62,6 +68,9 @@ export const DEFAULT_AREA_RAIL_LABELS: AreaRailLabels = {
     "Every file as a node, grouped into its folders and sized by lines of code. The lens re-marks the same field rather than redrawing it. Click a folder to zoom, a file to inspect it.",
   searchPlaceholder: "Find a file in the map…",
   moreLenses: "More",
+  scopeProduction: "Production code",
+  scopeAll: "All code",
+  scopeWith: (names) => `Production code and ${names}`,
   mapLoadError: "Couldn't load the map",
   mapAriaLabel: (lens) =>
     `Code health map, ${lens} lens. Arrow keys move between the areas and files inside the selected area, Enter opens one, Backspace goes up a level, Escape returns to the repository, plus and minus zoom.`,

@@ -40,6 +40,7 @@ import { useHover, useMapPointer } from "./map/use-map-pointer";
 import { useKeyboardCursor, useMapKeyboard, type KeyboardCursor } from "./map/use-map-keyboard";
 import type { AreaSource } from "./map/use-area-source";
 import { DEFAULT_MAP_CANVAS_LABELS, type MapCanvasLabels } from "./map/canvas-labels";
+import type { HeldGroups } from "./map/scope-note";
 import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./map/types";
 
 export type { CodeHealthMapFile, CodeHealthOverlay, FileNode, MapScope, PerformanceActionability } from "./map/types";
@@ -77,6 +78,7 @@ export { MapLegend, MapLensSwitcher } from "./map/legend";
 export { SEARCH_MARK_CAP } from "./map/overlay";
 export { useAreaSource, type AreaFetchers, type AreaSource } from "./map/use-area-source";
 export { DEFAULT_MAP_CANVAS_LABELS, type MapCanvasLabels } from "./map/canvas-labels";
+export type { HeldGroups } from "./map/scope-note";
 
 /** What the root disc is called in the breadcrumb and the key. */
 const ROOT_LABEL = "Repository";
@@ -138,6 +140,8 @@ export interface CodeHealthMapProps {
   ariaLabel?: (lens: string) => string;
   /** The words the canvas prints (folder chips, hover card), for translation. */
   labels?: Partial<MapCanvasLabels>;
+  /** Groups held out of the map, toggled back from the canvas footer. */
+  heldGroups?: HeldGroups;
 }
 
 /** The selected area, owned by the host when it passes `onAreaChange`, local otherwise. */
@@ -179,6 +183,7 @@ export function CodeHealthMap({
   rootLabel = ROOT_LABEL,
   ariaLabel = DEFAULT_ARIA_LABEL,
   labels: labelOverrides,
+  heldGroups,
 }: CodeHealthMapProps) {
   const words = useMemo(() => ({ ...DEFAULT_MAP_CANVAS_LABELS, ...labelOverrides }), [labelOverrides]);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -372,6 +377,8 @@ export function CodeHealthMap({
           loaded={source && root ? { loaded: scene.nodes.length, total: root.fileCount } : null}
           matches={model.matches.length}
           query={model.query}
+          held={heldGroups}
+          labels={words}
         />
         <FieldHover
           hover={hover}

@@ -14,7 +14,7 @@ import type { AreaGeometry } from "./area-layout";
 import { HEALTH_UNSUPPORTED_NOTICE, noFileScored, type MapLens } from "./lens";
 import type { AreaLabel } from "./labels";
 import { AreaHoverCard, HoverCard } from "./overlay";
-import { LoadedNote, MapScopeNote } from "./scope-note";
+import { LoadedNote, MapScopeNote, type HeldGroups } from "./scope-note";
 import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./types";
 import type { Hover } from "./use-map-pointer";
 import type { AreaAnalysed } from "./fills";
@@ -103,11 +103,15 @@ export function FieldNotes({
   loaded,
   matches,
   query,
+  held,
+  labels,
 }: {
   flat: FlatFieldNotes | null;
   loaded: { loaded: number; total: number } | null;
   matches: number;
   query: string;
+  held?: HeldGroups | undefined;
+  labels: MapCanvasLabels;
 }) {
   return (
     <>
@@ -123,7 +127,13 @@ export function FieldNotes({
           onFindUndrawn={flat.onFindUndrawn}
         />
       ) : loaded ? (
-        <LoadedNote loaded={loaded.loaded} total={loaded.total} matches={query ? matches : null} />
+        <LoadedNote
+          loaded={loaded.loaded}
+          total={loaded.total}
+          matches={query ? matches : null}
+          held={held}
+          labels={labels}
+        />
       ) : null}
       {flat && noFileScored(flat.files) ? (
         <div

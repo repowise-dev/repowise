@@ -42,6 +42,8 @@ export interface AreaCardProps {
   links?: AreaLinks | undefined;
   onNavigate?: ((href: string) => void) | undefined;
   repoName?: string | undefined;
+  /** What the figures cover, named in the header. */
+  scope?: string | undefined;
 }
 
 function Links({ links, labels, onNavigate }: { links: AreaLinks; labels: AreaRailLabels; onNavigate?: ((href: string) => void) | undefined }) {
@@ -114,6 +116,7 @@ export function AreaCard(props: AreaCardProps) {
       <AreaHeader
         detail={detail}
         eyebrow={isRoot ? labels.repoEyebrow : labels.areaEyebrow}
+        scope={props.scope}
         title={isRoot ? labels.repository : nameOf(path)}
         labels={labels}
       />

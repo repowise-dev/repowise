@@ -492,7 +492,21 @@
         "directFiles": "直接位于 {folder} 的文件",
         "notLoaded": "文件尚未加载 · 放大以查看",
         "analysedFiles": "已分析 {loaded} 个文件中的 {analysed} 个",
-        "flaggedFiles": "已分析的 {analysed} 个文件中有 {flagged} 个被标记"
+        "flaggedFiles": "已分析的 {analysed} 个文件中有 {flagged} 个被标记",
+        "scopeProduction": "生产代码",
+        "scopeAll": "全部代码",
+        "scopeWith": "生产代码及{names}",
+        "origin": {
+          "test": "测试文件",
+          "docs_example": "文档示例",
+          "build": "构建文件",
+          "vendored": "第三方文件",
+          "generated": "生成的文件",
+          "tooling": "工具文件",
+          "production": "生产文件"
+        },
+        "showHeld": "显示{name}（{count}）",
+        "hideHeld": "隐藏{name}"
       }
     },
     "knowledgeGraph": {

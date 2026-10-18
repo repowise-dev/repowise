@@ -14,6 +14,12 @@ export function useAreaRailLabels(): AreaRailLabels {
       flatMapDescription: t("flatMapDescription"),
       searchPlaceholder: t("searchPlaceholder"),
       moreLenses: t("moreLenses"),
+      scopeProduction: t("scopeProduction"),
+      scopeAll: t("scopeAll"),
+      scopeWith: (names) => t("scopeWith", { names }),
+      originName: (origin) => (t.has(`origin.${origin}`) ? t(`origin.${origin}`) : origin.replace(/_/g, " ")),
+      showHeld: (name, count) => t("showHeld", { name, count: count.toLocaleString() }),
+      hideHeld: (name) => t("hideHeld", { name }),
       hotspotChip: (count, health) =>
         health == null ? t("hotspotChip", { count }) : t("hotspotChipScored", { count, health }),
       fileCount: (count) => t("fileCount", { count }),

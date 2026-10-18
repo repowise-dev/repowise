@@ -14,7 +14,23 @@ export interface MapCanvasLabels {
   notLoaded: string;
   analysedFiles: (analysed: number, loaded: number) => string;
   flaggedFiles: (flagged: number, analysed: number) => string;
+  /** A held-out origin's name, plural: "test files", "generated files". */
+  originName: (origin: string) => string;
+  /** The footer toggle that brings a held group back: "Show test files (1,755)". */
+  showHeld: (name: string, count: number) => string;
+  hideHeld: (name: string) => string;
 }
+
+/** Names for the stored code_origin values the map holds out. */
+const ORIGIN_NAMES: Record<string, string> = {
+  test: "test files",
+  docs_example: "docs examples",
+  build: "build files",
+  vendored: "vendored files",
+  generated: "generated files",
+  tooling: "tooling files",
+  production: "production files",
+};
 
 const n = (v: number) => v.toLocaleString();
 
@@ -26,4 +42,7 @@ export const DEFAULT_MAP_CANVAS_LABELS: MapCanvasLabels = {
   notLoaded: "Files not loaded yet · zoom in to read them",
   analysedFiles: (analysed, loaded) => `${n(analysed)} of ${n(loaded)} files analysed`,
   flaggedFiles: (flagged, analysed) => `${n(flagged)} of ${n(analysed)} analysed files flagged`,
+  originName: (origin) => ORIGIN_NAMES[origin] ?? origin.replace(/_/g, " "),
+  showHeld: (name, count) => `Show ${name} (${n(count)})`,
+  hideHeld: (name) => `Hide ${name}`,
 };

@@ -24,11 +24,14 @@ function windowDays(detail: AreaDetail): number {
 export function AreaHeader({
   detail,
   eyebrow,
+  scope,
   title,
   labels,
 }: {
   detail: AreaDetail;
   eyebrow: string;
+  /** What the figures cover ("Production code"), when the map holds files out. */
+  scope?: string | undefined;
   title: string;
   labels: AreaRailLabels;
 }) {
@@ -41,7 +44,7 @@ export function AreaHeader({
     <header className="flex flex-col gap-3">
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          {eyebrow} · {labels.files(a.file_count)}
+          {[eyebrow, scope, labels.files(a.file_count)].filter(Boolean).join(" · ")}
         </span>
         <h3 className="break-all font-mono text-[15px] font-semibold leading-snug text-[var(--color-text-primary)]">
           {title}

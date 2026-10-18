@@ -64,6 +64,13 @@ export interface AreaMapSectionProps {
   /** Per-file signals the host joins onto the loaded rows (e.g. churn). */
   fileExtras?: ReadonlyMap<string, Partial<CodeHealthMapFile>> | undefined;
   railLabels?: Partial<AreaRailLabels> | undefined;
+  /**
+   * Held-out groups brought back (`["test"]`), owned by the host so it rides
+   * in the URL. With `onIncludeChange` the canvas footer offers a toggle per
+   * held group; the host's fetchers read the same list.
+   */
+  include?: readonly string[] | undefined;
+  onIncludeChange?: ((include: string[]) => void) | undefined;
   /** Overrides the labels' description for this host. */
   description?: string | undefined;
 }
@@ -83,6 +90,19 @@ function useFetchers(adapter: CodeHealthAdapter): AreaFetchers | null {
         : null,
     [has],
   );
+}
+
+/** What the map's figures cover, given the held groups brought back. */
+export function scopeName(
+  held: { default: readonly string[]; counts: Readonly<Record<string, number>> },
+  include: readonly string[],
+  labels: AreaRailLabels,
+): string {
+  const present = held.default.filter((o) => (held.counts[o] ?? 0) > 0);
+  const back = present.filter((o) => include.includes(o));
+  if (back.length === 0) return labels.scopeProduction;
+  if (back.length === present.length) return labels.scopeAll;
+  return labels.scopeWith(back.map((o) => labels.originName(o)).join(", "));
 }
 
 function SearchBox({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) {
@@ -105,9 +125,15 @@ function SearchBox({ value, onChange, label }: { value: string; onChange: (v: st
 }
 
 /** The lazily loaded source with the host's per-file extras joined on, or none without the areas API. */
-function useJoinedSource(adapter: CodeHealthAdapter, fileExtras: AreaMapSectionProps["fileExtras"]) {
+function useJoinedSource(
+  adapter: CodeHealthAdapter,
+  fileExtras: AreaMapSectionProps["fileExtras"],
+  holdKey: string,
+) {
   const fetchers = useFetchers(adapter);
-  const raw = useAreaSource(fetchers, adapter.cacheKey);
+  // The held groups change which files every read covers, so they start the
+  // hierarchy over, like a new repository.
+  const raw = useAreaSource(fetchers, `${adapter.cacheKey}|${holdKey}`);
   const files = useMemo(
     () =>
       fileExtras
@@ -169,7 +195,9 @@ function MapPane({ failed, waiting, onRetry, errorTitle, ...map }: MapPaneProps)
 export function AreaMapSection(props: AreaMapSectionProps) {
   const { adapter, overlay, selected, setSelected } = props;
   const labels = useMemo(() => ({ ...DEFAULT_AREA_RAIL_LABELS, ...props.railLabels }), [props.railLabels]);
-  const source = useJoinedSource(adapter, props.fileExtras);
+  const include = props.include ?? [];
+  const holdKey = include.join(",");
+  const source = useJoinedSource(adapter, props.fileExtras, holdKey);
   const [area, setArea] = useAreaSelection(props.area, props.onAreaChange, setSelected);
   const [query, setQuery] = useState("");
 
@@ -181,6 +209,13 @@ export function AreaMapSection(props: AreaMapSectionProps) {
     (p: string) => (area && p.startsWith(`${area}/`) ? p.slice(area.length + 1) : p),
     [area],
   );
+
+  const held = source?.held ?? null;
+  const heldGroups =
+    held && props.onIncludeChange
+      ? { default: held.default, counts: held.counts, include, onChange: props.onIncludeChange }
+      : undefined;
+  const scope = held ? scopeName(held, include, labels) : undefined;
 
   const rail =
     source && adapter.getAreaDetail && index ? (
@@ -198,6 +233,8 @@ export function AreaMapSection(props: AreaMapSectionProps) {
         onSelectFile={setSelected}
         areaLinks={adapter.areaLinks ? (p) => adapter.areaLinks!(p) : undefined}
         onNavigate={(href) => adapter.navigate(href)}
+        scope={scope}
+        holdKey={holdKey}
       />
     ) : flatFiles ? (
       <div className="min-h-0 flex-1 overflow-hidden border-t border-[var(--color-border-default)] pt-3">
@@ -247,6 +284,7 @@ export function AreaMapSection(props: AreaMapSectionProps) {
             onSelectFile={setSelected}
             overlay={overlay}
             {...(lens ? { lens } : {})}
+            {...(heldGroups ? { heldGroups } : {})}
             {...props.mapExtra}
           />
           <MapLegend overlay={overlay} {...(lens ? { lens } : {})} loading={props.overlayLoading} />

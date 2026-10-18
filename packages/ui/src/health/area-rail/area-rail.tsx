@@ -33,6 +33,10 @@ export interface AreaRailProps {
   onSelectFile: (path: string) => void;
   areaLinks?: ((path: string) => AreaLinks) | undefined;
   onNavigate?: ((href: string) => void) | undefined;
+  /** What the figures cover ("Production code"), when the map holds files out. */
+  scope?: string | undefined;
+  /** Part of the cache key: a card read under one hold is not another's. */
+  holdKey?: string | undefined;
 }
 
 function CardSkeleton({ label }: { label: string }) {
@@ -51,7 +55,7 @@ export function AreaRail(props: AreaRailProps) {
   const { cacheKey, getAreaDetail, area, labels } = props;
   const { openPrompt, promptModal } = useAiPromptAction();
   const { data, error, mutate, isLoading } = useSWR<AreaDetail>(
-    props.selectedFile ? null : `area-detail:${cacheKey}:${area}`,
+    props.selectedFile ? null : `area-detail:${cacheKey}:${props.holdKey ?? ""}:${area}`,
     () => getAreaDetail(area),
     { revalidateOnFocus: false, keepPreviousData: true },
   );
@@ -86,6 +90,7 @@ export function AreaRail(props: AreaRailProps) {
         openPrompt={openPrompt}
         links={props.areaLinks?.(area)}
         onNavigate={props.onNavigate}
+        scope={props.scope}
       />
       {promptModal}
     </>

@@ -103,6 +103,8 @@ export function TriageView({
   fileExtras,
   railLabels,
   primaryLenses,
+  include,
+  onIncludeChange,
 }: {
   adapter: CodeHealthAdapter;
   /** Trend fetched once by the host. Consumed by `trendSlot`; accepted here so
@@ -163,6 +165,9 @@ export function TriageView({
   railLabels?: Partial<AreaRailLabels>;
   /** Lenses shown as segments; the rest sit behind "More". */
   primaryLenses?: CodeHealthOverlay[];
+  /** Held-out groups brought back into the map, and the toggle that changes them. */
+  include?: readonly string[];
+  onIncludeChange?: (include: string[]) => void;
 }) {
   const { cacheKey } = adapter;
   const { data: overview, isLoading, error, mutate } = useSWR<HealthOverviewResponse>(
@@ -269,6 +274,8 @@ export function TriageView({
           fileExtras={fileExtras}
           railLabels={railLabels}
           primaryLenses={primaryLenses}
+          include={include}
+          onIncludeChange={onIncludeChange}
         />
       ) : null}
 
