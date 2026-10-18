@@ -380,6 +380,67 @@ class TestCountActiveContributors:
         metas = [self._meta(("Alice", anchor), ("Bob", anchor - 30 * 86400))]
         assert count_active_contributors(metas) == 2
 
+    @pytest.mark.parametrize(
+        ("authors", "expected"),
+        [
+            pytest.param(
+                [("Alice Smith", "alice@example.com"), ("alice", "alice@example.com")],
+                1,
+                id="same-email-aliases",
+            ),
+            pytest.param(
+                [("Alex", "first@example.com"), ("Alex", "second@example.com")],
+                2,
+                id="same-name-distinct-emails",
+            ),
+            pytest.param(
+                [
+                    ("Alice", "123+alice@users.noreply.github.com"),
+                    ("alice", "alice@users.noreply.github.com"),
+                ],
+                1,
+                id="canonical-noreply-email",
+            ),
+            pytest.param([("Alice", None), (" Alice ", None)], 1, id="name-fallback-whitespace"),
+            pytest.param([("Alice", None), ("alice", None)], 1, id="name-fallback-case-insensitive"),
+            pytest.param([("", "alice@example.com")], 1, id="email-without-name"),
+            pytest.param([("", None)], None, id="missing-identity"),
+        ],
+    )
+    def test_counts_canonical_identities(
+        self, authors: list[tuple[str, str | None]], expected: int | None
+    ) -> None:
+        import json
+
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        metas = [{
+            "top_authors_json": json.dumps([
+                {"name": name, "email": email, "last_commit_ts": 1_700_000_000}
+                for name, email in authors
+            ])
+        }]
+        assert count_active_contributors(metas) == expected
+
+    def test_identity_keeps_latest_timestamp_across_files(self) -> None:
+        import json
+
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        anchor = 1_700_000_000
+        cutoff = anchor - 30 * 86400
+        metas = [
+            {"top_authors_json": json.dumps([
+                {"name": "Alice", "email": "alice@example.com", "last_commit_ts": anchor},
+                {"name": "Bob", "email": "bob@example.com", "last_commit_ts": cutoff},
+            ])},
+            {"top_authors_json": json.dumps([
+                {"name": "alice", "email": "alice@example.com", "last_commit_ts": cutoff - 1},
+                {"name": "Carol", "email": "carol@example.com", "last_commit_ts": cutoff - 1},
+            ])},
+        ]
+        assert count_active_contributors(metas, window_days=30) == 2
+
 
 # ---------------------------------------------------------------------------
 # 4. test_stable_classification
