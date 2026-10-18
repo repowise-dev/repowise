@@ -146,3 +146,17 @@ async def test_a_new_snapshot_moves_the_cached_delta(app, client):
         await session.commit()
     after = (await client.get(url, params={"root": "src"})).json()
     assert after["nodes"][0]["health_delta_30d"] == 1.0
+
+
+async def test_a_warmed_model_serves_the_next_read_without_a_build(app, client, monkeypatch):
+    from repowise.server.services import areas as service
+
+    repo_id = await _seed(app, client)
+    await service.warm_area_model(app.state.session_factory, repo_id)
+
+    async def no_build(*_args):
+        raise AssertionError("the warm-up should have built the model")
+
+    monkeypatch.setattr(service, "_build", no_build)
+    tree = await client.get(f"/api/repos/{repo_id}/areas/tree")
+    assert tree.status_code == 200

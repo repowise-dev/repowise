@@ -9,13 +9,15 @@ written after the scores.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+import structlog
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.analysis.areas import (
     AreaIndex,
@@ -33,6 +35,7 @@ from repowise.core.analysis.areas import (
 from repowise.core.analysis.areas.trend import DELTA_WINDOW_DAYS
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud import code_file_rows
+from repowise.core.persistence.database import get_session
 from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.core.persistence.models import (
     GitCommit,
@@ -49,7 +52,10 @@ __all__ = [
     "area_tree_payload",
     "clear_area_cache",
     "load_area_model",
+    "warm_area_model",
 ]
+
+logger = structlog.get_logger(__name__)
 
 #: Levels one tree request may unfold below its root. Deeper is a second request.
 MAX_TREE_DEPTH = 4
@@ -57,15 +63,21 @@ MAX_TREE_DEPTH = 4
 #: Snapshots an area trend reads, newest last; the repo trend's default window.
 TREND_POINTS = 20
 
-#: Folded indexes: one per repository and index state a server holds.
-_models = IndexStampCache(8)
+#: Folded indexes, one per repository (older states are dropped): a few MB
+#: each on a 6k-file repository.
+_models = IndexStampCache(4)
 #: Area cards, the ones a reader opens.
 _details = IndexStampCache(128)
+#: One build per repository at a time; a concurrent caller waits and reads the
+#: cache instead of folding the same rows again.
+_locks: dict[str, asyncio.Lock] = {}
 
 
 def clear_area_cache() -> None:
     _models.clear()
     _details.clear()
+    # A lock is bound to the loop that first waited on it.
+    _locks.clear()
 
 
 @dataclass
@@ -159,7 +171,26 @@ async def load_area_model(session: AsyncSession, repo_id: str) -> AreaReadModel:
     key = await _models.key(session, repo_id, await _area_stamp(session, repo_id))
     if key in _models:
         return _models.get(key)
-    return _models.remember(key, await _build(session, repo_id))
+    async with _locks.setdefault(repo_id, asyncio.Lock()):
+        if key in _models:
+            return _models.get(key)
+        model = await _build(session, repo_id)
+        _models.drop_repo(repo_id)
+        return _models.remember(key, model)
+
+
+async def warm_area_model(
+    session_factory: async_sessionmaker[AsyncSession], repo_id: str
+) -> None:
+    """Fold *repo_id*'s areas now, so the first reader after an index run does
+    not pay for it. Best effort: a failure leaves the build to that reader.
+    Ceiling: an index written outside this process (``repowise update`` from
+    the CLI) is still folded on first read."""
+    try:
+        async with get_session(session_factory) as session:
+            await load_area_model(session, repo_id)
+    except Exception:
+        logger.warning("areas_warm_failed", repo_id=repo_id, exc_info=True)
 
 
 def _iso(dt: datetime | None) -> str | None:

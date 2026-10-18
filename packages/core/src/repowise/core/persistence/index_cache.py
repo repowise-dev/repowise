@@ -55,6 +55,12 @@ class IndexStampCache:
         self._entries.move_to_end(key)
         return value
 
+    def drop_repo(self, repo_id: str) -> None:
+        """Forget every answer kept for *repo_id*, for a caller that keeps one
+        state per repository: an older index state is never asked for again."""
+        for key in [k for k in self._entries if k[1] == repo_id]:
+            del self._entries[key]
+
     def remember(self, key: tuple[Any, ...], value: Any) -> Any:
         self._entries[key] = value
         while len(self._entries) > self._size:

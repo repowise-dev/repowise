@@ -31,20 +31,6 @@ def _file(row: Any) -> dict[str, Any]:
     }
 
 
-def _finding(row: Any) -> dict[str, Any]:
-    impact = field(row, "health_impact")
-    return {
-        "id": field(row, "id"),
-        "file_path": field(row, "file_path"),
-        "biomarker_type": field(row, "biomarker_type"),
-        "severity": str(field(row, "severity") or "").lower(),
-        "function_name": field(row, "function_name"),
-        "line_start": field(row, "line_start"),
-        "health_impact": round(float(impact), 3) if impact is not None else None,
-        "reason": field(row, "reason"),
-    }
-
-
 def _top_findings(index: AreaIndex, area: str, limit: int) -> list[dict[str, Any]]:
     """The first *limit* open findings in the area, in the finding lists' order.
 
@@ -54,16 +40,15 @@ def _top_findings(index: AreaIndex, area: str, limit: int) -> list[dict[str, Any
     for finding in index.findings:
         if len(out) >= limit:
             break
-        if in_area(field(finding, "file_path"), area) and not is_advisory(
-            field(finding, "biomarker_type", "") or ""
+        if in_area(finding["file_path"], area) and not is_advisory(
+            finding["biomarker_type"] or ""
         ):
-            out.append(_finding(finding))
+            out.append(finding)
     return out
 
 
 def _is_hotspot(index: AreaIndex, path: str) -> bool:
-    git = index.git_by_path.get(path)
-    return git is not None and bool(field(git, "is_hotspot"))
+    return bool(index.git_by_path.get(path, {}).get("is_hotspot"))
 
 
 def _test_reach(group: Sequence[Any]) -> dict[str, Any]:

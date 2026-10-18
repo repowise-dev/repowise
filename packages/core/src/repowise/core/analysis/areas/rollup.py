@@ -26,7 +26,22 @@ from repowise.core.analysis.health.rows import scored_rows
 from .owners import FileOwner, owner_breakdown, primary_owner
 from .paths import ancestors, area_depth, area_name, area_parent
 
-__all__ = ["AreaIndex", "build_area_index", "coverage_rollup", "severity_by_file"]
+__all__ = [
+    "AreaIndex",
+    "build_area_index",
+    "coverage_rollup",
+    "finding_row",
+    "severity_by_file",
+]
+
+#: The fields an area reads of each row; the index is kept in memory per index
+#: state, so the rest of a row (an ORM entity is a few KB) is not kept.
+_METRIC_FIELDS = ("file_path", "score", "nloc", "is_test", "line_coverage_pct", "has_test_file")
+_GIT_FIELDS = ("is_hotspot", "bus_factor")
+
+
+def _pick(row: Any, names: tuple[str, ...]) -> dict[str, Any]:
+    return {name: row_field(row, name) for name in names}
 
 
 @dataclass
@@ -34,14 +49,31 @@ class AreaIndex:
     """Every area's rollup plus what a detail view folds further."""
 
     nodes: dict[str, dict[str, Any]]
-    #: Scored metric rows under each area, at any depth.
+    #: Scored metric rows (the fields an area reads) under each area, at any depth.
     members: dict[str, list[Any]]
     children: dict[str, list[str]]
-    git_by_path: Mapping[str, Any] = field(default_factory=dict)
+    #: ``{path: {is_hotspot, bus_factor}}``: only what an area reads, since
+    #: the index is kept in memory per index state.
+    git_by_path: Mapping[str, dict[str, Any]] = field(default_factory=dict)
     owners: Mapping[str, FileOwner] = field(default_factory=dict)
     deductions: Mapping[str, float] = field(default_factory=dict)
-    #: Open findings in the finding lists' priority order.
-    findings: Sequence[Any] = ()
+    #: Open findings as :func:`finding_row` dicts, in the finding lists' priority order.
+    findings: Sequence[dict[str, Any]] = ()
+
+
+def finding_row(row: Any) -> dict[str, Any]:
+    """The fields an area shows of one finding, detached from its stored row."""
+    impact = row_field(row, "health_impact")
+    return {
+        "id": row_field(row, "id"),
+        "file_path": row_field(row, "file_path"),
+        "biomarker_type": row_field(row, "biomarker_type"),
+        "severity": str(row_field(row, "severity") or "").lower(),
+        "function_name": row_field(row, "function_name"),
+        "line_start": row_field(row, "line_start"),
+        "health_impact": round(float(impact), 3) if impact is not None else None,
+        "reason": row_field(row, "reason"),
+    }
 
 
 def severity_by_file(findings: Iterable[Any]) -> dict[str, dict[str, int]]:
@@ -132,7 +164,7 @@ def build_area_index(
     members: dict[str, list[Any]] = defaultdict(list)
     direct: dict[str, int] = defaultdict(int)
     children: dict[str, set[str]] = defaultdict(set)
-    for row in scored_rows(metrics):
+    for row in (_pick(m, _METRIC_FIELDS) for m in scored_rows(metrics)):
         chain = ancestors(row_field(row, "file_path"))
         for area in chain:
             members[area].append(row)
@@ -144,11 +176,13 @@ def build_area_index(
         nodes={},
         members=dict(members),
         children={area: sorted(kids) for area, kids in children.items()},
-        git_by_path={row_field(g, "file_path"): g for g in git_rows},
+        git_by_path={
+            row_field(g, "file_path"): _pick(g, _GIT_FIELDS) for g in git_rows
+        },
         owners=owners or {},
         deductions=deductions or {},
     )
-    index.findings = list(findings)
+    index.findings = [finding_row(f) for f in findings]
     severities = severity_by_file(index.findings)
     for area, group in index.members.items():
         index.nodes[area] = _node(
