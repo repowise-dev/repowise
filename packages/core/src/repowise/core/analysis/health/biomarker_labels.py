@@ -11,19 +11,19 @@ from .biomarker_names import canonical_biomarker
 
 BIOMARKER_LABELS: dict[str, str] = {
     "brain_method": "Brain method",
-    "nested_complexity": "Nested complexity",
+    "nested_complexity": "Deep nesting",
     "repeated_nesting": "Repeated nesting",
     "complex_method": "Complex method",
-    "large_method": "Large method",
+    "large_method": "Long function",
     "primitive_obsession": "Long parameter list",
     "dry_violation": "DRY violation",
     "untested_hotspot": "Untested hotspot",
     "coverage_gap": "Coverage gap",
     "coverage_gradient": "Coverage gradient",
-    "developer_congestion": "Developer congestion",
-    "knowledge_loss": "Knowledge loss",
+    "developer_congestion": "Many authors",
+    "knowledge_loss": "Fading ownership",
     "hidden_coupling": "Hidden coupling",
-    "complex_conditional": "Complex conditional",
+    "complex_conditional": "Compound condition",
     "function_hotspot": "Function hotspot",
     "code_age_volatility": "Code age volatility",
     "low_cohesion": "Low cohesion",
@@ -67,3 +67,11 @@ def biomarker_label(name: str) -> str:
     """The glossary label; an id it does not know reads with spaces for underscores."""
     name = canonical_biomarker(name)
     return BIOMARKER_LABELS.get(name) or name.replace("_", " ")
+
+
+def biomarker_phrase(name: str) -> str:
+    """The label mid-sentence: ``Deep nesting`` reads ``deep nesting``, ``DRY violation`` stays."""
+    label = biomarker_label(name)
+    if len(label) > 1 and label[0].isupper() and label[1].islower():
+        return label[0].lower() + label[1:]
+    return label

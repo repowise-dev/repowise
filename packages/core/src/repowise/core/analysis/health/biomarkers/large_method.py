@@ -1,4 +1,4 @@
-"""Large Method — function bodies that exceed a healthy line budget.
+"""Long function — function bodies that exceed a healthy line budget.
 
 Fires on NLOC once a function carries *some* branching, so it measures
 length-with-substance rather than pure size. A long but perfectly flat

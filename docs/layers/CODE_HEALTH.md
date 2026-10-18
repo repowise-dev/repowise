@@ -163,7 +163,7 @@ on the dashboard, in `get_health` and in `repowise health --format json`
 `repowise next` prints the cross-layer list the dashboard calls Do next and
 `get_overview` returns as `next_actions`. It reads stored actions, so it is
 instant. Fix first items sit beside a live secret, fresh regressions, fragile
-files, files with knowledge loss, broken doc references, a dead-code batch,
+files, files with fading ownership, broken doc references, a dead-code batch,
 missing or stale coverage, and decisions waiting for review. Rows are grouped as
 Now, Worth planning and Improve what Repowise can see. Within a group, rows rank
 by value times confidence over effort, and the top due Fix first item leads its
@@ -199,7 +199,7 @@ dominating a file.
 | Size and complexity | 3 | 1.5 | Long or high-CCN functions, primitive obsession |
 | Duplication | 1 | 1.0 | Cloned blocks |
 | Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors |
-| Change history | 10 | 1.0 to 3.5 | Churn, change entropy, co-change scatter, ownership, knowledge loss, prior bug fixes |
+| Change history | 10 | 1.0 to 3.5 | Churn, change entropy, co-change scatter, ownership, fading ownership, prior bug fixes |
 | Test coverage | 3 | 2.0 + 2.0 | Untested hotspots, coverage gaps, uncovered lines (needs a coverage report) |
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
 | SQL | 4 | none | Complex SQL, `SELECT *`, `UPDATE`/`DELETE` with no `WHERE`, cartesian joins; maintainability or performance only |

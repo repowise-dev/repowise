@@ -46,7 +46,7 @@ no import between them can still change together every week.
 
 | Built on it | What you get | Read more |
 |---|---|---|
-| Ownership and knowledge risk | Owners, bus factor, silos, knowledge loss when a main author goes quiet, suggested reviewers | [OWNERSHIP.md](OWNERSHIP.md) |
+| Ownership and knowledge risk | Owners, bus factor, silos, fading ownership when a main author goes quiet, suggested reviewers | [OWNERSHIP.md](OWNERSHIP.md) |
 | Bug history | Fix commits traced to files and symbols, bug magnets | [BUG_HISTORY.md](BUG_HISTORY.md) |
 | Hidden coupling | Files that change together with no import link | [CHANGE_RISK.md](CHANGE_RISK.md) |
 | Branch overlap | Other branches editing the same files or their co-change partners | [CHANGE_RISK.md](CHANGE_RISK.md#branch-overlap) |

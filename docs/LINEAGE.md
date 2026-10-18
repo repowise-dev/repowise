@@ -162,7 +162,7 @@ language, every day. Where we departed from the source, we say so:
 - **Missing evidence reads as no signal.** A class with no detected member references
   reports LCOM4 of 1, not a high value; an unsupported language produces no health
   findings, not guessed ones.
-- **Weak signals stay weak.** Developer congestion and knowledge loss calibrated
+- **Weak signals stay weak.** Many authors and fading ownership calibrated
   weakly, so their weights are floored at 0.5 and 0.4 instead of being removed or
   inflated.
 

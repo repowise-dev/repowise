@@ -18,6 +18,7 @@ from ...support_paths import TEMPLATE_EXTENSIONS, is_doc_or_config_path
 from ...test_paths import is_test_related_path
 from ..finding_registry import excluded_types, gate_for, is_served, language_label
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
+from ..health.biomarker_labels import biomarker_label
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
 from .analyzer import RevisionAnalysis, RevisionHealthAnalyzer, language_for, language_of
@@ -361,7 +362,7 @@ class ChangeHealthDeltaService:
             symbol=head.function_name,
             line_start=head.line_start,
             line_end=head.line_end,
-            reason=head.reason or str(head.biomarker_type).replace("_", " "),
+            reason=head.reason or biomarker_label(str(head.biomarker_type)),
             attribution_basis=attribution.basis,
             attribution_confidence=attribution.confidence,
             attribution_detail=attribution.detail,

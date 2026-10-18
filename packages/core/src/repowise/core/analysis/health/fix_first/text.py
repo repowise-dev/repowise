@@ -295,7 +295,7 @@ HISTORY_LABEL: dict[str, str] = {
     "hidden_coupling": "hidden coupling",
     "churn_risk": "churn",
     "ownership_risk": "ownership",
-    "knowledge_loss": "knowledge loss",
+    "knowledge_loss": "fading ownership",
     "developer_congestion": "many hands",
     "prior_defect": "past bugs",
     "function_hotspot": "keeps changing",
