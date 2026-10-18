@@ -35,6 +35,11 @@ FIXES = [
     "Fix crash when the index is empty",
     "Resolve race in scheduler",
     "revert(api): fix the retry loop",
+    "Fixes: crash on an empty index",
+    "Bug: pager skips the last row",
+    "Resolves: race in scheduler",
+    "fix!: drop the broken retry",
+    'Revert "fix: x"',
 ]
 
 

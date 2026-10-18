@@ -8,10 +8,10 @@ directions: "refactor(...): split the Fix-first builder" matches the word "fix",
 This rule decides by the declared type first. A non-fix type (the types the
 evolution timeline maps to a category) is never a fix, and a fix type always is:
 the diff-shape filter downstream drops a fix that touches no production code. A
-subject without a known type falls back to the keyword rule on the text after any
-prefix, so a scope never excludes it. It counts ``prior_defect`` and its fix
-events and sets the change-risk ``is_fix`` flag; every other fix count keeps
-``is_fix_commit``.
+subject without a known type is a fix when its type word or the text after the
+prefix passes the keyword rule, so a scope never excludes it. It counts
+``prior_defect`` and its fix events and sets the change-risk ``is_fix`` flag;
+every other fix count keeps ``is_fix_commit``.
 """
 
 from __future__ import annotations
@@ -31,4 +31,4 @@ def is_typed_fix_commit(subject: str) -> bool:
         return True
     if kind in _CONVENTIONAL_MAP:
         return False
-    return is_fix_commit(subject[match.end() :])
+    return is_fix_commit(kind) or is_fix_commit(subject[match.end() :])
