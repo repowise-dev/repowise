@@ -624,6 +624,50 @@ def performance_category(name: str) -> str:
     return _PERFORMANCE_CATEGORY.get(name, "performance")
 
 
+# Per category: ``(index into the scored results, weighted deduction)``.
+_Entries = dict[str, list[tuple[int, float]]]
+
+
+def _weighted_by_category(
+    results_list: list[BiomarkerResult],
+    weight_fn: Callable[[BiomarkerResult], float],
+    category_fn: Callable[[str], str],
+) -> _Entries:
+    """Each finding's ``base x weight``, grouped by category."""
+    raw: _Entries = {}
+    for idx, r in enumerate(results_list):
+        # A continuous ``deduction`` override (coverage scaled by the uncovered
+        # fraction) takes the place of the severity table, so its impact stays linear.
+        base = r.deduction if r.deduction is not None else severity_deduction(r.severity)
+        raw.setdefault(category_fn(r.biomarker_type), []).append((idx, base * weight_fn(r)))
+    return raw
+
+
+def _condition(
+    raw: _Entries, caps: dict[str, float], conditioned_cap: tuple[str, Callable[[float], float]]
+) -> dict[str, float]:
+    """De-stack the conditioned category in place and return its live cap."""
+    cond_cat, cap_fn = conditioned_cap
+    others = sum(
+        min(sum(d for _, d in entries), caps.get(cat, 1.0))
+        for cat, entries in raw.items()
+        if cat != cond_cat
+    )
+    if cond_cat in raw:
+        idxs, values = zip(*raw[cond_cat], strict=True)
+        raw[cond_cat] = list(zip(idxs, destacked(values), strict=True))
+    return {cond_cat: cap_fn(others)}
+
+
+def _capped(entries: list[tuple[int, float]], cap: float, per_result: list[float]) -> float:
+    """Write each entry's share of the capped category total; return that total."""
+    cat_sum = sum(d for _, d in entries)
+    scale = 1.0 if cat_sum <= cap else cap / cat_sum
+    for idx, d in entries:
+        per_result[idx] = d * scale
+    return min(cat_sum, cap)
+
+
 def _score_dimension(
     results_list: list[BiomarkerResult],
     weight_fn: Callable[[BiomarkerResult], float],
@@ -642,45 +686,13 @@ def _score_dimension(
     other category's capped total)``; only the defect dimension uses it, for the
     history category.
     """
-    raw: dict[str, list[tuple[int, float]]] = {}
-    for idx, r in enumerate(results_list):
-        cat = category_fn(r.biomarker_type)
-        # A continuous ``deduction`` override (e.g. coverage scaled by the
-        # uncovered fraction) takes the place of the discrete severity table;
-        # both paths are then weighted and category-capped identically, so the
-        # per-finding ``health_impact`` stays linear and attributable.
-        base = r.deduction if r.deduction is not None else severity_deduction(r.severity)
-        weighted = base * weight_fn(r)
-        raw.setdefault(cat, []).append((idx, weighted))
-
+    raw = _weighted_by_category(results_list, weight_fn, category_fn)
+    cap_for = _condition(raw, caps, conditioned_cap) if conditioned_cap else {}
     per_result = [0.0] * len(results_list)
-    total = 0.0
-    cap_for: dict[str, float] = {}
-    if conditioned_cap is not None:
-        cond_cat, cap_fn = conditioned_cap
-        others = sum(
-            min(sum(d for _, d in entries), caps.get(cat, 1.0))
-            for cat, entries in raw.items()
-            if cat != cond_cat
-        )
-        cap_for[cond_cat] = cap_fn(others)
-        if cond_cat in raw:
-            idxs, values = zip(*raw[cond_cat], strict=True)
-            raw[cond_cat] = list(zip(idxs, destacked(values), strict=True))
-    for cat, entries in raw.items():
-        cap = cap_for.get(cat, caps.get(cat, 1.0))
-        cat_sum = sum(d for _, d in entries)
-        if cat_sum <= cap:
-            for idx, d in entries:
-                per_result[idx] = d
-            total += cat_sum
-        else:
-            # Scale down proportionally so the cap is respected.
-            scale = cap / cat_sum if cat_sum > 0 else 0.0
-            for idx, d in entries:
-                per_result[idx] = d * scale
-            total += cap
-
+    total = sum(
+        _capped(entries, cap_for.get(cat, caps.get(cat, 1.0)), per_result)
+        for cat, entries in raw.items()
+    )
     score = max(SCORE_FLOOR, min(SCORE_MAX, SCORE_MAX - total))
     return score, per_result
 
