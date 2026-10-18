@@ -118,3 +118,18 @@ def test_a_deleted_source_that_fails_to_parse_on_base_leaves_a_gap(make_repo, mo
 
     assert delta.skipped.get("tool.py") == "base_parse_failed"
     assert delta.status == "partial"
+
+
+def test_an_unnamed_marker_at_head_pairs_with_its_named_origin_by_span():
+    moves = MoveMap(
+        MappingProxyType({("pkg/run.py", "run"): ("tool.py", "run")}),
+        new_spans=MappingProxyType({("pkg/run.py", "run"): (1, 30)}),
+        old_spans=MappingProxyType({("tool.py", "run"): (200, 229)}),
+    )
+    base = unnamed("tool.py", 205)
+    base.function_name = "run"
+
+    result = FindingMatcher(moves=moves).match([base], [unnamed("pkg/run.py", 6)])
+
+    assert [m.kind for m in result.matched] == ["moved"]
+    assert result.resolved == []

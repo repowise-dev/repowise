@@ -129,9 +129,11 @@ class FindingMatcher:
             return False
         if base.file_path != old[0]:
             return False
-        if base.function_name:
-            return base.function_name == old[1]
-        return self.moves.holds(old, base.line_start)
+        if base.function_name == old[1]:
+            return True
+        # An unnamed marker on either side is placed by its line instead.
+        named_both = bool(base.function_name and head.function_name)
+        return not named_both and self.moves.holds(old, base.line_start)
 
     def _move_distance(
         self, base: HealthFindingData, head: HealthFindingData, new: SymbolKey, old: SymbolKey
