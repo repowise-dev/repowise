@@ -91,6 +91,30 @@ describe("HotspotTable", () => {
     expect(onQueryChange).toHaveBeenCalledWith("core");
   });
 
+  it("keeps what was typed when the URL echoes an earlier search", () => {
+    vi.useFakeTimers();
+    const tree = (query: string) => <HotspotTable hotspots={rows} query={query} onQueryChange={() => {}} />;
+    const { rerender } = render(tree(""));
+    const box = screen.getByRole("searchbox");
+    fireEvent.change(box, { target: { value: "co" } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    fireEvent.change(box, { target: { value: "core" } });
+    rerender(tree("co"));
+    expect(box).toHaveValue("core");
+    // A change from outside (back button, link) still resets the box.
+    rerender(tree("api"));
+    expect(box).toHaveValue("api");
+  });
+
+  it("keeps the active chip when its count drops to zero", () => {
+    render(
+      <HotspotTable hotspots={[]} query="x" facets={facets} filter="bug_magnet" onFilterChange={() => {}} />,
+    );
+    expect(screen.getByRole("button", { name: /^Bug magnet 0 of 672$/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("offers one prompt per row and one for every listed row", () => {
     const onGeneratePrompt = vi.fn();
     const onGenerateBatchPrompt = vi.fn();

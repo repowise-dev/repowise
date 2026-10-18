@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import type { HotspotFacets, HotspotFilter } from "@repowise-dev/types/git";
 import { Input } from "../ui/input";
@@ -26,9 +26,10 @@ const CHIPS: { key: HotspotFilter; label: string; title?: string }[] = [
   { key: "bug_magnet", label: "Bug magnet", title: "Repeated recent bug fixes." },
 ];
 
-/** The chips a facet set offers: a filter with nothing in it is not offered. */
-export function hotspotChips(facets: HotspotFacets) {
-  return CHIPS.filter((c) => c.key === "all" || facets[c.key] > 0).map((c) => ({
+/** The chips a facet set offers: a filter with nothing in it is not offered,
+ * unless it is the active one (the reader needs it to see what is applied). */
+export function hotspotChips(facets: HotspotFacets, active: HotspotFilter = "all") {
+  return CHIPS.filter((c) => c.key === "all" || c.key === active || facets[c.key] > 0).map((c) => ({
     ...c,
     count: c.key === "all" ? facets.total : facets[c.key],
   }));
@@ -38,10 +39,20 @@ export function hotspotChips(facets: HotspotFacets) {
 function SearchBox({ query, onChange }: { query: string; onChange: (q: string) => void }) {
   const [draft, setDraft] = useState(query);
   const settled = useDebounce(draft, SEARCH_DEBOUNCE_MS);
-  useEffect(() => setDraft(query), [query]);
+  // The last value sent up: its echo back through the URL must not overwrite
+  // what the reader has typed since. Only an outside change resets the box.
+  const sent = useRef(query);
   useEffect(() => {
-    if (settled !== query) onChange(settled);
-    // `query` is deliberately left out: a URL change must not re-send the draft.
+    if (query !== sent.current) {
+      sent.current = query;
+      setDraft(query);
+    }
+  }, [query]);
+  useEffect(() => {
+    if (settled === sent.current) return;
+    sent.current = settled;
+    onChange(settled);
+    // Keyed on the settled value alone; `onChange` is the host's latest setter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settled]);
   return (
@@ -88,7 +99,7 @@ export function HotspotToolbar({
           aria-label="Filter hotspots"
           className="flex flex-wrap rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs"
         >
-          {hotspotChips(facets).map((c) => (
+          {hotspotChips(facets, filter).map((c) => (
             <button
               key={c.key}
               type="button"

@@ -168,6 +168,21 @@ async def test_sort_and_offset_page_through_the_whole_set(client: AsyncClient, a
 
 
 @pytest.mark.asyncio
+async def test_facets_follow_a_git_only_remine(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _seed(app.state.session_factory, repo["id"])
+    assert (await _list(client, repo["id"]))["facets"]["total"] == 6
+
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_git_metadata(
+            session, repository_id=repo["id"], file_path="src/late.py", is_hotspot=True,
+            commit_count_90d=1, commit_count_30d=0, churn_percentile=0.1,
+        )
+    page = await _list(client, repo["id"])
+    assert page["facets"]["total"] == page["total"] == 7
+
+
+@pytest.mark.asyncio
 async def test_rejects_unknown_filter_and_sort(client: AsyncClient) -> None:
     repo = await create_test_repo(client)
     for params in ({"filter": "hot"}, {"sort": "trend"}, {"order": "up"}):

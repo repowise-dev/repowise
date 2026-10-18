@@ -131,6 +131,14 @@ def _search_clause(q: str) -> ColumnElement[bool]:
     )
 
 
+async def _git_stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
+    """What moves when git rows are re-mined without a health pass: the index
+    stamp watches health rows, and the facets read git rows."""
+    g = GitMetadata
+    stmt = select(func.count(), func.max(g.updated_at)).where(g.repository_id == repo_id)
+    return tuple((await session.execute(stmt)).one())
+
+
 @dataclass
 class HotspotListing:
     rows: list[tuple[GitMetadata, int]]
@@ -176,7 +184,7 @@ async def list_hotspots(
     if q:
         base = base.where(_search_clause(q))
 
-    key = await _facets.key(session, repo_id, tuple(sorted(held)), q)
+    key = await _facets.key(session, repo_id, await _git_stamp(session, repo_id), tuple(sorted(held)), q)
     facets = _facets.get(key) if key in _facets else _facets.remember(key, await _count_facets(session, base))
 
     listing = base
