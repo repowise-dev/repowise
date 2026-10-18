@@ -118,7 +118,9 @@ describe("commit detail card", () => {
   it("counts what the commit broke and what it fixed", () => {
     render(<CommitDetailCard commit={{ ...commit, health }} />);
 
-    expect(screen.getByText("Made 4 findings better and 3 findings worse.")).toBeInTheDocument();
+    // Figure first: what got worse, with what got resolved beside it.
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("findings introduced or worsened · 4 resolved")).toBeInTheDocument();
     expect(screen.getByText(/2 new, 1 made more severe/)).toBeInTheDocument();
     expect(screen.getByText(/Resolved 4 existing findings/)).toBeInTheDocument();
   });
@@ -206,7 +208,7 @@ describe("commit detail card", () => {
   it("says a never-scanned commit is not yet analysed and opens risk context", () => {
     render(<CommitDetailCard commit={commit} />);
 
-    expect(screen.getByText("Not yet analysed")).toBeInTheDocument();
+    expect(screen.getByText(/Not analysed for code health yet/)).toBeInTheDocument();
     expect(section("Risk context")?.open).toBe(true);
     expect(screen.queryByText(/Compared clean/)).toBeNull();
   });
@@ -222,7 +224,8 @@ describe("commit detail card", () => {
       />,
     );
 
-    expect(screen.getByText(/An earlier analysis read this commit as making health worse/)).toBeInTheDocument();
+    expect(screen.getByText(/An earlier analysis read the direction shown/)).toBeInTheDocument();
+    expect(screen.queryByText(/introduced or worsened/)).toBeNull();
     expect(screen.queryByText("Got worse")).toBeNull();
   });
 });

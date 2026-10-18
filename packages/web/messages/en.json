@@ -319,16 +319,6 @@
         "refactorsWhyPlain": "{symbol} was refactored as planned.",
         "none": "No wins recorded in this window yet. Resolved findings, healthier files and landed refactorings show up here as they happen."
       },
-      "health": {
-        "improved": "Better",
-        "worsened": "Worse",
-        "mixed": "Mixed",
-        "neutral": "No change",
-        "notAnalysed": "Not yet analysed",
-        "partial": "Part of this commit was not compared",
-        "stale": "Read by an earlier analysis: the direction holds, the counts are not shown",
-        "staleMark": "earlier"
-      },
       "filters": {
         "impactLabel": "Health impact",
         "all": "All",
@@ -345,7 +335,28 @@
         "from": "From",
         "to": "To",
         "author": "Author email or name",
-        "area": "Area, e.g. packages/core"
+        "area": "Area, e.g. packages/core",
+        "moreFilters": "More filters",
+        "clearAll": "Clear all"
+      },
+      "lede": {
+        "label": "What this commit did to code health",
+        "unitWorse": "{worse, plural, one {finding introduced or worsened} other {findings introduced or worsened}} · {better} resolved",
+        "unitBetter": "{better, plural, one {finding resolved} other {findings resolved}} · nothing made worse",
+        "unitNeutral": "findings changed",
+        "worse": "Each one is listed below by file, worst first, with the symbol and line. The prompt hands them to your agent.",
+        "improved": "Resolved {better, plural, one {# finding} other {# findings}} and made nothing worse. Nice work.",
+        "neutral": "Compared clean: nothing introduced, worsened or resolved.",
+        "stale": "An earlier analysis read the direction shown; its counts do not compare with the current analysis, so none are shown.",
+        "unknown": "This commit has not been analysed for code health yet, so the review priority below is the only signal."
+      },
+      "chips": {
+        "author": "Author: {value}",
+        "area": "Area: {value}",
+        "search": "Search: {value}",
+        "high": "High priority",
+        "fixes": "Fixes",
+        "sortRisk": "Sorted by review priority"
       }
     },
     "changes": {

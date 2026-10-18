@@ -6,10 +6,9 @@ import { PriorityBadge } from "./priority-badge";
 import { RiskDriverBreakdown, describeDriver } from "./risk-driver-breakdown";
 import { CommitFilesTable } from "./commit-files-table";
 import { FindingsByFile } from "./findings-by-file";
-import { readCommitHealth, verdictSentence, worseSentence } from "./commit-health-copy";
+import { commitDelta, readCommitHealth, worseSentence } from "./commit-health-copy";
+import { HealthDeltaLede, type HealthDeltaLedeCopy } from "./health-delta-lede";
 import type { HealthDeltaLabels } from "./health-delta-mark";
-import type { HealthDeltaKind } from "./health-delta";
-import { PageLede } from "../shared/page-lede";
 import { OverviewSection } from "../overview/section";
 import { formatDateTime } from "../lib/format";
 import type { CommitDetail } from "@repowise-dev/types/git";
@@ -24,8 +23,10 @@ export interface CommitDetailCardProps {
   fixPercentile?: number | null | undefined;
   /** The primary action beside the verdict, typically the agent prompt. */
   action?: React.ReactNode;
-  /** Words for the verdict; the host's translations of the health chip. */
+  /** Words for the health mark beside the lede figure. */
   healthLabels?: Partial<HealthDeltaLabels> | undefined;
+  /** The lede's words; the host's translations, English by default. */
+  ledeCopy?: Partial<HealthDeltaLedeCopy> | undefined;
   /** Where to fix a file's findings (its health view). Without it the
    *  "Got worse" groups carry no link. */
   fileHref?: ((path: string) => string) | undefined;
@@ -34,20 +35,6 @@ export interface CommitDetailCardProps {
   LinkComponent?: React.ElementType | undefined;
   className?: string;
 }
-
-const VERDICT_COLOR: Partial<Record<HealthDeltaKind, string>> = {
-  improved: "var(--color-success)",
-  worsened: "var(--color-error)",
-};
-
-/** Words for the verdict when the host passes none. */
-const HEALTH_WORDS: Record<HealthDeltaKind | "notCompared", string> = {
-  improved: "Better",
-  worsened: "Worse",
-  mixed: "Mixed",
-  neutral: "No change",
-  notCompared: "Not yet analysed",
-};
 
 /**
  * Drill-down for one commit, in the order a reader acts on it: what it did to
@@ -59,6 +46,7 @@ export function CommitDetailCard({
   fixPercentile,
   action,
   healthLabels,
+  ledeCopy,
   fileHref,
   openFileLabel = "Open file",
   LinkComponent,
@@ -69,7 +57,6 @@ export function CommitDetailCard({
   const files = c.files ?? [];
   const health = c.health ?? null;
   const read = readCommitHealth(c.health_delta, health);
-  const labels = { ...HEALTH_WORDS, ...healthLabels };
   const counted = read.kind !== null && !read.stale;
   const improvedFiles = (c.health_delta?.files ?? []).filter((f) => (f.change ?? 0) > 0);
   const reconciled = reconcile(c, fixPercentile ?? null);
@@ -79,14 +66,12 @@ export function CommitDetailCard({
       <CommitHeader commit={c} />
 
       <div className="mt-7">
-        <PageLede
-          label="Code health"
-          value={read.kind === null ? labels.notCompared : labels[read.kind]}
-          valueColor={read.kind ? VERDICT_COLOR[read.kind] : undefined}
+        <HealthDeltaLede
+          delta={commitDelta(c.health_delta, health)}
+          copy={{ label: "What this commit did to code health", ...ledeCopy }}
+          markLabels={healthLabels}
           action={action}
-        >
-          <p>{verdictSentence(read)}</p>
-        </PageLede>
+        />
       </div>
 
       {counted && read.better > 0 && (

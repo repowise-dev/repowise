@@ -3,20 +3,30 @@
 import { useMemo } from "react";
 import { useTranslations } from "next-intl";
 import type { HealthDeltaLabels } from "@repowise-dev/ui/commits/health-delta-mark";
+import type { HealthDeltaLedeCopy } from "@repowise-dev/ui/commits/health-delta-lede";
 import type { HistoryFilterLabels } from "@repowise-dev/ui/commits/history-filters";
+import { healthDeltaLabels } from "@/lib/changes";
 
-/** The health chip's words, translated; one object per locale render. */
+/** The health mark's words: the same ones the change records use. */
 export function useHealthDeltaLabels(): HealthDeltaLabels {
-  const t = useTranslations("views.commits.health");
+  const t = useTranslations("views.changes");
+  return useMemo(() => healthDeltaLabels(t), [t]);
+}
+
+/** The commit sheet's lede, worded for one commit. */
+export function useCommitLedeCopy(): HealthDeltaLedeCopy {
+  const t = useTranslations("views.commits.lede");
   return useMemo(
     () => ({
-      improved: t("improved"),
-      worsened: t("worsened"),
-      mixed: t("mixed"),
+      label: t("label"),
+      unitWorse: (worse, better) => t("unitWorse", { worse, better }),
+      unitBetter: (better) => t("unitBetter", { better }),
+      unitNeutral: t("unitNeutral"),
+      worse: t("worse"),
+      improved: (better) => t("improved", { better }),
       neutral: t("neutral"),
-      notCompared: t("notAnalysed"),
-      partial: t("partial"),
       stale: t("stale"),
+      unknown: t("unknown"),
     }),
     [t],
   );
@@ -43,6 +53,8 @@ export function useHistoryFilterLabels(): HistoryFilterLabels {
       to: t("to"),
       author: t("author"),
       area: t("area"),
+      moreFilters: t("moreFilters"),
+      clearAll: t("clearAll"),
     }),
     [t],
   );

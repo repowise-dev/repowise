@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readPeriodHealth } from "../../src/commits/period-health";
-import { readCommitHealth, verdictSentence, worseSentence } from "../../src/commits/commit-health-copy";
+import { readCommitHealth, worseSentence } from "../../src/commits/commit-health-copy";
+import { readHealthDeltaLede } from "../../src/commits/health-delta-lede";
+import { worseInHotspot } from "../../src/commits/commit-columns";
 import { winsReads } from "../../src/commits/recent-wins";
 import { buildChangeAiPrompt } from "../../src/health/ai-prompt-builder";
 import type { PeriodHealthSummaryResponse, WinsResponse } from "@repowise-dev/types/history";
@@ -47,30 +49,42 @@ const health = (o: Partial<CommitHealth>): CommitHealth => ({
   ...o,
 });
 
-describe("commit health copy", () => {
-  it("never reads a never-analysed commit as clean", () => {
-    const r = readCommitHealth(null, null);
-    expect(r.kind).toBeNull();
-    expect(verdictSentence(r)).toContain("not been analysed");
+describe("commit health reading", () => {
+  it("reads a never-analysed commit as no delta, never as clean", () => {
+    expect(readCommitHealth(null, null).kind).toBeNull();
+    expect(readHealthDeltaLede(null)).toMatchObject({ variant: "unknown", value: null });
   });
 
-  it("drops counts for a stale delta", () => {
-    const r = readCommitHealth(
-      { status: "available", kind: "worsened", introduced: 4, worsened: 0, resolved: 0, stale: true },
-      null,
-    );
-    expect(r.stale).toBe(true);
-    expect(verdictSentence(r)).not.toMatch(/\d/);
+  it("gives a stale delta its direction but no figure", () => {
+    const delta = { status: "available", kind: "worsened" as const, introduced: 4, worsened: 0, resolved: 0, stale: true };
+    expect(readCommitHealth(delta, null).stale).toBe(true);
+    expect(readHealthDeltaLede(delta)).toMatchObject({ variant: "stale", value: null });
   });
 
-  it("names improvements before regressions", () => {
+  it("leads with what got worse, and with what got better only when nothing did", () => {
+    expect(readHealthDeltaLede({ introduced: 2, worsened: 1, resolved: 4 })).toMatchObject({ variant: "worse", value: 3 });
+    expect(readHealthDeltaLede({ introduced: 0, worsened: 0, resolved: 4 })).toMatchObject({ variant: "improved", value: 4 });
+    expect(readHealthDeltaLede({ introduced: 0, worsened: 0, resolved: 0 })).toMatchObject({ variant: "neutral", value: 0 });
+  });
+
+  it("falls back to the detail's counts", () => {
     const r = readCommitHealth(null, health({ introduced_count: 2, resolved_count: 3 }));
-    expect(verdictSentence(r)).toBe("Made 3 findings better and 2 findings worse.");
+    expect(r).toMatchObject({ kind: "mixed", better: 3, worse: 2 });
   });
 
   it("says when the worse list is capped", () => {
-    const h = health({ introduced_count: 5, findings: [] });
-    expect(worseSentence(h)).toContain("Showing the 0 most severe of 5");
+    expect(worseSentence(health({ introduced_count: 5, findings: [] }))).toContain("Showing the 0 most severe of 5");
+  });
+});
+
+describe("worseInHotspot", () => {
+  const row = (kind: "improved" | "worsened" | "mixed" | "neutral", touches = 1) =>
+    ({ touches_hotspot: touches, health_delta: { status: "available", kind, introduced: 0, worsened: 0, resolved: 0 } }) as never;
+  it("marks only a commit that made a hotspot worse", () => {
+    expect(worseInHotspot(row("worsened"))).toBe(true);
+    expect(worseInHotspot(row("mixed"))).toBe(true);
+    expect(worseInHotspot(row("improved"))).toBe(false);
+    expect(worseInHotspot(row("worsened", 0))).toBe(false);
   });
 });
 

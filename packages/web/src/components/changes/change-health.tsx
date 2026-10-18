@@ -1,10 +1,9 @@
 import type { ReactNode } from "react";
 import { getTranslations } from "next-intl/server";
-import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { FindingsByFile } from "@repowise-dev/ui/commits/findings-by-file";
-import { HealthDeltaMark } from "@repowise-dev/ui/commits/health-delta-mark";
-import { betterCount, healthDeltaKind, worseCount } from "@repowise-dev/ui/commits/health-delta";
+import { HealthDeltaLede } from "@repowise-dev/ui/commits/health-delta-lede";
+import { worseCount } from "@repowise-dev/ui/commits/health-delta";
 import type { ChangePromptInput } from "@repowise-dev/ui/health/ai-prompt-builder";
 import type { ChangeHealthResponse } from "@repowise-dev/types/history";
 import { filePromptInput, healthDeltaLabels } from "@/lib/changes";
@@ -16,45 +15,31 @@ type Health = ChangeHealthResponse | null | undefined;
  * The change page's lede, figure first: how many findings the change made
  * worse (or, when it only helped, how many it resolved), the dot-and-word
  * mark beside it, one reading, and the primary action when there is work to
- * hand over. A change none of whose commits was analysed says so.
+ * hand over. A change none of whose commits was analysed says so. The shared
+ * `HealthDeltaLede` draws it; the commit sheet uses the same one.
  */
 export async function ChangeHealthLede({ health, action }: { health: Health; action?: ReactNode }) {
   const t = await getTranslations("views.changes");
-  const labels = healthDeltaLabels(t);
-  if (!health) {
-    return (
-      <PageLede
-        label={t("verdictLabel")}
-        value="—"
-        badge={<HealthDeltaMark delta={null} labels={labels} />}
-        action={action}
-      >
-        <p>{t("verdictUnknown")}</p>
-      </PageLede>
-    );
-  }
-  const kind = healthDeltaKind(health);
-  const better = betterCount(health);
-  const worse = worseCount(health);
-  const lead =
-    kind === "improved"
-      ? { value: better, unit: t("ledeUnitBetter", { better }), reading: t("verdictImproved", { better }) }
-      : kind === "neutral"
-        ? { value: 0, unit: t("ledeUnitNeutral"), reading: t("verdictNeutral") }
-        : { value: worse, unit: t("ledeUnitWorse", { worse, better }), reading: t("verdictWorseReading") };
   return (
-    <PageLede
-      label={t("verdictLabel")}
-      value={String(lead.value)}
-      unit={lead.unit}
-      badge={<HealthDeltaMark delta={health} labels={labels} figures={false} />}
+    <HealthDeltaLede
+      delta={health ?? null}
+      markLabels={healthDeltaLabels(t)}
       action={action}
+      copy={{
+        label: t("verdictLabel"),
+        unitWorse: (worse, better) => t("ledeUnitWorse", { worse, better }),
+        unitBetter: (better) => t("ledeUnitBetter", { better }),
+        unitNeutral: t("ledeUnitNeutral"),
+        worse: t("verdictWorseReading"),
+        improved: (better) => t("verdictImproved", { better }),
+        neutral: t("verdictNeutral"),
+        unknown: t("verdictUnknown"),
+      }}
     >
-      <p>{lead.reading}</p>
-      {health.status === "partial" && (
+      {health?.status === "partial" && (
         <p>{t("verdictPartial", { unscanned: health.unscanned_commits })}</p>
       )}
-    </PageLede>
+    </HealthDeltaLede>
   );
 }
 

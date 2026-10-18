@@ -23,7 +23,7 @@ import { getCommit } from "@/lib/api/git";
 import { getRiskRange } from "@/lib/api/risk";
 import { commitFixPromptInput, commitReviewPromptInput } from "@/lib/commit-prompt";
 import { useTranslations } from "next-intl";
-import { useHealthDeltaLabels } from "./history-labels";
+import { useCommitLedeCopy, useHealthDeltaLabels } from "./history-labels";
 
 /**
  * The commit detail drawer, driven entirely by `?commit=`.
@@ -39,6 +39,7 @@ import { useHealthDeltaLabels } from "./history-labels";
 export function CommitDetailSheet({ repoId }: { repoId: string }) {
   const t = useTranslations("commits");
   const healthLabels = useHealthDeltaLabels();
+  const ledeCopy = useCommitLedeCopy();
   const [selectedSha, setSelectedSha] = useQueryState("commit");
   const [promptOpen, setPromptOpen] = useState(false);
 
@@ -84,6 +85,7 @@ export function CommitDetailSheet({ repoId }: { repoId: string }) {
                 className="pt-1"
                 commit={detail}
                 healthLabels={healthLabels}
+                ledeCopy={ledeCopy}
                 fileHref={(path) => `${fileEntityPath(`/repos/${repoId}`, path)}?tab=health`}
                 openFileLabel={t("detail.openFile")}
                 LinkComponent={Link}

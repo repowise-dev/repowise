@@ -1,11 +1,34 @@
 /**
- * What one commit did to code health, in sentences: the detail sheet's
- * verdict, "Got better" and "Got worse". Pure, so tests pin the wording rules
- * (counts only from a current analysis, never-scanned is not clean).
+ * What one commit did to code health, read the same way by the detail sheet
+ * and the fix prompt. Pure, so tests pin the rules (counts only from a current
+ * analysis, never-scanned is not clean).
  */
 import type { CommitHealth } from "@repowise-dev/types/git";
 import type { HealthDeltaSummaryResponse } from "@repowise-dev/types/history";
-import { betterCount, healthDeltaKind, worseCount, type HealthDeltaKind } from "./health-delta";
+import {
+  betterCount,
+  healthDeltaKind,
+  worseCount,
+  type HealthDeltaCounts,
+  type HealthDeltaKind,
+} from "./health-delta";
+
+/** The commit's delta: the list row's summary, else the detail's counts;
+ *  null when the commit was never analysed. */
+export function commitDelta(
+  delta: HealthDeltaSummaryResponse | null | undefined,
+  health: CommitHealth | null | undefined,
+): HealthDeltaCounts | null {
+  if (delta) return { ...delta, stale: delta.stale === true || health?.stale === true };
+  if (!health) return null;
+  return {
+    introduced: health.introduced_count,
+    worsened: health.worsened_count,
+    resolved: health.resolved_count,
+    status: health.status,
+    stale: health.stale === true,
+  };
+}
 
 export interface CommitHealthRead {
   /** Null when the commit has no analysis at all. */
@@ -20,42 +43,9 @@ export function readCommitHealth(
   delta: HealthDeltaSummaryResponse | null | undefined,
   health: CommitHealth | null | undefined,
 ): CommitHealthRead {
-  const stale = delta?.stale === true || health?.stale === true;
-  if (delta) {
-    return { kind: healthDeltaKind(delta), stale, better: betterCount(delta), worse: worseCount(delta) };
-  }
-  if (health) {
-    const counts = {
-      introduced: health.introduced_count,
-      worsened: health.worsened_count,
-      resolved: health.resolved_count,
-    };
-    return { kind: healthDeltaKind(counts), stale, better: betterCount(counts), worse: worseCount(counts) };
-  }
-  return { kind: null, stale, better: 0, worse: 0 };
-}
-
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-
-/** The verdict's sentence. Improvements are named before regressions. */
-export function verdictSentence(r: CommitHealthRead): string {
-  if (r.kind === null) {
-    return "This commit has not been analysed for code health yet, so the review priority below is the only signal.";
-  }
-  if (r.stale) {
-    const way = { improved: "better", worsened: "worse", mixed: "better in places and worse in others", neutral: "neither better nor worse" }[r.kind];
-    return `An earlier analysis read this commit as making health ${way}. The counts are not compared with the current analysis.`;
-  }
-  switch (r.kind) {
-    case "improved":
-      return `Made health better: ${plural(r.better, "finding")} resolved, nothing made worse.`;
-    case "worsened":
-      return `Made health worse: ${plural(r.worse, "finding")} introduced or made more severe.`;
-    case "mixed":
-      return `Made ${plural(r.better, "finding")} better and ${plural(r.worse, "finding")} worse.`;
-    default:
-      return "Compared clean: nothing introduced, worsened or resolved.";
-  }
+  const d = commitDelta(delta, health);
+  if (!d) return { kind: null, stale: false, better: 0, worse: 0 };
+  return { kind: healthDeltaKind(d), stale: d.stale === true, better: betterCount(d), worse: worseCount(d) };
 }
 
 /** "Got worse" description: the counts, and what the list cannot show. */
