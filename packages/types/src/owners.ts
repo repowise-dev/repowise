@@ -22,6 +22,7 @@ export interface OwnerListEntry {
   /** A floor of that count when the indexed commits stop inside the window; null otherwise. */
   commit_count_90d_at_least?: number | null;
   last_commit_at: string | null;
+  /** Owned files whose bus factor is exactly 1 (0 means no indexed history). */
   bus_factor_risk_files: number;
 }
 
@@ -75,6 +76,7 @@ export interface OwnerProfile {
   commit_count_90d_at_least?: number | null;
   last_commit_at: string | null;
   first_commit_at: string | null;
+  /** Owned files whose bus factor is exactly 1 (0 means no indexed history). */
   bus_factor_risk_files: number;
   /** Estimated, not exact — see Pydantic doc. */
   lines_added_90d_est: number;

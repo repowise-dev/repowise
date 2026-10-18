@@ -246,7 +246,8 @@ def aggregate_owners(
             if row_field(m, "is_hotspot"):
                 primary.hotspots_owned += 1
                 primary.module_hotspots[module] += 1
-            if (row_field(m, "bus_factor") or 0) <= 1:
+            # Exactly 1: a bus factor of 0 means no indexed history, not risk.
+            if (row_field(m, "bus_factor") or 0) == 1:
                 primary.bus_factor_risk_files += 1
             if (row_field(m, "commit_count_90d") or 0) > 0:
                 primary.owned_changing_files += 1

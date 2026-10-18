@@ -54,7 +54,7 @@ class OwnerListEntry(BaseModel):
     # A floor of that count when the indexed commits stop inside the window.
     commit_count_90d_at_least: int | None = None
     last_commit_at: datetime | None
-    bus_factor_risk_files: int  # files they own where bus_factor <= 1
+    bus_factor_risk_files: int  # files they own whose bus_factor is exactly 1
 
 
 class OwnerModuleRollup(BaseModel):

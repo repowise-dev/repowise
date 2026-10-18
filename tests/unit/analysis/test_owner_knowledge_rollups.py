@@ -253,3 +253,13 @@ def test_an_email_only_owner_owns_files_on_every_surface() -> None:
     assert accs["solo@example.com"].files_owned == 1
     assert dict(owned_files(rows, resolve).by_owner) == {"solo@example.com": 1}
     assert person_owner(rows[0], resolve) == "solo@example.com"
+
+
+def test_a_file_without_history_is_not_a_single_owner_risk() -> None:
+    rows = [*ROWS, _row("core/new.py", _ADA, [], bus_factor=0)]
+    resolve = people_resolver(rows, COMMITS)
+    accs, _ = aggregate_owners(rows, [], COMMITS, len(COMMITS), resolve)
+    ada = accs["ada@example.com"]
+    # a.py and b.py have bus factor 1; c.py has 2 and new.py has none indexed.
+    assert (ada.files_owned, ada.bus_factor_risk_files) == (4, 2)
+    assert build_owner_summary(rows, resolve, accs)["single_owner_files"] == 7
