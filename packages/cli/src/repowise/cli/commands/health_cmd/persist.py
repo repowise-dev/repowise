@@ -98,6 +98,8 @@ def _load_queue_counts(repo_path: object) -> dict[str, Any] | None:
 
 def _load_short_history(repo_path: object) -> set[str]:
     """Files whose recorded history is too thin to count; empty when the store cannot answer."""
+    from sqlalchemy.exc import SQLAlchemyError
+
     from repowise.cli.helpers import repo_index_session
     from repowise.core.persistence.crud import get_short_history_paths
 
@@ -110,7 +112,8 @@ def _load_short_history(repo_path: object) -> set[str]:
 
     try:
         return run_async(_do())
-    except Exception:
+    except (SQLAlchemyError, OSError):
+        # A marker beside the score, never a reason to fail the report.
         return set()
 
 
