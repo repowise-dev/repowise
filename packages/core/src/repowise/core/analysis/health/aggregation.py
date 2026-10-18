@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from .governance import GOVERNANCE_BIOMARKERS
 from .models import Severity, primary_finding
 from .ranking import worst_metric
 from .rows import detail_map, field, scored_rows
@@ -252,6 +253,13 @@ def primary_and_magnitude_by_file(findings: Iterable[Any]) -> dict[str, dict[str
     return {path: primary_and_magnitude(fs) for path, fs in by_file.items()}
 
 
+def _scored_raw(finding: Any) -> float:
+    """:func:`finding_raw_deduction`, or 0 for a governance finding the score pass never saw."""
+    if field(finding, "biomarker_type", None) in GOVERNANCE_BIOMARKERS:
+        return 0.0
+    return finding_raw_deduction(finding)
+
+
 def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     """Reconstruct one file's per-category deductions from its open findings.
 
@@ -282,7 +290,7 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
         entries = per_category.get(category, [])
         if not entries:
             continue
-        raw_each = [finding_raw_deduction(f) for f in entries]
+        raw_each = [_scored_raw(f) for f in entries]
         cap = static_cap
         if category == HISTORY_CATEGORY:
             cap, raw_each = history_cap(structure), destacked(raw_each)
