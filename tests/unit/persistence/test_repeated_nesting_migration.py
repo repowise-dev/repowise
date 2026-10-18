@@ -27,19 +27,22 @@ def _alembic_config(db_path: Path):
     return config
 
 
+def _filler(table: str, name: str, kind: str | None) -> object:
+    numeric = any(k in (kind or "").upper() for k in ("INT", "FLOAT", "BOOL"))
+    return 0 if numeric else f"{table}-{name}"
+
+
 def _seed(db_path: Path) -> None:
     """One row per column holding the old id, with every NOT NULL column filled."""
     conn = sqlite3.connect(db_path)
     try:
         for table, column in _COLUMNS:
             info = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
-            values: dict[str, object] = {}
-            for _, name, kind, notnull, default, _pk in info:
-                if name == column:
-                    values[name] = OLD
-                elif notnull and default is None:
-                    numeric = any(k in (kind or "").upper() for k in ("INT", "FLOAT", "BOOL"))
-                    values[name] = 0 if numeric else f"{table}-{name}"
+            values = {
+                name: OLD if name == column else _filler(table, name, kind)
+                for _, name, kind, notnull, default, _pk in info
+                if name == column or (notnull and default is None)
+            }
             names = ", ".join(f'"{n}"' for n in values)
             marks = ", ".join("?" for _ in values)
             conn.execute(f'INSERT INTO "{table}" ({names}) VALUES ({marks})', list(values.values()))
