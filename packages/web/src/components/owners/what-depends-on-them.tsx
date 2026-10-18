@@ -8,6 +8,7 @@ import { OffboardingResultView } from "@repowise-dev/ui/owners/offboarding-resul
 import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { useKnowledgeMatrix } from "./use-knowledge-matrix";
+import { useOwnershipLabels } from "./ownership-labels";
 import { contributorsHref } from "./use-contributors-url";
 
 /**
@@ -23,6 +24,7 @@ export function WhatDependsOnThem({ repoId, ownerKey }: { repoId: string; ownerK
   const tCommon = useTranslations("common");
   const base = `/repos/${repoId}`;
   const matrix = useKnowledgeMatrix(repoId);
+  const labels = useOwnershipLabels();
   const result = useMemo(
     () => (matrix.data ? simulateOffboarding(matrix.data, [ownerKey]) : null),
     [matrix.data, ownerKey],
@@ -46,6 +48,7 @@ export function WhatDependsOnThem({ repoId, ownerKey }: { repoId: string; ownerK
       base={base}
       LinkComponent={Link}
       initialAreas={5}
+      labels={labels}
       secondaryAction={
         <Link
           href={contributorsHref(base, "offboarding", [ownerKey])}

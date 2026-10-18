@@ -2,13 +2,14 @@
 
 import * as React from "react";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { AGENT_PROMPT_LABEL, useAiPromptAction, type AiPromptRequest } from "../health/ai-prompt-action";
+import { useAiPromptAction } from "../health/ai-prompt-action";
 import { CleanState } from "../shared/clean-state";
 import { StatRibbon } from "../stats/stat-ribbon";
-import { buildHandoverPrompt, offboardingPromptAreas } from "./handover-prompt";
 import { KnowledgeAreaList, KnowledgeAreaRow } from "./knowledge-area-list";
 import { joinNames } from "./knowledge-files";
+import { ownershipLabels, type OwnershipLabels } from "./labels";
 import type { OffboardingArea, OffboardingResult } from "./offboarding";
+import { handoverPromptRequest } from "./prompt-requests";
 
 /**
  * How an off-boarding result reads, wherever it is shown: the what-if on the
@@ -19,70 +20,45 @@ import type { OffboardingArea, OffboardingResult } from "./offboarding";
 const pct = (share: number) => `${Math.round(share * 100)}%`;
 
 /** A share of the codebase; a sliver reads "under 1%", never "0%". */
-const codeShare = (share: number) => (share > 0 && share < 0.005 ? "under 1%" : pct(share));
+const codeShare = (share: number, labels: OwnershipLabels) =>
+  share > 0 && share < 0.005 ? labels.underOnePercent : pct(share);
 
-/** The handover prompt request for some areas of a result. */
-export function handoverPromptRequest(
-  result: OffboardingResult,
-  areas: readonly OffboardingArea[],
-  repoName?: string,
-): AiPromptRequest {
-  const people = result.leaving.map((p) => p.name);
-  const promptAreas = offboardingPromptAreas(areas);
-  const files = promptAreas.reduce((s, a) => s + a.files.length, 0);
-  return {
-    title: "Plan the handover",
-    description: `A handover plan for ${files.toLocaleString()} ${files === 1 ? "file" : "files"} that depend on ${joinNames(people)}.`,
-    filePath: areas.length === 1 ? areas[0]!.dir || "(repository root)" : null,
-    getPrompt: (flavor) =>
-      buildHandoverPrompt({
-        purpose: "handover",
-        people,
-        areas: promptAreas,
-        flavor,
-        threshold: result.threshold,
-        ...(repoName ? { repoName } : {}),
-      }),
-  };
-}
-
-function areaSummary(area: OffboardingArea): string {
+function areaSummary(area: OffboardingArea, labels: OwnershipLabels): string {
   const heir = area.inheritor
-    ? `${area.inheritor.person.name} could take over: the strongest remaining author on ${area.inheritor.files.toLocaleString()} of ${area.fileCount.toLocaleString()}`
-    : "Nobody who stays is among these files' main authors";
-  const severe =
-    area.severe > 0
-      ? `. ${area.severe.toLocaleString()} ${area.severe === 1 ? "is a hotspot or in" : "are hotspots or in"} weak health`
-      : "";
-  return `${heir}${severe}.`;
+    ? labels.heir(area.inheritor.person.name, area.inheritor.files, area.fileCount)
+    : labels.noHeir;
+  return area.severe > 0 ? `${heir}. ${labels.heirSevere(area.severe)}.` : `${heir}.`;
 }
 
 export interface OffboardingAreasProps {
   areas: readonly OffboardingArea[];
   onPrompt: (area: OffboardingArea) => void;
+  labels: OwnershipLabels;
   base?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
   initial?: number;
 }
 
-export function OffboardingAreas({ areas, onPrompt, base, LinkComponent, initial }: OffboardingAreasProps) {
+export function OffboardingAreas({ areas, onPrompt, labels, base, LinkComponent, initial }: OffboardingAreasProps) {
   return (
     <KnowledgeAreaList
-      label="Directories that would lose their majority author"
+      label={labels.offboardingListLabel}
+      showAllLabel={labels.showAllDirectories}
       areas={areas}
       keyOf={(a) => a.dir}
       {...(initial ? { initial } : {})}
       renderArea={(area) => (
         <KnowledgeAreaRow
           dir={area.dir}
-          summary={areaSummary(area)}
+          summary={areaSummary(area, labels)}
           files={area.files.map((f) => ({
             ...f,
-            note: f.inheritor ? `${f.inheritor.name} ${pct(f.inheritor.share)}` : "no other author",
+            note: f.inheritor ? `${f.inheritor.name} ${pct(f.inheritor.share)}` : labels.noOtherAuthor,
           }))}
           onPrompt={() => onPrompt(area)}
           base={base}
           LinkComponent={LinkComponent}
+          labels={labels}
         />
       )}
     />
@@ -98,6 +74,33 @@ export interface OffboardingResultViewProps {
   secondaryAction?: React.ReactNode;
   /** Directories shown before "Show all". */
   initialAreas?: number;
+  labels?: Partial<OwnershipLabels> | undefined;
+}
+
+/** Nothing at risk: either nothing depends on them, or they hold no share at all. */
+function NothingAtRisk({
+  result,
+  names,
+  labels,
+  children,
+}: {
+  result: OffboardingResult;
+  names: string;
+  labels: OwnershipLabels;
+  children?: React.ReactNode;
+}) {
+  const touched = result.totals.touchedFiles;
+  return (
+    <CleanState
+      align="start"
+      title={touched > 0 ? labels.nothingDependsTitle(names) : labels.noShareTitle(names, result.leaving.length)}
+      description={
+        touched > 0 ? labels.nothingDependsDescription(pct(result.threshold), touched, names) : labels.noShareDescription
+      }
+    >
+      {children}
+    </CleanState>
+  );
 }
 
 export function OffboardingResultView({
@@ -107,88 +110,62 @@ export function OffboardingResultView({
   LinkComponent,
   secondaryAction,
   initialAreas,
+  labels: overrides,
 }: OffboardingResultViewProps) {
+  const labels = React.useMemo(() => ownershipLabels(overrides), [overrides]);
   const { openPrompt, promptModal } = useAiPromptAction();
   const { totals } = result;
   const names = joinNames(result.leaving.map((p) => p.name));
-  const threshold = pct(result.threshold);
   const promptArea = React.useCallback(
-    (area: OffboardingArea) => openPrompt(handoverPromptRequest(result, [area], repoName)),
-    [openPrompt, result, repoName],
+    (area: OffboardingArea) => openPrompt(handoverPromptRequest(result, [area], labels, repoName)),
+    [openPrompt, result, labels, repoName],
   );
 
   if (result.leaving.length === 0) {
-    return (
-      <p className="text-[15px] leading-relaxed text-[var(--color-text-secondary)]">
-        None of the selected people appear in the indexed history. They may have committed under a
-        different address; search for them by name.
-      </p>
-    );
+    return <p className="text-[15px] leading-relaxed text-[var(--color-text-secondary)]">{labels.unknownPeople}</p>;
   }
-
   if (totals.atRiskFiles === 0) {
     return (
-      <CleanState
-        align="start"
-        title={
-          totals.touchedFiles > 0
-            ? `Nothing depends on ${names} alone`
-            : `${names} ${result.leaving.length === 1 ? "holds" : "hold"} no share of the indexed code`
-        }
-        description={
-          totals.touchedFiles > 0
-            ? `The people who stay hold at least ${threshold} of the commits on all ${totals.touchedFiles.toLocaleString()} files ${names} worked on.`
-            : "No code file lists them among its top five authors."
-        }
-      >
+      <NothingAtRisk result={result} names={names} labels={labels}>
         {secondaryAction}
-      </CleanState>
+      </NothingAtRisk>
     );
   }
 
+  const share = codeShare(totals.nlocShare, labels);
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-3">
         <p className="max-w-[68ch] text-[15px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-          Without {names},{" "}
-          <strong className="font-semibold text-[var(--color-text-primary)]">
-            {totals.atRiskFiles.toLocaleString()} {totals.atRiskFiles === 1 ? "file" : "files"}
-          </strong>{" "}
-          would be left with authors holding under {threshold} of the commits:{" "}
-          {codeShare(totals.nlocShare)} of the code
-          {totals.severeFiles > 0
-            ? `, ${totals.severeFiles.toLocaleString()} of them hotspots or in weak health`
-            : ""}
-          . {(totals.touchedFiles - totals.atRiskFiles).toLocaleString()} more carry some of their
-          history but keep at least {threshold} with the people who stay.
+          {labels.resultSentence({
+            names,
+            files: totals.atRiskFiles,
+            threshold: pct(result.threshold),
+            codeShare: share,
+            severe: totals.severeFiles,
+            kept: totals.touchedFiles - totals.atRiskFiles,
+          })}
         </p>
         <div className="flex flex-wrap items-center gap-3">
           <AiPromptButton
-            onClick={() => openPrompt(handoverPromptRequest(result, result.areas, repoName))}
-            label={AGENT_PROMPT_LABEL}
+            onClick={() => openPrompt(handoverPromptRequest(result, result.areas, labels, repoName))}
+            label={labels.agentPrompt}
           />
           {secondaryAction}
         </div>
       </div>
       <StatRibbon
         stats={[
-          { label: "Files at risk", value: totals.atRiskFiles.toLocaleString() },
-          {
-            label: "Hotspots among them",
-            value: totals.hotspots.toLocaleString(),
-            hint: "At-risk files in the repository's high-churn band",
-          },
-          {
-            label: "Share of code",
-            value: codeShare(totals.nlocShare),
-            hint: `Lines of code in at-risk files, of ${totals.totalNloc.toLocaleString()} across ${totals.trackedFiles.toLocaleString()} files`,
-          },
-          { label: "Directories", value: result.areas.length.toLocaleString() },
+          { label: labels.statAtRisk, value: totals.atRiskFiles.toLocaleString() },
+          { label: labels.statHotspots, value: totals.hotspots.toLocaleString(), hint: labels.statHotspotsHint },
+          { label: labels.statShare, value: share, hint: labels.statShareHint(totals.totalNloc, totals.trackedFiles) },
+          { label: labels.statDirectories, value: result.areas.length.toLocaleString() },
         ]}
       />
       <OffboardingAreas
         areas={result.areas}
         onPrompt={promptArea}
+        labels={labels}
         base={base}
         LinkComponent={LinkComponent}
         {...(initialAreas ? { initial: initialAreas } : {})}

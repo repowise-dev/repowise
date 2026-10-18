@@ -4,6 +4,8 @@ export * from "./owner-profile";
 export * from "./owner-avatar";
 export * from "./ownership-lede";
 export * from "./knowledge-coverage";
+export * from "./labels";
+export * from "./prompt-requests";
 export * from "./knowledge-files";
 export * from "./knowledge-risks";
 export * from "./knowledge-loss";

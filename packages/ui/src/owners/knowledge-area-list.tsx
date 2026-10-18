@@ -2,17 +2,17 @@
 
 import * as React from "react";
 import { formatScore } from "@repowise-dev/types/health";
-import { bulkAgentPromptLabel } from "../health/ai-prompt-action";
 import { RowPromptAction } from "../health/row-prompt-action";
 import { scoreTextColor } from "../health/tokens";
 import { fileEntityPath } from "../shared/entity";
 import { PathText } from "../shared/path-text";
+import type { OwnershipLabels } from "./labels";
 
 /**
  * Directories of files that carry knowledge risk, area first and files on
  * demand: the shape the Knowledge risks, Knowledge loss and Off-boarding views
- * and the person page all share. Each area leads with its one filled action,
- * a prompt for the whole group; file rows carry no button of their own.
+ * and the person page all share. Each area carries a quiet prompt for its
+ * files, shown on hover and focus; the one filled prompt sits on the section.
  */
 
 export interface KnowledgeAreaFile {
@@ -35,15 +35,16 @@ export interface KnowledgeAreaRowProps {
   base?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
   defaultOpen?: boolean;
+  labels: OwnershipLabels;
 }
 
 /** Files listed before "Show all N". */
 const FILE_LIMIT = 12;
 
-function FileMarks({ file }: { file: KnowledgeAreaFile }) {
+function FileMarks({ file, hotspot }: { file: KnowledgeAreaFile; hotspot: string }) {
   return (
     <span className="flex shrink-0 items-baseline gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
-      {file.isHotspot && <span>Hotspot</span>}
+      {file.isHotspot && <span>{hotspot}</span>}
       {file.lowHealth && file.healthScore != null && (
         <span className={`normal-case tracking-normal ${scoreTextColor(file.healthScore)}`}>
           {formatScore(file.healthScore)}
@@ -61,6 +62,7 @@ export function KnowledgeAreaRow({
   base,
   LinkComponent,
   defaultOpen = false,
+  labels,
 }: KnowledgeAreaRowProps) {
   const [open, setOpen] = React.useState(defaultOpen);
   const panelId = React.useId();
@@ -83,9 +85,9 @@ export function KnowledgeAreaRow({
           </span>
           <span className="min-w-0">
             <span className="flex flex-wrap items-baseline gap-x-2">
-              <PathText path={dir ? `${dir}/` : "(repository root)"} className="text-[13px]" />
+              <PathText path={dir ? `${dir}/` : labels.repositoryRoot} className="text-[13px]" />
               <span className="font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
-                {files.length.toLocaleString()} {files.length === 1 ? "file" : "files"}
+                {labels.files(files.length)}
               </span>
             </span>
             {summary && (
@@ -97,12 +99,14 @@ export function KnowledgeAreaRow({
         </button>
         <RowPromptAction
           onClick={onPrompt}
-          label={bulkAgentPromptLabel(files.length)}
-          subject={dir || "repository root"}
+          label={labels.promptForGroup(files.length)}
+          subject={dir || labels.repositoryRoot}
         />
       </div>
 
-      {open && <AreaFiles id={panelId} dir={dir} files={files} base={base} LinkComponent={LinkComponent} />}
+      {open && (
+        <AreaFiles id={panelId} dir={dir} files={files} base={base} LinkComponent={LinkComponent} labels={labels} />
+      )}
     </li>
   );
 }
@@ -114,19 +118,21 @@ function AreaFiles({
   files,
   base,
   LinkComponent,
+  labels,
 }: {
   id: string;
   dir: string;
   files: KnowledgeAreaFile[];
   base?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
+  labels: OwnershipLabels;
 }) {
   const [all, setAll] = React.useState(false);
   const shown = all ? files : files.slice(0, FILE_LIMIT);
   return (
     <ul id={id} className="mt-2 flex flex-col pl-5">
       {shown.map((f) => (
-        <AreaFileRow key={f.path} file={f} dir={dir} base={base} LinkComponent={LinkComponent} />
+        <AreaFileRow key={f.path} file={f} dir={dir} base={base} LinkComponent={LinkComponent} hotspot={labels.hotspot} />
       ))}
       {files.length > shown.length && (
         <li>
@@ -135,7 +141,7 @@ function AreaFiles({
             onClick={() => setAll(true)}
             className="mt-1 text-xs text-[var(--color-accent-primary)] hover:underline"
           >
-            Show all {files.length.toLocaleString()} files
+            {labels.showAllFiles(files.length)}
           </button>
         </li>
       )}
@@ -148,11 +154,13 @@ function AreaFileRow({
   dir,
   base,
   LinkComponent,
+  hotspot,
 }: {
   file: KnowledgeAreaFile;
   dir: string;
   base?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
+  hotspot: string;
 }) {
   const A = LinkComponent ?? "a";
   const name = <PathText path={dir ? file.path.slice(dir.length + 1) : file.path} />;
@@ -166,7 +174,7 @@ function AreaFileRow({
         ) : (
           name
         )}
-        <FileMarks file={file} />
+        <FileMarks file={file} hotspot={hotspot} />
       </span>
       {file.note && (
         <span className="font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">{file.note}</span>
@@ -182,6 +190,7 @@ export function KnowledgeAreaList<T>({
   renderArea,
   initial = 8,
   label,
+  showAllLabel,
 }: {
   areas: readonly T[];
   keyOf: (area: T) => string;
@@ -189,6 +198,8 @@ export function KnowledgeAreaList<T>({
   initial?: number;
   /** Accessible name of the list, e.g. "Areas at risk". */
   label: string;
+  /** "Show all N directories". */
+  showAllLabel: (count: number) => string;
 }) {
   const [limit, setLimit] = React.useState(initial);
   const shown = areas.slice(0, limit);
@@ -205,7 +216,7 @@ export function KnowledgeAreaList<T>({
           onClick={() => setLimit(areas.length)}
           className="self-start text-xs text-[var(--color-accent-primary)] hover:underline"
         >
-          Show all {areas.length.toLocaleString()} directories
+          {showAllLabel(areas.length)}
         </button>
       )}
     </div>

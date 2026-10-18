@@ -8,6 +8,7 @@ import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
 import { EmptyState } from "../shared/empty-state";
 import { OverviewSection } from "../overview/section";
+import { ownershipLabels, type OwnershipLabels } from "./labels";
 import { OwnerTable, type OwnerSortKey } from "./owner-table";
 
 export type { OwnerSortKey };
@@ -37,6 +38,7 @@ export interface OwnerDirectoryProps {
   LinkComponent?: React.ElementType | undefined;
   /** Rendered in place of the table when the list could not load. */
   error?: React.ReactNode;
+  labels?: Partial<OwnershipLabels> | undefined;
 }
 
 /**
@@ -58,17 +60,17 @@ export function OwnerDirectory({
   hrefFor,
   LinkComponent,
   error,
+  labels: overrides,
 }: OwnerDirectoryProps) {
-  const noun = filters.includeAutomation
-    ? total === 1 ? "contributor" : "contributors"
-    : total === 1 ? "person" : "people";
+  const labels = React.useMemo(() => ownershipLabels(overrides), [overrides]);
+  const all = filters.includeAutomation;
   return (
     <OverviewSection
-      title="Everyone"
-      description="A dot marks sole-owned files held by someone who has stopped committing, so a clean column means nothing to chase."
+      title={labels.everyone}
+      description={labels.everyoneDescription}
       action={
         <span className="font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          {total.toLocaleString()} {noun}
+          {labels.people(total, all)}
         </span>
       }
     >
@@ -78,8 +80,8 @@ export function OwnerDirectory({
           <Input
             value={filters.q}
             onChange={(e) => onFiltersChange({ ...filters, q: e.target.value })}
-            placeholder="Filter by name or email…"
-            aria-label="Filter contributors by name or email"
+            placeholder={labels.searchPlaceholder}
+            aria-label={labels.searchLabel}
             className="pl-8"
           />
         </div>
@@ -89,8 +91,7 @@ export function OwnerDirectory({
               checked={filters.includeAutomation}
               onCheckedChange={(includeAutomation) => onFiltersChange({ ...filters, includeAutomation })}
             />
-            Show {automationCount.toLocaleString()} bot and agent{" "}
-            {automationCount === 1 ? "identity" : "identities"}
+            {labels.showAutomation(automationCount)}
           </label>
         )}
       </div>
@@ -107,14 +108,14 @@ export function OwnerDirectory({
         filters.q ? (
           <EmptyState
             tone="filtered"
-            title="No contributors match this search"
-            action={{ label: "Clear search", onClick: () => onFiltersChange({ ...filters, q: "" }) }}
+            title={labels.noMatch}
+            action={{ label: labels.clearSearch, onClick: () => onFiltersChange({ ...filters, q: "" }) }}
           />
         ) : (
           <EmptyState
             icon={<Users />}
-            title="No contributors yet"
-            description="Contributors land with the first git index."
+            title={labels.noPeople}
+            description={labels.noPeopleDescription}
           />
         )
       ) : (
@@ -135,7 +136,7 @@ export function OwnerDirectory({
           disabled={isValidating}
           className="self-start text-xs text-[var(--color-accent-primary)] hover:underline disabled:text-[var(--color-text-tertiary)] disabled:no-underline"
         >
-          {isValidating ? "Loading…" : `Show all ${total.toLocaleString()} ${noun}`}
+          {isValidating ? labels.loading : labels.showAllPeople(total, all)}
         </button>
       )}
     </OverviewSection>

@@ -3,11 +3,12 @@
 import * as React from "react";
 import type { OwnersSummary } from "@repowise-dev/types/owners";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { AGENT_PROMPT_LABEL, useAiPromptAction, type AiPromptRequest } from "../health/ai-prompt-action";
+import { useAiPromptAction } from "../health/ai-prompt-action";
 import { ReadsColumn, type ReadItem } from "../overview/reads-column";
 import { PageLede } from "../shared/page-lede";
-import { buildHandoverPrompt, riskPromptAreas } from "./handover-prompt";
 import { WELL_SHARED_MIN, type KnowledgeCoverage } from "./knowledge-coverage";
+import { ownershipLabels, type OwnershipLabels } from "./labels";
+import { spreadPromptRequest } from "./prompt-requests";
 
 export type OwnershipTab = "risks" | "loss" | "offboarding";
 
@@ -18,31 +19,36 @@ export interface OwnershipLedeProps {
   hrefForTab: (tab: OwnershipTab, leave?: string[]) => string;
   repoName?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
+  labels?: Partial<OwnershipLabels> | undefined;
 }
 
-/** Whole percent, floored below 100 so a share short of everything never reads "100%". */
+/** Whole percent, capped below 100 so a share short of everything never reads "100%". */
 const pct = (share: number) => `${share >= 1 ? 100 : Math.min(99, Math.round(share * 100))}%`;
 
 /** The reads beside the lede, each present only when it has something to point at. */
-function ownershipReads(summary: OwnersSummary, hrefForTab: OwnershipLedeProps["hrefForTab"]): ReadItem[] {
+function ownershipReads(
+  summary: OwnersSummary,
+  hrefForTab: OwnershipLedeProps["hrefForTab"],
+  labels: OwnershipLabels,
+): ReadItem[] {
   const reads: ReadItem[] = [];
   if (summary.single_owner_hotspots > 0) {
     reads.push({
       key: "hotspots",
-      label: "Single-author hotspots",
+      label: labels.readHotspots,
       value: summary.single_owner_hotspots.toLocaleString(),
-      unit: `of ${summary.single_owner_files.toLocaleString()} single-author files`,
-      why: "Busy files only one person has written. The cheapest place to get a second reader.",
+      unit: labels.readHotspotsUnit(summary.single_owner_files),
+      why: labels.readHotspotsWhy,
       href: hrefForTab("risks"),
     });
   }
   if (summary.quiet_owners_total > 0) {
     reads.push({
       key: "quiet",
-      label: "Quiet owners of changing code",
+      label: labels.readQuiet,
       value: summary.quiet_owners_total.toLocaleString(),
-      unit: summary.quiet_owners_total === 1 ? "person" : "people",
-      why: `No commit in ${summary.activity_window_days} days, yet files they own changed in that time.`,
+      unit: labels.readQuietUnit(summary.quiet_owners_total),
+      why: labels.readQuietWhy(summary.activity_window_days),
       href: hrefForTab("loss"),
     });
   }
@@ -51,36 +57,17 @@ function ownershipReads(summary: OwnersSummary, hrefForTab: OwnershipLedeProps["
     // The truck factor is the fewest top owners covering half the owned files,
     // so within the concentration list those are the people; the read links to
     // their scenario without naming anyone.
-    const keys = tf <= summary.concentration.owners.length ? summary.concentration.owners.slice(0, tf).map((o) => o.key) : [];
+    const owners = summary.concentration.owners;
+    const keys = tf <= owners.length ? owners.slice(0, tf).map((o) => o.key) : [];
     reads.push({
       key: "truck",
-      label: "Fewest people holding half the owned files",
+      label: labels.readTruck,
       value: tf.toLocaleString(),
-      why: "The truck factor. Open the off-boarding view to see what depends on them.",
+      why: labels.readTruckWhy,
       href: hrefForTab("offboarding", keys),
     });
   }
   return reads;
-}
-
-/** The prompt for a plan to spread the single-person changing files. */
-function spreadRequest(coverage: KnowledgeCoverage, days: number, repoName?: string): AiPromptRequest {
-  const areas = riskPromptAreas(coverage.singleHolderAreas);
-  const people = Array.from(new Set(coverage.singleHolderAreas.flatMap((a) => a.files.map((f) => f.holder.name))));
-  const n = coverage.singleHolderFiles;
-  return {
-    title: "Spread the knowledge",
-    description: `A plan for a second person to learn ${n.toLocaleString()} changing ${n === 1 ? "file" : "files"} one person holds.`,
-    getPrompt: (flavor) =>
-      buildHandoverPrompt({
-        purpose: "spread",
-        people,
-        areas,
-        flavor,
-        spreadReason: `each one changed in the last ${days} days`,
-        ...(repoName ? { repoName } : {}),
-      }),
-  };
 }
 
 /** The coverage figure and its sentence; `share` is known here. */
@@ -88,32 +75,31 @@ function CoverageFigure({
   coverage,
   share,
   days,
+  labels,
   onPrompt,
 }: {
   coverage: KnowledgeCoverage;
   share: number;
   days: number;
+  labels: OwnershipLabels;
   onPrompt: () => void;
 }) {
   const byLines = coverage.basis === "nloc";
-  const scope = byLines ? "of the code" : "of the files";
   const good = share >= WELL_SHARED_MIN;
   const single = coverage.singleHolderFiles;
   return (
     <PageLede
-      label="Knowledge coverage"
-      labelHint={`Share ${scope} changed in the last ${days} days in files two or more people hold (bus factor 2 or more), ${byLines ? "weighted by lines of code" : "by file count"}. Files with no indexed history are left out.`}
+      label={labels.coverageLabel}
+      labelHint={labels.coverageHint(byLines, days)}
       value={pct(share)}
-      unit={`${scope} changed lately`}
-      {...(good ? { valueColor: "var(--color-success)", band: { label: "Well shared", color: "var(--color-success)" } } : {})}
+      unit={labels.coverageUnit(byLines)}
+      {...(good ? { valueColor: "var(--color-success)", band: { label: labels.wellShared, color: "var(--color-success)" } } : {})}
     >
       <p>
-        {pct(share)} {scope} changed in the last {days} days
-        {byLines ? ", by lines," : ""} has two or more people who know it.
-        {single > 0 &&
-          ` ${single.toLocaleString()} of the ${coverage.files.toLocaleString()} changing files have one main author; your agent can plan how a second person learns them.`}
+        {labels.coverageSentence(pct(share), byLines, days)}
+        {single > 0 && ` ${labels.singleHolderSentence(single, coverage.files)}`}
       </p>
-      {single > 0 && <AiPromptButton className="mt-3" onClick={onPrompt} label={AGENT_PROMPT_LABEL} />}
+      {single > 0 && <AiPromptButton className="mt-3" onClick={onPrompt} label={labels.agentPrompt} />}
     </PageLede>
   );
 }
@@ -124,24 +110,40 @@ function CoverageFigure({
  * plain, never as an alarm. The primary action hands the single-person
  * changing files to the reader's agent for a plan to spread what they know.
  */
-export function OwnershipLede({ coverage, summary, hrefForTab, repoName, LinkComponent }: OwnershipLedeProps) {
+export function OwnershipLede({
+  coverage,
+  summary,
+  hrefForTab,
+  repoName,
+  LinkComponent,
+  labels: overrides,
+}: OwnershipLedeProps) {
+  const labels = React.useMemo(() => ownershipLabels(overrides), [overrides]);
   const { openPrompt, promptModal } = useAiPromptAction();
-  const reads = ownershipReads(summary, hrefForTab);
+  const reads = ownershipReads(summary, hrefForTab, labels);
   const days = summary.activity_window_days;
 
   return (
     <section className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-10">
       {coverage.share == null ? (
         <p className="max-w-[62ch] text-[15px] leading-relaxed text-[var(--color-text-secondary)]">
-          No code with history changed in the last {days} days, so there is no moving code to measure
-          knowledge coverage on.
+          {labels.noChanges(days)}
         </p>
       ) : (
         <CoverageFigure
           coverage={coverage}
           share={coverage.share}
           days={days}
-          onPrompt={() => openPrompt(spreadRequest(coverage, days, repoName))}
+          labels={labels}
+          onPrompt={() =>
+            openPrompt(
+              spreadPromptRequest(coverage.singleHolderAreas, labels, {
+                // The prompt itself stays English: it is written for the agent.
+                spreadReason: `each one changed in the last ${days} days`,
+                repoName,
+              }),
+            )
+          }
         />
       )}
       {reads.length > 0 && <ReadsColumn items={reads} LinkComponent={LinkComponent} />}

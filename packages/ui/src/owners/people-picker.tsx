@@ -13,6 +13,10 @@ export interface PeoplePickerProps {
   /** Accessible name and placeholder. */
   label?: string;
   placeholder?: string;
+  /** Accessible name of a chip's remove button. */
+  removeLabel?: (name: string) => string;
+  /** Accessible name of the chip list. */
+  selectedLabel?: string;
 }
 
 /** Matches listed before the reader narrows the search. */
@@ -43,6 +47,8 @@ export function PeoplePicker({
   onChange,
   label = "Pick people",
   placeholder = "Search by name or email…",
+  removeLabel = (name) => `Remove ${name}`,
+  selectedLabel = "Selected people",
 }: PeoplePickerProps) {
   const [query, setQuery] = React.useState("");
   const [open, setOpen] = React.useState(false);
@@ -68,7 +74,13 @@ export function PeoplePicker({
 
   return (
     <div className="flex flex-col gap-2">
-      <SelectedPeople keys={selected} byKey={byKey} onRemove={remove} />
+      <SelectedPeople
+        keys={selected}
+        byKey={byKey}
+        onRemove={remove}
+        removeLabel={removeLabel}
+        label={selectedLabel}
+      />
       <div className="relative max-w-sm">
         <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-[var(--color-text-tertiary)]" />
         <Input
@@ -137,14 +149,18 @@ function SelectedPeople({
   keys,
   byKey,
   onRemove,
+  removeLabel,
+  label,
 }: {
   keys: readonly string[];
   byKey: ReadonlyMap<string, KnowledgePerson>;
   onRemove: (key: string) => void;
+  removeLabel: (name: string) => string;
+  label: string;
 }) {
   if (keys.length === 0) return null;
   return (
-    <ul aria-label="Selected people" className="flex flex-wrap gap-1.5">
+    <ul aria-label={label} className="flex flex-wrap gap-1.5">
       {keys.map((key) => {
         const p = byKey.get(key) ?? { key, name: key, email: null };
         return (
@@ -157,7 +173,7 @@ function SelectedPeople({
             <button
               type="button"
               onClick={() => onRemove(key)}
-              aria-label={`Remove ${p.name}`}
+              aria-label={removeLabel(p.name)}
               className="rounded-full p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
             >
               <X className="h-3 w-3" />

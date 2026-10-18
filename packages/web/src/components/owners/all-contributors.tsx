@@ -13,6 +13,7 @@ import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { listOwnersPage } from "@/lib/api/owners";
 import type { OwnerListEntry, Paginated } from "@/lib/api/types";
+import { useOwnershipLabels } from "./ownership-labels";
 import {
   directoryFiltersFromParams,
   directoryFiltersKey,
@@ -35,6 +36,7 @@ export function AllContributors({ repoId, automationCount }: { repoId: string; a
   const tCommon = useTranslations("common");
   const router = useRouter();
   const searchParams = useSearchParams();
+  const labels = useOwnershipLabels();
   const [filters, setFilters] = useState<OwnerDirectoryFilters>(() =>
     directoryFiltersFromParams(searchParams),
   );
@@ -109,6 +111,7 @@ export function AllContributors({ repoId, automationCount }: { repoId: string; a
       automationCount={automationCount}
       hrefFor={hrefFor}
       LinkComponent={Link}
+      labels={labels}
       error={
         error ? (
           <ApiError

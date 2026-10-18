@@ -3,12 +3,14 @@
 import * as React from "react";
 import type { KnowledgeMatrix, OwnersSummary } from "@repowise-dev/types/owners";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { AGENT_PROMPT_LABEL, bulkAgentPromptLabel, useAiPromptAction } from "../health/ai-prompt-action";
+import { useAiPromptAction } from "../health/ai-prompt-action";
 import { RowPromptAction } from "../health/row-prompt-action";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { CleanState } from "../shared/clean-state";
 import { quietOwnerExposure, quietOwnersTogether, type QuietOwnerExposure } from "./knowledge-loss";
-import { handoverPromptRequest, OffboardingAreas } from "./offboarding-result";
+import { ownershipLabels, type OwnershipLabels } from "./labels";
+import { OffboardingAreas } from "./offboarding-result";
+import { handoverPromptRequest } from "./prompt-requests";
 import { OwnerAvatar } from "./owner-avatar";
 
 export interface KnowledgeLossViewProps {
@@ -21,6 +23,7 @@ export interface KnowledgeLossViewProps {
   base?: string | undefined;
   repoName?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
+  labels?: Partial<OwnershipLabels> | undefined;
 }
 
 /**
@@ -37,7 +40,9 @@ export function KnowledgeLossView({
   base,
   repoName,
   LinkComponent,
+  labels: overrides,
 }: KnowledgeLossViewProps) {
+  const labels = React.useMemo(() => ownershipLabels(overrides), [overrides]);
   const rows = React.useMemo(
     () => quietOwnerExposure(matrix, summary.quiet_owners),
     [matrix, summary.quiet_owners],
@@ -52,47 +57,37 @@ export function KnowledgeLossView({
     return (
       <CleanState
         align="start"
-        title={`Everyone who owns changing code has committed in the last ${summary.activity_window_days} days`}
-        description={`Across ${summary.people.toLocaleString()} people and ${summary.owned_files.toLocaleString()} owned files, no file that changed lately belongs to someone who has stopped committing.`}
+        title={labels.lossCleanTitle(summary.activity_window_days)}
+        description={labels.lossCleanDescription(summary.people, summary.owned_files)}
       />
     );
   }
 
-  const shown = rows.length;
   return (
     <div className="flex flex-col gap-4">
       <p className="max-w-[68ch] text-[15px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-        <strong className="font-semibold text-[var(--color-text-primary)]">
-          {summary.quiet_owners_total.toLocaleString()}{" "}
-          {summary.quiet_owners_total === 1 ? "person" : "people"}
-        </strong>{" "}
-        {summary.quiet_owners_total === 1 ? "has" : "have"} not committed in {summary.activity_window_days} days
-        but still {summary.quiet_owners_total === 1 ? "owns" : "own"} files that changed in that time. Each
-        row shows which of the files that changed lately would have no majority author without them, and
-        who is best placed to pick each directory up.
-        {summary.quiet_owners_total > shown
-          ? ` Showing the ${shown.toLocaleString()} with the most changing code.`
-          : ""}
+        {labels.lossIntro(summary.quiet_owners_total, summary.activity_window_days, rows.length)}
       </p>
       {together.totals.atRiskFiles > 0 ? (
         <AiPromptButton
           className="self-start"
-          onClick={() => openPrompt(handoverPromptRequest(together, together.areas, repoName))}
-          label={AGENT_PROMPT_LABEL}
+          onClick={() => openPrompt(handoverPromptRequest(together, together.areas, labels, repoName))}
+          label={labels.agentPrompt}
         />
       ) : (
         <CleanState
           align="start"
-          title="Others already carry the code that is still changing"
-          description={`Every file that changed in the last ${summary.activity_window_days} days keeps a majority of its commits with people who are still here, even without all ${summary.quiet_owners_total.toLocaleString()} quiet owners.`}
+          title={labels.lossCarriedTitle}
+          description={labels.lossCarriedDescription(summary.activity_window_days, summary.quiet_owners_total)}
         />
       )}
-      <ul aria-label="Quiet owners of changing code" className="flex flex-col border-t border-[var(--color-border-default)]">
+      <ul aria-label={labels.lossListLabel} className="flex flex-col border-t border-[var(--color-border-default)]">
         {rows.map((row) => (
           <QuietOwnerRow
             key={row.owner.key}
             row={row}
-            onPrompt={(areas) => openPrompt(handoverPromptRequest(row.result, areas, repoName))}
+            onPrompt={(areas) => openPrompt(handoverPromptRequest(row.result, areas, labels, repoName))}
+            labels={labels}
             hrefForPerson={hrefForPerson}
             hrefForScenario={hrefForScenario}
             base={base}
@@ -106,20 +101,18 @@ export function KnowledgeLossView({
 }
 
 /** One quiet owner in words: when they last committed, what of theirs changed, what loses its majority. */
-function quietOwnerSentence({ owner, result: { totals } }: QuietOwnerExposure, last: string | null): string {
-  const lastCommit = last ? `Last commit ${last}. ` : "";
-  const changing =
-    owner.files_owned === 1
-      ? "The one file they own changed lately. "
-      : `${owner.changing_files_owned.toLocaleString()} of the ${owner.files_owned.toLocaleString()} files they own changed lately. `;
-  if (totals.atRiskFiles === 0) {
-    return `${lastCommit}${changing}The people who stay hold the majority of every changing file they worked on.`;
-  }
-  const one = totals.atRiskFiles === 1;
-  const files = `${totals.atRiskFiles.toLocaleString()} ${one ? "file" : "files"} that changed lately ${one ? "has" : "have"}`;
-  const severe =
-    totals.severeFiles > 0 ? `, ${totals.severeFiles.toLocaleString()} of them hotspots or in weak health` : "";
-  return `${lastCommit}${changing}Without them, ${files} no majority author left${severe}.`;
+function quietOwnerSentence(
+  { owner, result: { totals } }: QuietOwnerExposure,
+  last: string | null,
+  labels: OwnershipLabels,
+): string {
+  return [
+    last ? labels.lossLastCommit(last) : null,
+    labels.lossChanging(owner.changing_files_owned, owner.files_owned),
+    totals.atRiskFiles > 0 ? labels.lossAtRisk(totals.atRiskFiles, totals.severeFiles) : labels.lossNoneAtRisk,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function QuietOwnerRow({
@@ -129,6 +122,7 @@ function QuietOwnerRow({
   hrefForScenario,
   base,
   LinkComponent,
+  labels,
 }: {
   row: QuietOwnerExposure;
   onPrompt: (areas: QuietOwnerExposure["result"]["areas"]) => void;
@@ -136,6 +130,7 @@ function QuietOwnerRow({
   hrefForScenario?: ((key: string) => string) | undefined;
   base?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
+  labels: OwnershipLabels;
 }) {
   const [open, setOpen] = React.useState(false);
   const A = LinkComponent ?? "a";
@@ -157,7 +152,7 @@ function QuietOwnerRow({
             <span className="font-medium text-[var(--color-text-primary)]">{owner.name}</span>
           )}
           <p className="text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-            {quietOwnerSentence(row, formatRelativeTimeOrNull(owner.last_commit_at))}
+            {quietOwnerSentence(row, formatRelativeTimeOrNull(owner.last_commit_at), labels)}
           </p>
           <div className="mt-1 flex flex-wrap gap-x-4 text-xs">
             {totals.atRiskFiles > 0 && (
@@ -168,13 +163,12 @@ function QuietOwnerRow({
                 onClick={() => setOpen((o) => !o)}
                 className="text-[var(--color-accent-primary)] hover:underline"
               >
-                {open ? "Hide" : "Show"} {result.areas.length.toLocaleString()}{" "}
-                {result.areas.length === 1 ? "directory" : "directories"}
+                {labels.lossDirectories(open, result.areas.length)}
               </button>
             )}
             {hrefForScenario && (
               <A href={hrefForScenario(owner.key)} className="text-[var(--color-accent-primary)] hover:underline">
-                Open in off-boarding
+                {labels.openInOffboarding}
               </A>
             )}
           </div>
@@ -182,7 +176,7 @@ function QuietOwnerRow({
         {totals.atRiskFiles > 0 && (
           <RowPromptAction
             onClick={() => onPrompt(result.areas)}
-            label={bulkAgentPromptLabel(totals.atRiskFiles)}
+            label={labels.promptForGroup(totals.atRiskFiles)}
             subject={owner.name}
           />
         )}
@@ -192,6 +186,7 @@ function QuietOwnerRow({
           <OffboardingAreas
             areas={result.areas}
             onPrompt={(area) => onPrompt([area])}
+            labels={labels}
             base={base}
             LinkComponent={LinkComponent}
             initial={5}

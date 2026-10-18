@@ -12,6 +12,7 @@ import { OwnershipLede } from "@repowise-dev/ui/owners/ownership-lede";
 import { knowledgeCoverage } from "@repowise-dev/ui/owners/knowledge-coverage";
 import type { OffboardingScenario } from "@repowise-dev/ui/owners/offboarding-view";
 import { AllContributors } from "./all-contributors";
+import { useOwnershipLabels } from "./ownership-labels";
 import { useKnowledgeMatrix } from "./use-knowledge-matrix";
 import { contributorsHref, type ContributorTab } from "./use-contributors-url";
 
@@ -48,6 +49,7 @@ export function ContributorsPanel({ tab, repoId, summary, scenario, onScenarioCh
   const base = `/repos/${repoId}`;
   const matrix = useKnowledgeMatrix(repoId);
   const s = summary.data;
+  const labels = useOwnershipLabels();
   const coverage = useMemo(() => (matrix.data ? knowledgeCoverage(matrix.data) : null), [matrix.data]);
 
   const loadError = (onRetry: () => void, message: string) => (
@@ -78,6 +80,7 @@ export function ContributorsPanel({ tab, repoId, summary, scenario, onScenarioCh
                 summary={sum}
                 hrefForTab={(next, leave) => contributorsHref(base, next, leave)}
                 LinkComponent={Link}
+                labels={labels}
               />
             ),
           <Skeleton className="h-40 w-full rounded-lg" />,
@@ -85,7 +88,7 @@ export function ContributorsPanel({ tab, repoId, summary, scenario, onScenarioCh
         <AllContributors repoId={repoId} automationCount={s?.automation_identities ?? 0} />
       </>
     ),
-    risks: () => ready((m) => <KnowledgeRisksView matrix={m} base={base} LinkComponent={Link} />),
+    risks: () => ready((m) => <KnowledgeRisksView matrix={m} base={base} LinkComponent={Link} labels={labels} />),
     loss: () =>
       ready((m, sum) => (
         <KnowledgeLossView
@@ -95,6 +98,7 @@ export function ContributorsPanel({ tab, repoId, summary, scenario, onScenarioCh
           hrefForPerson={(key) => `${base}/owners/${encodeURIComponent(key)}`}
           hrefForScenario={(key) => contributorsHref(base, "offboarding", [key])}
           LinkComponent={Link}
+          labels={labels}
         />
       )),
     offboarding: () =>
@@ -106,6 +110,7 @@ export function ContributorsPanel({ tab, repoId, summary, scenario, onScenarioCh
           suggestions={suggestions}
           base={base}
           LinkComponent={Link}
+          labels={labels}
         />
       )),
   };

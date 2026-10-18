@@ -4,6 +4,7 @@ import * as React from "react";
 import type { KnowledgeMatrix } from "@repowise-dev/types/owners";
 import { Slider } from "../ui/slider";
 import { personAt, type KnowledgePerson } from "./knowledge-files";
+import { ownershipLabels, type OwnershipLabels } from "./labels";
 import { OFFBOARDING_THRESHOLD_RANGE, simulateOffboarding } from "./offboarding";
 import { OffboardingResultView } from "./offboarding-result";
 import { PeoplePicker } from "./people-picker";
@@ -23,6 +24,7 @@ export interface OffboardingViewProps {
   base?: string | undefined;
   repoName?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
+  labels?: Partial<OwnershipLabels> | undefined;
 }
 
 /**
@@ -38,7 +40,9 @@ export function OffboardingView({
   base,
   repoName,
   LinkComponent,
+  labels: overrides,
 }: OffboardingViewProps) {
+  const labels = React.useMemo(() => ownershipLabels(overrides), [overrides]);
   const people = React.useMemo<KnowledgePerson[]>(
     () => matrix.authors.map((_, i) => personAt(matrix, i)),
     [matrix],
@@ -58,17 +62,20 @@ export function OffboardingView({
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,1fr)_260px]">
         <div className="flex min-w-0 flex-col gap-2">
           <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-            If these people left
+            {labels.leavingLabel}
           </span>
           <PeoplePicker
             people={people}
             selected={scenario.leaving}
             onChange={(leaving) => onScenarioChange({ ...scenario, leaving })}
-            label="People leaving"
+            label={labels.leavingPicker}
+            placeholder={labels.pickerPlaceholder}
+            removeLabel={labels.removePerson}
+            selectedLabel={labels.selectedPeople}
           />
           {scenario.leaving.length === 0 && suggestions.length > 0 && (
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
-              Try:
+              {labels.tryLabel}
               {suggestions.map((s) => (
                 <button
                   key={s.label}
@@ -87,7 +94,7 @@ export function OffboardingView({
             id="offboarding-threshold"
             className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
           >
-            At risk below {draft}% kept
+            {labels.thresholdLabel(draft)}
           </span>
           <Slider
             aria-labelledby="offboarding-threshold"
@@ -99,19 +106,23 @@ export function OffboardingView({
             onValueCommit={([v]) => v != null && onScenarioChange({ ...scenario, threshold: v / 100 })}
           />
           <span className="text-xs leading-relaxed text-[var(--color-text-tertiary)]">
-            A file is at risk when the people who stay made less than this share of its commits.
+            {labels.thresholdHelp}
           </span>
         </div>
       </div>
 
       {scenario.leaving.length === 0 ? (
         <p className="max-w-[62ch] text-[15px] leading-relaxed text-[var(--color-text-secondary)]">
-          Pick one or more people to see which files would lose most of the knowledge behind them, and who
-          is best placed to take each directory over. Nothing is saved; the scenario lives in the page
-          address, so you can share it.
+          {labels.pickPrompt}
         </p>
       ) : (
-        <OffboardingResultView result={result} base={base} repoName={repoName} LinkComponent={LinkComponent} />
+        <OffboardingResultView
+          result={result}
+          base={base}
+          repoName={repoName}
+          LinkComponent={LinkComponent}
+          labels={labels}
+        />
       )}
     </div>
   );
