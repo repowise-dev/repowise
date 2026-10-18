@@ -100,15 +100,15 @@ export function NavGroupList({
             ) : gi > 0 ? (
               <div className="pt-1.5" />
             ) : null}
-            {open && (
-              <div id={listId} className="space-y-0.5">
-                {group.items.map((item) => (
+            {/* Always mounted, so `aria-controls` names an element that exists. */}
+            <div id={listId} hidden={!open} className="space-y-0.5">
+              {open &&
+                group.items.map((item) => (
                   <React.Fragment key={item.href}>
                     {renderItem(item, isNavItemActive(item, pathname))}
                   </React.Fragment>
                 ))}
-              </div>
-            )}
+            </div>
           </React.Fragment>
         );
       })}

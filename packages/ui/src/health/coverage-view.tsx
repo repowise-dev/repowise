@@ -695,7 +695,7 @@ function NoCoverageState() {
       </h2>
       <p className="text-[15px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
         No coverage report has been ingested, and the dependency graph found no
-        test files to trace either. Either would fill this tab: a report gives the
+        test files to trace either. Either would fill this page: a report gives the
         lines your tests executed, and the graph alone can name which tests reach
         which files with no setup at all. Run your suite with coverage on and hand
         us the report.

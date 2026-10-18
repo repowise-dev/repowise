@@ -192,7 +192,7 @@ export function SecurityFindingsTable({
         priority: 2,
         render: (f) => (
           <span
-            className="block max-w-[320px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
+            className="block max-w-[240px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
             title={f.snippet ?? ""}
           >
             {f.snippet || "—"}
