@@ -112,7 +112,12 @@ describe("FilePath", () => {
 
   it.each(["name-first", "middle-ellipsis", "distinguishing"] as const)("never truncates the file name in %s", (mode) => {
     render(<FilePath path={LONG} mode={mode} />);
-    expect(screen.getByText("tool_dependency.py").className).not.toMatch(/truncate/);
+    expect(screen.getByText("tool_dependency.py").className).not.toMatch(/\btruncate\b/);
+  });
+
+  it("keeps an inline mention on one line", () => {
+    render(<FilePath path={LONG} mode="middle-ellipsis" />);
+    expect(screen.getByText("tool_dependency.py").className).toMatch(/\bwhitespace-nowrap\b/);
   });
 
   it("copies the path", async () => {
