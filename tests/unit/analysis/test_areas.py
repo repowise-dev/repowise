@@ -169,3 +169,6 @@ def test_area_at_and_choose_depth_split_where_the_work_separates() -> None:
     # No depth splits a lone file; the shallowest is kept.
     assert choose_depth({"a/b.py": 3}) == 1
     assert choose_depth({}) == 1
+    # Plain paths weigh one each, and a caller can relax the thresholds.
+    assert choose_depth(["a/x.py", "b/y.py"], min_areas=1, small=0) == 1
+    assert choose_depth(["src/ui/a.ts", "src/web/b.ts", "x/y.py"], base="src", min_areas=1) == 2

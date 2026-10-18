@@ -35,9 +35,10 @@ def ancestors(file_path: str) -> list[str]:
 
 
 def area_at(file_path: str, depth: int) -> str:
-    """The area holding *file_path* at *depth*: its first *depth* directories,
-    or its own directory when the file sits shallower than that."""
-    return "/".join(file_path.split("/")[:-1][: max(depth, 0)])
+    """The one area holding *file_path* at *depth*, or its own directory when
+    that is shallower. Partitions files by level, as a grid of areas needs."""
+    chain = ancestors(file_path)
+    return chain[min(max(depth, 0), len(chain) - 1)]
 
 
 def in_area(file_path: str, area: str) -> bool:
