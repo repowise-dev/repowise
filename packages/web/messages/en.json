@@ -301,8 +301,10 @@
         "good": "Nothing made health worse. {better, plural, one {# commit made it better} other {# commits made it better}}, resolving {resolved, plural, one {# finding} other {# findings}}.",
         "mixed": "{worse, plural, one {# commit made it worse} other {# made it worse}}, {both} of them while also making something better. {neutral} had no health impact.",
         "quiet": "None of the {analysed, plural, one {# analysed commit} other {# analysed commits}} changed a health finding.",
-        "empty": "None of the {total, plural, one {# commit} other {# commits}} here has been analysed for health yet.",
-        "unscanned": "{n} not yet analysed."
+        "empty": "No commits in this window.",
+        "unscanned": "{n} not yet analysed.",
+        "catchingUpUnit": "of {total, plural, one {# commit} other {# commits}} analysed so far",
+        "catchingUp": "Most commits in this window have not been analysed by the current analyzer yet. Recent commits come first, as updates run; the rows below show each older commit's direction from the earlier analysis."
       },
       "wins": {
         "title": "Recent wins",

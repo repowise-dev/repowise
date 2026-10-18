@@ -32,9 +32,14 @@ describe("readPeriodHealth", () => {
     expect(readPeriodHealth(summary({ total: 4, improved: 2, neutral: 2 })).tone).toBe("good");
   });
 
-  it("separates nothing-changed from nothing-analysed", () => {
+  it("separates nothing-changed from not-yet-analysed and from an empty window", () => {
     expect(readPeriodHealth(summary({ total: 3, neutral: 3 })).tone).toBe("quiet");
-    expect(readPeriodHealth(summary({ total: 3, unscanned: 3 })).tone).toBe("empty");
+    expect(readPeriodHealth(summary({ total: 0 })).tone).toBe("empty");
+  });
+
+  it("leads with progress when most of the window is not analysed yet", () => {
+    expect(readPeriodHealth(summary({ total: 650, worsened: 8, improved: 4, unscanned: 638 })).tone).toBe("catchingUp");
+    expect(readPeriodHealth(summary({ total: 10, worsened: 3, neutral: 2, unscanned: 5 })).tone).toBe("mixed");
   });
 });
 

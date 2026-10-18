@@ -15,7 +15,10 @@ export interface PeriodHealthCopy {
   mixed: (r: PeriodHealthRead) => string;
   /** Analysed work that changed no finding. */
   quiet: (r: PeriodHealthRead) => string;
-  /** Nothing in the window has a current analysis. */
+  /** Most of the window is not analysed yet: a calm progress line leads. */
+  catchingUpUnit: (r: PeriodHealthRead) => string;
+  catchingUp: (r: PeriodHealthRead) => string;
+  /** The window holds no commits. */
   empty: (r: PeriodHealthRead) => string;
   /** How many items have no current analysis; shown only when some do not. */
   unscanned: (r: PeriodHealthRead) => string;
@@ -31,8 +34,10 @@ const DEFAULT_COPY: PeriodHealthCopy = {
     `${r.worse.toLocaleString()} made it worse, ${r.both.toLocaleString()} of them while also making something better. ${r.neutral.toLocaleString()} had no health impact.`,
   quiet: (r) =>
     `None of the ${r.analysed.toLocaleString()} analysed commit${s(r.analysed)} changed a health finding.`,
-  empty: (r) =>
-    `None of the ${r.total.toLocaleString()} commit${s(r.total)} here has been analysed for health yet.`,
+  catchingUpUnit: (r) => `of ${r.total.toLocaleString()} commit${s(r.total)} analysed so far`,
+  catchingUp: () =>
+    "Most commits in this window have not been analysed by the current analyzer yet. Recent commits come first, as updates run; the rows below show each older commit's direction from the earlier analysis.",
+  empty: () => "No commits in this window.",
   unscanned: (r) => `${r.unscanned.toLocaleString()} not yet analysed.`,
 };
 
@@ -54,6 +59,14 @@ export interface PeriodHealthHeadlineProps {
 export function PeriodHealthHeadline({ summary, period, copy, action }: PeriodHealthHeadlineProps) {
   const c = { ...DEFAULT_COPY, ...copy };
   const r = readPeriodHealth(summary);
+  if (r.tone === "catchingUp" || r.tone === "empty") {
+    // No alarm and no green: progress, stated plainly.
+    return (
+      <PageLede label={period} value={r.analysed.toLocaleString()} unit={c.catchingUpUnit(r)} action={action}>
+        <p>{c[r.tone](r)}</p>
+      </PageLede>
+    );
+  }
   return (
     <PageLede
       label={period}
@@ -63,7 +76,7 @@ export function PeriodHealthHeadline({ summary, period, copy, action }: PeriodHe
       action={action}
     >
       <p>{c[r.tone](r)}</p>
-      {r.unscanned > 0 && r.tone !== "empty" && (
+      {r.unscanned > 0 && (
         <p className="text-[var(--color-text-tertiary)]">{c.unscanned(r)}</p>
       )}
     </PageLede>

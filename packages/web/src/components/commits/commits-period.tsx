@@ -17,7 +17,9 @@ async function headlineCopy(): Promise<PeriodHealthCopy> {
     good: (r) => t("good", { better: r.better, resolved: r.findingsBetter }),
     mixed: (r) => t("mixed", { better: r.better, worse: r.worse, both: r.both, neutral: r.neutral }),
     quiet: (r) => t("quiet", { analysed: r.analysed }),
-    empty: (r) => t("empty", { total: r.total }),
+    catchingUpUnit: (r) => t("catchingUpUnit", { total: r.total }),
+    catchingUp: () => t("catchingUp"),
+    empty: () => t("empty"),
     unscanned: (r) => t("unscanned", { n: r.unscanned }),
   };
 }

@@ -48,6 +48,17 @@ export function readCommitHealth(
   return { kind: healthDeltaKind(d), stale: d.stale === true, better: betterCount(d), worse: worseCount(d) };
 }
 
+/** "Got better" description: findings resolved, and (once stored deltas
+ *  carry it) findings made less severe. */
+export function betterSentence(d: HealthDeltaCounts): string {
+  const improved = d.improved ?? 0;
+  const parts = [
+    d.resolved > 0 ? `Resolved ${d.resolved} existing finding${d.resolved === 1 ? "" : "s"}.` : null,
+    improved > 0 ? `Made ${improved} finding${improved === 1 ? "" : "s"} less severe.` : null,
+  ].filter((p): p is string => p !== null);
+  return `${parts.join(" ")} A finding that got better has no new location to point at, so it is counted here.`;
+}
+
 /** "Got worse" description: the counts, and what the list cannot show. */
 export function worseSentence(h: CommitHealth): string {
   const made = h.introduced_count + h.worsened_count;

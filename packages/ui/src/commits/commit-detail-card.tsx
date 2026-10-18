@@ -6,7 +6,7 @@ import { PriorityBadge } from "./priority-badge";
 import { RiskDriverBreakdown, describeDriver } from "./risk-driver-breakdown";
 import { CommitFilesTable } from "./commit-files-table";
 import { FindingsByFile } from "./findings-by-file";
-import { commitDelta, readCommitHealth, worseSentence } from "./commit-health-copy";
+import { betterSentence, commitDelta, readCommitHealth, worseSentence } from "./commit-health-copy";
 import { HealthDeltaLede, type HealthDeltaLedeCopy } from "./health-delta-lede";
 import type { HealthDeltaLabels } from "./health-delta-mark";
 import { OverviewSection } from "../overview/section";
@@ -56,6 +56,7 @@ export function CommitDetailCard({
   const c = commit;
   const files = c.files ?? [];
   const health = c.health ?? null;
+  const delta = commitDelta(c.health_delta, health);
   const read = readCommitHealth(c.health_delta, health);
   const counted = read.kind !== null && !read.stale;
   const improvedFiles = (c.health_delta?.files ?? []).filter((f) => (f.change ?? 0) > 0);
@@ -67,18 +68,18 @@ export function CommitDetailCard({
 
       <div className="mt-7">
         <HealthDeltaLede
-          delta={commitDelta(c.health_delta, health)}
+          delta={delta}
           copy={{ label: "What this commit did to code health", ...ledeCopy }}
           markLabels={healthLabels}
           action={action}
         />
       </div>
 
-      {counted && read.better > 0 && (
+      {counted && delta && read.better > 0 && (
         <OverviewSection
           className="mt-7"
           title="Got better"
-          description={`Resolved ${read.better} existing finding${read.better === 1 ? "" : "s"}. A resolved finding has no location left to point at, so it is counted here.`}
+          description={betterSentence(delta)}
         >
           {improvedFiles.length > 0 && (
             <ul className="space-y-1 font-mono text-[11px] text-[var(--color-text-secondary)]">

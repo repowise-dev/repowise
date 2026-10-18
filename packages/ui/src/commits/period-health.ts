@@ -5,7 +5,7 @@
  */
 import type { PeriodHealthSummaryResponse } from "@repowise-dev/types/history";
 
-export type PeriodHealthTone = "good" | "mixed" | "quiet" | "empty";
+export type PeriodHealthTone = "good" | "mixed" | "quiet" | "catchingUp" | "empty";
 
 export interface PeriodHealthRead {
   /** Items that made anything better, including those that also made
@@ -27,7 +27,10 @@ export interface PeriodHealthRead {
   /** Findings made worse: introduced plus worsened. */
   findingsWorse: number;
   /** `good` when something improved and nothing got worse; `quiet` when the
-   *  analysed work changed nothing; `empty` when none of it is analysed yet. */
+   *  analysed work changed nothing; `catchingUp` when most of the window is
+   *  not analysed by the current analyzer yet (after an upgrade, or older
+   *  history the bounded scan has not reached), so counts would mislead;
+   *  `empty` when the window holds nothing. */
   tone: PeriodHealthTone;
 }
 
@@ -36,7 +39,15 @@ export function readPeriodHealth(s: PeriodHealthSummaryResponse): PeriodHealthRe
   const worse = s.worsened + s.mixed;
   const analysed = s.improved + s.mixed + s.worsened + s.neutral;
   const tone: PeriodHealthTone =
-    analysed === 0 ? "empty" : worse === 0 ? (better > 0 ? "good" : "quiet") : "mixed";
+    s.total === 0
+      ? "empty"
+      : s.unscanned * 2 > s.total
+        ? "catchingUp"
+        : worse === 0
+          ? better > 0
+            ? "good"
+            : "quiet"
+          : "mixed";
   return {
     better,
     worse,
