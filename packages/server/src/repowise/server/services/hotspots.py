@@ -22,6 +22,7 @@ __all__ = [
     "FILTERS",
     "SORTS",
     "HotspotListing",
+    "HotspotQuery",
     "accelerating_clause",
     "clear_hotspot_cache",
     "is_accelerating",
@@ -139,6 +140,19 @@ async def _git_stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
     return tuple((await session.execute(stmt)).one())
 
 
+@dataclass(frozen=True)
+class HotspotQuery:
+    """One page of the list: which rows (scope, search, filter), in what order."""
+
+    limit: int = 50
+    offset: int = 0
+    q: str = ""
+    filter: str = "all"
+    sort: str = "score"
+    descending: bool = True
+    held: frozenset[str] = frozenset()
+
+
 @dataclass
 class HotspotListing:
     rows: list[tuple[GitMetadata, int]]
@@ -165,34 +179,23 @@ async def _count_facets(session: AsyncSession, base: Select[Any]) -> dict[str, i
     return dict(zip(("total", "bus_factor_1", "accelerating", "bug_magnet"), map(int, row), strict=True))
 
 
-async def list_hotspots(
-    session: AsyncSession,
-    repo_id: str,
-    *,
-    limit: int,
-    offset: int,
-    q: str = "",
-    filter: str = "all",
-    sort: str = "score",
-    descending: bool = True,
-    held: frozenset[str] = frozenset(),
-) -> HotspotListing:
-    scope = _scope(repo_id, held).subquery()
+async def list_hotspots(session: AsyncSession, repo_id: str, query: HotspotQuery) -> HotspotListing:
+    scope = _scope(repo_id, query.held).subquery()
     g = GitMetadata
     base = select(g, scope.c.rank).join(scope, scope.c.id == g.id)
-    q = q.strip()
+    q = query.q.strip()
     if q:
         base = base.where(_search_clause(q))
 
-    key = await _facets.key(session, repo_id, await _git_stamp(session, repo_id), tuple(sorted(held)), q)
+    stamp = await _git_stamp(session, repo_id)
+    key = await _facets.key(session, repo_id, stamp, tuple(sorted(query.held)), q)
     facets = _facets.get(key) if key in _facets else _facets.remember(key, await _count_facets(session, base))
 
-    listing = base
-    if filter in _FILTER_CLAUSES:
-        listing = listing.where(_FILTER_CLAUSES[filter]())
-    column = _sort_columns(g)[sort]
-    ordered = column.desc() if descending else column.asc()
-    page = listing.order_by(ordered.nulls_last(), scope.c.rank).limit(limit).offset(offset)
+    narrow = _FILTER_CLAUSES.get(query.filter)
+    listing = base if narrow is None else base.where(narrow())
+    column = _sort_columns(g)[query.sort]
+    ordered = column.desc() if query.descending else column.asc()
+    page = listing.order_by(ordered.nulls_last(), scope.c.rank).limit(query.limit).offset(query.offset)
     rows = [(r[0], int(r[1])) for r in (await session.execute(page)).all()]
-    total = facets["total"] if filter not in _FILTER_CLAUSES else facets[filter]
+    total = facets["total"] if narrow is None else facets[query.filter]
     return HotspotListing(rows=rows, total=total, facets=facets)

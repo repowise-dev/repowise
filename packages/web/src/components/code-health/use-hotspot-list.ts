@@ -27,6 +27,19 @@ function useHotspotParams() {
   );
 }
 
+/** The loaded pages as one list: rows appended, counts from the first page. */
+export function summarizePages(data: HotspotPage[] | undefined) {
+  const pages = data ?? [];
+  const first = pages[0];
+  return {
+    items: pages.flatMap((p) => p.items),
+    total: first ? first.total : 0,
+    facets: first?.facets,
+    hasMore: pages.length > 0 && pages[pages.length - 1]!.has_more,
+    loaded: pages.length,
+  };
+}
+
 /**
  * The hotspot list in the map's scope (`hold=map` plus `?include=`), paged by
  * offset. The server searches, filters, sorts and counts; this only appends.
@@ -59,18 +72,13 @@ export function useHotspotList(repoId: string) {
     { revalidateOnFocus: false, revalidateFirstPage: false, keepPreviousData: true },
   );
 
-  const items = useMemo(() => (data ? data.flatMap((p) => p.items) : []), [data]);
-  const first = data?.[0];
-  const last = data?.[data.length - 1];
+  const pages = useMemo(() => summarizePages(data), [data]);
   const loadMore = useCallback(() => setSize(size + 1), [setSize, size]);
 
   return {
-    items,
-    total: first?.total ?? 0,
-    facets: first?.facets,
-    hasMore: last?.has_more ?? false,
+    ...pages,
     isLoading,
-    loadingMore: isValidating && !isLoading && size > (data?.length ?? 0),
+    loadingMore: isValidating && !isLoading && size > pages.loaded,
     error,
     query: params.hq,
     filter: params.hfilter,

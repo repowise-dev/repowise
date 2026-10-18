@@ -95,7 +95,7 @@ from repowise.server.services.history.health import (
 )
 from repowise.server.services.hotspots import FILTERS as HOTSPOT_FILTERS
 from repowise.server.services.hotspots import SORTS as HOTSPOT_SORTS
-from repowise.server.services.hotspots import is_accelerating, list_hotspots
+from repowise.server.services.hotspots import HotspotQuery, is_accelerating, list_hotspots
 from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
@@ -687,9 +687,7 @@ async def get_git_metadata(
     return response
 
 
-@router.get("/{repo_id}/hotspots", response_model=HotspotPage)
-async def get_hotspots(
-    repo_id: str,
+def _hotspot_query(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     q: str = Query("", max_length=200, description="Path or owner substring, case-insensitive."),
@@ -698,17 +696,8 @@ async def get_hotspots(
     order: str = Query("desc", pattern="^(asc|desc)$"),
     hold: str = HOLD_QUERY,
     include: str = INCLUDE_QUERY,
-    session: AsyncSession = Depends(get_db_session),
-) -> HotspotPage:
-    """Hotspots ranked by temporal hotspot score, one page at a time.
-
-    ``total`` counts the rows this filter and search match; ``facets`` count
-    every filter over the searched set, so a chip can say "N of total". Each
-    row's ``rank`` is its place by score in the scope, whatever the sort.
-    """
-    listing = await list_hotspots(
-        session,
-        repo_id,
+) -> HotspotQuery:
+    return HotspotQuery(
         limit=limit,
         offset=offset,
         q=q,
@@ -717,8 +706,24 @@ async def get_hotspots(
         descending=order == "desc",
         held=held_origins(hold, include),
     )
+
+
+@router.get("/{repo_id}/hotspots", response_model=HotspotPage)
+async def get_hotspots(
+    repo_id: str,
+    query: HotspotQuery = Depends(_hotspot_query),
+    session: AsyncSession = Depends(get_db_session),
+) -> HotspotPage:
+    """Hotspots ranked by temporal hotspot score, one page at a time.
+
+    ``total`` counts the rows this filter and search match; ``facets`` count
+    every filter over the searched set, so a chip can say "N of total". Each
+    row's ``rank`` is its place by score in the scope, whatever the sort.
+    """
+    listing = await list_hotspots(session, repo_id, query)
     items = [_hotspot_from_row(r).model_copy(update={"rank": rank}) for r, rank in listing.rows]
-    next_offset = offset + limit if offset + limit < listing.total else None
+    end = query.offset + query.limit
+    next_offset = end if end < listing.total else None
     return HotspotPage(
         items=items,
         total=listing.total,
