@@ -11,6 +11,7 @@ import { ReadsColumn, type ReadItem } from "../overview/reads-column";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { EmptyState } from "../shared/empty-state";
 import { ProportionBar } from "../shared/proportion-bar";
+import { commitCategoryColor } from "../shared/series";
 import { formatCompact, formatRelativeTimeOrNull } from "../lib/format";
 import { OwnerAvatar } from "./owner-avatar";
 
@@ -254,8 +255,8 @@ export function OwnerProfileView({
  * reader to compare bars that are all measuring different denominators. One
  * bar shows the split, and the key carries the share.
  *
- * The share steps, not a hue per directory: these are ordered shares of one
- * whole, so position is the encoding.
+ * The share steps, the series colours by rank: these are ordered shares of
+ * one whole, so position is the encoding.
  */
 function OwnershipFootprint({
   modules,
@@ -543,8 +544,8 @@ function LeadPartner({
  * `perf`. The endpoint returns `feature`, `fix`, `refactor` and `dependency`,
  * so four of the five colours were unreachable and the largest category fell
  * through to the default — a palette that had never once rendered as designed.
- * Ordered shares of one whole want the share steps, where position is the
- * magnitude, not a hue per category.
+ * Each category keeps its fixed colour (commitCategoryColor), the same as on
+ * every other chart of commit types.
  *
  * Zero-count categories are dropped rather than rendered as an empty track:
  * the endpoint returns the full key set, so a contributor who has never
@@ -580,6 +581,7 @@ function CommitMix({ categories }: { categories: Record<string, number> }) {
             label: category.charAt(0).toUpperCase() + category.slice(1),
             value: n,
             detail: `${n.toLocaleString()} · ${pct(n, total)}%`,
+            color: commitCategoryColor(category),
           }))}
         />
       )}

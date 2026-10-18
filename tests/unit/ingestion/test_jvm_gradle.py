@@ -10,6 +10,7 @@ import pytest
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.jvm_gradle import (
     build_jvm_gradle_index,
+    parse_settings,
 )
 
 
@@ -256,3 +257,84 @@ class TestJvmGradleIndex:
         assert is_publishing_gradle_project(
             JvmGradleProject(id="lib_comment", root_dir="lib_comment", plugins=lib_comment_plugins)
         )
+
+
+class TestParseSettingsInclude:
+    """``parse_settings`` reads every module of an ``include`` statement (#3605)."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            # Groovy space form, several modules on one line.
+            ("include 'core', 'api', 'web'\n", ["core", "api", "web"]),
+            # Groovy space form, list continued on the next line.
+            ("include 'core',\n        'api'\n", ["core", "api"]),
+            # Groovy parenthesised form with single quotes.
+            ("include('core', 'api')\n", ["core", "api"]),
+            # Kotlin DSL form (already worked; must keep working).
+            ('include("core", "api")\n', ["core", "api"]),
+        ],
+    )
+    def test_reads_every_module(self, tmp_path: Path, text: str, expected: list[str]) -> None:
+        settings = tmp_path / "settings.gradle"
+        settings.write_text(text)
+
+        modules, _ = parse_settings(settings)
+        assert modules == expected
+
+    def test_mixed_quote_styles_and_leading_colon(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.gradle"
+        settings.write_text("include ':app', \":lib:core\", 'web'\n")
+
+        modules, _ = parse_settings(settings)
+        assert modules == ["app", "lib:core", "web"]
+
+    def test_include_build_is_not_a_module(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.gradle"
+        settings.write_text("includeBuild(\"build-logic\")\ninclude 'a'\ninclude 'b', 'c'\n")
+
+        modules, _ = parse_settings(settings)
+        assert modules == ["a", "b", "c"]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Line comment after a trailing comma, list continued on the next line.
+            "include 'core', // the core module\n        'api'\n",
+            # Block comment between two items.
+            "include 'core', /* the API */ 'api'\n",
+            # Block comment spanning lines inside a parenthesised list.
+            'include(\n    "core", /* the\n    API */\n    "api"\n)\n',
+        ],
+    )
+    def test_comment_between_items_keeps_the_list(self, tmp_path: Path, text: str) -> None:
+        settings = tmp_path / "settings.gradle"
+        settings.write_text(text)
+
+        modules, _ = parse_settings(settings)
+        assert modules == ["core", "api"]
+
+    def test_commented_out_include_is_not_a_module(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.gradle"
+        settings.write_text("include 'core'\n// include 'legacy'\n/* include 'old' */\n")
+
+        modules, _ = parse_settings(settings)
+        assert modules == ["core"]
+
+    def test_project_dir_override_applies_to_multi_name_include(self, tmp_path: Path) -> None:
+        (tmp_path / "settings.gradle").write_text(
+            "include 'core', 'api'\n"
+            'project(":api").projectDir = file("modules/api")\n'
+        )
+        (tmp_path / "build.gradle").write_text("// root\n")
+        _make_java_class(tmp_path, "core", "com.example.core", "Core")
+        api_path = _make_java_class(tmp_path, "modules/api", "com.example.api", "Api")
+
+        modules, overrides = parse_settings(tmp_path / "settings.gradle")
+        assert modules == ["core", "api"]
+        assert overrides == {"api": "modules/api"}
+
+        index = build_jvm_gradle_index(tmp_path)
+        assert "core" in index.modules
+        assert "api" in index.modules
+        assert api_path in index.lookup_class("com.example.api.Api")

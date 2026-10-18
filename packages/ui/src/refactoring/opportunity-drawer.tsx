@@ -36,6 +36,7 @@ import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
 import { CodeBlock } from "./plan-detail";
 import { SourceExcerpt } from "./source-excerpt";
 import { RelatedWork, type RelatedWorkSlotProps } from "../health/related-work";
+import { PreviewBadge } from "../health/preview-badge";
 import { GenerateCodePanel } from "./generate-code-panel";
 import {
   RefactoringModelToggle,
@@ -256,6 +257,11 @@ function DrawerBody({
         <div className="text-xs text-[var(--color-text-secondary)]">
           {meta.label}
           {detail.lead_biomarker ? ` · against ${humanizeBiomarker(detail.lead_biomarker)}` : ""}
+          {detail.preview ? (
+            <span className="ml-2">
+              <PreviewBadge note={detail.preview} />
+            </span>
+          ) : null}
         </div>
         <SheetTitle className="mt-0.5 break-words font-mono text-sm font-semibold text-[var(--color-text-primary)]">
           {name}
@@ -568,6 +574,7 @@ function StepCard({
             Moved by an earlier step
           </span>
         ) : null}
+        <PreviewBadge note={plan?.preview} />
       </div>
 
       <button

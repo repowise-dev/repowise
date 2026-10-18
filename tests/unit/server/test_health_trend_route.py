@@ -215,3 +215,92 @@ async def test_a_narrowed_trend_blanks_the_figures_it_never_recorded(
     assert row["structure_average"] is None
     assert row["history_average"] is None
     assert row["maintainability_average"] is None
+
+
+async def test_each_direction_keeps_half_the_slice(client, session, tmp_path) -> None:
+    """The page lists "got worse" and "improved" apart. A plain top-N by size
+    let many larger regressions fill the whole slice and leave the improved
+    group empty beside a count saying it has rows."""
+    repo_id = await _repo(client, session, tmp_path)
+    before, after = {}, {}
+    for i in range(FILE_DELTA_LIMIT):
+        before[f"down{i:02d}.py"], after[f"down{i:02d}.py"] = 9.0, 5.0
+    for i in range(30):
+        before[f"up{i:02d}.py"], after[f"up{i:02d}.py"] = 5.0, 5.5
+    await _two_snapshots(session, repo_id, before, after)
+
+    body = (await client.get(f"/api/repos/{repo_id}/health/trend")).json()
+
+    deltas = body["file_deltas"]
+    half = FILE_DELTA_LIMIT // 2
+    assert len(deltas) == FILE_DELTA_LIMIT
+    assert sum(1 for d in deltas if d["delta"] > 0) == half
+    assert sum(1 for d in deltas if d["delta"] < 0) == FILE_DELTA_LIMIT - half
+    # Still largest first across the merged slice.
+    assert [abs(d["delta"]) for d in deltas] == sorted((abs(d["delta"]) for d in deltas), reverse=True)
+    assert body["file_deltas_worse"] == FILE_DELTA_LIMIT
+    assert body["file_deltas_improved"] == 30
+    assert body["file_deltas_total"] == FILE_DELTA_LIMIT + 30
+
+
+async def test_a_direction_with_few_rows_leaves_its_half_to_the_other(
+    client, session, tmp_path
+) -> None:
+    repo_id = await _repo(client, session, tmp_path)
+    before = {f"d{i:02d}.py": 9.0 for i in range(FILE_DELTA_LIMIT + 5)}
+    after = {p: 8.0 for p in before}
+    before["up.py"], after["up.py"] = 4.0, 4.1
+    await _two_snapshots(session, repo_id, before, after)
+
+    body = (await client.get(f"/api/repos/{repo_id}/health/trend")).json()
+
+    deltas = body["file_deltas"]
+    assert len(deltas) == FILE_DELTA_LIMIT
+    assert [d["file_path"] for d in deltas if d["delta"] > 0] == ["up.py"]
+    assert (body["file_deltas_worse"], body["file_deltas_improved"]) == (FILE_DELTA_LIMIT + 5, 1)
+
+
+async def test_the_list_defers_the_per_file_maps(session, client, tmp_path) -> None:
+    """``file_maps=False`` loads every row's scalars and none of the
+    repository-sized maps; the trend route then loads only the last two."""
+    from sqlalchemy import inspect
+
+    from repowise.core.persistence.crud import list_health_snapshots
+
+    repo_id = await _repo(client, session, tmp_path)
+    await _two_snapshots(session, repo_id, {"a.py": 8.0}, {"a.py": 7.0})
+    session.expunge_all()
+
+    rows = await list_health_snapshots(session, repo_id, file_maps=False)
+
+    assert [r.average_health for r in rows] == [5.0, 5.0]
+    for row in rows:
+        unloaded = inspect(row).unloaded
+        assert {"per_file_scores_json", "per_file_deductions_json"} <= unloaded
+
+
+async def test_a_narrowed_trend_still_lists_movement(client, session, tmp_path) -> None:
+    """The scoped projection reads the deferred map through its stored row."""
+    repo_id = await _repo(client, session, tmp_path)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    for day, score in ((0, 8.0), (1, 6.0)):
+        await save_health_snapshot(
+            session,
+            repo_id,
+            hotspot_health=5.0,
+            average_health=5.0,
+            worst_performer_path=None,
+            worst_performer_score=None,
+            per_file_scores={"src/a.py": score, "src/b.py": 5.0},
+            production_average=score,
+            taken_at=base + timedelta(days=day),
+        )
+    await session.commit()
+    session.expunge_all()
+
+    body = (await client.get(f"/api/repos/{repo_id}/health/trend?scope=production")).json()
+
+    assert body["file_deltas"] == [
+        {"file_path": "src/a.py", "before": 8.0, "after": 6.0, "delta": -2.0}
+    ]
+    assert body["file_deltas_worse"] == 1

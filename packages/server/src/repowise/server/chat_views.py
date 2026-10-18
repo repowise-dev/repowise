@@ -8,6 +8,10 @@ from that result, and ``build_view`` adds provenance, applies the guards and
 validates it as a ``ViewPart``. Builders are pure functions registered on the
 ``chat-view`` seam, so a plugin adds one without editing this module.
 
+The named views live in :mod:`repowise.server.chat_view_builders`; the
+``chart`` view and the chat-only ``chart`` tool share
+:mod:`repowise.server.chat_chart_part`.
+
 Guards every builder passes through: no column or axis keyed by a person, no
 risk score as a chart series, and an attribution figure below
 ``ATTRIBUTION_COVERAGE_FLOOR`` (or without coverage) is refused with its
@@ -28,7 +32,7 @@ from uuid import uuid4
 from pydantic import TypeAdapter, ValidationError
 
 from repowise.core.registry.plugins import SeamRegistry, load_plugins
-from repowise.server import chat_view_spec
+from repowise.server import chat_spec
 from repowise.server.chat_artifacts import ARTIFACT_ID_FIELD
 from repowise.server.chat_references import (
     LATEST_PREFIX,
@@ -37,8 +41,6 @@ from repowise.server.chat_references import (
     ViewArtifact,
     stamp,
 )
-from repowise.server.chat_view_spec import SpecError
-from repowise.server.chat_view_spec import label as _label
 from repowise.server.schemas.evidence import MAX_WIRE_NUMBER
 from repowise.server.schemas.views import (
     VIEW_LIMITS,
@@ -49,18 +51,27 @@ from repowise.server.schemas.views import (
 
 logger = logging.getLogger(__name__)
 
+
 ATTRIBUTION_COVERAGE_FLOOR = 0.30
 
+
 _PART = TypeAdapter(ViewPart)
+
+
 _SHA = re.compile(r"^[0-9a-f]{7,64}$")
+
+
 _PERSON = re.compile(
     r"(^|_)(authors?|owners?|ownership|committers?|emails?|users?|username|login|assignees?"
     r"|reviewers?|maintainers?|contributors?|person|people|knowledge_map)(_|$)"
 )
+
+
 _RISK_SCORE = re.compile(r"risk|impact_score|hotspot_score")
+
+
 # Attribution figures are drawn only by views that check their coverage.
 _ATTRIBUTION = re.compile(r"(^|_)(agents?|attested|provenance|attribution)(_|$)")
-_DEFAULT_ROWS = 50
 
 
 class ViewError(ValueError):
@@ -147,7 +158,7 @@ def _meta(data: Mapping[str, Any]) -> Mapping[str, Any]:
     return meta if isinstance(meta, Mapping) else {}
 
 
-def _guard(part: dict[str, Any], spec: ViewBuilder) -> None:
+def _guard(part: dict[str, Any], coverage_metric: str | None = None) -> None:
     data = part.get("data", part)
     for column in data.get("columns", []):
         if _PERSON.search(str(column.get("key", ""))):
@@ -162,7 +173,7 @@ def _guard(part: dict[str, Any], spec: ViewBuilder) -> None:
                     f"a risk score is never a chart series ({key!r}); show it in a table",
                     code="risk_score_series",
                 )
-    if spec.coverage_metric == "attribution":
+    if coverage_metric == "attribution":
         coverage = part.get("coverage")
         ratio = coverage.get("ratio") if isinstance(coverage, Mapping) else None
         if not isinstance(ratio, (int, float)) or ratio < ATTRIBUTION_COVERAGE_FLOOR:
@@ -219,19 +230,44 @@ def build_view(
         raise ViewError(f"unknown options {unknown}; {view!r} takes {sorted(spec.options)}")
 
     part = spec.build(artifact, options)
-    receipt = part.pop("receipt", None)
     meta = _meta(artifact.data)
     commit = meta.get("indexed_commit")
-    part.update(
-        schema_version=VIEW_SCHEMA_VERSION,
-        id=part_id,
+    return finish_part(
+        part,
+        part_id=part_id,
         source={
             "artifact_id": artifact.artifact_id,
             "tool_name": artifact.tool_name,
             "args_hash": args_hash(artifact.arguments),
         },
         stale=bool(meta.get("stale_warning")),
-        as_of=commit if isinstance(commit, str) and _SHA.match(commit) else None,
+        as_of=commit if isinstance(commit, str) else None,
+        coverage_metric=spec.coverage_metric,
+        what=f"view {view!r}",
+    )
+
+
+def finish_part(
+    part: dict[str, Any],
+    *,
+    part_id: str,
+    source: Mapping[str, str],
+    stale: bool,
+    as_of: str | None,
+    coverage_metric: str | None = None,
+    what: str = "the chart",
+) -> dict[str, Any]:
+    """Add provenance to a builder's part, apply the guards and validate it.
+
+    A builder's ``receipt`` comes back under ``"receipt"``; ``TurnViews`` pops it.
+    """
+    receipt = part.pop("receipt", None)
+    part.update(
+        schema_version=VIEW_SCHEMA_VERSION,
+        id=part_id,
+        source=dict(source),
+        stale=stale,
+        as_of=as_of if isinstance(as_of, str) and _SHA.match(as_of) else None,
     )
     if part.get("kind") == "chart" and _all_zero(part):
         raise ViewError(
@@ -239,12 +275,12 @@ def build_view(
             "say so in a sentence instead",
             code="no_data",
         )
-    _guard(part, spec)
+    _guard(part, coverage_metric)
     try:
         model = _PART.validate_python(part)
     except ValidationError as exc:
         raise ViewError(
-            f"view {view!r} could not be built from this result: {exc.errors()[0]['msg']}",
+            f"{what} could not be built from this result: {exc.errors()[0]['msg']}",
             code="invalid_view",
         ) from None
     built = _PART.dump_python(model, mode="json", exclude_unset=True)
@@ -316,39 +352,62 @@ class TurnViews:
             logger.exception("chat_view_builder_failed", extra={"view": arguments.get("view")})
             return ViewError("the view builder failed", code="builder_failed").payload()
         self.parts.append(part)
-        receipt = {"view_id": part["id"], "kind": part["kind"], "title": part["title"]}
+        receipt = part_receipt(part)
         reference = arguments.get("artifact_id")
         if isinstance(reference, str) and reference.startswith(LATEST_PREFIX):
             # Say which result a symbolic reference picked.
             receipt["resolved_artifact_id"] = part["source"]["artifact_id"]
             receipt["source_tool"] = part["source"]["tool_name"]
-        if "summary" in part:
-            receipt["summary"] = part["summary"]
         return {**receipt, **extra}
 
-    def _build(self, arguments: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        reference = arguments.get("artifact_id")
-        view = arguments.get("view")
-        options = arguments.get("options") or {}
-        artifact = self.artifacts.resolve(reference)
-        if artifact is None:
-            raise ViewError(
-                f"no tool result matches artifact_id {reference!r}. Pass an artifact_id "
-                f"from `available` or {LATEST_PREFIX}<tool_name>; if the result you need "
-                "is not listed, call its tool first",
-                code="unknown_artifact",
-                available=self.artifacts.available(),
-            )
-        if not isinstance(view, str) or not isinstance(options, Mapping):
-            raise ViewError("view must be a string and options an object", code="bad_arguments")
-        part = build_view(artifact, view, options, part_id=f"v{len(self.parts) + 1}")
-        extra = part.pop("receipt", None) or {}
+    def next_id(self) -> str:
+        return f"v{len(self.parts) + 1}"
+
+    def keep(self, part: dict[str, Any]) -> None:
+        """Add a finished part to the turn, within the turn's view cap."""
+        self._check_room(part)
+        self.parts.append(part)
+
+    def _check_room(self, part: dict[str, Any]) -> None:
         try:
             ViewPartList.model_validate([*self.parts, part])
         except ValidationError:
             raise ViewError(
                 f"a turn holds at most {VIEW_LIMITS['parts']} views", code="view_limit"
             ) from None
+
+    def _build(self, arguments: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        reference = arguments.get("artifact_id")
+        view = arguments.get("view")
+        options = arguments.get("options") or {}
+        artifact = self.artifacts.resolve(reference)
+        if artifact is None and isinstance(reference, str) and re.fullmatch(r"v\d+", reference):
+            shown = next((p for p in reversed(self.parts) if p["id"] == reference), None)
+            shown = shown or self.artifacts.views.get(reference)
+            if shown is None:
+                raise ViewError(
+                    f"no view {reference!r} in this conversation; call chart to draw one",
+                    code="unknown_artifact",
+                )
+            # Deferred: chat_chart_part builds on this module.
+            from repowise.server.chat_chart_part import redraw
+
+            part = redraw(shown, options, part_id=self.next_id())
+            self._check_room(part)
+            return part, {"redrawn_from": reference}
+        if artifact is None:
+            raise ViewError(
+                f"no tool result matches artifact_id {reference!r}. Pass an artifact_id "
+                f"from `available` or {LATEST_PREFIX}<tool_name>; if the result you need "
+                "is not listed, call its tool first, or draw repository data with chart",
+                code="unknown_artifact",
+                available=self.artifacts.available(),
+            )
+        if not isinstance(view, str) or not isinstance(options, Mapping):
+            raise ViewError("view must be a string and options an object", code="bad_arguments")
+        part = build_view(artifact, view, options, part_id=self.next_id())
+        extra = part.pop("receipt", None) or {}
+        self._check_room(part)
         return part, extra
 
     def event(self, tool_id: str, result: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -356,6 +415,16 @@ class TurnViews:
         view_id = result.get("view_id")
         part = next((p for p in self.parts if p["id"] == view_id), None)
         return None if part is None else {"type": "view", "tool_id": tool_id, "view": part}
+
+
+def part_receipt(part: Mapping[str, Any]) -> dict[str, Any]:
+    """What the model reads back about a part it made: its id, kind, title and summary."""
+    receipt = {"view_id": part["id"], "kind": part["kind"], "title": part["title"]}
+    if part.get("kind") == "chart":
+        receipt["chart_type"] = part["chart_type"]
+    if "summary" in part:
+        receipt["summary"] = part["summary"]
+    return receipt
 
 
 def show_view_schema(artifact_types: list[str] | None = None) -> dict[str, Any]:
@@ -368,18 +437,14 @@ def show_view_schema(artifact_types: list[str] | None = None) -> dict[str, Any]:
         "function": {
             "name": SHOW_VIEW_TOOL,
             "description": (
-                "Show a table or chart built by the server from a tool result of this "
-                "conversation. Call the tool first (an earlier call in the same round "
-                "counts), then pass its artifact_id, or latest:<tool_name> for that "
-                "tool's newest result. Never restate the numbers yourself; the view "
-                "carries them. Views: " + ", ".join(names) + ". "
-                "`table` takes options path (dotted path to a list or map in the result), "
-                "columns and limit. When no named view fits, `chart` plots any list in the "
-                "result from options rows (path), x, y (field or list; omit to count rows), "
-                "series, filter [{field, op: eq|ne|lt|lte|gt|gte|in|contains|prefix, value}], "
-                "aggregate count|sum|avg|min|max, sort {field, order}, top, other (bucket the "
-                "rest), kind auto|bar|stacked_bar|line|donut|scatter, title. Its receipt says "
-                "the kind picked and why; an error lists the fields."
+                "Show a table or chart of a tool result already in this conversation "
+                "(for repository data prefer the chart tool, which needs no prior call). "
+                "Pass its artifact_id, or latest:<tool_name>, or an earlier view's id (v1) "
+                "with options.kind to redraw it. Views: " + ", ".join(names) + "; "
+                "named views take options.kind (e.g. donut, bar, table). `table` takes "
+                "options path (a list or map in the result), columns, limit. `chart` plots "
+                "any list or map in the result: options rows is its path. "
+                + chat_spec.SPEC_HELP
             ),
             "parameters": {
                 "type": "object",
@@ -395,31 +460,6 @@ def show_view_schema(artifact_types: list[str] | None = None) -> dict[str, Any]:
             },
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# Builders
-# ---------------------------------------------------------------------------
-
-
-def _basis(kind: str, source: str) -> dict[str, str]:
-    return {"kind": kind, "source": source}
-
-
-def _tool_basis(artifact: ViewArtifact) -> dict[str, str]:
-    declared = artifact.data.get("evidence_kind") or artifact.data.get("basis")
-    kind = declared if declared in ("measured", "inferred", "declared") else artifact.evidence_basis
-    if kind not in ("measured", "inferred", "declared"):
-        return _basis("unresolved", f"{artifact.tool_name} declares no basis")
-    return _basis(kind, artifact.tool_name)
-
-
-def _limit(options: Mapping[str, Any], default: int = _DEFAULT_ROWS, cap: int | None = None) -> int:
-    cap = cap or VIEW_LIMITS["rows"]
-    value = options.get("limit", default)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ViewError("limit must be a positive integer", code="bad_arguments")
-    return min(value, cap)
 
 
 def _wire(value: Any) -> Any:
@@ -439,518 +479,5 @@ def _cell(key: str, value: Any) -> Any:
     return _wire(value)
 
 
-def _node(data: Any, path: str) -> Any:
-    node = data
-    for segment in path.split("."):
-        if isinstance(node, Mapping) and segment in node:
-            node = node[segment]
-        elif isinstance(node, list) and segment.isdigit() and int(segment) < len(node):
-            node = node[int(segment)]
-        else:
-            raise ViewError(f"no {path!r} in the artifact", code="bad_path")
-    return node
-
-
-def _tabular(node: Any) -> list[dict[str, Any]] | None:
-    """Rows from a list of objects, or a map of objects keyed by id."""
-    if isinstance(node, list) and node and all(isinstance(row, Mapping) for row in node):
-        return [dict(row) for row in node]
-    if isinstance(node, Mapping) and node and all(isinstance(v, Mapping) for v in node.values()):
-        return [{"id": key, **value} for key, value in node.items()]
-    return None
-
-
-def _table_paths(data: Mapping[str, Any], prefix: str = "", depth: int = 0) -> list[str]:
-    paths: list[str] = []
-    for key, value in data.items():
-        if key == "_meta" or _PERSON.search(key):
-            continue
-        path = f"{prefix}{key}"
-        if _tabular(value) is not None:
-            paths.append(path)
-        elif isinstance(value, Mapping) and depth < 2:
-            paths.extend(_table_paths(value, f"{path}.", depth + 1))
-    return paths
-
-
-def _rows_at(
-    data: Mapping[str, Any], path: Any, option: str
-) -> tuple[str, list[dict[str, Any]], int]:
-    """The list or map of objects at *path* (picked when the result holds one),
-    its rows, and the row count the tool reports for it (``<leaf>_total``)."""
-    if path is None:
-        candidates = _table_paths(data)
-        if len(candidates) != 1:
-            raise ViewError(
-                f"pass options.{option}; tables in this result: {candidates}", code="bad_path"
-            )
-        path = candidates[0]
-    if not isinstance(path, str) or any(_PERSON.search(seg) for seg in path.split(".")):
-        raise ViewError(f"views never group by person ({path!r})", code="person_grouping")
-    rows = _tabular(_node(data, path))
-    if rows is None:
-        raise ViewError(f"{path!r} is not a list or map of objects", code="bad_path")
-    parent_path, _, leaf = path.rpartition(".")
-    parent = _node(data, parent_path) if parent_path else data
-    total = parent.get(f"{leaf}_total") if isinstance(parent, Mapping) else None
-    return path, rows, total if isinstance(total, int) and total >= len(rows) else len(rows)
-
-
-@register_view_builder(
-    "table",
-    description="Any list or map of objects in a result, as a table.",
-    options={"path", "columns", "limit"},
-)
-def table_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    path, rows, total_rows = _rows_at(artifact.data, options.get("path"), "path")
-    wanted = options.get("columns")
-    if wanted is not None and not (
-        isinstance(wanted, list) and all(isinstance(k, str) for k in wanted)
-    ):
-        raise ViewError("columns must be a list of keys", code="bad_arguments")
-    keys = list(dict.fromkeys(k for row in rows for k in row))
-    # A column is a key whose every value is a cell; nested values and people are left out.
-    keys = [
-        k
-        for k in keys
-        if not _PERSON.search(k)
-        and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", k)
-        and all(_cell(k, row.get(k)) is not ... for row in rows)
-    ]
-    if wanted is not None:
-        if missing := [k for k in wanted if k not in keys]:
-            raise ViewError(f"columns not available as cells: {missing}", code="bad_arguments")
-        keys = list(dict.fromkeys(wanted))
-    keys = keys[: VIEW_LIMITS["columns"]]
-    if not keys:
-        raise ViewError(f"{path!r} has no scalar fields to show", code="bad_path")
-
-    shown = rows[: _limit(options)]
-    return {
-        "kind": "table",
-        "title": f"{artifact.tool_name}: {path}",
-        "summary": f"{len(shown)} of {total_rows} rows.",
-        "basis": _tool_basis(artifact),
-        "columns": [{"key": k, "label": _label(k)} for k in keys],
-        "rows": [{k: _cell(k, row.get(k)) for k in keys} for row in shown],
-        "total_rows": total_rows,
-        "truncated": total_rows > len(shown),
-    }
-
-
-def _spec_error(exc: SpecError) -> ViewError:
-    extra = {"fields": exc.fields} if exc.fields else {}
-    return ViewError(str(exc), code=exc.code, **extra)
-
-
-@register_view_builder(
-    "chart",
-    description="A chart you specify over any list of objects in a result.",
-    options=chat_view_spec.OPTIONS,
-)
-def chart_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    try:
-        spec = chat_view_spec.parse_spec(options)
-    except SpecError as exc:
-        raise _spec_error(exc) from None
-    path, rows, source_total = _rows_at(artifact.data, options.get("rows"), "rows")
-    for name in spec.fields():
-        if _PERSON.search(name):
-            raise ViewError(
-                f"views never group or filter by person ({name!r})", code="person_grouping"
-            )
-    for name in [*spec.fields(), *path.split(".")]:
-        if _ATTRIBUTION.search(name):
-            # Deliberate ceiling: no coverage check per row here, so these are
-            # refused; changes.provenance draws them with their coverage.
-            raise ViewError(
-                f"attribution figures ({name!r}) are shown only by changes.provenance, "
-                "which checks their coverage",
-                code="attribution_figure",
-            )
-    types = {k: t for k, t in chat_view_spec.field_types(rows).items() if not _PERSON.search(k)}
-    numeric_x = types.get(spec.x) == "number"
-    split = [spec.series] if spec.series else []
-    for name in [*spec.y, *split, *([spec.x] if numeric_x else [])]:
-        if _RISK_SCORE.search(name):
-            raise ViewError(
-                f"a risk score is never a chart series ({name!r}); show it in a table",
-                code="risk_score_series",
-            )
-    try:
-        chat_view_spec.check_fields(spec, types)
-        result = chat_view_spec.transform(spec, rows, types)
-    except SpecError as exc:
-        raise _spec_error(exc) from None
-
-    def cell(key: str, value: Any) -> Any:
-        value = _cell(key, value) if key not in result.series else _wire(value)
-        return None if value is ... else value
-
-    shown = f"{result.matched} of {result.source_rows}" if spec.filters else f"{result.source_rows}"
-    summary = f"{shown} rows of {path}" + (f", grouped by {spec.x}" if spec.aggregate else "") + "."
-    if result.missing_x:
-        summary += f" {result.missing_x} rows without {spec.x} are left out."
-    if result.other:
-        summary += f" {chat_view_spec.OTHER_LABEL} adds up the rows past the top {spec.top}."
-    if source_total > len(rows):
-        summary += (
-            f" The tool returned {len(rows)} of {source_total} rows; the chart covers those only."
-        )
-    part: dict[str, Any] = {
-        "kind": "chart",
-        "chart_type": result.chart_type,
-        "title": spec.title or chat_view_spec.default_title(spec),
-        "summary": f"{spec.subtitle} {summary}" if spec.subtitle else summary,
-        "basis": _tool_basis(artifact),
-        "x": result.x,
-        "series": result.series,
-        "data": {
-            "columns": [{"key": k, "label": label} for k, label in result.columns],
-            "rows": [{k: cell(k, v) for k, v in row.items()} for row in result.rows],
-            "total_rows": result.total_rows,
-            "truncated": result.total_rows > len(result.rows),
-        },
-        "receipt": {"chart_type": result.chart_type, "reason": result.reason},
-    }
-    if result.sort:
-        part["sort"] = result.sort
-    return part
-
-
-def _chart(
-    *,
-    title: str,
-    summary: str,
-    basis: dict[str, str],
-    x: tuple[str, str],
-    series: list[tuple[str, str]],
-    unit: str,
-    rows: list[dict[str, Any]],
-    total_rows: int | None = None,
-    chart_type: str = "bar",
-) -> dict[str, Any]:
-    if not rows:
-        raise ViewError("this result has nothing to chart", code="no_data")
-    total = len(rows) if total_rows is None else max(total_rows, len(rows))
-    return {
-        "kind": "chart",
-        "chart_type": chart_type,
-        "title": title,
-        "summary": summary,
-        "basis": basis,
-        "x": x[0],
-        "series": [key for key, _ in series],
-        "data": {
-            "columns": [
-                {"key": x[0], "label": x[1]},
-                *({"key": key, "label": label, "unit": unit} for key, label in series),
-            ],
-            "rows": rows,
-            "total_rows": total,
-            "truncated": total > len(rows),
-        },
-    }
-
-
-_HEALTH_BANDS = ("at_risk", "needs_work", "fair", "good", "excellent")
-
-
-@register_view_builder(
-    "health.bands",
-    description="Files per health band.",
-    artifact_types={"health", "overview"},
-    options=frozenset(),
-)
-def health_bands_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    data = artifact.data
-    distribution = data.get("distribution") or (data.get("code_health") or {}).get("distribution")
-    bands = distribution.get("bands") if isinstance(distribution, Mapping) else None
-    if not isinstance(bands, Mapping):
-        raise ViewError("this result has no health distribution; call get_health with no targets")
-    rows = [
-        {"band": band.replace("_", " "), "files": bands[band]["files"]}
-        for band in _HEALTH_BANDS
-        if isinstance(bands.get(band), Mapping) and isinstance(bands[band].get("files"), int)
-    ]
-    total = sum(row["files"] for row in rows)
-    return _chart(
-        title="Files by health band",
-        summary=f"{total} files across {len(rows)} health bands.",
-        basis=_basis("inferred", "health engine"),
-        x=("band", "Health band"),
-        series=[("files", "Files")],
-        unit="files",
-        rows=rows,
-    )
-
-
-@register_view_builder(
-    "health.trend",
-    description="Average and hotspot health over recent snapshots.",
-    artifact_types={"health"},
-    options=frozenset(),
-)
-def health_trend_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    trend = artifact.data.get("trend")
-    recent = trend.get("recent") if isinstance(trend, Mapping) else None
-    if not isinstance(recent, list) or not recent:
-        raise ViewError('this result has no trend; call get_health(include=["trend"])')
-    snapshots = sorted(
-        (s for s in recent if isinstance(s, Mapping) and isinstance(s.get("taken_at"), str)),
-        key=lambda s: s["taken_at"],
-    )
-    rows = [
-        {
-            "taken_at": s["taken_at"],
-            "average_health": _wire(s.get("average_health")),
-            "hotspot_health": _wire(s.get("hotspot_health")),
-        }
-        for s in snapshots
-    ]
-    total = trend.get("recent_total")
-    return _chart(
-        chart_type="line",
-        title="Health over recent snapshots",
-        summary=f"{len(rows)} health snapshots, oldest first.",
-        basis=_basis("inferred", "health snapshots"),
-        x=("taken_at", "Snapshot"),
-        series=[("average_health", "Average health"), ("hotspot_health", "Hotspot health")],
-        unit="score",
-        rows=rows,
-        total_rows=total if isinstance(total, int) else None,
-    )
-
-
-@register_view_builder(
-    "health.test_coverage",
-    description="Measured line coverage per file, from the ingested coverage report.",
-    artifact_types={"health"},
-)
-def health_test_coverage_view(
-    artifact: ViewArtifact, options: Mapping[str, Any]
-) -> dict[str, Any]:
-    coverage = artifact.data.get("coverage")
-    files = coverage.get("files") if isinstance(coverage, Mapping) else None
-    if not isinstance(files, list):
-        raise ViewError('this result has no coverage; call get_health(include=["coverage"])')
-    usable = [f for f in files if isinstance(f, Mapping) and f.get("file_path")]
-    shown = usable[: _limit(options, cap=100)]
-    rows = [
-        {
-            "file": {"type": "file", "id": f["file_path"]},
-            "line_coverage": _wire(f.get("line_coverage_pct")),
-        }
-        for f in shown
-    ]
-    summary_pct = (coverage.get("summary") or {}).get("line_coverage_pct")
-    total = coverage.get("files_total")
-    total = max(total, len(usable)) if isinstance(total, int) else len(usable)
-    part = _chart(
-        title="Line coverage by file",
-        summary=f"{len(rows)} files from the coverage report.",
-        basis=_basis("measured", "coverage report"),
-        x=("file", "File"),
-        series=[("line_coverage", "Line coverage")],
-        unit="%",
-        rows=rows,
-        total_rows=total,
-    )
-    if isinstance(summary_pct, (int, float)) and 0 <= summary_pct <= 100:
-        # Rounded so the percentage converts without float noise (88.84 -> 0.8884).
-        part["coverage"] = {"metric": "test_reach", "ratio": round(summary_pct / 100, 6)}
-    return part
-
-
-@register_view_builder(
-    "dead_code.by_tier",
-    description="Dead-code findings per confidence tier.",
-    artifact_types={"dead_code"},
-    options=frozenset(),
-)
-def dead_code_by_tier_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    tiers = artifact.data.get("tiers")
-    if not isinstance(tiers, Mapping):
-        raise ViewError("this result has no confidence tiers")
-    rows = [
-        {"tier": tier, "findings": tiers[tier]["count"]}
-        for tier in ("high", "medium", "low")
-        if isinstance(tiers.get(tier), Mapping) and isinstance(tiers[tier].get("count"), int)
-    ]
-    return _chart(
-        title="Dead-code findings by tier",
-        summary=f"{sum(r['findings'] for r in rows)} findings kept by the call's filters.",
-        basis=_basis("inferred", "reachability graph"),
-        x=("tier", "Confidence tier"),
-        series=[("findings", "Findings")],
-        unit="findings",
-        rows=rows,
-    )
-
-
-@register_view_builder(
-    "dead_code.by_kind",
-    description="Open dead-code findings per kind.",
-    artifact_types={"dead_code"},
-    options=frozenset(),
-)
-def dead_code_by_kind_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    by_kind = (artifact.data.get("summary") or {}).get("by_kind")
-    if not isinstance(by_kind, Mapping) or not by_kind:
-        raise ViewError("this result has no findings by kind")
-    rows = [
-        {"kind": kind, "findings": count}
-        for kind, count in by_kind.items()
-        if isinstance(count, int) and not isinstance(count, bool)
-    ]
-    return _chart(
-        title="Dead-code findings by kind",
-        summary=f"{sum(r['findings'] for r in rows)} open findings.",
-        basis=_basis("inferred", "reachability graph"),
-        x=("kind", "Kind"),
-        series=[("findings", "Findings")],
-        unit="findings",
-        rows=rows,
-    )
-
-
-@register_view_builder(
-    "risk.hotspots",
-    description="Bug-fix commits on the repository's top hotspots.",
-    artifact_types={"risk"},
-)
-def risk_hotspots_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    hotspots = artifact.data.get("global_hotspots")
-    if not isinstance(hotspots, list) or not hotspots:
-        raise ViewError("this result has no global hotspots")
-    usable = [h for h in hotspots if isinstance(h, Mapping) and h.get("file_path")]
-    shown = usable[: _limit(options, cap=100)]
-    rows = [
-        {"file": {"type": "file", "id": h["file_path"]}, "fix_count": _wire(h.get("fix_count"))}
-        for h in shown
-    ]
-    total = artifact.data.get("global_hotspots_total")
-    total = max(total, len(usable)) if isinstance(total, int) else len(usable)
-    return _chart(
-        title="Bug fixes on top hotspots",
-        summary=f"Bug-fix commits on {len(rows)} hotspot files.",
-        basis=_basis("measured", "git history"),
-        x=("file", "File"),
-        series=[("fix_count", "Bug-fix commits")],
-        unit="commits",
-        rows=rows,
-        total_rows=total,
-    )
-
-
-def _changes_block(artifact: ViewArtifact) -> Mapping[str, Any]:
-    block = artifact.data.get("changes")
-    if not isinstance(block, Mapping) or not block.get("total"):
-        raise ViewError(
-            'this result has no change records; call get_overview(include=["changes"])'
-        )
-    return block
-
-
-def _window(block: Mapping[str, Any]) -> str:
-    window = block.get("window")
-    start = window.get("history_from") if isinstance(window, Mapping) else None
-    if isinstance(start, str):
-        return f" since {start[:10]}, where the indexed history starts"
-    days = window.get("days") if isinstance(window, Mapping) else None
-    return f" over the last {days} days of merged changes" if isinstance(days, int) else ""
-
-
-@register_view_builder(
-    "changes.by_category",
-    description="Merged changes per category (feature, fix, ...).",
-    artifact_types={"overview"},
-    options=frozenset(),
-)
-def changes_by_category_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    block = _changes_block(artifact)
-    by_category = block.get("by_category")
-    rows = [
-        {"category": category, "changes": count}
-        for category, count in (by_category.items() if isinstance(by_category, Mapping) else ())
-        if isinstance(count, int) and not isinstance(count, bool)
-    ]
-    return _chart(
-        title="Changes by category",
-        summary=f"{sum(r['changes'] for r in rows)} changes{_window(block)}.",
-        basis=_basis("measured", "git history"),
-        x=("category", "Category"),
-        series=[("changes", "Changes")],
-        unit="changes",
-        rows=rows,
-    )
-
-
-@register_view_builder(
-    "changes.by_week",
-    description="Merged changes per week.",
-    artifact_types={"overview"},
-    options=frozenset(),
-)
-def changes_by_week_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    block = _changes_block(artifact)
-    weeks = block.get("by_week")
-    rows = [
-        {"week": w["week"], "changes": w["changes"]}
-        for w in (weeks if isinstance(weeks, list) else ())
-        if isinstance(w, Mapping)
-        and isinstance(w.get("week"), str)
-        and isinstance(w.get("changes"), int)
-        and not isinstance(w.get("changes"), bool)
-    ][-VIEW_LIMITS["chart_points"] :]
-    return _chart(
-        chart_type="line",
-        title="Changes per week",
-        summary=f"{len(rows)} weeks{_window(block)}, oldest first.",
-        basis=_basis("measured", "git history"),
-        x=("week", "Week of"),
-        series=[("changes", "Changes")],
-        unit="changes",
-        rows=rows,
-    )
-
-
-_PROVENANCE_BANDS = (
-    ("agent", "agent_changes"),
-    ("human attested", "human_attested_changes"),
-    ("unknown", "unknown_changes"),
-)
-
-
-@register_view_builder(
-    "changes.provenance",
-    description="Merged changes by source: agent, human-attested, unknown.",
-    artifact_types={"overview"},
-    options=frozenset(),
-    coverage_metric="attribution",
-)
-def changes_provenance_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
-    block = _changes_block(artifact)
-    provenance = block.get("provenance")
-    if not isinstance(provenance, Mapping) or "coverage" not in provenance:
-        raise ViewError("attribution is off for this repository", code="attribution_off")
-    # Unknown is its own band, never folded into human.
-    rows = [
-        {"source": label, "changes": provenance[key]}
-        for label, key in _PROVENANCE_BANDS
-        if isinstance(provenance.get(key), int) and not isinstance(provenance.get(key), bool)
-    ]
-    part = _chart(
-        chart_type="donut",
-        title="Changes by source",
-        summary=f"{sum(r['changes'] for r in rows)} changes{_window(block)}.",
-        basis=_basis("measured", "git attribution markers"),
-        x=("source", "Source"),
-        series=[("changes", "Changes")],
-        unit="changes",
-        rows=rows,
-    )
-    coverage = provenance.get("coverage")
-    if isinstance(coverage, (int, float)) and not isinstance(coverage, bool):
-        part["coverage"] = {"metric": "attribution", "ratio": coverage}
-    return part
+# The named views register themselves on import; they build on this module, so last.
+from repowise.server import chat_view_builders as _builders  # noqa: E402, F401

@@ -11,8 +11,10 @@ events as SSE, and an in-process caller uses the class directly.
 The tools a model is shown, and the only ones it can run, are the backend's
 catalog for the principal narrowed by the policy's allowlist and safety
 ceiling, plus the chat-only ``show_view`` tool, which builds tables and
-charts from the conversation's tool results (:mod:`repowise.server.chat_views`), and
-the chat-only ``find_suspects`` (:mod:`repowise.server.chat_suspects`).
+charts from the conversation's tool results (:mod:`repowise.server.chat_views`),
+the chat-only ``chart``, which draws a repository dataset in one call
+(:mod:`repowise.server.chat_chart`), and the chat-only ``find_suspects``
+(:mod:`repowise.server.chat_suspects`).
 Everything outside the loop goes through the seams in
 :mod:`repowise.server.chat_seams`.
 """
@@ -31,6 +33,7 @@ from pydantic import ValidationError
 from repowise.core.providers.llm.base import ChatProvider
 from repowise.server.auth import Principal
 from repowise.server.chat_artifacts import create_artifact_envelope
+from repowise.server.chat_chart import CHART_TOOL, chart_schema, run_chart
 from repowise.server.chat_context import (
     OVERFLOW_MESSAGE,
     bound_history,
@@ -48,7 +51,7 @@ from repowise.server.chat_prompt import (
     stored_messages_to_llm_format,
     tool_result_message,
 )
-from repowise.server.chat_references import ArtifactIndex
+from repowise.server.chat_references import VIEW_TOOLS, ArtifactIndex
 from repowise.server.chat_seams import (
     ConversationStore,
     NoTurnHooks,
@@ -346,6 +349,7 @@ class _Turn:
         is_cancelled: IsCancelled,
         shows_views: bool = False,
         finds_suspects: bool = False,
+        draws_charts: bool = False,
         question: str = "",
         prior_calls: list[dict[str, Any]] | None = None,
         artifacts: ArtifactIndex | None = None,
@@ -355,6 +359,7 @@ class _Turn:
         self.catalog = {tool.entry.name: tool for tool in catalog}
         self.shows_views = shows_views
         self.finds_suspects = finds_suspects
+        self.draws_charts = draws_charts
         #: Earlier turns' results stay citable by show_view.
         self.views = TurnViews(artifacts)
         self.policy = policy
@@ -395,6 +400,8 @@ class _Turn:
         """
         if name == SHOW_VIEW_TOOL and self.shows_views:
             return self.views.show(arguments)
+        if name == CHART_TOOL and self.draws_charts:
+            return await run_chart(arguments, getattr(self.tools, "repo_alias", None), self.views)
         if name == SUSPECTS_TOOL and self.finds_suspects:
             result = await run_find_suspects(arguments, getattr(self.tools, "repo_alias", None))
             return self.views.record(name, arguments, result, evidence_basis="inferred")
@@ -593,7 +600,7 @@ class _Turn:
             "summary": summary,
             "artifact": artifact,
         }
-        view = self.views.event(tool_id, result) if name == SHOW_VIEW_TOOL else None
+        view = self.views.event(tool_id, result) if name in VIEW_TOOLS else None
         return [event] if view is None else [event, view]
 
     def reply_content(self) -> dict[str, Any]:
@@ -940,7 +947,15 @@ class ChatSession:
             and any(tool.entry.name == SCOPE_TOOL for tool in catalog)
             and self.policy.admits_name(SUSPECTS_TOOL, "read_only")
         )
+        # chart reads the same index in process, so it is local like find_suspects.
+        draws_charts = (
+            shows_views
+            and isinstance(self.tools, LocalToolBackend)
+            and self.policy.admits_name(CHART_TOOL, "read_only")
+        )
         schemas = tool_schemas(catalog)
+        if draws_charts:
+            schemas.append(chart_schema())
         if shows_views:
             schemas.append(show_view_schema([tool.entry.artifact_type for tool in catalog]))
         if finds_suspects:
@@ -957,6 +972,7 @@ class ChatSession:
             is_cancelled=is_cancelled,
             shows_views=shows_views,
             finds_suspects=finds_suspects,
+            draws_charts=draws_charts,
             question=message,
             prior_calls=[
                 call
@@ -971,7 +987,12 @@ class ChatSession:
         if grounded is not None:
             yield grounded
         system_prompt = _build_system_prompt(
-            self.scope.repo_name, self.scope.repo_path, catalog, context, shows_views=shows_views
+            self.scope.repo_name,
+            self.scope.repo_path,
+            catalog,
+            context,
+            shows_views=shows_views,
+            draws_charts=draws_charts,
         )
         async for event in turn.run(system_prompt, schemas):
             yield event

@@ -24,6 +24,7 @@
 import * as React from "react";
 
 import { formatNumber } from "../lib/format";
+import { EFFORT_LABEL } from "../health/labels";
 import { StructuralMap } from "./structural-map";
 import { typeMeta } from "./meta";
 import { MAP_MIN_POINTS } from "./types";
@@ -46,13 +47,6 @@ export interface StartHereProps {
   highlightedId?: string | null | undefined;
   onHighlight?: ((id: string | null) => void) | undefined;
 }
-
-const EFFORT_WORD: Record<string, string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
-  XL: "Extra large",
-};
 
 export function StartHere({
   opportunities,
@@ -122,7 +116,7 @@ export function StartHere({
       <div>
         {lead.map((item, i) => {
           const meta = typeMeta(item.lead_refactoring_type || "");
-          const effort = EFFORT_WORD[item.effort_bucket] ?? item.effort_bucket;
+          const effort = EFFORT_LABEL[item.effort_bucket] ?? item.effort_bucket;
           const lit = item.opportunity_id === highlighted;
           return (
             <button

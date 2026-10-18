@@ -7,6 +7,7 @@ import contextlib
 import logging
 import re
 from collections.abc import Container, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -1053,6 +1054,246 @@ def _missing_named_symbols(
     return missing
 
 
+@dataclass(frozen=True)
+class _SearchPlan:
+    """One structured search: the caller's arguments plus the derived query."""
+
+    query: str
+    limit: int
+    page_type: str | None
+    kind: str | None
+    symbol_kind: str | None
+    mode: str
+    names: Container[str] | None
+    canonical_symbol: tuple[Any, str] | None
+    symbol_query: str
+    fetch: int
+    multi: bool
+
+
+@dataclass
+class _Pools:
+    """Each row kind merged and ranked across the repos searched."""
+
+    contexts: list[Any]
+    symbols: list[dict]
+    spare: list[dict]
+    files: list[dict]
+    indexed_paths: list[str]
+    concepts: list[dict]
+
+
+def _symbol_query_for(
+    query: str, mode: str, names: Container[str] | None, canonical_symbol: Any
+) -> str:
+    """The text the symbol scorer ranks on."""
+    # Scored on the identifiers, not the prose: words like "is" would match
+    # ``is_ci`` and bury the symbol the question names.
+    symbol_query = query
+    if canonical_symbol:
+        symbol_query = canonical_symbol[1]
+    if mode == "hybrid":
+        _idents = _embedded_identifiers(query, names)
+        # No identifier: content words, else the raw text.
+        symbol_query = (
+            " ".join(_idents) if _idents else " ".join(content_terms(query)) or query
+        )
+    return symbol_query
+
+
+def _symbol_fetch(mode: str, limit: int) -> int:
+    """How many symbol rows each repo fetches."""
+    # Hybrid collapses rows per file, so it over-fetches; symbol mode takes every
+    # candidate so ``fuzzy_omitted`` can count what an exact hit hides.
+    fetch = limit * _FILE_WINDOW_OVERFETCH if mode == "hybrid" else limit
+    if mode == "symbol":
+        fetch = _MAX_CANDIDATES
+    return fetch
+
+
+async def _search_one_repo(
+    ctx: Any, plan: _SearchPlan
+) -> tuple[list[dict], list[dict], list[str], list[dict]]:
+    """Symbol, path and page rows for one repo, plus its indexed paths in path mode."""
+    s: list[dict] = []
+    f: list[dict] = []
+    paths: list[str] = []
+    c: list[dict] = []
+    if plan.mode in ("symbol", "hybrid"):
+        s = await search_symbols_single(
+            ctx, plan.symbol_query, plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind
+        )
+    if plan.mode == "path":
+        f = await search_paths_single(ctx, plan.query, plan.limit)
+        async with get_session(ctx.session_factory) as session:
+            paths = (await file_path_index(session, (await _get_repo(session)).id)).paths
+    if plan.mode == "hybrid":
+        c = await _search_single_repo(ctx, plan.query, plan.limit, plan.page_type, plan.kind)
+        for item in c:
+            item["type"] = "page"
+        await attach_hit_symbols(ctx, plan.query, c)
+    for rows in (s, f, c):
+        _tag_repo(rows, ctx, plan.multi)
+    return s, f, paths, c
+
+
+def _merge_pools(answered: list[tuple[Any, Any]], limit: int) -> _Pools:
+    """Merge each repo's rows into one ranked pool per row kind."""
+    parts = [part for _, part in answered]
+    return _Pools(
+        contexts=[ctx for ctx, _ in answered],
+        symbols=merge_ranked((p[0] for p in parts), _neg_score("score"), per_repo_cap=limit),
+        # Rows past each repo's limit only backfill slots that collapsing frees.
+        spare=merge_ranked((p[0][limit:] for p in parts), _neg_score("score")),
+        files=merge_ranked((p[1] for p in parts), _neg_score("score")),
+        indexed_paths=[path for p in parts for path in p[2]],
+        concepts=merge_ranked((p[3] for p in parts), _neg_score("relevance_score")),
+    )
+
+
+def _protect_exact(plan: _SearchPlan, pools: _Pools, candidates: list[str]) -> None:
+    """Keep exact name and path matches ahead of their fuzzy neighbours."""
+    if plan.mode == "symbol":
+        pools.symbols = _protect_exact_symbols(plan.query, pools.symbols)
+    elif plan.mode == "hybrid" and candidates:
+        pools.symbols = _protect_named_symbols(candidates, pools.symbols)
+    if plan.mode == "path":
+        pools.files = _protect_exact_paths(plan.query, pools.files, pools.indexed_paths)
+
+
+def _symbol_mode_results(
+    plan: _SearchPlan, pools: _Pools, candidates: list[str], exact: bool
+) -> tuple[list[dict], int]:
+    """Symbol mode rows, and how many fuzzy names an exact hit hides."""
+    # An exact hit is the answer; its fuzzy neighbours are only counted.
+    fuzzy_omitted = 0
+    pool = pools.symbols + pools.spare
+    named = [s for s in pool if _has_exact_symbol(candidates, [s])] if exact else []
+    if named:
+        canonical_symbol = plan.canonical_symbol
+        ident = (canonical_symbol[1] if canonical_symbol else plan.query).strip().lower()
+        shown = {id(s) for s in named}
+        fuzzy_omitted = sum(
+            1 for s in pool if id(s) not in shown and ident in (s.get("name") or "").lower()
+        )
+    return (named or pools.symbols)[: plan.limit], fuzzy_omitted
+
+
+def _hybrid_mode_results(plan: _SearchPlan, pools: _Pools, exact: bool) -> list[dict]:
+    """Hybrid rows: symbol matches interleaved with concept pages for new files."""
+    window = _hybrid_window(
+        plan.query, pools.symbols, pools.concepts, plan.limit, exact, plan.names
+    )
+    # One row per file; freed slots fill with the next pages, then symbols.
+    served = {id(item) for item in window}
+    rest = [
+        item for item in pools.concepts + pools.symbols + pools.spare if id(item) not in served
+    ]
+    results = _collapse_by_file(window + rest)[: plan.limit]
+    # Non-file pages leave the window unrefilled unless the caller asked for
+    # pages by type or kind="doc".
+    if not plan.page_type and plan.kind != "doc":
+        results = [item for item in results if hit_file_path(item)]
+    return results
+
+
+def _select_results(
+    plan: _SearchPlan, pools: _Pools, candidates: list[str], exact: bool
+) -> tuple[list[dict], int]:
+    """The served rows for the plan's mode, and the symbol-mode fuzzy count."""
+    if plan.mode == "symbol":
+        return _symbol_mode_results(plan, pools, candidates, exact)
+    if plan.mode == "path":
+        return pools.files[: plan.limit], 0
+    return _hybrid_mode_results(plan, pools, exact), 0
+
+
+async def _single_repository(contexts: list[Any], multi: bool) -> Any:
+    """The repository row a single-repo search ran against, else None."""
+    if multi or not contexts:
+        return None
+    async with get_session(contexts[0].session_factory) as session:
+        return await _get_repo(session)
+
+
+def _exact_match_note(
+    candidates: list[str],
+    exact: bool,
+    missing: list[str],
+    fuzzy_omitted: int,
+    has_results: bool,
+    grep_hint: str | None,
+) -> str | None:
+    """The note qualifying an identifier query's results, if one is owed."""
+    if missing:
+        shown = ", ".join(repr(c) for c in missing[:3])
+        # An empty window's grep_hint already carries the sweep advice.
+        pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if has_results else ""
+        sweep = "" if (grep_hint and not has_results) else " " + EXHAUSTIVE_SWEEP_HINT
+        return (
+            f"No indexed symbol is named {shown}, so no symbol is returned "
+            f"for it.{pages} Recheck the spelling, or search a shorter part "
+            f"of the name.{sweep}"
+        )
+    if not exact:
+        shown = ", ".join(repr(c) for c in candidates[:3])
+        return (
+            f"No indexed symbol exactly matches {shown}. The results are "
+            "fuzzy neighbours ranked by token overlap — confirm a hit names "
+            "what you meant before relying on it. If you expected an exact "
+            "symbol, recheck spelling/casing. " + EXHAUSTIVE_SWEEP_HINT
+        )
+    if fuzzy_omitted:
+        return (
+            f"{fuzzy_omitted} other symbols contain this name; search a "
+            "longer or partial name to list them."
+        )
+    return None
+
+
+def _match_named(
+    plan: _SearchPlan, pools: _Pools, candidates: list[str]
+) -> tuple[bool, list[str]]:
+    """Whether a returned symbol names the query exactly, and the names none does.
+
+    Missing names leave only exact symbols in *pools*.
+    """
+    exact = _has_exact_symbol(candidates, pools.symbols) if candidates else False
+    missing = _missing_named_symbols(
+        candidates, pools.symbols, bool(plan.canonical_symbol), pools.concepts
+    )
+    if missing:
+        pools.symbols = [s for s in pools.symbols if _has_exact_symbol(candidates, [s])]
+        pools.spare = [s for s in pools.spare if _has_exact_symbol(candidates, [s])]
+    return exact, missing
+
+
+def _attach_match_notes(
+    response: dict,
+    candidates: list[str],
+    exact: bool,
+    missing: list[str],
+    grep_hint: str | None,
+) -> None:
+    """Exact-match flag, its note, and the grep fallback for an empty window."""
+    results = response["results"]
+    # Fuzzy neighbours of a missing name look authoritative, so say so.
+    if candidates:
+        response["exact_match"] = exact and not missing
+        note = _exact_match_note(
+            candidates,
+            exact,
+            missing,
+            response.get("fuzzy_omitted", 0),
+            bool(results),
+            grep_hint,
+        )
+        if note:
+            response["note"] = note
+    if grep_hint and not results:
+        response["grep_hint"] = grep_hint
+
+
 async def _structured_search(
     query: str,
     limit: int,
@@ -1065,128 +1306,36 @@ async def _structured_search(
     names: Container[str] | None = None,
     fed: Federation | None = None,
 ) -> dict:
-    """Run symbol / path / hybrid search and shape the response.
+    """Run symbol / path / hybrid search, across repos when federated, and shape the response.
 
-    Honours ``repo="all"`` (federates across contexts, then re-ranks by score),
-    per-repo ``exclude_patterns`` and tombstones (enforced inside the
-    single-repo helpers). The grep_hint is attached only as a fallback — when
-    the structural index produced nothing, the agent still has a path forward.
+    ``grep_hint`` is attached only when nothing was found.
     """
     multi = fed is not None and fed.multi
-
-    # A hybrid query is prose wrapped around an identifier ("where is X
-    # defined"). The symbol scorer ranks on token overlap, so handing it the
-    # raw prose lets stopword-ish tokens ("is" -> is_ci, "filter" ->
-    # FilterRegistry) outrank the identifier the question is actually about,
-    # which then never reaches _has_exact_symbol and the response claims the
-    # symbol is unindexed. Score symbols on the extracted identifiers instead.
-    symbol_query = query
     canonical_symbol = _canonical_symbol_query(query)
-    if canonical_symbol:
-        symbol_query = canonical_symbol[1]
-    if mode == "hybrid":
-        _idents = _embedded_identifiers(query, names)
-        # Without an identifier, score on the content words so stopwords such
-        # as "on" can't match symbols like ``test_basic_auth_on_session``. A
-        # query made only of stopwords keeps the raw text.
-        symbol_query = (
-            " ".join(_idents) if _idents else " ".join(content_terms(query)) or query
-        )
-
-    # Only the hybrid window collapses symbol rows, so only it over-fetches
-    # them; path hits are file pages, already one row per file. Symbol mode
-    # takes every candidate so ``fuzzy_omitted`` counts the names an exact hit hides.
-    fetch = limit * _FILE_WINDOW_OVERFETCH if mode == "hybrid" else limit
-    if mode == "symbol":
-        fetch = _MAX_CANDIDATES
+    plan = _SearchPlan(
+        query=query,
+        limit=limit,
+        page_type=page_type,
+        kind=kind,
+        symbol_kind=symbol_kind,
+        mode=mode,
+        names=names,
+        canonical_symbol=canonical_symbol,
+        symbol_query=_symbol_query_for(query, mode, names, canonical_symbol),
+        fetch=_symbol_fetch(mode, limit),
+        multi=multi,
+    )
 
     async def _one_repo(ctx) -> tuple[list[dict], list[dict], list[str], list[dict]]:
-        s: list[dict] = []
-        f: list[dict] = []
-        paths: list[str] = []
-        c: list[dict] = []
-        if mode in ("symbol", "hybrid"):
-            s = await search_symbols_single(
-                ctx, symbol_query, fetch, symbol_kind=symbol_kind, kind=kind
-            )
-        if mode == "path":
-            f = await search_paths_single(ctx, query, limit)
-            async with get_session(ctx.session_factory) as session:
-                paths = (await file_path_index(session, (await _get_repo(session)).id)).paths
-        if mode == "hybrid":
-            c = await _search_single_repo(ctx, query, limit, page_type, kind)
-            for item in c:
-                item["type"] = "page"
-            await attach_hit_symbols(ctx, query, c)
-        for rows in (s, f, c):
-            _tag_repo(rows, ctx, multi)
-        return s, f, paths, c
+        return await _search_one_repo(ctx, plan)
 
-    answered = await _per_repo(repo, fed, _one_repo)
-    contexts = [ctx for ctx, _ in answered]
-    parts = [part for _, part in answered]
-    # Symbol rows past each repo's ``limit``: they only backfill slots that
-    # collapsing same-file rows frees, and never steer the exact-match signal.
-    symbols = merge_ranked((p[0] for p in parts), _neg_score("score"), per_repo_cap=limit)
-    spare = merge_ranked((p[0][limit:] for p in parts), _neg_score("score"))
-    files = merge_ranked((p[1] for p in parts), _neg_score("score"))
-    indexed_paths = [path for p in parts for path in p[2]]
-    # Re-ranked by relevance so a strong page in repo B isn't buried under
-    # repo A's weak ones.
-    concepts = merge_ranked((p[3] for p in parts), _neg_score("relevance_score"))
+    pools = _merge_pools(await _per_repo(repo, fed, _one_repo), limit)
     candidates = _identifier_candidates(query, mode, names)
-    if mode == "symbol":
-        symbols = _protect_exact_symbols(query, symbols)
-    elif mode == "hybrid" and candidates:
-        symbols = _protect_named_symbols(candidates, symbols)
-    if mode == "path":
-        files = _protect_exact_paths(query, files, indexed_paths)
+    _protect_exact(plan, pools, candidates)
+    exact, missing = _match_named(plan, pools, candidates)
 
-    # Whether any returned symbol matches the query's identifier(s) exactly.
-    # Computed once here so the hybrid interleave and the exact-match note below
-    # agree on the same signal.
-    exact = _has_exact_symbol(candidates, symbols) if candidates else False
-    missing = _missing_named_symbols(candidates, symbols, bool(canonical_symbol), concepts)
-    if missing:
-        symbols = [s for s in symbols if _has_exact_symbol(candidates, [s])]
-        spare = [s for s in spare if _has_exact_symbol(candidates, [s])]
-
-    fuzzy_omitted = 0
-    if mode == "symbol":
-        # An exact hit is the answer; its fuzzy neighbours only cost bytes.
-        # Summed over repos when federated, and a floor past the candidate cap.
-        pool = symbols + spare
-        named = [s for s in pool if _has_exact_symbol(candidates, [s])] if exact else []
-        if named:
-            ident = (canonical_symbol[1] if canonical_symbol else query).strip().lower()
-            shown = {id(s) for s in named}
-            fuzzy_omitted = sum(
-                1 for s in pool if id(s) not in shown and ident in (s.get("name") or "").lower()
-            )
-        results = (named or symbols)[:limit]
-    elif mode == "path":
-        results = files[:limit]
-    else:  # hybrid: interleave symbol matches and concept pages for new files
-        window = _hybrid_window(query, symbols, concepts, limit, exact, names)
-        # One row per file, so ``limit`` buys distinct files (mode "symbol"
-        # stays row-per-symbol: overloads there are the answer). Collapsing
-        # keeps the window's order and frees the slots same-file rows took;
-        # the next pages, then the next symbols, fill them.
-        served = {id(item) for item in window}
-        rest = [item for item in concepts + symbols + spare if id(item) not in served]
-        results = _collapse_by_file(window + rest)[:limit]
-        # A code-location query wants files to open, so a module, onboarding
-        # or decision page is dropped from the window. Its slot is not
-        # refilled: on the retrieval guard a refill bought +0.01 coverage at
-        # limit 5 for -0.01 precision at limit 10. Kept when the caller asked
-        # for pages by type or kind="doc".
-        if not page_type and kind != "doc":
-            results = [item for item in results if hit_file_path(item)]
-
-    repository = None
-    if not multi and contexts:
-        async with get_session(contexts[0].session_factory) as session:
-            repository = await _get_repo(session)
+    results, fuzzy_omitted = _select_results(plan, pools, candidates, exact)
+    repository = await _single_repository(pools.contexts, multi)
 
     response: dict = {
         "results": results,
@@ -1195,59 +1344,16 @@ async def _structured_search(
     }
     if fuzzy_omitted:
         response["fuzzy_omitted"] = fuzzy_omitted
-    # Symbols first, then everything else the window holds: in symbol and
-    # hybrid modes the ranked pool leads with symbol hits, and those are the
-    # entries most likely to collapse onto one another (several symbols of one
-    # file). Deduping them is the point.
-    #
-    # Bound to its own name, NOT to ``candidates``: that one holds the query's
-    # identifiers, which the exact-match note below quotes. Rebinding it here
-    # made the note quote file paths as if they were the identifiers asked for,
-    # and — worse — made its gate true for any query with results at all, so a
-    # prose query that names no identifier was told no symbol matched it.
+    # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands
-    # Exact-match honesty: an identifier-shaped query whose target names no
-    # indexed symbol still returns fuzzy neighbours. Say so, or the agent
-    # anchors on a wrong hit that looks authoritative (their Alamofire
-    # 44-overload read-spiral). Emit the boolean either way; a note only when
-    # there is no exact hit to distinguish from the fuzz. ``candidates`` /
-    # ``exact`` were computed above so ordering and this note stay consistent.
-    if candidates:
-        response["exact_match"] = exact and not missing
-        if missing:
-            shown = ", ".join(repr(c) for c in missing[:3])
-            # An empty window has no page to qualify, and its grep_hint
-            # already carries the sweep advice.
-            pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if results else ""
-            sweep = "" if (grep_hint and not results) else " " + EXHAUSTIVE_SWEEP_HINT
-            response["note"] = (
-                f"No indexed symbol is named {shown}, so no symbol is returned "
-                f"for it.{pages} Recheck the spelling, or search a shorter part "
-                f"of the name.{sweep}"
-            )
-        elif not exact:
-            shown = ", ".join(repr(c) for c in candidates[:3])
-            response["note"] = (
-                f"No indexed symbol exactly matches {shown}. The results are "
-                "fuzzy neighbours ranked by token overlap — confirm a hit names "
-                "what you meant before relying on it. If you expected an exact "
-                "symbol, recheck spelling/casing. " + EXHAUSTIVE_SWEEP_HINT
-            )
-        elif fuzzy_omitted:
-            response["note"] = (
-                f"{fuzzy_omitted} other symbols contain this name; search a "
-                "longer or partial name to list them."
-            )
-    if grep_hint and not results:
-        response["grep_hint"] = grep_hint
+    _attach_match_notes(response, candidates, exact, missing, grep_hint)
     if fed is not None:
         fed.annotate(response, results)
-    # Last, so nothing above has to know the field is on its way out. Paths
-    # first, so a page whose target_path is dropped keeps its page_id.
+    # Last: slims fields the steps above still read.
     _slim_served_rows(
         results,
-        {(ctx.alias if multi else None): _page_language(ctx) for ctx in contexts},
+        {(ctx.alias if multi else None): _page_language(ctx) for ctx in pools.contexts},
     )
     _serve_snippets(results)
     return response

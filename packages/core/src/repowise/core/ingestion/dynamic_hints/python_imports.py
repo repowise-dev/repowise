@@ -40,6 +40,10 @@ or docstring loads nothing). Three shapes are read:
   template that starts with a hole adds nothing; one with a single-segment
   prefix or more than :data:`_TEMPLATE_FANOUT_CAP` matches links the package
   only. A call in a comment or docstring is skipped.
+* **A package importing its own directory** (``for m in
+  pkgutil.iter_modules(__path__): import_module(f"{__name__}.{m.name}")``):
+  every module the loop loads, read by
+  :mod:`~.python_package_listing`, uncapped.
 
 The mechanism is repo-agnostic: plugin registries, ``importlib`` loaders,
 entry-point dispatch tables and lazy CLI groups all reduce to these shapes.
@@ -57,6 +61,7 @@ from ..languages.python_modules import build_python_module_index
 from ..languages.python_strings import PY_DYNAMIC_LOAD_MARKERS, defines_top_level, live_text
 from ..source_text import source_bytes
 from .base import DynamicEdge, DynamicHintExtractor
+from .python_package_listing import OWN_LISTING_RE, listed_children, listing_inputs
 
 # Dotted strings only produce edges from files that load modules at run time,
 # so plain dotted strings elsewhere never create spurious reachability.
@@ -117,6 +122,13 @@ class ModuleStringResolver:
         self._source_of = source_of
         self._attrs: dict[tuple[str, str], bool] = {}
         self._templates: dict[str, list[str]] = {}
+        self._dotted: dict[str, str] | None = None
+
+    def module_of(self, path: str) -> str | None:
+        """The dotted name *path* is indexed under (its package for an ``__init__``)."""
+        if self._dotted is None:
+            self._dotted = {p: d for d, p in self.module_index.items()}
+        return self._dotted.get(path)
 
     def has_attr(self, target: str, name: str) -> bool:
         """Whether a module defines, imports or lazily serves *name* at top level."""
@@ -233,6 +245,11 @@ def python_dynamic_refs(rel: str, blob: bytes, resolver: ModuleStringResolver) -
             body = m.group(2) or m.group(4) + b"{}"
             for target in resolver.template_targets(body.decode("ascii")):
                 _add_ref(refs, target, None)
+        # Every module listed and loaded loads at import time: no fan-out cap.
+        own = resolver.module_of(rel) if rel.endswith(_INIT_NAMES) else None
+        if own and OWN_LISTING_RE.search(blob):
+            for target in listed_children(blob, own, index):
+                _add_ref(refs, target, None)
     refs.pop(rel, None)
     return refs
 
@@ -259,7 +276,7 @@ def string_inputs(rel: str, blob: bytes) -> tuple:
     if any(maybe_not_code for _, maybe_not_code in found):
         code = live_text(rel, blob)
         live = {m.group(0) for r in (_DOTTED_STRING_RE, _ATTR_STRING_RE) for m in r.finditer(code)}
-    return gates, sorted(found), sorted(live)
+    return gates, sorted(found), sorted(live), listing_inputs(blob)
 
 
 class PythonDynamicHints(DynamicHintExtractor):

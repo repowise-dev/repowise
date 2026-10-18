@@ -18,6 +18,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.fsutils import comparable_path
 from repowise.server.mcp_server import _state
 
 if TYPE_CHECKING:
@@ -40,14 +41,6 @@ __all__ = [
     "cross_repo_tests_for",
     "tests_block_for",
 ]
-
-
-def _norm(path: str) -> str:
-    """The same one comparable spelling ``core.workspace.test_impact`` uses."""
-    cleaned = (path or "").replace("\\", "/")
-    while cleaned.startswith("./"):
-        cleaned = cleaned[2:]
-    return cleaned
 
 
 def _lock() -> asyncio.Lock:
@@ -210,7 +203,7 @@ def tests_block_for(
         block["unresolved_reason"] = "lookup_failed"
         block["unresolved_detail"] = result.summary.get("detail")
         return block
-    path = _norm(consumer_file)
+    path = comparable_path(consumer_file)
     rows = [
         rec
         for rec in result.recommendations

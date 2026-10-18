@@ -15,13 +15,14 @@ import { OVERLAY_ORDER, OVERLAY_SPECS, type LegendRow, type OverlaySpec } from "
 import type { CodeHealthOverlay } from "./types";
 import { ActivityDot } from "../../ui/activity-dot";
 
-/** One key swatch: a disc in the row's fill. */
+/** One key swatch: a disc in the row's fill, or a pill for a run of the ramp. */
 function Swatch({ row, size }: { row: LegendRow; size: number }) {
+  const run = row.fill.startsWith("linear-gradient");
   return (
     <span
       aria-hidden
       className="inline-block shrink-0 rounded-full"
-      style={{ width: size, height: size, backgroundColor: row.fill }}
+      style={{ width: run ? size * 2.4 : size, height: size, background: row.fill }}
     />
   );
 }
@@ -60,7 +61,7 @@ export function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: b
       {spec.legend.map((row, i) => (
         <Fragment key={row.label}>
           {row.group && row.group !== spec.legend[i - 1]?.group ? (
-            <span className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:mt-0">
+            <span className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:mt-0">
               {row.group}
             </span>
           ) : null}
@@ -70,7 +71,7 @@ export function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: b
           </span>
         </Fragment>
       ))}
-      <span className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+      <span className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         Size
       </span>
       <SizeKey className="text-[var(--color-text-tertiary)]" />
@@ -158,7 +159,7 @@ export function MapLegend({
   const spec = OVERLAY_SPECS[overlay] ?? OVERLAY_SPECS.health;
   return (
     <div
-      className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--color-text-tertiary)] ${className ?? ""}`}
+      className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[var(--color-text-tertiary)] ${className ?? ""}`}
     >
       {loading ? (
         <span className="flex items-center gap-1.5">
@@ -169,7 +170,7 @@ export function MapLegend({
         spec.legend.map((row, i) => (
           <Fragment key={row.label}>
             {row.group && row.group !== spec.legend[i - 1]?.group ? (
-              <span className="ml-1 font-mono text-[9px] uppercase tracking-[0.12em] first:ml-0">
+              <span className="ml-1 font-mono text-[10px] uppercase tracking-[0.12em] first:ml-0">
                 {row.group}
               </span>
             ) : null}

@@ -12,6 +12,7 @@ import {
 } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
 import { EFFORT_TINT, type Severity } from "./tokens";
+import { EFFORT_LABEL } from "./labels";
 import { ImpactFigure } from "./impact-figure";
 import { FindingOpportunityLink } from "./file-opportunity";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
@@ -19,6 +20,7 @@ import { AskAboutThis } from "../chat/ask-about-this";
 import { SeverityMark } from "./severity-mark";
 import { VerificationTag } from "./verification-tag";
 import { LowerPriorityTag } from "./lower-priority-tag";
+import { PreviewBadge } from "./preview-badge";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
@@ -36,6 +38,9 @@ export interface HealthWorkItemFinding {
   /** `"unverified"` for a provisional finding type. */
   verification?: string | null;
   lower_priority?: string | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export interface HealthWorkItem {
@@ -60,6 +65,9 @@ export interface HealthWorkItem {
   effort_bucket: EffortBucket;
   impact_per_effort: number;
   all_findings?: HealthWorkItemFinding[];
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export type FindingStatus = "open" | "acknowledged" | "resolved" | "false_positive";
@@ -101,13 +109,6 @@ export interface HealthWorkItemCardProps {
    */
   onToggleSelect?: ((target: HealthWorkItem) => void) | undefined;
 }
-
-const effortLabel: Record<EffortBucket, string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
-  XL: "Extra large",
-};
 
 export function HealthWorkItemCard({
   target,
@@ -205,9 +206,10 @@ export function HealthWorkItemCard({
               test
             </span>
           ) : null}
+          <PreviewBadge note={target.preview} />
           <span
             className={`inline-block rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${EFFORT_TINT[target.effort_bucket]}`}
-            title={`Effort: ${effortLabel[target.effort_bucket]} (NLOC ${target.nloc})`}
+            title={`Effort: ${EFFORT_LABEL[target.effort_bucket]} (NLOC ${target.nloc})`}
           >
             {target.effort_bucket}
           </span>
@@ -264,7 +266,7 @@ export function HealthWorkItemCard({
         <div className="flex items-center gap-3 pt-1 text-xs text-[var(--color-text-tertiary)] flex-wrap">
           <span>Score {target.score.toFixed(1)}/10</span>
           <span>· {target.nloc} NLOC</span>
-          <span>· {effortLabel[target.effort_bucket]} effort</span>
+          <span>· {EFFORT_LABEL[target.effort_bucket]} effort</span>
           <span>
             {"· "}
             {target.open_finding_count != null &&
@@ -321,6 +323,7 @@ export function HealthWorkItemCard({
                     </span>
                     <VerificationTag verification={f.verification} />
                     <LowerPriorityTag reason={f.lower_priority} />
+                    <PreviewBadge note={f.preview} />
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}

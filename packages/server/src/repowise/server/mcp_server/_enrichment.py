@@ -550,7 +550,8 @@ class CrossRepoEnricher:
 
     def get_repos_depending_on(self, repo_alias: str) -> list[str]:
         """Return repo aliases that depend on *repo_alias* via package manifests."""
-        return self._package_dep_reverse.get(repo_alias, [])
+        # One entry per repo: several manifests can link the same pair.
+        return sorted(set(self._package_dep_reverse.get(repo_alias, [])))
 
     def get_package_consumers(self, repo_alias: str) -> list[dict]:
         """Typed package links whose source repository depends on *repo_alias*."""

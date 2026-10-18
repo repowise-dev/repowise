@@ -355,8 +355,9 @@ async def test_no_policy_file_reads_no_policy_configured(ctx, builds):
 
 async def test_method_appendix_says_what_git_cannot_attest(ctx, builds):
     method = _section(await _document(ctx), "change-method")
-    assert {"review", "tests", "policy", "accountability", "provenance", "outcomes",
+    assert {"period", "review", "tests", "policy", "accountability", "provenance", "outcomes",
             "snapshot", "not-attested"} == set(method)
+    assert "the start --since gave" in method["period"]["reason"]
     assert "not recorded in" in method["review"]["reason"]
     assert method["not-attested"]["basis"] == "unresolved"
 
@@ -418,6 +419,78 @@ def test_cli_writes_the_pack_and_reports_progress(root: Path, builds, tmp_path: 
               "--until", "2026-02-01"],
     )
     assert bad.exit_code != 0 and "--since must be before --until" in bad.output + bad.stderr
+
+
+# -- the default period ----------------------------------------------------------
+
+#: Merged more than 90 days before the newest indexed commit (HEAD1, 2026-03-01).
+OLD = _change("pr-0", "0", "f" * 40, "fix: old", datetime(2025, 11, 1, tzinfo=UTC), "fix")
+
+
+async def test_no_since_covers_90_days_before_the_newest_commit(ctx, builds):
+    from dataclasses import replace
+
+    from repowise.core.changes.period import DEFAULT_WINDOW_DAYS, PeriodRequest, period_evidence
+
+    await _add_changes(ctx.repo_root, [OLD])
+    request = await PeriodRequest().resolved(ctx.session, ctx.repository_id)
+    assert DEFAULT_WINDOW_DAYS == 90 and request.window_days == 90
+    assert request.since == datetime(2025, 12, 1, tzinfo=UTC)
+    got = [r.change_id async for r, _e in period_evidence(
+        ctx.session, ctx.repository_id, ctx.repo_root, PeriodRequest())]
+    assert got == ["pr-3", "pr-2", "pr-1"]
+
+    # An earlier --until is the anchor instead of the newest commit.
+    until = datetime(2026, 1, 15, tzinfo=UTC)
+    early = await PeriodRequest(until=until).resolved(ctx.session, ctx.repository_id)
+    assert early.since == datetime(2025, 10, 17, tzinfo=UTC)
+
+    doc = await _document(replace(ctx, period=PeriodRequest()))
+    summary = _section(doc, "change-summary")["changes-in-period"]
+    assert summary["data"]["window_days"] == 90 and summary["data"]["changes"] == 3
+    assert summary["data"]["since"] == "2025-12-01T00:00:00+00:00"
+    assert "90 days before 2026-03-01 (the newest indexed commit)" in summary["details"][0]
+    method = _section(doc, "change-method")["period"]["reason"]
+    assert "from 2025-12-01" in method and "--since all" in method
+
+
+async def test_explicit_since_wins_and_all_covers_every_change(ctx, builds):
+    from repowise.core.changes.period import PeriodRequest, period_evidence
+
+    await _add_changes(ctx.repo_root, [OLD])
+    given = await PeriodRequest(since=SINCE).resolved(ctx.session, ctx.repository_id)
+    assert given.since == SINCE and given.window_days is None
+    every = PeriodRequest(window_days=None)
+    assert (await every.resolved(ctx.session, ctx.repository_id)).since is None
+    got = [r.change_id async for r, _e in period_evidence(
+        ctx.session, ctx.repository_id, ctx.repo_root, every)]
+    assert got == ["pr-3", "pr-2", "pr-1", "pr-0"]
+
+
+def test_cli_defaults_to_the_window_and_takes_since_all(root: Path, builds, tmp_path: Path) -> None:
+    from repowise.cli.helpers import run_async
+    from repowise.cli.main import cli
+    from repowise.core.changes.period import DEFAULT_WINDOW_DAYS
+
+    run_async(_add_changes(root, [OLD]))
+    runner = CliRunner(mix_stderr=False)
+    out = tmp_path / "pack.json"
+    args = ["report", "changes", str(root), "--no-workspace", "--format", "json", "--out", str(out)]
+
+    assert runner.invoke(cli, args).exit_code == 0
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["scope"]["period"] == {"since": None, "until": None, "window_days": 90}
+    assert set(_section(doc, "changes")) == {"#1", "#2", "#3"}
+
+    assert runner.invoke(cli, [*args, "--since", "all"]).exit_code == 0
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["scope"]["period"] == {"since": None, "until": None}
+    assert set(_section(doc, "changes")) == {"#0", "#1", "#2", "#3"}
+
+    help_text = runner.invoke(cli, ["report", "changes", "--help"]).output
+    assert f"{DEFAULT_WINDOW_DAYS} days" in help_text and "`all`" in help_text
+    bad = runner.invoke(cli, [*args, "--since", "yesterday"])
+    assert bad.exit_code != 0
 
 
 # -- the pass under load, failure and other writers ---------------------------

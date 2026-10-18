@@ -5,19 +5,12 @@
  * cannot drift: both call the same spec.
  */
 
-import {
-  HEALTH_BAND_LABEL,
-  HEALTH_BAND_ORDER,
-  HEALTH_BAND_RANGE_LABEL,
-} from "@repowise-dev/types/health";
-import { healthBandNodeFill, healthNodeFill } from "../tokens";
+import { HEALTH_BAND_LABEL, HEALTH_BAND_ORDER, HEALTH_BAND_RANGE_LABEL } from "@repowise-dev/types/health";
+import { NODE_HEALTHY_FILL, NODE_RAMP_STOP, healthBandMapFill, healthRampFill } from "../tokens";
 import type { CodeHealthMapFile, CodeHealthOverlay, PerformanceActionability } from "./types";
 
-/** Worst-first legend rows, each naming its band and the range it covers. */
-const BAND_LEGEND = HEALTH_BAND_ORDER.map((band) => ({
-  fill: healthBandNodeFill(band),
-  label: `${HEALTH_BAND_LABEL[band]} · ${HEALTH_BAND_RANGE_LABEL[band]}`,
-}));
+/** The one quiet tone every file that needs nothing takes, under every lens. */
+export const QUIET_FILL = NODE_HEALTHY_FILL;
 
 /**
  * Neutral fill for nodes a lens has no signal for.
@@ -40,6 +33,12 @@ export interface LegendRow {
   group?: string;
 }
 
+/** Worst-first legend rows on the five canonical bands, as every score pill reads. */
+const BAND_LEGEND: LegendRow[] = HEALTH_BAND_ORDER.map((band) => ({
+  fill: healthBandMapFill(band),
+  label: `${HEALTH_BAND_LABEL[band]} · ${HEALTH_BAND_RANGE_LABEL[band]}`,
+}));
+
 /** Lens metadata: how to fill a node and what the key reads. */
 export interface OverlaySpec {
   label: string;
@@ -49,28 +48,28 @@ export interface OverlaySpec {
   legend: LegendRow[];
 }
 
-/** Score band: the health ramp, quiet grey when the pillar is unscored. */
+/** Score: the map ramp, the neutral when the pillar is unscored. */
 function scoreFill(score: number | null | undefined): string {
   if (score == null) return NEUTRAL_FILL;
-  return healthNodeFill(score);
+  return healthRampFill(score);
 }
 
-/** Coverage band: green = well covered, red = uncovered, grey = no data. */
+/** Coverage band: quiet when well covered, the ramp's stops below that. */
 function coverageFill(pct: number | null | undefined): string {
   if (pct == null) return NEUTRAL_FILL;
-  if (pct >= 80) return "var(--color-success)";
-  if (pct >= 50) return "var(--color-caution)";
-  if (pct >= 20) return "var(--color-warning)";
-  return "var(--color-error)";
+  if (pct >= 80) return QUIET_FILL;
+  if (pct >= 50) return NODE_RAMP_STOP.warning;
+  if (pct >= 20) return NODE_RAMP_STOP.serious;
+  return NODE_RAMP_STOP.alert;
 }
 
-/** Churn band: red = top-decile churn, green = quiet. */
+/** Churn band: quiet below the top 60%, the ramp's stops above it. */
 function churnFill(pctile: number | null | undefined): string {
   if (pctile == null) return NEUTRAL_FILL;
-  if (pctile >= 90) return "var(--color-error)";
-  if (pctile >= 70) return "var(--color-warning)";
-  if (pctile >= 40) return "var(--color-caution)";
-  return "var(--color-success)";
+  if (pctile >= 90) return NODE_RAMP_STOP.alert;
+  if (pctile >= 70) return NODE_RAMP_STOP.serious;
+  if (pctile >= 40) return NODE_RAMP_STOP.warning;
+  return QUIET_FILL;
 }
 
 /* ------------------------------------------------------------------ *
@@ -187,16 +186,16 @@ export function burdenBand(count: number): 0 | 1 | 2 | 3 {
 }
 
 /**
- * The three steps, borrowed from the health ramp.
+ * The three steps, borrowed from the map ramp's stops.
  *
- * Same tokens the score pills and the health lens use, so a colour means the
- * same severity wherever it appears on this surface. The two greens are
- * deliberately absent: they are the bands that would claim a file is fine.
+ * The same values the health lens paints at 7, 5 and 2.5, so a colour means
+ * the same severity wherever it appears on this field. The quiet tone is
+ * deliberately absent: it is the one that would claim a file is fine.
  */
 const BURDEN_FILL: Record<1 | 2 | 3, string> = {
-  1: healthBandNodeFill("fair"),
-  2: healthBandNodeFill("needs_work"),
-  3: healthBandNodeFill("at_risk"),
+  1: NODE_RAMP_STOP.warning,
+  2: NODE_RAMP_STOP.serious,
+  3: NODE_RAMP_STOP.alert,
 };
 
 export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
@@ -250,10 +249,7 @@ export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
     label: "Maintainability",
     caption: "color = maintainability score · grey = not measured",
     fill: (f) => scoreFill(f.maintainability_score),
-    legend: [
-      ...BAND_LEGEND,
-      { fill: NEUTRAL_FILL, label: "not measured" },
-    ],
+    legend: [...BAND_LEGEND, { fill: NEUTRAL_FILL, label: "not measured" }],
   },
   performance: {
     label: "Performance",
@@ -271,10 +267,10 @@ export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
     caption: "color = line coverage · grey = no coverage data",
     fill: (f) => coverageFill(f.line_coverage_pct),
     legend: [
-      { fill: "var(--color-success)", label: "≥80%" },
-      { fill: "var(--color-caution)", label: "50-80%" },
-      { fill: "var(--color-warning)", label: "20-50%" },
-      { fill: "var(--color-error)", label: "<20%" },
+      { fill: NODE_RAMP_STOP.alert, label: "<20%" },
+      { fill: NODE_RAMP_STOP.serious, label: "20-50%" },
+      { fill: NODE_RAMP_STOP.warning, label: "50-80%" },
+      { fill: QUIET_FILL, label: "≥80%" },
       { fill: NEUTRAL_FILL, label: "no data" },
     ],
   },
@@ -283,28 +279,28 @@ export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
     caption: "color = 90-day churn percentile",
     fill: (f) => churnFill(f.churn_percentile),
     legend: [
-      { fill: "var(--color-error)", label: "Top 10%" },
-      { fill: "var(--color-warning)", label: "Top 30%" },
-      { fill: "var(--color-caution)", label: "Top 60%" },
-      { fill: "var(--color-success)", label: "Quiet" },
+      { fill: NODE_RAMP_STOP.alert, label: "Top 10%" },
+      { fill: NODE_RAMP_STOP.serious, label: "Top 30%" },
+      { fill: NODE_RAMP_STOP.warning, label: "Top 60%" },
+      { fill: QUIET_FILL, label: "Quiet" },
       { fill: NEUTRAL_FILL, label: "no data" },
     ],
   },
   "dead-code": {
     label: "Dead code",
     caption: "red = reclaimable lines · grey = clean",
-    fill: (f) => ((f.dead_code_lines ?? 0) > 0 ? "var(--color-error)" : NEUTRAL_FILL),
+    fill: (f) => ((f.dead_code_lines ?? 0) > 0 ? NODE_RAMP_STOP.alert : NEUTRAL_FILL),
     legend: [
-      { fill: "var(--color-error)", label: "Has dead code" },
+      { fill: NODE_RAMP_STOP.alert, label: "Has dead code" },
       { fill: NEUTRAL_FILL, label: "Clean" },
     ],
   },
   security: {
     label: "Security",
     caption: "red = open findings · grey = clean",
-    fill: (f) => ((f.security_findings ?? 0) > 0 ? "var(--color-error)" : NEUTRAL_FILL),
+    fill: (f) => ((f.security_findings ?? 0) > 0 ? NODE_RAMP_STOP.alert : NEUTRAL_FILL),
     legend: [
-      { fill: "var(--color-error)", label: "Has findings" },
+      { fill: NODE_RAMP_STOP.alert, label: "Has findings" },
       { fill: NEUTRAL_FILL, label: "Clean" },
     ],
   },
@@ -324,3 +320,16 @@ export const OVERLAY_ORDER: CodeHealthOverlay[] = [
   "maintainability",
   "performance",
 ];
+
+/**
+ * Whether the rows carry the signal a lens colours by.
+ *
+ * Dead code and security colour from fields this feed does not serve, and a
+ * lens with no data draws every node grey, which reads as "clean" rather than
+ * as "not here". A lens the rows cannot back is not offered.
+ */
+export function lensAvailable(lens: CodeHealthOverlay, files: CodeHealthMapFile[]): boolean {
+  if (lens === "dead-code") return files.some((f) => f.dead_code_lines != null);
+  if (lens === "security") return files.some((f) => f.security_findings != null);
+  return true;
+}

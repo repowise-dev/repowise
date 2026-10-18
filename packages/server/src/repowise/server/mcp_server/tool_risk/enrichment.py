@@ -358,7 +358,13 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
                     HealthFinding.file_path.in_(target_paths),
                     HealthFinding.status == "open",
                     HealthFinding.biomarker_type.not_in(excluded_types()),
-                    ungated("health", HealthFinding.file_path, HealthFinding.biomarker_type),
+                    # get_risk is about history: its history markers stay.
+                    ungated(
+                        "health",
+                        HealthFinding.file_path,
+                        HealthFinding.biomarker_type,
+                        hold_history=False,
+                    ),
                 )
                 .order_by(HealthFinding.health_impact.desc())
             )

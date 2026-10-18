@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import label_previews
 from repowise.core.analysis.health.perf.serving import parse_query
 from repowise.server.deps import get_db_session
 from repowise.server.services.performance_health import PerformanceHealthService
@@ -120,7 +121,9 @@ async def list_performance_opportunities(
         query, evidence_per_item=_EVIDENCE_PER_ITEM, with_facets=True, with_summary=True
     )
     return {
-        "items": [_item(item) for item in page.items],
+        "items": label_previews(
+            "performance", [_item(item) for item in page.items], kind="biomarker_type"
+        ),
         "total": page.total,
         "has_more": page.next_offset is not None,
         "next_offset": page.next_offset,
@@ -148,7 +151,7 @@ async def get_performance_opportunity_detail(
     detail = await _service(session, repo_id).detail(
         opportunity_id, evidence_limit=evidence_limit, evidence_offset=evidence_offset
     )
-    return _item(detail)
+    return label_previews("performance", [_item(detail)], kind="biomarker_type")[0]
 
 
 @router.get("/api/repos/{repo_id}/health/performance-opportunities/{opportunity_id}/findings")
@@ -165,7 +168,7 @@ async def list_performance_opportunity_findings(
     )
     emitted = offset + len(items)
     return {
-        "items": items,
+        "items": label_previews("performance", items, kind="biomarker_type"),
         "total": total,
         "has_more": emitted < total,
         "next_offset": emitted if emitted < total else None,

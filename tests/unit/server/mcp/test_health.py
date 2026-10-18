@@ -66,7 +66,8 @@ async def test_finding_ids_distinguish_same_coordinate_evidence(
     session.add_all(rows)
     await session.commit()
 
-    emitted = await get_health(only=["top_findings"], limit=10)
+    # A history marker is held from the default list; the opt-in lists it.
+    emitted = await get_health(only=["top_findings"], include=["unverified"], limit=10)
     findings = [
         row
         for row in emitted["top_findings"]
@@ -1203,7 +1204,8 @@ async def health_data_with_tests(session, health_data: str) -> str:
     ``is_test=True``; this gives it health rows. Its findings carry the two
     highest impacts in the fixture, so an unsplit list leads with the test
     suite — which is the shape measured on the real index, where 2 of the top
-    5 open findings repo-wide sat on test files.
+    5 open findings repo-wide sat on test files. Both are code-shape markers:
+    a history marker is held from finding lists on any file.
 
     Rows are added through the ORM rather than ``save_health_metrics`` /
     ``save_health_findings``: both are delete-then-insert over the whole repo,
@@ -1229,7 +1231,7 @@ async def health_data_with_tests(session, health_data: str) -> str:
         )
     )
     for biomarker, fn, impact, reason in (
-        ("change_entropy", None, 3.02, "tests/test_service.py changes with unrelated files"),
+        ("god_class", None, 3.02, "tests/test_service.py holds one class doing everything"),
         ("complex_method", "test_everything", 2.5, "test_everything has complexity 12"),
     ):
         session.add(

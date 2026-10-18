@@ -19,6 +19,10 @@ import { getFixFirst, getFixFirstItemPrompt, updateFindingStatus } from "@/lib/a
 const LIMIT = 10;
 
 export function fixPlanHref(repoId: string, item: FixItem): string | null {
+  const planId = item.source.plan_ids[0];
+  if (item.kind === "finding" && planId) {
+    return `/repos/${repoId}/refactoring?plan=${encodeURIComponent(planId)}`;
+  }
   const id = item.source.opportunity_id;
   if (!id) return null;
   const opp = encodeURIComponent(id);

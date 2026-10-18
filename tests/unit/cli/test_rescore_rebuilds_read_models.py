@@ -55,7 +55,16 @@ class _EmptyGraphBuilder:
 
 
 _SCORED = "src/app.py"
-_SOURCE = "def run(items):\n    return [i for i in items if i]\n"
+# Nested three deep so a replayed function_hotspot on `run` still clears the
+# complexity floor the re-score checks it against.
+_SOURCE = (
+    "def run(items):\n"
+    "    for i in items:\n"
+    "        if i:\n"
+    "            while i:\n"
+    "                i -= 1\n"
+    "    return items\n"
+)
 
 
 def _parsed_file(repo_path: Path) -> SimpleNamespace:

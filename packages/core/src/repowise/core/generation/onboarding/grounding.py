@@ -77,6 +77,7 @@ _CODE_EXTENSIONS = frozenset(
         "clj",
         "vue",
         "svelte",
+        "astro",
         "m",
         "mm",
     }

@@ -12,6 +12,7 @@ import {
   VIEW_KINDS,
   VIEW_LIMITS,
   VIEW_SCHEMA_VERSION,
+  VIEW_SCHEMA_VERSIONS,
   parseViewParts,
   validateViewPart,
   validateViewParts,
@@ -87,6 +88,7 @@ describe("view part contract shared with the server", () => {
   it("uses the shared vocabulary and limits", () => {
     expect({
       schema_version: VIEW_SCHEMA_VERSION,
+      schema_versions: VIEW_SCHEMA_VERSIONS,
       max_wire_number: MAX_WIRE_NUMBER,
       view_kinds: VIEW_KINDS,
       chart_types: CHART_TYPES,
@@ -185,5 +187,26 @@ describe("view part validator", () => {
     expect(parseViewParts(Array.from({ length: VIEW_LIMITS.parts + 5 }, (_, i) => ({ ...t1!, id: `t${i}` })))).toHaveLength(
       VIEW_LIMITS.parts,
     );
+  });
+
+  it("keeps a chart it cannot draw as its data table", () => {
+    const { c1 } = fixture.valid as Record<string, ViewPart>;
+    const newer = { ...c1!, schema_version: 3, chart_type: "sankey", flows: [] };
+    const [kept] = parseViewParts([newer]);
+    expect(kept?.kind).toBe("table");
+    expect(kept && "rows" in kept ? kept.rows : null).toEqual((c1 as { data: { rows: unknown } }).data.rows);
+    expect(kept?.schema_version).toBe(VIEW_SCHEMA_VERSION);
+    // A table with a field this client does not know keeps its known fields.
+    const { t1 } = fixture.valid as Record<string, ViewPart>;
+    expect(parseViewParts([{ ...t1!, sparkline: [1, 2] }])[0]?.kind).toBe("table");
+    // Something that is no table at all is still dropped.
+    expect(parseViewParts([{ ...c1!, chart_type: "sankey", data: { rows: "x" } }])).toEqual([]);
+  });
+
+  it("reads parts stored at schema version 1", () => {
+    const { c1 } = fixture.valid as Record<string, ViewPart>;
+    expect(c1?.schema_version).toBe(1);
+    expect(validateViewPart(c1).ok).toBe(true);
+    expect(validateViewPart({ ...c1!, schema_version: 2 }).ok).toBe(true);
   });
 });

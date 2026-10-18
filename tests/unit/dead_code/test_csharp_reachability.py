@@ -398,3 +398,56 @@ def test_an_export_used_only_in_its_own_file_is_demoted_not_dropped(tmp_path: Pa
     (finding,) = [f for f in report.findings if f.symbol_name == "CreateRequest"]
     assert finding.confidence < 0.4
     assert "Used in its own file at App/Create.cs:2" in finding.evidence[-1]
+
+
+def _extension_block_findings(tmp_path: Path, main_body: str) -> set[tuple[str, str | None]]:
+    """Dead-code findings for a C# 14 extension-block holder, parsed end to end."""
+    from repowise.core.pipeline.incremental import build_repo_graph
+
+    files = {
+        "App/App.csproj": _csproj(),
+        "App/Extensions/StringExtensions.cs": (
+            "namespace App.Extensions;\n\n"
+            "public static class StringExtensions\n{\n"
+            "    extension(string value)\n    {\n"
+            "        public bool IsBlank()\n        {\n"
+            "            return string.IsNullOrWhiteSpace(value);\n        }\n"
+            "    }\n}\n"
+        ),
+        "App/Program.cs": (
+            "using System;\nusing App.Extensions;\n\nnamespace App;\n\n"
+            "public static class Program\n{\n"
+            "    public static void Main(string[] args)\n    {\n"
+            '        var name = args.Length > 0 ? args[0] : "";\n'
+            f"        {main_body}\n"
+            "    }\n}\n"
+        ),
+    }
+    for rel, text in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    _, sources, builder, _, _ = build_repo_graph(
+        tmp_path, [], collect_sources=True, log=lambda *a, **k: None, read_only=True
+    )
+    report = DeadCodeAnalyzer(
+        builder.graph(),
+        {},
+        parsed_files=builder._parsed_files,
+        source_map=sources,
+        repo_root=tmp_path,
+    ).analyze({"min_confidence": 0.0})
+    return {
+        (f.kind.value, f.symbol_name)
+        for f in report.findings
+        if f.file_path == "App/Extensions/StringExtensions.cs"
+    }
+
+
+def test_a_called_extension_block_keeps_its_holder(tmp_path: Path) -> None:
+    assert _extension_block_findings(tmp_path, "Console.WriteLine(name.IsBlank());") == set()
+
+
+def test_an_extension_block_nobody_calls_is_still_reported(tmp_path: Path) -> None:
+    findings = _extension_block_findings(tmp_path, "Console.WriteLine(name);")
+    assert ("unused_export", "StringExtensions") in findings

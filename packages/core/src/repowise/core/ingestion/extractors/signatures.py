@@ -68,6 +68,10 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}(){_ret(('type',))}"
     if node_type == "type_alias_declaration":
         return f"type {name}"
+    if node_type == "type_alias" and any(c.type == "typealias" for c in def_node.children):
+        # Kotlin: keep the aliased type, which a call through the alias constructs.
+        target = def_node.children[-1]
+        return f"typealias {name} = {node_text(target, src)}"
     if node_type == "enum_declaration":
         return f"enum {name}"
     if node_type in ("method_definition", "method_signature"):

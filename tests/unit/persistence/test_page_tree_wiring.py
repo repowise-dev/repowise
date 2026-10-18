@@ -23,7 +23,7 @@ import pytest
 
 _PERSIST_PATHS = [
     ("repowise.core.pipeline.persist", "the full index"),
-    ("repowise.core.pipeline.incremental", "the incremental index"),
+    ("repowise.core.pipeline.incremental.persist_index", "the incremental index"),
     ("repowise.core.pipeline.scoped_generation", "a scoped regeneration"),
     ("repowise.cli.commands.update_cmd.persistence", "the docs update"),
     ("repowise.cli.commands.upgrade_flow", "the fast-to-full upgrade"),

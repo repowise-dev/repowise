@@ -28,10 +28,11 @@ def test_file_hold_reads_origin_and_test_flag():
     assert file_hold("health", "change_entropy", "test", True) == "test_history"
     # A code-shape finding on a test file is still served.
     assert file_hold("health", "complex_method", "test", True) is None
-    # A history marker on production code is still served.
-    assert file_hold("health", "ownership_risk", "production", False) is None
-    # Unknown flag (row written before the column) is not held.
-    assert file_hold("health", "ownership_risk", None, None) is None
+    # A history marker on production code is context, held under its own key.
+    assert file_hold("health", "ownership_risk", "production", False) == "history"
+    # Unknown flag (row written before the column) is not a test file.
+    assert file_hold("health", "ownership_risk", None, None) == "history"
+    assert file_hold("health", "complex_method", "production", False) is None
     # Other layers are untouched.
     assert file_hold("dead_code", "unreachable_file", "vendored", False) is None
 
@@ -53,11 +54,11 @@ def test_split_gated_applies_file_holds_with_their_reason():
     )
     assert [(r["file_path"], r["biomarker_type"]) for r in shown] == [
         (_TEST, "complex_method"),
-        ("src/app.py", "ownership_risk"),
     ]
     assert gated == {
         "vendored": {"count": 1, "reason": FILE_HOLDS["vendored"]},
         "test_history": {"count": 1, "reason": FILE_HOLDS["test_history"]},
+        "history": {"count": 1, "reason": FILE_HOLDS["history"]},
     }
     # Without the metric rows nothing is held by file (unknown is not a hold).
     assert len(split_gated("health", rows, kind="biomarker_type", get=lambda r, k: r[k])[0]) == 4

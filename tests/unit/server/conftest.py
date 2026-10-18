@@ -6,7 +6,10 @@ provides an httpx AsyncClient for making requests.
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -192,3 +195,48 @@ async def create_test_repo(client: AsyncClient, tmp_path: Path | None = None) ->
     )
     assert resp.status_code == 201
     return resp.json()
+
+
+def normalize_payload(value: Any, replace: dict[str, str]) -> Any:
+    """Swap per-run substrings (temp paths, generated ids) for placeholders.
+
+    Values, nesting and key order are kept exact; freeze the clock instead of
+    masking timestamps, so a moved timestamp still fails the golden.
+    """
+    if isinstance(value, dict):
+        return {k: normalize_payload(v, replace) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_payload(v, replace) for v in value]
+    if isinstance(value, str):
+        for old, new in replace.items():
+            value = value.replace(old, new)
+    return value
+
+
+def path_placeholders(root: str | Path, placeholder: str = "<repo>") -> dict[str, str]:
+    """Map a temp root, in either slash style, to one spelling on every OS.
+
+    A separator right after the root becomes ``/`` too, so a joined path
+    reads the same on Windows and Linux. Longest first, so the joined forms win.
+    """
+    native = str(root)
+    replace: dict[str, str] = {}
+    for form in {native, native.replace("\\", "/")}:
+        replace[form + "\\"] = placeholder + "/"
+        replace[form + "/"] = placeholder + "/"
+        replace[form] = placeholder
+    return dict(sorted(replace.items(), key=lambda kv: len(kv[0]), reverse=True))
+
+
+def assert_payload_golden(path: Path, payload: Any) -> None:
+    """Compare a normalized payload byte for byte, key order included.
+
+    ``REPOWISE_REWRITE_GOLDEN=1`` rewrites the file instead, only for an
+    intended behaviour change.
+    """
+    text = json.dumps(payload, indent=2, sort_keys=False) + "\n"
+    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+        pytest.skip("golden rewritten")
+    assert text == path.read_text(encoding="utf-8")

@@ -158,12 +158,18 @@ class _ScopedSnapshot:
 
     taken_at: Any
     average_health: float
-    per_file_scores_json: str
+    #: The stored row, so the per-file map is read only by a caller that asks
+    #: for it: a route that deferred the maps loads just the rows it reads.
+    source: Any = field(default=None, repr=False)
     hotspot_health: float | None = None
     worst_performer_path: str | None = None
     worst_performer_score: float | None = None
     structure_average: float | None = None
     history_average: float | None = None
+
+    @property
+    def per_file_scores_json(self) -> str:
+        return self.source.per_file_scores_json
 
 
 def project_scope(history: list[Any], scope: str) -> list[Any]:
@@ -187,7 +193,7 @@ def project_scope(history: list[Any], scope: str) -> list[Any]:
             _ScopedSnapshot(
                 taken_at=snap.taken_at,
                 average_health=float(value),
-                per_file_scores_json=snap.per_file_scores_json,
+                source=snap,
             )
         )
     return out

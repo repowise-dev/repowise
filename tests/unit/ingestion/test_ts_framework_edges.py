@@ -119,6 +119,24 @@ class TestRemixConvention:
         add_framework_edges(graph, parsed, ctx, tech_stack=["remix"])
         assert not graph.has_edge("app/routes/foo.test.tsx", "utils/auth.ts")
 
+    def test_astro_page_links_to_helper(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "lib").mkdir(parents=True)
+        (tmp_path / "src" / "lib" / "db.ts").write_text("export const db = {};\n")
+        (tmp_path / "src" / "pages").mkdir()
+        page = tmp_path / "src" / "pages" / "index.astro"
+        page.write_text("---\nimport { db } from '../lib/db';\n---\n<p>{db}</p>\n")
+        parsed = _build_parsed(tmp_path)
+        rel = "src/pages/index.astro"
+        parsed[rel] = ASTParser().parse_file(
+            _file_info(rel, str(page.resolve()), "astro"), page.read_bytes()
+        )
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=[])
+        assert graph.has_edge(rel, "src/lib/db.ts")
+
 
 class TestTrpc:
     def test_procedure_query_links_handler(self, tmp_path: Path) -> None:

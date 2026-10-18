@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from repowise.core.fsutils import repo_relative
+
 from .models import DeadCodeFindingData, DeadCodeKind
 
 #: Where a published symbol lands: under ``RISK_CAP_CONFIDENCE``, so the
@@ -43,14 +45,6 @@ class BuildFacts:
     dotnet_index: Any | None
 
 
-def _relative(path: Path, root: Path) -> str | None:
-    try:
-        rel = path.resolve().relative_to(root.resolve()).as_posix()
-    except (OSError, ValueError):
-        return None
-    return "" if rel == "." else rel
-
-
 def _keeps_api_baseline(project_dir: Path) -> bool:
     try:
         folders = [project_dir, *(p for p in project_dir.iterdir() if p.is_dir())]
@@ -67,9 +61,10 @@ def _dotnet_published(facts: BuildFacts) -> dict[str, str | None]:
     root = Path(index.repo_path)
     out: dict[str, str | None] = {}
     for project in index.projects.values():
-        rel = _relative(project.project_dir, root)
+        rel = repo_relative(project.project_dir, root, resolve=True)
         if rel is None:
             continue
+        rel = "" if rel == "." else rel
         name = project.published_id
         if name is None and _keeps_api_baseline(project.project_dir):
             name = project.assembly_name or project.path.stem

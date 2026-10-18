@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { commitCategoryColor } from "../shared/series";
 
 /**
  * The Overview's primary two-column arrangement: a wide main column (health,
@@ -43,28 +44,28 @@ export function CommitActivityCard({
           <span className="flex items-center gap-1">
             <span
               className="inline-block h-2 w-2 rounded-sm"
-              style={{ background: "var(--color-info)" }}
+              style={{ background: commitCategoryColor("feature") }}
             />{" "}
             Feature
           </span>
           <span className="flex items-center gap-1">
             <span
               className="inline-block h-2 w-2 rounded-sm"
-              style={{ background: "var(--color-error)" }}
+              style={{ background: commitCategoryColor("fix") }}
             />{" "}
             Fix
           </span>
           <span className="flex items-center gap-1">
             <span
               className="inline-block h-2 w-2 rounded-sm"
-              style={{ background: "var(--color-accent-secondary)" }}
+              style={{ background: commitCategoryColor("refactor") }}
             />{" "}
             Refactor
           </span>
           <span className="flex items-center gap-1">
             <span
               className="inline-block h-2 w-2 rounded-sm"
-              style={{ background: "var(--color-accent-fill)" }}
+              style={{ background: commitCategoryColor("dependency") }}
             />{" "}
             Dependency
           </span>

@@ -10,9 +10,9 @@ base_url, following the same pattern as OpenRouterProvider / DeepSeekProvider.
 
 Models use ``vendor/model`` format:
     - mistral/mistral-small-latest  fast, economical EU model [default]
-    - openai/gpt-4o-mini            OpenAI small model
-    - anthropic/claude-haiku-4-5    Anthropic Claude Haiku
-    - google/gemini-2.5-flash       Google Gemini Flash
+    - openai/gpt-latest             OpenAI's current GPT
+    - anthropic/claude-sonnet-latest  Anthropic's current Sonnet
+    - vertex/gemini-flash-latest    Google's current Gemini Flash
 
 The live catalogue is public and needs no authentication at
 https://api.edenai.run/v3/models.

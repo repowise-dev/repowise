@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 
-import { ProportionBar, shareColor, SHARE_TAIL } from "../../src/shared/proportion-bar";
+import { ProportionBar, shareColor } from "../../src/shared/proportion-bar";
+import { SERIES_TAIL, commitCategoryColor, seriesColor } from "../../src/shared/series";
 
 const seg = (key: string, value: number) => ({ key, label: key, value });
 
@@ -15,15 +16,15 @@ function fills(container: HTMLElement) {
 }
 
 describe("ProportionBar", () => {
-  it("orders largest first and steps down the share palette", () => {
+  it("orders largest first and takes the series colours in order", () => {
     const { container } = render(
       <ProportionBar label="Split" segments={[seg("b", 10), seg("a", 60), seg("c", 30)]} />,
     );
     expect(legendItems("Split").map((li) => li.textContent)).toEqual(["a60%", "c30%", "b10%"]);
     const styles = fills(container);
-    expect(styles[0]).toContain("--color-share-1");
-    expect(styles[1]).toContain("--color-share-2");
-    expect(styles[2]).toContain("--color-share-3");
+    expect(styles[0]).toContain("--color-series-1");
+    expect(styles[1]).toContain("--color-series-2");
+    expect(styles[2]).toContain("--color-series-3");
   });
 
   it("folds the long tail into one named tail segment", () => {
@@ -100,6 +101,43 @@ describe("ProportionBar", () => {
       />,
     );
     expect(legendItems("Split").map((li) => li.textContent)).toEqual(["a20%", "Others80%"]);
-    expect(shareColor(5)).toBe(SHARE_TAIL);
+    expect(shareColor(5)).toBe(SERIES_TAIL);
+  });
+
+  it("colours a named category the same on every chart", () => {
+    render(
+      <ProportionBar
+        label="Commits"
+        segments={[
+          { key: "feature", label: "Feature", value: 10, color: commitCategoryColor("feature") },
+          { key: "fix", label: "Fix", value: 90, color: commitCategoryColor("fix") },
+        ]}
+      />,
+    );
+    const swatches = legendItems("Commits").map(
+      (li) => (li.querySelector("span[aria-hidden]") as HTMLElement).style.background,
+    );
+    // Sorted largest first, but each keeps its own colour.
+    expect(swatches).toEqual(["var(--color-series-1)", "var(--color-series-2)"]);
+  });
+});
+
+describe("series palette", () => {
+  it("wraps past the last colour", () => {
+    expect(seriesColor(0)).toBe("var(--color-series-1)");
+    expect(seriesColor(7)).toBe("var(--color-series-8)");
+    expect(seriesColor(8)).toBe("var(--color-series-1)");
+    expect(seriesColor(-1)).toBe("var(--color-series-8)");
+  });
+
+  it("maps each commit category to one fixed colour", () => {
+    expect(commitCategoryColor("fix")).toBe("var(--color-series-1)");
+    expect(commitCategoryColor("feature")).toBe("var(--color-series-2)");
+    expect(commitCategoryColor("refactor")).toBe("var(--color-series-3)");
+    expect(commitCategoryColor("Docs")).toBe("var(--color-series-4)");
+    expect(commitCategoryColor("test")).toBe("var(--color-series-5)");
+    expect(commitCategoryColor("deps")).toBe(commitCategoryColor("dependency"));
+    expect(commitCategoryColor("chore")).toBe("var(--color-series-8)");
+    expect(commitCategoryColor("other")).toBe(SERIES_TAIL);
   });
 });

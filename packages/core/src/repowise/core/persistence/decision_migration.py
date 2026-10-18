@@ -61,7 +61,6 @@ __all__ = [
     "backfill_decision_node_links",
     "backfill_scope_basis",
     "backfill_session_scope_basis",
-    "plan_json",
     "plan_migration",
     "prune_unindexed_scope_files",
     "render_plan",
@@ -690,7 +689,3 @@ def render_plan(plan: MigrationPlan, *, limit: int = 10) -> str:
         lines += ["", "  Why records became candidates:"]
         lines += [f"    {n:>4}  {reason}" for reason, n in reasons.most_common(limit)]
     return "\n".join(lines)
-
-
-def plan_json(plan: MigrationPlan) -> str:
-    return json.dumps(plan.as_dict(), indent=2)

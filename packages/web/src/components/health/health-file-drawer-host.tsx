@@ -4,7 +4,7 @@ import { useCallback, useMemo } from "react";
 import useSWR from "swr";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { HealthFileDrawer, useRelatedWork } from "@repowise-dev/ui/health";
+import { HealthFileDrawer, useRelatedWorkQuery } from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getPerformanceOpportunities,
@@ -39,7 +39,7 @@ export function HealthFileDrawerHost({
 }) {
   const t = useTranslations("health");
   const router = useRouter();
-  const { data, isLoading } = useFileBreakdown(repoId, filePath, counts);
+  const { data, error, isLoading, mutate } = useFileBreakdown(repoId, filePath, counts);
   const prefix = `/repos/${repoId}`;
   const filePageHref = filePath ? fileEntityPath(prefix, filePath) : undefined;
 
@@ -74,7 +74,8 @@ export function HealthFileDrawerHost({
     (paths: string[]) => getRelatedWork(repoId, paths),
     [repoId],
   );
-  const related = useRelatedWork(fetchRelated, [filePath]);
+  // Cached per path, so going back to a file already looked at is instant.
+  const related = useRelatedWorkQuery(fetchRelated, [filePath]);
   const toRelated = useMemo(() => relatedWorkHref(repoId), [repoId]);
 
   return (
@@ -82,11 +83,16 @@ export function HealthFileDrawerHost({
       open={filePath !== null}
       opportunity={opportunity}
       refactoringOpportunityHref={(id) => refactoringOpportunityHref(repoId, id)}
-      related={related?.files?.[0]}
+      related={related.data?.files?.[0]}
+      relatedError={related.error}
+      onRelatedRetry={related.retry}
       relatedWorkHref={toRelated}
       onNavigate={(href) => router.push(href)}
       onClose={onClose}
+      filePath={filePath}
       loading={isLoading}
+      error={error}
+      onRetry={() => void mutate()}
       metric={data?.metric ?? null}
       breakdown={
         data?.breakdown
@@ -99,6 +105,7 @@ export function HealthFileDrawerHost({
       }
       findings={data?.findings ?? []}
       suggestions={data?.suggestions ?? {}}
+      heldBack={data?.gated ?? null}
       trend={data?.trend ?? null}
       signals={data?.signals ?? null}
       lens={lens}
@@ -126,6 +133,9 @@ export function HealthFileDrawerHost({
           toast.error(t("findingStatusFailed"));
           throw err;
         }
+        // The score, leading cause and category totals all count open
+        // findings, so they re-read rather than describe the old status.
+        void mutate();
       }}
     />
   );

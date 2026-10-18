@@ -197,8 +197,11 @@ if TYPE_CHECKING:
     )
     from .meta import (
         ChangelogEntryModel,
+        ChangelogHighlightModel,
         ChangelogResponse,
         ChangelogSectionModel,
+        ReleaseStatsModel,
+        ReleaseTypeCountsModel,
         VersionResponse,
     )
     from .ownership import (
@@ -278,6 +281,8 @@ if TYPE_CHECKING:
         EmbedderEntry,
         OkResponse,
         ProviderEntry,
+        ProviderModelEntry,
+        ProviderModelsResponse,
         ProviderStatusResponse,
         ProviderValidationResponse,
         SavingsAgentRow,
@@ -505,8 +510,11 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
     "mcp": ("McpToolInfo", "McpToolSurfaceResponse", "UpdateMcpToolsRequest"),
     "meta": (
         "ChangelogEntryModel",
+        "ChangelogHighlightModel",
         "ChangelogResponse",
         "ChangelogSectionModel",
+        "ReleaseStatsModel",
+        "ReleaseTypeCountsModel",
         "VersionResponse",
     ),
     "ownership": (
@@ -575,6 +583,8 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "EmbedderEntry",
         "OkResponse",
         "ProviderEntry",
+        "ProviderModelEntry",
+        "ProviderModelsResponse",
         "ProviderStatusResponse",
         "ProviderValidationResponse",
         "SavingsAgentRow",
@@ -677,6 +687,7 @@ __all__ = [
     "CardRef",
     "ChangeFeaturesResponse",
     "ChangelogEntryModel",
+    "ChangelogHighlightModel",
     "ChangelogResponse",
     "ChangelogSectionModel",
     "ChartView",
@@ -824,6 +835,8 @@ __all__ = [
     "PlanRiskResponse",
     "PopulationBreakdown",
     "ProviderEntry",
+    "ProviderModelEntry",
+    "ProviderModelsResponse",
     "ProviderStatusResponse",
     "ProviderValidationResponse",
     "RefactoringHiddenCounts",
@@ -846,6 +859,8 @@ __all__ = [
     "RelatedWorkLens",
     "RelatedWorkRequest",
     "RelatedWorkResponse",
+    "ReleaseStatsModel",
+    "ReleaseTypeCountsModel",
     "RepoCreate",
     "RepoDeletedResponse",
     "RepoResponse",

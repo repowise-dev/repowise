@@ -3,11 +3,13 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Callout } from "@repowise-dev/ui/shared/callout";
-import { useTranslations } from "next-intl";
+import { useFormatter, useTranslations } from "next-intl";
 import { useMetaVersion } from "@/lib/hooks/use-meta-version";
 import { WhatsNewModal } from "./whats-new-modal";
 
 const STORAGE_PREFIX = "repowise:upgrade-banner-dismissed:v";
+/** Highlight titles named in the banner; the rest wait in the release notes. */
+const BANNER_TITLES = 2;
 
 /**
  * Global, non-blocking "newer release available" banner. Dismissal is keyed per
@@ -17,6 +19,7 @@ const STORAGE_PREFIX = "repowise:upgrade-banner-dismissed:v";
 export function UpgradeBanner() {
   const t = useTranslations("shell");
   const tc = useTranslations("common");
+  const format = useFormatter();
   const { meta } = useMetaVersion();
   const [dismissed, setDismissed] = useState(true);
   const [showWhatsNew, setShowWhatsNew] = useState(false);
@@ -34,6 +37,7 @@ export function UpgradeBanner() {
   }, [updateAvailable, latest]);
 
   if (!updateAvailable || dismissed) return null;
+  const titles = (meta?.latest_highlights ?? []).slice(0, BANNER_TITLES);
 
   const dismiss = () => {
     try {
@@ -62,10 +66,18 @@ export function UpgradeBanner() {
             </button>
           }
         >
-          {t.rich("updateBanner", {
-            latest,
-            b: (chunks) => <span className="font-medium">{chunks}</span>,
-          })}
+          {/* Names what the newer release brings when GitHub could be read,
+              otherwise the plain "is available". */}
+          {titles.length > 0
+            ? t.rich("updateBannerHighlights", {
+                latest,
+                titles: format.list(titles, { type: "conjunction" }),
+                b: (chunks) => <span className="font-medium">{chunks}</span>,
+              })
+            : t.rich("updateBanner", {
+                latest,
+                b: (chunks) => <span className="font-medium">{chunks}</span>,
+              })}
           {meta?.server_version ? (
             <span className="hidden text-[var(--color-text-tertiary)] sm:inline">
               {t("updateBannerCurrent", { current: meta.server_version })}

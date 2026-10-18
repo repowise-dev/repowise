@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -49,6 +51,10 @@ class ProviderEntry(BaseModel):
     configured: bool = False
     #: Takes an API key; ``False`` hides the key field.
     requires_key: bool = True
+    #: Takes a custom endpoint (an OpenAI-compatible local server, a proxy).
+    accepts_base_url: bool = False
+    #: Can point at a local OpenAI-compatible server (LM Studio) with no key.
+    local_server: bool = False
     #: Env vars a user sets to make the provider usable.
     env_vars: list[str] = []
     #: One line on how to install or set it up.
@@ -81,6 +87,9 @@ class ActiveProviderSelection(BaseModel):
     #: Where each value came from, per field: ``request``, ``config.yaml``,
     #: ``global``, ``env:<VAR>``, ``default`` or ``autodetect``; ``None`` if unset.
     provenance: SelectionProvenance = SelectionProvenance()
+    #: The repo's config.yaml base URL is refused until the user confirms it
+    #: here, so a cloned repo cannot send stored keys to its own host.
+    base_url_unconfirmed: bool = False
     #: USD per 1K tokens for ``model``; ``None`` when no model resolves.
     input_cost_per_1k: float | None = None
     output_cost_per_1k: float | None = None
@@ -94,6 +103,24 @@ class ProviderStatusResponse(BaseModel):
     #: Registerable providers the catalog leaves out (picker_rank ``None``).
     flag_only_providers: list[str] = []
     embedders: list[EmbedderEntry] = []
+
+
+class ProviderModelEntry(BaseModel):
+    id: str
+    label: str | None = None
+
+
+class ProviderModelsResponse(BaseModel):
+    """Models a provider offers, newest-looking first after the default.
+
+    ``source`` is ``live`` when the provider listed them and ``catalog`` when
+    the built-in list stands in, with ``error`` saying why.
+    """
+
+    models: list[ProviderModelEntry]
+    source: Literal["live", "catalog"]
+    default_model: str
+    error: str | None = None
 
 
 class ProviderValidationResponse(BaseModel):

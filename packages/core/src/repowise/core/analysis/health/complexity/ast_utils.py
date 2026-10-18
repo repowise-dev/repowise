@@ -14,6 +14,7 @@ both ask the same question of a listed receiver.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from .languages import LanguageNodeMap
@@ -42,6 +43,10 @@ _MAX_CALLEE_PATH = 100
 # A callee whose source text is already a dotted name (``ipcMain.handle``,
 # ``this.on``) and is kept as written.
 _PLAIN_PATH = re.compile(r"[\w$#]+(?:\.[\w$#]+)*")
+
+
+def is_comment(node: Node) -> bool:
+    return "comment" in node.type
 
 
 def member_object(node: Node) -> Node | None:
@@ -367,7 +372,9 @@ def _parameter_list(fn_node: Node) -> Node | None:
             (
                 c
                 for c in fn_node.children
-                if c.type in ("parameters", "parameter_list", "formal_parameters")
+                if c.type in (
+                    "parameters", "parameter_list", "formal_parameters", "function_value_parameters",
+                )
             ),
             None,
         )
@@ -375,7 +382,9 @@ def _parameter_list(fn_node: Node) -> Node | None:
 
 
 def _dialect_parameter_list(fn_node: Node) -> Node | None:
-    """Dart and Pascal keep the parameter list off the function node."""
+    """C, C++, Dart and Pascal keep the parameter list off the function node."""
+    if fn_node.type == "function_definition":
+        return _declarator_parameter_list(fn_node)
     if fn_node.type == "function_body":
         # Dart: the parameter list lives on the preceding signature sibling.
         sig = _dart_signature_sibling(fn_node)
@@ -394,6 +403,50 @@ def _dialect_parameter_list(fn_node: Node) -> Node | None:
     return None
 
 
+def _declarator_parameter_list(fn_node: Node) -> Node | None:
+    """Follow only the C/C++ declarator spine, never a callback parameter.
+
+    The innermost function declarator owns the function's parameters; an
+    outer one can instead describe the function pointer it returns.
+    """
+    node = fn_node.child_by_field_name("declarator")
+    params = None
+    while node is not None:
+        if node.type == "function_declarator":
+            params = node.child_by_field_name("parameters")
+        inner = node.child_by_field_name("declarator")
+        if inner is None and node.type in ("parenthesized_declarator", "reference_declarator"):
+            inner = next((c for c in node.named_children if not is_comment(c)), None)
+        node = inner
+    return params
+
+
+def _parameter_nodes(params: Node) -> Iterator[Node]:
+    """Declared parameters, excluding comments and grammar-only siblings."""
+    if params.type == "function_value_parameters":
+        # Kotlin defaults and modifiers (e.g. ``vararg``) are siblings of
+        # the parameters, not children of them.
+        yield from (c for c in params.named_children if c.type == "parameter")
+        return
+    for child in params.children:
+        if is_comment(child) or _is_void_parameter(child):
+            continue
+        # C++ represents a bare variadic parameter as an unnamed token.
+        if child.is_named or child.type == "...":
+            yield child
+
+
+def _is_void_parameter(node: Node) -> bool:
+    """C/C++ ``(void)`` denotes an empty list; a ``void *`` still has arity."""
+    return (
+        node.type == "parameter_declaration"
+        and node.child_by_field_name("declarator") is None
+        and (type_node := node.child_by_field_name("type")) is not None
+        and type_node.type == "primitive_type"
+        and type_node.text == b"void"
+    )
+
+
 # A method's explicit receiver: Python's conventional first ``self`` / ``cls``
 # and Rust's ``self`` / ``&self`` / ``&mut self``. No caller passes it, so it is
 # no part of the parameter list anyone reads at a call site.
@@ -402,7 +455,7 @@ _RECEIVER_NAMES = frozenset({"self", "cls"})
 
 def _receiver_parameter(params: Node) -> Node | None:
     """The receiver among *params*' children, when the first parameter is one."""
-    first = next((c for c in params.named_children if c.type != "comment"), None)
+    first = next(_parameter_nodes(params), None)
     if first is None:
         return None
     if first.type == "self_parameter":
@@ -415,8 +468,8 @@ def _receiver_parameter(params: Node) -> Node | None:
 def _count_parameters(fn_node: Node) -> int:
     """Best-effort parameter-list size for *fn_node*.
 
-    Looks at tree-sitter ``parameters`` / ``parameter_list`` / ``parameters_list`` fields and counts non-punctuation
-    children. Returns 0 when no parameter list is found.
+    Counts declared parameters, excluding receivers, comments and separators.
+    Returns 0 when no parameter list is found (apart from Swift's flat list).
     """
     params = _parameter_list(fn_node)
     if params is None:
@@ -428,27 +481,13 @@ def _count_parameters(fn_node: Node) -> int:
         return sum(1 for child in holder.children if child.type == "parameter")
     count = 0
     receiver = _receiver_parameter(params)
-    for child in params.children:
+    for child in _parameter_nodes(params):
         if child == receiver:
             continue
         # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
         # marker) parse as named ``keyword_separator`` / ``positional_separator``
-        # nodes but carry no arity, so they must be skipped alongside the
-        # ``*``/``**`` splat tokens and the punctuation. A ``comment`` node is
-        # also named but carries no arity — an explanatory comment block inside
-        # the parameter list (idiomatic for a validation pattern) must not
-        # count as a parameter (#1775).
-        if child.type in (
-            "(",
-            ")",
-            ",",
-            ":",
-            "*",
-            "**",
-            "keyword_separator",
-            "positional_separator",
-            "comment",
-        ):
+        # nodes but carry no arity.
+        if child.type in ("keyword_separator", "positional_separator"):
             continue
         if child.type == "declArg":
             # Pascal groups same-typed parameters under one ``declArg``
@@ -458,8 +497,7 @@ def _count_parameters(fn_node: Node) -> int:
             # is a different node type and never matches).
             count += sum(1 for gc in child.children if gc.type == "identifier")
             continue
-        if child.is_named:
-            count += 1
+        count += 1
     return count
 
 

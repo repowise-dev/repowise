@@ -185,11 +185,18 @@ def _declared_deliberately_unused(decorators: Iterable[str]) -> bool:
                 continue
             base = _decorator_base(token)
             if any(
-                base == name and argument in token
-                for name, argument in _DELIBERATELY_UNUSED_ANNOTATIONS
+                base == name and _carries_argument(token, argument, whole)
+                for name, argument, whole in _DELIBERATELY_UNUSED_ANNOTATIONS
             ):
                 return True
     return False
+
+
+def _carries_argument(token: str, argument: str, whole: bool) -> bool:
+    """*argument* in the annotation *token*: a substring, or one whole quoted argument."""
+    if not whole:
+        return argument in token
+    return argument in (q[1:-1].lower() for q in _QUOTED_STR_RE.findall(token))
 
 
 def _is_framework_registered(
@@ -382,7 +389,7 @@ _TS_JS_IMPORTABLE_KINDS: frozenset[str] = frozenset({"constant", "variable"})
 
 # Single-file-component languages: the whole file is one component, so their
 # exports behave unlike an ordinary module's â€” see _non_importable_kinds.
-_SFC_LANGUAGES: frozenset[str] = frozenset({"svelte", "vue"})
+_SFC_LANGUAGES: frozenset[str] = frozenset({"svelte", "vue", "astro"})
 
 # Every kind an SFC component prop can take, plus "class" for the synthetic
 # component symbol itself â€” see _non_importable_kinds.

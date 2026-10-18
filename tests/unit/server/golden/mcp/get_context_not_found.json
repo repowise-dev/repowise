@@ -1,0 +1,10 @@
+{
+  "targets": {
+    "nonexistent_thing_xyz": {
+      "error": "Target not found: 'nonexistent_thing_xyz'"
+    }
+  },
+  "_meta": {
+    "index_age_days": 7
+  }
+}

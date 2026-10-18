@@ -24,8 +24,9 @@
  * operate rather than a pile you read, so neither is numbered.
  */
 
+import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import {
   Bug,
@@ -45,6 +46,7 @@ import { ReleaseNotice } from "@repowise-dev/ui/shared/release-notice";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Button } from "@repowise-dev/ui/ui/button";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -64,14 +66,7 @@ import {
 import type { DocDriftResponse } from "@repowise-dev/types/doc-drift";
 import { TriageTab } from "@/components/code-health/triage-tab";
 import { HotspotsSection } from "@/components/code-health/hotspots-section";
-import { FindingsTab } from "@/components/code-health/findings-tab";
-import { PerformanceTab } from "@/components/code-health/performance-tab";
-import { CoverageTab } from "@/components/code-health/coverage-tab";
 import { TrendSection } from "@/components/code-health/trend-tab";
-import { DeadCodeTab } from "@/components/risk/dead-code-tab";
-import { DocDriftTab } from "@/components/risk/doc-drift-tab";
-import { ImpactTab } from "@/components/risk/impact-tab";
-import { SecurityTab } from "@/components/risk/security-tab";
 import { getDeadCodeSummary } from "@/lib/api/dead-code";
 import { getDocDrift } from "@/lib/api/doc-drift";
 import {
@@ -88,6 +83,39 @@ import {
   type HealthTrendResponse,
 } from "@/lib/api/code-health";
 import { useTranslations } from "next-intl";
+
+// The tabs render one at a time behind `?tab=` and triage is the default, so
+// the others are split out: landing here downloads the triage chunk only.
+// ssr:false because they are interactive, data-fetching client views.
+const TabFallback = () => <Skeleton className="h-[60vh] w-full rounded-lg" />;
+const FindingsTab = dynamic(
+  () => import("@/components/code-health/findings-tab").then((m) => m.FindingsTab),
+  { ssr: false, loading: TabFallback },
+);
+const PerformanceTab = dynamic(
+  () => import("@/components/code-health/performance-tab").then((m) => m.PerformanceTab),
+  { ssr: false, loading: TabFallback },
+);
+const CoverageTab = dynamic(
+  () => import("@/components/code-health/coverage-tab").then((m) => m.CoverageTab),
+  { ssr: false, loading: TabFallback },
+);
+const DeadCodeTab = dynamic(
+  () => import("@/components/risk/dead-code-tab").then((m) => m.DeadCodeTab),
+  { ssr: false, loading: TabFallback },
+);
+const DocDriftTab = dynamic(
+  () => import("@/components/risk/doc-drift-tab").then((m) => m.DocDriftTab),
+  { ssr: false, loading: TabFallback },
+);
+const SecurityTab = dynamic(
+  () => import("@/components/risk/security-tab").then((m) => m.SecurityTab),
+  { ssr: false, loading: TabFallback },
+);
+const ImpactTab = dynamic(
+  () => import("@/components/risk/impact-tab").then((m) => m.ImpactTab),
+  { ssr: false, loading: TabFallback },
+);
 
 const TABS = [
   "triage",
@@ -215,12 +243,16 @@ const COUNTS_LABEL_KEYS: Record<HealthCounts, string> = {
 };
 
 /**
- * Nodes the map draws. The server chooses which ones: the selected file first,
- * then every file carrying an open performance cause in rank order, then the
- * biggest files fill the rest. Ranking by size alone used to push tens of
- * files with open causes off the field entirely.
+ * Nodes the map draws at first. The server chooses which ones: pinned paths
+ * first, a floor per module, then production before tooling, tests and
+ * examples, with open performance causes and then the unhealthiest files
+ * leading each tier. "Draw more" steps the cap up to the server's ceiling.
  */
 const MAP_CAP = 2000;
+const MAP_CAP_STEP = 2000;
+const MAP_CAP_MAX = 8000;
+/** Paths pinned for selections made outside the drawn field, at most. */
+const MAX_EXTRA_PINS = 20;
 /**
  * Churn points pulled for the churn lens. Deliberately larger than
  * `MAP_FILE_LIMIT`: the map ranks by NLOC and churn-complexity ranks by
@@ -347,22 +379,56 @@ export default function CodeHealthPage() {
   // The bounded field: one pull, shared across lenses so switching never
   // refetches. The paths the page needs on screen ride along as `active`, which
   // is what makes the guarantee a server-side one rather than a hope that the
-  // size ranking happened to include them.
-  const activePaths = useMemo(
-    () => [...new Set([...(selectedPath ? [selectedPath] : []), ...(highlightPaths ?? [])])],
-    [selectedPath, highlightPaths],
+  // ranking happened to include them.
+  //
+  // A selection is pinned only when it is not already drawn, and a pin, once
+  // made, stays: a click on a node the reader can see costs no request, and a
+  // file pinned in does not drop out again on the refetch its own pin caused.
+  // The deep-linked file is pinned from the first request.
+  const [extraPins, setExtraPins] = useState<string[]>(() =>
+    selectedPath ? [selectedPath] : [],
   );
-  const { data: mapFeed } = useSWR<HealthMapFeed>(
-    `code-health-map:${repoId}${viewKey}:${activePaths.join(",")}`,
+  const [mapCap, setMapCap] = useState(MAP_CAP);
+  const [includeHeld, setIncludeHeld] = useState(false);
+  const [pinQuery, setPinQuery] = useState("");
+  const activePaths = useMemo(
+    () => [...new Set([...extraPins, ...(highlightPaths ?? [])])],
+    [extraPins, highlightPaths],
+  );
+  const {
+    data: mapFeed,
+    error: mapError,
+    isValidating: mapValidating,
+    mutate: mutateMap,
+  } = useSWR<HealthMapFeed>(
+    `code-health-map:${repoId}${viewKey}:${mapCap}:${includeHeld ? "held" : ""}:${pinQuery}:${activePaths.join(",")}`,
     () =>
       getHealthMap(repoId, {
-        cap: MAP_CAP,
+        cap: mapCap,
         ...(activePaths.length ? { active: activePaths } : {}),
         scope,
         counts,
+        ...(includeHeld ? { include_held: true } : {}),
+        ...(pinQuery ? { q: pinQuery } : {}),
       }),
     { revalidateOnFocus: false, keepPreviousData: true },
   );
+  const drawnPaths = useMemo(
+    () => new Set(mapFeed?.files.map((f) => f.file_path) ?? []),
+    [mapFeed],
+  );
+  useEffect(() => {
+    if (!selectedPath || !mapFeed || drawnPaths.has(selectedPath)) return;
+    setExtraPins((pins) =>
+      pins.includes(selectedPath) ? pins : [...pins, selectedPath].slice(-MAX_EXTRA_PINS),
+    );
+  }, [selectedPath, mapFeed, drawnPaths]);
+  const canDrawMore = mapCap < MAP_CAP_MAX;
+  const drawMore = useCallback(
+    () => setMapCap((c) => Math.min(MAP_CAP_MAX, c + MAP_CAP_STEP)),
+    [],
+  );
+  const retryMap = useCallback(() => void mutateMap(), [mutateMap]);
 
   // Churn percentiles for the churn lens. Fetched only once that lens is
   // selected: it is a second request, and the other three lenses color from
@@ -588,6 +654,13 @@ export default function CodeHealthPage() {
             onSelectPath={setSelectedPath}
             highlightPaths={highlightPaths}
             scope={scope}
+            onDrawMore={canDrawMore ? drawMore : undefined}
+            drawMoreStep={MAP_CAP_STEP}
+            onIncludeHeldChange={setIncludeHeld}
+            onFindUndrawn={setPinQuery}
+            mapPending={mapValidating}
+            mapError={mapError}
+            onRetryMap={retryMap}
             hotspotsSlot={<HotspotsSection repoId={repoId} />}
             trendSlot={
               <OverviewSection
@@ -600,6 +673,7 @@ export default function CodeHealthPage() {
                   error={trendError}
                   onRetry={() => void mutateTrend()}
                   counts={counts}
+                  onSelectFile={setSelectedPath}
                 />
               </OverviewSection>
             }

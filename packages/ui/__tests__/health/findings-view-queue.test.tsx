@@ -111,6 +111,19 @@ describe("FindingsView history signals", () => {
     const watchSection = screen.getAllByRole("heading", { level: 3 })[watchAt]!.closest("section")!;
     expect(within(watchSection).getByText("w.py")).toBeInTheDocument();
   });
+
+  it("groups by effort under the shared label, with no size threshold", async () => {
+    const load = vi.fn(async () => page([row("a.py"), row("b.py", { effort_bucket: "XL" })]));
+    render(<FindingsView adapter={adapter({ getHealthWorkQueue: load })} />);
+    await screen.findByText("a.py");
+
+    fireEvent.change(screen.getByLabelText("Group"), { target: { value: "effort" } });
+
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent ?? "");
+    expect(headings.some((h) => h.startsWith("Medium"))).toBe(true);
+    expect(headings.some((h) => h.startsWith("Extra large"))).toBe(true);
+    expect(headings.join(" ")).not.toMatch(/NLOC/);
+  });
 });
 
 describe("FindingsView graph", () => {

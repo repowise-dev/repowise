@@ -9,7 +9,7 @@ baseline and, through it, GitPython.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import pathspec
@@ -63,21 +63,40 @@ def path_filter(
     return counts
 
 
-def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
-    # stdin=DEVNULL: on MCP stdio transport a child that inherits the JSON-RPC
-    # pipe handles can wedge the session (same failure mode _meta.py guards
-    # against). check=True so a bad revspec raises instead of yielding empty
-    # stdout, which used to score as a zero-feature "low risk" change.
-    proc = subprocess.run(
+def run_git(
+    args: Sequence[str],
+    cwd: str | Path | None = None,
+    *,
+    text: bool = True,
+    input: str | bytes | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = GIT_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess:
+    """One ``git`` call with output captured and the exit code left to the caller.
+
+    ``text`` decodes as utf-8 with replacement (git writes utf-8; the locale
+    codec fails on Windows); ``text=False`` returns bytes. stdin is DEVNULL
+    unless *input* is given: on MCP stdio transport a child that inherits the
+    JSON-RPC pipe can wedge the session. Spawn errors and timeouts propagate.
+    """
+    decode = {"text": True, "encoding": "utf-8", "errors": "replace"} if text else {}
+    return subprocess.run(
         ["git", *args],
         cwd=cwd,
+        input=input,
+        stdin=None if input is not None else subprocess.DEVNULL,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        timeout=GIT_TIMEOUT_SECONDS,
+        env=env,
+        timeout=timeout,
+        check=False,
+        **decode,
     )
+
+
+def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
+    # check=True so a bad revspec raises instead of yielding empty stdout,
+    # which used to score as a zero-feature "low risk" change.
+    proc = run_git(args, cwd)
     if check and proc.returncode != 0:
         raise subprocess.CalledProcessError(
             proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr

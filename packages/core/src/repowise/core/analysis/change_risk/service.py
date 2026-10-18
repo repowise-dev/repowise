@@ -185,6 +185,10 @@ def score_live_change(
     """
     if baseline < 0:
         raise ValueError("baseline must be non-negative")
+    # A ref reaches git as an argument; one that reads as an option (--output=f)
+    # would run as a git flag instead of being looked up as a revision.
+    if revspec and any(p.startswith("-") for p in (split_revspec(revspec) or (revspec,))):
+        raise ValueError(f"Invalid revspec {revspec!r}: a ref cannot start with '-'.")
 
     extensions = normalize_extensions(extensions)
     from_riskignore = riskignore_patterns(repo_path)

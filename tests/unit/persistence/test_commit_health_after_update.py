@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import repowise.core.analysis.change_health.commit_scan as scan_mod
-import repowise.core.pipeline.incremental as incremental_mod
+import repowise.core.pipeline.incremental.persist_index as incremental_mod
 from repowise.core.analysis.change_health.commit_scan import (
     CommitHealthScan,
     current_fingerprint,

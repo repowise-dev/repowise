@@ -121,4 +121,15 @@ describe("chat route conversation lifecycle", () => {
     expect(mocks.shellProps?.onArtifactNavigate).toBe(navigate);
     expect(mocks.shellProps?.onArtifactCompare).toBe(compare);
   });
+
+  it("offers the translated empty-chat questions when the page measured none", async () => {
+    render(<ChatInterface repoId="r1" />);
+    await waitFor(() => expect(mocks.shellProps).not.toBeNull());
+    const suggestions = mocks.shellProps?.suggestions as { text: string; source: string }[];
+    expect(suggestions).toHaveLength(6);
+    expect(suggestions[0]).toEqual({
+      text: "Chart code health by package as a treemap",
+      source: "static",
+    });
+  });
 });

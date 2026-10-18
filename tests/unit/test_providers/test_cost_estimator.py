@@ -22,6 +22,8 @@ from repowise.cli.cost_estimator.heuristics import heuristic_tokens
         # The default. An unpriced model is estimated as free (lookup_cost
         # returns None), so this row is the guard.
         ("gpt-5.6-luna", 0.0002, 0.0012),
+        ("gpt-6-luna", 0.0001, 0.0005),
+        ("gpt-6-sol", 0.002, 0.010),
         # Gemini
         ("gemini-3.1-flash-lite-preview", 0.00025, 0.0015),
         ("gemini-3-flash-preview", 0.0005, 0.003),
@@ -31,6 +33,8 @@ from repowise.cli.cost_estimator.heuristics import heuristic_tokens
         ("claude-sonnet-4-6", 0.003, 0.015),
         ("claude-haiku-4-5", 0.001, 0.005),
         ("claude-haiku-5-5", 0.0001, 0.0005),
+        ("claude-sonnet-5-5", 0.002, 0.01),
+        ("claude-opus-5-5", 0.004, 0.02),
         # Free/local models
         ("mock", 0.0, 0.0),
         ("llama3", 0.0, 0.0),

@@ -34,7 +34,7 @@ For a map of every layer and how they feed each other, read
 | [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
 | [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: the spinner, change review, Flow and the `/lens` map shown while Claude works |
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph, and how much to trust each edge |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 26 parsed to a full AST, 40 on the support ladder |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 27 parsed to a full AST, 41 on the support ladder |
 
 ### Find what to fix first
 
@@ -67,6 +67,14 @@ For a map of every layer and how they feed each other, read
 |-----|----------------|
 | [layers/CHANGES.md](layers/CHANGES.md) | Change Records: each merged PR, MR or commit read back from git, with an in-toto export |
 | [layers/ATTRIBUTION.md](layers/ATTRIBUTION.md) | AI attribution: public markers read by default, opt-in edit capture, and coverage beside every share |
+
+### Govern change across a team
+
+| Doc | What it covers |
+|-----|----------------|
+| [layers/COMPONENTS.md](layers/COMPONENTS.md) | Backstage-shaped components, declared owners against recent activity, events and package usage |
+| [layers/POLICY.md](layers/POLICY.md) | Change policy in `.repowise/policies.yaml`, checked locally or in CI with SARIF and JUnit |
+| [layers/REPORTS.md](layers/REPORTS.md) | Assessment, change evidence and inventory packs to hand to an auditor, acquirer or board |
 
 ### Know which tests matter
 
@@ -106,8 +114,10 @@ For a map of every layer and how they feed each other, read
 
 | Doc | What it covers |
 |-----|----------------|
+| [business/EVALUATION.md](business/EVALUATION.md) | Try it on your own code in an afternoon, offline, from index to evidence packs |
 | [business/SECURITY_COMPLIANCE.md](business/SECURITY_COMPLIANCE.md) | What leaves your machine, what is stored, and the answers your security team wants |
 | [business/COMMERCIAL.md](business/COMMERCIAL.md) | Hosted tier, enterprise options and commercial licensing |
+| [business/FORESIGHT.md](business/FORESIGHT.md) | Foresight: learned models that predict where a fix goes and what a change forgot, coming to hosted and enterprise |
 | [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and method, including the rows we lose |
 | [LINEAGE.md](LINEAGE.md) | The published research each layer is built on, where it lives in the code, and how we checked it |
 | [../ROADMAP.md](../ROADMAP.md) | What we are building next, and what we are not |

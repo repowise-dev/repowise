@@ -14,8 +14,6 @@ from typing import Any
 
 #: Criticality levels a "critical component" rule applies to.
 CRITICAL_LEVELS = frozenset({"high", "critical"})
-#: Component tags that make attribution moves worth an event.
-REGULATED_TAGS = frozenset({"regulated", "pci", "cra-product"})
 
 #: Below this many owned files ownership figures are anecdotes.
 MIN_OWNED_FILES = 5
@@ -29,9 +27,6 @@ TEST_REACH_MIN_DROP = 0.10
 TEST_REACH_MIN_FILES = 5
 #: Measured line coverage must fall by this many points.
 LINE_COVERAGE_MIN_DROP = 5.0
-#: Agent share must move by this much, over at least this many commits per run.
-ATTRIBUTION_MIN_DELTA = 0.20
-ATTRIBUTION_MIN_COMMITS = 10
 
 Occurrence = tuple[str, str, str, dict[str, Any]]
 
@@ -48,6 +43,13 @@ def diff_snapshots(
         for rule in _RULES:
             out.extend((kind, name, subject, ev) for kind, subject, ev in rule(before, after))
     return out
+
+
+def contract_occurrences(
+    component: str, before: Mapping[str, Any], after: Mapping[str, Any]
+) -> list[Occurrence]:
+    """The contract rule alone, for one component's facts at two runs."""
+    return [(kind, component, subject, ev) for kind, subject, ev in _contracts(before, after)]
 
 
 def _get(facts: Mapping[str, Any], key: str) -> dict[str, Any]:
@@ -190,27 +192,6 @@ def _test_reach(before: Mapping[str, Any], after: Mapping[str, Any]) -> Iterator
         yield "test_reach_drop", "", ev
 
 
-def _attribution(before: Mapping[str, Any], after: Mapping[str, Any]) -> Iterator[tuple]:
-    if not REGULATED_TAGS & set(after.get("tags") or ()):
-        return
-    a, b = _get(before, "attribution"), _get(after, "attribution")
-    if a.get("agent_share") is None or b.get("agent_share") is None:
-        return
-    if a.get("recent_capped") or b.get("recent_capped"):
-        return
-    if min(a.get("commits", 0), b.get("commits", 0)) < ATTRIBUTION_MIN_COMMITS:
-        return
-    if round(abs(b["agent_share"] - a["agent_share"]), 3) >= ATTRIBUTION_MIN_DELTA:
-        yield "attribution_jump", "", {
-            "basis": "measured",
-            "previous_agent_share": a["agent_share"],
-            "agent_share": b["agent_share"],
-            "coverage": b.get("coverage"),
-            "commits": b.get("commits"),
-            "window_days": b.get("window_days"),
-        }
-
-
 _RULES = (
     _ownership,
     _owner_inactive,
@@ -220,5 +201,4 @@ _RULES = (
     _decisions,
     _dead_code,
     _test_reach,
-    _attribution,
 )

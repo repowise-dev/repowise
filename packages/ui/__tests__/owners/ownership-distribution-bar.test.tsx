@@ -34,8 +34,8 @@ describe("OwnershipDistributionBar", () => {
     // 167 owned files across the seven loaded contributors.
     expect(items).toEqual(["dev136%", "dev324%", "dev418%", "dev512%", "dev06%", "35 others4%"]);
     expect(screen.getByRole("link", { name: /dev1/ })).toHaveAttribute("href", "/owners/dev1");
-    // The same neutral share steps as every other proportion, never the accent.
-    expect(container.innerHTML).toContain("--color-share-1");
+    // The same series colours as every other proportion, never the accent token.
+    expect(container.innerHTML).toContain("--color-series-1");
     expect(container.innerHTML).not.toContain("accent");
   });
 });

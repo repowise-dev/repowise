@@ -446,3 +446,38 @@ def test_whole_module_hint_folded_into_an_import_marks_target_file_live() -> Non
     )
 
     assert not {"OllamaProvider", "app"} & _unused_export_names(g)
+
+
+def test_package_importing_its_own_path_listing_keeps_its_modules_reachable(
+    tmp_path: Path,
+) -> None:
+    """``for m in pkgutil.iter_modules(__path__): import_module(f"{__name__}.{m.name}")``
+    loads every module in the package, so none of them is unreachable and
+    their exports stay live; a module outside the package is still flagged."""
+    sources = {
+        "pkg/__init__.py": "",
+        "pkg/main.py": "from pkg import sections\n",
+        "pkg/sections/__init__.py": (
+            "import importlib\nimport pkgutil\n"
+            "for _m in pkgutil.iter_modules(__path__):\n"
+            '    importlib.import_module(f"{__name__}.{_m.name}")\n'
+        ),
+        "pkg/sections/alpha.py": "class AlphaSection:\n    pass\n",
+        "pkg/sections/beta.py": "def register():\n    pass\n",
+        "pkg/orphan.py": "def lonely():\n    pass\n",
+    }
+    for path, src in sources.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(src)
+    builder = GraphBuilder()
+    for path, src in sources.items():
+        builder.add_file(_PARSER.parse_file(_file_info(path), src.encode("utf-8")))
+    builder.build()
+    builder.add_dynamic_edges(PythonDynamicHints().extract(tmp_path))
+    graph = builder.graph()
+
+    unreachable = _unreachable_paths(graph)
+    assert "pkg/sections/alpha.py" not in unreachable
+    assert "pkg/sections/beta.py" not in unreachable
+    assert "pkg/orphan.py" in unreachable
+    assert not {"AlphaSection", "register"} & _unused_export_names(graph)

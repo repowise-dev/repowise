@@ -39,6 +39,9 @@ export interface FileHealthFinding {
   /** `"unverified"` for a provisional finding type; null for a validated one. */
   verification?: string | null;
   lower_priority?: string | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export interface FileHealthMetric {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { EFFORT_LABEL } from "../../src/health/labels";
 import {
   RefactoringCard,
   type RefactoringTarget,
@@ -148,6 +149,18 @@ describe("a file led by a history marker", () => {
 });
 
 describe("the row's labels and action", () => {
+  it("uses the shared effort wording in the badge and summary", () => {
+    const original = EFFORT_LABEL.M;
+    EFFORT_LABEL.M = "Moderate";
+    try {
+      render(<RefactoringCard target={target({ effort_bucket: "M" })} />);
+      expect(screen.getByTitle("Effort: Moderate (NLOC 900)")).toBeInTheDocument();
+      expect(screen.getByText("· Moderate effort")).toBeInTheDocument();
+    } finally {
+      EFFORT_LABEL.M = original;
+    }
+  });
+
   it("labels a test file, and only a test file", () => {
     const { rerender } = render(<RefactoringCard target={target({ is_test: true })} />);
     expect(screen.getByText("test")).toBeInTheDocument();

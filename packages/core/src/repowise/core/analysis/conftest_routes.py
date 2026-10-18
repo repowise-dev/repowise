@@ -64,11 +64,14 @@ import symtable
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from repowise.core.pyparse import parse_python, symtable_python
 
 from ..ingestion.framework_edges.pytest_edges import (
     CONFTEST_HINT,
@@ -479,6 +482,9 @@ def _not_local(deps: Mapping[str, set[str] | None]) -> set[str]:
     return bad
 
 
+# Keyed on the text alone, so an edited file is a new key and a long-lived MCP
+# server stops re-walking the same unchanged entries on every selection.
+@lru_cache(maxsize=1024)
 def local_names(source: str) -> frozenset[str]:
     """Names a Python module binds once, at its top level, whose use is its own text alone.
 
@@ -496,8 +502,8 @@ def local_names(source: str) -> frozenset[str]:
     import-time side effect that patches the standard library.
     """
     try:
-        tree = ast.parse(source)
-        table = symtable.symtable(source, "<module>", "exec")
+        tree = parse_python(source)
+        table = symtable_python(source)
     except (SyntaxError, ValueError):
         return frozenset()
     counts: dict[str, int] = {}
@@ -636,7 +642,7 @@ class ConftestFacts:
     @classmethod
     def parse(cls, source: str, path: str) -> ConftestFacts:
         try:
-            tree = ast.parse(source)
+            tree = parse_python(source)
         except (SyntaxError, ValueError):
             return cls(path, error=f"{path} does not parse")
         facts = cls(path, here=module_parts(path)[:-1], parents=_parents(tree))

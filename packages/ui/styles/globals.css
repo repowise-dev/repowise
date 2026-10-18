@@ -119,22 +119,41 @@
   --color-model-hover: var(--color-plum-600);
   --color-model-muted: color-mix(in srgb, var(--color-accent-secondary) 14%, transparent);
 
-  /* Share steps — the one palette for a share-of-whole bar (ProportionBar):
-     ink stepped toward the well, largest share first, `tail` for the
-     collapsed rest. No hue, so a proportion never reads as navigation (orange),
-     model work (plum) or a health verdict (green/amber/red). Steps 1-5 clear
-     3:1 against the page and a card in both themes; the tail does not and is
-     always named in the legend.
-
-     Per theme because the same mix that holds on cream fades out on
-     near-black. */
-  --color-share-1: color-mix(in srgb, var(--color-text-primary) 86%, var(--color-bg-inset));
-  --color-share-2: color-mix(in srgb, var(--color-text-primary) 74%, var(--color-bg-inset));
-  --color-share-3: color-mix(in srgb, var(--color-text-primary) 63%, var(--color-bg-inset));
-  --color-share-4: color-mix(in srgb, var(--color-text-primary) 54%, var(--color-bg-inset));
-  --color-share-5: color-mix(in srgb, var(--color-text-primary) 47%, var(--color-bg-inset));
+  /* Series — the one categorical palette for every chart (seriesColor in
+     shared/series.ts): orange, plum, blue, olive, rose, gold, brick, slate,
+     ordered so neighbours stay apart. The community hues' values, set here
+     and in `.dark` so they theme in this layer; plum, blue and brick alias
+     tokens with the same values in both themes. Each clears 3:1 on the page
+     and a card in both themes (contrast-check.py). `share-tail` is the grey
+     for an unnamed remainder ("Other"). Verdicts (health bands, risk) keep
+     their own tokens. */
+  --color-series-1: #c0641a;
+  --color-series-2: var(--color-accent-secondary);
+  --color-series-3: var(--color-info);
+  --color-series-4: #6b7a3d;
+  --color-series-5: #b06a86;
+  --color-series-6: #a8821f;
+  --color-series-7: var(--color-error);
+  --color-series-8: #4a5d7a;
   --color-share-tail: color-mix(in srgb, var(--color-text-primary) 20%, var(--color-bg-inset));
-  /* Supporting cast beside an accent series. Same idea, no hue. */
+  /* Heat steps — a heatmap cell's fill, light to dark: the accent stepped
+     into the card. Steps 1-3 carry ink text, 4-5 card-coloured text; each
+     pairing clears 4.5:1 in both themes (contrast-check.py). Per theme
+     because the light accent darkens and the dark one lightens. */
+  --color-heat-1: color-mix(in srgb, var(--color-accent-primary) 10%, var(--color-bg-surface));
+  --color-heat-2: color-mix(in srgb, var(--color-accent-primary) 26%, var(--color-bg-surface));
+  --color-heat-3: color-mix(in srgb, var(--color-accent-primary) 50%, var(--color-bg-surface));
+  --color-heat-4: var(--color-accent-primary);
+  --color-heat-5: var(--color-accent-hover);
+  /* Release moment (What's new) — a deeper ground than the overlay plane and
+     a low-opacity orange-to-plum glow band behind the version heading, and
+     the card a linked highlight sits on. Solid values so ink on them is
+     checked (contrast-check.py). */
+  --color-release-ground: var(--color-bg-root);
+  --color-release-card: var(--color-bg-surface);
+  --color-release-glow-1: #f8dfc2;
+  --color-release-glow-2: #e8deef;
+  /* Supporting cast beside an accent series: tertiary ink stepped into the well. */
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 22%, var(--color-bg-inset));
@@ -253,14 +272,7 @@
   --color-zoom-grid: rgba(36, 27, 44, 0.045);
   --color-zoom-grid-strong: rgba(36, 27, 44, 0.08);
 
-  /* Language colors (canonical brand hues — theme-independent) */
-  --color-lang-python: #3776ab;
-  --color-lang-typescript: #3178c6;
-  --color-lang-go: #00add8;
-  --color-lang-rust: #dea584;
-  --color-lang-java: #ed8b00;
-  --color-lang-cpp: #00599c;
-  --color-lang-config: #6b7280;
+  /* The "Other" provider in the costs comparison (theme-independent). */
   --color-lang-other: #8b5cf6;
 
   /* Edge colors (graph edges) — remapped to the new palette */
@@ -314,10 +326,9 @@
   --color-viz-diff-affected: var(--color-warning);
 
   /* Savings surfaces — two categorical hues distinguishing the distill ledger
-     from MCP-tool answers in the Costs savings card. Plum + brand-orange so the
-     split reads in both themes without a third brand color. */
-  --color-savings-distill: var(--color-accent-fill);
-  --color-savings-mcp: var(--color-accent-secondary);
+     from MCP-tool answers in the Costs savings card: the first two series. */
+  --color-savings-distill: var(--color-series-1);
+  --color-savings-mcp: var(--color-series-2);
 
   /* ================================================================== */
   /* Signature gradients (theme-independent)                            */
@@ -501,14 +512,22 @@
      and need no override; see the light block for the family. */
   --color-model-hover: var(--color-plum-200);
 
-  /* Share steps — see the light block. Light ink on near-black stays visible
-     lower down, so the steps spread wider before the 3:1 floor. */
-  --color-share-1: color-mix(in srgb, var(--color-text-primary) 86%, var(--color-bg-inset));
-  --color-share-2: color-mix(in srgb, var(--color-text-primary) 71%, var(--color-bg-inset));
-  --color-share-3: color-mix(in srgb, var(--color-text-primary) 58%, var(--color-bg-inset));
-  --color-share-4: color-mix(in srgb, var(--color-text-primary) 48%, var(--color-bg-inset));
-  --color-share-5: color-mix(in srgb, var(--color-text-primary) 40%, var(--color-bg-inset));
+  /* Series, the tail and heat steps — see the light block. */
+  --color-series-1: #f59520;
+  --color-series-4: #a9bb6f;
+  --color-series-5: #d795b1;
+  --color-series-6: #d9b04a;
+  --color-series-8: #8fa3c0;
   --color-share-tail: color-mix(in srgb, var(--color-text-primary) 18%, var(--color-bg-inset));
+  --color-heat-1: color-mix(in srgb, var(--color-accent-primary) 12%, var(--color-bg-surface));
+  --color-heat-2: color-mix(in srgb, var(--color-accent-primary) 26%, var(--color-bg-surface));
+  --color-heat-3: color-mix(in srgb, var(--color-accent-primary) 42%, var(--color-bg-surface));
+  --color-heat-4: color-mix(in srgb, var(--color-accent-primary) 75%, var(--color-bg-surface));
+  --color-heat-5: var(--color-accent-primary);
+  --color-release-ground: #111013;
+  --color-release-card: #1b191e;
+  --color-release-glow-1: #2b1c0e;
+  --color-release-glow-2: #1f1729;
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 70%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 45%, var(--color-bg-inset));
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));

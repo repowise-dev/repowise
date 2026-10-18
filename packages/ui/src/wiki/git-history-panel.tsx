@@ -189,8 +189,8 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
                     <div className="h-1 w-full rounded-full bg-[var(--color-bg-elevated)] ml-7">
                       <div
                         className="h-1 rounded-full transition-all"
-                        // One share step for every row: the length is the reading.
-                        style={{ width: `${share * 100}%`, backgroundColor: "var(--color-share-1)" }}
+                        // One series colour for every row: the length is the reading.
+                        style={{ width: `${share * 100}%`, backgroundColor: "var(--color-series-1)" }}
                       />
                     </div>
                   )}

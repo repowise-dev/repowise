@@ -779,8 +779,8 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 | Model | Notes |
 |-------|-------|
-| `claude-sonnet-4-6` | Best balance of quality and cost |
-| `claude-opus-4-6` | Highest quality, higher cost |
+| `claude-sonnet-5-5` | Best balance of quality and cost |
+| `claude-opus-5-5` | Highest quality, higher cost |
 | `claude-haiku-5-5` | Default, fastest, lowest cost |
 
 ```bash
@@ -858,7 +858,7 @@ Gemini is also the default embedding provider when `GEMINI_API_KEY` is set.
 
 ```bash
 export DEEPSEEK_API_KEY="..."
-repowise init --provider deepseek --model deepseek-chat
+repowise init --provider deepseek --model deepseek-flash
 ```
 
 ### Kimi
@@ -967,6 +967,10 @@ so the CLI uses it too. A local OpenAI-compatible server such as LM Studio works
 as `provider: openai` with `openai: {base_url: http://localhost:1234/v1}`.
 Because `config.yaml` may be committed, a non-local base URL there only receives a key
 that is not in the repo's `.repowise/.env` after you confirm it in Settings or with `repowise init`.
+You can set all of this from the repo's Settings page instead of editing the
+file: the model field lists the provider's live models and takes any id, and
+Test connection checks a base URL before you save it. A loopback base URL needs
+no API key.
 
 ---
 

@@ -4,7 +4,9 @@ opts in, and every surface says how many rows it held back.
 
 The seeded repository is Python; these tests add Java, C#, C++, Kotlin and
 Swift rows beside it, so each case checks both halves: the gated rows leave,
-the Python rows stay.
+the Python rows stay. No row is gated in the shipped table, so every test here
+runs on :data:`AUDIT_GATED`, the 2026-10-02 audit's gated cells, to keep the
+gated state working; ``test_preview_gates`` pins the shipped states.
 """
 
 from __future__ import annotations
@@ -24,15 +26,54 @@ from repowise.core.analysis.finding_registry import (
 )
 from repowise.core.persistence.models import DeadCodeFinding
 
+_LAYERS = ("health", "refactoring", "performance", "dead_code")
+
+#: Every audited cell gated: each layer on Java, C#, C and C++, and dead code on
+#: Kotlin and Swift.
+AUDIT_GATED: tuple[LanguageGate, ...] = (
+    *(
+        LanguageGate(layer, language, 0.1, "test sample", "2026-10-02", "test")
+        for layer in _LAYERS
+        for language in ("java", "csharp", "c", "cpp")
+    ),
+    *(
+        LanguageGate("dead_code", language, 0.1, "test sample", "2026-10-02", "test")
+        for language in ("kotlin", "swift")
+    ),
+)
+
+
+@pytest.fixture(autouse=True)
+def _audit_gated(monkeypatch):
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", AUDIT_GATED)
+
+
+def _java_on_every_layer(monkeypatch, state: str = "gated") -> None:
+    monkeypatch.setattr(
+        finding_registry,
+        "LANGUAGE_GATES",
+        tuple(
+            LanguageGate(layer, "java", 0.1, "test", "2026-10-15", "test", state=state)
+            for layer in _LAYERS
+        ),
+    )
+
+
+def test_a_gated_row_holds_its_layer_back_on_every_extension(monkeypatch):
+    _java_on_every_layer(monkeypatch)
+    for layer in _LAYERS:
+        assert gate_for(layer, "src/Foo.java") is not None, layer
+        assert gate_for(layer, "src/foo.py") is None, layer
+
 
 def test_audited_languages_are_gated_on_every_layer():
-    for layer in ("health", "refactoring", "performance", "dead_code"):
+    for layer in _LAYERS:
         for path in ("src/Foo.java", "src/Foo.cs", "src/foo.c", "src/foo.cpp", "inc/foo.h"):
             assert gate_for(layer, path) is not None, (layer, path)
 
 
 def test_unaudited_languages_are_never_gated():
-    for layer in ("health", "refactoring", "performance", "dead_code"):
+    for layer in _LAYERS:
         for path in ("a.py", "a.ts", "a.tsx", "a.js", "a.go", "a.rs", "pom.xml", ""):
             assert gate_for(layer, path) is None, (layer, path)
 

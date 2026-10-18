@@ -83,9 +83,9 @@ def _handle_post_edit_use(
     if tool_input is not None and session_id:
         file_path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
         if isinstance(file_path, str) and file_path.strip():
-            from .read_state import _relativize
+            from repowise.core.fsutils import repo_relative
 
-            rel = _relativize(file_path, repo_path)
+            rel = repo_relative(file_path, repo_path, resolve=True)
             if rel is not None:
                 state = _load_session_state(repo_path, session_id)
                 for emit in (
