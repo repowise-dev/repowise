@@ -9,8 +9,9 @@ export interface HealthLedeCopy {
   reportLink: string;
   /** Shown before the first health run. */
   empty: string;
-  /** Methodology behind the info tip beside the label. */
-  hint: (counts: { hotspots: string; files: string }) => string;
+  /** Methodology behind the info tip beside the label. `counts` is null when
+   *  the index has no hotspots. */
+  hint: (counts: { hotspots: string; files: string } | null) => string;
   /** The one reading under the figure. `figure` is the coloured hotspot score;
    *  `holdsUp` is true when hotspots score at or above the whole codebase. */
   hotspotReading: (figure: React.ReactNode, holdsUp: boolean) => React.ReactNode;
@@ -22,8 +23,12 @@ export const HEALTH_LEDE_COPY: HealthLedeCopy = {
   reportLink: "Full health report",
   empty:
     "Health scores land with the first index: complexity, duplication, coverage, churn and ownership across every file.",
-  hint: ({ hotspots, files }) =>
-    `Average code health of every scored file, from 1 to 10. Hotspots are the ${hotspots} of ${files} files that git history changes and fixes most.`,
+  hint: (counts) =>
+    `Average code health of every scored file, from 1 to 10.${
+      counts
+        ? ` Hotspots are the ${counts.hotspots} of ${counts.files} files that git history changes and fixes most.`
+        : ""
+    }`,
   hotspotReading: (figure, holdsUp) =>
     holdsUp ? (
       <>Hotspots average {figure}, as healthy as the rest of the code.</>
@@ -80,11 +85,11 @@ export function HealthLede({
   return (
     <PageLede
       label={c.label}
-      labelHint={
+      labelHint={c.hint(
         hot != null && fileCount > 0
-          ? c.hint({ hotspots: hotspotCount.toLocaleString(), files: fileCount.toLocaleString() })
-          : undefined
-      }
+          ? { hotspots: hotspotCount.toLocaleString(), files: fileCount.toLocaleString() }
+          : null,
+      )}
       value={formatScore(score)}
       valueColor={band.color}
       unit={c.unit}

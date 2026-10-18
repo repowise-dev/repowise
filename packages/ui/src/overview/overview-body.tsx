@@ -33,7 +33,7 @@ export interface OverviewBodySlots {
   header?: React.ReactNode;
   /** Under the reads column. Hosted puts its MCP connect card here. */
   afterReads?: React.ReactNode;
-  /** A section between Composition and Explore. Hosted's index-coverage
+  /** A section above Explore. Hosted's index-coverage
    *  panel. */
   beforeExplore?: React.ReactNode;
   /** Contents of the "Ask this codebase" section. Omitted where the host

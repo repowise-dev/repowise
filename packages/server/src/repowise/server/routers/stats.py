@@ -2,8 +2,9 @@
 
 A read-only aggregate for the repo Stats page. The derivations live in
 :mod:`repowise.core.stats_highlights` so the hosted backend can build the same
-payload from its artifacts; this module only reads rows. Every read is a narrow
-column select or a capped ordered query, and nothing recomputes analysis.
+payload from its artifacts; this module reads rows plus one threaded size walk
+of ``.repowise/``. Every read is a narrow column select or a capped ordered
+query, and nothing recomputes analysis.
 """
 
 from __future__ import annotations

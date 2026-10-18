@@ -66,7 +66,6 @@ export type ResolvedOverviewRoutes = ReturnType<typeof resolveOverviewRoutes>;
  * Resolved routes, with the defaults both hosts share filled in.
  *
  * Exported so a renderer that needs one of these hrefs outside a built list
- * (the Composition section links to the same language graph the ribbon does)
  * reads it from here rather than rebuilding a list to find one entry in it.
  */
 export function resolveOverviewRoutes(routes: OverviewRoutes) {

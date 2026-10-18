@@ -253,7 +253,7 @@ export interface OverviewSyncStatus {
   last_sync_model: string | null;
   active_job_id: string | null;
   page_count: number;
-  /** Total on-disk size of the repo's `.repowise/` directory (bytes). */
+  /** @deprecated Not sent by the OSS server; read `StatsHighlights.index_storage_bytes`. */
   index_storage_bytes?: number;
 }
 
