@@ -18,7 +18,8 @@ export type {
 /** The hold parameters as query values; nothing when every file is read. */
 export function holdParams(opts: MapHoldQuery = {}): Record<string, string | undefined> {
   if (opts.hold !== "map") return {};
-  return { hold: "map", include: opts.include?.length ? opts.include.join(",") : undefined };
+  // Sorted, so two orders of the same toggles are one request and one cache entry.
+  return { hold: "map", include: opts.include?.length ? [...opts.include].sort().join(",") : undefined };
 }
 
 /** The root area's rollup plus every directory up to `depth` levels below it. */

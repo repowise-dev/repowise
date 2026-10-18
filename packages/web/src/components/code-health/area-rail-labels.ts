@@ -16,6 +16,7 @@ export function useAreaRailLabels(): AreaRailLabels {
       moreLenses: t("moreLenses"),
       scopeProduction: t("scopeProduction"),
       scopeAll: t("scopeAll"),
+      heldOutHint: t("heldOutHint"),
       scopeWith: (names) => t("scopeWith", { names }),
       originName: (origin) => (t.has(`origin.${origin}`) ? t(`origin.${origin}`) : origin.replace(/_/g, " ")),
       showHeld: (name, count) => t("showHeld", { name, count: count.toLocaleString() }),

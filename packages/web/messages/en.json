@@ -506,7 +506,8 @@
           "production": "production files"
         },
         "showHeld": "Show {name} ({count})",
-        "hideHeld": "Hide {name}"
+        "hideHeld": "Hide {name}",
+        "heldOutHint": "This folder may hold only files the map leaves out by default. Bring them back with the toggles under the map."
       }
     },
     "knowledgeGraph": {

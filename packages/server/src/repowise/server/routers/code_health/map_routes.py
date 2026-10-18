@@ -72,6 +72,6 @@ async def get_health_map(
         include_held=include_held,
         query=q,
         area=normalize_area(area) or None,
-        held=held_origins(hold, include),
+        held=held_origins(hold, include) if hold == "map" else None,
     )
     return feed.payload()

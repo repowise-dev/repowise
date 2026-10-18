@@ -35,6 +35,8 @@ export interface AreaRailProps {
   onNavigate?: ((href: string) => void) | undefined;
   /** What the figures cover ("Production code"), when the map holds files out. */
   scope?: string | undefined;
+  /** Said under a load error: the folder may hold only files the map leaves out. */
+  errorHint?: string | undefined;
   /** Part of the cache key: a card read under one hold is not another's. */
   holdKey?: string | undefined;
 }
@@ -75,9 +77,16 @@ export function AreaRail(props: AreaRailProps) {
     );
   }
   if (error && !data) {
-    return <ApiError size="compact" title={labels.loadError} message={toFriendlyMessage(error)} onRetry={() => void mutate()} />;
+    return (
+      <ApiError
+        size="compact"
+        title={labels.loadError}
+        message={props.errorHint ?? toFriendlyMessage(error)}
+        onRetry={() => void mutate()}
+      />
+    );
   }
-  if (!data || (isLoading && data.area.path !== area)) return <CardSkeleton label={labels.loading} />;
+  if (!data || isLoading) return <CardSkeleton label={labels.loading} />;
   return (
     <>
       <AreaCard

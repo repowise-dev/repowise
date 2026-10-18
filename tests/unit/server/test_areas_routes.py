@@ -158,7 +158,8 @@ async def test_a_warmed_model_serves_the_next_read_without_a_build(app, client, 
         raise AssertionError("the warm-up should have built the model")
 
     monkeypatch.setattr(service, "_build", no_build)
-    tree = await client.get(f"/api/repos/{repo_id}/areas/tree")
+    # The warm-up builds the map's default view, the one the first reader opens.
+    tree = await client.get(f"/api/repos/{repo_id}/areas/tree", params={"hold": "map"})
     assert tree.status_code == 200
 
 
@@ -222,3 +223,14 @@ async def test_bringing_every_held_group_back_is_the_whole_repository(app, clien
     overview = (await client.get(f"/api/repos/{repo_id}/health/overview", params={"limit": 1})).json()
     assert back["root"]["health"] == whole["root"]["health"] == overview["summary"]["average_health"]
     assert back["held"]["excluded"] == []
+
+
+async def test_every_group_back_draws_generated_files_too(app, client):
+    # With every held group brought back the set is empty, and the map must
+    # still read that as "hold nothing", not as the default vendored hold.
+    repo_id = await _seed_origins(app, client)
+    whole = (await client.get(f"/api/repos/{repo_id}/areas/tree")).json()
+    params = {"hold": "map", "include": " TEST, " + ",".join(whole["held"]["default"])}
+    feed = (await client.get(f"/api/repos/{repo_id}/health/map", params=params)).json()
+    assert "src/gen_pb2.py" in {f["file_path"] for f in feed["files"]}
+    assert feed["omitted"]["held"] == 0

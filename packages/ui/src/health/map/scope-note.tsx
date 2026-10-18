@@ -188,7 +188,7 @@ function HeldToggles({ groups, labels }: { groups: HeldGroups; labels: MapCanvas
   const present = groups.default.filter((o) => (groups.counts[o] ?? 0) > 0);
   if (present.length === 0) return null;
   return (
-    <span role="group" aria-label="Files held out of the map" className="contents">
+    <>
       {present.map((origin) => {
         const on = groups.include.includes(origin);
         const name = labels.originName(origin);
@@ -197,7 +197,6 @@ function HeldToggles({ groups, labels }: { groups: HeldGroups; labels: MapCanvas
           <Part key={origin}>
             <button
               type="button"
-              aria-pressed={on}
               onClick={() => groups.onChange(next)}
               className={ACTION}
             >
@@ -206,7 +205,7 @@ function HeldToggles({ groups, labels }: { groups: HeldGroups; labels: MapCanvas
           </Part>
         );
       })}
-    </span>
+    </>
   );
 }
 

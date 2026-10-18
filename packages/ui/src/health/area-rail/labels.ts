@@ -17,6 +17,8 @@ export interface AreaRailLabels extends MapCanvasLabels {
   scopeAll: string;
   /** Some held groups brought back: "Production code and test files". */
   scopeWith: (names: string) => string;
+  /** Under an area that failed to load while groups are held out. */
+  heldOutHint: string;
   /** The lens switcher's menu of further lenses. */
   moreLenses: string;
   /** A lens's name in the switcher; `undefined` keeps the built-in English. */
@@ -68,6 +70,8 @@ export const DEFAULT_AREA_RAIL_LABELS: AreaRailLabels = {
     "Every file as a node, grouped into its folders and sized by lines of code. The lens re-marks the same field rather than redrawing it. Click a folder to zoom, a file to inspect it.",
   searchPlaceholder: "Find a file in the map…",
   moreLenses: "More",
+  heldOutHint:
+    "This folder may hold only files the map leaves out by default. Bring them back with the toggles under the map.",
   scopeProduction: "Production code",
   scopeAll: "All code",
   scopeWith: (names) => `Production code and ${names}`,

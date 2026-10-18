@@ -13,6 +13,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Search } from "lucide-react";
+import type { AreaHeld } from "@repowise-dev/types/areas";
 import type { HealthMapFeed } from "@repowise-dev/types/health";
 
 import { ApiError } from "../shared/api-error";
@@ -21,7 +22,7 @@ import { Skeleton } from "../ui/skeleton";
 import { OverviewSection } from "../overview/section";
 import { ROOT_AREA } from "../lib/areas";
 import { CodeHealthMap, MapLegend, MapLensSwitcher, type CodeHealthMapFile, type CodeHealthOverlay, type MapScope } from "./code-health-map";
-import { deriveAreaIndex } from "./map/areas";
+import { deriveAreaIndex, type AreaIndex } from "./map/areas";
 import { OVERLAY_SPECS, resolveLens } from "./map/lens-registry";
 import { useAreaSource, type AreaFetchers } from "./map/use-area-source";
 import { MapFieldList } from "./map/inspector";
@@ -192,12 +193,79 @@ function MapPane({ failed, waiting, onRetry, errorTitle, ...map }: MapPaneProps)
   return <CodeHealthMap {...map} minHeight={MAP_HEIGHT} chrome="none" />;
 }
 
+/** The held groups the host brought back, as the canvas footer offers them and the rail names them. */
+function heldScope(
+  held: AreaHeld | null,
+  include: readonly string[],
+  onIncludeChange: ((include: string[]) => void) | undefined,
+  labels: AreaRailLabels,
+) {
+  const heldGroups =
+    held && onIncludeChange ? { default: held.default, counts: held.counts, include, onChange: onIncludeChange } : undefined;
+  return { heldGroups, scope: held ? scopeName(held, include, labels) : undefined };
+}
+
+/** The rail: the area cards with the areas API, the ranked file list without. */
+function SectionRail(
+  props: AreaMapSectionProps & {
+    source: AreaSourceLike | undefined;
+    index: AreaIndex | null;
+    flatFiles: CodeHealthMapFile[] | undefined;
+    area: string;
+    setArea: (area: string) => void;
+    labels: AreaRailLabels;
+    scope: string | undefined;
+    holdKey: string;
+    heldOut: boolean;
+  },
+) {
+  const { adapter, overlay, selected, setSelected, area, index, labels } = props;
+  if (props.source && adapter.getAreaDetail && index) {
+    return (
+      <AreaRail
+        cacheKey={adapter.cacheKey}
+        getAreaDetail={(p) => adapter.getAreaDetail!(p)}
+        area={area}
+        index={index}
+        nameOf={(p) => (area && p.startsWith(`${area}/`) ? p.slice(area.length + 1) : p)}
+        labels={labels}
+        selectedFile={selected}
+        fileDetail={adapter.renderFileDrawer({ filePath: selected, onClose: () => setSelected(null), lens: overlay, inline: true })}
+        onClearFile={() => setSelected(null)}
+        onSelectArea={props.setArea}
+        onSelectFile={setSelected}
+        areaLinks={adapter.areaLinks ? (p) => adapter.areaLinks!(p) : undefined}
+        onNavigate={(href) => adapter.navigate(href)}
+        scope={props.scope}
+        holdKey={props.holdKey}
+        {...(props.heldOut ? { errorHint: labels.heldOutHint } : {})}
+      />
+    );
+  }
+  if (!props.flatFiles) return null;
+  return (
+    <div className="min-h-0 flex-1 overflow-hidden border-t border-[var(--color-border-default)] pt-3">
+      <MapFieldList
+        files={props.flatFiles}
+        overlay={overlay}
+        selectedPath={selected}
+        onSelectFile={setSelected}
+        {...(props.mapScope ? { scope: props.mapScope } : {})}
+      />
+    </div>
+  );
+}
+
+type AreaSourceLike = ReturnType<typeof useJoinedSource>;
+
 export function AreaMapSection(props: AreaMapSectionProps) {
-  const { adapter, overlay, selected, setSelected } = props;
+  const { overlay, selected, setSelected } = props;
   const labels = useMemo(() => ({ ...DEFAULT_AREA_RAIL_LABELS, ...props.railLabels }), [props.railLabels]);
   const include = props.include ?? [];
-  const holdKey = include.join(",");
-  const source = useJoinedSource(adapter, props.fileExtras, holdKey);
+  // Sorted, so two orders of the same toggles are one read.
+  const holdKey = [...include].sort().join(",");
+  const source = useJoinedSource(props.adapter, props.fileExtras, holdKey);
+  const { heldGroups, scope } = heldScope(source?.held ?? null, include, props.onIncludeChange, labels);
   const [area, setArea] = useAreaSelection(props.area, props.onAreaChange, setSelected);
   const [query, setQuery] = useState("");
 
@@ -205,48 +273,21 @@ export function AreaMapSection(props: AreaMapSectionProps) {
   const derived = useMemo(() => (source || !flatFiles ? null : deriveAreaIndex(flatFiles)), [source, flatFiles]);
   const index = source?.index ?? derived;
   const lens = useMemo(() => (index ? resolveLens(overlay, index, labels) : undefined), [overlay, index, labels]);
-  const nameOf = useCallback(
-    (p: string) => (area && p.startsWith(`${area}/`) ? p.slice(area.length + 1) : p),
-    [area],
+
+  const rail = (
+    <SectionRail
+      {...props}
+      source={source}
+      index={index}
+      flatFiles={flatFiles}
+      area={area}
+      setArea={setArea}
+      labels={labels}
+      scope={scope}
+      holdKey={holdKey}
+      heldOut={Boolean(heldGroups)}
+    />
   );
-
-  const held = source?.held ?? null;
-  const heldGroups =
-    held && props.onIncludeChange
-      ? { default: held.default, counts: held.counts, include, onChange: props.onIncludeChange }
-      : undefined;
-  const scope = held ? scopeName(held, include, labels) : undefined;
-
-  const rail =
-    source && adapter.getAreaDetail && index ? (
-      <AreaRail
-        cacheKey={adapter.cacheKey}
-        getAreaDetail={(p) => adapter.getAreaDetail!(p)}
-        area={area}
-        index={index}
-        nameOf={nameOf}
-        labels={labels}
-        selectedFile={selected}
-        fileDetail={adapter.renderFileDrawer({ filePath: selected, onClose: () => setSelected(null), lens: overlay, inline: true })}
-        onClearFile={() => setSelected(null)}
-        onSelectArea={setArea}
-        onSelectFile={setSelected}
-        areaLinks={adapter.areaLinks ? (p) => adapter.areaLinks!(p) : undefined}
-        onNavigate={(href) => adapter.navigate(href)}
-        scope={scope}
-        holdKey={holdKey}
-      />
-    ) : flatFiles ? (
-      <div className="min-h-0 flex-1 overflow-hidden border-t border-[var(--color-border-default)] pt-3">
-        <MapFieldList
-          files={flatFiles}
-          overlay={overlay}
-          selectedPath={selected}
-          onSelectFile={setSelected}
-          {...(props.mapScope ? { scope: props.mapScope } : {})}
-        />
-      </div>
-    ) : null;
 
   return (
     <OverviewSection

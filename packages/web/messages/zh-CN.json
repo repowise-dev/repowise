@@ -506,7 +506,8 @@
           "production": "生产文件"
         },
         "showHeld": "显示{name}（{count}）",
-        "hideHeld": "隐藏{name}"
+        "hideHeld": "隐藏{name}",
+        "heldOutHint": "此文件夹可能只包含地图默认隐藏的文件。可使用地图下方的开关将它们显示出来。"
       }
     },
     "knowledgeGraph": {

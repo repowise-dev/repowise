@@ -79,7 +79,10 @@ function useIncludeParam() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const raw = searchParams.get("include") ?? "";
-  const include = useMemo(() => raw.split(",").filter(Boolean), [raw]);
+  const include = useMemo(
+    () => raw.split(",").map((o) => o.trim().toLowerCase()).filter(Boolean),
+    [raw],
+  );
   const setInclude = useCallback(
     (next: string[]) => {
       const sp = new URLSearchParams(searchParams.toString());

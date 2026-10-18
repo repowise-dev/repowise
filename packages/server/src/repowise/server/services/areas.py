@@ -99,7 +99,7 @@ def held_origins(hold: str, include: str) -> frozenset[str]:
     (:data:`MAP_HELD_ORIGINS`) less the ones the reader brought back."""
     if hold != "map":
         return frozenset()
-    return map_held(o for o in include.split(",") if o)
+    return map_held(o.strip().lower() for o in include.split(",") if o.strip())
 
 
 def _origin(metric: Any) -> str:
@@ -233,7 +233,8 @@ async def warm_area_model(
     the CLI) is still folded on first read."""
     try:
         async with get_session(session_factory) as session:
-            await load_area_model(session, repo_id)
+            # The map's default view, which is what the first reader opens.
+            await load_area_model(session, repo_id, frozenset(MAP_HELD_ORIGINS))
     except Exception:
         logger.warning("areas_warm_failed", repo_id=repo_id, exc_info=True)
 

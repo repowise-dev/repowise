@@ -22,7 +22,7 @@ describe("held groups in the canvas footer", () => {
     );
     fireEvent.click(getByRole("button", { name: "Show test files (1,755)" }));
     expect(onChange).toHaveBeenCalledWith(["test"]);
-    expect(getByRole("button", { name: "Show build files (2)" })).toHaveAttribute("aria-pressed", "false");
+    expect(getByRole("button", { name: "Show build files (2)" })).toBeInTheDocument();
     // A group with no files offers nothing to show.
     expect(queryByRole("button", { name: /vendored/ })).not.toBeInTheDocument();
   });
@@ -32,8 +32,9 @@ describe("held groups in the canvas footer", () => {
     const { getByRole } = render(
       <LoadedNote loaded={10} total={20} matches={null} labels={DEFAULT_MAP_CANVAS_LABELS} held={{ ...held, include: ["test", "build"], onChange }} />,
     );
+    // The verb carries the state; aria-pressed beside it read as "Hide, pressed".
     const hide = getByRole("button", { name: "Hide test files" });
-    expect(hide).toHaveAttribute("aria-pressed", "true");
+    expect(hide).not.toHaveAttribute("aria-pressed");
     fireEvent.click(hide);
     expect(onChange).toHaveBeenCalledWith(["build"]);
   });
@@ -44,5 +45,14 @@ describe("the scope the figures cover", () => {
     expect(scopeName(held, [], DEFAULT_AREA_RAIL_LABELS)).toBe("Production code");
     expect(scopeName(held, ["test", "docs_example", "build"], DEFAULT_AREA_RAIL_LABELS)).toBe("All code");
     expect(scopeName(held, ["test"], DEFAULT_AREA_RAIL_LABELS)).toBe("Production code and test files");
+  });
+});
+
+describe("the hold on the wire", () => {
+  it("sends the brought-back groups sorted, so two toggle orders are one request", async () => {
+    const { holdParams } = await import("../../../api-client/src/areas.js");
+    expect(holdParams({ hold: "map", include: ["test", "build"] })).toEqual({ hold: "map", include: "build,test" });
+    expect(holdParams({ hold: "map", include: ["build", "test"] })).toEqual({ hold: "map", include: "build,test" });
+    expect(holdParams({})).toEqual({});
   });
 });
