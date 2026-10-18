@@ -323,9 +323,7 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: than the change-entropy sweep cap.
 #: v3: commits carry their category, and changes are rebuilt from history; the
 #: default history window grew from 500 to 5,000 commits.
-#: v4: prior-defect counts and fix events read the conventional type first
-#: (``fix_rule.py``).
-GIT_HISTORY_VERSION: int = 4
+GIT_HISTORY_VERSION: int = 3
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
 #: backfill`` so the next update re-walks history to label the newly bound

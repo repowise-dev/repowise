@@ -131,6 +131,9 @@ class FixWalk:
 
     fixes: list[FixCommit] = field(default_factory=list)
     oldest_fix_ts: int = 0
+    #: Every fix commit's sha, taken before ``skip_shas`` narrows *fixes*;
+    #: ``None`` when the walk did not run, so no stored fix can be judged gone.
+    shas: frozenset[str] | None = None
 
 
 def collect_fix_commits(
@@ -167,13 +170,16 @@ def collect_fix_commits(
         return FixWalk()
 
     fixes = _walk_fix_commits(repo, rev_range, indexable_files)
+    if fixes is None:
+        return FixWalk()
     # Taken before the skip, so an update and a full index at the same HEAD agree
     # on the trailing edge even though they trace different commits.
     oldest = min((f.ts for f in fixes if f.ts > 0), default=0)
+    shas = frozenset(f.sha for f in fixes)
     if skip_shas:
         fixes = [f for f in fixes if f.sha not in skip_shas]
     if not fixes:
-        return FixWalk(oldest_fix_ts=oldest)
+        return FixWalk(oldest_fix_ts=oldest, shas=shas)
 
     diffs = _parse_fix_diffs(repo, [f.sha for f in fixes])
     resolved_fixes = [
@@ -189,7 +195,7 @@ def collect_fix_commits(
         )
         for fix in fixes
     ]
-    return FixWalk(fixes=resolved_fixes, oldest_fix_ts=oldest)
+    return FixWalk(fixes=resolved_fixes, oldest_fix_ts=oldest, shas=shas)
 
 
 def compute_prior_defects(
@@ -264,11 +270,13 @@ def _resolve_rev_range(repo: Any, *, as_of_ts: float | None, window_days: int) -
     return f"{prior_sha}..{head_sha}" if prior_sha else head_sha
 
 
-def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> list[FixCommit]:
+def _walk_fix_commits(
+    repo: Any, rev_range: str, indexable_files: set[str]
+) -> list[FixCommit] | None:
     """Subject-matched fix commits in *rev_range*, each with its indexable paths.
 
     Commits that touched nothing indexable are dropped here so the diff pass
-    never pays for them.
+    never pays for them. ``None`` when the log itself failed.
     """
     try:
         raw = repo.git.log(
@@ -280,7 +288,7 @@ def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> l
         )
     except Exception as exc:
         logger.debug("prior_defect_log_failed", error=str(exc))
-        return []
+        return None
 
     if not raw:
         return []

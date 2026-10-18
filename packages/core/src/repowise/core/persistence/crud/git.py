@@ -1147,6 +1147,22 @@ async def prune_fix_events_for_missing_paths(
     return int(deleted.rowcount or 0)
 
 
+async def prune_fix_events_for_shas(
+    session: AsyncSession, repository_id: str, shas: set[str]
+) -> int:
+    """Drop the fix events of commits the fix rule no longer names a fix."""
+    if not shas:
+        return 0
+    deleted = await session.execute(
+        delete(FixEvent).where(
+            FixEvent.repository_id == repository_id,
+            FixEvent.fix_sha.in_(sorted(shas)),
+        )
+    )
+    await session.flush()
+    return int(deleted.rowcount or 0)
+
+
 async def get_fix_event_shas(session: AsyncSession, repository_id: str) -> set[str]:
     """Every fix sha already persisted for a repo.
 

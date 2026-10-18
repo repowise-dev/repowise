@@ -146,12 +146,12 @@ async def test_capture_new_fix_events_skips_known_commits(tmp_path) -> None:
 
     indexer = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
 
-    everything, oldest, tracked = indexer.capture_new_fix_events()
+    everything, oldest, tracked, _ = indexer.capture_new_fix_events()
     assert {r["fix_sha"] for r in everything} == {first, second}
     assert oldest > 0
     assert tracked == {"a.py"}
 
-    new_only, oldest_again, _ = indexer.capture_new_fix_events(known_shas={first})
+    new_only, oldest_again, _, _ = indexer.capture_new_fix_events(known_shas={first})
     assert {r["fix_sha"] for r in new_only} == {second}
     # The cutoff is taken before the skip, so narrowing the trace must not move it.
     assert oldest_again == oldest
@@ -168,10 +168,10 @@ async def test_update_capture_matches_a_full_index(tmp_path) -> None:
     _write(repo, tmp_path, "a.py", "x = 1\n", "feat: add a")
     _write(repo, tmp_path, "a.py", "x = 2\n", "fix: first")
     indexer = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
-    seeded, _, _ = indexer.capture_new_fix_events()
+    seeded, _, _, _ = indexer.capture_new_fix_events()
 
     _write(repo, tmp_path, "a.py", "x = 3\n", "fix: second")
-    incremental, _, _ = indexer.capture_new_fix_events(known_shas={r["fix_sha"] for r in seeded})
+    incremental, _, _, _ = indexer.capture_new_fix_events(known_shas={r["fix_sha"] for r in seeded})
     merged = sorted(seeded + incremental, key=lambda r: (r["fix_sha"], r["file_path"]))
 
     summary, _ = await GitIndexer(tmp_path, tier=GitIndexTier.FULL).index_repo("repo1")
