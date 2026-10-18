@@ -26,6 +26,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/
 import { cn } from "../lib/cn";
 import { foldPackagePrefix, pathWithLine, splitDirTail, splitPath } from "../lib/path-parts";
 
+const TOOLTIP_DELAY_MS = 300;
+
 export type FilePathMode = "name-first" | "distinguishing" | "full" | "middle-ellipsis";
 
 export interface FilePathProps {
@@ -127,7 +129,8 @@ function FullPieces({ dir, name, chip, line, nameClass }: PieceProps) {
 function NameFirstPieces({ dir, name, chip, line, nameClass }: PieceProps) {
   return (
     <span className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap">
-      <span className={cn("max-w-full shrink-0 truncate", nameClass)}>
+      {/* Wider than its column, the name wraps rather than losing characters. */}
+      <span className={cn("max-w-full shrink-0 whitespace-normal [overflow-wrap:break-word]", nameClass)}>
         {name}
         <LineSuffix line={line} />
       </span>
@@ -276,6 +279,15 @@ export function FilePath({
     if (next) setArmed(true);
     setOpen(next);
   }, []);
+  // The hover that arms happens before the trigger exists, so Radix never
+  // sees it; that hover opens the tooltip itself, after the same delay.
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const cancelHover = useCallback(() => clearTimeout(hoverTimer.current), []);
+  const armOnHover = useCallback(() => {
+    setArmed(true);
+    hoverTimer.current = setTimeout(() => setOpen(true), TOOLTIP_DELAY_MS);
+  }, []);
+  useEffect(() => cancelHover, [cancelHover]);
   const full = pathWithLine(path, line);
   // `full` shows every character in reading order, and a bare top-level
   // file is already its whole path: neither needs a second, hidden copy.
@@ -303,7 +315,7 @@ export function FilePath({
     <span
       ref={ref}
       className="flex min-w-0 max-w-full"
-      onPointerEnter={armed ? undefined : () => setArmed(true)}
+      onPointerEnter={armed ? undefined : armOnHover}
     >
       <span className="sr-only">{full}</span>
       <span aria-hidden className="flex min-w-0">
@@ -313,9 +325,15 @@ export function FilePath({
   );
 
   return (
-    <span data-path={path} className={cn("inline-flex min-w-0 max-w-full items-baseline font-mono text-xs", className)}>
+    // The leave is caught here, on a node arming does not remount, so a pointer
+    // that leaves while the trigger moves into the tooltip still cancels it.
+    <span
+      data-path={path}
+      className={cn("inline-flex min-w-0 max-w-full items-baseline font-mono text-xs", className)}
+      onPointerLeave={cancelHover}
+    >
       {armed ? (
-        <TooltipProvider delayDuration={300}>
+        <TooltipProvider delayDuration={TOOLTIP_DELAY_MS}>
           <Tooltip open={open} onOpenChange={setOpen}>
             <TooltipTrigger asChild>{trigger}</TooltipTrigger>
             <TooltipContent className="max-w-[min(36rem,90vw)] font-mono [overflow-wrap:anywhere]">{full}</TooltipContent>

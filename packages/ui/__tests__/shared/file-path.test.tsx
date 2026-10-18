@@ -81,6 +81,40 @@ describe("FilePath", () => {
     expect(container.querySelector("[data-state]")).not.toBeNull();
   });
 
+  it("opens on the first hover even when the pointer then stays still", async () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(<FilePath path="a/b.ts" />);
+      fireEvent.pointerEnter(container.querySelector("[data-path] > span")!);
+      await act(async () => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(screen.getByRole("tooltip").textContent).toContain("a/b.ts");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not open when the first hover leaves before the delay", async () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(<FilePath path="a/b.ts" />);
+      fireEvent.pointerEnter(container.querySelector("[data-path] > span")!);
+      fireEvent.pointerLeave(container.querySelector("[data-path]")!);
+      await act(async () => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never truncates the file name in name-first", () => {
+    render(<FilePath path={LONG} />);
+    expect(screen.getByText("tool_dependency.py").className).not.toMatch(/truncate/);
+  });
+
   it("copies the path", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
