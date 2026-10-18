@@ -293,6 +293,11 @@ export function PerformanceView({
           )
         ) : (
           <div className="space-y-3">
+            {paged ? (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Areas group the {items.length.toLocaleString()} causes on this page.
+              </p>
+            ) : null}
             {focused ? (
               <button
                 type="button"

@@ -43,7 +43,7 @@ describe("PerformanceView queue", () => {
     expect(await screen.findByText("changes worth making now")).toBeTruthy();
     expect(screen.getByText(/All in src\./)).toBeTruthy();
     // Every hidden cause is named, with a link to the scope that lists it.
-    expect(screen.getByRole("button", { name: "3 more production causes need evidence first" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "3 more production causes are not ready to act on" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "3 are outside production code" })).toBeTruthy();
   });
 
@@ -264,7 +264,7 @@ describe("PerformanceView states", () => {
       }),
     );
     render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
-    expect(await screen.findByRole("button", { name: "5 more production causes need evidence first" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "5 more production causes are not ready to act on" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Why left out?" }));
     expect(screen.queryByRole("button", { name: /run rarely/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "loop size unknown" }));

@@ -23,8 +23,8 @@ const SCOPE_LABEL: Record<PerformanceScope, string> = {
 };
 
 const SCOPE_HINT: Record<PerformanceScope, string> = {
-  now: "Production causes with a named fix whose cost is measured to grow.",
-  production: "Every production cause, including ones that need evidence first.",
+  now: "Production causes with a fix to make, whose cost is shown to grow with the data.",
+  production: "Every production cause, including expected repetition and ones without a fix yet.",
   all: "Every cause, in tests, tooling and unclassified code too.",
 };
 
@@ -75,7 +75,7 @@ export function scopeAccount(scope: PerformanceScope, counts: ScopeCounts): Scop
           { count: now, text: "worth doing now", scope: null },
           {
             count: waiting,
-            text: `more production ${plural(waiting, "cause needs", "causes need")} evidence first`,
+            text: `more production ${plural(waiting, "cause is", "causes are")} not ready to act on`,
             scope: "production",
           },
           {
@@ -123,7 +123,10 @@ export function ScopeSentence({
   const clauses = scopeAccount(scope, counts);
   return (
     <div className="space-y-2 text-sm text-[var(--color-text-secondary)]">
-      <p role="status">
+      <p role="status" className="sr-only">
+        {clauses.map((clause) => `${clause.count.toLocaleString()} ${clause.text}`).join(", ")}.
+      </p>
+      <p>
         {clauses.map((clause, index) => (
           <span key={clause.text}>
             {index === 0 ? "" : scope === "now" ? ". " : ", "}

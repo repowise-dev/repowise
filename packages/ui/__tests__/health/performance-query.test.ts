@@ -70,6 +70,7 @@ describe("performance scope and its URL", () => {
       scope: "production",
       actionability: "investigate",
     });
+    expect(read("ctx=production&role=all")).toMatchObject({ scope: "production", role: null });
     expect(read("ctx=test")).toMatchObject({ scope: "all", context: "test" });
     expect(read("ctx=all")).toMatchObject({ scope: "all", context: null });
     expect(read("perf=context%3Dtooling%26offset%3D240")).toMatchObject({
@@ -90,6 +91,9 @@ describe("performance scope and its URL", () => {
     expect(parsed.page).toBe(1);
     // Proof and role cannot narrow "now", whose causes are all measured and served.
     expect(read("scope=now&proof=unproven&context=test")).toMatchObject({ proof: null, context: null });
+    // "Worth doing now" holds plan-ready and advisory causes only.
+    expect(read("scope=now&actionability=investigate").actionability).toBeNull();
+    expect(read("scope=now&actionability=advisory").actionability).toBe("advisory");
   });
 });
 

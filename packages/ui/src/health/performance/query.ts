@@ -58,6 +58,9 @@ export const INITIAL_FILTERS: PerformanceFilterState = {
 
 export const SCOPES: readonly PerformanceScope[] = ["now", "production", "all"];
 
+/** The states the default queue holds. */
+const NOW_STATES: readonly PerformanceActionabilityState[] = ["plan_ready", "advisory"];
+
 /** The filters behind "More filters", each offered only where it can narrow. */
 export const NARROWING_KEYS = ["context", "boundary", "confidence", "proof", "role"] as const;
 export type NarrowingKey = (typeof NARROWING_KEYS)[number];
@@ -206,6 +209,7 @@ function fromLegacy(params: URLSearchParams, contextKey: string): PerformanceFil
   const widened =
     fields.proof !== null ||
     fields.role !== null ||
+    params.get("role") === "all" ||
     fields.actionability === "investigate" ||
     fields.actionability === "expected";
   const scope: PerformanceScope =
@@ -237,6 +241,11 @@ export function readFilters(params: URLSearchParams): PerformanceFilterState {
   const fields = narrowing(params);
   return {
     ...fields,
+    // "Worth doing now" holds plan-ready and advisory causes only.
+    actionability:
+      scope === "now" && !NOW_STATES.includes(fields.actionability ?? "plan_ready")
+        ? null
+        : fields.actionability,
     scope,
     context: scope === "all" ? oneOf(params.get("context"), CONTEXTS) : null,
     proof: scope === "now" ? null : fields.proof,

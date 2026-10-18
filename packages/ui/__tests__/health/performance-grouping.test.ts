@@ -78,7 +78,7 @@ describe("scope accounting", () => {
   it("accounts for every hidden cause from the default queue", () => {
     expect(scopeAccount("now", counts)).toEqual([
       { count: 4, text: "worth doing now", scope: null },
-      { count: 426, text: "more production causes need evidence first", scope: "production" },
+      { count: 426, text: "more production causes are not ready to act on", scope: "production" },
       { count: 508, text: "are outside production code", scope: "all" },
     ]);
   });
