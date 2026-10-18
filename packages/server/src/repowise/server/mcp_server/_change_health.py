@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.analysis.change_health.file_scores import (
+    SCORE_BASIS,
+    FileScoreDelta,
+    score_change,
+)
 from repowise.core.analysis.change_health.models import ChangeFinding, ChangeHealthDelta
 from repowise.core.analysis.review_directive import (
     CoveringTestEvidence,
@@ -27,6 +32,8 @@ REASON_LIMIT = 3
 
 #: Deleted sources listed with where their code went.
 MOVED_TO_LIMIT = 10
+#: Per-file score rows carried in ``health_delta.files``.
+FILE_ROWS_LIMIT = 10
 
 #: Findings whose next-action is carried in the default response.
 _ACTIONABLE_FINDINGS = 2
@@ -185,11 +192,26 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
     block.update(_nonzero(improved=delta.improved_total, moved=delta.moved_total))
     if delta.moved_to:
         block["moved_to"] = dict(list(delta.moved_to.items())[:MOVED_TO_LIMIT])
+    if delta.files:
+        block.update(_file_scores(delta.files))
     if delta.skipped:
         block["skipped"] = _skipped(delta.skipped)
     if delta.limits:
         block["limits"] = delta.limits
     return block
+
+
+def _file_scores(rows: list[FileScoreDelta]) -> dict[str, Any]:
+    """The changed files' scores before and after, and their base-nloc average."""
+    out: dict[str, Any] = {
+        "score_basis": SCORE_BASIS,
+        "files": [r.as_dict() for r in rows[:FILE_ROWS_LIMIT]],
+        "files_total": len(rows),
+    }
+    change = score_change(rows)
+    if change is not None:
+        out["score_change"] = change.as_dict()
+    return out
 
 
 def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from .file_scores import FileScoreDelta
+
 DeltaStatus = Literal[
     "available",
     "partial",
@@ -198,6 +200,8 @@ class ChangeHealthDelta:
     timing_ms: float = 0.0
     cache_hit: bool = False
     limits: list[str] = field(default_factory=list)
+    #: Per-file scores on both sides, largest structure move first.
+    files: list[FileScoreDelta] = field(default_factory=list)
 
     @property
     def introduced_total(self) -> int:

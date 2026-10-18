@@ -21,7 +21,7 @@ from ...ingestion.models import (
 )
 from ...ingestion.parser import parse_file
 from ...test_paths import is_test_related_path
-from ..health import HealthAnalyzer, HealthFindingData
+from ..health import HealthAnalyzer, HealthFileMetricData, HealthFindingData
 from ..health.complexity.languages import has_health_dialect
 from ..health.source_reader import MappingSourceReader
 
@@ -70,6 +70,8 @@ class RevisionAnalysis:
     #: Dependents count per file, as this side's centrality gates read it.
     dependents: dict[str, int] = field(default_factory=dict)
     symbols: dict[str, list[Symbol]] = field(default_factory=dict)
+    #: Per-file scores and deductions, by path.
+    metrics: dict[str, HealthFileMetricData] = field(default_factory=dict)
 
     def findings_for(self, paths: set[str]) -> list[HealthFindingData]:
         return [f for f in self.findings if f.file_path in paths]
@@ -117,6 +119,7 @@ class RevisionHealthAnalyzer:
         result.analyzed = set(usable)
         result.dependents = analyzer.file_dependents()
         result.symbols = {pf.file_info.path: pf.symbols for pf in parsed}
+        result.metrics = {m.file_path: m for m in report.metrics}
         return result
 
     # -- internals ----------------------------------------------------------

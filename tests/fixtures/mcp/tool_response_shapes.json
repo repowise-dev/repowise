@@ -207,6 +207,18 @@
       "by_dimension": {},
       "by_severity": {},
       "explanation": null,
+      "files": [
+        {
+          "base_score": null,
+          "base_structure": null,
+          "head_score": null,
+          "head_structure": null,
+          "nloc_base": null,
+          "nloc_head": null,
+          "path": null
+        }
+      ],
+      "files_total": null,
       "findings_emitted": null,
       "findings_total": null,
       "introduced": null,
@@ -217,6 +229,15 @@
         "eligible": null,
         "failed": null,
         "skipped": null
+      },
+      "score_basis": null,
+      "score_change": {
+        "base": null,
+        "delta": null,
+        "files_compared": null,
+        "head": null,
+        "structure_delta": null,
+        "weighting": null
       },
       "skipped": {
         "by_reason": {

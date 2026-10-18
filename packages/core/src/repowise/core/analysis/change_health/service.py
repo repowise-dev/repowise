@@ -22,6 +22,7 @@ from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
 from .analyzer import RevisionAnalysis, RevisionHealthAnalyzer, language_for, language_of
 from .attribution import FindingAttributor, changed_symbols_for
+from .file_scores import file_score_deltas
 from .identity import change_finding_id, finding_key, severity_rank
 from .matcher import FindingMatcher, MatchedFinding, MatchResult
 from .models import (
@@ -280,6 +281,13 @@ class ChangeHealthDeltaService:
             skipped=skipped,
             moved_to={old: new for old, new in moves.destinations().items() if old in gone},
             limits=_limits(sides.head_run.findings_for(subject)),
+            files=file_score_deltas(
+                sides.base_run.metrics,
+                sides.head_run.metrics,
+                subject,
+                sides.rename,
+                departed={old: moves.destinations().get(old, []) for old in gone},
+            ),
         )
         delta.timing_ms = (time.perf_counter() - started) * 1000
         return delta
