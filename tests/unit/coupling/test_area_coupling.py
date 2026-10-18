@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from repowise.core.analysis.areas import area_at
+from repowise.core.analysis.areas import area_at, area_depth, choose_depth
 from repowise.core.analysis.coupling import (
+    MAX_DEPTH,
     CouplingEdge,
     CouplingScope,
     area_coupling,
     area_placer,
     coupled_areas,
-    default_depth,
     linked_area_pairs,
     place_edges,
 )
@@ -107,6 +107,11 @@ def test_coupled_areas_names_partners_at_the_areas_depth():
     out = coupled_areas(EDGES, "src/ui", keep=lambda e: not _no_tests(e.target))
     assert [(c["path"], c["pairs"], c["unexplained_pairs"]) for c in out] == [("src/web", 2, 2)]
     assert coupled_areas(EDGES, "") == []
+
+
+def default_depth(paths, root=""):
+    """Coupling's default depth below *root*, as the service chooses it."""
+    return choose_depth(paths, base=root, min_areas=1, small=0, max_depth=MAX_DEPTH) - area_depth(root)
 
 
 def test_default_depth_splits_a_dominant_area():

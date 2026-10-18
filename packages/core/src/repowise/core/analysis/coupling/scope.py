@@ -13,7 +13,7 @@ classifier and get placed edges back.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
@@ -27,16 +27,12 @@ __all__ = [
     "CouplingScope",
     "PlacedEdge",
     "area_placer",
-    "default_depth",
     "place_edges",
 ]
 
 #: Deepest level a view groups by. Below it areas are single files' folders.
+#: The default depth is chosen by ``areas.choose_depth`` within this bound.
 MAX_DEPTH = 6
-
-#: An area holding more than this share of the coupled files is split one
-#: level further when the depth is chosen for the reader.
-_DOMINANT_SHARE = 0.5
 
 
 @dataclass(frozen=True)
@@ -151,25 +147,3 @@ def place_edges(
         if scope.area is None or _between(placed, scope.area, scope.partner):
             out.append(placed)
     return out
-
-
-def default_depth(paths: Iterable[str], root: str = ROOT_AREA) -> int:
-    """The shallowest depth below *root* at which no area holds most of *paths*.
-
-    A repository whose code all lives under ``src/`` or ``packages/`` groups
-    one level further down rather than opening on one area that holds
-    everything. Stops early once no path reaches deeper.
-    """
-    floor = area_depth(root)
-    inside = [p for p in paths if in_area(p, root)]
-    if not inside:
-        return 1
-    deepest = max(area_depth(p) - 1 for p in inside) - floor
-    for depth in range(1, MAX_DEPTH + 1):
-        counts: dict[str, int] = {}
-        for path in inside:
-            key = area_at(path, floor + depth)
-            counts[key] = counts.get(key, 0) + 1
-        if max(counts.values()) <= _DOMINANT_SHARE * len(inside) or depth >= deepest:
-            return depth
-    return MAX_DEPTH

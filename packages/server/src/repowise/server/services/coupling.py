@@ -18,7 +18,9 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from repowise.core.analysis.areas import area_depth, choose_depth
 from repowise.core.analysis.coupling import (
+    MAX_DEPTH,
     CouplingEdge,
     CouplingGraph,
     CouplingScope,
@@ -26,7 +28,6 @@ from repowise.core.analysis.coupling import (
     area_placer,
     coupled_areas,
     coupling_edges,
-    default_depth,
     graph_from_edges,
     linked_area_pairs,
     place_edges,
@@ -90,7 +91,12 @@ class CouplingModel:
         found = self._depths.get(root)
         if found is None:
             paths = {p for e in self.edges for p in (e.source, e.target)}
-            found = self._depths[root] = default_depth(paths, root)
+            # Any area that holds no more than half the coupled files will do,
+            # so no minimum count of areas; the depth is relative to the root.
+            found = self._depths[root] = (
+                choose_depth(paths, base=root, min_areas=1, small=0, max_depth=MAX_DEPTH)
+                - area_depth(root)
+            )
         return found
 
 

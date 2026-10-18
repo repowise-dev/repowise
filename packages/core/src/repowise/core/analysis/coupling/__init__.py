@@ -28,7 +28,6 @@ from repowise.core.analysis.coupling.scope import (
     CouplingScope,
     PlacedEdge,
     area_placer,
-    default_depth,
     place_edges,
 )
 
@@ -47,7 +46,6 @@ __all__ = [
     "coupled_areas",
     "coupling_edges",
     "coupling_graph",
-    "default_depth",
     "graph_from_edges",
     "linked_area_pairs",
     "place_edges",
