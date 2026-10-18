@@ -44,11 +44,16 @@ export function foldPackagePrefix(path: string): FoldedPath {
   if (segments.length < 3 || !PACKAGE_ROOTS.has(segments[0] ?? "") || !pkg) {
     return { pkg: null, rest: path };
   }
-  let rest = segments.slice(2);
-  if (rest.length > 1 && rest[0] === "src") rest = rest.slice(1);
-  if (rest.length > 1 && samePackage(rest[0] ?? "", pkg)) rest = rest.slice(1);
-  else if (rest.length > 2 && samePackage(rest[1] ?? "", pkg)) rest = rest.slice(2);
-  return { pkg, rest: rest.join("/") };
+  const inPackage = segments.slice(2);
+  const rest = inPackage.length > 1 && inPackage[0] === "src" ? inPackage.slice(1) : inPackage;
+  return { pkg, rest: dropRepeatedNamespace(rest, pkg).join("/") };
+}
+
+/** `server/x` or `repowise/server/x` under package `server` is just `x`; the name always stays. */
+function dropRepeatedNamespace(rest: string[], pkg: string): string[] {
+  if (rest.length > 1 && samePackage(rest[0] ?? "", pkg)) return rest.slice(1);
+  if (rest.length > 2 && samePackage(rest[1] ?? "", pkg)) return rest.slice(2);
+  return rest;
 }
 
 /**

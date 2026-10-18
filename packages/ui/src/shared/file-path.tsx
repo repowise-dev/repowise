@@ -99,53 +99,50 @@ function DirClip({ dir, trailingSlash = false }: { dir: string; trailingSlash?: 
   );
 }
 
-function Visual({
-  path,
-  mode,
-  line,
-  labels,
-  fold,
-  accent,
-}: Required<Pick<FilePathProps, "path" | "mode">> &
-  Pick<FilePathProps, "line" | "labels" | "fold" | "accent">) {
-  const folded = fold ? foldPackagePrefix(path) : { pkg: null, rest: path };
-  const chip = folded.pkg ? <PackageChip pkg={folded.pkg} /> : null;
-  const { dir, name } = splitPath(mode === "distinguishing" ? labels?.get(path) ?? splitPath(path).name : folded.rest);
-  const nameClass = accent ? ACCENT : undefined;
+interface PieceProps {
+  dir: string;
+  name: string;
+  chip: React.ReactNode;
+  line: FilePathProps["line"];
+  nameClass: string | undefined;
+}
 
-  if (mode === "full") {
-    return (
-      <span className="[word-break:normal] [overflow-wrap:break-word]">
-        {chip ? <span className="mr-1 inline-block">{chip}</span> : null}
-        {dir ? (
-          <span className={DIM}>
-            <SlashBreaks text={`${dir}/`} />
-          </span>
-        ) : null}
-        <span className={cn("font-medium", nameClass)}>{name}</span>
+/** Every segment, wrapping only after a slash; the name at reading weight. */
+function FullPieces({ dir, name, chip, line, nameClass }: PieceProps) {
+  return (
+    <span className="[word-break:normal] [overflow-wrap:break-word]">
+      {chip ? <span className="mr-1 inline-block">{chip}</span> : null}
+      {dir ? (
+        <span className={DIM}>
+          <SlashBreaks text={`${dir}/`} />
+        </span>
+      ) : null}
+      <span className={cn("font-medium", nameClass)}>{name}</span>
+      <LineSuffix line={line} />
+    </span>
+  );
+}
+
+/** The name first, then the package chip and a directory that clips. */
+function NameFirstPieces({ dir, name, chip, line, nameClass }: PieceProps) {
+  return (
+    <span className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap">
+      <span className={cn("max-w-full shrink-0 truncate", nameClass)}>
+        {name}
         <LineSuffix line={line} />
       </span>
-    );
-  }
-
-  if (mode === "name-first") {
-    return (
-      <span className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap">
-        <span className={cn("max-w-full shrink-0 truncate", nameClass)}>
-          {name}
-          <LineSuffix line={line} />
+      {chip}
+      {dir ? (
+        <span className="flex min-w-0">
+          <DirClip dir={dir} />
         </span>
-        {chip}
-        {dir ? (
-          <span className="flex min-w-0">
-            <DirClip dir={dir} />
-          </span>
-        ) : null}
-      </span>
-    );
-  }
+      ) : null}
+    </span>
+  );
+}
 
-  // distinguishing and middle-ellipsis read in path order.
+/** Path order on one line: distinguishing labels and middle-ellipsis mentions. */
+function InlinePieces({ dir, name, chip, line, nameClass }: PieceProps) {
   return (
     <span className="flex min-w-0 items-baseline whitespace-nowrap">
       {chip ? <span className="mr-1 flex shrink-0">{chip}</span> : null}
@@ -154,6 +151,49 @@ function Visual({
       <LineSuffix line={line} />
     </span>
   );
+}
+
+const PIECES: Record<FilePathMode, (props: PieceProps) => React.ReactElement> = {
+  full: FullPieces,
+  "name-first": NameFirstPieces,
+  distinguishing: InlinePieces,
+  "middle-ellipsis": InlinePieces,
+};
+
+/** What the mode prints: a distinguishing label, or the (optionally folded) path. */
+function displayed(path: string, mode: FilePathMode, labels: FilePathProps["labels"], fold: boolean) {
+  if (mode === "distinguishing") return { pkg: null, rest: labels?.get(path) ?? splitPath(path).name };
+  return fold ? foldPackagePrefix(path) : { pkg: null, rest: path };
+}
+
+function Visual({
+  path,
+  mode,
+  line,
+  labels,
+  fold = false,
+  accent,
+}: Required<Pick<FilePathProps, "path" | "mode">> &
+  Pick<FilePathProps, "line" | "labels" | "fold" | "accent">) {
+  const { pkg, rest } = displayed(path, mode, labels, fold);
+  const Pieces = PIECES[mode];
+  return (
+    <Pieces
+      {...splitPath(rest)}
+      chip={pkg ? <PackageChip pkg={pkg} /> : null}
+      line={line}
+      nameClass={accent ? ACCENT : undefined}
+    />
+  );
+}
+
+/** True for keyboard focus; an engine without `:focus-visible` counts as keyboard. */
+function isKeyboardFocus(el: HTMLElement): boolean {
+  try {
+    return el.matches(":focus-visible");
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -173,13 +213,7 @@ function useHostFocus(
     const host = el.parentElement?.closest<HTMLElement>(HOST);
     if (!host) return;
     const show = () => {
-      let keyboard = true;
-      try {
-        keyboard = host.matches(":focus-visible");
-      } catch {
-        /* selector unsupported: treat as keyboard focus */
-      }
-      if (keyboard) setOpen(true);
+      if (isKeyboardFocus(host)) setOpen(true);
     };
     const hide = () => setOpen(false);
     host.addEventListener("focus", show);

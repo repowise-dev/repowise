@@ -48,6 +48,16 @@ function score(node: CentralityNode, metric: "pagerank" | "betweenness" | "degre
   return (node.in_degree ?? 0) + (node.out_degree ?? 0);
 }
 
+/** A node's label when it has one; a bare file id reads as a path. */
+function NodeLabel({ nodeId, label }: { nodeId: string; label?: string | null | undefined }) {
+  if (label || !isFileNodeId(nodeId)) {
+    return (
+      <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">{label ?? nodeId}</p>
+    );
+  }
+  return <FilePath path={nodeId} fold className="flex text-[var(--color-text-primary)]" />;
+}
+
 export function CentralityLeaderboard({
   nodes,
   metric: initialMetric = "pagerank",
@@ -151,13 +161,7 @@ export function CentralityLeaderboard({
                       {i + 1}
                     </span>
                     <div className="min-w-0 flex-1">
-                      {n.label || !isFileNodeId(n.node_id) ? (
-                        <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">
-                          {n.label ?? n.node_id}
-                        </p>
-                      ) : (
-                        <FilePath path={n.node_id} fold className="flex text-[var(--color-text-primary)]" />
-                      )}
+                      <NodeLabel nodeId={n.node_id} label={n.label} />
                       <div className="mt-0.5 h-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
                         <div
                           className="h-full bg-[var(--color-accent-primary)]"
