@@ -3,6 +3,7 @@ import type { OverviewAttentionAreaRow } from "@repowise-dev/types/overview";
 import { attentionSourceHref, attentionSourceLabel } from "../dashboard/attention-href";
 import { biomarkerLabel } from "../health/biomarker-glossary";
 import { SeverityMark } from "../health/severity-mark";
+import { FilePath } from "../shared/file-path";
 import { formatNumber } from "../lib/format";
 
 /** What to call the lead item's kind. Health findings name their biomarker. */
@@ -76,13 +77,20 @@ export function AttentionAreas({
                   <>
                     <SeverityMark severity={area.severity} className="mr-2" />
                     {kind && <span className="text-[var(--color-text-secondary)]">{kind} · </span>}
-                    <span className="text-[var(--color-text-secondary)]">{area.lead.title}</span>
+                    {area.lead.target_id && area.lead.title === area.lead.target_id ? (
+                      <FilePath
+                        path={area.lead.title}
+                        fold
+                        className="min-w-0 align-baseline text-[var(--color-text-secondary)]"
+                      />
+                    ) : (
+                      <span className="text-[var(--color-text-secondary)]">{area.lead.title}</span>
+                    )}
                     <span className="mt-0.5 block truncate text-[11px] [text-wrap:pretty]">
                       {/* The composition wins the second line where there is
-                          one: knowing that most of a security count is git
-                          history rather than the working tree changes what the
-                          number means, and changes it more than one more
-                          example would. */}
+                          one: knowing that most security matches sit in tests
+                          and docs changes what the number means more than one
+                          more example would. */}
                       {area.detail || area.lead.description}
                     </span>
                   </>

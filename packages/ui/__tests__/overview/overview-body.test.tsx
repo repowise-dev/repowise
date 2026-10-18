@@ -260,3 +260,29 @@ describe("AttentionAreas", () => {
     expect(row.textContent).not.toMatch(/worst item is/);
   });
 });
+
+describe("AttentionAreas paths", () => {
+  it("names a lead that is a path by its file first", () => {
+    render(
+      <AttentionAreas
+        prefix="/r"
+        areas={[
+          {
+            key: "health",
+            total: 3,
+            severity: "high",
+            detail: "",
+            lead: {
+              title: "packages/core/src/deep/engine.py",
+              target_id: "packages/core/src/deep/engine.py",
+              description: "3 findings",
+              type: "health_finding",
+              severity: "high",
+            },
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText("engine.py")).toBeInTheDocument();
+  });
+});
