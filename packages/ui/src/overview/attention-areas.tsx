@@ -1,22 +1,9 @@
 import * as React from "react";
 import type { OverviewAttentionAreaRow } from "@repowise-dev/types/overview";
-import {
-  attentionSourceHref,
-  attentionSourceLabel,
-  type AttentionSeverity,
-} from "../dashboard/attention-href";
+import { attentionSourceHref, attentionSourceLabel } from "../dashboard/attention-href";
 import { biomarkerLabel } from "../health/biomarker-glossary";
+import { SeverityMark } from "../health/severity-mark";
 import { formatNumber } from "../lib/format";
-
-const SEVERITY_COLOR: Record<AttentionSeverity, string> = {
-  // Critical and high share the one red. The palette has a single "this is
-  // bad" hue and a second would spend the distinction on nothing: the band is
-  // already named in the screen-reader text and carried by the row order.
-  critical: "var(--color-error)",
-  high: "var(--color-error)",
-  medium: "var(--color-warning)",
-  low: "var(--color-text-tertiary)",
-};
 
 /** What to call the lead item's kind. Health findings name their biomarker. */
 function leadKind(lead: NonNullable<OverviewAttentionAreaRow["lead"]>): string {
@@ -43,14 +30,16 @@ function leadKind(lead: NonNullable<OverviewAttentionAreaRow["lead"]>): string {
  *
  * Fixed order, never re-sorted by severity. These are stable subjects, and a
  * list whose rows move between visits cannot be scanned by position — you have
- * to re-read it every time. Severity is carried by the dot and by the lead.
+ * to re-read it every time. The worst item's severity sits beside the lead as
+ * a dot and a word, read once by sight and once by a screen reader.
  */
 export function AttentionAreas({
   areas,
   prefix,
   LinkComponent,
 }: {
-  areas: OverviewAttentionAreaRow[];
+  /** `unit` names what the count is in, e.g. "open findings". */
+  areas: (OverviewAttentionAreaRow & { unit?: string })[];
   prefix: string;
   LinkComponent?: React.ElementType | undefined;
 }) {
@@ -71,29 +60,21 @@ export function AttentionAreas({
               href={attentionSourceHref(area.key, prefix)}
               className="group flex flex-col gap-1 py-3 text-xs no-underline sm:flex-row sm:items-baseline sm:gap-4"
             >
-              <span className="flex shrink-0 items-center gap-2 sm:w-40">
-                <span
-                  aria-hidden
-                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: SEVERITY_COLOR[area.severity] }}
-                />
-                {/* The dot is nothing at all to a screen reader, and to anyone
-                    who cannot separate the hues. The text equivalent goes here
-                    rather than into a `title`, which assistive tech reads
-                    inconsistently. */}
-                <span className="sr-only">worst item is {area.severity} severity. </span>
-                <span className="font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
-                  {attentionSourceLabel(area.key)}
-                </span>
+              <span className="shrink-0 font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)] sm:w-32">
+                {attentionSourceLabel(area.key)}
               </span>
 
-              <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)] sm:w-24">
-                {formatNumber(area.total)}
+              <span className="shrink-0 text-[var(--color-text-tertiary)] sm:w-48">
+                <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
+                  {formatNumber(area.total)}
+                </span>
+                {area.unit && ` ${area.unit}`}
               </span>
 
               <span className="min-w-0 flex-1 text-[var(--color-text-tertiary)]">
                 {area.lead ? (
                   <>
+                    <SeverityMark severity={area.severity} className="mr-2" />
                     {kind && <span className="text-[var(--color-text-secondary)]">{kind} · </span>}
                     <span className="text-[var(--color-text-secondary)]">{area.lead.title}</span>
                     <span className="mt-0.5 block truncate text-[11px] [text-wrap:pretty]">

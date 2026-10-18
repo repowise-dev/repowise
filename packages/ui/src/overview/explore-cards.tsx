@@ -1,4 +1,5 @@
 import * as React from "react";
+import { CopyLine } from "../settings/settings-primitives";
 import type { ExploreEntry } from "./explore-list";
 
 export interface ExploreCard {
@@ -8,6 +9,8 @@ export interface ExploreCard {
   value?: string;
   /** What the figure counts, or what the page holds when there is no figure. */
   caption: string;
+  /** A command that fills the page, shown with a copy button. */
+  command?: string;
   href: string;
 }
 
@@ -17,31 +20,43 @@ export interface ExploreCardsProps {
   more?: ExploreEntry[];
   /** Label before the further doors. */
   moreLabel?: string;
+  /** What a card's command is, for its copy button's accessible name. */
+  commandLabel?: string;
   LinkComponent?: React.ElementType | undefined;
 }
 
 /**
- * The main pages as a row of doors, each carrying one figure from the data
+ * The main pages as a grid of doors, each carrying one figure from the data
  * the page already loaded. Hairline outlines on the page ground, no fill: the
- * card is the link, and hover strengthens the hairline rather than lifting it.
+ * card's link fills it, and hover strengthens the hairline rather than lifting
+ * it. A card with a command keeps the copy button outside the link.
  */
-export function ExploreCards({ cards, more = [], moreLabel = "Also", LinkComponent }: ExploreCardsProps) {
+export function ExploreCards({
+  cards,
+  more = [],
+  moreLabel = "Also",
+  commandLabel = "the command",
+  LinkComponent,
+}: ExploreCardsProps) {
   const A = LinkComponent ?? "a";
   if (cards.length === 0 && more.length === 0) return null;
   return (
     <div className="flex flex-col gap-3">
-      <ul className="m-0 grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 lg:grid-cols-5">
+      <ul className="m-0 grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 lg:grid-cols-3">
         {cards.map((c) => (
-          <li key={c.key} className="min-w-0 sm:last:odd:col-span-2 lg:last:odd:col-span-1">
+          <li
+            key={c.key}
+            className="group flex min-w-0 flex-col rounded-lg border border-[var(--color-border-default)] bg-transparent transition-colors hover:border-[var(--color-border-hover)] focus-within:border-[var(--color-border-hover)]"
+          >
             <A
               href={c.href}
-              className="group flex h-full flex-col gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-transparent px-5 py-4 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="flex flex-1 flex-col gap-1.5 rounded-lg px-5 py-4 no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
             >
               <span className="flex items-center justify-between gap-2 text-xs font-medium text-[var(--color-text-secondary)]">
                 {c.label}
                 <span
                   aria-hidden
-                  className="text-[var(--color-text-tertiary)] transition-transform group-hover:translate-x-0.5 group-focus-visible:translate-x-0.5"
+                  className="text-[var(--color-text-tertiary)] transition-transform group-hover:translate-x-0.5 group-focus-within:translate-x-0.5"
                 >
                   →
                 </span>
@@ -55,6 +70,11 @@ export function ExploreCards({ cards, more = [], moreLabel = "Also", LinkCompone
                 {c.caption}
               </span>
             </A>
+            {c.command && (
+              <div className="px-5 pb-4">
+                <CopyLine value={c.command} copyLabel={commandLabel} />
+              </div>
+            )}
           </li>
         ))}
       </ul>

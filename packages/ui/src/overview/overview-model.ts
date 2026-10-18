@@ -22,7 +22,10 @@
  * why {@link OverviewRoutes} exists and is the whole capability surface.
  */
 
-import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
+import type {
+  OverviewAttentionAreaRow,
+  OverviewSummaryResponse,
+} from "@repowise-dev/types/overview";
 import type { ChangeStat } from "./change-line";
 import type { ExploreCard } from "./explore-cards";
 import type { ExploreEntry } from "./explore-list";
@@ -235,48 +238,50 @@ export function buildRibbon(
   return ribbon;
 }
 
+/** Ingests a coverage report; with no path it finds the report itself. */
+export const COVERAGE_ADD_COMMAND = "repowise coverage add";
+
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
 /**
- * The five main doors off Overview, each with one live figure from the
- * summary payload. Keys match {@link buildExplore}'s, so the list beside the
- * cards can drop the entries a card already covers.
+ * The six main doors off Overview, each with one live figure read through the
+ * function its page leads with (`summary.explore`), so the card and the page
+ * agree. Keys match {@link buildExplore}'s, so the line of further doors can
+ * drop the entries a card already covers.
  */
 export function buildExploreCards(
   summary: OverviewSummaryResponse,
   routes: OverviewRoutes,
 ): ExploreCard[] {
   const { base } = resolveOverviewRoutes(routes);
-  const { stats, repo } = summary;
-  const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
-  const docPages = docPageCount(summary);
+  const { stats } = summary;
+  const explore = summary.explore;
+  const sole = explore?.ownership?.sole_owned_files;
+  const decisions = explore?.decisions;
+  const refactoring = explore?.refactoring;
+  const coverage = explore?.coverage;
   return [
-    stats.hotspot_count > 0
-      ? {
-          key: "code-health",
-          label: "Code health map",
-          value: formatNumber(stats.hotspot_count),
-          caption: `${plural(stats.hotspot_count, "hotspot", "hotspots")} across ${formatNumber(stats.file_count)} files`,
-          href: `${base}/code-health`,
-        }
-      : {
-          key: "code-health",
-          label: "Code health map",
-          value: formatNumber(stats.file_count),
-          caption: "files scored",
-          href: `${base}/code-health`,
-        },
+    {
+      key: "code-health",
+      label: "Code health map",
+      ...(stats.hotspot_count > 0
+        ? {
+            value: formatNumber(stats.hotspot_count),
+            caption: `${plural(stats.hotspot_count, "hotspot", "hotspots")} across ${formatNumber(stats.file_count)} files`,
+          }
+        : { value: formatNumber(stats.file_count), caption: "files scored" }),
+      href: `${base}/code-health`,
+    },
     {
       key: "contributors",
       label: "Ownership",
-      value: formatNumber(stats.silo_count),
-      caption: plural(stats.silo_count, "top-level folder where one person owns over 80% of files", "top-level folders where one person owns over 80% of files"),
+      ...(sole != null
+        ? {
+            value: formatNumber(sole),
+            caption: `sole-owned ${plural(sole, "file", "files")}: one author, no second reader`,
+          }
+        : { caption: "Who knows each file, and what depends on them" }),
       href: `${base}/owners`,
-    },
-    {
-      key: "commits",
-      label: "Commits",
-      ...(repo.head_commit ? { value: repo.head_commit.slice(0, 7) } : {}),
-      caption: "Each change with what it did to health",
-      href: `${base}/commits`,
     },
     {
       key: "architecture",
@@ -286,12 +291,42 @@ export function buildExploreCards(
       href: `${base}/architecture`,
     },
     {
-      key: "docs",
-      label: "Docs",
-      ...(docPages > 0 ? { value: formatNumber(docPages) } : {}),
-      caption: docPages > 0 ? plural(docPages, "documentation page", "documentation pages") : "No documentation pages yet",
-      href: `${base}/docs`,
+      key: "decisions",
+      label: "Decisions",
+      ...(decisions && decisions.total > 0
+        ? {
+            value: formatNumber(decisions.total),
+            caption: `recorded: ${formatNumber(decisions.accepted)} accepted, ${formatNumber(decisions.candidates)} awaiting review`,
+          }
+        : { caption: "No decisions recorded yet" }),
+      href: `${base}/decisions`,
     },
+    {
+      key: "refactoring",
+      label: "Refactoring",
+      ...(refactoring
+        ? {
+            value: formatNumber(refactoring.opportunities_total),
+            caption: `open ${plural(refactoring.opportunities_total, "opportunity", "opportunities")}, one per file`,
+          }
+        : { caption: "No refactoring analysis yet" }),
+      href: `${base}/refactoring`,
+    },
+    coverage
+      ? {
+          key: "tests",
+          label: "Tests",
+          value: `${coverage.line_coverage_pct.toFixed(1)}%`,
+          caption: "line coverage from the latest report",
+          href: `${base}/tests`,
+        }
+      : {
+          key: "tests",
+          label: "Tests",
+          caption: "No coverage report yet. Run your tests with coverage on, then add the report:",
+          command: COVERAGE_ADD_COMMAND,
+          href: `${base}/tests`,
+        },
   ];
 }
 
@@ -403,4 +438,63 @@ export function buildLanguageDistribution(
   const distribution: Record<string, number> = {};
   for (const l of summary.languages) distribution[l.language] = l.file_count;
   return distribution;
+}
+
+/** An inventory row, with the unit its count is in. */
+export type InventoryRow = OverviewAttentionAreaRow & { unit?: string };
+
+/**
+ * The inventory's area rows, with each count read from the same basis as the
+ * explore card and the page it links to: open findings for code health,
+ * matches in shipped source for security, open opportunities for
+ * refactoring, decisions to review, and sole-owned files for ownership. Rows
+ * whose basis the payload does not carry keep the server's count.
+ */
+export function inventoryRows(summary: OverviewSummaryResponse): InventoryRow[] {
+  const areas = summary.attention_summary?.areas ?? [];
+  const explore = summary.explore;
+  const findings = summary.health.finding_counts?.inventory;
+  return areas.map((area): InventoryRow => {
+    switch (area.key) {
+      case "health":
+        return findings != null ? { ...area, total: findings, unit: "open findings" } : area;
+      case "security": {
+        const s = explore?.security;
+        if (!s) return area;
+        return {
+          ...area,
+          total: s.source,
+          unit: "in shipped source",
+          detail: s.elsewhere > 0 ? `${formatNumber(s.elsewhere)} more in tests and docs` : "",
+        };
+      }
+      case "refactoring": {
+        const r = explore?.refactoring;
+        return r ? { ...area, total: r.opportunities_total, unit: "open opportunities" } : area;
+      }
+      case "decisions": {
+        const d = explore?.decisions;
+        if (!d) return area;
+        return {
+          ...area,
+          total: d.candidates + d.needs_review,
+          unit: "to review",
+          detail: `${formatNumber(d.candidates)} awaiting review, ${formatNumber(d.needs_review)} drifting from the code`,
+        };
+      }
+      case "ownership": {
+        const o = explore?.ownership;
+        return o
+          ? {
+              ...area,
+              total: o.sole_owned_files,
+              unit: "sole-owned files",
+              detail: "One author, no second reader",
+            }
+          : area;
+      }
+      default:
+        return area;
+    }
+  });
 }

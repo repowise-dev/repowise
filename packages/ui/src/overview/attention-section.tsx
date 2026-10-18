@@ -4,6 +4,7 @@ import { getDefaultHref } from "../dashboard/attention-href";
 import { formatNumber } from "../lib/format";
 import { AttentionAreas } from "./attention-areas";
 import { AttentionRows } from "./attention-rows";
+import { inventoryRows } from "./overview-model";
 import { OverviewSection } from "./section";
 
 /** Ranked rows shown when the server predates the area rollup. */
@@ -29,13 +30,15 @@ export function AttentionSection({
   inventory = false,
   LinkComponent,
 }: AttentionSectionProps) {
-  // The list is capped per source server-side, so its length is not a total.
-  // Falling back to the row count on a server that predates the summary keeps
-  // the old (correct-for-that-payload) behaviour rather than rendering
-  // nothing.
-  const attentionTotal = summary.attention_summary?.total ?? summary.attention.length;
-  const areas = summary.attention_summary?.areas ?? [];
+  // Counts read from the same basis as the explore cards and the pages they
+  // link to. The areas count different things (findings, files,
+  // opportunities), so the header counts areas rather than summing them.
+  const areas = inventoryRows(summary);
   const hasAttention = areas.length > 0 || summary.attention.length > 0;
+  const scope =
+    areas.length > 0
+      ? `${formatNumber(areas.length)} ${areas.length === 1 ? "area" : "areas"}`
+      : `${formatNumber(summary.attention_summary?.total ?? summary.attention.length)} open`;
 
   if (!hasAttention) return null;
   return (
@@ -48,13 +51,13 @@ export function AttentionSection({
       }
       collapsible={inventory}
       defaultOpen={!inventory}
-      hint={inventory ? `${formatNumber(attentionTotal)} open` : undefined}
+      hint={inventory ? scope : undefined}
       // No section link: these span seven pages, so there is no single
       // destination that holds "all of them", and a count linking to one
       // of them would be a lie about where the rest live.
       action={
         <span className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
-          {formatNumber(attentionTotal)} open
+          {scope}
         </span>
       }
     >

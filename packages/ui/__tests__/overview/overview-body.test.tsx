@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 
+import { AttentionAreas } from "../../src/overview/attention-areas.js";
 import { HealthLede } from "../../src/overview/health-lede.js";
 import { OverviewBody } from "../../src/overview/overview-body.js";
-import { buildReads } from "../../src/overview/overview-model.js";
+import { buildReads, inventoryRows } from "../../src/overview/overview-model.js";
 
 function summary(): OverviewSummaryResponse {
   return {
@@ -156,18 +157,96 @@ describe("OverviewBody", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
-  it("gives each main door a live figure from the summary", () => {
-    render(<OverviewBody summary={summary()} routes={{ base: "/r" }} />);
+  it("gives each main door a live figure read through its page's basis", () => {
+    const withCounts = {
+      ...summary(),
+      explore: {
+        decisions: { total: 12, accepted: 7, candidates: 4, needs_review: 1 },
+        refactoring: { opportunities_total: 9, files_total: 9 },
+        ownership: { sole_owned_files: 41 },
+        security: { total: 10, source: 1, source_high: 1, elsewhere: 9 },
+        coverage: { line_coverage_pct: 81.25, ingested_at: null },
+      },
+    } as unknown as OverviewSummaryResponse;
+    render(<OverviewBody summary={withCounts} routes={{ base: "/r" }} />);
     const map = screen.getByRole("link", { name: /Code health map/ });
     expect(map).toHaveAttribute("href", "/r/code-health");
     expect(map).toHaveTextContent("1,059");
-    expect(map).toHaveTextContent("hotspots across 6,328 files");
-    expect(screen.getByRole("link", { name: /Ownership/ })).toHaveTextContent(
-      "3top-level folders where one person owns over 80% of files",
+    expect(screen.getByRole("link", { name: /^Ownership/ })).toHaveTextContent("41sole-owned files");
+    expect(screen.getByRole("link", { name: /^Decisions/ })).toHaveTextContent(
+      "12recorded: 7 accepted, 4 awaiting review",
     );
-    expect(screen.getByRole("link", { name: /^Commits/ })).toHaveTextContent("abc1234");
-    // Doors a card covers are not repeated in the line of further links.
+    expect(screen.getByRole("link", { name: /^Refactoring/ })).toHaveTextContent("9open opportunities");
+    expect(screen.getByRole("link", { name: /^Tests/ })).toHaveTextContent("81.3%line coverage");
+    // Docs and Commits are further doors now, once each.
     expect(screen.getAllByRole("link", { name: /^Docs/ })).toHaveLength(1);
-    expect(screen.getByRole("link", { name: "Files" })).toHaveAttribute("href", "/r/files");
+    expect(screen.getByRole("link", { name: "Commits" })).toHaveAttribute("href", "/r/commits");
+    expect(screen.getAllByRole("link", { name: /^Decisions/ })).toHaveLength(1);
+  });
+
+  it("turns the Tests card into the ingest command when no report exists", () => {
+    render(<OverviewBody summary={summary()} routes={{ base: "/r" }} />);
+    expect(screen.getByRole("link", { name: /^Tests/ })).toHaveTextContent("No coverage report yet");
+    expect(screen.getByText("repowise coverage add")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy the command" })).toBeInTheDocument();
+  });
+});
+
+describe("inventoryRows", () => {
+  it("counts each area on the same basis as its card and page", () => {
+    const rows = inventoryRows({
+      ...summary(),
+      health: { ...summary().health, finding_counts: { inventory: 321 } },
+      attention_summary: {
+        total: 99,
+        by_source: {},
+        areas: ["health", "security", "refactoring", "decisions", "ownership", "doc_drift"].map((key) => ({
+          key,
+          total: 5,
+          severity: "low",
+          detail: "server detail",
+          lead: null,
+        })),
+      },
+      explore: {
+        decisions: { total: 12, accepted: 7, candidates: 4, needs_review: 1 },
+        refactoring: { opportunities_total: 9, files_total: 9 },
+        ownership: { sole_owned_files: 41 },
+        security: { total: 10, source: 1, source_high: 1, elsewhere: 9 },
+        coverage: null,
+      },
+    } as unknown as OverviewSummaryResponse);
+    expect(rows.map((r) => [r.key, r.total, r.unit ?? null, r.detail])).toEqual([
+      ["health", 321, "open findings", "server detail"],
+      ["security", 1, "in shipped source", "9 more in tests and docs"],
+      ["refactoring", 9, "open opportunities", "server detail"],
+      ["decisions", 5, "to review", "4 awaiting review, 1 drifting from the code"],
+      ["ownership", 41, "sole-owned files", "One author, no second reader"],
+      ["doc_drift", 5, null, "server detail"],
+    ]);
+  });
+});
+
+describe("AttentionAreas", () => {
+  it("shows the worst item's severity once, as a dot and a word, with no hidden copy", () => {
+    render(
+      <AttentionAreas
+        prefix="/r"
+        areas={[
+          {
+            key: "refactoring",
+            total: 9,
+            unit: "open opportunities",
+            severity: "low",
+            detail: "",
+            lead: { title: "Split parse()", description: "+1.2 health", type: "refactoring", severity: "low" },
+          },
+        ]}
+      />,
+    );
+    const row = screen.getByRole("link", { name: /Refactoring/ });
+    expect(row).toHaveTextContent("9 open opportunities");
+    expect(row.textContent!.match(/Low/g)).toHaveLength(1);
+    expect(row.textContent).not.toMatch(/worst item is/);
   });
 });
