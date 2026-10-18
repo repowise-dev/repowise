@@ -54,6 +54,7 @@ from repowise.server.routers._local_git import (
     resolve_local_repo,
     revision_exists,
 )
+from repowise.server.routers.held_origins import HOLD_QUERY, INCLUDE_QUERY
 from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
@@ -79,7 +80,9 @@ from repowise.server.schemas import (
     RiskHistogramBucket,
     RiskRangeResponse,
 )
+from repowise.server.schemas.git import HotspotFacets, HotspotPage
 from repowise.server.schemas.history import PeriodHealthSummaryResponse
+from repowise.server.services.areas import held_origins
 from repowise.server.services.history.commits import (
     CommitHistory,
     commit_history,
@@ -90,6 +93,9 @@ from repowise.server.services.history.health import (
     finding_fields,
     period_response,
 )
+from repowise.server.services.hotspots import FILTERS as HOTSPOT_FILTERS
+from repowise.server.services.hotspots import SORTS as HOTSPOT_SORTS
+from repowise.server.services.hotspots import is_accelerating, list_hotspots
 from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
@@ -142,6 +148,7 @@ def _hotspot_from_row(r: GitMetadata) -> HotspotResponse:
         bug_magnet=bool(r.bug_magnet),
         last_fix_at=r.last_fix_at,
         original_path=r.original_path,
+        accelerating=is_accelerating(r.commit_count_30d, r.commit_count_90d, r.age_days),
     )
 
 
@@ -680,43 +687,44 @@ async def get_git_metadata(
     return response
 
 
-@router.get("/{repo_id}/hotspots", response_model=Paginated[HotspotResponse])
+@router.get("/{repo_id}/hotspots", response_model=HotspotPage)
 async def get_hotspots(
     repo_id: str,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    q: str = Query("", max_length=200, description="Path or owner substring, case-insensitive."),
+    filter: str = Query("all", pattern=f"^({'|'.join(HOTSPOT_FILTERS)})$"),
+    sort: str = Query("score", pattern=f"^({'|'.join(HOTSPOT_SORTS)})$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    hold: str = HOLD_QUERY,
+    include: str = INCLUDE_QUERY,
     session: AsyncSession = Depends(get_db_session),
-) -> Paginated[HotspotResponse]:
-    """Return the highest-churn files (hotspots), paginated.
+) -> HotspotPage:
+    """Hotspots ranked by temporal hotspot score, one page at a time.
 
-    The previous response shape was a bare list capped at 100 rows — large
-    repos with thousands of hotspots silently lost the long tail. Callers
-    should treat the envelope's ``total`` as authoritative and request
-    further pages via ``offset``.
+    ``total`` counts the rows this filter and search match; ``facets`` count
+    every filter over the searched set, so a chip can say "N of total". Each
+    row's ``rank`` is its place by score in the scope, whatever the sort.
     """
-
-    base = select(GitMetadata).where(
-        GitMetadata.repository_id == repo_id,
-        GitMetadata.is_hotspot.is_(True),
+    listing = await list_hotspots(
+        session,
+        repo_id,
+        limit=limit,
+        offset=offset,
+        q=q,
+        filter=filter,
+        sort=sort,
+        descending=order == "desc",
+        held=held_origins(hold, include),
     )
-    total = await session.scalar(select(func.count()).select_from(base.subquery())) or 0
-
-    paged = (
-        base.order_by(
-            GitMetadata.temporal_hotspot_score.desc().nulls_last(),
-            GitMetadata.churn_percentile.desc(),
-        )
-        .limit(limit)
-        .offset(offset)
-    )
-    rows = (await session.execute(paged)).scalars().all()
-    items = [_hotspot_from_row(r) for r in rows]
-    next_offset = offset + limit if offset + limit < total else None
-    return Paginated[HotspotResponse](
+    items = [_hotspot_from_row(r).model_copy(update={"rank": rank}) for r, rank in listing.rows]
+    next_offset = offset + limit if offset + limit < listing.total else None
+    return HotspotPage(
         items=items,
-        total=total,
+        total=listing.total,
         has_more=next_offset is not None,
         next_offset=next_offset,
+        facets=HotspotFacets(**listing.facets),
     )
 
 

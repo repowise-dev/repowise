@@ -399,7 +399,9 @@
       "prior_defect_count": 0,
       "bug_magnet": false,
       "last_fix_at": null,
-      "original_path": null
+      "original_path": null,
+      "accelerating": false,
+      "rank": null
     },
     {
       "file_path": "web/app.ts",
@@ -429,7 +431,9 @@
       "prior_defect_count": 0,
       "bug_magnet": false,
       "last_fix_at": null,
-      "original_path": null
+      "original_path": null,
+      "accelerating": false,
+      "rank": null
     }
   ],
   "recent_decisions": [

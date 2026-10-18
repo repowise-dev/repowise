@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from repowise.core.attribution import file_share
 from repowise.core.co_change import parse_partners
 from repowise.server.schemas.history import HealthDeltaSummaryResponse
+from repowise.server.schemas.pagination import Paginated
 from repowise.server.schemas.risk_semantics import RiskAuthority
 
 
@@ -175,6 +176,24 @@ class HotspotResponse(BaseModel):
     bug_magnet: bool = False
     last_fix_at: datetime | None = None
     original_path: str | None = None
+    #: Changing faster over the last 30 days than over the last 90, on a file
+    #: older than that window (see ``services.hotspots.is_accelerating``).
+    accelerating: bool = False
+    #: Place by hotspot score within the listed scope; set by the hotspot list only.
+    rank: int | None = None
+
+
+class HotspotFacets(BaseModel):
+    """Counts over every hotspot the search matches, whatever the filter."""
+
+    total: int
+    bus_factor_1: int
+    accelerating: int
+    bug_magnet: int
+
+
+class HotspotPage(Paginated[HotspotResponse]):
+    facets: HotspotFacets
 
 
 class OwnershipEntry(BaseModel):
