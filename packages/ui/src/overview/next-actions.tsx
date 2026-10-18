@@ -192,7 +192,7 @@ export function NextActions({
 
   return (
     <OverviewSection
-      title="Do next"
+      title={defaultOpen ? "Do next" : `Do next · ${work(horizon).toLocaleString("en-US")}`}
       description={data.summary?.[horizon] ?? fallbackSummary(data, horizon)}
       // A folded section has no header action slot, so the time frame sits
       // under the summary, above the list it filters, and the toggle carries
@@ -200,7 +200,6 @@ export function NextActions({
       action={defaultOpen ? timeFrame : undefined}
       collapsible={!defaultOpen}
       defaultOpen={defaultOpen}
-      hint={defaultOpen ? undefined : `${work(horizon).toLocaleString("en-US")} suggested`}
     >
       {!defaultOpen && timeFrame}
       {shown.length === 0 && [...answered.values()].some((a) => a.horizons.includes(horizon)) ? (

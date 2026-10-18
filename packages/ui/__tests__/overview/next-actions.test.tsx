@@ -175,7 +175,7 @@ describe("NextActions", () => {
     expect(details).not.toBeNull();
     expect(details).not.toHaveAttribute("open");
     // The count is the default time frame's, the same one its chip shows.
-    expect(within(details!.querySelector("summary")!).getByText("1 suggested")).toBeInTheDocument();
+    expect(within(details!.querySelector("summary")!).getByRole("heading", { name: "Do next · 1" })).toBeInTheDocument();
 
     details!.open = true;
     fireEvent.click(within(details!).getByRole("radio", { name: /This quarter/ }));
@@ -183,7 +183,7 @@ describe("NextActions", () => {
       "aria-checked",
       "true",
     );
-    expect(screen.getByText("2 suggested")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Do next · 2" })).toBeInTheDocument();
     // React only writes `open` when the prop changes, so a rerender keeps a
     // section the user opened open.
     expect(details!.open).toBe(true);
