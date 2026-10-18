@@ -125,12 +125,18 @@ function FullPieces({ dir, name, chip, line, nameClass }: PieceProps) {
   );
 }
 
+/**
+ * The file name in every one-line mode: wider than its box, it wraps rather
+ * than losing characters. `break-word` keeps its min-content width, so a
+ * table column is not squeezed to one character.
+ */
+const NAME_CLS = "max-w-full shrink-0 whitespace-normal [overflow-wrap:break-word]";
+
 /** The name first, then the package chip and a directory that clips. */
 function NameFirstPieces({ dir, name, chip, line, nameClass }: PieceProps) {
   return (
     <span className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap">
-      {/* Wider than its column, the name wraps rather than losing characters. */}
-      <span className={cn("max-w-full shrink-0 whitespace-normal [overflow-wrap:break-word]", nameClass)}>
+      <span className={cn(NAME_CLS, nameClass)}>
         {name}
         <LineSuffix line={line} />
       </span>
@@ -150,7 +156,7 @@ function InlinePieces({ dir, name, chip, line, nameClass }: PieceProps) {
     <span className="flex min-w-0 items-baseline whitespace-nowrap">
       {chip ? <span className="mr-1 flex shrink-0">{chip}</span> : null}
       {dir ? <DirClip dir={dir} trailingSlash /> : null}
-      <span className={cn("max-w-full shrink-0 truncate", nameClass)}>{name}</span>
+      <span className={cn(NAME_CLS, nameClass)}>{name}</span>
       <LineSuffix line={line} />
     </span>
   );

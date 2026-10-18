@@ -110,8 +110,8 @@ describe("FilePath", () => {
     }
   });
 
-  it("never truncates the file name in name-first", () => {
-    render(<FilePath path={LONG} />);
+  it.each(["name-first", "middle-ellipsis", "distinguishing"] as const)("never truncates the file name in %s", (mode) => {
+    render(<FilePath path={LONG} mode={mode} />);
     expect(screen.getByText("tool_dependency.py").className).not.toMatch(/truncate/);
   });
 
