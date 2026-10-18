@@ -10,7 +10,8 @@ export interface PeriodHealthCopy {
   unit: (r: PeriodHealthRead) => string;
   /** Something improved and nothing got worse. */
   good: (r: PeriodHealthRead) => string;
-  /** Both directions happened. Improvements are named first. */
+  /** Both directions happened. The figure already names the improvements,
+   *  so the sentence carries what got worse and what did nothing. */
   mixed: (r: PeriodHealthRead) => string;
   /** Analysed work that changed no finding. */
   quiet: (r: PeriodHealthRead) => string;
@@ -27,7 +28,7 @@ const DEFAULT_COPY: PeriodHealthCopy = {
   good: (r) =>
     `Nothing made health worse. ${r.better.toLocaleString()} commit${s(r.better)} made it better, resolving ${r.findingsBetter.toLocaleString()} finding${s(r.findingsBetter)}.`,
   mixed: (r) =>
-    `${r.better.toLocaleString()} commit${s(r.better)} made health better and ${r.worse.toLocaleString()} made it worse (${r.both.toLocaleString()} did both). ${r.neutral.toLocaleString()} had no health impact.`,
+    `${r.worse.toLocaleString()} made it worse, ${r.both.toLocaleString()} of them while also making something better. ${r.neutral.toLocaleString()} had no health impact.`,
   quiet: (r) =>
     `None of the ${r.analysed.toLocaleString()} analysed commit${s(r.analysed)} changed a health finding.`,
   empty: (r) =>

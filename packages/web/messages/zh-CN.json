@@ -286,7 +286,7 @@
       "viewByChange": "按变更",
       "viewByCommit": "按提交",
       "viewEvents": "事件",
-      "listTitle": "提交",
+      "listTitle": "提交历史",
       "listDescription": "最新的在前，每行先显示它对代码健康的影响。筛选作用于整个仓库，而不仅是当前页。",
       "hotspotMark": "热点",
       "period": {
@@ -299,7 +299,7 @@
       "headline": {
         "unit": "个提交改善了代码健康",
         "good": "没有任何提交让健康变差。{better} 个提交改善了健康，解决了 {resolved} 个问题。",
-        "mixed": "{better} 个提交改善了健康，{worse} 个让健康变差（其中 {both} 个两者兼有）。{neutral} 个对健康没有影响。",
+        "mixed": "{worse} 个让健康变差，其中 {both} 个同时也改善了某些地方。{neutral} 个对健康没有影响。",
         "quiet": "已分析的 {analysed} 个提交都没有改变任何健康问题。",
         "empty": "这里的 {total} 个提交还没有进行健康分析。",
         "unscanned": "{n} 个尚未分析。"
