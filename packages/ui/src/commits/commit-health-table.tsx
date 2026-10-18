@@ -12,6 +12,11 @@ export interface CommitHealthTableProps {
  *  touched the file, which is a weaker claim and is labelled as one. */
 const DIRECT = new Set(["added_lines", "changed_symbol", "new_file"]);
 
+const INDIRECT_NOTE: Record<string, string> = {
+  changed_call_edge: "reached through a call this commit edited",
+  unknown: "not explained by this commit's diff",
+};
+
 /** How the commit relates to the finding, when it did not write the line itself. */
 function basisNote(f: CommitHealthFinding): string | null {
   if (f.attribution_basis === "moved" || f.moved_from) {
@@ -19,7 +24,8 @@ function basisNote(f: CommitHealthFinding): string | null {
     if (!src) return "moved here from another file";
     return src.symbol ? `moved here from ${src.symbol} in ${src.path}` : `moved here from ${src.path}`;
   }
-  return DIRECT.has(f.attribution_basis) ? null : "in a file this commit touched, not on a line it wrote";
+  if (DIRECT.has(f.attribution_basis)) return null;
+  return INDIRECT_NOTE[f.attribution_basis] ?? "in a file this commit touched, not on a line it wrote";
 }
 
 function where(f: CommitHealthFinding): string {
