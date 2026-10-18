@@ -65,7 +65,7 @@ function columns(
     key: "health",
     header: "Health",
     headerClassName: "w-32",
-    render: (c) => <HealthDeltaMark delta={c.health_delta} labels={healthLabels} />,
+    render: (c) => <HealthDeltaMark delta={c.health_delta} labels={healthLabels ?? {}} />,
   },
   {
     key: "commit",
