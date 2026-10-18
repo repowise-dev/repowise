@@ -44,14 +44,14 @@ const NARROWING: NarrowingSpec[] = [
  * A facet with one value is a fact, not a choice, so it is stated rather than
  * offered as a control that could only ever return the same rows.
  */
+/** The label and its one value; the count belongs to the options, and one value has none to compare. */
 function SingleValueFact({ facet, only }: { facet: PerformanceFacetKey; only: PerformanceFacetCount }) {
   return (
     <p className="text-xs text-[var(--color-text-tertiary)]">
-      <span className="uppercase tracking-wider">{FACET_LABEL[facet]}</span>{" "}
+      {FACET_LABEL[facet]}:{" "}
       <span className="text-[var(--color-text-secondary)]">
         {facetValueLabel(facet, only.value)}
-      </span>{" "}
-      <span className="tabular-nums">on {only.total.toLocaleString()} matching</span>
+      </span>
     </p>
   );
 }

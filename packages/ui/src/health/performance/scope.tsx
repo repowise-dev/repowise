@@ -123,9 +123,9 @@ export function ScopeSentence({
   const clauses = scopeAccount(scope, counts);
   return (
     <div className="space-y-2 text-sm text-[var(--color-text-secondary)]">
-      <p role="status" className="sr-only">
-        {clauses.map((clause) => `${clause.count.toLocaleString()} ${clause.text}`).join(", ")}.
-      </p>
+      {/* Said once, visibly: a second hidden copy for screen readers was read
+          (and copied) twice, and a live region around these links would
+          re-announce them on every count change. */}
       <p>
         {clauses.map((clause, index) => (
           <span key={clause.text}>

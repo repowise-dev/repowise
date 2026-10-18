@@ -15,8 +15,8 @@ import type {
  * One scope decides which causes exist (worth doing now, every production
  * cause, everything), and every number on the page is counted inside it. The
  * filters narrow within the scope and are all server-side, so a count and the
- * rows it describes never come from two different universes. Only `area` is
- * applied on the client, over the loaded page.
+ * rows it describes never come from two different universes, the area
+ * included.
  */
 
 export type { PerformanceScope };
@@ -36,8 +36,10 @@ export interface PerformanceFilterState {
   sort: PerformanceSort;
   /** 1-based page of `PAGE_SIZE` causes. */
   page: number;
-  /** One area opened on its own, every cause in it listed. */
+  /** One area (a directory) at any depth, narrowed on the server. */
   area: string | null;
+  /** The directory depth area cards are drawn at; null lets the server choose. */
+  depth: number | null;
 }
 
 /** The server's page ceiling: a default queue fits in one page almost always. */
@@ -54,6 +56,7 @@ export const INITIAL_FILTERS: PerformanceFilterState = {
   sort: "rank",
   page: 1,
   area: null,
+  depth: null,
 };
 
 export const SCOPES: readonly PerformanceScope[] = ["now", "production", "all"];
@@ -125,6 +128,8 @@ export function toQuery(
   }
   if (state.boundary) query.boundary = state.boundary;
   if (state.confidence) query.confidence = state.confidence;
+  if (state.area) query.area = state.area;
+  if (state.depth) query.area_depth = state.depth;
   return query;
 }
 
@@ -140,6 +145,8 @@ export function serverKey(state: PerformanceFilterState): string {
     state.role ?? "",
     state.sort,
     state.page,
+    state.area ?? "",
+    state.depth ?? "",
   ].join("|");
 }
 
@@ -172,6 +179,8 @@ export function writeFilters(state: PerformanceFilterState, params: URLSearchPar
   // The root area is the empty string, so only null means "no area".
   if (state.area !== null) params.set("area", state.area);
   else params.delete("area");
+  if (state.depth) params.set("depth", String(state.depth));
+  else params.delete("depth");
 }
 
 function oneOf<T extends string>(value: string | null, allowed: readonly T[]): T | null {
@@ -223,6 +232,7 @@ function fromLegacy(params: URLSearchParams, contextKey: string): PerformanceFil
     role: scope === "now" ? null : fields.role,
     page,
     area: params.get("area"),
+    depth: positive(params.get("depth")),
   };
 }
 
@@ -252,6 +262,7 @@ export function readFilters(params: URLSearchParams): PerformanceFilterState {
     role: scope === "now" ? null : fields.role,
     page: positive(params.get("page")) ?? 1,
     area: params.get("area"),
+    depth: positive(params.get("depth")),
   };
 }
 
@@ -261,16 +272,18 @@ export function parseLegacyFilters(blob: string): PerformanceFilterState {
 }
 
 /**
- * Change one field. A server filter returns to the first page and drops the
- * open area, whose value may not exist in the new result.
+ * Change one field. Every filter is the server's, so any change but the page
+ * returns to the first page. A new area draws its cards at the depth the
+ * server chooses inside it.
  */
 export function withFilter<K extends keyof PerformanceFilterState>(
   state: PerformanceFilterState,
   key: K,
   value: PerformanceFilterState[K],
 ): PerformanceFilterState {
-  if (key === "page" || key === "area") return { ...state, [key]: value };
+  if (key === "page") return { ...state, page: value as number };
   if (key === "scope") return withScope(state, value as PerformanceScope);
+  if (key === "area") return withFilters(state, { area: value as string | null, depth: null });
   return withFilters(state, { [key]: value });
 }
 
@@ -279,7 +292,7 @@ export function withFilters(
   state: PerformanceFilterState,
   patch: Partial<PerformanceFilterState>,
 ): PerformanceFilterState {
-  return { ...state, ...patch, page: 1, area: null };
+  return { ...state, ...patch, page: 1 };
 }
 
 /**
@@ -299,6 +312,8 @@ export function withScope(
 
 export function clearNarrowing(state: PerformanceFilterState): PerformanceFilterState {
   return withFilters(state, {
+    area: null,
+    depth: null,
     context: null,
     boundary: null,
     confidence: null,

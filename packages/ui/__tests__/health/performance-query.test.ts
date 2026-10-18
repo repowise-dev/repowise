@@ -42,6 +42,7 @@ describe("performance scope and its URL", () => {
       sort: "leverage",
       page: 3,
       area: "packages/core",
+      depth: 4,
     };
     const params = write(state, "tab=performance&opportunity=perf1");
     expect(params.get("tab")).toBe("performance");
@@ -133,10 +134,12 @@ describe("performance scope queries", () => {
 });
 
 describe("performance state changes", () => {
-  it("returns to the first page and drops the open area when a server filter moves", () => {
-    const viewed = { ...INITIAL_FILTERS, page: 2, area: "src" };
-    expect(withFilter(viewed, "boundary", "db")).toMatchObject({ page: 1, area: null, boundary: "db" });
-    expect(withFilter(viewed, "area", null).page).toBe(2);
+  it("returns to the first page on any filter, the area included, and resets depth with it", () => {
+    const viewed = { ...INITIAL_FILTERS, page: 2, area: "src", depth: 3 };
+    expect(withFilter(viewed, "boundary", "db")).toMatchObject({ page: 1, area: "src", boundary: "db" });
+    expect(withFilter(viewed, "area", "src/a")).toMatchObject({ page: 1, area: "src/a", depth: null });
+    expect(withFilter(viewed, "page", 3).area).toBe("src");
+    expect(toQuery(viewed, { limit: 100 })).toMatchObject({ area: "src", area_depth: 3 });
   });
 
   it("keeps the filters a new scope can narrow by, and drops the state", () => {
@@ -158,8 +161,8 @@ describe("performance state changes", () => {
     expect(narrowingKeysFor("now")).toEqual(["boundary", "confidence"]);
   });
 
-  it("keys the server query on server fields only", () => {
-    expect(serverKey({ ...INITIAL_FILTERS, area: "src" })).toBe(serverKey(INITIAL_FILTERS));
+  it("keys the server query on every field, the area included", () => {
+    expect(serverKey({ ...INITIAL_FILTERS, area: "src" })).not.toBe(serverKey(INITIAL_FILTERS));
     expect(serverKey(withScope(INITIAL_FILTERS, "production"))).not.toBe(serverKey(INITIAL_FILTERS));
   });
 

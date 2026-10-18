@@ -115,7 +115,9 @@ describe("PerformanceView queue", () => {
     await rows();
     fireEvent.click(screen.getByRole("button", { name: /More filters/ }));
     expect(screen.queryByLabelText("Evidence confidence")).toBeNull();
-    expect(screen.getByText("on 7 matching")).toBeTruthy();
+    // Label and value only; counts belong to a select's options.
+    expect(screen.getByText(/Evidence confidence:/)).toBeTruthy();
+    expect(screen.queryByText(/matching/)).toBeNull();
   });
 
   it("draws the actionability bar from the server's counts and narrows on the server", async () => {
@@ -134,18 +136,78 @@ describe("PerformanceView queue", () => {
     );
   });
 
-  it("groups rows by area, ranked by plan-ready causes, each with a bulk prompt", async () => {
+  it("draws every area the server counts, with true totals and its top causes", async () => {
     const items = [
       opportunity({ opportunity_id: "a", file_path: "pkg/a/x.py", actionability_state: "advisory", rank_position: 0 }),
       opportunity({ opportunity_id: "b", file_path: "pkg/b/y.py", actionability_state: "plan_ready", rank_position: 1 }),
     ];
-    const load = vi.fn(async () => page({ items, total: 2, next_offset: null }));
+    const smallTop = opportunity({ opportunity_id: "c", file_path: "pkg/c/z.py", rank_position: 9 });
+    const load = vi.fn(async (query?: { area?: string; limit?: number }) =>
+      query?.area === "pkg/c"
+        ? page({ items: [smallTop], total: 4, next_offset: null })
+        : page({
+            items,
+            total: 10,
+            next_offset: null,
+            areas: {
+              depth: 2,
+              total: 10,
+              more: 0,
+              items: [
+                { area: "pkg/b", total: 1, actionability: { plan_ready: 1 } },
+                { area: "pkg/a", total: 5, actionability: { advisory: 5 } },
+                { area: "pkg/c", total: 4, actionability: { investigate: 4 } },
+              ],
+            },
+          }),
+    );
     render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
     await rows();
     const areas = screen.getAllByRole("region").map((node) => node.getAttribute("aria-label"));
-    expect(areas.filter((a) => a?.startsWith("pkg/"))).toEqual(["pkg/b, 1 causes", "pkg/a, 1 causes"]);
-    expect(screen.getAllByRole("button", { name: "Copy prompt for this one" })).toHaveLength(2);
-    expect(screen.getByText(/Across 2 areas, led by pkg\/b\./)).toBeTruthy();
+    expect(areas.filter((a) => a?.startsWith("pkg/"))).toEqual([
+      "pkg/b, 1 causes",
+      "pkg/a, 5 causes",
+      "pkg/c, 4 causes",
+    ]);
+    expect(screen.getByText(/Across 3 areas, led by pkg\/b\./)).toBeTruthy();
+    // pkg/c has no loaded cause, so its card asks for its own top three.
+    await waitFor(() =>
+      expect(load).toHaveBeenCalledWith(expect.objectContaining({ area: "pkg/c", limit: 3 })),
+    );
+    expect(await screen.findByText(/Show all 5 in pkg\/a/)).toBeTruthy();
+    // No page caveat: the counts are the scope's own.
+    expect(screen.queryByText(/causes on this page/)).toBeNull();
+  });
+
+  it("opens an area on the server when a card asks to show all", async () => {
+    const load = vi.fn(async () =>
+      page({
+        areas: {
+          depth: 1,
+          total: 7,
+          more: 0,
+          items: [
+            { area: "src", total: 6, actionability: { advisory: 6 } },
+            { area: "lib", total: 1, actionability: { advisory: 1 } },
+          ],
+        },
+      }),
+    );
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
+    await rows();
+    fireEvent.click(screen.getByRole("button", { name: /Show all 6 in src/ }));
+    await waitFor(() =>
+      expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ area: "src" })),
+    );
+    expect(await screen.findByRole("button", { name: "Remove filter Area: src" })).toBeTruthy();
+  });
+
+  it("says the accounting sentence once, never a hidden second copy", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await rows();
+    const text = document.body.textContent ?? "";
+    expect(text.split("are outside production code").length - 1).toBe(1);
+    expect(document.querySelectorAll(".sr-only p, p.sr-only").length).toBe(0);
   });
 
   it("leads each row with the fix, its gain, effort and safety, and the agent prompt", async () => {
@@ -1085,13 +1147,6 @@ describe("PerformanceView accessibility", () => {
     expect(screen.getByLabelText("Boundary")).toBeTruthy();
     expect(screen.getByRole("radiogroup", { name: "Actionability" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: /More actions for/ }).length).toBeGreaterThan(0);
-  });
-
-  it("announces the scope's accounting through a status region", async () => {
-    render(<PerformanceView adapter={adapter()} />);
-    await rows();
-    const statuses = screen.getAllByRole("status").map((node) => node.textContent ?? "");
-    expect(statuses.some((text) => text.includes("worth doing now"))).toBe(true);
   });
 
 });

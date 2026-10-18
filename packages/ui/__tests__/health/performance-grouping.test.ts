@@ -5,7 +5,7 @@ import {
   areaGroups,
   countsFromFacet,
   excludedReviews,
-  visibleItems,
+  facetAreaGroups,
 } from "../../src/health/performance/grouping";
 import { scopeAccount } from "../../src/health/performance/scope";
 import { verdictOf } from "../../src/health/performance/verdict";
@@ -42,9 +42,24 @@ describe("performance grouping", () => {
     expect(groups[1]!.items.map((i) => i.opportunity_id)).toEqual(["a", "c"]);
   });
 
-  it("narrows to an area at any depth", () => {
-    expect(visibleItems(items, "pkg/core").map((i) => i.opportunity_id)).toEqual(["a", "c"]);
-    expect(visibleItems(items, null)).toHaveLength(4);
+  it("draws every area the server counts, holding the loaded causes at its depth", () => {
+    const groups = facetAreaGroups(items, {
+      depth: 2,
+      total: 40,
+      more: 0,
+      items: [
+        { area: "pkg/server", total: 10, actionability: { plan_ready: 1, expected: 9 } },
+        { area: "pkg/core", total: 25, actionability: { advisory: 25 } },
+        { area: "pkg/lib", total: 5, actionability: { investigate: 5 } },
+      ],
+    });
+    expect(groups.map((g) => [g.area, g.total, g.items.length])).toEqual([
+      ["pkg/server", 10, 1],
+      ["pkg/core", 25, 2],
+      // Counted by the server though no loaded cause sits in it.
+      ["pkg/lib", 5, 0],
+    ]);
+    expect(groups[0]!.counts).toEqual({ plan_ready: 1, advisory: 0, investigate: 0, expected: 9 });
   });
 
   it("turns left-out counts into review links with the scope that lists them", () => {

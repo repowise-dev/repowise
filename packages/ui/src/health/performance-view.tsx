@@ -9,14 +9,19 @@ import { Button } from "../ui/button";
 import { useAiPromptAction } from "./ai-prompt-action";
 import { ActionabilityBar } from "./performance/actionability-bar";
 import type { PerformanceViewAdapter } from "./performance/adapter";
-import { AREA_PREVIEW, AreaGroups, areaLabel } from "./performance/area-groups";
+import {
+  AREA_PREVIEW,
+  AreaGroups,
+  areaLabel,
+  type AreaTopRows,
+} from "./performance/area-groups";
 import { useOpportunityDetail, usePrefetchDetail } from "./performance/cache";
 import { NarrowingFilters, narrowingChipLabel, SortControl } from "./performance/filters";
 import {
   areaGroups,
   countsFromFacet,
   excludedReviews,
-  visibleItems,
+  facetAreaGroups,
   type ExcludedReview,
 } from "./performance/grouping";
 import { LegacyPerformanceFindings } from "./performance/legacy";
@@ -29,6 +34,8 @@ import {
   narrowingKeysFor,
   PAGE_SIZE,
   readFilters,
+  serverKey,
+  toQuery,
   withFilter,
   withScope,
   writeFilters,
@@ -147,11 +154,10 @@ export function PerformanceView({
     }),
     [select, openPrompt, prompts, prefetch, detailById],
   );
-  // Areas group the loaded page; a prompt says so when the queue runs past it.
-  const paged = data ? data.total > data.items.length : false;
   const onAreaPrompt = useCallback(
-    (area: string, rows: PerformanceOpportunity[]) => openPrompt(prompts.forArea(area, rows, paged)),
-    [openPrompt, prompts, paged],
+    (area: string, rows: PerformanceOpportunity[], partial: boolean) =>
+      openPrompt(prompts.forArea(area, rows, partial)),
+    [openPrompt, prompts],
   );
   const onOpenArea = useCallback(
     (area: string) => apply(withFilter(current.current, "area", area)),
@@ -160,13 +166,33 @@ export function PerformanceView({
 
   const items = useMemo(() => data?.items ?? [], [data]);
   const counts = useMemo(() => countsFromFacet(data?.facets.actionability), [data]);
-  const allGroups = useMemo(() => areaGroups(items), [items]);
-  // An open area lists every cause in it, grouped by its own sub-areas.
+  // Every area in the scope with its true counts, from the server's facet; a
+  // server that predates it groups the loaded page instead.
   const groups = useMemo(
-    () => areaGroups(visibleItems(items, filters.area)),
-    [items, filters.area],
+    () => (data?.areas ? facetAreaGroups(items, data.areas) : areaGroups(items)),
+    [data, items],
   );
   const focused = filters.area !== null;
+  // An opened area that does not split further lists every loaded cause in it.
+  const listAll = focused && groups.length <= 1;
+  // A small area's causes may sit past the loaded page; a card asks for its top.
+  const viewKey = serverKey(filters);
+  const load = adapter.getPerformanceOpportunities;
+  const topRows: AreaTopRows | undefined = useMemo(
+    () =>
+      load
+        ? {
+            key: `${adapter.cacheKey}:${viewKey}`,
+            load: async (area: string) =>
+              (
+                await load(
+                  toQuery(withFilter(current.current, "area", area), { limit: AREA_PREVIEW }),
+                )
+              ).items,
+          }
+        : undefined,
+    [load, adapter.cacheKey, viewKey, current],
+  );
 
   if (!supported) return <LegacyPerformanceFindings adapter={adapter} />;
   if (error && [404, 405].includes(Number((error as { status?: number }).status))) {
@@ -241,7 +267,7 @@ export function PerformanceView({
     <div className="space-y-8">
       {items.length > 0 ? (
         <PerformanceVerdict
-          verdict={verdictOf(filters.scope, data.total, allGroups)}
+          verdict={verdictOf(filters.scope, data.total, groups)}
           analyzedCommit={summary.analyzed_commit}
         >
           {sentence}
@@ -293,11 +319,6 @@ export function PerformanceView({
           )
         ) : (
           <div className="space-y-3">
-            {paged ? (
-              <p className="text-xs text-[var(--color-text-tertiary)]">
-                Areas group the {items.length.toLocaleString()} causes on this page.
-              </p>
-            ) : null}
             {focused ? (
               <button
                 type="button"
@@ -314,7 +335,8 @@ export function PerformanceView({
               callbacks={callbacks}
               onOpenArea={onOpenArea}
               onAreaPrompt={onAreaPrompt}
-              preview={focused ? Number.POSITIVE_INFINITY : AREA_PREVIEW}
+              preview={listAll ? Number.POSITIVE_INFINITY : AREA_PREVIEW}
+              topRows={topRows}
             />
           </div>
         )}

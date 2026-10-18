@@ -1,10 +1,11 @@
 import type {
   PerformanceActionabilityState,
+  PerformanceAreaFacet,
   PerformanceOpportunity,
   PerformanceQueueExclusion,
 } from "@repowise-dev/types/health";
 
-import { groupByArea, inArea, separatingDepth } from "../../lib/areas";
+import { areaOf, groupByArea, separatingDepth } from "../../lib/areas";
 import type { PerformanceFilterState, PerformanceScope } from "./query";
 
 /**
@@ -39,8 +40,30 @@ export function actionableCount(counts: ActionabilityCounts): number {
 
 export interface PerformanceAreaGroup {
   area: string;
+  /** The loaded causes in the area, in the server's order; may be fewer than `total`. */
   items: PerformanceOpportunity[];
   counts: ActionabilityCounts;
+  /** Causes the area holds in the scope and filters. */
+  total: number;
+}
+
+/**
+ * Area cards from the server's area facet: every area in the scope with its
+ * true counts, in the server's ranking, each holding the loaded causes that
+ * sit in it at the facet's depth.
+ */
+export function facetAreaGroups(
+  items: readonly PerformanceOpportunity[],
+  facet: PerformanceAreaFacet,
+): PerformanceAreaGroup[] {
+  return facet.items.map((entry) => ({
+    area: entry.area,
+    total: entry.total,
+    counts: countsFromFacet(
+      Object.entries(entry.actionability).map(([value, total]) => ({ value, total: total ?? 0 })),
+    ),
+    items: items.filter((item) => areaOf(item.file_path, facet.depth) === entry.area),
+  }));
 }
 
 /**
@@ -52,7 +75,11 @@ export interface PerformanceAreaGroup {
 export function areaGroups(items: readonly PerformanceOpportunity[]): PerformanceAreaGroup[] {
   const depth = separatingDepth(items.map((item) => item.file_path));
   return groupByArea(items, (item) => item.file_path, depth)
-    .map((group) => ({ ...group, counts: actionabilityCounts(group.items) }))
+    .map((group) => ({
+      ...group,
+      counts: actionabilityCounts(group.items),
+      total: group.items.length,
+    }))
     .sort(
       (a, b) =>
         b.counts.plan_ready - a.counts.plan_ready ||
@@ -60,17 +87,6 @@ export function areaGroups(items: readonly PerformanceOpportunity[]): Performanc
         b.items.length - a.items.length ||
         a.items[0]!.rank_position - b.items[0]!.rank_position,
     );
-}
-
-/**
- * The loaded result narrowed to one area at any depth (an area named by
- * another view, such as the map, need not be one this result groups by).
- */
-export function visibleItems(
-  items: readonly PerformanceOpportunity[],
-  area: string | null,
-): PerformanceOpportunity[] {
-  return area === null ? [...items] : items.filter((item) => inArea(item.file_path, area));
 }
 
 export interface ExcludedReview {

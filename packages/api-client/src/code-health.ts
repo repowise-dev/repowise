@@ -136,6 +136,8 @@ export async function getPerformanceOpportunities(
       proof: opts.proof,
       role: opts.role,
       queue: opts.queue || undefined,
+      area: opts.area,
+      area_depth: opts.area_depth,
       view: opts.view,
       sort: opts.sort,
       file_paths: opts.file_paths?.length ? opts.file_paths.join(",") : undefined,

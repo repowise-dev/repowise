@@ -649,6 +649,10 @@ export type PerformanceOpportunityQuery = {
   proof?: PerformanceCostProof | "all";
   /** Keep to the default queue's stored verdict whatever state is chosen (REST only). */
   queue?: boolean;
+  /** One area (a directory) at any depth (REST only). */
+  area?: string;
+  /** Group the area facet at this directory depth; absent lets the server choose (REST only). */
+  area_depth?: number;
   /** Absent means every role but startup, cli, ui, tooling and test; `all` lists every role. */
   role?: PerformanceExecutionRole | "all";
   /** `summary` drops the explanatory fields and keeps identity and counts. */
@@ -724,6 +728,24 @@ export interface PerformanceOpportunitySummary {
 /** The dashboard's three scopes: the default queue, every production cause, everything. */
 export type PerformanceScope = "now" | "production" | "all";
 
+/** One area of the queried causes, with its actionability split. */
+export interface PerformanceAreaFacetEntry {
+  area: string;
+  total: number;
+  actionability: Partial<Record<PerformanceActionabilityState, number>>;
+}
+
+/** The queried causes by area, over the whole scope and filters, not one page. */
+export interface PerformanceAreaFacet {
+  /** The directory depth the areas are drawn at. */
+  depth: number;
+  /** Ranked by plan-ready causes, then advisory, then size. */
+  items: PerformanceAreaFacetEntry[];
+  /** Causes in areas past the response's limit. */
+  more: number;
+  total: number;
+}
+
 export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportunity> {
   summary: PerformanceOpportunitySummary;
   /** Counted inside the requested scope and filters on the REST queue, so a
@@ -731,6 +753,8 @@ export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportu
   facets: PerformanceFacets;
   /** Causes per scope, unfiltered. Absent from a server that predates scopes. */
   scopes?: Partial<Record<PerformanceScope, number>>;
+  /** The causes by area. Absent from a server that predates it. */
+  areas?: PerformanceAreaFacet;
   /** What a language gate held back, by language. Empty or absent when nothing was. */
   gated?: GatedByLanguage;
   /** Filter values the server did not recognize, named rather than dropped. */

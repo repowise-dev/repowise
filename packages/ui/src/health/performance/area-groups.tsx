@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useState } from "react";
+import useSWR from "swr";
 import { ChevronRight } from "lucide-react";
 import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 
@@ -32,6 +33,15 @@ function countsLine(group: PerformanceAreaGroup): string {
   return parts.join(" · ");
 }
 
+/**
+ * The top causes of one area when the loaded page holds too few of them:
+ * keyed by the query, so it is fetched once per area and view.
+ */
+export interface AreaTopRows {
+  key: string;
+  load: (area: string) => Promise<PerformanceOpportunity[]>;
+}
+
 export function AreaGroups({
   groups,
   adapter,
@@ -40,14 +50,18 @@ export function AreaGroups({
   onOpenArea,
   onAreaPrompt,
   preview = AREA_PREVIEW,
+  topRows,
 }: {
   groups: PerformanceAreaGroup[];
+  /** Fetches an area's top causes when the loaded page lacks them. */
+  topRows?: AreaTopRows | undefined;
   adapter: PerformanceViewAdapter;
   selectedId: string | null;
   callbacks: RowCallbacks;
   /** Open one area on its own, every cause listed. */
   onOpenArea: (area: string) => void;
-  onAreaPrompt: (area: string, items: PerformanceOpportunity[]) => void;
+  /** `partial` when the rows are only the area's leading causes. */
+  onAreaPrompt: (area: string, items: PerformanceOpportunity[], partial: boolean) => void;
   /** Causes each card lists before "Show all"; `Infinity` lists every one. */
   preview?: number;
 }) {
@@ -63,6 +77,7 @@ export function AreaGroups({
           onOpenArea={onOpenArea}
           onAreaPrompt={onAreaPrompt}
           preview={preview}
+          topRows={topRows}
         />
       ))}
     </div>
@@ -77,22 +92,33 @@ const AreaCard = memo(function AreaCard({
   onOpenArea,
   onAreaPrompt,
   preview,
+  topRows,
 }: {
   group: PerformanceAreaGroup;
+  topRows?: AreaTopRows | undefined;
   adapter: PerformanceViewAdapter;
   selectedId: string | null;
   callbacks: RowCallbacks;
   onOpenArea: (area: string) => void;
-  onAreaPrompt: (area: string, items: PerformanceOpportunity[]) => void;
+  /** `partial` when the rows are only the area's leading causes. */
+  onAreaPrompt: (area: string, items: PerformanceOpportunity[], partial: boolean) => void;
   preview: number;
 }) {
   const [open, setOpen] = useState(true);
   const label = areaLabel(group.area);
-  const shown = group.items.slice(0, preview);
-  const rest = group.items.length - shown.length;
+  // The loaded page may hold none of a small area's causes; ask for them.
+  const short = group.items.length < Math.min(preview, group.total);
+  const { data: fetched } = useSWR<PerformanceOpportunity[]>(
+    open && short && topRows ? `performance-area-top:${topRows.key}:${group.area}` : null,
+    () => topRows!.load(group.area),
+    { revalidateOnFocus: false },
+  );
+  const rows = short && fetched ? fetched : group.items;
+  const shown = rows.slice(0, preview);
+  const rest = group.total - shown.length;
   return (
     <section
-      aria-label={`${label}, ${group.items.length} causes`}
+      aria-label={`${label}, ${group.total} causes`}
       className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
     >
       <header className="flex flex-col items-start gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-3">
@@ -114,8 +140,8 @@ const AreaCard = memo(function AreaCard({
           </span>
         </button>
         <AiPromptButton
-          label={bulkAgentPromptLabel(group.items.length)}
-          onClick={() => onAreaPrompt(group.area, group.items)}
+          label={bulkAgentPromptLabel(rows.length)}
+          onClick={() => onAreaPrompt(group.area, rows, rows.length < group.total)}
         />
       </header>
       {open ? (
@@ -133,7 +159,7 @@ const AreaCard = memo(function AreaCard({
               onClick={() => onOpenArea(group.area)}
               className={`${QUIET_LINK_CLS} mt-2 px-1 text-xs`}
             >
-              Show all {group.items.length.toLocaleString()} in {label}
+              Show all {group.total.toLocaleString()} in {label}
             </button>
           ) : null}
         </div>
