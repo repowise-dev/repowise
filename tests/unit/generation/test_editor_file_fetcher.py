@@ -623,14 +623,14 @@ async def test_code_health_names_production_files_only(session, repo, tmp_path):
         [
             {
                 "file_path": path,
-                "biomarker_type": "brain_method",
+                "biomarker_type": "complex_method",
                 "severity": "high",
                 "function_name": "f",
                 "line_start": 1,
                 "line_end": 130,
                 "details": {"ccn": 30, "nloc": 120, "max_nesting": 4, "deepest_block": {"start": 40, "end": 52}},
                 "health_impact": 2.0,
-                "reason": "brain method",
+                "reason": "complex method",
             }
             for path in ("tests/test_a.py", "src/a.py")
         ],
@@ -640,4 +640,4 @@ async def test_code_health_names_production_files_only(session, repo, tmp_path):
 
     assert data.code_health.worst_path == "src/a.py"
     assert [f["where"] for f in data.code_health.fix_first] == ["src/a.py:1"]
-    assert data.code_health.fix_first[0]["title"] == "Split f into smaller functions"
+    assert data.code_health.fix_first[0]["title"] == "Reduce the branching in f"
