@@ -174,7 +174,7 @@ describe("OverviewBody", () => {
     expect(map).toHaveTextContent("1,059");
     expect(screen.getByRole("link", { name: /^Ownership/ })).toHaveTextContent("41sole-owned files");
     expect(screen.getByRole("link", { name: /^Decisions/ })).toHaveTextContent(
-      "12recorded: 7 accepted, 4 awaiting review",
+      "12recorded, of which 7 accepted and 4 awaiting review",
     );
     expect(screen.getByRole("link", { name: /^Refactoring/ })).toHaveTextContent("9open opportunities");
     expect(screen.getByRole("link", { name: /^Tests/ })).toHaveTextContent("81.3%line coverage");
@@ -184,8 +184,18 @@ describe("OverviewBody", () => {
     expect(screen.getAllByRole("link", { name: /^Decisions/ })).toHaveLength(1);
   });
 
-  it("turns the Tests card into the ingest command when no report exists", () => {
+  it("offers no command where the server cannot say whether a report exists", () => {
     render(<OverviewBody summary={summary()} routes={{ base: "/r" }} />);
+    expect(screen.getByRole("link", { name: /^Tests/ })).toHaveTextContent("Coverage and the tests");
+    expect(screen.queryByText("repowise coverage add")).toBeNull();
+  });
+
+  it("turns the Tests card into the ingest command when no report exists", () => {
+    const noReport = {
+      ...summary(),
+      explore: { decisions: null, refactoring: null, ownership: null, security: null, coverage: null },
+    } as unknown as OverviewSummaryResponse;
+    render(<OverviewBody summary={noReport} routes={{ base: "/r" }} />);
     expect(screen.getByRole("link", { name: /^Tests/ })).toHaveTextContent("No coverage report yet");
     expect(screen.getByText("repowise coverage add")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy the command" })).toBeInTheDocument();

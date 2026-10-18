@@ -243,6 +243,26 @@ export const COVERAGE_ADD_COMMAND = "repowise coverage add";
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
+/** Coverage when a report exists; the ingest command when the server says none does. */
+function testsCard(explore: OverviewSummaryResponse["explore"], base: string): ExploreCard {
+  const card = { key: "tests", label: "Tests", href: `${base}/tests` };
+  const coverage = explore?.coverage;
+  if (coverage) {
+    return {
+      ...card,
+      value: `${coverage.line_coverage_pct.toFixed(1)}%`,
+      caption: "line coverage from the latest report",
+    };
+  }
+  // A server without the counts cannot say whether a report exists.
+  if (!explore) return { ...card, caption: "Coverage and the tests that reach each file" };
+  return {
+    ...card,
+    caption: "No coverage report yet. Run your tests with coverage on, then add the report:",
+    command: COVERAGE_ADD_COMMAND,
+  };
+}
+
 /**
  * The six main doors off Overview, each with one live figure read through the
  * function its page leads with (`summary.explore`), so the card and the page
@@ -259,7 +279,6 @@ export function buildExploreCards(
   const sole = explore?.ownership?.sole_owned_files;
   const decisions = explore?.decisions;
   const refactoring = explore?.refactoring;
-  const coverage = explore?.coverage;
   return [
     {
       key: "code-health",
@@ -296,7 +315,7 @@ export function buildExploreCards(
       ...(decisions && decisions.total > 0
         ? {
             value: formatNumber(decisions.total),
-            caption: `recorded: ${formatNumber(decisions.accepted)} accepted, ${formatNumber(decisions.candidates)} awaiting review`,
+            caption: `recorded, of which ${formatNumber(decisions.accepted)} accepted and ${formatNumber(decisions.candidates)} awaiting review`,
           }
         : { caption: "No decisions recorded yet" }),
       href: `${base}/decisions`,
@@ -312,21 +331,7 @@ export function buildExploreCards(
         : { caption: "No refactoring analysis yet" }),
       href: `${base}/refactoring`,
     },
-    coverage
-      ? {
-          key: "tests",
-          label: "Tests",
-          value: `${coverage.line_coverage_pct.toFixed(1)}%`,
-          caption: "line coverage from the latest report",
-          href: `${base}/tests`,
-        }
-      : {
-          key: "tests",
-          label: "Tests",
-          caption: "No coverage report yet. Run your tests with coverage on, then add the report:",
-          command: COVERAGE_ADD_COMMAND,
-          href: `${base}/tests`,
-        },
+    testsCard(explore, base),
   ];
 }
 

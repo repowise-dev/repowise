@@ -56,7 +56,7 @@ export function ExploreCards({
                 {c.label}
                 <span
                   aria-hidden
-                  className="text-[var(--color-text-tertiary)] transition-transform group-hover:translate-x-0.5 group-focus-within:translate-x-0.5"
+                  className="text-[var(--color-text-tertiary)] transition-transform group-hover:translate-x-0.5 group-has-[a:focus-visible]:translate-x-0.5"
                 >
                   →
                 </span>

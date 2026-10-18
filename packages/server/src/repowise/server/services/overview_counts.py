@@ -11,8 +11,9 @@ the Overview figure and the page figure cannot disagree:
   "in shipped source" versus tests and docs;
 - coverage: the newest ingested report, the Tests page lede.
 
-Every read is a grouped count, a primary-key read or one narrow column, and a
-store that fails costs its own block rather than the page.
+The reads are grouped counts, a primary-key read and the decision lanes'
+three-column scan the Decisions page already pays. Each runs in a savepoint,
+so a store that fails costs its own block rather than the page.
 """
 
 from __future__ import annotations
@@ -21,13 +22,16 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.refactoring.serving import summary_payload
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.coverage import load_newest_ingest
+from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+    get_refactoring_summary,
+)
 from repowise.core.persistence.models import GitMetadata, SecurityFinding
-from repowise.server.services.refactoring_health import RefactoringHealthService
 
 # Mirrors `securityPathClass` in packages/ui/src/security/posture.tsx, which
 # the Security page uses for its lede. Change both together.
@@ -75,7 +79,9 @@ async def _decisions(session: AsyncSession, repo_id: str) -> dict[str, int]:
 
 
 async def _refactoring(session: AsyncSession, repo_id: str) -> dict[str, int] | None:
-    summary = await RefactoringHealthService(session, repo_id, repo_id).summary()
+    # The rollup the Refactoring lede reads, without the gate breakdown the
+    # page adds beside it.
+    summary = summary_payload(await get_refactoring_summary(session, repo_id))
     if summary.get("status") != "available":
         return None
     return {
@@ -85,33 +91,39 @@ async def _refactoring(session: AsyncSession, repo_id: str) -> dict[str, int] | 
 
 
 async def _ownership(session: AsyncSession, repo_id: str) -> dict[str, int]:
-    # Exactly 1, credited to a primary owner, as the owners rollup counts it:
-    # a bus factor of 0 means no indexed history, not risk.
+    # Exactly 1, credited to a primary owner (named or by email), as the
+    # owners rollup counts it: a bus factor of 0 means no indexed history.
     sole = await session.scalar(
         select(func.count()).where(
             crud.code_file_rows(repo_id),
             GitMetadata.bus_factor == 1,
-            GitMetadata.primary_owner_name.is_not(None),
-            GitMetadata.primary_owner_name != "",
+            or_(GitMetadata.primary_owner_name != "", GitMetadata.primary_owner_email != ""),
         )
     )
     return {"sole_owned_files": int(sole or 0)}
 
 
 async def _security(session: AsyncSession, repo_id: str) -> dict[str, int]:
-    rows = (
+    # Grouped by path and severity, so the classifier runs once per file.
+    groups = (
         await session.execute(
-            select(SecurityFinding.file_path, SecurityFinding.severity).where(
-                SecurityFinding.repository_id == repo_id
-            )
+            select(SecurityFinding.file_path, SecurityFinding.severity, func.count())
+            .where(SecurityFinding.repository_id == repo_id)
+            .group_by(SecurityFinding.file_path, SecurityFinding.severity)
         )
     ).all()
-    source = [sev for path, sev in rows if security_path_class(path or "") == "source"]
+    total = source = source_high = 0
+    for path, severity, n in groups:
+        total += n
+        if security_path_class(path or "") == "source":
+            source += n
+            if severity == "high":
+                source_high += n
     return {
-        "total": len(rows),
-        "source": len(source),
-        "source_high": sum(1 for sev in source if sev == "high"),
-        "elsewhere": len(rows) - len(source),
+        "total": total,
+        "source": source,
+        "source_high": source_high,
+        "elsewhere": total - source,
     }
 
 
@@ -139,7 +151,8 @@ async def explore_counts(session: AsyncSession, repo_id: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, read in _BLOCKS:
         try:
-            out[key] = await read(session, repo_id)
+            async with session.begin_nested():
+                out[key] = await read(session, repo_id)
         except Exception:
             out[key] = None
     return out
