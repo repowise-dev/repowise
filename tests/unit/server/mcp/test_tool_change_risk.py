@@ -878,3 +878,16 @@ def test_the_patch_coverage_action_joins_the_directive(monkeypatch):
     assert payload["directive"]["next_actions"][-1] == (
         "1 changed executable line since origin/main is uncovered; extend tests/test_a.py"
     )
+
+
+@pytest.mark.asyncio
+async def test_index_dependents_come_from_the_stored_graph(setup_mcp, factory):
+    """Distinct importing files per file, read once for both sides of the delta."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_change_risk.health import _index_dependents
+
+    counts = await _index_dependents(SimpleNamespace(session_factory=factory))
+    assert counts["src/auth/service.py"] == 2
+    assert counts["src/db/models.py"] == 1
+    assert await _index_dependents(SimpleNamespace(session_factory=None)) is None

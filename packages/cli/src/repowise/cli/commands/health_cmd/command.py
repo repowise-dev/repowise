@@ -26,7 +26,7 @@ from repowise.cli.helpers import (
     run_async,
     silence_logs_for_machine_output_until_close,
 )
-from repowise.core.analysis.finding_registry import preview_lines
+from repowise.core.analysis.finding_registry import excluded_types, is_served, preview_lines
 from repowise.core.analysis.health.counts import (
     COUNTS,
     DEFAULT_COUNTS,
@@ -40,6 +40,7 @@ from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.rows import detail_map, split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
+from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
 
 from .codegen import _generate_refactoring_code
@@ -48,6 +49,7 @@ from .persist import (
     _load_persisted_coverage_map,
     _load_queue_counts,
     _load_recommendations,
+    _load_short_history,
     _load_stored_report,
     _persist_health,
 )
@@ -231,8 +233,12 @@ def health_command(
         return
 
     report, hotspots, languages = _load_report(repo_path, opts)
-    metrics, findings, unanalysed = _scope_report(report, hotspots, opts)
+    metrics, scored, unanalysed = _scope_report(report, hotspots, opts)
     metrics_sorted = sorted(metrics, key=lambda m: m.score)
+    # JSON explains the score with every finding it counted; the rest list
+    # what MCP and the web UI list.
+    excluded = excluded_types()
+    findings = [f for f in scored if not _withheld(f, excluded)]
 
     if generate_code is not None:
         suggestions = _scoped_suggestions(report, opts)
@@ -247,13 +253,18 @@ def health_command(
     elif badge_view:
         _render_badge(report.kpis.get("average_health"), report.kpis.get("analysed_share"))
     elif fmt == "json":
-        _render_json(repo_path, report, metrics_sorted, findings, opts)
+        _render_json(repo_path, report, metrics_sorted, scored, opts)
     elif fmt == "md":
         _render_md(report, findings)
     else:
         _render_table(
             repo_path, report, (metrics, metrics_sorted), findings, unanalysed, languages, opts
         )
+
+
+def _withheld(finding: Any, excluded: frozenset[str]) -> bool:
+    """A finding the registry or a language gate keeps off default surfaces."""
+    return not is_served("health", finding.biomarker_type, finding.file_path, excluded)
 
 
 @dataclass(frozen=True)
@@ -421,6 +432,8 @@ def _scoped_suggestions(report: Any, opts: _Options) -> list[Any]:
 def _render_json(
     repo_path: Path, report: Any, metrics_sorted: list[Any], findings: list[Any], opts: _Options
 ) -> None:
+    excluded = excluded_types()
+    short_history = _load_short_history(repo_path)
     click.echo(
         json.dumps(
             {
@@ -430,20 +443,7 @@ def _render_json(
                 # Findings, causes, plans and Fix first items, as every
                 # surface counts them; ``shown`` is 0, nothing is listed.
                 "queue_counts": _load_queue_counts(repo_path),
-                "metrics": [
-                    {
-                        "file_path": m.file_path,
-                        "score": m.score,
-                        "max_ccn": m.max_ccn,
-                        "max_nesting": m.max_nesting,
-                        "nloc": m.nloc,
-                        "has_test_file": m.has_test_file,
-                        "line_coverage_pct": m.line_coverage_pct,
-                        "branch_coverage_pct": m.branch_coverage_pct,
-                        "duplication_pct": m.duplication_pct,
-                    }
-                    for m in metrics_sorted
-                ],
+                "metrics": [_json_metric(m, short_history) for m in metrics_sorted],
                 "findings": [
                     {
                         "biomarker_type": f.biomarker_type,
@@ -453,6 +453,7 @@ def _render_json(
                         "health_impact": f.health_impact,
                         "details": detail_map(f),
                         "reason": f.reason,
+                        **({"withheld": True} if _withheld(f, excluded) else {}),
                     }
                     for f in findings
                 ],
@@ -460,6 +461,21 @@ def _render_json(
             indent=2,
         )
     )
+
+
+def _json_metric(m: Any, short_history: set[str]) -> dict[str, Any]:
+    return {
+        "file_path": m.file_path,
+        "score": m.score,
+        "max_ccn": m.max_ccn,
+        "max_nesting": m.max_nesting,
+        "nloc": m.nloc,
+        "has_test_file": m.has_test_file,
+        "line_coverage_pct": m.line_coverage_pct,
+        "branch_coverage_pct": m.branch_coverage_pct,
+        "duplication_pct": m.duplication_pct,
+        **({"history": "short"} if m.file_path in short_history else {}),
+    }
 
 
 def _render_md(report: Any, findings: list[Any]) -> None:
@@ -496,8 +512,8 @@ def _render_table(
     _render_defect_accuracy_line(report)
     # Lead with the finding count, density and coverage, not the bounded /10
     # average. Metrics carry no language, so it comes with the report.
-    _render_performance_section(report, languages)
-    _render_files_table(metrics_sorted)
+    _render_performance_section(report, findings, languages)
+    _render_files_table(metrics_sorted, _load_short_history(repo_path))
     _render_findings_table(findings)
 
 
@@ -534,7 +550,7 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
         console.print(f"[dim]Code health {note}.[/dim]")
 
 
-def _render_files_table(metrics_sorted: list[Any]) -> None:
+def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> None:
     from repowise.core.analysis.health.grading import BAND_TERMINAL_COLOR, band_for
 
     table = Table(title=f"Lowest-scoring files ({min(len(metrics_sorted), 20)})")
@@ -548,13 +564,19 @@ def _render_files_table(metrics_sorted: list[Any]) -> None:
         score_color = BAND_TERMINAL_COLOR[band_for(m.score)]
         table.add_row(
             m.file_path,
-            f"[{score_color}]{m.score:.1f}[/{score_color}]",
+            f"[{score_color}]{m.score:.1f}[/{score_color}]"
+            + ("*" if m.file_path in short_history else ""),
             str(m.max_ccn),
             str(m.max_nesting),
             str(m.nloc),
             "✓" if m.has_test_file else "—",
         )
     console.print(table)
+    if any(m.file_path in short_history for m in metrics_sorted[:20]):
+        console.print(
+            f"[dim]* Short history (under {HISTORY_MIN_COMMITS} commits): most history "
+            "markers need more, so the score is mostly code shape.[/dim]"
+        )
 
 
 def _render_findings_table(findings: list[Any]) -> None:

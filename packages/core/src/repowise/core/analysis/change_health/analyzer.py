@@ -12,10 +12,16 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from ...ingestion.graph.builder import GraphBuilder
-from ...ingestion.models import EXTENSION_TO_LANGUAGE, SPECIAL_FILENAMES, FileInfo, ParsedFile
+from ...ingestion.models import (
+    EXTENSION_TO_LANGUAGE,
+    SPECIAL_FILENAMES,
+    FileInfo,
+    ParsedFile,
+    Symbol,
+)
 from ...ingestion.parser import parse_file
 from ...test_paths import is_test_related_path
-from ..health import HealthAnalyzer, HealthFindingData
+from ..health import HealthAnalyzer, HealthFileMetricData, HealthFindingData
 from ..health.complexity.languages import has_health_dialect
 from ..health.source_reader import MappingSourceReader
 
@@ -63,6 +69,9 @@ class RevisionAnalysis:
     skipped: dict[str, str] = field(default_factory=dict)
     #: Dependents count per file, as this side's centrality gates read it.
     dependents: dict[str, int] = field(default_factory=dict)
+    symbols: dict[str, list[Symbol]] = field(default_factory=dict)
+    #: Per-file scores and deductions, by path.
+    metrics: dict[str, HealthFileMetricData] = field(default_factory=dict)
 
     def findings_for(self, paths: set[str]) -> list[HealthFindingData]:
         return [f for f in self.findings if f.file_path in paths]
@@ -88,11 +97,11 @@ class RevisionHealthAnalyzer:
         remainder are closure context that shapes resolution without being
         charged to the change.
 
-        *dependents* is the other side's :attr:`RevisionAnalysis.dependents`.
-        Both sides see only the changed files, so a file's dependents count
-        here is a slice of its real one, and an import added between two
-        changed files can carry it across a centrality gate. Scoring both
-        sides against one count keeps that from reading as a code change.
+        *dependents* is one count both sides score against: the index's when
+        there is one, else the other side's :attr:`RevisionAnalysis.dependents`.
+        Both sides see only the changed files, so a local count is a slice of
+        the real one, and an import added between two changed files can carry
+        a file across a centrality gate without any change to its code.
         """
         result = RevisionAnalysis()
         parsed, usable = self._parse(sources, result)
@@ -109,6 +118,8 @@ class RevisionHealthAnalyzer:
         result.findings = list(report.findings)
         result.analyzed = set(usable)
         result.dependents = analyzer.file_dependents()
+        result.symbols = {pf.file_info.path: pf.symbols for pf in parsed}
+        result.metrics = {m.file_path: m for m in report.metrics}
         return result
 
     # -- internals ----------------------------------------------------------

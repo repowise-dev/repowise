@@ -12,6 +12,22 @@ export interface CommitHealthTableProps {
  *  touched the file, which is a weaker claim and is labelled as one. */
 const DIRECT = new Set(["added_lines", "changed_symbol", "new_file"]);
 
+const INDIRECT_NOTE: Record<string, string> = {
+  changed_call_edge: "reached through a call this commit edited",
+  unknown: "not explained by this commit's diff",
+};
+
+/** How the commit relates to the finding, when it did not write the line itself. */
+function basisNote(f: CommitHealthFinding): string | null {
+  if (f.attribution_basis === "moved" || f.moved_from) {
+    const src = f.moved_from;
+    if (!src) return "moved here from another file";
+    return src.symbol ? `moved here from ${src.symbol} in ${src.path}` : `moved here from ${src.path}`;
+  }
+  if (DIRECT.has(f.attribution_basis)) return null;
+  return INDIRECT_NOTE[f.attribution_basis] ?? "in a file this commit touched, not on a line it wrote";
+}
+
 function where(f: CommitHealthFinding): string {
   const at = f.line_start ? `:${f.line_start}` : "";
   return f.symbol ? `${f.symbol} — ${f.path}${at}` : `${f.path}${at}`;
@@ -37,17 +53,15 @@ const COLUMNS: ResponsiveColumn<CommitHealthFinding>[] = [
     key: "reason",
     header: "What changed",
     cellClassName: "[overflow-wrap:anywhere]",
-    render: (f) => (
-      <span>
-        {f.reason}
-        {!DIRECT.has(f.attribution_basis) && (
-          <span className="text-[var(--color-text-tertiary)]">
-            {" "}
-            (in a file this commit touched, not on a line it wrote)
-          </span>
-        )}
-      </span>
-    ),
+    render: (f) => {
+      const note = basisNote(f);
+      return (
+        <span>
+          {f.reason}
+          {note && <span className="text-[var(--color-text-tertiary)]"> ({note})</span>}
+        </span>
+      );
+    },
   },
   {
     key: "where",

@@ -208,6 +208,8 @@ export interface CommitHealthFinding {
    *  `unknown`. Separates what a change wrote from what it merely touched. */
   attribution_basis: string;
   reason: string;
+  /** Set when the commit moved this finding's code here from another file. */
+  moved_from?: { path: string; symbol?: string | null } | null;
 }
 
 /** What a commit did to code health, computed at index time.
@@ -225,6 +227,10 @@ export interface CommitHealth {
   introduced_count: number;
   worsened_count: number;
   resolved_count: number;
+  /** Findings whose metric dropped, at the same place or after a move. */
+  improved_count?: number;
+  /** Findings carried to another file with their code; a worsened or improved one is in that count too. */
+  moved_count?: number;
   files_analyzed: number;
   files_skipped: number;
   /** Worst first, capped. `introduced_count + worsened_count` is the true

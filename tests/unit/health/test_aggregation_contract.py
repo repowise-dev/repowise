@@ -268,6 +268,35 @@ def test_the_history_category_reports_the_cap_it_was_scored_under() -> None:
     assert by_cat[HISTORY_CATEGORY]["capped"] is True
 
 
+def test_destacked_history_under_its_cap_is_not_flagged_capped() -> None:
+    """History findings de-stack before the cap; that alone is not a cap binding."""
+    from repowise.core.analysis.health.scoring import HISTORY_CATEGORY
+
+    shape = _Finding(_category_biomarker("structural_complexity"), health_impact=2.5)
+    top = _Finding("prior_defect", severity="critical", health_impact=2.0)
+    rest = _Finding("prior_defect", severity="high", health_impact=0.3)
+    history = {c["category"]: c for c in score_breakdown([shape, top, rest])["categories"]}[
+        HISTORY_CATEGORY
+    ]
+    assert history["raw_deduction"] == 2.3
+    assert [f["raw_impact"] for f in history["findings"]] == [2.0, 0.3]
+    assert history["capped"] is False
+
+
+def test_a_governance_finding_does_not_reshape_the_history_breakdown() -> None:
+    """Governance findings are written after scoring, so they add no raw history."""
+    from repowise.core.analysis.health.scoring import HISTORY_CATEGORY
+
+    shape = _Finding(_category_biomarker("structural_complexity"), health_impact=2.5)
+    real = _Finding("prior_defect", severity="high", health_impact=1.2)
+    governance = _Finding("ungoverned_hotspot", severity="critical", health_impact=0.0)
+    history = {c["category"]: c for c in score_breakdown([shape, real, governance])["categories"]}[
+        HISTORY_CATEGORY
+    ]
+    assert [f["raw_impact"] for f in history["findings"]] == [1.2, 0.0]
+    assert history["capped"] is False
+
+
 def test_a_category_with_no_findings_is_absent_rather_than_zero_filled() -> None:
     biomarker = _category_biomarker("structural_complexity")
     out = score_breakdown([_Finding(biomarker, health_impact=1.0)])

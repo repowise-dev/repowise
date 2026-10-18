@@ -316,6 +316,8 @@ function DrawerBody(props: HealthFileDrawerProps & { metric: HealthDrawerMetric 
       <VerdictSection
         metric={metric}
         trend={props.trend}
+        breakdown={props.breakdown}
+        signals={signals}
         model={model}
         planTarget={planTarget}
         fullPage={props.permalinkHref ?? props.fileViewHref}

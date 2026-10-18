@@ -369,7 +369,7 @@ def _walk_function_body(
 
     ``bumps`` counts how many *direct* children of the function body
     contain nested control flow that reaches a depth of ≥ 2. A function
-    with several heavy independent branches is "bumpy".
+    with several heavy independent branches has repeated nesting.
 
     ``complex_conditions`` is an additive side-channel — collected for
     every branch/loop/case construct encountered. The CCN / cognitive

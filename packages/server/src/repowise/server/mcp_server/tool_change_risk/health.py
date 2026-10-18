@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections import OrderedDict
 from typing import Any
@@ -110,19 +111,60 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
     return service
 
 
+async def _index_dependents(ctx: Any) -> dict[str, int] | None:
+    """The index's dependents count per file, or ``None`` with no readable index."""
+    from repowise.core.analysis.change_health.index_context import index_dependents
+    from repowise.core.persistence.database import get_session
+
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is None:
+        return None
+    try:
+        async with get_session(session_factory) as session:
+            repository = await _pkg._get_repo(session)
+            return await index_dependents(session, repository.id)
+    except Exception as exc:
+        # An input that sharpens the delta, never a reason to fail the call.
+        log.warning("change_health_index_dependents_failed", error=str(exc))
+        return None
+
+
+async def _delta_with_index(
+    ctx: Any,
+    revspec: str | None,
+    extensions: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+    include_paths: tuple[str, ...],
+) -> Any:
+    """Read the index's dependents, then compare off the event loop."""
+    dependents = await _index_dependents(ctx)
+    return await asyncio.to_thread(
+        _pkg._compare_health,
+        str(ctx.path),
+        revspec,
+        extensions,
+        exclude_patterns,
+        include_paths,
+        dependents,
+    )
+
+
 def _compare_health(
     repo_path: str,
     revspec: str | None,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
     include_paths: tuple[str, ...] = (),
+    dependents: dict[str, int] | None = None,
 ) -> Any:
     """Run the comparison, degrading to an explicit unavailable state."""
     from repowise.core.analysis.change_health.models import ChangeHealthDelta
 
     try:
         return _pkg._delta_service(repo_path).compare(
-            DeltaRequest(repo_path, revspec, extensions, exclude_patterns, include_paths)
+            DeltaRequest(
+                repo_path, revspec, extensions, exclude_patterns, include_paths, dependents
+            )
         )
     except Exception as exc:
         log.warning("change_health_comparison_failed", revspec=revspec, error=str(exc))

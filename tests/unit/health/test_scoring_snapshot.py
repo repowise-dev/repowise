@@ -70,8 +70,7 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
     # floored - fired widely but weak/non-predictive at T0
     "developer_congestion": 0.5,
     "low_cohesion": 0.5,
-    "brain_method": 0.5,
-    "bumpy_road": 0.5,
+    "repeated_nesting": 0.5,
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,
@@ -90,7 +89,7 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "low_cohesion": "structural_complexity",
     "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
-    "bumpy_road": "structural_complexity",
+    "repeated_nesting": "structural_complexity",
     "complex_conditional": "structural_complexity",
     "complex_method": "size_and_complexity",
     "large_method": "size_and_complexity",
@@ -154,7 +153,7 @@ def _result(biomarker: str, severity: Severity) -> BiomarkerResult:
 def test_known_fixture_score_is_stable():
     """A handcrafted finding set should produce a known, fixed score."""
     findings = [
-        _result("brain_method", Severity.CRITICAL),
+        _result("low_cohesion", Severity.CRITICAL),
         _result("nested_complexity", Severity.HIGH),
         _result("complex_method", Severity.MEDIUM),
         _result("untested_hotspot", Severity.HIGH),
@@ -162,7 +161,7 @@ def test_known_fixture_score_is_stable():
     ]
     scores, _ = score_file(findings)
     # Math (defect-calibrated weights):
-    #   structural   = brain(2.0*0.5) + nested(1.2*1.34) = 1.0 + 1.608 = 2.608 -> capped at 2.5
+    #   structural   = cohesion(2.0*0.5) + nested(1.2*1.34) = 1.0 + 1.608 = 2.608 -> capped at 2.5
     #   size_and_cx  = complex_method 0.7 * 1.21 = 0.847   (under 1.5 cap)
     #   coverage     = untested_hotspot 1.2 * 1.3 = 1.56   (under 2.0 cap)
     #   organizational = knowledge_loss 0.3 * 0.4 = 0.12   (under 3.5 cap)
@@ -172,7 +171,7 @@ def test_known_fixture_score_is_stable():
 
 def test_category_cap_clamps_score():
     """Many critical structural findings should not exceed the -2.5 cap."""
-    findings = [_result("brain_method", Severity.CRITICAL) for _ in range(10)]
+    findings = [_result("low_cohesion", Severity.CRITICAL) for _ in range(10)]
     scores, _ = score_file(findings)
     # Cap at -2.5, so floor on this category alone is 7.5.
     assert scores["defect"] == 7.5
@@ -240,9 +239,10 @@ def test_organizational_cap_bounds_stream():
 
 def test_history_cap_follows_structure():
     """Each point of code-shape deduction lets history deduct one more, to 3.5."""
-    history = [_result("prior_defect", Severity.CRITICAL) for _ in range(3)]  # 6.0 raw
-    # structure 2.5 (brain_method x 3 -> structural cap) -> history cap 3.5
-    shaped = [*history, *(_result("brain_method", Severity.CRITICAL) for _ in range(3))]
+    # 2.0 + 0.25 x 10.0 = 4.5 de-stacked
+    history = [_result("prior_defect", Severity.CRITICAL) for _ in range(6)]
+    # structure 2.5 (low_cohesion x 3 -> structural cap) -> history cap 3.5
+    shaped = [*history, *(_result("low_cohesion", Severity.CRITICAL) for _ in range(3))]
     scores, _ = score_file(shaped)
     assert round(scores["defect"], 6) == round(10.0 - 2.5 - 3.5, 6)
     # structure 0.847 (one MEDIUM complex_method) -> history cap 1.847
@@ -251,6 +251,19 @@ def test_history_cap_follows_structure():
     assert round(scores["defect"], 6) == round(10.0 - 0.847 - 1.847, 6)
     # impacts still sum to the deduction the score was computed from
     assert round(sum(ded), 6) == round(0.847 + 1.847, 6)
+
+
+def test_history_markers_destack():
+    """The largest history finding counts whole, every other one at a quarter."""
+    shaped = [_result("low_cohesion", Severity.CRITICAL) for _ in range(3)]  # structure 2.5
+    history = [
+        _result("prior_defect", Severity.CRITICAL),  # 2.0
+        _result("change_entropy", Severity.HIGH),  # 1.2 x 1.51 = 1.812
+    ]
+    scores, ded = score_file([*shaped, *history])
+    # 2.0 + 0.25 x 1.812 = 2.453, under the 3.5 cap
+    assert round(scores["defect"], 6) == round(10.0 - 2.5 - 2.453, 6)
+    assert [round(d, 6) for d in ded[3:]] == [2.0, 0.453]
 
 
 def test_improving_code_never_lowers_score():

@@ -1,25 +1,14 @@
 """Per-file score aggregation + repo-level KPIs.
 
-Each file starts at 10.0. Biomarker findings deduct; deductions are
-capped per category so no single category can drive the score below the
-cap. Final score is clamped to [1.0, 10.0].
-
-The recalibrated category caps (plan §3.1):
-
-    organizational        -> -3.5   # ceiling; the live cap is history_cap()
-    structural_complexity -> -2.5   # was -3.5
-    test_coverage         -> -2.0
-    size_and_complexity   -> -1.5   # was -2.0
-    duplication           -> -1.0   # was -1.5
-
-Per-biomarker weight multipliers (plan §3.2 Option A) are applied to
-the per-finding raw deduction *before* category capping, so the strongest
-empirical predictors are no longer suppressed by uniform severity values.
+Each file starts at 10.0. Biomarker findings deduct; each finding's severity
+deduction is scaled by its biomarker's weight, then capped per category
+(:data:`CATEGORY_CAPS`; history by :func:`history_cap`). The final score is
+clamped to [1.0, 10.0].
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -90,11 +79,13 @@ HISTORY_CATEGORY = "organizational"
 # broken. History therefore amplifies code risk rather than standing alone: its
 # cap is 1.0 plus one point per point of structure deduction (every other defect
 # category, already capped), up to the category's 3.5. A file with no code-shape
-# finding keeps at least 9.0. Checked against the defect benchmark: no
-# measurable predictive cost. The weights are unchanged; fit the base and slope
-# with them in the next calibration pass.
+# finding keeps at least 9.0. Against a flat 3.5 cap this costs about 0.009
+# defect AUC; it is kept so a refactor can lift a file that history holds down.
 HISTORY_CAP_BASE: float = 1.0
 HISTORY_CAP_PER_STRUCTURE: float = 1.0
+# History markers restate one another (a busy file trips churn, entropy and
+# scatter together), so after the largest each one adds only this share.
+HISTORY_STACK_SHARE: float = 0.25
 
 
 def history_cap(structure: float) -> float:
@@ -104,6 +95,14 @@ def history_cap(structure: float) -> float:
         CATEGORY_CAPS[HISTORY_CATEGORY],
         HISTORY_CAP_BASE + HISTORY_CAP_PER_STRUCTURE * max(structure, 0.0),
     )
+
+
+def destacked(values: Sequence[float]) -> list[float]:
+    """*values* with the largest kept whole and every other one scaled by :data:`HISTORY_STACK_SHARE`."""
+    if not values:
+        return []
+    top = max(range(len(values)), key=values.__getitem__)
+    return [v if i == top else v * HISTORY_STACK_SHARE for i, v in enumerate(values)]
 
 
 # Per-biomarker deduction by severity. The scorer caps the per-category
@@ -125,9 +124,8 @@ _SEVERITY_DEDUCTION: dict[Severity, float] = {
 # L2-regularized logistic regression of "received a bug-fix in (T0,T1]" on the
 # per-biomarker hits PLUS an explicit NLOC control column - so each weight
 # reflects the biomarker's defect lift *beyond file size*. Cross-project
-# (leave-one-repo-out) pooled OOF AUC ~ 0.70. The fit is reproduced by
-# `local-stash/calibrate_health_weights.py`; the runtime stays pure-
-# deterministic / zero-LLM - only these learned constants ship.
+# (leave-one-repo-out) pooled OOF AUC ~ 0.70. Method and later re-fits:
+# docs/architecture/code-health.md. Only these learned constants ship.
 #
 # Mapping policy ("balanced"): positive, well-measured predictors are scaled
 # into [1.0, 1.8] ∝ coefficient; biomarkers that fired widely but were weak/
@@ -152,15 +150,10 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "complex_method": 1.21,
     "function_hotspot": 1.16,
     "god_class": 1.13,
-    # Prior-defect history (recent bug-fix count). NEUTRAL weight by design, not
-    # a boost: on the 13-repo corpus its calibrated coefficient is ~+0.02 (no lift
-    # beyond size + the existing process signals - it correlates +0.59 with
-    # change_entropy, +0.38 with churn) and the effort-aware Popt gain is +0.01
-    # with bootstrap CIs straddling zero. So it ships as an interpretable,
-    # leakage-free finding ("bug-fixed N times recently" - directly actionable,
-    # and it uniquely flags a handful of files the other signals miss), NOT as a
-    # calibrated predictor. See local-stash/{calibrate_health_weights,
-    # measure_prior_defect,diagnose_prior_defect}.py + the progress doc Phase 8.5.
+    # Prior-defect history (recent bug-fix count). Neutral weight: its 21-repo
+    # coefficient is positive (+0.13 keyword labels, CI spans zero; +0.23 SZZ
+    # labels) but it correlates with change_entropy and churn, so it is kept at
+    # 1.0 as an interpretable finding rather than boosted.
     "prior_defect": 1.0,
     # --- kept at prior: benchmark could not fairly measure these ---
     "untested_hotspot": 1.3,  # benchmark ingests no coverage (has_test_file fallback only)
@@ -169,8 +162,7 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     # --- floored: fired widely but weak / non-predictive at T0 ---
     "developer_congestion": 0.5,  # was 1.5 - the HEAD-leakage hero; weak under T0
     "low_cohesion": 0.5,
-    "brain_method": 0.5,
-    "bumpy_road": 0.5,
+    "repeated_nesting": 0.5,
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,  # confirmed weak-negative since Phase 1
@@ -196,7 +188,7 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "low_cohesion": "structural_complexity",
     "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
-    "bumpy_road": "structural_complexity",
+    "repeated_nesting": "structural_complexity",
     "complex_conditional": "structural_complexity",
     "complex_method": "size_and_complexity",
     "large_method": "size_and_complexity",
@@ -273,7 +265,6 @@ ZERO_IMPACT_DIMENSIONS: frozenset[str] = frozenset({"performance", ADVISORY_DIME
 _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # Floored-in-defect maintainability smells -> full weight in maintainability.
     "low_cohesion": {"defect", "maintainability"},
-    "brain_method": {"defect", "maintainability"},
     "primitive_obsession": {"defect", "maintainability"},
     "dry_violation": {"defect", "maintainability"},
     "error_handling": {"defect", "maintainability"},
@@ -288,7 +279,7 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # maintainability problem whether or not it is also a defect predictor.
     "complex_method": {"defect", "maintainability"},
     "complex_conditional": {"defect", "maintainability"},
-    "bumpy_road": {"defect", "maintainability"},
+    "repeated_nesting": {"defect", "maintainability"},
     # Performance-risk detectors contribute to ``performance`` ONLY. They are
     # NOT defect predictors and must never move the surfaced (defect) score -
     # that exclusion is what keeps the defect golden guarantee intact.
@@ -332,6 +323,9 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # Near-chance defect AUC alone, and dropping it was non-inferior on a fresh
     # 12-repo pre-registered test (docs/architecture/code-health.md).
     "hidden_coupling": {ADVISORY_DIMENSION},
+    # Fires only beside complex_method and large_method on the same function, so
+    # scoring it charged that function twice; dropping it moved no defect AUC.
+    "brain_method": {ADVISORY_DIMENSION},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -341,7 +335,6 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
 # below, never against the defect corpus. Unknown biomarkers fall back to 1.0.
 _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
     "low_cohesion": 1.0,
-    "brain_method": 1.0,
     "primitive_obsession": 1.0,
     "dry_violation": 1.0,
     "error_handling": 1.0,
@@ -350,7 +343,7 @@ _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
     "nested_complexity": 1.0,
     "complex_method": 1.0,
     "complex_conditional": 1.0,
-    "bumpy_road": 1.0,
+    "repeated_nesting": 1.0,
     # SQL smells ship advisory (0.7) pending a precision spot-check on a
     # migrations-heavy corpus, mirroring how new perf markers land.
     "sql_high_complexity": 0.7,
@@ -361,13 +354,12 @@ _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
 # Maintainability category per biomarker - an OWN table, independent of the
 # defect category map, so the two dimensions can be retuned separately.
 _MAINTAINABILITY_CATEGORY: dict[str, str] = {
-    "brain_method": "structural_complexity",
     "low_cohesion": "structural_complexity",
     "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
     "large_method": "structural_complexity",
     "complex_conditional": "structural_complexity",
-    "bumpy_road": "structural_complexity",
+    "repeated_nesting": "structural_complexity",
     "complex_method": "size_and_complexity",
     "primitive_obsession": "size_and_complexity",
     "dry_violation": "duplication",
@@ -398,7 +390,6 @@ _MAINTAINABILITY_CATEGORY_CAPS: dict[str, float] = {
 _MAINTAINABILITY_HOME: frozenset[str] = frozenset(
     {
         "low_cohesion",
-        "brain_method",
         "primitive_obsession",
         "dry_violation",
         "error_handling",
@@ -556,7 +547,7 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
 # The display half of the pairing above; ``test_advisory_dimension.py`` locks
 # the two together for every registered biomarker.
 _ADVISORY_HOME: frozenset[str] = frozenset(
-    {"assertion_free_test", "mock_saturated_test", "hidden_coupling"}
+    {"assertion_free_test", "mock_saturated_test", "hidden_coupling", "brain_method"}
 )
 
 
@@ -633,6 +624,50 @@ def performance_category(name: str) -> str:
     return _PERFORMANCE_CATEGORY.get(name, "performance")
 
 
+# Per category: ``(index into the scored results, weighted deduction)``.
+_Entries = dict[str, list[tuple[int, float]]]
+
+
+def _weighted_by_category(
+    results_list: list[BiomarkerResult],
+    weight_fn: Callable[[BiomarkerResult], float],
+    category_fn: Callable[[str], str],
+) -> _Entries:
+    """Each finding's ``base x weight``, grouped by category."""
+    raw: _Entries = {}
+    for idx, r in enumerate(results_list):
+        # A continuous ``deduction`` override (coverage scaled by the uncovered
+        # fraction) takes the place of the severity table, so its impact stays linear.
+        base = r.deduction if r.deduction is not None else severity_deduction(r.severity)
+        raw.setdefault(category_fn(r.biomarker_type), []).append((idx, base * weight_fn(r)))
+    return raw
+
+
+def _condition(
+    raw: _Entries, caps: dict[str, float], conditioned_cap: tuple[str, Callable[[float], float]]
+) -> dict[str, float]:
+    """De-stack the conditioned category in place and return its live cap."""
+    cond_cat, cap_fn = conditioned_cap
+    others = sum(
+        min(sum(d for _, d in entries), caps.get(cat, 1.0))
+        for cat, entries in raw.items()
+        if cat != cond_cat
+    )
+    if cond_cat in raw:
+        idxs, values = zip(*raw[cond_cat], strict=True)
+        raw[cond_cat] = list(zip(idxs, destacked(values), strict=True))
+    return {cond_cat: cap_fn(others)}
+
+
+def _capped(entries: list[tuple[int, float]], cap: float, per_result: list[float]) -> float:
+    """Write each entry's share of the capped category total; return that total."""
+    cat_sum = sum(d for _, d in entries)
+    scale = 1.0 if cat_sum <= cap else cap / cat_sum
+    for idx, d in entries:
+        per_result[idx] = d * scale
+    return min(cat_sum, cap)
+
+
 def _score_dimension(
     results_list: list[BiomarkerResult],
     weight_fn: Callable[[BiomarkerResult], float],
@@ -646,46 +681,18 @@ def _score_dimension(
     category, cap each category, clamp to ``[1.0, 10.0]``. Every dimension runs
     the identical algorithm against its own weight / category / cap tables.
 
-    *conditioned_cap* ``(category, cap_fn)`` replaces that one category's cap
-    with ``cap_fn(sum of every other category's capped total)``; only the
-    defect dimension uses it, for the history category.
+    *conditioned_cap* ``(category, cap_fn)`` de-stacks that one category's
+    findings (:func:`destacked`) and replaces its cap with ``cap_fn(sum of every
+    other category's capped total)``; only the defect dimension uses it, for the
+    history category.
     """
-    raw: dict[str, list[tuple[int, float]]] = {}
-    for idx, r in enumerate(results_list):
-        cat = category_fn(r.biomarker_type)
-        # A continuous ``deduction`` override (e.g. coverage scaled by the
-        # uncovered fraction) takes the place of the discrete severity table;
-        # both paths are then weighted and category-capped identically, so the
-        # per-finding ``health_impact`` stays linear and attributable.
-        base = r.deduction if r.deduction is not None else severity_deduction(r.severity)
-        weighted = base * weight_fn(r)
-        raw.setdefault(cat, []).append((idx, weighted))
-
+    raw = _weighted_by_category(results_list, weight_fn, category_fn)
+    cap_for = _condition(raw, caps, conditioned_cap) if conditioned_cap else {}
     per_result = [0.0] * len(results_list)
-    total = 0.0
-    cap_for: dict[str, float] = {}
-    if conditioned_cap is not None:
-        cond_cat, cap_fn = conditioned_cap
-        others = sum(
-            min(sum(d for _, d in entries), caps.get(cat, 1.0))
-            for cat, entries in raw.items()
-            if cat != cond_cat
-        )
-        cap_for[cond_cat] = cap_fn(others)
-    for cat, entries in raw.items():
-        cap = cap_for.get(cat, caps.get(cat, 1.0))
-        cat_sum = sum(d for _, d in entries)
-        if cat_sum <= cap:
-            for idx, d in entries:
-                per_result[idx] = d
-            total += cat_sum
-        else:
-            # Scale down proportionally so the cap is respected.
-            scale = cap / cat_sum if cat_sum > 0 else 0.0
-            for idx, d in entries:
-                per_result[idx] = d * scale
-            total += cap
-
+    total = sum(
+        _capped(entries, cap_for.get(cat, caps.get(cat, 1.0)), per_result)
+        for cat, entries in raw.items()
+    )
     score = max(SCORE_FLOOR, min(SCORE_MAX, SCORE_MAX - total))
     return score, per_result
 

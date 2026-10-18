@@ -12,6 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .....analysis.finding_registry import excluded_types
+from .....analysis.health.biomarker_names import canonical_biomarker
 from .....analysis.health.finding_identity import (
     finding_public_id,
     legacy_finding_public_id,
@@ -342,7 +343,9 @@ async def get_health_findings(
     # Accept a comma-separated list so a caller can pull several biomarker
     # types in one request (e.g. the function-level + coupling panels).
     # A single value with no comma still matches exactly (``IN`` of one).
-    types = [t.strip() for t in (biomarker_type or "").split(",") if t.strip()]
+    types = [
+        canonical_biomarker(t.strip()) for t in (biomarker_type or "").split(",") if t.strip()
+    ]
     if types:
         q = q.where(HealthFinding.biomarker_type.in_(types))
     if not include_withheld:

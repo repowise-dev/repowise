@@ -441,6 +441,7 @@ export interface ChangeHealthFindingResponse {
   line_end?: number | null;
   attribution_basis: string;
   reason: string;
+  moved_from?: MovedFromResponse | null;
   sha: string;
 }
 
@@ -883,6 +884,7 @@ export interface CommitHealthFindingResponse {
   line_end?: number | null;
   attribution_basis: string;
   reason: string;
+  moved_from?: MovedFromResponse | null;
 }
 
 /**
@@ -898,6 +900,8 @@ export interface CommitHealthResponse {
   introduced_count: number;
   worsened_count: number;
   resolved_count: number;
+  improved_count?: number;
+  moved_count?: number;
   files_analyzed: number;
   files_skipped: number;
   findings?: CommitHealthFindingResponse[];
@@ -2649,6 +2653,12 @@ export interface ModuleNodeResponse {
   dead_count?: number;
   has_decision?: boolean;
   primary_owner?: string | null;
+}
+
+/** Where a finding's code was before the commit moved it. */
+export interface MovedFromResponse {
+  path: string;
+  symbol?: string | null;
 }
 
 export interface NeighboringCommunity {

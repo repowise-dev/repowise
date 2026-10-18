@@ -24,6 +24,7 @@ from repowise.core.analysis.history import (
 )
 from repowise.core.persistence import crud
 from repowise.core.persistence.sql import is_missing_table
+from repowise.server.schemas.git import MovedFromResponse
 from repowise.server.schemas.history import (
     FileScoreShiftResponse,
     HealthDeltaSummaryResponse,
@@ -103,6 +104,11 @@ def finding_fields(row: Any) -> dict:
         "line_end": row.line_end,
         "attribution_basis": row.attribution_basis,
         "reason": row.reason,
+        "moved_from": (
+            MovedFromResponse(path=row.moved_from_path, symbol=row.moved_from_symbol)
+            if row.moved_from_path
+            else None
+        ),
     }
 
 

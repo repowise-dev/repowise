@@ -262,6 +262,13 @@ class RiskDriverResponse(BaseModel):
     label: str
 
 
+class MovedFromResponse(BaseModel):
+    """Where a finding's code was before the commit moved it."""
+
+    path: str
+    symbol: str | None = None
+
+
 class CommitHealthFindingResponse(BaseModel):
     """One thing a commit introduced or worsened."""
 
@@ -280,6 +287,8 @@ class CommitHealthFindingResponse(BaseModel):
     #: merely touched.
     attribution_basis: str
     reason: str
+    #: Set when the commit moved this finding's code here from another file.
+    moved_from: MovedFromResponse | None = None
 
 
 class CommitHealthResponse(BaseModel):
@@ -299,6 +308,10 @@ class CommitHealthResponse(BaseModel):
     introduced_count: int
     worsened_count: int
     resolved_count: int
+    #: Findings whose metric dropped, at the same place or after a move.
+    improved_count: int = 0
+    #: Findings carried to another file with their code; a worsened or improved one is in that count too.
+    moved_count: int = 0
     files_analyzed: int
     files_skipped: int
     #: Worst first, capped. ``introduced_count + worsened_count`` is the true

@@ -294,6 +294,8 @@ async def _commit_health(
         introduced_count=delta.introduced_count,
         worsened_count=delta.worsened_count,
         resolved_count=delta.resolved_count,
+        improved_count=delta.improved_count,
+        moved_count=delta.moved_count,
         files_analyzed=delta.files_analyzed,
         files_skipped=delta.files_skipped,
         findings=[CommitHealthFindingResponse(**finding_fields(f)) for f in rows],

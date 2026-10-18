@@ -164,6 +164,9 @@ export const HEALTH_BAND_RANGE_LABEL: Record<HealthBand, string> = {
   at_risk: "under 4.0",
 };
 
+/** The lowest score a file can show. Mirror of `SCORE_FLOOR` in core scoring. */
+export const SCORE_FLOOR = 1.0;
+
 /**
  * Pure score -> band mapping. Mirror of `grading.band_for` in core. Prefer the
  * API-provided `band` where available; use this only when deriving locally.
@@ -1067,6 +1070,8 @@ export interface FileSignals {
   bug_magnet: boolean | null;
   last_fix_at: string | null;
   fix_symbol_counts: Record<string, number> | null;
+  // "short": too few recorded commits for most history markers to fire.
+  history?: "short" | null;
 }
 
 /* ------------------------------------------------------------------ *
