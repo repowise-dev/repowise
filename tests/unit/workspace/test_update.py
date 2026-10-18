@@ -615,6 +615,106 @@ class TestUpdateWorkspace:
         updated = [r for r in results if r.updated]
         assert len(updated) == 0
 
+    def test_post_update_state_write_error_reports_repo_alias(self, tmp_path: Path) -> None:
+        """A failure in _write_repo_state reports that repo's alias and calls on_repo_done."""
+        import asyncio
+
+        from repowise.core.workspace.update import workspace_pass as wp
+
+        web = _make_git_repo(tmp_path, "web")
+        core = _make_git_repo(tmp_path, "core")
+        web_old = get_head_commit(web)
+        core_old = get_head_commit(core)
+        _write_state(web, web_old)
+        _write_state(core, core_old)
+        _add_commit(web, "w.txt")
+        _add_commit(core, "c.txt")
+
+        ws_config = WorkspaceConfig(
+            repos=[
+                RepoEntry(path="web", alias="web", last_commit_at_index=web_old),
+                RepoEntry(path="core", alias="core", last_commit_at_index=core_old),
+            ],
+            default_repo="web",
+        )
+        ws_config.save(tmp_path)
+
+        orig_write = wp._write_repo_state
+
+        def _failing_write(path: Path, alias: str, *args, **kwargs) -> None:
+            if alias == "web":
+                raise OSError("disk full")
+            orig_write(path, alias, *args, **kwargs)
+
+        done_results: list[RepoUpdateResult] = []
+
+        async def _fake_update(_path: Path, **_kwargs) -> RepoUpdateResult:
+            return RepoUpdateResult(alias="", updated=True, file_count=1, symbol_count=1)
+
+        async def _run():
+            with (
+                patch.object(wp, "update_single_repo_index", side_effect=_fake_update),
+                patch.object(wp, "_write_repo_state", side_effect=_failing_write),
+                patch.object(wp, "reconcile_repo_head_commit", new_callable=AsyncMock),
+                patch(
+                    "repowise.core.workspace.update.workspace_pass.run_cross_repo_hooks",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                return await update_workspace(
+                    tmp_path, ws_config, on_repo_done=done_results.append
+                )
+
+        results = asyncio.run(_run())
+        by_alias = {r.alias: r for r in results}
+        assert set(by_alias) == {"web", "core"}
+        assert by_alias["web"].updated is False
+        assert by_alias["web"].error == "disk full"
+        assert by_alias["core"].updated is True
+        assert by_alias["core"].error is None
+        assert {r.alias for r in done_results} == {"web", "core"}
+
+    def test_cancelled_repo_update_propagates_and_releases_workspace_lock(
+        self, tmp_path: Path
+    ) -> None:
+        """A CancelledError inside update_single_repo_index propagates cleanly and releases the workspace lock."""
+        import asyncio
+
+        from repowise.core.update_lock import workspace_update_lock_path
+
+        repo = _make_git_repo(tmp_path, "api")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "new.txt")
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="api", alias="api", last_commit_at_index=old_head)],
+            default_repo="api",
+        )
+        ws_config.save(tmp_path)
+
+        async def _run():
+            with patch(
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
+                new_callable=AsyncMock,
+                side_effect=asyncio.CancelledError,
+            ):
+                return await update_workspace(tmp_path, ws_config)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(_run())
+
+        assert not workspace_update_lock_path(tmp_path).exists()
+
+    def test_collect_update_results_reraises_cancelled_error(self) -> None:
+        import asyncio
+
+        from repowise.core.workspace.update.workspace_pass import _collect_update_results
+
+        results: list[RepoUpdateResult] = []
+        with pytest.raises(asyncio.CancelledError):
+            _collect_update_results([asyncio.CancelledError()], results)
+
 
 # ---------------------------------------------------------------------------
 # Workspace-level single-flight (issue #1831)
