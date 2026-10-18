@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.history import (
+    DeltaStamp,
     HealthRollup,
     PeriodHealthSummary,
     matches_delta,
@@ -24,7 +25,7 @@ from repowise.core.analysis.history import (
 from repowise.core.persistence import crud
 from repowise.server.schemas.changes import ChangeHealthFindingResponse, ChangeHealthResponse
 
-from .health import current_stamp, finding_fields, rollup_fields, stored_deltas
+from .health import finding_fields, rollup_fields, stored_deltas
 
 #: Worse findings a change detail carries for a fix prompt; the counts are whole.
 DETAIL_FINDINGS = 50
@@ -63,12 +64,13 @@ class ChangeHealth:
 
 
 async def change_health(
-    session: AsyncSession, repo_id: str, changes: Sequence[ChangeInputs]
+    session: AsyncSession, repo_id: str, changes: Sequence[ChangeInputs], stamp: DeltaStamp
 ) -> dict[str, ChangeHealth]:
-    """``change_id -> rollup and hotspot touches`` for *changes*, in three reads."""
+    """``change_id -> rollup and hotspot touches`` for *changes*, in three reads.
+
+    A rollup is an aggregate: rows under the current *stamp* only, the rest unscanned.
+    """
     shas = [sha for c in changes for sha in c.shas]
-    # A rollup is an aggregate: current-analyzer rows only, the rest unscanned.
-    stamp = await current_stamp(session, repo_id)
     deltas = await stored_deltas(session, repo_id, shas, stamp, current_only=True)
     worse_paths = await crud.get_worse_paths_bulk(session, repo_id, list(deltas))
     hotspots = await crud.get_hotspot_paths(session, repo_id)
@@ -93,6 +95,7 @@ async def narrow_by_health(
     session: AsyncSession,
     repo_id: str,
     where: crud.ChangeFilter,
+    stamp: DeltaStamp,
     *,
     delta: str | None,
     touches_hotspot: bool,
@@ -111,7 +114,7 @@ async def narrow_by_health(
     if not delta and not touches_hotspot:
         return where
     inputs = await _matching_inputs(session, repo_id, where)
-    health = await change_health(session, repo_id, inputs)
+    health = await change_health(session, repo_id, inputs, stamp)
     keep = [
         c.change_id
         for c in inputs
@@ -132,13 +135,14 @@ async def change_period_summary(
     session: AsyncSession,
     repo_id: str,
     where: crud.ChangeFilter,
+    stamp: DeltaStamp,
     *,
     delta: str | None = None,
     touches_hotspot: bool = False,
 ) -> PeriodHealthSummary:
     """How many changes under the filters made health better, worse, both or neither."""
     inputs = await _matching_inputs(session, repo_id, where)
-    health = await change_health(session, repo_id, inputs)
+    health = await change_health(session, repo_id, inputs, stamp)
     return summarize_period(
         health[c.change_id].rollup
         for c in inputs
@@ -147,10 +151,10 @@ async def change_period_summary(
 
 
 async def change_detail_health(
-    session: AsyncSession, repo_id: str, change: ChangeInputs
+    session: AsyncSession, repo_id: str, change: ChangeInputs, stamp: DeltaStamp
 ) -> tuple[ChangeHealthResponse | None, int]:
     """A change detail's health block, with its worse findings, and hotspot touches."""
-    got = (await change_health(session, repo_id, [change]))[change.change_id]
+    got = (await change_health(session, repo_id, [change], stamp))[change.change_id]
     if got.rollup is None:
         return None, got.touches_hotspot
     rows = await crud.get_commit_findings_bulk(

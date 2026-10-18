@@ -369,12 +369,8 @@ async def get_commits(
     # The high band is a tercile of the repo's own scores, so the boundary has
     # to be resolved before the page is cut rather than derived per row.
     high_cut = normalizer.high_cut
-    where = params.commit_filter(
-        authorship=authorship,
-        kind=kind,
-        high_cut=high_cut,
-        stamp=await current_stamp(session, repo_id),
-    )
+    stamp = await current_stamp(session, repo_id)
+    where = params.commit_filter(authorship=authorship, kind=kind, high_cut=high_cut, stamp=stamp)
     total = await crud.count_git_commits(session, repo_id, where=where)
     rows = await crud.get_git_commits(
         session,
@@ -385,7 +381,7 @@ async def get_commits(
         where=where,
     )
     author_counts = await _author_commit_counts(session, repo_id)
-    history = await commit_history(session, repo_id, [r.sha for r in rows])
+    history = await commit_history(session, repo_id, [r.sha for r in rows], stamp)
     items = [
         _commit_from_row(
             r, normalizer, author_counts, attribution_on=attribution_on, history=history
@@ -652,9 +648,8 @@ async def get_commit(
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
     author_counts = await _author_commit_counts(session, repo_id)
     files = await _commit_files(session, repo_id, row.sha)
-    health = await _commit_health(
-        session, repo_id, row.sha, await current_stamp(session, repo_id)
-    )
+    stamp = await current_stamp(session, repo_id)
+    health = await _commit_health(session, repo_id, row.sha, stamp)
     return _commit_detail_from_row(
         row,
         normalizer,
@@ -662,7 +657,7 @@ async def get_commit(
         files,
         health,
         attribution_on=await repo_attribution_on(session, repo_id),
-        history=await commit_history(session, repo_id, [row.sha]),
+        history=await commit_history(session, repo_id, [row.sha], stamp),
     )
 
 

@@ -7,10 +7,15 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.history import HealthDeltaSummary, PeriodHealthSummary, summarize_period
+from repowise.core.analysis.history import (
+    DeltaStamp,
+    HealthDeltaSummary,
+    PeriodHealthSummary,
+    summarize_period,
+)
 from repowise.core.persistence import crud
 
-from .health import current_stamp, delta_response, stored_deltas
+from .health import delta_response, stored_deltas
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,10 +33,11 @@ class CommitHistory:
         }
 
 
-async def commit_history(session: AsyncSession, repo_id: str, shas: Sequence[str]) -> CommitHistory:
+async def commit_history(
+    session: AsyncSession, repo_id: str, shas: Sequence[str], stamp: DeltaStamp
+) -> CommitHistory:
     """Two bulk reads for the whole page, whatever its size. A row from an older
     analyzer shows, flagged stale."""
-    stamp = await current_stamp(session, repo_id)
     return CommitHistory(
         deltas=await stored_deltas(session, repo_id, shas, stamp, current_only=False),
         hotspots=await crud.count_hotspot_files_bulk(session, repo_id, shas),

@@ -48,7 +48,11 @@ from repowise.server.services.history.changes import (
     change_period_summary,
     narrow_by_health,
 )
-from repowise.server.services.history.health import period_response, rollup_response
+from repowise.server.services.history.health import (
+    current_stamp,
+    period_response,
+    rollup_response,
+)
 
 router = APIRouter(
     prefix="/api/repos",
@@ -96,10 +100,12 @@ async def list_changes(
     to health. ``since``/``until`` read ``merged_at``; ``delta`` and
     ``touches_hotspot`` judge the change's rollup."""
     attribution = await _attribution(session, repo_id)
+    stamp = await current_stamp(session, repo_id)
     where = await narrow_by_health(
         session,
         repo_id,
         _change_filter(params, category=category, shape=shape, q=q),
+        stamp,
         delta=params.delta,
         touches_hotspot=params.touches_hotspot,
     )
@@ -109,7 +115,7 @@ async def list_changes(
         )
     else:
         rows, total = await crud.list_changes(session, repo_id, where, limit=limit, offset=offset)
-    health = await change_health(session, repo_id, [_inputs(r) for r in rows])
+    health = await change_health(session, repo_id, [_inputs(r) for r in rows], stamp)
     items = []
     for r in rows:
         item = summary_from_record(change_record(r, attribution=attribution))
@@ -161,6 +167,7 @@ async def changes_summary(
         session,
         repo_id,
         _change_filter(params, category=category),
+        await current_stamp(session, repo_id),
         delta=params.delta,
         touches_hotspot=params.touches_hotspot,
     )
@@ -185,7 +192,7 @@ async def get_change(
         raise HTTPException(status_code=404, detail="Change not found")
     record = change_record(row, attribution=attribution)
     record["health"], record["touches_hotspot"] = await change_detail_health(
-        session, repo_id, _inputs(row)
+        session, repo_id, _inputs(row), await current_stamp(session, repo_id)
     )
     if evidence:
         kept = None if refresh else cached_evidence(row)
