@@ -136,7 +136,8 @@ async def test_index_storage_bytes_moves_to_stats(client: AsyncClient, tmp_path)
     (repowise / "wiki.db").write_bytes(b"x" * 100)
 
     assert await index_storage_bytes(repo["local_path"]) == 100
-    assert await index_storage_bytes(None) == 0
+    assert await index_storage_bytes(None) is None
+    assert await index_storage_bytes(str(tmp_path / "no-index")) is None
 
     overview = await client.get(f"/api/repos/{repo['id']}/overview-summary")
     assert overview.status_code == 200

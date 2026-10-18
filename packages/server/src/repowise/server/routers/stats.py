@@ -243,6 +243,8 @@ async def stats_highlights(
         "chronotypes": activity["chronotypes"],
         "arrivals": activity["arrivals"],
     }
+    # Absent, not zero, where no local index exists to measure.
+    index_size = await index_storage_bytes(repo.local_path)
     return {
         "repo": {"id": repo.id, "name": repo.name},
         "scale": sh.build_scale(file_nodes, metrics),
@@ -251,5 +253,5 @@ async def stats_highlights(
         "rhythm": rhythm,
         "people": people,
         "records": records,
-        "index_storage_bytes": await index_storage_bytes(repo.local_path),
+        **({"index_storage_bytes": index_size} if index_size is not None else {}),
     }

@@ -19,8 +19,9 @@ def walk_index_storage_bytes(repowise_dir: Path) -> int:
     return total
 
 
-async def index_storage_bytes(local_path: str | None) -> int:
-    """``walk_index_storage_bytes`` for a repo checkout, off the event loop.
+async def index_storage_bytes(local_path: str | None) -> int | None:
+    """``walk_index_storage_bytes`` for a repo checkout, off the event loop;
+    ``None`` when there is no local index to measure.
 
     The walk is a full recursive stat of a directory that holds the vectors,
     the wiki and the symbol store, routinely hundreds of megabytes and tens of
@@ -30,5 +31,8 @@ async def index_storage_bytes(local_path: str | None) -> int:
     to stamp the size when the index is written and read the number back.
     """
     if not local_path:
-        return 0
-    return await asyncio.to_thread(walk_index_storage_bytes, Path(local_path) / ".repowise")
+        return None
+    repowise_dir = Path(local_path) / ".repowise"
+    if not repowise_dir.is_dir():
+        return None
+    return await asyncio.to_thread(walk_index_storage_bytes, repowise_dir)
