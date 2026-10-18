@@ -647,7 +647,7 @@ _SWIFT_INVOKABLE = re.compile(
 # and Swift.
 _CS_INVOKABLE = (
     re.compile(
-        r"(?<!\w)(?:[\w.]*\.)?(?:Func|Action)(?:<[^;\n=]*>)?\s+(?P<name>[A-Za-z_]\w*)\b"
+        r"(?<!\w)(?:[\w.]*\.)?(?:Func|Action)(?:<[^;\n=]*>)?\??\s+(?P<name>[A-Za-z_]\w*)\b"
     ),
     re.compile(
         r"(?<![\w.])(?P<name>[A-Za-z_]\w*)\s*=\s*(?:\([^)\n]*\)\s*=>|[A-Za-z_]\w*\s*=>|delegate\b|new\s+(?:[\w.]*\.)?(?:Func|Action)\b)"

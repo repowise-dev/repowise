@@ -140,6 +140,16 @@ public class Holder
 }
 """
 
+# A nullable delegate field (`Func<..>?`, `Action?`) still holds a function.
+CS_NULLABLE_DELEGATE_FIELD = """
+namespace App;
+
+public class Holder
+{
+    public Func<int>? Amount;
+}
+"""
+
 
 # A getter and its setter are two declarations under one id. That reads as an
 # overload set and is not one: the name is an attribute, not a callable.
@@ -237,6 +247,22 @@ class TestOverloadSetIsOneSymbol:
         edges = _edges(parsed, tmp_path)
         assert [e for e in edges if e[0].endswith("::FieldCaller::Run")], (
             f"a delegate-typed field keeps its bare-name call; edges: {edges}"
+        )
+
+    def test_a_nullable_delegate_typed_field_is_still_callable(
+        self, tmp_path: Path
+    ) -> None:
+        """A `Func<..>?` field declaration also holds the invoked function."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Holder.cs": ("csharp", CS_NULLABLE_DELEGATE_FIELD),
+                "src/FieldCaller.cs": ("csharp", CS_FIELD_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert [e for e in edges if e[0].endswith("::FieldCaller::Run")], (
+            f"a nullable delegate-typed field keeps its bare-name call; edges: {edges}"
         )
 
     def test_a_property_getter_and_setter_are_not_an_overload_set(
