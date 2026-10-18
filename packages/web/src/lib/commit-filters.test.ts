@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   commitFiltersQuery,
+  effectiveWindow,
   historyFilters,
   isNarrowed,
   parseCommitFilters,
@@ -13,6 +14,13 @@ describe("commit filters", () => {
   it("defaults to the past month and ignores junk", () => {
     const f = parseCommitFilters({ health: "nope", window: "decade", since: "yesterday" });
     expect(f).toMatchObject({ impact: "all", window: "month", hotspots: false, since: undefined });
+  });
+
+  it("drops days that do not exist rather than throwing", () => {
+    const f = parseCommitFilters({ window: "custom", since: "2026-02-31", until: "2026-13-01" });
+    expect([f.since, f.until]).toEqual([undefined, undefined]);
+    expect(effectiveWindow(f)).toBe("all");
+    expect(isNarrowed(f)).toBe(false);
   });
 
   it("keys rolling windows on the UTC day so a day's fetches agree", () => {

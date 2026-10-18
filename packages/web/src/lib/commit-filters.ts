@@ -24,6 +24,14 @@ const DEFAULT_WINDOW: HistoryWindow = "month";
 const DAY_MS = 86_400_000;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** A real calendar day: "2026-02-31" has the shape but not the day, and would
+ *  throw when turned into an ISO range. */
+function isDay(v: string | undefined): v is string {
+  if (!v || !DATE.test(v)) return false;
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return Number.isFinite(t) && new Date(t).toISOString().startsWith(v);
+}
+
 /** `improved` and `worsened` include mixed on the server, matching the
  *  headline's "made things better / worse" counts. */
 const IMPACT_DELTA: Record<Exclude<HealthImpact, "all">, DeltaFilter> = {
@@ -48,8 +56,8 @@ export function parseCommitFilters(sp: Params): HistoryFilterValue {
     impact: pick(one(sp.health), IMPACTS, "all"),
     hotspots: one(sp.hotspots) === "1",
     window: pick(one(sp.window), WINDOWS, DEFAULT_WINDOW),
-    since: since && DATE.test(since) ? since : undefined,
-    until: until && DATE.test(until) ? until : undefined,
+    since: isDay(since) ? since : undefined,
+    until: isDay(until) ? until : undefined,
     author: one(sp.author),
     area: one(sp.area),
   };
@@ -93,9 +101,15 @@ export function historyFilters(
   };
 }
 
+/** The window the range really covers: a custom window with no dates yet is
+ *  the whole history, and is named so. */
+export function effectiveWindow(f: Pick<HistoryFilterValue, "window" | "since" | "until">): HistoryWindow {
+  return f.window === "custom" && !f.since && !f.until ? "all" : f.window;
+}
+
 /** True when anything but the whole history is shown. */
 export function isNarrowed(f: HistoryFilterValue): boolean {
-  return f.window !== "all" || f.impact !== "all" || f.hotspots || !!f.author || !!f.area;
+  return effectiveWindow(f) !== "all" || f.impact !== "all" || f.hotspots || !!f.author || !!f.area;
 }
 
 /**

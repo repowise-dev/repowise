@@ -5,6 +5,7 @@ import { RecentWins } from "@repowise-dev/ui/commits/recent-wins";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import type { HistoryFilterValue } from "@repowise-dev/ui/commits/history-filters";
 import type { PeriodHealthSummaryResponse, WinsResponse } from "@repowise-dev/types/history";
+import { effectiveWindow } from "@/lib/commit-filters";
 
 /**
  * The Commits page's lede: the period headline (improvements first) beside the
@@ -26,7 +27,7 @@ export async function CommitsPeriod({
   const t = await getTranslations("views.commits");
   if (!summary && !wins) return null;
   const base = `/repos/${repoId}`;
-  const period = t(`period.${filters.window}`);
+  const period = t(`period.${effectiveWindow(filters)}`);
   const scope = [
     period,
     filters.author ?? null,
