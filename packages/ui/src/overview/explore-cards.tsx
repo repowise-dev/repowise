@@ -6,8 +6,6 @@ export interface ExploreCard {
   label: string;
   /** One live figure. Omitted when the payload has none for this door. */
   value?: string;
-  /** Set the figure in mono, for machine facts such as a commit hash. */
-  mono?: boolean;
   /** What the figure counts, or what the page holds when there is no figure. */
   caption: string;
   href: string;
@@ -24,8 +22,8 @@ export interface ExploreCardsProps {
 
 /**
  * The main pages as a row of doors, each carrying one figure from the data
- * the page already loaded. Every card is a link, so the card is the object
- * that responds.
+ * the page already loaded. Hairline outlines on the page ground, no fill: the
+ * card is the link, and hover strengthens the hairline rather than lifting it.
  */
 export function ExploreCards({ cards, more = [], moreLabel = "Also", LinkComponent }: ExploreCardsProps) {
   const A = LinkComponent ?? "a";
@@ -37,23 +35,19 @@ export function ExploreCards({ cards, more = [], moreLabel = "Also", LinkCompone
           <li key={c.key} className="min-w-0 sm:last:odd:col-span-2 lg:last:odd:col-span-1">
             <A
               href={c.href}
-              className="group flex h-full flex-col gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-4 py-3.5 no-underline transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="group flex h-full flex-col gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-transparent px-5 py-4 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
             >
-              <span className="flex items-center justify-between gap-2 text-xs font-medium text-[var(--color-accent-primary)]">
+              <span className="flex items-center justify-between gap-2 text-xs font-medium text-[var(--color-text-secondary)]">
                 {c.label}
                 <span
                   aria-hidden
-                  className="text-[var(--color-text-tertiary)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--color-accent-primary)]"
+                  className="text-[var(--color-text-tertiary)] transition-transform group-hover:translate-x-0.5 group-focus-visible:translate-x-0.5"
                 >
                   →
                 </span>
               </span>
               {c.value && (
-                <span
-                  className={`text-[22px] font-semibold leading-tight tabular-nums text-[var(--color-text-primary)] ${
-                    c.mono ? "font-mono" : ""
-                  }`}
-                >
+                <span className="font-mono text-[22px] font-semibold leading-tight tabular-nums text-[var(--color-text-primary)]">
                   {c.value}
                 </span>
               )}

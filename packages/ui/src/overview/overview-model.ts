@@ -274,7 +274,7 @@ export function buildExploreCards(
     {
       key: "commits",
       label: "Commits",
-      ...(repo.head_commit ? { value: repo.head_commit.slice(0, 7), mono: true } : {}),
+      ...(repo.head_commit ? { value: repo.head_commit.slice(0, 7) } : {}),
       caption: "Each change with what it did to health",
       href: `${base}/commits`,
     },
