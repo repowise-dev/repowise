@@ -43,7 +43,15 @@ export interface ChangePromptInput {
   complete: boolean;
   /** Evidence rows that need a look, already worded ("Decisions crossed: 4 accepted"). */
   attention: string[];
+  /** `commit` when the unit is one commit rather than a merged change. */
+  unit?: "change" | "commit" | undefined;
 }
+
+/** How the prompt names its unit. */
+const UNIT_WORDS = {
+  change: { noun: "change", subject: "merged change", heading: "Merged change", fact: "Change", madeFor: "merged for" },
+  commit: { noun: "commit", subject: "commit", heading: "Commit", fact: "Commit", madeFor: "made for" },
+} as const;
 
 export interface BuildChangePromptOptions {
   change: ChangePromptInput;
@@ -82,17 +90,15 @@ function diffCommand(c: ChangePromptInput): string {
 }
 
 function changeFacts(c: ChangePromptInput): string {
+  const w = UNIT_WORDS[c.unit ?? "change"];
   const shown = c.files.slice(0, FILE_CAP).map((f) => `\`${f}\``);
   const more = c.files.length > FILE_CAP ? ` and ${c.files.length - FILE_CAP} more` : "";
   return bulletList([
-    `Change: ${c.label} — ${c.title}`,
+    `${w.fact}: ${c.label} — ${c.title}`,
     `Commits: ${c.commits.length} (head \`${c.head_sha.slice(0, 12)}\`)`,
     `Files (${c.files.length}): ${shown.join(", ")}${more}`,
     c.resolved > 0 ? `It also resolved ${c.resolved} existing finding${pluralS(c.resolved)}; keep those fixes.` : null,
-    c.complete ? null : "Part of this change could not be compared, so the list below may be incomplete.",
-    c.omitted
-      ? `${c.omitted} more finding${pluralS(c.omitted)} this change made worse ${c.omitted === 1 ? "is" : "are"} not listed below (the list keeps the worst first); after these, check the files above for the rest.`
-      : null,
+    c.complete ? null : `Part of this ${w.noun} could not be compared, so the list below may be incomplete.`,
   ]);
 }
 
@@ -106,25 +112,25 @@ export function buildChangeAiPrompt({
   flavor = "generic",
   repoName,
 }: BuildChangePromptOptions): string {
-  const fixing = changePromptFixes(c);
+  const fixing = c.findings.length > 0;
+  const w = UNIT_WORDS[c.unit ?? "change"];
   const lead = preamble(flavor, {
     source: fixing
-      ? "Repowise compared code health before and after this merged change and charged the findings below to it."
-      : "Repowise built an evidence checklist for this merged change; the rows below are what it flagged.",
+      ? `Repowise compared code health before and after this ${w.subject} and charged the findings below to it.`
+      : `Repowise built an evidence checklist for this ${w.subject}; the rows below are what it flagged.`,
     open: "the files and lines named below",
     mcpTail:
       "Call `get_context([...])` on the files named below and `get_risk(changed_files=[...])` for blast radius and test gaps before reading by hand.",
   });
 
-  const work =
-    c.findings.length > 0
-      ? ["## What this change made worse", "", bulletList(c.findings.map(findingLine)), ""]
-      : [];
+  const work = fixing
+    ? [`## What this ${w.noun} made worse`, "", bulletList(c.findings.map(findingLine)), ""]
+    : [];
   const flagged = c.attention.length > 0 ? ["## Flagged for a look", "", bulletList(c.attention), ""] : [];
 
   const constraints = fixing
     ? [
-        "Fix the findings above in place. Do not revert the change or undo the behaviour it was merged for.",
+        `Fix the findings above in place. Do not revert the ${w.noun} or undo the behaviour it was ${w.madeFor}.`,
         "Keep each fix small and local to the named symbol; no unrelated refactors.",
         "If a finding is a false positive or the cost is justified, say so and leave it.",
         "Run the tests that cover the touched files before and after.",
@@ -139,20 +145,20 @@ export function buildChangeAiPrompt({
         "2. The tests you ran and their result.",
       ]
     : [
-        "1. For each flagged row: whether it matters for this change and why.",
+        `1. For each flagged row: whether it matters for this ${w.noun} and why.`,
         "2. Anything a reviewer should still check, tied to files.",
       ];
 
   return joinSections([
     lead,
     "",
-    `## Merged change${repoSuffix(repoName)}`,
+    `## ${w.heading}${repoSuffix(repoName)}`,
     "",
     changeFacts(c),
     "",
     ...work,
     ...flagged,
     ...closingSections(constraints, expected),
-    `Read the change with \`${diffCommand(c)}\` first.`,
+    `Read the ${w.noun} with \`${diffCommand(c)}\` first.`,
   ]);
 }

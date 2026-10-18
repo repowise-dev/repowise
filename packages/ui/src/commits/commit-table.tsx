@@ -3,7 +3,8 @@
 import { useMemo, useState } from "react";
 import { Bug, Search } from "lucide-react";
 import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge";
-import { PriorityBadge } from "./priority-badge";
+import { priorityLabel } from "./priority-badge";
+import { HealthDeltaMark, type HealthDeltaLabels } from "./health-delta-mark";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
@@ -37,19 +38,34 @@ export interface CommitTableProps {
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
+  /** Words for the health chip; the host's translations. */
+  healthLabels?: Partial<HealthDeltaLabels> | undefined;
+  /** Word marking a row that touched a hotspot file. */
+  hotspotLabel?: string | undefined;
+  /** True when filters outside this table (time window, health impact, author,
+   *  area) narrowed the list, so an empty list is "no matches", not "nothing
+   *  indexed". */
+  narrowed?: boolean | undefined;
 }
 
 type CommitRow = Commit & { _idx: number };
 
-const COLUMNS: ResponsiveColumn<CommitRow>[] = [
+function priorityText(c: Commit): string {
+  return `${Math.round(c.risk_percentile)}th · ${priorityLabel(c.review_priority as ReviewPriority)}`;
+}
+
+function columns(
+  healthLabels: Partial<HealthDeltaLabels> | undefined,
+  hotspotLabel: string,
+): ResponsiveColumn<CommitRow>[] {
+  return [
   {
-    key: "rank",
-    header: "#",
-    headerClassName: "w-8",
-    hideInCard: true,
-    render: (c) => (
-      <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">{c._idx + 1}</span>
-    ),
+    // The lead: what the commit did to code health. Green only for a real
+    // improvement, red only for a regression, a word beside every dot.
+    key: "health",
+    header: "Health",
+    headerClassName: "w-32",
+    render: (c) => <HealthDeltaMark delta={c.health_delta} labels={healthLabels} />,
   },
   {
     key: "commit",
@@ -68,6 +84,13 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
         <span className="min-w-0 text-xs text-[var(--color-text-primary)] [text-wrap:pretty]">
           {c.subject || "(no subject)"}
         </span>
+        {/* An exception, so marked only when true, in plain text: hotspot is
+            not a health verdict and must not borrow the chip's colours. */}
+        {(c.touches_hotspot ?? 0) > 0 && (
+          <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
+            {hotspotLabel}
+          </span>
+        )}
       </div>
     ),
   },
@@ -113,28 +136,19 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
   {
     key: "risk",
     header: "Review priority",
-    headerClassName: "w-28",
-    // No ChurnBar. The cell was carrying the same fact three times over (a
-    // filled bar, the percentile, and the pill), and because the queue sorts
-    // by risk the bar was full-width and semantic-red on every visible row —
-    // decoration that could not vary, drawn in the loudest colour available.
-    // The number and the pill say it, and only one of them needs ink.
+    headerClassName: "w-36",
+    priority: 3,
+    // Context, not the lead: the diff-shape rank supports the health delta,
+    // so it stays plain text with no colour of its own beside the chip.
     render: (c) => (
-      <div className="flex items-center gap-2">
-        <span className="w-8 text-xs tabular-nums text-[var(--color-text-tertiary)]">
-          {Math.round(c.risk_percentile)}th
-        </span>
-        <PriorityBadge priority={c.review_priority as ReviewPriority} />
-      </div>
-    ),
-    mobileRender: (c) => (
-      <span className="inline-flex items-center gap-2">
-        <span className="tabular-nums">{Math.round(c.risk_percentile)}th</span>
-        <PriorityBadge priority={c.review_priority as ReviewPriority} />
+      <span className="whitespace-nowrap text-xs tabular-nums text-[var(--color-text-tertiary)]">
+        {priorityText(c)}
       </span>
     ),
+    mobileRender: priorityText,
   },
-];
+  ];
+}
 
 /**
  * The review-priority queue: per-commit change-risk, ranked. Ordering is
@@ -156,8 +170,12 @@ export function CommitTable({
   hasMore,
   loadingMore,
   onLoadMore,
+  healthLabels,
+  hotspotLabel = "Hotspot",
+  narrowed = false,
 }: CommitTableProps) {
   const [search, setSearch] = useState("");
+  const cols = useMemo(() => columns(healthLabels, hotspotLabel), [healthLabels, hotspotLabel]);
 
   // Search stays client-side over the loaded page; the band and fix filters
   // are server-driven, so they narrow the repository rather than the page.
@@ -172,7 +190,7 @@ export function CommitTable({
     );
   }, [commits, search]);
 
-  if (commits.length === 0 && authorship === "all" && kind === "all") {
+  if (commits.length === 0 && authorship === "all" && kind === "all" && !narrowed) {
     return (
       <EmptyState
         title="No commits indexed"
@@ -276,10 +294,10 @@ export function CommitTable({
       ) : (
         <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
           <ResponsiveTable
-            columns={COLUMNS}
+            columns={cols}
             rows={filtered.map((c, i) => ({ ...c, _idx: i }))}
             rowKey={(c) => c.sha}
-            caption="Commit review-priority queue"
+            caption="Commits, each led by what it did to code health"
             {...(onSelect ? { onRowClick: onSelect } : {})}
             stacked="sm"
             bare

@@ -31,6 +31,8 @@
     "./git/*": "./src/git/*.tsx",
     "./commits": "./src/commits/index.ts",
     "./commits/health-delta": "./src/commits/health-delta.ts",
+    "./commits/period-health": "./src/commits/period-health.ts",
+    "./commits/commit-health-copy": "./src/commits/commit-health-copy.ts",
     "./commits/*": "./src/commits/*.tsx",
     "./dead-code": "./src/dead-code/index.ts",
     "./dead-code/*": "./src/dead-code/*.tsx",

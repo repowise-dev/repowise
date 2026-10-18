@@ -15,3 +15,8 @@ export * from "./commit-files-table";
 export * from "./health-delta";
 export * from "./health-delta-mark";
 export * from "./findings-by-file";
+export * from "./period-health";
+export * from "./period-health-headline";
+export * from "./recent-wins";
+export * from "./history-filters";
+export * from "./commit-health-copy";
