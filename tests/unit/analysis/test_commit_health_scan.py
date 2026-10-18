@@ -157,3 +157,16 @@ def test_no_shas_is_not_an_error() -> None:
     scan = scan_commits("/repo", [], service=_StubService({}))
 
     assert (scan.delta_rows, scan.finding_rows, scan.scanned) == ([], [], 0)
+
+
+def test_rows_keep_improved_and_moved_totals_and_where_a_finding_moved_from() -> None:
+    moved = _finding("f0", change_kind="worsened", moved_from={"path": "old.py", "symbol": "g"})
+    delta = _delta([moved, _finding("f1")], improved_total=3, moved_total=5)
+
+    scan = scan_commits("/repo", ["aaa"], service=_StubService({"aaa": delta}))
+
+    (row,) = scan.delta_rows
+    assert (row["improved_count"], row["moved_count"]) == (3, 5)
+    by_id = {r["change_finding_id"]: r for r in scan.finding_rows}
+    assert (by_id["f0"]["moved_from_path"], by_id["f0"]["moved_from_symbol"]) == ("old.py", "g")
+    assert (by_id["f1"]["moved_from_path"], by_id["f1"]["moved_from_symbol"]) == (None, None)
