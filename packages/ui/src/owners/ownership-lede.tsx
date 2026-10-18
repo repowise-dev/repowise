@@ -3,7 +3,7 @@
 import * as React from "react";
 import type { OwnersSummary } from "@repowise-dev/types/owners";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { AGENT_PROMPT_LABEL, useAiPromptAction } from "../health/ai-prompt-action";
+import { AGENT_PROMPT_LABEL, useAiPromptAction, type AiPromptRequest } from "../health/ai-prompt-action";
 import { ReadsColumn, type ReadItem } from "../overview/reads-column";
 import { PageLede } from "../shared/page-lede";
 import { buildHandoverPrompt, riskPromptAreas } from "./handover-prompt";
@@ -63,6 +63,61 @@ function ownershipReads(summary: OwnersSummary, hrefForTab: OwnershipLedeProps["
   return reads;
 }
 
+/** The prompt for a plan to spread the single-person changing files. */
+function spreadRequest(coverage: KnowledgeCoverage, days: number, repoName?: string): AiPromptRequest {
+  const areas = riskPromptAreas(coverage.singleHolderAreas);
+  const people = Array.from(new Set(coverage.singleHolderAreas.flatMap((a) => a.files.map((f) => f.holder.name))));
+  const n = coverage.singleHolderFiles;
+  return {
+    title: "Spread the knowledge",
+    description: `A plan for a second person to learn ${n.toLocaleString()} changing ${n === 1 ? "file" : "files"} one person holds.`,
+    getPrompt: (flavor) =>
+      buildHandoverPrompt({
+        purpose: "spread",
+        people,
+        areas,
+        flavor,
+        spreadReason: `each one changed in the last ${days} days`,
+        ...(repoName ? { repoName } : {}),
+      }),
+  };
+}
+
+/** The coverage figure and its sentence; `share` is known here. */
+function CoverageFigure({
+  coverage,
+  share,
+  days,
+  onPrompt,
+}: {
+  coverage: KnowledgeCoverage;
+  share: number;
+  days: number;
+  onPrompt: () => void;
+}) {
+  const byLines = coverage.basis === "nloc";
+  const scope = byLines ? "of the code" : "of the files";
+  const good = share >= WELL_SHARED_MIN;
+  const single = coverage.singleHolderFiles;
+  return (
+    <PageLede
+      label="Knowledge coverage"
+      labelHint={`Share ${scope} changed in the last ${days} days in files two or more people hold (bus factor 2 or more), ${byLines ? "weighted by lines of code" : "by file count"}. Files with no indexed history are left out.`}
+      value={pct(share)}
+      unit={`${scope} changed lately`}
+      {...(good ? { valueColor: "var(--color-success)", band: { label: "Well shared", color: "var(--color-success)" } } : {})}
+    >
+      <p>
+        {pct(share)} {scope} changed in the last {days} days
+        {byLines ? ", by lines," : ""} has two or more people who know it.
+        {single > 0 &&
+          ` ${single.toLocaleString()} of the ${coverage.files.toLocaleString()} changing files have one main author; your agent can plan how a second person learns them.`}
+      </p>
+      {single > 0 && <AiPromptButton className="mt-3" onClick={onPrompt} label={AGENT_PROMPT_LABEL} />}
+    </PageLede>
+  );
+}
+
 /**
  * The Ownership page's one figure: how much of the code that is changing has
  * a second person who knows it. Good news reads calm green; a low share reads
@@ -72,53 +127,22 @@ function ownershipReads(summary: OwnersSummary, hrefForTab: OwnershipLedeProps["
 export function OwnershipLede({ coverage, summary, hrefForTab, repoName, LinkComponent }: OwnershipLedeProps) {
   const { openPrompt, promptModal } = useAiPromptAction();
   const reads = ownershipReads(summary, hrefForTab);
-  const { share } = coverage;
-  const good = share != null && share >= WELL_SHARED_MIN;
-  const scope = coverage.basis === "nloc" ? "of the code" : "of the files";
-
-  const spreadPrompt = () => {
-    const areas = riskPromptAreas(coverage.singleHolderAreas);
-    const people = Array.from(new Set(coverage.singleHolderAreas.flatMap((a) => a.files.map((f) => f.holder.name))));
-    openPrompt({
-      title: "Spread the knowledge",
-      description: `A plan for a second person to learn ${coverage.singleHolderFiles.toLocaleString()} changing ${coverage.singleHolderFiles === 1 ? "file" : "files"} one person holds.`,
-      getPrompt: (flavor) =>
-        buildHandoverPrompt({
-          purpose: "spread",
-          people,
-          areas,
-          flavor,
-          spreadReason: `each one changed in the last ${summary.activity_window_days} days`,
-          ...(repoName ? { repoName } : {}),
-        }),
-    });
-  };
+  const days = summary.activity_window_days;
 
   return (
     <section className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-10">
-      {share == null ? (
+      {coverage.share == null ? (
         <p className="max-w-[62ch] text-[15px] leading-relaxed text-[var(--color-text-secondary)]">
-          No code with history changed in the last {summary.activity_window_days} days, so there is no moving
-          code to measure knowledge coverage on.
+          No code with history changed in the last {days} days, so there is no moving code to measure
+          knowledge coverage on.
         </p>
       ) : (
-        <PageLede
-          label="Knowledge coverage"
-          labelHint={`Share ${scope} changed in the last ${summary.activity_window_days} days in files two or more people hold (bus factor 2 or more), ${coverage.basis === "nloc" ? "weighted by lines of code" : "by file count"}. Files with no indexed history are left out.`}
-          value={pct(share)}
-          unit={`${scope} changed lately`}
-          {...(good ? { valueColor: "var(--color-success)", band: { label: "Well shared", color: "var(--color-success)" } } : {})}
-        >
-          <p>
-            {pct(share)} {scope} changed in the last {summary.activity_window_days} days
-            {coverage.basis === "nloc" ? ", by lines," : ""} has two or more people who know it.
-            {coverage.singleHolderFiles > 0 &&
-              ` ${coverage.singleHolderFiles.toLocaleString()} of the ${coverage.files.toLocaleString()} changing files have one main author; your agent can plan how a second person learns them.`}
-          </p>
-          {coverage.singleHolderFiles > 0 && (
-            <AiPromptButton className="mt-3" onClick={spreadPrompt} label={AGENT_PROMPT_LABEL} />
-          )}
-        </PageLede>
+        <CoverageFigure
+          coverage={coverage}
+          share={coverage.share}
+          days={days}
+          onPrompt={() => openPrompt(spreadRequest(coverage, days, repoName))}
+        />
       )}
       {reads.length > 0 && <ReadsColumn items={reads} LinkComponent={LinkComponent} />}
       {promptModal}
