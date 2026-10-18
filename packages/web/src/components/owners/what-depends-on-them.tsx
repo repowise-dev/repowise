@@ -16,7 +16,7 @@ import { contributorsHref } from "./use-contributors-url";
  * Computed in the browser from the knowledge matrix rather than on the server.
  * For the person behind the truck factor the result covers thousands of files,
  * megabytes once serialised into the page, while the matrix is one gzipped
- * fetch under 100 KB that the Contributors tabs share under the same key.
+ * fetch under 100 KB that the Ownership tabs share under the same key.
  */
 export function WhatDependsOnThem({ repoId, ownerKey }: { repoId: string; ownerKey: string }) {
   const t = useTranslations("views.contributors");

@@ -12,7 +12,7 @@ import type { OffboardingArea, OffboardingResult } from "./offboarding";
 
 /**
  * How an off-boarding result reads, wherever it is shown: the what-if on the
- * Contributors page, a quiet owner on Knowledge loss, and "What depends on
+ * Ownership page, a quiet owner on Knowledge loss, and "What depends on
  * them" on a person page. Summary first, then directories, then files.
  */
 

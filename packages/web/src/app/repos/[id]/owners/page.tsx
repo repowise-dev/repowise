@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Contributors — `/repos/[id]/owners`.
+ * Ownership — `/repos/[id]/owners` (the route keeps its original name).
  *
  * Knowledge and handover, as four tabs behind `?tab=`: the overview (truck
  * factor lede, two reads, the full table collapsed), knowledge risks,

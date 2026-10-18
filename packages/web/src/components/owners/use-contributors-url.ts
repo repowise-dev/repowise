@@ -20,7 +20,7 @@ const SORT_KEYS: readonly OwnerSortKey[] = [
 ];
 const DEFAULT_SORT: OwnerSortKey = "files_owned";
 
-/** The All contributors table's filters from `?q=&sort=&automation=1`. */
+/** The Everyone table's filters from `?q=&sort=&automation=1`. */
 export function directoryFiltersFromParams(sp: URLSearchParams): OwnerDirectoryFilters {
   const sort = sp.get("sort") as OwnerSortKey | null;
   return {
@@ -72,7 +72,7 @@ function parseTab(raw: string | null): ContributorTab {
   return (CONTRIBUTOR_TABS as readonly string[]).includes(raw ?? "") ? (raw as ContributorTab) : "overview";
 }
 
-/** A Contributors URL: a tab and, for off-boarding, who is leaving. */
+/** An Ownership page URL: a tab and, for off-boarding, who is leaving. */
 export function contributorsHref(base: string, tab: ContributorTab, leave?: string[]): string {
   const sp = new URLSearchParams();
   if (tab !== "overview") sp.set("tab", tab);
@@ -82,7 +82,7 @@ export function contributorsHref(base: string, tab: ContributorTab, leave?: stri
 }
 
 /**
- * The Contributors page's URL state: `?tab=` and the off-boarding scenario
+ * The Ownership page's URL state: `?tab=` and the off-boarding scenario
  * (`?leave=a,b&threshold=50`). The scenario is parsed off the raw strings so
  * its array keeps one identity between renders and the simulation memo holds.
  */

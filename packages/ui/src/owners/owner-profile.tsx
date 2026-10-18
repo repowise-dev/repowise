@@ -67,7 +67,7 @@ export function OwnerProfileView({
         description="Files where this person made most of the commits, so the people who stay would hold under half of the history, and who is best placed to take each directory over."
         action={
           <SectionLink href={`${base}/owners`} LinkComponent={LinkComponent}>
-            All contributors
+            Ownership
           </SectionLink>
         }
       >

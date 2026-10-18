@@ -8,7 +8,7 @@
  * top five is read as holding none, and everything not lost counts as staying.
  * A file is severe when it is also a hotspot or in a weak health band.
  *
- * Pure and O(files) per call; the result type is the contract the Contributors
+ * Pure and O(files) per call; the result type is the contract the Ownership
  * page, the person page and the area map's off-boarding lens all render.
  */
 
