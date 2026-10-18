@@ -985,6 +985,13 @@ export interface CommunitySummaryItem {
   top_file: string;
 }
 
+export interface ConcentrationOwner {
+  key: string;
+  name: string;
+  files_owned: number;
+  share: number;
+}
+
 export interface ConversationDetailResponse {
   conversation: ConversationResponse;
   messages?: ChatMessageResponse[];
@@ -2451,6 +2458,21 @@ export interface KnowledgeMapTarget {
   doc_words: number;
 }
 
+export interface KnowledgeMatrixAuthor {
+  key: string;
+  name: string;
+  email: string | null;
+  last_commit_at: string | null;
+  active: boolean;
+}
+
+/** Every code file's top-5 human authors, positional and indexed for size. */
+export interface KnowledgeMatrixResponse {
+  authors: KnowledgeMatrixAuthor[];
+  dirs: string[];
+  files: ([number, string, number, number | null, boolean, number, number | null, [number, number][]])[];
+}
+
 /** One tool in the configurable surface, with the flags a UI needs. */
 export interface McpToolInfo {
   name: string;
@@ -2604,6 +2626,12 @@ export interface OkResponse {
   ok?: boolean;
 }
 
+/** Every display name and canonical email folded into one person. */
+export interface OwnerAliases {
+  names: string[];
+  emails: string[];
+}
+
 export interface OwnerCoAuthor {
   name: string;
   email: string | null;
@@ -2626,6 +2654,7 @@ export interface OwnerListEntry {
   key: string;
   name: string;
   email: string | null;
+  kind: "human" | "bot" | "agent";
   files_owned: number;
   hotspots_owned: number;
   silo_modules: number;
@@ -2648,6 +2677,8 @@ export interface OwnerProfileResponse {
   key: string;
   name: string;
   email: string | null;
+  kind: "human" | "bot" | "agent";
+  aliases: OwnerAliases;
   files_owned: number;
   hotspots_owned: number;
   silo_modules: number;
@@ -2666,6 +2697,36 @@ export interface OwnerProfileResponse {
   co_authors: OwnerCoAuthor[];
   co_authors_total?: number;
   commit_categories: Record<string, unknown>;
+}
+
+export interface OwnerRef {
+  key: string;
+  name: string;
+}
+
+/** Repository knowledge risk, people only (automation owns nothing). */
+export interface OwnersSummaryResponse {
+  truck_factor: number | null;
+  people: number;
+  automation_identities: number;
+  owners: number;
+  tracked_files: number;
+  owned_files: number;
+  single_owner_files: number;
+  single_owner_hotspots: number;
+  concentration: OwnershipConcentration;
+  silo_modules: SiloModule[];
+  activity_window_days: number;
+  active_contributors: number;
+  activity_complete: boolean;
+  quiet_owners: QuietOwner[];
+  quiet_owners_total: number;
+}
+
+export interface OwnershipConcentration {
+  top_n: number;
+  share: number | null;
+  owners: ConcentrationOwner[];
 }
 
 export interface OwnershipEntry {
@@ -3096,6 +3157,14 @@ export interface QueueCounts {
   shown?: number;
   excluded?: Record<string, number>;
   gated?: number;
+}
+
+export interface QuietOwner {
+  key: string;
+  name: string;
+  last_commit_at: string | null;
+  files_owned: number;
+  changing_files_owned: number;
 }
 
 /** What the ``fix_first`` scope leaves out of a page's filtered set. */
@@ -3674,6 +3743,14 @@ export interface SetActiveProviderRequest {
 export interface SetApiKeyRequest {
   api_key: string;
   repo_id?: string | null;
+}
+
+export interface SiloModule {
+  module: string;
+  owner: OwnerRef;
+  owned_files: number;
+  file_count: number;
+  share: number;
 }
 
 /** One change in reading order; ``signals`` holds each signal that fired. */

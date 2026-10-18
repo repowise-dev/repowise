@@ -8,6 +8,7 @@ const owner = (name: string, over: Partial<OwnerListEntry>): OwnerListEntry => (
   key: name,
   name,
   email: null,
+  kind: "human",
   files_owned: 3,
   hotspots_owned: 0,
   silo_modules: 0,

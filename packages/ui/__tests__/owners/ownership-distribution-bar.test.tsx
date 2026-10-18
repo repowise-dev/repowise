@@ -8,6 +8,7 @@ const owner = (name: string, files: number): OwnerListEntry => ({
   key: name,
   name,
   email: null,
+  kind: "human",
   files_owned: files,
   hotspots_owned: 0,
   silo_modules: 0,
