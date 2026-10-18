@@ -57,7 +57,7 @@ describe("FilePath", () => {
         <FilePath path="c/d.ts" />
       </>,
     );
-    const triggers = container.querySelectorAll("[data-state]");
+    const triggers = container.querySelectorAll("[data-path] > span");
     expect(triggers[0]?.getAttribute("tabindex")).toBeNull();
     expect(triggers[1]?.getAttribute("tabindex")).toBeNull();
   });
@@ -72,6 +72,13 @@ describe("FilePath", () => {
       screen.getByRole("link").focus();
     });
     expect((await screen.findByRole("tooltip")).textContent).toContain("a/b.ts");
+  });
+
+  it("mounts no tooltip machinery until the path is hovered", () => {
+    const { container } = render(<FilePath path="a/b.ts" />);
+    expect(container.querySelector("[data-state]")).toBeNull();
+    fireEvent.pointerEnter(container.querySelector("[data-path] > span")!);
+    expect(container.querySelector("[data-state]")).not.toBeNull();
   });
 
   it("copies the path", async () => {

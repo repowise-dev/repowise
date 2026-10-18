@@ -20,7 +20,7 @@
  */
 
 import * as React from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "../lib/cn";
@@ -268,11 +268,19 @@ export function FilePath({
 }: FilePathProps) {
   const ref = useRef<HTMLSpanElement>(null);
   const [open, setOpen] = useState(false);
+  // The tooltip machinery mounts on first hover or focus, so a list of a
+  // thousand paths mounts no Radix provider, root or listener per row, and
+  // the path still works in hosts that mount no ambient TooltipProvider.
+  const [armed, setArmed] = useState(false);
+  const reveal = useCallback((next: boolean) => {
+    if (next) setArmed(true);
+    setOpen(next);
+  }, []);
   const full = pathWithLine(path, line);
   // `full` shows every character in reading order, and a bare top-level
   // file is already its whole path: neither needs a second, hidden copy.
   const abbreviated = mode !== "full" && (path.includes("/") || full !== path);
-  useHostFocus(ref, setOpen, abbreviated);
+  useHostFocus(ref, reveal, abbreviated);
 
   const visual = (
     <Visual path={path} mode={mode} line={line} labels={labels} fold={fold} accent={accent} />
@@ -291,21 +299,31 @@ export function FilePath({
     );
   }
 
+  const trigger = (
+    <span
+      ref={ref}
+      className="flex min-w-0 max-w-full"
+      onPointerEnter={armed ? undefined : () => setArmed(true)}
+    >
+      <span className="sr-only">{full}</span>
+      <span aria-hidden className="flex min-w-0">
+        {visual}
+      </span>
+    </span>
+  );
+
   return (
     <span data-path={path} className={cn("inline-flex min-w-0 max-w-full items-baseline font-mono text-xs", className)}>
-      <TooltipProvider delayDuration={300}>
-        <Tooltip open={open} onOpenChange={setOpen}>
-          <TooltipTrigger asChild>
-            <span ref={ref} className="flex min-w-0 max-w-full">
-              <span className="sr-only">{full}</span>
-              <span aria-hidden className="flex min-w-0">
-                {visual}
-              </span>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-[min(36rem,90vw)] font-mono [overflow-wrap:anywhere]">{full}</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      {armed ? (
+        <TooltipProvider delayDuration={300}>
+          <Tooltip open={open} onOpenChange={setOpen}>
+            <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+            <TooltipContent className="max-w-[min(36rem,90vw)] font-mono [overflow-wrap:anywhere]">{full}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        trigger
+      )}
       {copy}
     </span>
   );
