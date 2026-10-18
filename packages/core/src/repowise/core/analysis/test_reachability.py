@@ -456,13 +456,12 @@ async def cached_files_reached_by_tests(session: AsyncSession, repo_id: str) -> 
     The Tests page asks this on every load and the answer moves only when an
     index run rewrites the graph, so the bulk edge read is paid once per index.
     """
-    key = await _cache_key(session, repo_id, "files_reached")
+    key = await _cache.key(session, repo_id, "files_reached")
     if key in _cache:
-        _cache.move_to_end(key)
-        return _cache[key]
+        return _cache.get(key)
     test_files = set(await cached_test_files(session, repo_id))
     view = await call_graph_from_db(session, repo_id)
-    return _remember(key, frozenset(files_reached_by_tests(view, test_files)))
+    return _cache.remember(key, frozenset(files_reached_by_tests(view, test_files)))
 
 
 async def any_tests_reaching(
