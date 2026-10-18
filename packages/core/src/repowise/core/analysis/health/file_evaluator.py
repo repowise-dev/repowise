@@ -21,6 +21,7 @@ from .finding_identity import SYMBOL_INDEX_KEY, SYMBOL_KEY, SYMBOL_LINE_KEY
 from .function_blame_rollup import blame_commit_entries, commit_spans
 from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, Severity
+from .reexport_only import is_reexport_only
 from .refactoring import RefactoringContext, RefactoringSuggestion, detect_refactorings
 from .scoring import attach_impacts, file_score_fields, remap_severities, score_file
 from .source_reader import SourceReader
@@ -128,22 +129,6 @@ def _commit_entries(fcx: FileComplexity, git_meta: dict) -> list:
     if isinstance(idx, BlameIndex):
         return blame_commit_entries(fcx.functions, idx)
     return list(git_meta.get("function_commit_shas") or ())
-
-
-def _reexport_only(pf: Any, fcx: FileComplexity) -> bool:
-    """No function, no declaration but ``__all__``, and no code line beyond docstring, imports and exports.
-
-    The line check keeps a script of bare top-level statements out. The parsed docstring
-    is stripped, so a multi-line one gets its closing-quote line back.
-    """
-    if fcx.functions or any(s.name != "__all__" for s in pf.symbols):
-        return False
-    lines = sum(imp.raw_statement.count("\n") + 1 for imp in pf.imports)
-    lines += sum(s.end_line - s.start_line + 1 for s in pf.symbols)
-    if pf.docstring:
-        breaks = pf.docstring.count("\n")
-        lines += breaks + 1 + (breaks > 0)
-    return fcx.file_nloc <= lines
 
 
 def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | None:
@@ -302,7 +287,8 @@ class FileEvaluator:
             branch_coverage_pct=cov.get("branch_coverage_pct") if cov else None,
             covered_lines=set(cov.get("covered_lines") or ()) if cov else set(),
             total_coverable_lines=int(cov.get("total_coverable_lines", 0)) if cov else 0,
-            reexport_only=bool(cov) and _reexport_only(pf, fcx),
+            reexport_only=bool(cov)
+            and is_reexport_only(pf, bool(fcx.functions), analyzer.read_source),
             clones=list(clones),
             duplication_pct=dup_pct,
             clone_sources=clone_sources,
