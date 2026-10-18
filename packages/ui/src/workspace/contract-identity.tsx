@@ -1,31 +1,14 @@
 /**
- * How a contract and a file read in a row. Paths get a break opportunity after
- * each `/`, so they wrap between segments and a segment is split only when it
- * alone is wider than its column. No `"use client"`: server and client rows
- * both render them.
+ * How a contract reads in a row. Its label gets a break opportunity after
+ * each `/`, so it wraps between segments and a segment is split only when it
+ * alone is wider than its column.
  */
 
-import { Fragment } from "react";
+import { FilePath, SlashBreaks } from "../shared/file-path";
 import { parseContractId } from "./contract-facts";
 
-/** A slash-separated string that wraps only after its slashes. */
-export function SlashBreaks({ text }: { text: string }) {
-  const segments = text.split("/");
-  return (
-    <>
-      {segments.map((segment, i) => (
-        <Fragment key={i}>
-          {segment}
-          {i < segments.length - 1 ? (
-            <>
-              /<wbr />
-            </>
-          ) : null}
-        </Fragment>
-      ))}
-    </>
-  );
-}
+/** @deprecated Import `SlashBreaks` from `shared/file-path`; kept so existing imports compile. */
+export { SlashBreaks };
 
 const KIND_TAG: Record<string, string> = {
   data: "TABLE",
@@ -81,8 +64,8 @@ export function ContractIdentity({
 }
 
 /**
- * A repo-relative file: the directory dim, the file name at reading weight,
- * the line when known. The full path rides on `title`.
+ * @deprecated Use `<FilePath>` from `shared/file-path`, picking the mode for
+ * the surface. Kept with its props so existing callers compile.
  */
 export function FilePathText({
   path,
@@ -91,34 +74,9 @@ export function FilePathText({
 }: {
   path: string;
   line?: number | null | undefined;
-  /** The file name in the link colour, for a path that is a link. */
   accent?: boolean;
 }) {
-  const cut = path.lastIndexOf("/");
-  const dir = cut >= 0 ? path.slice(0, cut + 1) : "";
-  const name = cut >= 0 ? path.slice(cut + 1) : path;
-  return (
-    <span
-      className="font-mono text-xs [word-break:normal] [overflow-wrap:break-word]"
-      title={line != null ? `${path}:${line}` : path}
-    >
-      {dir ? (
-        <span className="text-[var(--color-text-tertiary)]">
-          <SlashBreaks text={dir} />
-        </span>
-      ) : null}
-      <span
-        className={
-          accent ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-secondary)]"
-        }
-      >
-        {name}
-      </span>
-      {line != null ? (
-        <span className="tabular-nums text-[var(--color-text-tertiary)]">:{line}</span>
-      ) : null}
-    </span>
-  );
+  return <FilePath path={path} line={line} mode="full" accent={accent} />;
 }
 
 /**

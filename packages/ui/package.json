@@ -126,7 +126,8 @@
     "./lib/errors": "./src/lib/errors.ts",
     "./lib/fix-history": "./src/lib/fix-history.ts",
     "./lib/format": "./src/lib/format.ts",
-    "./lib/page-types": "./src/lib/page-types.ts"
+    "./lib/page-types": "./src/lib/page-types.ts",
+    "./lib/path-parts": "./src/lib/path-parts.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
