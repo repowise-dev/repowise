@@ -1,11 +1,9 @@
 import * as React from "react";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
-import { getDefaultHref } from "../dashboard/attention-href";
 import { formatNumber } from "../lib/format";
 import { fileEntityPath } from "../shared/entity";
 import { PageFrame } from "../shared/page-shell";
-import { AttentionAreas } from "./attention-areas";
-import { AttentionRows } from "./attention-rows";
+import { AttentionSection } from "./attention-section";
 import type { CommitRow } from "./activity-lists";
 import { ChangeLine } from "./change-line";
 import { ExploreCards } from "./explore-cards";
@@ -23,8 +21,7 @@ import {
 import { ReadsColumn } from "./reads-column";
 import { OverviewSection, SectionLink } from "./section";
 
-/** How many rows each list section shows before deferring to its own page. */
-const ATTENTION_ROWS = 6;
+/** Hotspot rows shown before deferring to Code Health. */
 const HOTSPOT_ROWS = 5;
 
 export interface OverviewBodySlots {
@@ -110,48 +107,6 @@ export function OverviewBody({
   const moreDoors = buildExplore(summary, routes).filter((e) => !carded.has(e.key));
   const changeStats = buildChangeStats(summary);
 
-  // The list is capped per source server-side, so its length is not a total.
-  // Falling back to the row count on a server that predates the summary keeps
-  // the old (correct-for-that-payload) behaviour rather than rendering
-  // nothing.
-  const attentionTotal = summary.attention_summary?.total ?? summary.attention.length;
-  const areas = summary.attention_summary?.areas ?? [];
-  const hasAttention = areas.length > 0 || summary.attention.length > 0;
-
-  const attention = (inventory: boolean) => (
-    <OverviewSection
-      title={inventory ? "Everything we found" : "Needs attention"}
-      description={
-        inventory
-          ? "Every detector's open count by area. The actions above are the part worth doing."
-          : "Each area of work, led by the worst thing in it."
-      }
-      collapsible={inventory}
-      defaultOpen={!inventory}
-      hint={inventory ? `${formatNumber(attentionTotal)} open` : undefined}
-      // No section link: these span seven pages, so there is no single
-      // destination that holds "all of them", and a count linking to one
-      // of them would be a lie about where the rest live.
-      action={
-        <span className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
-          {formatNumber(attentionTotal)} open
-        </span>
-      }
-    >
-      {areas.length > 0 ? (
-        <AttentionAreas areas={areas} prefix={base} LinkComponent={LinkComponent} />
-      ) : (
-        // A server predating the area rollup still sends ranked items, and
-        // rendering those is strictly better than rendering nothing.
-        <AttentionRows
-          items={summary.attention.slice(0, ATTENTION_ROWS)}
-          hrefFor={(item) => getDefaultHref(item, base)}
-          LinkComponent={LinkComponent}
-        />
-      )}
-    </OverviewSection>
-  );
-
   return (
     <PageFrame>
       {slots.header}
@@ -184,7 +139,9 @@ export function OverviewBody({
         />
       </OverviewSection>
 
-      {slots.actions ?? (hasAttention && attention(false))}
+      {slots.actions ?? (
+        <AttentionSection summary={summary} base={base} LinkComponent={LinkComponent} />
+      )}
 
       {slots.wins}
 
@@ -214,7 +171,9 @@ export function OverviewBody({
 
       {/* The areas as the inventory behind "Do next", folded at the bottom
           because the list above already says what to do. */}
-      {slots.actions && hasAttention && attention(true)}
+      {slots.actions && (
+        <AttentionSection summary={summary} base={base} inventory LinkComponent={LinkComponent} />
+      )}
     </PageFrame>
   );
 }
