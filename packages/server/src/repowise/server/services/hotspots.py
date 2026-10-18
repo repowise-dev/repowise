@@ -173,10 +173,12 @@ async def _count_facets(session: AsyncSession, base: Select[Any]) -> dict[str, i
                 count_of(_bus_factor_1_clause()),
                 count_of(accelerating_clause()),
                 count_of(_bug_magnet_clause()),
+                count_of(func.coalesce(GitMetadata.prior_defect_count, 0) > 0),
             ).order_by(None)
         )
     ).one()
-    return dict(zip(("total", "bus_factor_1", "accelerating", "bug_magnet"), map(int, row), strict=True))
+    keys = ("total", "bus_factor_1", "accelerating", "bug_magnet", "with_fixes")
+    return dict(zip(keys, map(int, row), strict=True))
 
 
 async def list_hotspots(session: AsyncSession, repo_id: str, query: HotspotQuery) -> HotspotListing:

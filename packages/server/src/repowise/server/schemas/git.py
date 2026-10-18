@@ -190,6 +190,8 @@ class HotspotFacets(BaseModel):
     bus_factor_1: int
     accelerating: int
     bug_magnet: int
+    #: Hotspots with any recorded fix, so a client knows fix data exists past its page.
+    with_fixes: int = 0
 
 
 class HotspotPage(Paginated[HotspotResponse]):

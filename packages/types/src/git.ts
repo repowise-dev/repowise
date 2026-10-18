@@ -139,6 +139,8 @@ export interface HotspotFacets {
   bus_factor_1: number;
   accelerating: number;
   bug_magnet: number;
+  /** Hotspots with any recorded fix, across the whole searched set. */
+  with_fixes?: number;
 }
 
 /** Repo-relative tercile of the diff-size percentile within its own repo;

@@ -2638,6 +2638,23 @@ export interface HotFilesNodeResponse {
   commit_count: number;
 }
 
+/** Counts over every hotspot the search matches, whatever the filter. */
+export interface HotspotFacets {
+  total: number;
+  bus_factor_1: number;
+  accelerating: number;
+  bug_magnet: number;
+  with_fixes?: number;
+}
+
+export interface HotspotPage {
+  items: HotspotResponse[];
+  total: number;
+  has_more: boolean;
+  next_offset?: number | null;
+  facets: HotspotFacets;
+}
+
 export interface HotspotResponse {
   file_path: string;
   commit_count_total?: number;
@@ -2667,6 +2684,8 @@ export interface HotspotResponse {
   bug_magnet?: boolean;
   last_fix_at?: string | null;
   original_path?: string | null;
+  accelerating?: boolean;
+  rank?: number | null;
 }
 
 export interface IdentityResponse {
@@ -3149,13 +3168,6 @@ export interface PageVersionResponse {
 
 export interface Paginated_CommitResponse_ {
   items: CommitResponse[];
-  total: number;
-  has_more: boolean;
-  next_offset?: number | null;
-}
-
-export interface Paginated_HotspotResponse_ {
-  items: HotspotResponse[];
   total: number;
   has_more: boolean;
   next_offset?: number | null;

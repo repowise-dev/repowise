@@ -152,6 +152,11 @@ describe("HotspotTable fix history", () => {
     expect(screen.queryByRole("columnheader", { name: /^Fixes/ })).not.toBeInTheDocument();
   });
 
+  it("shows the Fixes column when fixes sit only past the loaded page", () => {
+    render(<HotspotTable hotspots={rows} facets={{ ...facets, with_fixes: 4 }} onSortChange={() => {}} />);
+    expect(screen.getByRole("columnheader", { name: /^Fixes/ })).toBeInTheDocument();
+  });
+
   it("shows the Fixes column once the index carries fix data", () => {
     const withFixes = [
       hotspot({ file_path: "src/a.ts", prior_defect_count: 7, last_fix_at: daysAgo(3) }),

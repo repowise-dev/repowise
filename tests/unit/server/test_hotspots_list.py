@@ -91,7 +91,13 @@ async def test_default_lists_every_hotspot_by_score(client: AsyncClient, app) ->
     assert [r["rank"] for r in page["items"]] == [1, 2, 3, 4, 5, 6]
     assert page["total"] == 6
     # Bus factor 0 is "no history", not one owner; the new file is not accelerating.
-    assert page["facets"] == {"total": 6, "bus_factor_1": 3, "accelerating": 3, "bug_magnet": 2}
+    assert page["facets"] == {
+        "total": 6,
+        "bus_factor_1": 3,
+        "accelerating": 3,
+        "bug_magnet": 2,
+        "with_fixes": 2,
+    }
 
 
 @pytest.mark.asyncio

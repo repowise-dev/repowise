@@ -133,8 +133,12 @@ export function HotspotTable({
 }: HotspotTableProps) {
   const listed = total ?? hotspots.length;
   // Churn and bug-fix history are different claims, so the Fixes column only
-  // appears once the index actually carries fix data for this set of files.
-  const showFixes = useMemo(() => hotspots.some((h) => (h.prior_defect_count ?? 0) > 0), [hotspots]);
+  // appears once the index carries fix data for this set of files: anywhere in
+  // the searched set (the facet), not only on the loaded page.
+  const showFixes = useMemo(
+    () => (facets?.with_fixes ?? 0) > 0 || hotspots.some((h) => (h.prior_defect_count ?? 0) > 0),
+    [facets, hotspots],
+  );
   const { scrollRef, virtualRows, paddingTop, paddingBottom } = useVirtualRows({
     count: hotspots.length,
     estimateSize: ROW_HEIGHT,
