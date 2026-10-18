@@ -97,3 +97,4 @@ export {
   type ProportionSegment,
 } from "./proportion-bar";
 export { SERIES, SERIES_TAIL, seriesColor, commitCategoryColor } from "./series";
+export { FilePath, SlashBreaks, type FilePathMode, type FilePathProps } from "./file-path";

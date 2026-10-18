@@ -10,6 +10,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { formatConfidence } from "../lib/format";
 import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
+import { FilePath } from "../shared/file-path";
 import { PreviewBadge } from "../health/preview-badge";
 import { RowPromptAction } from "../health/row-prompt-action";
 import {
@@ -97,17 +98,13 @@ export function FindingIdentity({ finding, href, onNavigate, mark }: FindingIden
         <a
           href={href}
           onClick={onLinkClick}
-          className="block truncate font-mono text-xs text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline"
-          title={finding.file_path}
+          className="flex min-w-0 text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline"
         >
-          {finding.file_path}
+          <FilePath path={finding.file_path} fold />
         </a>
       ) : (
-        <span
-          className="block truncate font-mono text-xs text-[var(--color-text-primary)]"
-          title={finding.file_path}
-        >
-          {finding.file_path}
+        <span className="flex min-w-0 text-[var(--color-text-primary)]">
+          <FilePath path={finding.file_path} fold />
         </span>
       )}
       {finding.symbol_name && (

@@ -37,6 +37,7 @@ def _create_test_app():
         changes,
         code_health,
         costs,
+        coupling,
         dead_code,
         decisions,
         doc_drift,
@@ -107,6 +108,7 @@ def _create_test_app():
     app.include_router(owners.router)
     app.include_router(modules.router)
     app.include_router(areas.router)
+    app.include_router(coupling.router)
     app.include_router(decisions.router)
     app.include_router(episodes.router)
     app.include_router(external_systems.router)

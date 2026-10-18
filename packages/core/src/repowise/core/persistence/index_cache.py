@@ -61,6 +61,14 @@ class IndexStampCache:
         for key in [k for k in self._entries if k[1] == repo_id]:
             del self._entries[key]
 
+    def drop_repo_except(self, repo_id: str, prefix: tuple[Any, ...]) -> None:
+        """Forget *repo_id*'s answers whose key does not start with *prefix*:
+        older states go, variants of the current state (a trailing key part)
+        stay."""
+        n = len(prefix)
+        for key in [k for k in self._entries if k[1] == repo_id and k[:n] != prefix]:
+            del self._entries[key]
+
     def remember(self, key: tuple[Any, ...], value: Any) -> Any:
         self._entries[key] = value
         while len(self._entries) > self._size:

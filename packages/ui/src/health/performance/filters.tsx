@@ -1,24 +1,15 @@
 "use client";
 
 import type {
-  PerformanceContextFilter,
-  PerformanceExecutionContext,
   PerformanceFacetCount,
   PerformanceFacetKey,
   PerformanceFacets,
 } from "@repowise-dev/types/health";
 
 import { FilterSelect } from "../code-health-controls";
-import { ViewTabs } from "../../shared/view-tabs";
+import { MoreFilters } from "../../shared/more-filters";
+import { FACET_LABEL, facetValueLabel } from "./presentation";
 import {
-  CONTEXT_HINT,
-  CONTEXT_ORDER,
-  FACET_LABEL,
-  contextLabel,
-  facetValueLabel,
-} from "./presentation";
-import {
-  narrowingCount,
   type NarrowingKey,
   type PerformanceFilterState,
   type PerformanceSort,
@@ -30,187 +21,99 @@ import {
  * removes its own alternatives from the list.
  */
 
-function countOf(counts: PerformanceFacetCount[] | undefined, value: string): number {
-  return counts?.find((entry) => entry.value === value)?.total ?? 0;
-}
-
-/**
- * The four canonical contexts stay separate and always visible, because a
- * context with no rows is a fact about the repository worth reading. When the
- * server predates the vocabulary they collapse to the pairing it understands.
- */
-export function ContextTabs({
-  value,
-  facets,
-  total,
-  collapsed,
-  onChange,
-}: {
-  value: PerformanceContextFilter;
-  facets: PerformanceFacets;
-  total: number;
-  collapsed: boolean;
-  onChange: (context: PerformanceContextFilter) => void;
-}) {
-  const counts = facets.context;
-  const contexts: PerformanceExecutionContext[] = collapsed
-    ? ["production", "test"]
-    : CONTEXT_ORDER;
-  // `total` is the unscoped repository_total; `counts` is facets.context,
-  // which the server has already narrowed by every other active filter.
-  // Badge "All" with the sum of the (narrowed) context facet so it agrees
-  // with what clicking it actually returns. Fall back to `total` only when
-  // the server sends no facets.context at all (a server predating context
-  // scoping, which also won't send a narrowed repository_total).
-  const scopedTotal = counts?.reduce((sum, entry) => sum + entry.total, 0) ?? total;
-  const tabs = [
-    { id: "all", label: "All", badge: scopedTotal },
-    ...contexts.map((context) => ({
-      id: context,
-      label:
-        collapsed && context === "production" ? "Production & tooling" : contextLabel(context),
-      badge:
-        collapsed && context === "production"
-          ? countOf(counts, "production") + countOf(counts, "tooling")
-          : countOf(counts, context),
-    })),
-  ];
-  return (
-    <ViewTabs
-      tabs={tabs}
-      value={value}
-      onValueChange={(next) => onChange(next as PerformanceContextFilter)}
-    />
-  );
-}
-
 interface NarrowingSpec {
   key: NarrowingKey;
   facet: PerformanceFacetKey;
   anyLabel: string;
 }
 
+/**
+ * The server filters behind "More filters". Actionability is not among them:
+ * the actionability bar is that axis's one control. Context is offered only
+ * in Everything, where more than production is listed.
+ */
 const NARROWING: NarrowingSpec[] = [
-  // "expected" causes are real but offer nothing to change, so the default
-  // (no explicit selection) reads as "every other state" rather than "any".
-  { key: "actionability", facet: "actionability", anyLabel: "All but expected" },
+  { key: "context", facet: "context", anyLabel: "Any context" },
   { key: "boundary", facet: "boundary", anyLabel: "Any" },
   { key: "confidence", facet: "confidence", anyLabel: "Any" },
-  // Unproven causes (loop size unknown) are counted but never queued by default.
-  { key: "proof", facet: "proof", anyLabel: "Measured only" },
-  // Startup, CLI, tooling and test loops run once per process, so the default
-  // leaves them out; each role stays one selection away.
-  { key: "role", facet: "role", anyLabel: "Served paths" },
+  { key: "proof", facet: "proof", anyLabel: "Any" },
+  { key: "role", facet: "role", anyLabel: "Any" },
 ];
 
 /**
  * A facet with one value is a fact, not a choice, so it is stated rather than
  * offered as a control that could only ever return the same rows.
  */
+/** The label and its one value; the count belongs to the options, and one value has none to compare. */
 function SingleValueFact({ facet, only }: { facet: PerformanceFacetKey; only: PerformanceFacetCount }) {
   return (
     <p className="text-xs text-[var(--color-text-tertiary)]">
-      <span className="uppercase tracking-wider">{FACET_LABEL[facet]}</span>{" "}
+      {FACET_LABEL[facet]}:{" "}
       <span className="text-[var(--color-text-secondary)]">
         {facetValueLabel(facet, only.value)}
-      </span>{" "}
-      <span className="tabular-nums">on {only.total.toLocaleString()} matching</span>
+      </span>
     </p>
   );
 }
 
-export function QueueFilters({
+/** One server filter: a select over its facet, or a stated fact when it has one value. */
+function NarrowingControl({
+  spec: { key, facet, anyLabel },
   filters,
   facets,
   onChange,
-  onClear,
 }: {
+  spec: NarrowingSpec;
   filters: PerformanceFilterState;
   facets: PerformanceFacets;
   onChange: (key: NarrowingKey, value: string | null) => void;
-  onClear: () => void;
 }) {
-  const active = narrowingCount(filters);
+  const counts = facets[facet] ?? [];
+  if (counts.length === 1 && !filters[key]) return <SingleValueFact facet={facet} only={counts[0]!} />;
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-      {NARROWING.map(({ key, facet, anyLabel }) => {
-        const counts = facets[facet] ?? [];
-        if (counts.length === 0) return null;
-        if (counts.length === 1 && !filters[key]) {
-          return <SingleValueFact key={key} facet={facet} only={counts[0]!} />;
-        }
-        return (
-          <FilterSelect
-            key={key}
-            label={FACET_LABEL[facet]}
-            value={filters[key] ?? ""}
-            onChange={(next) => onChange(key, next || null)}
-            options={[
-              { value: "", label: anyLabel },
-              ...counts.map((entry) => ({
-                value: entry.value,
-                label: `${facetValueLabel(facet, entry.value)} (${entry.total.toLocaleString()})`,
-              })),
-            ]}
-          />
-        );
-      })}
-      {active > 0 ? (
-        <button
-          type="button"
-          onClick={onClear}
-          className="rounded text-xs font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-        >
-          Clear {active} filter{active === 1 ? "" : "s"}
-        </button>
-      ) : null}
-    </div>
+    <FilterSelect
+      label={FACET_LABEL[facet]}
+      value={filters[key] ?? ""}
+      onChange={(next) => onChange(key, next || null)}
+      options={[
+        { value: "", label: anyLabel },
+        ...counts.map((entry) => ({
+          value: entry.value,
+          label: `${facetValueLabel(facet, entry.value)} (${entry.total.toLocaleString()})`,
+        })),
+      ]}
+    />
   );
 }
 
 /**
- * What the queue currently describes, and what it was drawn from. The
- * per-page range is the pagination control's job, so this states only what
- * that control cannot: how the selection narrows the repository, and when the
- * answer was computed.
+ * Scope and sort stay visible; the rest of the server filters sit behind one
+ * disclosure, which states how many are active while it is closed.
  */
-export function ScopeLine({
-  filteredTotal,
-  repositoryTotal,
-  context,
-  narrowed,
-  analyzedCommit,
+export function NarrowingFilters({
+  filters,
+  facets,
+  keys,
+  onChange,
 }: {
-  filteredTotal: number;
-  repositoryTotal: number;
-  context: PerformanceContextFilter;
-  narrowed: number;
-  analyzedCommit?: string | null | undefined;
+  filters: PerformanceFilterState;
+  facets: PerformanceFacets;
+  /** The filters the current scope can narrow by. */
+  keys: readonly NarrowingKey[];
+  onChange: (key: NarrowingKey, value: string | null) => void;
 }) {
-  const noun = filteredTotal === 1 ? "opportunity" : "opportunities";
-  const scope =
-    context === "all"
-      ? noun
-      : `${contextLabel(context as PerformanceExecutionContext).toLowerCase()} ${noun}`;
-  return (
-    <p role="status" className="text-xs text-[var(--color-text-tertiary)]">
-      <span className="tabular-nums">{filteredTotal.toLocaleString()}</span> {scope}
-      {narrowed > 0 ? ` under ${narrowed} filter${narrowed === 1 ? "" : "s"}` : ""}
-      {filteredTotal !== repositoryTotal ? (
-        <>
-          , from <span className="tabular-nums">{repositoryTotal.toLocaleString()}</span> in the
-          repository
-        </>
-      ) : null}
-      .
-      {analyzedCommit ? (
-        <>
-          {" "}
-          Analyzed at <span className="font-mono">{analyzedCommit.slice(0, 7)}</span>.
-        </>
-      ) : null}
-    </p>
-  );
+  const specs = NARROWING.filter((spec) => keys.includes(spec.key));
+  const active = specs.filter(({ key }) => filters[key] !== null).length;
+  const controls = specs.filter((spec) => (facets[spec.facet] ?? []).length > 0).map((spec) => (
+    <NarrowingControl key={spec.key} spec={spec} filters={filters} facets={facets} onChange={onChange} />
+  ));
+  if (controls.length === 0) return null;
+  return <MoreFilters active={active}>{controls}</MoreFilters>;
+}
+
+/** The chip label for one active narrowing, "Boundary: Database". */
+export function narrowingChipLabel(key: NarrowingKey, value: string): string {
+  return `${FACET_LABEL[key]}: ${facetValueLabel(key, value)}`;
 }
 
 const SORT_OPTIONS: { value: PerformanceSort; label: string }[] = [
@@ -235,14 +138,5 @@ export function SortControl({
       onChange={(next) => onChange(next as PerformanceSort)}
       options={SORT_OPTIONS}
     />
-  );
-}
-
-export function ContextHint({ context }: { context: PerformanceContextFilter }) {
-  if (context === "all") return null;
-  return (
-    <p className="text-xs text-[var(--color-text-tertiary)]">
-      {CONTEXT_HINT[context as PerformanceExecutionContext]}
-    </p>
   );
 }

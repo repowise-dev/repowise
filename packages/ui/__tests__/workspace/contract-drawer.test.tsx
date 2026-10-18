@@ -96,10 +96,7 @@ describe("ContractDrawer", () => {
     expect(screen.getByText("HTTP contract / Provider")).toBeInTheDocument();
     expect(screen.getByText("users-api")).toBeInTheDocument();
     // The file reads as a dim directory and its name, with the line after it.
-    expect(screen.getByText("users.ts").parentElement).toHaveAttribute(
-      "title",
-      "src/routes/users.ts:42",
-    );
+    expect(screen.getByText("users.ts").parentElement?.textContent).toBe("src/routes/users.ts:42");
     expect(screen.getByText("92%")).toBeInTheDocument();
     expect(screen.getByText("fastapi")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "AI prompt" })).toBeInTheDocument();

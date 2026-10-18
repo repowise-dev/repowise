@@ -50,3 +50,5 @@ export * from "./inferred-tests-view";
 export * from "./tests-reaching-list";
 export * from "./trend-view";
 export * from "./fix-first";
+export { DEFAULT_AREA_RAIL_LABELS, type AreaRailLabels } from "./area-rail/labels";
+export type { AreaLinks } from "./area-rail/area-card";

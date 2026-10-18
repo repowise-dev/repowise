@@ -29,7 +29,7 @@
 
 import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { HeartPulse, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
@@ -59,13 +59,9 @@ import { HotspotsSection } from "@/components/code-health/hotspots-section";
 import { TrendSection } from "@/components/code-health/trend-tab";
 import { getDeadCodeSummary } from "@/lib/api/dead-code";
 import {
-  getChurnComplexity,
-  getHealthMap,
   getHealthOverview,
   getHealthTrend,
   getPerformanceOpportunity,
-  type ChurnComplexityResponse,
-  type HealthMapFeed,
   type HealthOverviewResponse,
   type HealthTrendResponse,
 } from "@/lib/api/code-health";
@@ -96,11 +92,19 @@ const DeadCodeTab = dynamic(
 );
 
 /**
- * Lenses on the map. The three co-equal health signals ride on the map payload
- * itself; churn arrives on its own request and is joined in below, which is why
- * it is listed here rather than in the map component's default.
+ * Lenses on the map. Three lead as segments; the rest sit behind "More",
+ * where later lenses (off-boarding, coupling) join. Churn percentiles are
+ * joined in by the map tab; owner and knowledge read the ownership rollup.
  */
-const OVERLAYS: CodeHealthOverlay[] = ["health", "maintainability", "performance", "churn"];
+const PRIMARY_LENSES: CodeHealthOverlay[] = ["health", "hotspot", "owner"];
+const OVERLAYS: CodeHealthOverlay[] = [
+  ...PRIMARY_LENSES,
+  "maintainability",
+  "performance",
+  "coverage",
+  "churn",
+  "knowledge",
+];
 
 /**
  * Tabs whose data honours `scope`. Dead code has no production/test split,
@@ -165,34 +169,6 @@ const COUNTS_LABEL_KEYS: Record<HealthCounts, string> = {
   everything: "countsEverything",
   code_shape: "countsCodeShape",
 };
-
-/**
- * Nodes the map draws at first. The server chooses which ones: pinned paths
- * first, a floor per module, then production before tooling, tests and
- * examples, with open performance causes and then the unhealthiest files
- * leading each tier. "Draw more" steps the cap up to the server's ceiling.
- */
-const MAP_CAP = 2000;
-const MAP_CAP_STEP = 2000;
-const MAP_CAP_MAX = 8000;
-/** Paths pinned for selections made outside the drawn field, at most. */
-const MAX_EXTRA_PINS = 20;
-/**
- * Churn points pulled for the churn lens. Deliberately larger than
- * `MAP_FILE_LIMIT`: the map ranks by NLOC and churn-complexity ranks by
- * `commit_count × max_ccn`, so the two windows do not contain the same files.
- * At the old default of 300 this repo joined churn onto 296 of the 1,935 mapped
- * files that have it, and the other ~1,700 nodes rendered as the legend's
- * "no data" swatch for data that exists. Matching the map's 2,000 would still
- * miss 445. 5,000 covers every churned file here with headroom; a repo that
- * exceeds it degrades back to the same partial join rather than breaking.
- *
- * Costs ~469 KB uncompressed on this repo (3,011 points), on a request that
- * only fires once the churn lens is selected. The hosted route still caps at
- * 1,000, so porting this page there needs that ceiling raised first or the
- * request 422s.
- */
-const CHURN_POINT_LIMIT = 5000;
 
 export function CodeHealthView() {
   const t = useTranslations("views.codeHealth");
@@ -291,85 +267,6 @@ export function CodeHealthView() {
     const paths = [opportunity.file_path, ...opportunity.evidence.map((e) => e.file_path)];
     return [...new Set(paths.filter(Boolean))];
   }, [opportunity]);
-
-  // The bounded field: one pull, shared across lenses so switching never
-  // refetches. The paths the page needs on screen ride along as `active`, which
-  // is what makes the guarantee a server-side one rather than a hope that the
-  // ranking happened to include them.
-  //
-  // A selection is pinned only when it is not already drawn, and a pin, once
-  // made, stays: a click on a node the reader can see costs no request, and a
-  // file pinned in does not drop out again on the refetch its own pin caused.
-  // The deep-linked file is pinned from the first request.
-  const [extraPins, setExtraPins] = useState<string[]>(() =>
-    selectedPath ? [selectedPath] : [],
-  );
-  const [mapCap, setMapCap] = useState(MAP_CAP);
-  const [includeHeld, setIncludeHeld] = useState(false);
-  const [pinQuery, setPinQuery] = useState("");
-  const activePaths = useMemo(
-    () => [...new Set([...extraPins, ...(highlightPaths ?? [])])],
-    [extraPins, highlightPaths],
-  );
-  const {
-    data: mapFeed,
-    error: mapError,
-    isValidating: mapValidating,
-    mutate: mutateMap,
-  } = useSWR<HealthMapFeed>(
-    `code-health-map:${repoId}${viewKey}:${mapCap}:${includeHeld ? "held" : ""}:${pinQuery}:${activePaths.join(",")}`,
-    () =>
-      getHealthMap(repoId, {
-        cap: mapCap,
-        ...(activePaths.length ? { active: activePaths } : {}),
-        scope,
-        counts,
-        ...(includeHeld ? { include_held: true } : {}),
-        ...(pinQuery ? { q: pinQuery } : {}),
-      }),
-    { revalidateOnFocus: false, keepPreviousData: true },
-  );
-  const drawnPaths = useMemo(
-    () => new Set(mapFeed?.files.map((f) => f.file_path) ?? []),
-    [mapFeed],
-  );
-  useEffect(() => {
-    if (!selectedPath || !mapFeed || drawnPaths.has(selectedPath)) return;
-    setExtraPins((pins) =>
-      pins.includes(selectedPath) ? pins : [...pins, selectedPath].slice(-MAX_EXTRA_PINS),
-    );
-  }, [selectedPath, mapFeed, drawnPaths]);
-  const canDrawMore = mapCap < MAP_CAP_MAX;
-  const drawMore = useCallback(
-    () => setMapCap((c) => Math.min(MAP_CAP_MAX, c + MAP_CAP_STEP)),
-    [],
-  );
-  const retryMap = useCallback(() => void mutateMap(), [mutateMap]);
-
-  // Churn percentiles for the churn lens. Fetched only once that lens is
-  // selected: it is a second request, and the other three lenses color from
-  // fields already on the map payload.
-  const churnWanted = overlay === "churn";
-  const { data: churn, isLoading: churnLoading } = useSWR<ChurnComplexityResponse>(
-    churnWanted ? `health-churn-complexity:${repoId}` : null,
-    () => getChurnComplexity(repoId, { limit: CHURN_POINT_LIMIT }),
-    { revalidateOnFocus: false, keepPreviousData: true },
-  );
-
-  // Join churn onto the map rows by path. Until it lands every node would be
-  // neutral, so the legend is told it is loading rather than letting an
-  // all-grey field read as "no churn anywhere".
-  const mapFeedWithChurn: HealthMapFeed | undefined = useMemo(() => {
-    if (!mapFeed || !churn) return mapFeed;
-    const byPath = new Map(churn.points.map((p) => [p.file_path, p.churn_percentile]));
-    return {
-      ...mapFeed,
-      files: mapFeed.files.map((file) => ({
-        ...file,
-        churn_percentile: byPath.get(file.file_path) ?? null,
-      })),
-    };
-  }, [mapFeed, churn]);
 
   // ---- Tab counts ----
   // Dead code uses the same key + fetcher as its own tab, so this is a prefetch
@@ -529,19 +426,11 @@ export function CodeHealthView() {
             overlay={overlay}
             onOverlayChange={setOverlay}
             lenses={OVERLAYS}
-            mapFeed={mapFeedWithChurn}
-            overlayLoading={churnWanted && churnLoading && !churn}
+            primaryLenses={PRIMARY_LENSES}
             selectedPath={selectedPath}
             onSelectPath={setSelectedPath}
             highlightPaths={highlightPaths}
             scope={scope}
-            onDrawMore={canDrawMore ? drawMore : undefined}
-            drawMoreStep={MAP_CAP_STEP}
-            onIncludeHeldChange={setIncludeHeld}
-            onFindUndrawn={setPinQuery}
-            mapPending={mapValidating}
-            mapError={mapError}
-            onRetryMap={retryMap}
             hotspotsSlot={<HotspotsSection repoId={repoId} />}
             trendSlot={
               <OverviewSection

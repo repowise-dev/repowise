@@ -102,12 +102,11 @@ describe("SecurityFindingsTable", () => {
     expect(rows[2]!.textContent).toContain("test");
   });
 
-  it("wraps the path instead of truncating it", () => {
+  it("leads with the file name and keeps the whole path as its name", () => {
     render(<SecurityFindingsTable findings={FINDINGS} />);
-    const path = screen.getByText("src/app/server.py");
-    expect(path.className).not.toContain("break-all");
-    expect(path.querySelectorAll("wbr").length).toBeGreaterThan(1);
-    expect(path.className).not.toContain("truncate");
+    const name = screen.getByText("server.py");
+    expect(name.closest("[aria-hidden]")?.textContent?.startsWith("server.py")).toBe(true);
+    expect(screen.getByText(/^src\/app\/server\.py(:\d+)?$/).className).toContain("sr-only");
   });
 
   it("keeps every severity option and its unfiltered count when one is picked", () => {

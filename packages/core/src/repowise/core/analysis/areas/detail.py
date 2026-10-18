@@ -67,12 +67,15 @@ def area_detail(
     area: str,
     *,
     trend: Sequence[dict[str, Any]] = (),
+    coupled: Sequence[dict[str, Any]] = (),
     limit: int = DETAIL_LIMIT,
 ) -> dict[str, Any] | None:
     """The area's rollup and lists, or ``None`` when no scored file is under it.
 
     *trend* is the area's score per snapshot (``[{taken_at, health}]``), read
-    from the history by the caller.
+    from the history by the caller. *coupled* is the areas it changes with
+    (:func:`repowise.core.analysis.coupling.coupled_areas`), folded by the
+    caller from the co-change rows this index does not read.
     """
     node = index.nodes.get(area)
     if node is None:
@@ -90,4 +93,5 @@ def area_detail(
         "trend": list(trend),
         "top_findings": _top_findings(index, area, limit),
         "test_reach": _test_reach(group),
+        "coupled_areas": list(coupled),
     }

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from .coupling import CouplingAreaSummary
 
 Band = Literal["at_risk", "needs_work", "fair", "good", "excellent"]
 
@@ -85,12 +87,25 @@ class AreaDeltaWindow(BaseModel):
     baseline_at: str | None
 
 
+class AreaHeld(BaseModel):
+    """The origins the map holds out by default, and what this answer left out."""
+
+    #: ``MAP_HELD_ORIGINS``, in order: what ``hold=map`` leaves out.
+    default: list[str]
+    #: Origins left out of every figure in this answer; empty with ``hold=none``.
+    excluded: list[str]
+    #: Files per held origin, repository-wide, for a toggle's count.
+    counts: dict[str, int]
+
+
 class AreaTreeResponse(BaseModel):
     root: AreaNode
     depth: int
     #: Every area up to ``depth`` levels below the root, sorted by path.
     nodes: list[AreaNode]
     delta_window: AreaDeltaWindow
+    #: Absent on older servers.
+    held: AreaHeld | None = None
 
 
 class AreaBandShare(BaseModel):
@@ -168,3 +183,6 @@ class AreaDetailResponse(BaseModel):
     top_findings: list[AreaFinding]
     test_reach: AreaTestReach
     delta_window: AreaDeltaWindow
+    #: Areas outside this one its files change with, strongest first; test
+    #: material left out. Each named at this area's own depth.
+    coupled_areas: list[CouplingAreaSummary] = Field(default_factory=list)

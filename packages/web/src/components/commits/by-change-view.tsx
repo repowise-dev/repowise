@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { InfoTip } from "@repowise-dev/ui/shared/info-tip";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { ChangesTable } from "@/components/changes/changes-table";
 import { listChanges } from "@/lib/api/changes";
@@ -142,17 +143,20 @@ export async function ByChangeView({ repoId, params }: { repoId: string; params:
           allCategories: t("allCategories"),
         }}
       />
-      <p className="mb-3 text-xs text-[var(--color-text-tertiary)]">
-        {attention && `${t("attentionScope")} `}
-        {built && `${t("checklistsBuilt", { built: built.built, changes: built.changes })} `}
-        {t("checklistsBuildHint")}
+      {/* One scope line; how a checklist gets built is behind the tip. */}
+      <p className="mb-3 flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)]">
+        <span>
+          {attention && `${t("attentionScope")} `}
+          {built && t("checklistsBuilt", { built: built.built, changes: built.changes })}
+        </span>
+        <InfoTip content={t("checklistsBuildHint")} />
       </p>
       {page.items.length === 0 ? (
         <p className="py-6 text-sm text-[var(--color-text-secondary)]">
           {t(attention ? "attentionEmpty" : "filterEmpty")}
         </p>
       ) : (
-        <ChangesTable repoId={repoId} rows={page.items} showProvenance={page.attribution} />
+        <ChangesTable repoId={repoId} rows={page.items} />
       )}
       <Pager
         showing={t("showing", { shown: page.items.length, total: page.total })}

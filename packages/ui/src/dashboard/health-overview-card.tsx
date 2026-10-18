@@ -12,7 +12,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
 import { AllClearStat } from "../shared/empty-state";
-import { truncatePath } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { healthBand, SEVERITY_LABEL, SEVERITY_SEGMENT, type Severity } from "../health/tokens";
 import { ProportionBar } from "../shared/proportion-bar";
 import { formatScore, type HealthBand } from "@repowise-dev/types/health";
@@ -353,9 +353,11 @@ export function HealthOverviewCard({
                     <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] shrink-0">
                       Worst file
                     </span>
-                    <span className="truncate font-mono text-xs text-[var(--color-text-secondary)] group-hover:text-[var(--color-accent-primary)] transition-colors">
-                      {truncatePath(data.worst_performer_path, 40)}
-                    </span>
+                    <FilePath
+                      path={data.worst_performer_path}
+                      fold
+                      className="text-[var(--color-text-secondary)] transition-colors group-hover:text-[var(--color-accent-primary)]"
+                    />
                   </span>
                   <span
                     className="shrink-0 text-xs font-bold tabular-nums"

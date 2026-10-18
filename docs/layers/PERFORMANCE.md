@@ -134,7 +134,7 @@ competes with other kinds of work.
 |---|---|
 | CLI | `repowise health` and `repowise next` list performance work inside Fix first |
 | MCP | `get_health(include=["performance"])`; open one cause with `opportunity_id` |
-| Dashboard | Code Health, Performance tab: each cause with its steps and the raw observations as evidence |
+| Dashboard | Code Health, Performance tab: one scope (Worth doing now, All production, Everything) with every count inside it, causes grouped by area, each with its steps and the raw observations as evidence |
 
 MCP filters: `performance_view` (`detail` or `summary`), `performance_context`
 (`production` by default; `tooling`, `test`, `unknown` or `all`),

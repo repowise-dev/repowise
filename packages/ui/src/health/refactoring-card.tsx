@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 import { InfoTip } from "../shared/info-tip";
+import { FilePath } from "../shared/file-path";
 import {
   biomarkerInfo,
   biomarkerLabel,
@@ -240,10 +241,10 @@ export function HealthWorkItemCard({
           disabled={!onSelect}
           title={onSelect ? "Open file health drawer" : undefined}
         >
-          <p className="min-w-0 flex-1 text-sm font-mono text-[var(--color-text-primary)] truncate group-hover/file:text-[var(--color-accent-primary)]">
-            {target.file_path}
+          <p className="flex min-w-0 flex-1 items-baseline font-mono text-sm text-[var(--color-text-primary)] group-hover/file:text-[var(--color-accent-primary)]">
+            <FilePath path={target.file_path} fold className="text-sm" />
             {target.primary_function ? (
-              <span className="text-[var(--color-text-secondary)]">
+              <span className="min-w-0 truncate whitespace-pre text-[var(--color-text-secondary)]">
                 {" :: "}
                 {target.primary_function}
               </span>
