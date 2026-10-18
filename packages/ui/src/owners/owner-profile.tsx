@@ -6,6 +6,7 @@ import { OwnerFileTable, soleCarriedCount } from "./owner-file-table";
 import { OwnerFootprint } from "./owner-footprint";
 import { OwnerIdentity } from "./owner-identity";
 import { OwnerRelationships } from "./owner-relationships";
+import { ownershipLabels, type OwnershipLabels } from "./labels";
 
 /**
  * A person page about knowledge and handover, never a scorecard: who they
@@ -41,6 +42,7 @@ export interface OwnerProfileViewProps {
   hrefForModule?: ((modulePath: string) => string) | undefined;
   hrefForCoAuthor?: ((coAuthor: OwnerCoAuthor) => string) | undefined;
   LinkComponent?: React.ElementType | undefined;
+  labels?: Partial<OwnershipLabels> | undefined;
 }
 
 export function OwnerProfileView({
@@ -52,51 +54,59 @@ export function OwnerProfileView({
   hrefForModule,
   hrefForCoAuthor,
   LinkComponent,
+  labels: overrides,
 }: OwnerProfileViewProps) {
+  const labels = ownershipLabels(overrides);
   const filesShown = owner.top_files.slice(0, 20);
   const soleCarried = soleCarriedCount(filesShown);
   const touched = owner.files_touched_total ?? owner.top_files.length;
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
-      <OwnerIdentity owner={owner} />
+      <OwnerIdentity owner={owner} labels={labels} />
 
       <OverviewSection
         flush
-        title="What depends on them"
-        description="Files where this person made most of the commits, so the people who stay would hold under half of the history, and who is best placed to take each directory over."
+        title={labels.dependsTitle}
+        description={labels.dependsDescription}
         action={
           <SectionLink href={`${base}/owners`} LinkComponent={LinkComponent}>
-            Ownership
+            {labels.ownershipLink}
           </SectionLink>
         }
       >
         {dependsOn}
       </OverviewSection>
 
-      <OwnerFootprint modules={owner.modules} hrefForModule={hrefForModule} LinkComponent={LinkComponent} />
+      <OwnerFootprint
+        modules={owner.modules}
+        hrefForModule={hrefForModule}
+        LinkComponent={LinkComponent}
+        labels={labels}
+      />
 
-      {credit && <OwnerCreditSection credit={credit} LinkComponent={LinkComponent} />}
+      {credit && <OwnerCreditSection credit={credit} LinkComponent={LinkComponent} labels={labels} />}
 
       <OwnerRelationships
         coAuthors={owner.co_authors}
         total={owner.co_authors_total ?? owner.co_authors.length}
         hrefForCoAuthor={hrefForCoAuthor}
         LinkComponent={LinkComponent}
+        labels={labels}
       />
 
       <OverviewSection
-        title="Files they carry"
+        title={labels.filesCarryTitle}
         collapsible
         defaultOpen={false}
-        hint={`${filesShown.length.toLocaleString()} of ${touched.toLocaleString()} touched`}
-        description={`The files with the most commits attributed to this person. Churn is a percentile against every file in the repo. A dot marks a high-churn file they alone maintain and wrote at least 90% of the commits for${soleCarried > 0 ? `: ${soleCarried} of these ${filesShown.length}` : ", and none of these qualify"}.`}
+        hint={labels.filesCarryHint(filesShown.length, touched)}
+        description={labels.filesCarryDescription(soleCarried, filesShown.length)}
       >
-        <OwnerFileTable files={filesShown} hrefForFile={hrefForFile} LinkComponent={LinkComponent} />
+        <OwnerFileTable files={filesShown} hrefForFile={hrefForFile} LinkComponent={LinkComponent} labels={labels} />
       </OverviewSection>
 
-      <OverviewSection title="What they commit" collapsible defaultOpen={false}>
-        <OwnerCommitMix categories={owner.commit_categories} />
+      <OverviewSection title={labels.commitMixTitle} collapsible defaultOpen={false}>
+        <OwnerCommitMix categories={owner.commit_categories} labels={labels} />
       </OverviewSection>
     </div>
   );
@@ -105,34 +115,28 @@ export function OwnerProfileView({
 function OwnerCreditSection({
   credit,
   LinkComponent,
+  labels,
 }: {
   credit: OwnerCredit;
   LinkComponent?: React.ElementType | undefined;
+  labels: OwnershipLabels;
 }) {
   if (credit.filesImproved === 0 && credit.findingsResolved === 0) return null;
   return (
     <OverviewSection
-      title="What they improved"
+      title={labels.creditTitle}
       {...(credit.href
         ? {
             action: (
               <SectionLink href={credit.href} LinkComponent={LinkComponent}>
-                See the commits
+                {labels.creditLink}
               </SectionLink>
             ),
           }
         : {})}
     >
       <p className="text-[15px] leading-relaxed text-[var(--color-text-secondary)]">
-        In the last {credit.windowDays} days their commits made{" "}
-        <strong className="font-semibold text-[var(--color-text-primary)]">
-          {credit.filesImproved.toLocaleString()} {credit.filesImproved === 1 ? "file" : "files"}
-        </strong>{" "}
-        healthier and resolved{" "}
-        <strong className="font-semibold text-[var(--color-text-primary)]">
-          {credit.findingsResolved.toLocaleString()} {credit.findingsResolved === 1 ? "finding" : "findings"}
-        </strong>
-        .
+        {labels.creditSentence(credit.windowDays, credit.filesImproved, credit.findingsResolved)}
       </p>
     </OverviewSection>
   );

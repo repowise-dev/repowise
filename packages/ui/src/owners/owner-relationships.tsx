@@ -2,6 +2,7 @@ import * as React from "react";
 import type { OwnerCoAuthor } from "@repowise-dev/types/owners";
 import { OverviewSection } from "../overview/section";
 import { EmptyState } from "../shared/empty-state";
+import type { OwnershipLabels } from "./labels";
 import { OwnerAvatar } from "./owner-avatar";
 
 /**
@@ -18,11 +19,13 @@ export function OwnerRelationships({
   total,
   hrefForCoAuthor,
   LinkComponent,
+  labels,
 }: {
   coAuthors: OwnerCoAuthor[];
   total: number;
   hrefForCoAuthor?: ((coAuthor: OwnerCoAuthor) => string) | undefined;
   LinkComponent?: React.ElementType | undefined;
+  labels: OwnershipLabels;
 }) {
   const A = LinkComponent ?? "a";
   const [lead, second] = [...coAuthors].sort(
@@ -31,30 +34,24 @@ export function OwnerRelationships({
 
   return (
     <OverviewSection
-      title="Who else works here"
-      description="Contributors editing the same files. Overlap is the share of this person's files the other has also committed to, so it reads as how much of their work is genuinely shared."
+      title={labels.relationshipsTitle}
+      description={labels.relationshipsDescription}
     >
       {!lead ? (
         <EmptyState
           className="p-6"
-          title="Nobody else has touched these files"
-          description="Co-authorship appears once a second contributor commits to a file this person owns."
+          title={labels.relationshipsEmptyTitle}
+          description={labels.relationshipsEmptyDescription}
         />
       ) : (
         <div className="flex flex-col gap-3">
-          <LeadPartner coAuthor={lead} href={hrefForCoAuthor?.(lead)} LinkComponent={A} />
+          <LeadPartner coAuthor={lead} href={hrefForCoAuthor?.(lead)} LinkComponent={A} labels={labels} />
           <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">
-            {total <= 1 ? (
-              <>No other contributor shares a file with this person.</>
-            ) : second ? (
-              <>
-                The next closest of {(total - 1).toLocaleString()} other contributors overlaps on{" "}
-                {(second.co_change_strength * 100).toFixed(1)}%, so there is one natural reviewer here
-                rather than a shortlist.
-              </>
-            ) : (
-              <>{(total - 1).toLocaleString()} other contributors share at least one file.</>
-            )}
+            {total <= 1
+              ? labels.relationshipsAlone
+              : second
+                ? labels.relationshipsNext(total - 1, (second.co_change_strength * 100).toFixed(1))
+                : labels.relationshipsOthers(total - 1)}
           </p>
         </div>
       )}
@@ -66,10 +63,12 @@ function LeadPartner({
   coAuthor,
   href,
   LinkComponent,
+  labels,
 }: {
   coAuthor: OwnerCoAuthor;
   href: string | undefined;
   LinkComponent: React.ElementType;
+  labels: OwnershipLabels;
 }) {
   const A = LinkComponent;
   const body = (
@@ -77,11 +76,10 @@ function LeadPartner({
       <OwnerAvatar name={coAuthor.name} email={coAuthor.email} size="md" />
       <span className="min-w-0">
         <span className="block font-medium text-[var(--color-text-primary)] transition-colors group-hover:text-[var(--color-accent-primary)] [text-wrap:pretty]">
-          {coAuthor.name || coAuthor.email || "unknown"}
+          {coAuthor.name || coAuthor.email || labels.unknownName}
         </span>
         <span className="block text-xs tabular-nums text-[var(--color-text-tertiary)]">
-          {coAuthor.shared_files.toLocaleString()} shared {coAuthor.shared_files === 1 ? "file" : "files"} ·{" "}
-          {(coAuthor.co_change_strength * 100).toFixed(1)}% of this person&apos;s work overlaps theirs
+          {labels.partnerLine(coAuthor.shared_files, (coAuthor.co_change_strength * 100).toFixed(1))}
         </span>
       </span>
     </>

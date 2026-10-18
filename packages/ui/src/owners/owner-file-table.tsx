@@ -4,6 +4,7 @@ import { EmptyState } from "../shared/empty-state";
 import { PathText } from "../shared/path-text";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { isSingleOwner } from "./knowledge-files";
+import type { OwnershipLabels } from "./labels";
 
 /**
  * The only marker on the file table.
@@ -37,10 +38,12 @@ export function OwnerFileTable({
   files,
   hrefForFile,
   LinkComponent,
+  labels,
 }: {
   files: OwnerFileEntry[];
   hrefForFile?: ((filePath: string) => string) | undefined;
   LinkComponent?: React.ElementType | undefined;
+  labels: OwnershipLabels;
 }) {
   const A = LinkComponent ?? "a";
 
@@ -48,8 +51,8 @@ export function OwnerFileTable({
     return (
       <EmptyState
         className="p-6"
-        title="No file attribution yet"
-        description="File-level ownership appears after the next git sync."
+        title={labels.fileTableEmptyTitle}
+        description={labels.fileTableEmptyDescription}
       />
     );
   }
@@ -64,27 +67,27 @@ export function OwnerFileTable({
         <thead className="max-sm:hidden">
           <tr>
             <th scope="col" className={`${headCls} pr-3 text-left`}>
-              File
+              {labels.colFile}
             </th>
             <th scope="col" className={`${headCls} whitespace-nowrap pl-3 text-right`}>
-              Commits 90d
+              {labels.colCommits90d}
             </th>
             <th
               scope="col"
-              title="Percentile rank of this file's change frequency against every file in the repo"
+              title={labels.colChurnHint}
               className={`${headCls} cursor-help whitespace-nowrap pl-3 text-right`}
             >
-              Churn
+              {labels.colChurn}
             </th>
             <th
               scope="col"
-              title="Share of this file's commits written by this person"
+              title={labels.colTheirCommitsHint}
               className={`${headCls} cursor-help whitespace-nowrap pl-3 text-right`}
             >
-              Their commits
+              {labels.colTheirCommits}
             </th>
             <th scope="col" className={`${headCls} whitespace-nowrap pl-3 text-right`}>
-              Touched
+              {labels.colTouched}
             </th>
           </tr>
         </thead>
@@ -111,16 +114,14 @@ export function OwnerFileTable({
                   )}
                   {isSoleCarried(f) && (
                     <span
-                      title="High-churn file this person alone maintains"
+                      title={labels.soleCarriedTitle}
                       className="ml-1.5 inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[var(--color-warning)] align-middle"
                     />
                   )}
                   {/* The four figures as one line, below `sm` only. Reads as a
                       sentence rather than as a table row that lost its header. */}
                   <span className="mt-1 hidden text-[11.5px] tabular-nums text-[var(--color-text-tertiary)] max-sm:block">
-                    {f.commit_count_90d.toLocaleString()} commits in 90d · churn{" "}
-                    {Math.round(f.churn_percentile)} · {ownPct} of its commits ·
-                    touched {touched}
+                    {labels.fileMeta(f.commit_count_90d, Math.round(f.churn_percentile), ownPct, touched)}
                   </span>
                 </td>
                 <td className={numCls}>{f.commit_count_90d.toLocaleString()}</td>

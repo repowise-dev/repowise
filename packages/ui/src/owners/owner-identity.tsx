@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { OwnerProfile } from "@repowise-dev/types/owners";
+import type { OwnershipLabels } from "./labels";
 
 /** Active, quiet, or unknown when the indexed commits do not reach back far enough. */
 export function ownerActivity(owner: Pick<OwnerProfile, "commit_count_90d" | "commit_count_90d_at_least">):
@@ -15,13 +16,11 @@ export function ownerActivity(owner: Pick<OwnerProfile, "commit_count_90d" | "co
  * index folded into them, so a reader looking for "jdoe@old-corp" finds the
  * person they know. Plain words, no badges: activity is a fact, not a grade.
  */
-function activityLine(owner: OwnerProfile): string | null {
+function activityLine(owner: OwnerProfile, labels: OwnershipLabels): string | null {
   const activity = ownerActivity(owner);
-  if (activity !== "active") return activity && "Quiet: no commit in the last 90 days";
+  if (activity !== "active") return activity && labels.quietLine;
   const exact = owner.commit_count_90d;
-  const commits = exact ?? owner.commit_count_90d_at_least ?? 0;
-  const floor = exact == null ? "at least " : "";
-  return `Active: ${floor}${commits.toLocaleString()} ${commits === 1 ? "commit" : "commits"} in the last 90 days`;
+  return labels.activeLine(exact ?? owner.commit_count_90d_at_least ?? 0, exact == null);
 }
 
 /** Every folded-in name and address other than the ones the page already shows. */
@@ -32,12 +31,12 @@ function otherIdentities(owner: OwnerProfile): string[] {
   ];
 }
 
-export function OwnerIdentity({ owner }: { owner: OwnerProfile }) {
+export function OwnerIdentity({ owner, labels }: { owner: OwnerProfile; labels: OwnershipLabels }) {
   const aliases = otherIdentities(owner);
   const rows = [
-    { label: "Activity", hidden: true, value: activityLine(owner), mono: false },
-    { label: "Email", hidden: false, value: owner.email !== owner.name ? owner.email : null, mono: true },
-    { label: "Also commits as", hidden: false, value: aliases.join(", ") || null, mono: true },
+    { label: labels.activityLabel, hidden: true, value: activityLine(owner, labels), mono: false },
+    { label: labels.emailLabel, hidden: false, value: owner.email !== owner.name ? owner.email : null, mono: true },
+    { label: labels.aliasesLabel, hidden: false, value: aliases.join(", ") || null, mono: true },
   ].filter((r) => r.value);
 
   if (rows.length === 0) return null;

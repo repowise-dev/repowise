@@ -126,6 +126,7 @@ export function OwnerDirectory({
           hrefFor={hrefFor}
           onSelect={hrefFor ? undefined : onSelect}
           LinkComponent={LinkComponent}
+          labels={labels}
         />
       )}
 

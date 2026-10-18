@@ -113,6 +113,70 @@ export interface OwnershipLabels {
   handoverDescription: (files: number, names: string) => string;
   offboardingListLabel: string;
   underOnePercent: string;
+
+  // Person page
+  dependsTitle: string;
+  dependsDescription: string;
+  ownershipLink: string;
+  filesCarryTitle: string;
+  filesCarryHint: (shown: number, touched: number) => string;
+  filesCarryDescription: (soleCarried: number, shown: number) => string;
+  commitMixTitle: string;
+  commitMixDescription: (total: number) => string;
+  commitMixEmptyTitle: string;
+  commitMixEmptyDescription: string;
+  commitMixBarLabel: string;
+  creditTitle: string;
+  creditLink: string;
+  creditSentence: (days: number, files: number, findings: number) => string;
+  activityLabel: string;
+  activeLine: (commits: number, floor: boolean) => string;
+  quietLine: string;
+  emailLabel: string;
+  aliasesLabel: string;
+  footprintTitle: string;
+  footprintDescription: string;
+  footprintEmptyTitle: string;
+  footprintEmptyDescription: string;
+  footprintBarLabel: string;
+  footprintDetail: (files: number, pct: number) => string;
+  relationshipsTitle: string;
+  relationshipsDescription: string;
+  relationshipsEmptyTitle: string;
+  relationshipsEmptyDescription: string;
+  relationshipsAlone: string;
+  relationshipsNext: (others: number, pct: string) => string;
+  relationshipsOthers: (others: number) => string;
+  partnerLine: (files: number, pct: string) => string;
+  unknownName: string;
+  fileTableEmptyTitle: string;
+  fileTableEmptyDescription: string;
+  colFile: string;
+  colCommits90d: string;
+  colChurn: string;
+  colChurnHint: string;
+  colTheirCommits: string;
+  colTheirCommitsHint: string;
+  colTouched: string;
+  soleCarriedTitle: string;
+  fileMeta: (commits: number, churn: number, ownPct: string, touched: string) => string;
+
+  // People table
+  colContributor: string;
+  colFilesOwned: string;
+  colFilesOwnedHint: string;
+  colHotspots: string;
+  colHotspotsHint: string;
+  colSoleOwner: string;
+  colSoleOwnerHint: string;
+  colDeadLines: string;
+  colDeadLinesHint: string;
+  colLastTouched: string;
+  kindPerson: string;
+  kindBot: string;
+  kindAgent: string;
+  soleInactiveTitle: string;
+  atLeastTitle: string;
 }
 
 export const DEFAULT_OWNERSHIP_LABELS: OwnershipLabels = {
@@ -226,6 +290,77 @@ export const DEFAULT_OWNERSHIP_LABELS: OwnershipLabels = {
   handoverDescription: (files, names) => `A handover plan for ${s(files, "file", "files")} that depend on ${names}.`,
   offboardingListLabel: "Directories that would lose their majority author",
   underOnePercent: "under 1%",
+
+  dependsTitle: "What depends on them",
+  dependsDescription:
+    "Files where this person made most of the commits, so the people who stay would hold under half of the history, and who is best placed to take each directory over.",
+  ownershipLink: "Ownership",
+  filesCarryTitle: "Files they carry",
+  filesCarryHint: (shown, touched) => `${shown.toLocaleString()} of ${touched.toLocaleString()} touched`,
+  filesCarryDescription: (sole, shown) =>
+    `The files with the most commits attributed to this person. Churn is a percentile against every file in the repo. A dot marks a high-churn file they alone maintain and wrote at least 90% of the commits for${sole > 0 ? `: ${sole.toLocaleString()} of these ${shown.toLocaleString()}` : ", and none of these qualify"}.`,
+  commitMixTitle: "What they commit",
+  commitMixDescription: (total) =>
+    `${s(total, "commit", "commits")} classified from the subject line, across every file this person has touched.`,
+  commitMixEmptyTitle: "No classified commits yet",
+  commitMixEmptyDescription: "Commit classification runs during indexing and fills this in on the next sync.",
+  commitMixBarLabel: "Commits by type",
+  creditTitle: "What they improved",
+  creditLink: "See the commits",
+  creditSentence: (days, files, findings) =>
+    `In the last ${days} days their commits made ${s(files, "file", "files")} healthier and resolved ${s(findings, "finding", "findings")}.`,
+  activityLabel: "Activity",
+  activeLine: (commits, floor) =>
+    `Active: ${floor ? "at least " : ""}${s(commits, "commit", "commits")} in the last 90 days`,
+  quietLine: "Quiet: no commit in the last 90 days",
+  emailLabel: "Email",
+  aliasesLabel: "Also commits as",
+  footprintTitle: "Where they work",
+  footprintDescription:
+    "Files they are the main owner of, by top-level directory. Share is the fraction of each directory's files where this person wrote most of the surviving lines.",
+  footprintEmptyTitle: "No directory attribution yet",
+  footprintEmptyDescription: "Ownership by directory appears after the next git sync.",
+  footprintBarLabel: "Owned files by directory",
+  footprintDetail: (files, pct) => `${s(files, "file", "files")} · ${pct}% theirs`,
+  relationshipsTitle: "Who else works here",
+  relationshipsDescription:
+    "People editing the same files. Overlap is the share of this person's files the other has also committed to, so it reads as how much of their work is genuinely shared.",
+  relationshipsEmptyTitle: "Nobody else has touched these files",
+  relationshipsEmptyDescription: "Co-authorship appears once a second person commits to a file this person owns.",
+  relationshipsAlone: "Nobody else shares a file with this person.",
+  relationshipsNext: (others, pct) =>
+    `The next closest of ${s(others, "other person", "other people")} overlaps on ${pct}%, so there is one natural reviewer here rather than a shortlist.`,
+  relationshipsOthers: (others) => `${s(others, "other person shares", "other people share")} at least one file.`,
+  partnerLine: (files, pct) => `${s(files, "shared file", "shared files")} · ${pct}% of this person's work overlaps theirs`,
+  unknownName: "unknown",
+  fileTableEmptyTitle: "No file attribution yet",
+  fileTableEmptyDescription: "File-level ownership appears after the next git sync.",
+  colFile: "File",
+  colCommits90d: "Commits 90d",
+  colChurn: "Churn",
+  colChurnHint: "Percentile rank of this file's change frequency against every file in the repo",
+  colTheirCommits: "Their commits",
+  colTheirCommitsHint: "Share of this file's commits written by this person",
+  colTouched: "Touched",
+  soleCarriedTitle: "High-churn file this person alone maintains",
+  fileMeta: (commits, churn, ownPct, touched) =>
+    `${s(commits, "commit", "commits")} in 90d · churn ${churn} · ${ownPct} of its commits · touched ${touched}`,
+
+  colContributor: "Contributor",
+  colFilesOwned: "Files owned",
+  colFilesOwnedHint: "Files where this person wrote most of the surviving lines",
+  colHotspots: "Hotspots",
+  colHotspotsHint: "Owned files that are also high-churn",
+  colSoleOwner: "Sole owner",
+  colSoleOwnerHint: "Owned files nobody else has touched",
+  colDeadLines: "Dead lines",
+  colDeadLinesHint: "Unreachable lines still attributed here",
+  colLastTouched: "Last touched",
+  kindPerson: "Person",
+  kindBot: "Bot",
+  kindAgent: "Coding agent",
+  soleInactiveTitle: "Sole-owned files held by someone inactive for 90 days",
+  atLeastTitle: "At least this many: the indexed commits stop inside the 90 days",
 };
 
 /** The defaults with a host's overrides on top. */
