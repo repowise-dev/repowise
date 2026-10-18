@@ -193,6 +193,8 @@ class ChangeHealthDelta:
     moved_total: int = 0
     #: ``{path: reason}``. Any reason outside ``NO_CODE_GAP`` means the run was partial.
     skipped: dict[str, str] = field(default_factory=dict)
+    #: Deleted files compared on the base side, and the files their code moved to.
+    moved_to: dict[str, list[str]] = field(default_factory=dict)
     timing_ms: float = 0.0
     cache_hit: bool = False
     limits: list[str] = field(default_factory=list)
