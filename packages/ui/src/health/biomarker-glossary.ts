@@ -66,7 +66,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.brain_method,
     category: "structural_complexity",
     description:
-      "A function that knows too much — high cyclomatic complexity, many parameters, and deep nesting all at once. Hard to test, easy to break.",
+      "A function that knows too much — high cyclomatic complexity, many parameters, and deep nesting all at once. Hard to test, easy to break. Advisory: its complexity and size findings already cost this file points, so it costs none of its own.",
   },
   nested_complexity: {
     label: BIOMARKER_LABELS.nested_complexity,
@@ -395,6 +395,7 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "assertion_free_test",
   "mock_saturated_test",
   "hidden_coupling",
+  "brain_method",
 ]);
 
 /**
@@ -411,7 +412,6 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
  */
 export const MAINTAINABILITY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "low_cohesion",
-  "brain_method",
   "primitive_obsession",
   "dry_violation",
   "error_handling",

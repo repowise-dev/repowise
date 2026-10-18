@@ -323,7 +323,7 @@ golden guarantee (§6).
 | Category               | Cap  | Markers |
 |------------------------|------|------------|
 | Organizational         | −3.5‡ | developer_congestion, knowledge_loss, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
-| Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
+| Structural complexity  | −2.5 | low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
 | Test coverage gradient | −2.0 | coverage_gradient |
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
@@ -345,6 +345,11 @@ category, so git history alone costs a file at most 1.0.
 nothing. On its own it ranks defect-prone files near chance (AUC about 0.55), and
 a pre-registered test on 12 repositories no earlier health study used found the
 score without it non-inferior at predicting defects.
+
+`brain_method` is advisory too. It fires only on a function that `complex_method`
+and `large_method` already charge, so scoring it charged one function twice, and
+dropping it left defect AUC unchanged on the 66-repo corpus. It is still listed
+under structural complexity.
 
 The maintainability dimension has its own independent tables
 (`_MAINTAINABILITY_CATEGORY`, caps: structural_complexity 4.0,
@@ -570,7 +575,7 @@ full calibration, with confidence intervals, is published in the
 | 1.1–1.33 | remaining structural complexity / size markers | Moderate calibrated lift. |
 | 1.3 / 1.2 / 1.1 | `untested_hotspot` / `churn_risk` / `code_age_volatility` | Coverage-dependent and rarely-firing; keep prior weights the corpus could not fairly measure. |
 | 1.0 | `prior_defect` | Neutral by design: largely redundant with the other process signals, kept for its explanatory value. |
-| 0.5 (floored) | `developer_congestion`, `dry_violation`, `low_cohesion`, `brain_method`, `primitive_obsession`, `bumpy_road` | Fire widely but proved weak under leakage-free scoring; kept as maintainability and parity signals, not disabled. |
+| 0.5 (floored) | `developer_congestion`, `dry_violation`, `low_cohesion`, `primitive_obsession`, `bumpy_road` | Fire widely but proved weak under leakage-free scoring; kept as maintainability and parity signals, not disabled. |
 | 0.4 (de-rated) | `knowledge_loss` | Weakest of the floored set. |
 | 0.5 (not fitted) | `error_handling` | Excluded from calibration (AUC-neutral); floored and capped at 0.5 per file. |
 

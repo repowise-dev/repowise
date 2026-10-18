@@ -47,8 +47,8 @@ are never blended into one number.
 | Maintainability | How hard the code is to read and change | Set by hand; never fitted to bugs |
 | Performance risk | Where the structure wastes work | Per-marker precision weights; see [PERFORMANCE.md](PERFORMANCE.md) |
 
-Smells that fire often but predict bugs weakly (low cohesion, brain methods,
-duplicated code, broad error handling) are down-weighted in code health and
+Smells that fire often but predict bugs weakly (low cohesion, duplicated code,
+broad error handling) are down-weighted in code health and
 counted in full in maintainability.
 
 ## Reading the score
@@ -195,7 +195,7 @@ dominating a file.
 
 | Family | Detectors | Cap | Catches |
 |---|---:|---|---|
-| Structural complexity | 6 | 2.5 | Deep nesting, brain methods, god classes, low cohesion, bumpy roads, complex conditions |
+| Structural complexity | 6 | 2.5 | Deep nesting, brain methods (listed, not scored), god classes, low cohesion, bumpy roads, complex conditions |
 | Size and complexity | 3 | 1.5 | Long or high-CCN functions, primitive obsession |
 | Duplication | 1 | 1.0 | Cloned blocks |
 | Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors |
