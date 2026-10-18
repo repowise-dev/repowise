@@ -150,3 +150,16 @@ def test_a_move_out_of_a_renamed_file_names_the_base_path():
     result = moves(base, head, rename_map={"old.py": "new.py"})
 
     assert dict(result.by_new) == {("knots.py", "knot"): ("old.py", "knot")}
+
+
+def test_a_same_named_function_with_a_different_body_is_not_an_edited_move():
+    """Similar size, unrelated code: the name alone is no evidence of a move."""
+    other = "\n".join(
+        ["def tangle(rows):", "    out = []"]
+        + [f"    out.append(str(rows[{i}]).strip().lower())" for i in range(12)]
+        + ["    return out", ""]
+    )
+    base = {"tool.py": python_complex("tangle", 6)}
+    head = {"tool.py": "", "knots.py": other}
+
+    assert moves(base, head).moved_total == 0

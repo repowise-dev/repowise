@@ -5,8 +5,9 @@ its own name blanked, so a reindent, a comment edit or a rename does not hide a
 move. Pairing runs in three passes over the symbols that left their place on
 the base side and the ones that appeared on the head side, each pass taking
 only keys unique on both sides: same name and body, then same body under a new
-name, then same name with an edited body. A move is cross-file only; a symbol
-that stays in its file, or in the file a rename carried it to, is not a move.
+name, then same name with an edited body that kept most of its token pairs. A
+move is cross-file only; a symbol that stays in its file, or in the file a
+rename carried it to, is not a move.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from itertools import pairwise
 from types import MappingProxyType
 
 from ...ingestion.models import Symbol
@@ -34,6 +36,9 @@ MIN_RENAMED_TOKENS = 20
 #: An edited move may grow or shrink by at most this factor.
 _MAX_EDITED_GROWTH = 2
 
+#: An edited move keeps at least this share of its adjacent token pairs.
+_MIN_EDITED_OVERLAP = 0.5
+
 _NAME_MARK = b"\x00"
 _SEPARATOR = b"\x1f"
 
@@ -46,6 +51,8 @@ class SymbolBody:
     name: str
     digest: str
     tokens: int
+    #: Adjacent token pairs, hashed; how much of the body an edit kept.
+    pairs: frozenset[int] = field(default=frozenset(), compare=False, repr=False)
 
     @property
     def key(self) -> SymbolKey:
@@ -82,7 +89,7 @@ def symbol_bodies(path: str, raw: bytes, symbols: Iterable[Symbol]) -> list[Symb
         # Line-bounded: code sharing a line with the symbol joins its body.
         span = rows[bisect_left(starts, symbol.start_line) : bisect_right(starts, symbol.end_line)]
         if span:
-            out.append(SymbolBody(path, symbol.name, _digest(raw, span, symbol.name), len(span)))
+            out.append(_body(path, symbol.name, raw, span))
     return out
 
 
@@ -111,7 +118,7 @@ def build_move_map(
     edited = [
         (old, new)
         for old, new in _pair_unique(removed, added, lambda b: b.name)
-        if _comparable_size(old, new)
+        if _similar(old, new)
     ]
     by_new = {new.key: old.key for old, new in verbatim + edited}
     return MoveMap(MappingProxyType(by_new), frozenset(new.key for _, new in edited))
@@ -148,15 +155,20 @@ def _rest(
     )
 
 
-def _comparable_size(old: SymbolBody, new: SymbolBody) -> bool:
-    """An edited move keeps a body of similar size; a same-named stranger need not."""
+def _similar(old: SymbolBody, new: SymbolBody) -> bool:
+    """An edited move keeps most of its body; a same-named stranger does not."""
     small, large = sorted((old.tokens, new.tokens))
-    return small >= MIN_RENAMED_TOKENS and large <= small * _MAX_EDITED_GROWTH
+    if small < MIN_RENAMED_TOKENS or large > small * _MAX_EDITED_GROWTH:
+        return False
+    shared = len(old.pairs & new.pairs)
+    return shared >= _MIN_EDITED_OVERLAP * max(len(old.pairs), len(new.pairs), 1)
 
 
-def _digest(raw: bytes, rows: list[TokenRow], name: str) -> str:
+def _body(path: str, name: str, raw: bytes, rows: list[TokenRow]) -> SymbolBody:
     parts = [_NAME_MARK if row[5] == name else raw[row[3] : row[4]] for row in rows]
-    return hashlib.blake2b(_SEPARATOR.join(parts), digest_size=16).hexdigest()
+    digest = hashlib.blake2b(_SEPARATOR.join(parts), digest_size=16).hexdigest()
+    pairs = frozenset(hash(pair) for pair in pairwise(parts))
+    return SymbolBody(path, name, digest, len(parts), pairs)
 
 
 def _order(body: SymbolBody) -> tuple[str, str, str]:
