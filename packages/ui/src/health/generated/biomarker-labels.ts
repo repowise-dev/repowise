@@ -55,3 +55,12 @@ export const BIOMARKER_LABELS = {
   sql_update_delete_without_where: "UPDATE/DELETE without WHERE",
   sql_cartesian_join: "Cartesian join",
 } as const;
+
+/** Renamed ids (old -> current), so rows stored under an old id get the current label. */
+export const LEGACY_BIOMARKER_NAMES: Readonly<Record<string, string>> = {
+  bumpy_road: "repeated_nesting",
+};
+
+export function canonicalBiomarker(name: string): string {
+  return LEGACY_BIOMARKER_NAMES[name] ?? name;
+}

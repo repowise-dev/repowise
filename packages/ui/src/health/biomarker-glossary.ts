@@ -9,7 +9,7 @@
  * map, so agent prompts and the page name a marker the same way.
  */
 
-import { BIOMARKER_LABELS } from "./generated/biomarker-labels";
+import { BIOMARKER_LABELS, canonicalBiomarker } from "./generated/biomarker-labels";
 
 export type BiomarkerCategory =
   | "structural_complexity"
@@ -366,7 +366,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
   return (
-    BIOMARKER_GLOSSARY[name] ?? {
+    BIOMARKER_GLOSSARY[canonicalBiomarker(name)] ?? {
       label: name.replace(/_/g, " "),
       category: "size_and_complexity",
       description: "",
