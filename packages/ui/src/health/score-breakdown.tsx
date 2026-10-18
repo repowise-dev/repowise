@@ -59,9 +59,9 @@ export interface ScoreBreakdownProps {
 function arithmetic(score: number, totalDeduction: number): string {
   const head = `10.0 − ${totalDeduction.toFixed(2)} = `;
   const raw = 10 - totalDeduction;
-  if (raw >= SCORE_FLOOR) return head + score.toFixed(1);
-  const signed = raw < 0 ? `−${Math.abs(raw).toFixed(2)}` : raw.toFixed(2);
-  return `${head}${signed}, floored at ${SCORE_FLOOR.toFixed(1)}`;
+  if (raw >= SCORE_FLOOR || score > SCORE_FLOOR) return head + score.toFixed(1);
+  const shown = raw.toFixed(2).replace(/^-(0\.00)$/, "$1").replace(/^-/, "−");
+  return `${head}${shown}, floored at ${SCORE_FLOOR.toFixed(1)}`;
 }
 
 export function ScoreBreakdown({
