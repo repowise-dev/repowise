@@ -25,6 +25,7 @@ import { Separator } from "@repowise-dev/ui/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise-dev/ui/ui/tooltip";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
+import { NavGroupList } from "./nav-group-list";
 import { VersionFooter } from "./version-footer";
 import { NewMark, useNavNewMark } from "./new-mark";
 import { FeedbackButton } from "./feedback-button";
@@ -324,7 +325,7 @@ export function Sidebar({
                             <TooltipContent side="right">{repo.name}</TooltipContent>
                           </Tooltip>
                           {navGroups.map((group, gi) => (
-                            <React.Fragment key={group.label ?? gi}>
+                            <React.Fragment key={group.id}>
                               {gi > 0 && <Separator className="my-1.5" />}
                               {group.items.map((item) => (
                                 <SidebarNavItem
@@ -390,26 +391,14 @@ export function Sidebar({
                       </button>
                       {isExpanded && (
                         <div id={`sidebar-repo-${repo.id}`} className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
-                          {navGroups.map((group, gi) => (
-                            <React.Fragment key={group.label ?? gi}>
-                              {group.label ? (
-                                <p className="px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                                  {group.labelKey ? t(group.labelKey) : group.label}
-                                </p>
-                              ) : gi > 0 ? (
-                                <div className="pt-1.5" />
-                              ) : null}
-                              {group.items.map((item) => (
-                                <SidebarNavItem
-                                  key={item.href}
-                                  item={item}
-                                  isActive={isNavItemActive(item, pathname)}
-                                  size="sm"
-                                  iconOnly={false}
-                                />
-                              ))}
-                            </React.Fragment>
-                          ))}
+                          <NavGroupList
+                            groups={navGroups}
+                            pathname={pathname}
+                            idPrefix={`sidebar-repo-${repo.id}`}
+                            renderItem={(item, active) => (
+                              <SidebarNavItem item={item} isActive={active} size="sm" />
+                            )}
+                          />
                         </div>
                       )}
                     </div>

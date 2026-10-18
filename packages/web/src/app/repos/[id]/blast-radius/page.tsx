@@ -1,11 +1,12 @@
 import { redirect } from "next/navigation";
+import { commitsViewHref } from "@/lib/changes";
 
-/** Legacy route — redirects into the consolidated IA. */
+/** Legacy route: blast radius is the Commits page's "Review a change" view. */
 export default async function LegacyRedirect({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  redirect(`/repos/${id}/code-health?tab=impact`);
+  redirect(commitsViewHref(id, "review"));
 }

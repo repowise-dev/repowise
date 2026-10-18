@@ -45,7 +45,7 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
       value: stats.fix_commit_count.toLocaleString(),
       unit: `${fixPct}%`,
       why: "Commits whose subject reads as a bug fix rather than new work.",
-      href: `${base}/code-health?tab=triage`,
+      href: `${base}/code-health`,
     },
   ];
   if (stats.agent_commit_count != null && stats.agent_commit_count > 0) {
@@ -83,7 +83,7 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
       value: stats.high_cut.toFixed(1),
       unit: "out of 10",
       why: "Score a commit has to clear to land in this repo's top tercile.",
-      href: `${base}/code-health?tab=triage`,
+      href: `${base}/code-health`,
     });
   }
 

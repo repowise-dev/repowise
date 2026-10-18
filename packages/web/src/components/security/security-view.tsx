@@ -1,5 +1,12 @@
 "use client";
 
+/**
+ * Security — the body of `/repos/[id]/security`. Leads with the posture
+ * (counts, where they sit, when the scan ran from `/security/summary`), then
+ * every finding with the agent prompt as each row's primary action, then the
+ * directory matrix. The page's Re-scan action is exported beside it.
+ */
+
 import { useMemo, useState, type ReactNode } from "react";
 import useSWR from "swr";
 import { RotateCw } from "lucide-react";
@@ -15,6 +22,8 @@ import { AiPromptModal, buildSecurityAiPrompt, fileChatContext } from "@repowise
 import { Button } from "@repowise-dev/ui/ui/button";
 import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { CleanState } from "@repowise-dev/ui/shared/clean-state";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { formatRelativeTime } from "@repowise-dev/ui/lib/format";
 import {
@@ -25,6 +34,7 @@ import {
 } from "@/lib/api/security";
 import { syncRepo } from "@/lib/api/repos";
 import { useFileCardHost } from "@/components/shared/file-card-host";
+import { useRepoFileCount } from "@/lib/hooks/use-repo";
 import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { useTranslations } from "next-intl";
@@ -32,7 +42,34 @@ import { useTranslations } from "next-intl";
 /** Request limit for the findings list; at the limit the page says so. */
 const LIMIT = 500;
 
-export function SecurityTab({ repoId }: { repoId: string }) {
+/** Starts a sync, which re-runs the pattern scan. The page header's action. */
+export function SecurityRescanButton({ repoId }: { repoId: string }) {
+  const t = useTranslations("risk");
+  const [rescanning, setRescanning] = useState(false);
+
+  const handleRescan = async () => {
+    setRescanning(true);
+    try {
+      await syncRepo(repoId);
+      toast.success(t("syncStarted"));
+    } catch (err) {
+      toast.error(toFriendlyMessage(err, t("syncFailed")));
+    } finally {
+      setRescanning(false);
+    }
+  };
+
+  return (
+    <Button size="sm" variant="outline" onClick={handleRescan} disabled={rescanning}>
+      <RotateCw
+        className={`h-3.5 w-3.5 mr-1.5 ${rescanning ? "motion-safe:animate-spin" : ""}`}
+      />
+      {rescanning ? t("rescanning") : t("rescan")}
+    </Button>
+  );
+}
+
+export function SecurityView({ repoId }: { repoId: string }) {
   const t = useTranslations("risk");
   const {
     data: findings,
@@ -51,20 +88,8 @@ export function SecurityTab({ repoId }: { repoId: string }) {
     () => getSecuritySummary(repoId).catch(() => null),
     { revalidateOnFocus: false },
   );
-  const [rescanning, setRescanning] = useState(false);
   const [promptFinding, setPromptFinding] = useState<SecurityFinding | null>(null);
-
-  const handleRescan = async () => {
-    setRescanning(true);
-    try {
-      await syncRepo(repoId);
-      toast.success(t("syncStarted"));
-    } catch (err) {
-      toast.error(toFriendlyMessage(err, t("syncFailed")));
-    } finally {
-      setRescanning(false);
-    }
-  };
+  const fileCount = useRepoFileCount(repoId);
 
   const { showFile, dialog } = useFileCardHost(repoId);
 
@@ -104,7 +129,7 @@ export function SecurityTab({ repoId }: { repoId: string }) {
   } else if (list.length === 0) {
     // Green only when the scan is known to have run; an unknown scan time
     // with nothing listed is "not scanned yet", not good news.
-    body = <SecurityEmpty scannedAgo={scannedAgo} />;
+    body = <SecurityEmpty scannedAgo={scannedAgo} fileCount={fileCount} />;
   } else {
     body = (
       <SecurityFindingsBody
@@ -120,15 +145,6 @@ export function SecurityTab({ repoId }: { repoId: string }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button size="sm" variant="outline" onClick={handleRescan} disabled={rescanning}>
-          <RotateCw
-            className={`h-3.5 w-3.5 mr-1.5 ${rescanning ? "motion-safe:animate-spin" : ""}`}
-          />
-          {rescanning ? "Re-scanning…" : "Re-scan"}
-        </Button>
-      </div>
-
       {body}
 
       <AiPromptModal
@@ -174,12 +190,21 @@ function usePostureLabels(): SecurityPostureLabels {
   );
 }
 
-function SecurityEmpty({ scannedAgo }: { scannedAgo: string | null }) {
+function SecurityEmpty({
+  scannedAgo,
+  fileCount,
+}: {
+  scannedAgo: string | null;
+  fileCount: number | null;
+}) {
   const t = useTranslations("risk");
   return scannedAgo ? (
-    <EmptyState
-      tone="positive"
-      title={t("posture.clearTitle")}
+    <CleanState
+      title={
+        fileCount != null
+          ? t("posture.clearTitleScoped", { files: formatNumber(fileCount) })
+          : t("posture.clearTitle")
+      }
       description={t("posture.clearBody", { when: scannedAgo })}
     />
   ) : (
@@ -211,6 +236,7 @@ function SecurityFindingsBody({
           findings={list}
           onSelect={onSelect}
           onGeneratePrompt={onGeneratePrompt}
+          promptLabel={t("promptAction")}
         />
         {capped && (
           <p className="text-xs text-[var(--color-text-tertiary)]">

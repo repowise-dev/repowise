@@ -16,6 +16,7 @@ import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
 import { getCoChanges, getGitMetadata } from "@/lib/api/git";
 import { listDeadCode } from "@/lib/api/dead-code";
 import type { SymbolResponse } from "@/lib/api/types";
+import { commitsViewHref } from "@/lib/changes";
 import type { SymbolDetailData } from "@repowise-dev/types/symbols";
 
 interface Props {
@@ -169,7 +170,7 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
         ? {
             onOpenBlastRadius: () =>
               router.push(
-                `/repos/${repoId}/code-health?tab=impact&file=${encodeURIComponent(filePath)}`,
+                `${commitsViewHref(repoId, "review")}&file=${encodeURIComponent(filePath)}`,
               ),
           }
         : {})}

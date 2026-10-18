@@ -24,12 +24,8 @@ import { FeedbackButton } from "./feedback-button";
 import { LanguageSwitcher } from "./language-switcher";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { cn } from "@/lib/utils/cn";
-import {
-  GLOBAL_NAV,
-  WORKSPACE_NAV,
-  repoNavGroups,
-  isNavItemActive,
-} from "./nav-items";
+import { GLOBAL_NAV, WORKSPACE_NAV, repoNavGroups } from "./nav-items";
+import { NavGroupList } from "./nav-group-list";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface MobileNavProps {
@@ -216,21 +212,14 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                           </button>
                           {isExpanded && (
                             <div className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
-                              {navGroups.map((group, gi) => (
-                                <React.Fragment key={group.label ?? gi}>
-                                  {group.label ? (
-                                    <p className="px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                                      {group.labelKey ? t(group.labelKey) : group.label}
-                                    </p>
-                                  ) : gi > 0 ? (
-                                    <div className="pt-1.5" />
-                                  ) : null}
-                                  {group.items.map((item) => {
+                              <NavGroupList
+                                groups={navGroups}
+                                pathname={pathname}
+                                idPrefix={`mobile-repo-${repo.id}`}
+                                renderItem={(item, isActive) => {
                                     const Icon = item.icon;
-                                    const isActive = isNavItemActive(item, pathname);
                                     return (
                                       <Link
-                                        key={item.href}
                                         href={item.href}
                                         className={cn(
                                           "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
@@ -251,9 +240,8 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                                         {isNew(item.href) && <NewMark />}
                                       </Link>
                                     );
-                                  })}
-                                </React.Fragment>
-                              ))}
+                                }}
+                              />
                             </div>
                           )}
                         </div>

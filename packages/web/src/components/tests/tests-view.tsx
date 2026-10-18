@@ -1,14 +1,22 @@
 "use client";
 
 /**
- * Coverage host — binds the shared {@link CoverageView} to web's `/api` client
- * and `/repos/:id` routing. The composition lives in `@repowise-dev/ui/health`;
- * this file only injects the app-specific data fetchers and navigation.
+ * Tests host — binds the shared {@link CoverageView} to web's `/api` client
+ * and `/repos/:id` routing, and passes its copy in the reader's language. The
+ * composition lives in `@repowise-dev/ui/health`; this file only injects the
+ * app-specific data fetchers, navigation and strings.
  */
 
+import { useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { CoverageView, type CodeHealthAdapter } from "@repowise-dev/ui/health";
+import { useTranslations } from "next-intl";
+import {
+  CoverageView,
+  type CodeHealthAdapter,
+  type CoverageViewCopy,
+} from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import {
   getHealthCoverage,
   getTestsReaching,
@@ -18,8 +26,9 @@ import {
   updateFindingStatus,
 } from "@/lib/api/code-health";
 
-export function CoverageTab({ repoId: id }: { repoId: string }) {
+export function TestsView({ repoId: id }: { repoId: string }) {
   const router = useRouter();
+  const t = useTranslations("views.tests");
   const prefix = `/repos/${id}`;
 
   const adapter: CodeHealthAdapter = {
@@ -36,5 +45,14 @@ export function CoverageTab({ repoId: id }: { repoId: string }) {
     renderFileDrawer: () => null,
   };
 
-  return <CoverageView adapter={adapter} />;
+  const copy = useMemo<CoverageViewCopy>(
+    () => ({
+      promptLabel: t("promptAction"),
+      cleanTitle: (files) => t("cleanTitle", { files: formatNumber(files) }),
+      cleanDescription: t("cleanBody"),
+    }),
+    [t],
+  );
+
+  return <CoverageView adapter={adapter} copy={copy} />;
 }

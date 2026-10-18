@@ -66,7 +66,7 @@ export function HotspotsMini({
             </span>
           </span>
           <a
-            href={`${prefix}/code-health?tab=triage`}
+            href={`${prefix}/code-health`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             View all

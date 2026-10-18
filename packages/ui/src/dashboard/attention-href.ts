@@ -89,7 +89,7 @@ export function attentionSourceHref(source: string, prefix: string): string {
     // `doc_drift` and `dead_code` name an area and an item type at once and
     // route to the same page either way, so they need no separate case.
     case "security":
-      return `${prefix}/code-health?tab=security`;
+      return `${prefix}/security`;
     case "health":
       return `${prefix}/code-health?tab=findings`;
     case "ownership":
@@ -101,13 +101,13 @@ export function attentionSourceHref(source: string, prefix: string): string {
     case "knowledge_silo":
       return `${prefix}/owners`;
     case "ungoverned_hotspot":
-      return `${prefix}/code-health?tab=triage`;
+      return `${prefix}/code-health`;
     case "health_finding":
       return `${prefix}/code-health?tab=findings`;
     case "refactoring":
       return `${prefix}/refactoring`;
     case "security_finding":
-      return `${prefix}/code-health?tab=security`;
+      return `${prefix}/security`;
     case "doc_drift":
       return `${prefix}/code-health?tab=doc-drift`;
     case "dead_code":
