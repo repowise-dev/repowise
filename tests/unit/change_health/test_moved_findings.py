@@ -157,3 +157,19 @@ def test_a_nesting_drop_within_one_band_is_improved():
     base.details, head.details = {"max_nesting": 6}, {"max_nesting": 5}
 
     assert [m.kind for m in FindingMatcher().match([base], [head]).matched] == ["improved"]
+
+
+def test_the_mcp_block_names_moved_findings_and_stays_lean_without_them(make_repo):
+    from repowise.server.mcp_server._change_health import health_delta_block
+
+    repo = make_repo()
+    repo.commit("seed", {"tool.py": python_complex("tangle", 14) + python_complex("knot", 5)})
+    repo.commit(
+        "split", {"tool.py": python_complex("tangle", 14), "knots.py": python_complex("knot", 9)}
+    )
+    block = health_delta_block(compare(repo), revspec="HEAD")
+    assert block["moved"] >= 1
+    assert block["top_findings"][0]["moved_from"] == {"path": "tool.py", "symbol": "knot"}
+
+    repo.commit("touch", {"tool.py": python_complex("tangle", 14) + "\n"})
+    assert {"moved", "improved"}.isdisjoint(health_delta_block(compare(repo), revspec="HEAD"))
