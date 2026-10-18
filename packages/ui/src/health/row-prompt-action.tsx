@@ -2,6 +2,7 @@
 
 import { cn } from "../lib/cn";
 import { AiPromptButton } from "./ai-prompt-button";
+import { AGENT_PROMPT_LABEL, bulkAgentPromptLabel } from "./ai-prompt-action";
 
 /**
  * The per-row "hand this to your agent" action. Ghost (icon + label, no fill)
@@ -10,11 +11,12 @@ import { AiPromptButton } from "./ai-prompt-button";
  * shows on focus, and it is always visible where there is no hover (touch).
  *
  * The row must carry `group/row` (and `data-selected` when selected), as
- * `ResponsiveTable` rows do.
+ * `ResponsiveTable` rows do. The click usually calls `openPrompt` from
+ * {@link useAiPromptAction}, the one modal host.
  */
 export function RowPromptAction({
   onClick,
-  label = "Copy agent prompt",
+  label = AGENT_PROMPT_LABEL,
   subject,
   className,
 }: {
@@ -46,7 +48,7 @@ export function RowPromptAction({
 export function PromptForRowsButton({
   count,
   onClick,
-  label = (n) => `Copy prompt for these ${n}`,
+  label = bulkAgentPromptLabel,
   className,
 }: {
   count: number;

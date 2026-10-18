@@ -12,8 +12,8 @@ describe("RowPromptAction", () => {
         <RowPromptAction subject="src/a.ts" onClick={onClick} />
       </div>,
     );
-    const button = screen.getByRole("button", { name: "Copy agent prompt: src/a.ts" });
-    expect(button).toHaveTextContent("Copy agent prompt");
+    const button = screen.getByRole("button", { name: "Copy prompt for your agent: src/a.ts" });
+    expect(button).toHaveTextContent("Copy prompt for your agent");
     expect(button.className).toMatch(/opacity-0/);
     expect(button.className).toMatch(/group-hover\/row:opacity-100/);
     expect(button.className).toMatch(/group-focus-within\/row:opacity-100/);

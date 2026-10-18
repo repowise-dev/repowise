@@ -9,6 +9,7 @@ import { CiHint } from "../shared/ci-hint";
 import { Segmented } from "../shared/segmented";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { PromptForRowsButton, RowPromptAction } from "../health/row-prompt-action";
+import { AGENT_PROMPT_LABEL } from "../health/ai-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { formatDate, formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
@@ -138,7 +139,7 @@ export function SecurityFindingsTable({
   findings,
   onSelect,
   onGeneratePrompt,
-  promptLabel = "Copy agent prompt",
+  promptLabel = AGENT_PROMPT_LABEL,
   onGenerateBatchPrompt,
   batchPromptLabel,
 }: SecurityFindingsTableProps) {

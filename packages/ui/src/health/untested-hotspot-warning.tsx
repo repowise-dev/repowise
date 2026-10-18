@@ -2,6 +2,7 @@ import { ArrowUpRight } from "lucide-react";
 
 import { coverageBand } from "./tokens";
 import { RowPromptAction } from "./row-prompt-action";
+import { AGENT_PROMPT_LABEL } from "./ai-prompt-action";
 
 export interface UntestedHotspotEntry {
   file_path: string;
@@ -36,7 +37,7 @@ export function UntestedHotspotWarning({
   limit = 6,
   onSelect,
   onGeneratePrompt,
-  promptLabel = "Copy agent prompt",
+  promptLabel = AGENT_PROMPT_LABEL,
 }: UntestedHotspotWarningProps) {
   if (entries.length === 0) return null;
   const shown = entries.slice(0, limit);

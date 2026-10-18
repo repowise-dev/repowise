@@ -18,7 +18,11 @@ import {
   SecurityPostureSkeleton,
   type SecurityPostureLabels,
 } from "@repowise-dev/ui/security/posture";
-import { AiPromptModal, buildSecurityBatchAiPrompt, fileChatContext } from "@repowise-dev/ui/health";
+import {
+  buildSecurityBatchAiPrompt,
+  fileChatContext,
+  useAiPromptAction,
+} from "@repowise-dev/ui/health";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
@@ -88,9 +92,19 @@ export function SecurityView({ repoId }: { repoId: string }) {
     () => getSecuritySummary(repoId).catch(() => null),
     { revalidateOnFocus: false },
   );
-  // One finding from a row, or every finding the table's filters show.
-  const [promptFindings, setPromptFindings] = useState<SecurityFinding[] | null>(null);
-  const promptFile = promptFindings?.length === 1 ? promptFindings[0]!.file_path : undefined;
+  // One finding from a row, or every finding the table's filters show,
+  // through the shared prompt modal.
+  const { openPrompt, promptModal } = useAiPromptAction();
+  const promptFor = (findings: SecurityFinding[]) => {
+    const one = findings.length === 1 ? findings[0]!.file_path : undefined;
+    openPrompt({
+      title: t("promptTitle"),
+      description: t("promptDescription"),
+      filePath: one ?? null,
+      ...(one ? { chatContext: fileChatContext(one)! } : {}),
+      getPrompt: (flavor) => buildSecurityBatchAiPrompt({ findings, flavor }),
+    });
+  };
   const fileCount = useRepoFileCount(repoId);
 
   const { showFile, dialog } = useFileCardHost(repoId);
@@ -140,8 +154,8 @@ export function SecurityView({ repoId }: { repoId: string }) {
         capped={capped}
         labels={labels}
         onSelect={handleSelect}
-        onGeneratePrompt={(f) => setPromptFindings([f])}
-        onGenerateBatchPrompt={setPromptFindings}
+        onGeneratePrompt={(f) => promptFor([f])}
+        onGenerateBatchPrompt={promptFor}
       />
     );
   }
@@ -150,19 +164,7 @@ export function SecurityView({ repoId }: { repoId: string }) {
     <div className="space-y-6">
       {body}
 
-      <AiPromptModal
-        open={promptFindings !== null}
-        onOpenChange={(o) => !o && setPromptFindings(null)}
-        getPrompt={
-          promptFindings
-            ? (flavor) => buildSecurityBatchAiPrompt({ findings: promptFindings, flavor })
-            : null
-        }
-        filePath={promptFile}
-        chatContext={fileChatContext(promptFile)}
-        title={t("promptTitle")}
-        description={t("promptDescription")}
-      />
+      {promptModal}
 
       {dialog}
     </div>

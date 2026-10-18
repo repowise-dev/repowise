@@ -651,7 +651,7 @@
     "tests": {
       "title": "测试",
       "description": "你的测试覆盖了哪些代码：已导入覆盖率报告时为实测结果，否则根据依赖图推断。",
-      "promptAction": "复制智能体提示词",
+      "promptAction": "为你的智能体复制提示词",
       "cleanTitle": "{files} 个已测量文件中没有未测试的热点",
       "cleanBody": "所有频繁变更或被大量代码依赖的文件都有测试覆盖。",
       "batchPromptAction": "为这 {count} 项复制提示词"
@@ -1144,7 +1144,7 @@
     "promptDescription": "一段可直接粘贴的提示词，引导 AI 智能体确认并修复这条安全发现项。",
     "rescan": "重新扫描",
     "rescanning": "正在重新扫描…",
-    "promptAction": "复制智能体提示词",
+    "promptAction": "为你的智能体复制提示词",
     "deadCodeClean": {
       "title": "未发现死代码",
       "titleScoped": "{files} 个文件中没有死代码",

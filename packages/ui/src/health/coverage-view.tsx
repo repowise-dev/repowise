@@ -40,7 +40,8 @@ import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-tab
 import { ResultsFooter } from "../shared/results-footer";
 import { OverviewSection } from "../overview/section";
 
-import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
+import { fileChatContext } from "./ai-prompt-modal";
+import { AGENT_PROMPT_LABEL, useAiPromptAction } from "./ai-prompt-action";
 import { PromptForRowsButton, RowPromptAction } from "./row-prompt-action";
 import { CoverageLede } from "./coverage-lede";
 import { CoverageBar } from "./coverage-bar";
@@ -101,7 +102,19 @@ export function CoverageView({
   adapter: CodeHealthAdapter;
   copy?: CoverageViewCopy | undefined;
 }) {
-  const [promptRows, setPromptRows] = useState<CoverageFilePromptInput[] | null>(null);
+  const { openPrompt, promptModal } = useAiPromptAction();
+  // One file from a row, or every file a list shows, through the shared modal.
+  const promptFor = (rows: CoverageFilePromptInput[]) => {
+    const one = rows.length === 1 ? rows[0]!.file_path : undefined;
+    openPrompt({
+      title: "AI test prompt",
+      description:
+        "A ready-to-paste prompt that asks your AI coding agent to add tests for the uncovered lines and branches.",
+      filePath: one ?? null,
+      ...(one ? { chatContext: fileChatContext(one)! } : {}),
+      getPrompt: (flavor) => buildCoverageBatchAiPrompt({ rows, flavor }),
+    });
+  };
 
   const { data, isLoading, error, mutate } = useSWR<HealthCoverageResponse>(
     `code-health-coverage:${adapter.cacheKey}`,
@@ -155,26 +168,12 @@ export function CoverageView({
           data={data}
           untestedFindings={untestedFindings ?? []}
           onOpenFile={openFilePage}
-          onGeneratePrompt={setPromptRows}
+          onGeneratePrompt={promptFor}
           copy={copy}
         />
       )}
 
-      <AiPromptModal
-        open={promptRows !== null}
-        onOpenChange={(open) => {
-          if (!open) setPromptRows(null);
-        }}
-        filePath={promptRows?.length === 1 ? promptRows[0]!.file_path : null}
-        chatContext={fileChatContext(promptRows?.length === 1 ? promptRows[0]!.file_path : undefined)}
-        title="AI test prompt"
-        description="A ready-to-paste prompt that asks your AI coding agent to add tests for this file's uncovered lines and branches."
-        getPrompt={
-          promptRows
-            ? (flavor) => buildCoverageBatchAiPrompt({ rows: promptRows, flavor })
-            : null
-        }
-      />
+      {promptModal}
     </div>
   );
 }
@@ -193,7 +192,7 @@ function CoverageBody({
   onGeneratePrompt: (rows: CoverageFilePromptInput[]) => void;
   copy?: CoverageViewCopy | undefined;
 }) {
-  const promptLabel = copy?.promptLabel ?? "Copy agent prompt";
+  const promptLabel = copy?.promptLabel ?? AGENT_PROMPT_LABEL;
   const { summary, files, modules } = data;
   // The true count, not the length of what came back. They differ only if the
   // rollup was capped, but the lede claims to describe the repo.

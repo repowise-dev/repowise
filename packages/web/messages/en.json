@@ -651,7 +651,7 @@
     "tests": {
       "title": "Tests",
       "description": "Which code your tests reach: measured from a coverage report when one is ingested, inferred from the dependency graph otherwise.",
-      "promptAction": "Copy agent prompt",
+      "promptAction": "Copy prompt for your agent",
       "cleanTitle": "No untested hotspots across {files} measured files",
       "cleanBody": "Every file that changes often or that much of the code depends on has tests watching it.",
       "batchPromptAction": "Copy prompt for these {count}"
@@ -1144,7 +1144,7 @@
     "promptDescription": "A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding.",
     "rescan": "Re-scan",
     "rescanning": "Re-scanning…",
-    "promptAction": "Copy agent prompt",
+    "promptAction": "Copy prompt for your agent",
     "deadCodeClean": {
       "title": "No dead code found",
       "titleScoped": "No dead code across {files} files",
