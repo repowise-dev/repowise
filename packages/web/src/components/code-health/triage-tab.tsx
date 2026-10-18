@@ -38,6 +38,7 @@ import type { HealthCounts, HealthScope } from "@repowise-dev/types/health";
 import { HealthFileDrawerHost } from "@/components/health/health-file-drawer-host";
 import { FixFirstSection } from "@/components/code-health/fix-first-section";
 import { useAreaRailLabels } from "./area-rail-labels";
+import { useIncludeParam } from "./use-include-param";
 
 /**
  * Churn points pulled for the churn lens, joined onto the area-loaded rows by
@@ -67,33 +68,6 @@ function useAreaParam() {
     [router, pathname, searchParams, area],
   );
   return [area, setArea] as const;
-}
-
-/**
- * Held-out groups brought back into the map, in `?include=` (e.g.
- * `test,build`). Replaced rather than pushed: it is a view setting, not a
- * place to go back to.
- */
-function useIncludeParam() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-  const raw = searchParams.get("include") ?? "";
-  const include = useMemo(
-    () => raw.split(",").map((o) => o.trim().toLowerCase()).filter(Boolean),
-    [raw],
-  );
-  const setInclude = useCallback(
-    (next: string[]) => {
-      const sp = new URLSearchParams(searchParams.toString());
-      if (next.length) sp.set("include", next.join(","));
-      else sp.delete("include");
-      const qs = sp.toString();
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-    },
-    [router, pathname, searchParams],
-  );
-  return [include, setInclude] as const;
 }
 
 /** Churn percentiles by path, fetched only while the churn lens is on. */

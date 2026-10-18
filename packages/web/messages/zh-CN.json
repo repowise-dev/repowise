@@ -1098,11 +1098,14 @@
   "codeHealth": {
     "hotspots": {
       "title": "热点",
-      "description": "按变更频率与历史缺陷修复排序，从完整 git 历史中挖掘。危险的不只是频繁变更，而是那种频繁改动却只有一个人看得懂的文件。",
+      "description": "按热点分数排序：每次提交都计入，越近的权重越高（半衰期 180 天）。范围与上方地图一致。危险的不只是频繁变更，而是那种频繁改动却只有一个人看得懂的文件。",
       "commitHistory": "提交历史",
       "loadFailed": "无法加载热点。请运行一次同步，为该代码仓库挖掘 git 历史。",
       "promptTitle": "AI 稳定化提示词",
-      "promptDescription": "一段可直接粘贴的提示词，让 AI 智能体诊断该文件为何频繁变更，并提出降低维护成本的改动建议。"
+      "promptDescription": "一段可直接粘贴的提示词，让 AI 智能体诊断该文件为何频繁变更，并提出降低维护成本的改动建议。",
+      "batchPromptAction": "为这 {count} 项复制提示词",
+      "batchPromptTitle": "{count} 个热点的提示词",
+      "batchPromptDescription": "一段提示词，让智能体按分数从高到低逐个处理这些热点。"
     }
   },
   "commits": {

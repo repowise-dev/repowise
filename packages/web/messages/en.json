@@ -1098,11 +1098,14 @@
   "codeHealth": {
     "hotspots": {
       "title": "Hotspots",
-      "description": "Ranked by change frequency and prior bug fixes, mined from full git history. The danger is not churn on its own. It is a file that changes constantly and only one person understands.",
+      "description": "Ranked by hotspot score: every commit counts, recent ones most (180-day half-life). Same scope as the map above. The danger is not churn on its own. It is a file that changes constantly and only one person understands.",
       "commitHistory": "Commit history",
       "loadFailed": "Couldn't load hotspots. Run a sync to mine git history for this repo.",
       "promptTitle": "AI stabilization prompt",
-      "promptDescription": "A ready-to-paste prompt that has your AI agent diagnose why this file churns and propose changes that make it cheaper to maintain."
+      "promptDescription": "A ready-to-paste prompt that has your AI agent diagnose why this file churns and propose changes that make it cheaper to maintain.",
+      "batchPromptAction": "Copy prompt for these {count}",
+      "batchPromptTitle": "Prompt for {count, plural, one {# hotspot} other {# hotspots}}",
+      "batchPromptDescription": "One prompt that has your agent work through these hotspots one at a time, highest score first."
     }
   },
   "commits": {
