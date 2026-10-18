@@ -101,7 +101,7 @@ The key is absent when every argument was understood. One entry per argument.
 | `search_codebase` | `kind`, `mode` (an unknown `mode` runs as `auto`), `pattern` when `query` is also given (entry carries `"superseded_by": "query"`) | Top-level list |
 | `get_risk`, `get_change_risk`, `get_overview` | `include` | Top-level list |
 | `get_answer` | `include` | `_meta.ignored_arguments`, a map: `{"include": [...]}` |
-| `get_health` | `refactoring_*` and `performance_*` filters, `scope`, `counts` | Top-level flat map of argument to dropped value, e.g. `{"counts": "code-shape"}` |
+| `get_health` | `refactoring_*` and `performance_*` filters, `scope`, `counts` | Top-level flat map of argument to dropped value, e.g. `{"counts": "code-shape"}`. A value that belongs to the other control (`scope="code_shape"`) also gets `ignored_arguments_hint` naming the right one (not on a detail lookup, where neither control applies) |
 
 `get_health` reports a misspelled `only` key under `unknown_only_keys`. A detail lookup (`finding_id`, `plan_id`, `opportunity_id`) also lists `scope` and `counts` there, since a population control has nothing to act on for one stored row.
 
@@ -377,7 +377,7 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 | `worst_files`, `test_worst_files` | Lowest raw scores, production and test |
 | `high_leverage_files` | Ranked by `weighted_deficit`, with `share_of_repo_gap_pct` |
 | `top_findings` / `findings`, `test_findings` | Production and test findings; their totals sum to the whole open set |
-| metric row | `score` (defect dimension and headline), `maintainability_score`, `performance_score`, `weighted_deficit` = (8 - score) x NLOC, `is_test`, `has_test_file`, `primary_biomarker`, `total_deduction`, and `withheld_deduction` when part of it comes from a withheld finding type |
+| metric row | `score` (defect dimension and headline), `maintainability_score`, `performance_score`, `weighted_deficit` = (8 - score) x NLOC, `is_test`, `has_test_file`, `primary_biomarker`, `total_deduction`, `structure_deduction` and `history_deduction` (the score is 10 minus both, before the 1.0 floor; history reads 0.0 under `counts="code_shape"`), `history: "short"` only when the file has fewer than 5 recorded commits (new, split out, or renamed without follow), where most history markers cannot fire yet, and `withheld_deduction` when part of it comes from a withheld finding type |
 
 `weighted_deficit` and the gap fields share one unit, score points x NLOC; they compare only with each other. Non-code files score a mechanical 10.0 because no marker reads them; `average_health_code_only` shows the headline without them. `primary_biomarker` prefers a discrete finding over the continuous `coverage_gradient`. Each finding carries a `dimension`; `advisory` findings (`assertion_free_test`, `mock_saturated_test`) never deduct and appear only with `include=["advisory"]`.
 

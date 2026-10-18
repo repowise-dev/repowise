@@ -34,6 +34,7 @@ from .models import (
     RevisionId,
     ScopeCounts,
 )
+from .moves import bodies_for, build_move_map
 from .perf_delta import PerfOpportunityView, index_by_finding, opportunities_for
 from .sources import (
     FileChange,
@@ -287,7 +288,12 @@ class ChangeHealthDeltaService:
             1 for r in skipped.values() if r.removeprefix("base_") in {"parse_failed", "unreadable"}
         )
 
-        matcher = FindingMatcher(rename, _hunks(eligible))
+        moves = build_move_map(
+            bodies_for(base_sources, base_run.symbols),
+            bodies_for(head_sources, head_run.symbols),
+            rename_map=rename,
+        )
+        matcher = FindingMatcher(rename, _hunks(eligible), moves)
         # Both sides are restricted to the same comparable set, so an excluded
         # file cannot contribute a one-sided "introduced" or "resolved".
         # Advisory markers deduct nothing, so adding one is not a regression
@@ -336,6 +342,8 @@ class ChangeHealthDeltaService:
             findings=findings,
             resolved_total=len(match.resolved),
             unchanged_total=match.unchanged_total,
+            improved_total=match.improved_total,
+            moved_total=match.moved_total,
             skipped=skipped,
             limits=_limits(head_run.findings_for(subject)),
         )
@@ -352,8 +360,9 @@ class ChangeHealthDeltaService:
     ) -> ChangeFinding:
         head = matched.head
         edge = perf.intervention_symbol if perf and perf.is_cross_function else None
+        moved_from = matched.moved_from
         attribution = attributor.attribute(
-            head, changed_symbols=changed_symbols, changed_call_edge=edge
+            head, changed_symbols=changed_symbols, changed_call_edge=edge, moved_from=moved_from
         )
         key = finding_key(head)
         return ChangeFinding(
@@ -377,6 +386,7 @@ class ChangeHealthDeltaService:
             opportunity_id=perf.opportunity_id if perf else None,
             opportunity_rank=perf.rank_score if perf else None,
             evidence=_evidence(head, perf),
+            moved_from={"path": moved_from[0], "symbol": moved_from[1]} if moved_from else None,
         )
 
 

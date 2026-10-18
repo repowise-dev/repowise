@@ -1,7 +1,7 @@
 """Stateless AST helper functions used by :class:`~.parser.ASTParser`.
 
 Language-neutral tree-sitter utilities live here; per-language helpers live in
-:mod:`.lang_helpers` and are re-exported so ``parser.py`` imports one module.
+:mod:`.lang_helpers` and are re-exported so the ``parser`` package imports one module.
 No imports from ``parser``, so there is no import cycle.
 """
 

@@ -165,6 +165,7 @@ def _serialize_metric(
     lead: dict[str, Any] | None = None,
     *,
     is_test: bool = False,
+    history: str | None = None,
 ) -> dict[str, Any]:
     return {
         "file_path": m.file_path,
@@ -185,6 +186,11 @@ def _serialize_metric(
         # ``defect_score`` is deliberately absent: it always equals ``score``.
         "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
         "performance_score": _round_opt(getattr(m, "performance_score", None)),
+        # The score's two halves (``10 - structure - history``, before the floor).
+        "structure_deduction": _round_opt(getattr(m, "structure_deduction", None)),
+        "history_deduction": _round_opt(getattr(m, "history_deduction", None)),
+        # ``"short"``: too few recorded commits for most history markers.
+        **({"history": history} if history else {}),
         # Dominant cause and pre-clamp magnitude; null when the file has no findings.
         "primary_biomarker": lead.get("primary_biomarker") if lead else None,
         "primary_reason": lead.get("primary_reason") if lead else None,

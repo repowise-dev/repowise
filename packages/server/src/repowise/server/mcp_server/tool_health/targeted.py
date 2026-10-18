@@ -7,7 +7,7 @@ from typing import Any
 
 from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.core.analysis.health.trends import file_trend
-from repowise.server.mcp_server.tool_health.loading import HealthData
+from repowise.server.mcp_server.tool_health.loading import HealthData, history_of
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
@@ -85,7 +85,10 @@ def _metric_payload(data: HealthData) -> list[dict[str, Any]]:
     rows = []
     for m in data.metric_rows:
         row = _serialize_metric(
-            m, data.leads.get(m.file_path), is_test=m.file_path in data.test_paths
+            m,
+            data.leads.get(m.file_path),
+            is_test=m.file_path in data.test_paths,
+            history=history_of(data, m.file_path),
         )
         if m.file_path in data.signals_by_path:
             row["signals"] = data.signals_by_path[m.file_path]

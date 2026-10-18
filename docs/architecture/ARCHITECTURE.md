@@ -113,7 +113,7 @@ repowise/
 │   │   ├── src/repowise/core/
 │   │   │   ├── ingestion/
 │   │   │   │   ├── traverser.py        # file tree walking + gitignore + per-dir .repowiseIgnore + extra exclude patterns
-│   │   │   │   ├── parser.py           # ASTParser: one class, all languages; _extract_calls(), _extract_import_bindings()
+│   │   │   │   ├── parser/             # ASTParser: one class, all languages; one module per pass (symbols, imports, calls, references)
 │   │   │   │   ├── parsers/            # per-language parser helpers
 │   │   │   │   ├── graph.py            # NetworkX dep graph builder; add_file(), _resolve_calls(), file_subgraph()
 │   │   │   │   ├── call_resolver.py    # CallResolver: origin-stamped call resolution
@@ -1594,7 +1594,7 @@ each with the file it registers in and what you lose by skipping it.
 
 Two things worth knowing before you start:
 
-- **You never edit `parser.py` or `registry.py`.** Language identity goes in
+- **You never edit `parser/` or `registry.py`.** Language identity goes in
   `ingestion/languages/specs/<lang>.py` and is slotted into `ALL_SPECS`; parser
   configuration goes in `ingestion/language_configs.py`. The one unavoidable
   core edit is adding your tag to the `LanguageTag` Literal in

@@ -10,9 +10,13 @@ from ..health import HealthFindingData
 from ..health.aggregation import finding_raw_deduction
 from .identity import finding_key, measured_shape, normalize_path, severity_rank
 from .models import ChangeKind, FindingKey
+from .moves import MoveMap, SymbolKey
 
 #: Health-impact movement below this is rounding, not a regression.
 _IMPACT_EPSILON = 0.01
+
+#: Measured values a finding's details may carry, compared for "improved".
+_METRICS = ("ccn", "nloc", "max_nesting", "params")
 
 
 @dataclass(slots=True)
@@ -24,6 +28,7 @@ class MatchedFinding:
     key: FindingKey
     ordinal: int
     kind: ChangeKind
+    moved_from: SymbolKey | None = None
 
     @property
     def severity_before(self) -> str | None:
@@ -39,6 +44,14 @@ class MatchResult:
     def unchanged_total(self) -> int:
         return sum(1 for m in self.matched if m.kind == "unchanged")
 
+    @property
+    def improved_total(self) -> int:
+        return sum(1 for m in self.matched if m.kind == "improved")
+
+    @property
+    def moved_total(self) -> int:
+        return sum(1 for m in self.matched if m.moved_from is not None)
+
     def of_kind(self, *kinds: ChangeKind) -> list[MatchedFinding]:
         return [m for m in self.matched if m.kind in kinds]
 
@@ -53,8 +66,9 @@ class FindingMatcher:
     base line where the diff moved it (*hunks*, by head path), so lines
     inserted above a symbol do not cross-pair two findings inside it.
 
-    A second pass pairs what is left over across a symbol rename: a head
-    finding with no peer takes a resolved base finding of the same measured
+    Two more passes pair what is left over: across a move (*moves*), a head
+    finding takes the resolved finding of the symbol its code came from; across
+    a symbol rename, it takes a resolved base finding of the same measured
     shape in the same file.
     """
 
@@ -62,9 +76,11 @@ class FindingMatcher:
         self,
         rename_map: dict[str, str] | None = None,
         hunks: dict[str, list[tuple[int, int, int, int]]] | None = None,
+        moves: MoveMap | None = None,
     ) -> None:
         self.rename_map = rename_map or {}
         self.hunks = hunks or {}
+        self.moves = moves or MoveMap()
 
     def match(self, base: list[HealthFindingData], head: list[HealthFindingData]) -> MatchResult:
         base_groups = self._group(base, normalize=True)
@@ -78,10 +94,32 @@ class FindingMatcher:
             result.resolved.extend(unmatched)
         for leftovers in base_groups.values():
             result.resolved.extend(leftovers)
+        self._pair_moves(result)
         self._pair_renames(result)
         return result
 
     # -- internals ----------------------------------------------------------
+
+    def _pair_moves(self, result: MatchResult) -> None:
+        """Pair introduced head findings with the resolved finding of their code's origin."""
+        if not self.moves.moved_total:
+            return
+        candidates = []
+        for mi, m in enumerate(result.matched):
+            origin = self.moves.origin_of(m.head.file_path, m.head.function_name)
+            if m.base is None and origin is not None:
+                candidates += [
+                    (_shape_gap(b, m.head), mi, bi)
+                    for bi, b in enumerate(result.resolved)
+                    if _same_marker_at(b, m.head, origin)
+                ]
+        peers = _closest_first(candidates)
+        for mi, bi in peers.items():
+            m, base = result.matched[mi], result.resolved[bi]
+            m.base, m.kind = base, _classify(base, m.head, carried="moved")
+            m.moved_from = (base.file_path, str(base.function_name))
+        claimed = {id(result.resolved[bi]) for bi in peers.values()}
+        result.resolved = [f for f in result.resolved if id(f) not in claimed]
 
     def _pair_renames(self, result: MatchResult) -> None:
         """Pair introduced head findings with resolved base findings of one shape.
@@ -169,14 +207,41 @@ def _closest_first(candidates: Iterable[tuple[int, int, int]]) -> dict[int, int]
     return peers
 
 
-def _classify(base: HealthFindingData | None, head: HealthFindingData) -> ChangeKind:
-    """Introduced when nothing matched; worsened only on a real regression."""
+def _same_marker_at(base: HealthFindingData, head: HealthFindingData, origin: SymbolKey) -> bool:
+    """*base* is *head*'s marker on the symbol *origin* names."""
+    return (base.file_path, base.function_name) == origin and (
+        base.dimension,
+        base.biomarker_type,
+    ) == (head.dimension, head.biomarker_type)
+
+
+def _shape_gap(base: HealthFindingData, head: HealthFindingData) -> int:
+    """0 when both measured the same, else 1; line numbers do not travel across files."""
+    return 0 if measured_shape(base, path=head.file_path) == measured_shape(head) else 1
+
+
+def _classify(
+    base: HealthFindingData | None, head: HealthFindingData, *, carried: ChangeKind = "unchanged"
+) -> ChangeKind:
+    """Introduced when unmatched, worsened or improved on a real difference, else *carried*."""
     if base is None:
         return "introduced"
-    if severity_rank(head.severity) > severity_rank(base.severity):
-        return "worsened"
-    if severity_rank(head.severity) < severity_rank(base.severity):
-        return "unchanged"
-    if finding_raw_deduction(head) - finding_raw_deduction(base) > _IMPACT_EPSILON:
-        return "worsened"
-    return "unchanged"
+    rank = severity_rank(head.severity) - severity_rank(base.severity)
+    if rank:
+        return "worsened" if rank > 0 else "improved"
+    impact = finding_raw_deduction(head) - finding_raw_deduction(base)
+    if abs(impact) > _IMPACT_EPSILON:
+        return "worsened" if impact > 0 else "improved"
+    # Lower metrics within one band read as improved; higher ones stay quiet,
+    # since only a deduction change is a regression worth surfacing.
+    return "improved" if _metrics_dropped(base, head) else carried
+
+
+def _metrics_dropped(base: HealthFindingData, head: HealthFindingData) -> bool:
+    """True when no shared metric rose and at least one fell."""
+    before, after = base.details or {}, head.details or {}
+    shared = [(before[k], after[k]) for k in _METRICS if k in before and k in after]
+    pairs = [
+        (b, a) for b, a in shared if isinstance(b, (int, float)) and isinstance(a, (int, float))
+    ]
+    return any(a < b for b, a in pairs) and all(a <= b for b, a in pairs)

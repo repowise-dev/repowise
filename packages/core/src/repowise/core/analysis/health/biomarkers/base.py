@@ -70,6 +70,8 @@ class FileContext:
     branch_coverage_pct: float | None = None
     covered_lines: set[int] = field(default_factory=set)
     total_coverable_lines: int = 0
+    # Only a docstring, imports and export lists: no code for coverage to measure.
+    reexport_only: bool = False
     # Duplication signals (populated when the engine ran the
     # duplication detector for this analyze() call). ``clones`` is the
     # list of clone pairs this file participates in; ``duplication_pct``

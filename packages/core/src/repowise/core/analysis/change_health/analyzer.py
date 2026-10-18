@@ -12,7 +12,13 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from ...ingestion.graph.builder import GraphBuilder
-from ...ingestion.models import EXTENSION_TO_LANGUAGE, SPECIAL_FILENAMES, FileInfo, ParsedFile
+from ...ingestion.models import (
+    EXTENSION_TO_LANGUAGE,
+    SPECIAL_FILENAMES,
+    FileInfo,
+    ParsedFile,
+    Symbol,
+)
 from ...ingestion.parser import parse_file
 from ...test_paths import is_test_related_path
 from ..health import HealthAnalyzer, HealthFindingData
@@ -63,6 +69,7 @@ class RevisionAnalysis:
     skipped: dict[str, str] = field(default_factory=dict)
     #: Dependents count per file, as this side's centrality gates read it.
     dependents: dict[str, int] = field(default_factory=dict)
+    symbols: dict[str, list[Symbol]] = field(default_factory=dict)
 
     def findings_for(self, paths: set[str]) -> list[HealthFindingData]:
         return [f for f in self.findings if f.file_path in paths]
@@ -109,6 +116,7 @@ class RevisionHealthAnalyzer:
         result.findings = list(report.findings)
         result.analyzed = set(usable)
         result.dependents = analyzer.file_dependents()
+        result.symbols = {pf.file_info.path: pf.symbols for pf in parsed}
         return result
 
     # -- internals ----------------------------------------------------------

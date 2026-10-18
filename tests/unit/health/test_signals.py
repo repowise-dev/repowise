@@ -167,3 +167,25 @@ def test_naive_timestamps_are_serialized_with_an_explicit_utc_offset():
 
     s = file_signals(_GitNaive(prior_defect_count=1), None)
     assert s.last_fix_at == "2026-06-02T10:30:00+00:00"
+
+
+def test_history_reads_short_below_the_commits_the_history_markers_need():
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS, history_basis
+
+    def git(total, history_only=False):
+        return SimpleNamespace(commit_count_total=total, history_only=history_only)
+
+    assert history_basis(git(HISTORY_MIN_COMMITS - 1)) == "short"
+    assert history_basis(git(HISTORY_MIN_COMMITS)) is None
+    # No row, no count, or a non-code row: nothing measured, so nothing claimed.
+    assert history_basis(None) is None
+    assert history_basis(git(None)) is None
+    assert history_basis(git(1, history_only=True)) is None
+
+    @dataclass
+    class _GitYoung(_Git):
+        commit_count_total: int | None = 1
+
+    assert file_signals(_GitYoung(), None).history == "short"

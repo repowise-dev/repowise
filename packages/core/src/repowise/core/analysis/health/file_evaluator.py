@@ -21,6 +21,7 @@ from .finding_identity import SYMBOL_INDEX_KEY, SYMBOL_KEY, SYMBOL_LINE_KEY
 from .function_blame_rollup import blame_commit_entries, commit_spans
 from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, Severity
+from .reexport_only import is_reexport_only
 from .refactoring import RefactoringContext, RefactoringSuggestion, detect_refactorings
 from .scoring import attach_impacts, file_score_fields, remap_severities, score_file
 from .source_reader import SourceReader
@@ -286,6 +287,8 @@ class FileEvaluator:
             branch_coverage_pct=cov.get("branch_coverage_pct") if cov else None,
             covered_lines=set(cov.get("covered_lines") or ()) if cov else set(),
             total_coverable_lines=int(cov.get("total_coverable_lines", 0)) if cov else 0,
+            reexport_only=bool(cov)
+            and is_reexport_only(pf, bool(fcx.functions), analyzer.read_source),
             clones=list(clones),
             duplication_pct=dup_pct,
             clone_sources=clone_sources,
