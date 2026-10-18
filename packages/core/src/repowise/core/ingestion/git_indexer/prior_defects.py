@@ -9,25 +9,23 @@ index, deliberately: that index is depth-capped (``_DEFAULT_COMMIT_LIMIT`` newes
 commits repo-wide) and buckets by file, so on a busy repo a hot file's slice of
 those commits silently under-counts — exactly the files this signal cares about.
 
-The walk mirrors the defect benchmark's prior-defects baseline
+The walk follows the defect benchmark's prior-defects baseline
 (``lib/baselines._prior_defect_count`` → ``defect_counter.find_fix_commits`` +
-``_attribute``) so the product identifies exactly the commits the benchmark
-labels as fixes (product == benchmark):
+``_attribute``) except in how it names a fix:
 
 * resolve the window-start commit = the last commit on/before ``as_of - window``;
 * walk the **topological range** ``prior_sha..head`` (every non-merge commit
   merged into HEAD since then — so feature-branch fixes count, matching the
   benchmark's ``prior_sha..t0_sha`` range, not a date-pruned ``--since`` walk);
-* classify each commit subject with the shared ``is_fix_commit`` keyword rule;
+* classify each commit subject with :func:`.fix_rule.is_typed_fix_commit`;
 * attribute a fix to every indexable file it touched, under the path that file
   has at HEAD, so a rename inside the window does not reset the count.
 
 Reachable-from-HEAD means a T0 worktree never sees post-T0 fixes → leakage-free.
 
 A second pass then opens each matched fix commit's ``-U0`` diff and keeps only
-the ones that actually change production code (:mod:`fix_shape`). ``is_fix_commit``
-stays byte-identical to the benchmark's regex set; the filter sits after it, and
-both totals are returned so the delta is inspectable.
+the ones that actually change production code (:mod:`fix_shape`); both totals are
+returned so the delta is inspectable.
 """
 
 from __future__ import annotations
@@ -38,7 +36,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from ._constants import PRIOR_DEFECT_WINDOW_DAYS, _truncate_body, is_fix_commit
+from ._constants import PRIOR_DEFECT_WINDOW_DAYS, _truncate_body
+from .fix_rule import is_typed_fix_commit
 from .fix_shape import classify_fix_shape
 from .records import _RECORD_SEP, RenameTrail, name_status_path
 
@@ -295,7 +294,7 @@ def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> l
         fields, path_block = _split_record(record)
         sha, committed, subject, body = fields
         entries = _record_paths(path_block)
-        if is_fix_commit(subject):
+        if is_typed_fix_commit(subject):
             paths = [p for p, _ in entries if p in indexable_files]
             history = [renames.resolve(p) for p, _ in entries]
             history = [p for p in dict.fromkeys(history) if p in indexable_files]
@@ -325,7 +324,7 @@ def _split_record(record: str) -> tuple[tuple[str, str, str, str], str]:
     therefore the real one, and a commit message that somehow carried one keeps
     its paths and its subject intact. Taking the subject boundary from the left
     instead would truncate a subject at an embedded separator and change which
-    commits ``is_fix_commit`` matches, which is a defect count rather than a
+    commits the fix rule matches, which is a defect count rather than a
     cosmetic loss.
 
     The terminator is not optional and there is no fallback for its absence:
