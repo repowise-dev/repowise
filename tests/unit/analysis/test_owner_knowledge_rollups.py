@@ -100,7 +100,7 @@ def test_owned_files_counts_people_and_leaves_automation_out() -> None:
     owned = owned_files(ROWS, people_resolver(ROWS, COMMITS))
     assert dict(owned.by_owner) == {"ada@example.com": 3, "bob@example.com": 2, "cy@example.com": 1}
     assert owned.owned_total == 6
-    assert owned.single_owner_files == 7
+    assert owned.single_owner_files == 5
     assert sum(owned.module_totals.values()) == len(ROWS)
 
 
@@ -122,7 +122,7 @@ def test_build_people_reads_the_shared_concentration() -> None:
     assert people == {
         "owner_count": 3,
         "tracked_files": 8,
-        "single_owner_files": 7,
+        "single_owner_files": 5,
         "silo_count": 3,
         "truck_factor": 2,
     }
@@ -156,7 +156,7 @@ def test_summary_is_people_only() -> None:
     assert summary["truck_factor"] == build_people(ROWS, COMMITS)["truck_factor"] == 2
     assert (summary["people"], summary["automation_identities"]) == (3, 1)
     assert (summary["owned_files"], summary["tracked_files"]) == (6, 8)
-    assert summary["single_owner_files"] == 7
+    assert summary["single_owner_files"] == 5
     assert summary["single_owner_hotspots"] == 2
 
     concentration = summary["concentration"]
@@ -262,4 +262,18 @@ def test_a_file_without_history_is_not_a_single_owner_risk() -> None:
     ada = accs["ada@example.com"]
     # a.py and b.py have bus factor 1; c.py has 2 and new.py has none indexed.
     assert (ada.files_owned, ada.bus_factor_risk_files) == (4, 2)
-    assert build_owner_summary(rows, resolve, accs)["single_owner_files"] == 7
+    assert build_owner_summary(rows, resolve, accs)["single_owner_files"] == 5
+
+
+def test_automation_and_unowned_files_are_not_single_owner_risks() -> None:
+    rows = [
+        *ROWS,
+        _row("deps/hot.py", _BOT, [_author(_BOT, 30)], hotspot=True),
+        _row("gen/out.py", ("", ""), [], hotspot=True),
+    ]
+    resolve = people_resolver(rows, COMMITS)
+    accs, _ = aggregate_owners(rows, [], COMMITS, len(COMMITS), resolve)
+    owned = owned_files(rows, resolve)
+    assert (owned.single_owner_files, owned.single_owner_hotspots) == (5, 2)
+    summary = build_owner_summary(rows, resolve, accs)
+    assert (summary["single_owner_files"], summary["single_owner_hotspots"]) == (5, 2)

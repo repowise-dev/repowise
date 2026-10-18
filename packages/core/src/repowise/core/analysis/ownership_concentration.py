@@ -32,8 +32,10 @@ class OwnedFiles:
     by_module: dict[str, Counter[str]] = field(default_factory=dict)
     # Every file per module, owned by a person or not.
     module_totals: Counter[str] = field(default_factory=Counter)
-    # Files whose bus factor is exactly 1 (0 means no history, not risk).
+    # Person-owned files whose bus factor is exactly 1 (0 means no history,
+    # not risk), and those of them git flags as hotspots.
     single_owner_files: int = 0
+    single_owner_hotspots: int = 0
 
     @property
     def owned_total(self) -> int:
@@ -70,13 +72,15 @@ def owned_files(rows: Iterable[Any], resolve: IdentityResolver) -> OwnedFiles:
     out = OwnedFiles()
     for m in rows:
         owner = person_owner(m, resolve)
-        if (row_field(m, "bus_factor") or 0) == 1:
-            out.single_owner_files += 1
         module = module_label(row_field(m, "file_path"))
         out.module_totals[module] += 1
-        if owner:
-            out.by_owner[owner] += 1
-            out.by_module.setdefault(module, Counter())[owner] += 1
+        if not owner:
+            continue
+        out.by_owner[owner] += 1
+        out.by_module.setdefault(module, Counter())[owner] += 1
+        if (row_field(m, "bus_factor") or 0) == 1:
+            out.single_owner_files += 1
+            out.single_owner_hotspots += bool(row_field(m, "is_hotspot"))
     return out
 
 

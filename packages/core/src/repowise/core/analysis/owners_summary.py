@@ -15,7 +15,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from repowise.core.analysis.health.rows import field as row_field
 from repowise.core.analysis.owners import (
     ACTIVITY_WINDOW_DAYS,
     OwnerAccumulator,
@@ -107,8 +106,7 @@ def build_owner_summary(
     accs: Accs,
 ) -> dict[str, Any]:
     """The summary payload; see ``OwnersSummaryResponse`` for the fields."""
-    rows = list(git_rows)
-    owned = owned_files(rows, resolve)
+    owned = owned_files(git_rows, resolve)
     identities = [a for a in accs.values() if a.key]
     people = [a for a in identities if a.kind == "human"]
     return {
@@ -119,11 +117,7 @@ def build_owner_summary(
         "tracked_files": sum(owned.module_totals.values()),
         "owned_files": owned.owned_total,
         "single_owner_files": owned.single_owner_files,
-        "single_owner_hotspots": sum(
-            1
-            for m in rows
-            if (row_field(m, "bus_factor") or 0) == 1 and row_field(m, "is_hotspot")
-        ),
+        "single_owner_hotspots": owned.single_owner_hotspots,
         "concentration": _concentration(owned, accs, resolve),
         "silo_modules": _silos(owned, accs, resolve),
         **_activity(people),
