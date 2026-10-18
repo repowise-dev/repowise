@@ -11,7 +11,7 @@ describe("repoNavGroups", () => {
       ["start", ["Overview", "Chat"]],
       ["understand", ["Docs", "Architecture", "Knowledge Graph", "Files"]],
       ["quality", ["Code Health", "Refactoring", "Tests", "Security"]],
-      ["people", ["Contributors", "Commits", "Decisions"]],
+      ["people", ["Ownership", "Commits", "Decisions"]],
       ["settings", ["Stats", "Usage & savings", "Settings"]],
     ]);
   });
