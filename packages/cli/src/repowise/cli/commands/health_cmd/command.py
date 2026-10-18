@@ -44,7 +44,6 @@ from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
 
 from .codegen import _generate_refactoring_code
-from .live_score import analyzer_config
 from .persist import (
     _load_fix_first,
     _load_persisted_coverage_map,
@@ -679,6 +678,8 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
         duplication_cache_dir=Path(repo_path) / ".repowise",
         repo_root=repo_path,
     )
+    from .live_score import analyzer_config
+
     report = analyzer.analyze(
         analyzer_config(repo_path, [pf.file_info.path for pf in parsed_files])
     )
