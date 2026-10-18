@@ -1,3 +1,4 @@
+import { holdParams } from "./areas";
 import { apiGet } from "./client";
 import type {
   AgentTrend,
@@ -12,6 +13,13 @@ import type {
   Paginated,
   ReviewerSuggestionsResponse,
 } from "./types";
+import type { MapHoldQuery } from "@repowise-dev/types/areas";
+import type {
+  HotspotFacets,
+  HotspotFilter,
+  HotspotOrder,
+  HotspotSort,
+} from "@repowise-dev/types/git";
 import type {
   HistoryFilters,
   PeriodHealthSummaryResponse,
@@ -26,21 +34,39 @@ export async function getGitMetadata(
   });
 }
 
+/** One page of the hotspot list plus counts over the whole searched set. */
+export interface HotspotPage extends Paginated<HotspotResponse> {
+  facets: HotspotFacets;
+}
+
+export interface HotspotPageQuery extends MapHoldQuery {
+  limit?: number;
+  offset?: number;
+  /** Path or owner substring. */
+  q?: string;
+  filter?: HotspotFilter;
+  sort?: HotspotSort;
+  order?: HotspotOrder;
+}
+
 /**
- * Paginated hotspot fetch — returns the full envelope so the UI can render
- * "Showing N of M / Load more". New callers should prefer this over
- * {@link getHotspots}, which is kept for back-compat (returns just the
- * items list, but no longer hides the long tail since the server cap is
- * 500 rather than the old 100).
+ * One page of hotspots ranked by temporal hotspot score. `total` counts what
+ * the filter and search match; `facets` count every filter over the search.
+ * Defaults (no search, no filter, every origin) list the whole hotspot set.
  */
 export async function getHotspotsPage(
   repoId: string,
-  options: { limit?: number; offset?: number } = {},
-): Promise<Paginated<HotspotResponse>> {
-  const { limit = 50, offset = 0 } = options;
-  return apiGet<Paginated<HotspotResponse>>(`/api/repos/${repoId}/hotspots`, {
+  options: HotspotPageQuery = {},
+): Promise<HotspotPage> {
+  const { limit = 50, offset = 0, q, filter, sort, order } = options;
+  return apiGet<HotspotPage>(`/api/repos/${repoId}/hotspots`, {
     limit,
     offset,
+    q: q || undefined,
+    filter: filter && filter !== "all" ? filter : undefined,
+    sort,
+    order,
+    ...holdParams(options),
   });
 }
 

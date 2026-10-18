@@ -121,6 +121,24 @@ export interface Hotspot {
   last_fix_at?: string | null;
   /** The file's path before its most recent rename, if any. */
   original_path?: string | null;
+  /** Faster over the last 30 days than over the last 90, on a file older than that window. */
+  accelerating?: boolean;
+  /** Place by hotspot score within the listed scope; set by the hotspot list only. */
+  rank?: number | null;
+}
+
+/** The hotspot list's filters; `all` lists every hotspot in scope. */
+export type HotspotFilter = "all" | "bus_factor_1" | "accelerating" | "bug_magnet";
+/** The hotspot list's sortable columns; `score` is the temporal hotspot score. */
+export type HotspotSort = "score" | "commits" | "fixes" | "churn";
+export type HotspotOrder = "asc" | "desc";
+
+/** Counts over every hotspot the search matches, whatever the filter. */
+export interface HotspotFacets {
+  total: number;
+  bus_factor_1: number;
+  accelerating: number;
+  bug_magnet: number;
 }
 
 /** Repo-relative tercile of the diff-size percentile within its own repo;

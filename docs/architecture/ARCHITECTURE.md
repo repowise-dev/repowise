@@ -1144,7 +1144,7 @@ Key routers:
 - `/api/webhooks/gitlab`: GitLab webhook handler
 - `/api/webhooks/gitea`: Gitea and Forgejo webhook handler with HMAC verification
 - `/api/repos/{id}/git-metadata`: per-file git metadata
-- `/api/repos/{id}/hotspots`: high-churn + high-complexity files
+- `/api/repos/{id}/hotspots`: hotspots ranked by temporal hotspot score; `q`, `filter`, `sort`/`order`, offset paging, `hold`/`include` (map scope) and `facets` counts over the searched set
 - `/api/repos/{id}/ownership`: ownership breakdown (file/module/package granularity)
 - `/api/repos/{id}/co-changes`: co-change partners for a file
 - `/api/repos/{id}/git-summary`: aggregate git health signals for dashboard

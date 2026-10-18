@@ -3,6 +3,8 @@ import { describe, it, expect } from "vitest";
 import {
   buildCoverageAiPrompt,
   buildCoverageBatchAiPrompt,
+  buildHotspotAiPrompt,
+  buildHotspotBatchAiPrompt,
   buildSecurityAiPrompt,
   buildSecurityBatchAiPrompt,
 } from "../../src/health/ai-prompt-builder";
@@ -41,5 +43,14 @@ describe("batch prompts", () => {
       findings: [finding(1), finding(2, "public_env_secret")],
     });
     expect(prompt).toContain("**rotated**");
+  });
+
+  it("hotspot batch lists the loaded rows and counts the rest of the filtered total", () => {
+    const hot = (i: number) => ({ file_path: `src/h${i}.ts`, commit_count_90d: 9, bus_factor: 1 });
+    expect(buildHotspotBatchAiPrompt({ rows: [hot(1)] })).toBe(buildHotspotAiPrompt({ hotspot: hot(1) }));
+    const prompt = buildHotspotBatchAiPrompt({ rows: Array.from({ length: 30 }, (_, i) => hot(i)), total: 672 });
+    expect(prompt).toContain("`src/h24.ts` — 9 commits in 90 days, one person holds the knowledge");
+    expect(prompt).not.toContain("`src/h25.ts`");
+    expect(prompt).toContain("…and 647 more");
   });
 });

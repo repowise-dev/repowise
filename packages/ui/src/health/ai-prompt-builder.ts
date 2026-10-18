@@ -53,6 +53,8 @@ export {
 } from "./ai-prompts/security-prompt";
 export {
   buildHotspotAiPrompt,
+  buildHotspotBatchAiPrompt,
+  type BuildHotspotBatchPromptOptions,
   type BuildHotspotPromptOptions,
   type HotspotPromptInput,
 } from "./ai-prompts/hotspot-prompt";

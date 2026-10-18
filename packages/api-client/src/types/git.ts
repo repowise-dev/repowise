@@ -84,6 +84,10 @@ export interface HotspotResponse {
   bug_magnet?: boolean;
   last_fix_at?: string | null;
   original_path?: string | null;
+  /** Faster over the last 30 days than over the last 90, on a file older than that window. */
+  accelerating?: boolean;
+  /** Place by hotspot score within the listed scope; set by the hotspot list only. */
+  rank?: number | null;
 }
 
 export interface OwnershipEntry {
