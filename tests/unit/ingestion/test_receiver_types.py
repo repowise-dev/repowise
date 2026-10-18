@@ -349,7 +349,6 @@ class TestKotlinRefusals:
         source = "class C {\n    fun f() {\n        val local: Logger = make()\n    }\n}"
         assert "local" not in fields(source, "kotlin", [(2, 4)])
 
-
     def test_a_chained_construction_types_nothing(self) -> None:
         """``val x = Builder().build()`` makes ``x`` whatever ``build()``
         returns, so typing it as a ``Builder`` is a wrong answer rather than a
@@ -433,7 +432,6 @@ class TestKotlinFieldScope:
     def test_an_uninitialised_property_is_a_field(self) -> None:
         source = "abstract class Repo {\n    abstract val api: Api\n}"
         assert fields(source, "kotlin", [])["api"] == "Api"
-
 
 
 class TestSwiftShapes:
@@ -683,9 +681,9 @@ class TestGoShapes:
 def go_fields(source: str) -> dict[str, str | None]:
     """The fields of one struct spanning the whole text; Go methods sit outside it."""
     lines = source.count("\n") + 1
-    return types_by_class(
-        scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go"
-    ).get("f.go::C", {})
+    return types_by_class(scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go").get(
+        "f.go::C", {}
+    )
 
 
 class TestGoFields:
@@ -885,9 +883,7 @@ class TestKotlinSwiftDartCallAssignments:
             ("while let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
         ],
     )
-    def test_swift_optional_binding(
-        self, statement: str, expected: CallAssignment
-    ) -> None:
+    def test_swift_optional_binding(self, statement: str, expected: CallAssignment) -> None:
         body = f"f() {{\n  {statement}\n}}"
         assert scan_call_assignments(body, "swift") == (expected,)
 
@@ -941,7 +937,9 @@ class TestClassScope:
         assert fields(source, "java", [])["factory"] == "NodeFactory"
 
     def test_an_inner_class_field_answers_for_the_inner_class(self) -> None:
-        source = "class C {\nprivate CacheLoader outer;\nclass D {\nprivate NodeFactory inner;\n}\n}"
+        source = (
+            "class C {\nprivate CacheLoader outer;\nclass D {\nprivate NodeFactory inner;\n}\n}"
+        )
         by_class = types_by_class(
             scan_declarations(source, "java"),
             {"f.java::C": (1, 6), "f.java::C::D": (3, 5)},
@@ -1195,8 +1193,7 @@ class PlainParamViewModel(
     parsed = {"App.kt": parse_file(info, source.encode("utf-8"))}
     resolver = CallResolver(parsed, {"App.kt": set()}, repo_path=str(tmp_path))
     calls_by_caller = {
-        rc.caller_id: rc.callee_id
-        for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)
+        rc.caller_id: rc.callee_id for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)
     }
     assert (
         calls_by_caller.get("App.kt::PlainParamViewModel::data")

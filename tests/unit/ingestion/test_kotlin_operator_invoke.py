@@ -187,8 +187,7 @@ class ViewModel(
     parsed = {"App.kt": parse_file(info, source.encode("utf-8"))}
     resolver = CallResolver(parsed, {"App.kt": set()}, repo_path=str(tmp_path))
     calls_by_caller = {
-        rc.caller_id: rc.callee_id
-        for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)
+        rc.caller_id: rc.callee_id for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)
     }
     assert calls_by_caller.get("App.kt::ViewModel::result") == "App.kt::UseCase::invoke"
     assert "App.kt::ViewModel::later" not in calls_by_caller
