@@ -1,3 +1,5 @@
+import type { HealthDeltaSummaryResponse } from "@repowise-dev/types/history";
+
 // ---------------------------------------------------------------------------
 // Git Intelligence
 // ---------------------------------------------------------------------------
@@ -137,6 +139,10 @@ export interface CommitResponse {
   agent_confidence?: string | null;
   /** agent / human_attested / unknown; null when attribution is off. */
   attribution?: "agent" | "human_attested" | "unknown" | null;
+  /** What the commit did to health, the row's lead; null when never scanned. */
+  health_delta?: HealthDeltaSummaryResponse | null;
+  /** Hotspot files (as flagged now) the commit touched. */
+  touches_hotspot?: number;
 }
 
 export interface RiskDriverResponse {

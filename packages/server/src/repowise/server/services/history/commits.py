@@ -1,0 +1,45 @@
+"""Health delta and hotspot touches for commit rows, and a commit period headline."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from repowise.core.analysis.history import HealthDeltaSummary, PeriodHealthSummary, summarize_period
+from repowise.core.persistence import crud
+
+from .health import delta_response, stored_deltas
+
+
+@dataclass(frozen=True, slots=True)
+class CommitHistory:
+    """What a page of commits did to health and how many hotspots each touched."""
+
+    deltas: dict[str, HealthDeltaSummary]
+    hotspots: dict[str, int]
+
+    def fields(self, sha: str) -> dict:
+        """The ``CommitResponse`` history fields for *sha*."""
+        return {
+            "health_delta": delta_response(self.deltas.get(sha)),
+            "touches_hotspot": self.hotspots.get(sha, 0),
+        }
+
+
+async def commit_history(session: AsyncSession, repo_id: str, shas: Sequence[str]) -> CommitHistory:
+    """Two bulk reads for the whole page, whatever its size."""
+    return CommitHistory(
+        deltas=await stored_deltas(session, repo_id, shas),
+        hotspots=await crud.count_hotspot_files_bulk(session, repo_id, shas),
+    )
+
+
+async def commit_period_summary(
+    session: AsyncSession, repo_id: str, where: crud.CommitFilter
+) -> PeriodHealthSummary:
+    """How many commits under *where* made health better, worse, both or neither."""
+    shas = await crud.list_commit_shas(session, repo_id, where)
+    deltas = await stored_deltas(session, repo_id, shas)
+    return summarize_period(deltas.get(sha) for sha in shas)

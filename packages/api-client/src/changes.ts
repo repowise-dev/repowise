@@ -13,6 +13,10 @@ import type {
   ChangeRecord,
   EvidenceItem,
 } from "@repowise-dev/types/changes";
+import type {
+  HistoryFilters,
+  PeriodHealthSummaryResponse,
+} from "@repowise-dev/types/history";
 
 export type {
   ChangeEvidence,
@@ -23,10 +27,12 @@ export type {
   EvidenceItem,
 };
 
-/** A page of changes, newest merged first, without file or commit lists. */
+/** A page of changes, newest merged first, without file or commit lists.
+ *  Each row leads with `health`, its commits' rolled-up delta. `since` and
+ *  `until` read `merged_at`. */
 export async function listChanges(
   repoId: string,
-  opts?: {
+  opts?: HistoryFilters & {
     /** One commit category, e.g. `fix`. */
     category?: string;
     shape?: "merge" | "squash" | "commit";
@@ -40,7 +46,18 @@ export async function listChanges(
     offset?: number;
   },
 ): Promise<ChangeListResponse> {
-  return apiGet<ChangeListResponse>(`/api/repos/${repoId}/changes`, opts);
+  return apiGet<ChangeListResponse>(`/api/repos/${repoId}/changes`, { ...opts });
+}
+
+/** A period headline over changes: how many made health better, worse, both
+ *  or neither (improvements first), and the findings behind it. */
+export async function getChangesSummary(
+  repoId: string,
+  filters: HistoryFilters & { category?: string } = {},
+): Promise<PeriodHealthSummaryResponse> {
+  return apiGet<PeriodHealthSummaryResponse>(`/api/repos/${repoId}/changes/summary`, {
+    ...filters,
+  });
 }
 
 /**

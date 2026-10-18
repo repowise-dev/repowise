@@ -428,6 +428,40 @@ export interface ChangeForgeMetadata {
   linked_issues?: string[] | null;
 }
 
+/** A finding a change's commit introduced or worsened, with that commit. */
+export interface ChangeHealthFindingResponse {
+  change_kind: string;
+  dimension: string;
+  biomarker_type: string;
+  severity: string;
+  severity_before?: string | null;
+  path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  attribution_basis: string;
+  reason: string;
+  sha: string;
+}
+
+/**
+ * A change's health rollup plus its worse findings, worst first and
+ * capped: file, lines, symbol and biomarker, enough for a fix prompt.
+ */
+export interface ChangeHealthResponse {
+  status: string;
+  kind: "improved" | "worsened" | "mixed" | "neutral";
+  scanned_commits: number;
+  unscanned_commits: number;
+  introduced: number;
+  worsened: number;
+  resolved: number;
+  improved?: number | null;
+  files_improved?: number | null;
+  files_worsened: number;
+  findings?: ChangeHealthFindingResponse[];
+}
+
 /** ``pr`` | ``change_id`` | ``merge`` | ``commit``, first that applies. */
 export interface ChangeIdentity {
   kind: string;
@@ -451,6 +485,8 @@ export interface ChangeListItem {
   lines_deleted: number;
   category: string;
   provenance?: ChangeProvenance | null;
+  health?: HealthRollupResponse | null;
+  touches_hotspot?: number;
   evidence_summary?: ChangeEvidenceSummary | null;
 }
 
@@ -489,6 +525,8 @@ export interface ChangeRecord {
   lines_deleted: number;
   category: string;
   provenance?: ChangeProvenance | null;
+  health?: ChangeHealthResponse | null;
+  touches_hotspot?: number;
   commits: string[];
   files: ChangeFile[];
   metadata: ChangeForgeMetadata;
@@ -785,6 +823,8 @@ export interface CommitDetailResponse {
   agent_autonomy_tier?: number | null;
   agent_confidence?: string | null;
   attribution?: string | null;
+  health_delta?: HealthDeltaSummaryResponse | null;
+  touches_hotspot?: number;
   drivers?: RiskDriverResponse[];
   agent_channel?: string | null;
   files?: CommitFileResponse[];
@@ -896,6 +936,8 @@ export interface CommitResponse {
   agent_autonomy_tier?: number | null;
   agent_confidence?: string | null;
   attribution?: string | null;
+  health_delta?: HealthDeltaSummaryResponse | null;
+  touches_hotspot?: number;
 }
 
 /**
@@ -1821,6 +1863,14 @@ export interface FileHealthTrendResponse {
   snapshot_count?: number;
 }
 
+/** A file's health score before and after; ``None`` on a side it was unscored. */
+export interface FileScoreShiftResponse {
+  path: string;
+  before?: number | null;
+  after?: number | null;
+  change?: number | null;
+}
+
 export interface FileTrendPointResponse {
   taken_at?: string | null;
   score: number;
@@ -2173,6 +2223,24 @@ export interface HealthBadgeResponse {
   band: string;
 }
 
+/**
+ * What one commit did to health, as list rows carry it.
+ *
+ * ``kind`` reads the counts: ``improved`` when it only made things better,
+ * ``worsened`` when it only made them worse, ``mixed`` for both, ``neutral``
+ * for neither. ``improved`` and ``files`` are null and empty until the stored
+ * deltas carry the analyzer's improved count and per-file scores.
+ */
+export interface HealthDeltaSummaryResponse {
+  status: string;
+  kind: "improved" | "worsened" | "mixed" | "neutral";
+  introduced: number;
+  worsened: number;
+  resolved: number;
+  improved?: number | null;
+  files?: FileScoreShiftResponse[];
+}
+
 /** One file's movement between the last two snapshots. */
 export interface HealthFileDelta {
   file_path: string;
@@ -2229,6 +2297,27 @@ export interface HealthResponse {
   status: string;
   db: string;
   version: string;
+}
+
+/**
+ * What a change's commits did to health, summed.
+ *
+ * ``status`` is ``partial`` when a commit was not scanned or skipped files.
+ * ``files_worsened`` counts paths the stored worse findings name (a floor:
+ * findings are capped per commit). ``files_improved`` is null until stored
+ * deltas carry per-file scores.
+ */
+export interface HealthRollupResponse {
+  status: string;
+  kind: "improved" | "worsened" | "mixed" | "neutral";
+  scanned_commits: number;
+  unscanned_commits: number;
+  introduced: number;
+  worsened: number;
+  resolved: number;
+  improved?: number | null;
+  files_improved?: number | null;
+  files_worsened: number;
 }
 
 export interface HealthTrendAlert {
@@ -2973,6 +3062,29 @@ export interface PatchCoverageTestHint {
   tests: string[];
   basis: "per_test" | "call_graph" | "import_graph" | "none";
   total: number;
+}
+
+/**
+ * A period headline: items that made health better first, then worse.
+ *
+ * Items are changes on ``/changes/summary`` and commits on
+ * ``/commits/health-summary``. ``unscanned`` items have no stored delta and
+ * are in none of the four kinds.
+ */
+export interface PeriodHealthSummaryResponse {
+  since?: string | null;
+  until?: string | null;
+  total: number;
+  improved: number;
+  mixed: number;
+  worsened: number;
+  neutral: number;
+  unscanned: number;
+  findings_resolved: number;
+  findings_improved?: number | null;
+  findings_introduced: number;
+  findings_worsened: number;
+  net_findings: number;
 }
 
 /** A function's stored size measures; an absent one was not measured. */
@@ -3917,6 +4029,76 @@ export interface VersionResponse {
 export interface WebhookResponse {
   event_id: string;
   status?: string;
+}
+
+export interface WinsFileGain {
+  path: string;
+  before: number;
+  after: number;
+  gain: number;
+}
+
+/**
+ * Files commits in the window touched whose score rose between the snapshot
+ * at ``baseline_at`` and the one at ``current_at``.
+ */
+export interface WinsFilesImproved {
+  count: number;
+  baseline_at?: string | null;
+  current_at?: string | null;
+  top?: WinsFileGain[];
+}
+
+/**
+ * Findings commits in the window resolved. Resolved findings are stored as
+ * per-commit counts, so the top items are the commits that resolved most.
+ */
+export interface WinsFindingsResolved {
+  count: number;
+  commits: number;
+  top_commits?: WinsResolvingCommit[];
+}
+
+/** A refactoring plan that landed: its target is gone or shrank as planned. */
+export interface WinsRefactoring {
+  file_path: string;
+  target_symbol: string;
+  refactoring_type: string;
+  resolved_at?: string | null;
+  before_ccn?: number | null;
+  after_ccn?: number | null;
+  before_nloc?: number | null;
+  after_nloc?: number | null;
+}
+
+export interface WinsRefactorings {
+  count: number;
+  top?: WinsRefactoring[];
+}
+
+export interface WinsResolvingCommit {
+  sha: string;
+  subject: string;
+  author_name: string;
+  committed_at?: string | null;
+  resolved: number;
+}
+
+/**
+ * What got better since ``since``. Positive only.
+ *
+ * With ``author`` every section narrows to that person's commits and the
+ * files they touched. ``unavailable`` names wins the index cannot answer
+ * from stored data (no history is kept for them).
+ */
+export interface WinsResponse {
+  since: string;
+  until?: string | null;
+  author?: string | null;
+  findings_resolved: WinsFindingsResolved;
+  files_improved: WinsFilesImproved;
+  refactorings_landed: WinsRefactorings;
+  unavailable?: string[];
 }
 
 export interface WorkspaceActionsResponse {

@@ -12,6 +12,10 @@ import type {
   Paginated,
   ReviewerSuggestionsResponse,
 } from "./types";
+import type {
+  HistoryFilters,
+  PeriodHealthSummaryResponse,
+} from "@repowise-dev/types/history";
 
 export async function getGitMetadata(
   repoId: string,
@@ -112,13 +116,13 @@ export async function getGitSummary(
 }
 
 /**
- * Paginated per-commit change-risk feed — the review-priority queue. `sort`
- * defaults to `risk` (review-priority order); `date` orders by recency. Each
- * commit carries a repo-relative `risk_percentile` + `review_priority`.
+ * Paginated per-commit feed, each row led by its `health_delta` and
+ * `touches_hotspot`. `sort` defaults to `date`; `risk` orders by the
+ * supporting diff-shape score. The history filters narrow the repository.
  */
 export async function getCommitsPage(
   repoId: string,
-  options: {
+  options: HistoryFilters & {
     sort?: "risk" | "date";
     authorship?: "all" | "agent" | "human" | "unknown";
     /** Narrows the whole repository, not the page: the high review-priority
@@ -134,6 +138,7 @@ export async function getCommitsPage(
     kind = "all",
     limit = 50,
     offset = 0,
+    ...filters
   } = options;
   return apiGet<Paginated<CommitResponse>>(`/api/repos/${repoId}/commits`, {
     sort,
@@ -141,7 +146,20 @@ export async function getCommitsPage(
     kind,
     limit,
     offset,
+    ...filters,
   });
+}
+
+/** How many commits under the filters made health better, worse, both or
+ *  neither; improvements first. */
+export async function getCommitHealthSummary(
+  repoId: string,
+  filters: HistoryFilters = {},
+): Promise<PeriodHealthSummaryResponse> {
+  return apiGet<PeriodHealthSummaryResponse>(
+    `/api/repos/${repoId}/commits/health-summary`,
+    { ...filters },
+  );
 }
 
 /** Monthly agent-vs-human commit volume across the indexed window. */
