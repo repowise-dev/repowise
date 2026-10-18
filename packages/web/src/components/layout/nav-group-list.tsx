@@ -76,27 +76,14 @@ export function NavGroupList({
         const listId = `${idPrefix}-${group.id}`;
         return (
           <React.Fragment key={group.id}>
-            {group.label && activeHere ? (
-              // Not a control while it cannot fold: a live-looking toggle
-              // that does nothing is worse than a plain label.
-              <p className={GROUP_LABEL}>
-                <span className="flex-1 truncate">{label(group)}</span>
-              </p>
-            ) : group.label ? (
-              <button
-                type="button"
-                onClick={() => toggle(group.id)}
-                aria-expanded={open}
-                aria-controls={listId}
-                className={`${GROUP_LABEL} rounded-md transition-colors hover:text-[var(--color-text-secondary)]`}
-              >
-                <span className="flex-1 truncate text-left">{label(group)}</span>
-                {open ? (
-                  <ChevronDown aria-hidden className="h-3 w-3 shrink-0 opacity-60" />
-                ) : (
-                  <ChevronRight aria-hidden className="h-3 w-3 shrink-0 opacity-60" />
-                )}
-              </button>
+            {group.label ? (
+              <GroupHeader
+                label={label(group)}
+                listId={listId}
+                open={open}
+                foldable={!activeHere}
+                onToggle={() => toggle(group.id)}
+              />
             ) : gi > 0 ? (
               <div className="pt-1.5" />
             ) : null}
@@ -113,5 +100,43 @@ export function NavGroupList({
         );
       })}
     </>
+  );
+}
+
+/** A labelled group's header: a fold toggle, or a plain label while it holds the current page. */
+function GroupHeader({
+  label,
+  listId,
+  open,
+  foldable,
+  onToggle,
+}: {
+  label: string | undefined;
+  listId: string;
+  open: boolean;
+  foldable: boolean;
+  onToggle: () => void;
+}) {
+  if (!foldable) {
+    // Not a control while it cannot fold: a live-looking toggle that does
+    // nothing is worse than a plain label.
+    return (
+      <p className={GROUP_LABEL}>
+        <span className="flex-1 truncate">{label}</span>
+      </p>
+    );
+  }
+  const Chevron = open ? ChevronDown : ChevronRight;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-controls={listId}
+      className={`${GROUP_LABEL} rounded-md transition-colors hover:text-[var(--color-text-secondary)]`}
+    >
+      <span className="flex-1 truncate text-left">{label}</span>
+      <Chevron aria-hidden className="h-3 w-3 shrink-0 opacity-60" />
+    </button>
   );
 }
