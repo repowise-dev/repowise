@@ -276,7 +276,6 @@
       "emptyAction": "Go to overview",
       "title": "Commits",
       "description": "Every commit, led by what it did to code health. Review priority from the diff's shape stays alongside as context.",
-      "emptyDescription": "Every commit scored for change-risk against this repo's own history.",
       "emptyHint": "Per-commit change risk is captured on the next full index. Run a sync from the overview and the review queue fills in behind it.",
       "scoreBehaviourTitle": "How the score behaves here",
       "scoreBehaviourDescription": "Two views of the same model: where the cuts fall, and what commit shape lands you above them.",

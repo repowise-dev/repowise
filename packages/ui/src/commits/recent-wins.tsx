@@ -55,47 +55,40 @@ export function winsReads(
   routes: RecentWinsRoutes,
   copy: RecentWinsCopy = DEFAULT_COPY,
 ): ReadItem[] {
-  const reads: ReadItem[] = [];
-  const fr = wins.findings_resolved;
-  if (fr.count > 0) {
-    const top = fr.top_commits?.[0];
-    reads.push({
+  const commit = wins.findings_resolved.top_commits?.[0];
+  const file = wins.files_improved.top?.[0];
+  const refactor = wins.refactorings_landed.top?.[0];
+  const sections: (Omit<ReadItem, "value"> & { count: number })[] = [
+    {
       key: "findings",
+      count: wins.findings_resolved.count,
       label: copy.findingsLabel,
-      value: fr.count.toLocaleString(),
-      unit: copy.findingsUnit(fr.commits),
-      why: top ? copy.findingsWhy(top.subject, top.resolved) : "",
-      href: top ? routes.commit(top.sha) : routes.refactorings,
-      good: true,
-    });
-  }
-  const fi = wins.files_improved;
-  if (fi.count > 0) {
-    const top = fi.top?.[0];
-    reads.push({
+      unit: copy.findingsUnit(wins.findings_resolved.commits),
+      why: commit ? copy.findingsWhy(commit.subject, commit.resolved) : "",
+      href: commit ? routes.commit(commit.sha) : routes.refactorings,
+    },
+    {
       key: "files",
+      count: wins.files_improved.count,
       label: copy.filesLabel,
-      value: fi.count.toLocaleString(),
       unit: copy.filesUnit,
-      why: top ? copy.filesWhy(top.path, top.before, top.after) : "",
-      href: top ? routes.file(top.path) : routes.refactorings,
-      good: true,
-    });
-  }
-  const rl = wins.refactorings_landed;
-  if (rl.count > 0) {
-    const top = rl.top?.[0];
-    reads.push({
+      why: file ? copy.filesWhy(file.path, file.before, file.after) : "",
+      href: file ? routes.file(file.path) : routes.refactorings,
+    },
+    {
       key: "refactors",
+      count: wins.refactorings_landed.count,
       label: copy.refactorsLabel,
-      value: rl.count.toLocaleString(),
       unit: copy.refactorsUnit,
-      why: top ? copy.refactorsWhy(top.target_symbol, top.before_ccn ?? null, top.after_ccn ?? null) : "",
+      why: refactor
+        ? copy.refactorsWhy(refactor.target_symbol, refactor.before_ccn ?? null, refactor.after_ccn ?? null)
+        : "",
       href: routes.refactorings,
-      good: true,
-    });
-  }
-  return reads;
+    },
+  ];
+  return sections
+    .filter((s) => s.count > 0)
+    .map(({ count, ...s }) => ({ ...s, value: count.toLocaleString(), good: true }));
 }
 
 export interface RecentWinsProps {

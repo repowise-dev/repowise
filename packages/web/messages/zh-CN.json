@@ -276,7 +276,6 @@
       "emptyAction": "前往概览",
       "title": "提交",
       "description": "每个提交都以它对代码健康的影响为先。根据 diff 形态得出的审查优先级作为背景信息一并保留。",
-      "emptyDescription": "每个提交都针对该仓库自身的历史评定了变更风险。",
       "emptyHint": "每次提交的变更风险会在下一次完整索引时记录。在概览页运行一次同步，审查队列就会随之填充。",
       "scoreBehaviourTitle": "分数在这个仓库里的表现",
       "scoreBehaviourDescription": "同一个模型的两种视角：分档线落在哪里，以及什么样的提交形态能让你高于这些线。",
