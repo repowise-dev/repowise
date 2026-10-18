@@ -143,6 +143,7 @@ def test_file_signals_to_dict_no_data_all_null() -> None:
         "lines_deleted_90d": None,
         "commit_count_90d": None,
         "age_days": None,
+        "history": None,
         "primary_owner_name": None,
         "primary_owner_commit_pct": None,
         "recent_owner_name": None,

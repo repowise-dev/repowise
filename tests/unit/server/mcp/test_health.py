@@ -155,6 +155,29 @@ async def test_get_health_dashboard_surfaces_performance(setup_mcp, health_data)
 
 
 @pytest.mark.asyncio
+async def test_a_file_with_short_history_says_so_beside_its_score(
+    setup_mcp, session, health_data
+):
+    """Most history markers need more commits than it has."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_health
+
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/db/models.py")
+        .values(commit_count_total=2)
+    )
+    await session.commit()
+    rows = {m["file_path"]: m for m in (await get_health(only=["worst_files"]))["worst_files"]}
+    assert rows["src/db/models.py"]["history"] == "short"
+    assert "history" not in rows["src/auth/service.py"]
+    targeted = await get_health(targets=["src/db/models.py"], only=["metrics"])
+    assert targeted["metrics"][0]["history"] == "short"
+
+
+@pytest.mark.asyncio
 async def test_get_health_dashboard_surfaces_leverage(setup_mcp, health_data):
     """Leverage view: which files move the NLOC-weighted headline, not just which score low."""
     from repowise.server.mcp_server import get_health

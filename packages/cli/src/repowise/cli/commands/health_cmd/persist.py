@@ -96,6 +96,24 @@ def _load_queue_counts(repo_path: object) -> dict[str, Any] | None:
         return None
 
 
+def _load_short_history(repo_path: object) -> set[str]:
+    """Files whose recorded history is too thin to count; empty when the store cannot answer."""
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud import get_short_history_paths
+
+    async def _do() -> set[str]:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
+                return set()
+            session, repo_id = opened
+            return await get_short_history_paths(session, repo_id)
+
+    try:
+        return run_async(_do())
+    except Exception:
+        return set()
+
+
 def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str]] | None:
     """The health analysis the last ``init``/``update`` stored, read without writing.
 

@@ -36,6 +36,7 @@ from repowise.core.persistence.crud import (
     get_git_metadata_bulk,
     get_hotspot_file_paths,
     get_node_degree_counts_bulk,
+    get_short_history_paths,
     get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
@@ -114,6 +115,8 @@ class HealthData:
     gated: dict[str, dict] = field(default_factory=dict)
     #: Open findings of a withheld type: never listed, but the score counted them.
     withheld_rows: list[Any] = field(default_factory=list)
+    #: Files whose recorded history is too thin for the history half to count.
+    short_history_paths: set[str] = field(default_factory=set)
 
 
 async def load_health_data(
@@ -177,6 +180,8 @@ async def load_health_data(
         session, repository, pop, req
     )
     data.signals_by_path = await _read_signals(session, repository, pop, req)
+    if _lists_file_rows(req):
+        data.short_history_paths = await get_short_history_paths(session, repository.id)
     data.drift_rows, data.drift_unavailable = await _read_doc_drift(
         session, repository, pop, req
     )
@@ -218,6 +223,17 @@ async def _read_gated(session: Any, req: HealthRequest, data: HealthData) -> dic
         "performance": data.performance.page.gated if data.performance.page else {},
     }
     return {layer: counts for layer, counts in layers.items() if counts}
+
+
+def history_of(data: HealthData, path: str) -> str | None:
+    """A file row's ``history`` value: ``"short"`` or absent."""
+    return "short" if path in data.short_history_paths else None
+
+
+def _lists_file_rows(req: HealthRequest) -> bool:
+    return any(
+        req.wants(k) for k in ("metrics", "worst_files", "test_worst_files", "high_leverage_files")
+    )
 
 
 def _scope_reasons(metrics: list[HealthFileMetric]) -> dict[str, str | None]:

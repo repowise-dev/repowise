@@ -14,6 +14,8 @@ from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text, upd
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analysis.health.signals import HISTORY_MIN_COMMITS as _HISTORY_MIN_COMMITS
+from ...analysis.health.signals import history_basis as _history_basis
 from ...co_change import CoChangePartner, parse_partners
 from ..models import (
     Change,
@@ -165,6 +167,19 @@ async def get_hotspot_file_paths(session: AsyncSession, repository_id: str) -> s
         )
     )
     return {row[0] for row in result.all() if row[0] is not None}
+
+
+async def get_short_history_paths(session: AsyncSession, repository_id: str) -> set[str]:
+    """The files whose recorded history ``signals.history_basis`` reads as short."""
+    result = await session.execute(
+        select(
+            GitMetadata.file_path, GitMetadata.commit_count_total, GitMetadata.history_only
+        ).where(
+            GitMetadata.repository_id == repository_id,
+            GitMetadata.commit_count_total < _HISTORY_MIN_COMMITS,
+        )
+    )
+    return {row.file_path for row in result.all() if _history_basis(row)}
 
 
 #: The only git fields dead-code confidence is scored from
