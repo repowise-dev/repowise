@@ -322,20 +322,20 @@ export function HealthOverviewCard({
 
             {/* The scores above, checked against this repo's own git history. */}
             {defectAccuracy && (
-              <AccuracyStrip data={defectAccuracy} href={`${reportHref}?tab=triage`} />
+              <AccuracyStrip data={defectAccuracy} href={`${reportHref}`} />
             )}
 
             {/* Findings + worst performer */}
             <div className="px-4 py-3.5 space-y-3">
               {severityTotal > 0 ? (
                 <FindingsLine
-                  href={`${reportHref}?tab=triage`}
+                  href={`${reportHref}`}
                   segments={severities}
                   count={data.open_findings}
                 />
               ) : (
                 <a
-                  href={`${reportHref}?tab=triage`}
+                  href={`${reportHref}`}
                   className="flex items-center gap-1.5 text-xs text-[var(--color-success)] hover:underline"
                 >
                   <ShieldAlert className="h-3 w-3" />

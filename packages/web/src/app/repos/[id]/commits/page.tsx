@@ -14,6 +14,7 @@ import { CommitDistribution } from "@/components/commits/commit-distribution";
 import { CommitsViewToggle } from "@/components/commits/commits-view-toggle";
 import { ByChangeView, type ByChangeParams } from "@/components/commits/by-change-view";
 import { EventsView } from "@/components/commits/events-view";
+import { ImpactTab } from "@/components/risk/impact-tab";
 import { parseCommitsView } from "@/lib/changes";
 import {
   getAgentTrend,
@@ -53,7 +54,9 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
  *
  * `?view=changes` swaps all of that for the history grouped by merged change
  * (`ByChangeView`), `?view=events` for what moved between index runs
- * (`EventsView`); the commit view stays the default.
+ * (`EventsView`), `?view=review` for a change's blast radius before it lands
+ * (`ImpactTab`, once Code Health's blast-radius tab); the commit view stays
+ * the default.
  */
 export default async function CommitsPage({
   params,
@@ -93,6 +96,19 @@ export default async function CommitsPage({
         actions={toggle}
       >
         <EventsView repoId={id} />
+      </PageShell>
+    );
+  }
+
+  if (view === "review") {
+    return (
+      <PageShell
+        icon={<GitCommitHorizontal />}
+        title={t("title")}
+        description={t("reviewDescription")}
+        actions={toggle}
+      >
+        <ImpactTab repoId={id} />
       </PageShell>
     );
   }
@@ -175,7 +191,7 @@ export default async function CommitsPage({
         title={t("scoreBehaviourTitle")}
         description={t("scoreBehaviourDescription")}
         action={
-          <SectionLink href={`${base}/code-health?tab=triage`} LinkComponent={Link}>
+          <SectionLink href={`${base}/code-health`} LinkComponent={Link}>
             {t("changeRisk")}
           </SectionLink>
         }

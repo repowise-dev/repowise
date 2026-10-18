@@ -199,6 +199,7 @@ __all__ = [
     "ReachDistance",
     "ReachedBy",
     "any_tests_reaching",
+    "cached_files_reached_by_tests",
     "cached_test_files",
     "call_graph_from_db",
     "call_graph_from_graph",
@@ -280,30 +281,30 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     walk is seeded with a change's files; this question is seeded with the
     repository, and a per-level ``IN`` list over every file is the shape it was
     explicitly not built for.
+
+    The view carries no call-site lines: reachability reads only ``declares``
+    and the forward/reverse adjacency, and ``call_lines_json`` was most of the
+    read's cost (measured on this repository, 189k edges: 8.4 s cold with the
+    column, under 2 s without it).
     """
     wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES)]
     params: dict[str, Any] = {"repo_id": repo_id}
     ets = _in_clause("e", wanted, params)
     rows = await session.execute(
         text(
-            "SELECT source_node_id, target_node_id, edge_type, resolution_origin, "
-            "call_lines_json "
+            "SELECT source_node_id, target_node_id, edge_type, resolution_origin "
             "FROM graph_edges WHERE repository_id = :repo_id "
             f"AND edge_type IN ({ets}) "
             "ORDER BY source_node_id, target_node_id, edge_type"
         ),
         params,
     )
-    edge_rows = []
-    for src, dst, edge_type, origin, call_lines_json in rows:
-        try:
-            call_lines = json.loads(call_lines_json or "[]")
-        except (TypeError, ValueError):
-            call_lines = []
-        edge_rows.append((src, dst, edge_type, origin, call_lines))
-    # No spawn lines here: test reachability reads only forward/reverse, never
-    # first-hop sites, ``spawn_only`` or roles, and a spawned callee is still reached.
-    return ExecutionGraphIndex(edge_rows=edge_rows)
+    # No call or spawn lines here: test reachability reads only forward/reverse,
+    # never first-hop sites, ``spawn_only`` or roles, and a spawned callee is
+    # still reached.
+    return ExecutionGraphIndex(
+        edge_rows=((src, dst, edge_type, origin, None) for src, dst, edge_type, origin in rows)
+    )
 
 
 def files_reached_by_tests(
@@ -447,6 +448,20 @@ async def cached_test_files(session: AsyncSession, repo_id: str) -> frozenset[st
     if key in _cache:
         return _cache.get(key)
     return _cache.remember(key, frozenset(await load_test_files(session, repo_id)))
+
+
+async def cached_files_reached_by_tests(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """:func:`files_reached_by_tests` over the stored graph, walked once per index state.
+
+    The Tests page asks this on every load and the answer moves only when an
+    index run rewrites the graph, so the bulk edge read is paid once per index.
+    """
+    key = await _cache.key(session, repo_id, "files_reached")
+    if key in _cache:
+        return _cache.get(key)
+    test_files = set(await cached_test_files(session, repo_id))
+    view = await call_graph_from_db(session, repo_id)
+    return _cache.remember(key, frozenset(files_reached_by_tests(view, test_files)))
 
 
 async def any_tests_reaching(

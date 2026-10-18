@@ -21,9 +21,8 @@ from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.test_reachability import (
-    call_graph_from_db,
-    files_reached_by_tests,
-    load_test_files,
+    cached_files_reached_by_tests,
+    cached_test_files,
     tests_reaching_by_tier,
 )
 from repowise.core.persistence import crud
@@ -217,7 +216,7 @@ async def _inferred_coverage(
     wrong trade.
     """
     try:
-        test_files = await load_test_files(session, repo_id)
+        test_files = await cached_test_files(session, repo_id)
         if not test_files:
             return {
                 "basis": "none",
@@ -257,8 +256,8 @@ async def _inferred_coverage(
                     "test_file_count": len(test_files),
                 },
             }
-        view = await call_graph_from_db(session, repo_id)
-        reached = files_reached_by_tests(view, test_files)
+        # Walked once per index state: the edge read is the cost of this tab.
+        reached = await cached_files_reached_by_tests(session, repo_id)
     except Exception:
         return {
             "basis": "none",

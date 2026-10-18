@@ -10,6 +10,8 @@ export type { AiPromptFlavor } from "./ai-prompts/shared";
 export { buildAiPrompt, type BuildPromptOptions } from "./ai-prompts/refactor-prompt";
 export {
   buildCoverageAiPrompt,
+  buildCoverageBatchAiPrompt,
+  type BuildCoverageBatchPromptOptions,
   type BuildCoveragePromptOptions,
   type CoverageFilePromptInput,
 } from "./ai-prompts/coverage-prompt";
@@ -44,6 +46,8 @@ export {
 } from "./ai-prompts/conformance-prompt";
 export {
   buildSecurityAiPrompt,
+  buildSecurityBatchAiPrompt,
+  type BuildSecurityBatchPromptOptions,
   type BuildSecurityPromptOptions,
   type SecurityPromptFinding,
 } from "./ai-prompts/security-prompt";

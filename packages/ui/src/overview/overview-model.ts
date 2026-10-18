@@ -195,7 +195,7 @@ export function buildReads(summary: OverviewSummaryResponse, routes: OverviewRou
       label: "Score validation",
       value: `${formatNumber(accuracy.hits)}/${formatNumber(accuracy.k)}`,
       ...(accuracy.lift ? { unit: `${accuracy.lift.toFixed(1)}× baseline` } : {}),
-      href: `${r.base}/code-health?tab=triage`,
+      href: `${r.base}/code-health`,
       why: "Top-ranked files that did go on to need a bug fix",
     });
   }
