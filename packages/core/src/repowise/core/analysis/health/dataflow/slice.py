@@ -75,6 +75,7 @@ from .slice_receiver import (
     FunctionFacts,
     _collect_assigned,
     _ends_in_exit,
+    _free_names,
     _free_write_lines,
     _function_kinds,
     _is_receiver,
@@ -301,6 +302,7 @@ class _FunctionSlicer:
         self.carry_defs = _rebinding_defs_dropped(analysis, self.def_lines, lmap)
         self.scan = _scan_for(lmap, receiver, fn_node)
         self.free_writes = _free_write_lines(def_use) if receiver and receiver.implicit else []
+        self.free_names = _free_names(def_use) if receiver and receiver.implicit else frozenset()
         # Expression-oriented grammars: a block's last non-statement child is its
         # value, and a span ending on it would drop that value.
         self.tail_stmt_kinds = (
@@ -418,6 +420,7 @@ class _FunctionSlicer:
             self.declared_first,
             reads=self.reads,
             valueless=self.valueless,
+            exclude=self.free_names,
         )
         if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
             return None

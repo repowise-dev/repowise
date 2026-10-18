@@ -132,6 +132,14 @@ def _whole_receiver_facts(
     return uses, None if _UNREAD_TARGET in assigned else tuple(sorted(assigned))
 
 
+def _free_names(def_use: FunctionDefUse) -> frozenset[str]:
+    params = {p.name for p in def_use.params}
+    declared = {d.var for d in def_use.definitions if d.declares or d.declared_at is not None}
+    return frozenset(
+        d.var for d in def_use.definitions if d.var not in params and d.var not in declared
+    )
+
+
 def _free_write_lines(def_use: FunctionDefUse) -> list[int]:
     """Sorted lines writing a name the function neither declares nor takes
     as a parameter: in Java or C++ that is a field (or a C++ global) written
@@ -156,7 +164,7 @@ def _receiver_facts(
     found = frozenset().union(*pre.assigns[i : j + 1])
     fields = None if _UNREAD_TARGET in found else tuple(sorted(found))
     if receiver.implicit:
-        return (True if named else None), (None if free_writes else fields)
+        return (True if (named or free_writes) else None), (None if free_writes else fields)
     return named, fields
 
 

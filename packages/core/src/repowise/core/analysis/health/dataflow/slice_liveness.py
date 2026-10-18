@@ -173,6 +173,7 @@ def _infer_in_out(
     *,
     reads: dict[str, list[tuple[int, frozenset[int]]]],
     valueless: dict[str, frozenset[int]] | None = None,
+    exclude: frozenset[str] = frozenset(),
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Infer IN (parameters) and OUT (return) variables for span ``[s, e]``.
 
@@ -195,7 +196,7 @@ def _infer_in_out(
     """
     params: list[str] = []
     returns: list[str] = []
-    for var in sorted(set(def_lines) | set(use_lines)):
+    for var in sorted((set(def_lines) | set(use_lines)) - exclude):
         dl = def_lines.get(var, [])
         ul = use_lines.get(var, [])
         u_lo, u_hi = bisect_left(ul, s), bisect_right(ul, e)
