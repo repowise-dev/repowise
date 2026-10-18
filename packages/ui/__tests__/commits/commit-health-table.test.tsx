@@ -44,4 +44,19 @@ describe("CommitHealthTable attribution", () => {
     render(<CommitHealthTable findings={[finding({ attribution_basis: "file_change" })]} />);
     expect(screen.getAllByText(/not on a line it wrote/).length).toBeGreaterThan(0);
   });
+
+  it("adds no note when the commit wrote the line", () => {
+    render(<CommitHealthTable findings={[finding({ attribution_basis: "added_lines" })]} />);
+    expect(screen.queryByText(/\(.*\)/)).toBeNull();
+  });
+
+  it("says a call-path finding was reached through a call the commit edited", () => {
+    render(<CommitHealthTable findings={[finding({ attribution_basis: "changed_call_edge" })]} />);
+    expect(screen.getAllByText(/reached through a call this commit edited/).length).toBeGreaterThan(0);
+  });
+
+  it("says an unexplained finding is not explained by the diff", () => {
+    render(<CommitHealthTable findings={[finding({ attribution_basis: "unknown" })]} />);
+    expect(screen.getAllByText(/not explained by this commit's diff/).length).toBeGreaterThan(0);
+  });
 });
