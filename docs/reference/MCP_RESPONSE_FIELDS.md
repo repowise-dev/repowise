@@ -402,6 +402,7 @@ On test files, history markers (ownership, churn, change entropy, co-change and 
 | `churn_complexity` | One point per recently changed file: commits, max CCN, NLOC, score, churn percentile |
 | `doc_drift` | `findings` naming the document to edit, its line, the `target` it wrongly claims, `reason`, `kind`, `confidence`, optional `suggestion`; plus `findings_total`, `documents`, `basis`. A finding is evidence to check, not a proven defect |
 | `semantics` | `_meta.health_semantics`: the legend for deficit points and percentiles |
+| `what_if` | Up to 10 worst files (or the targets), each with `ceiling` (the score with no structure deduction left, history's cap shrinking with it: the most an edit can reach), `target_out_of_reach` when that is below 8.0, `fix_all_structure` gains and its top 3 `findings`; `top_fixes` ranks single fixes across them. Each fix has `points` (its impact, an upper bound when its category is at its cap) and `gain`: `file`, `average` (headline points) and `hotspot` (when the file is a hotspot). `structure_deduction` can include withheld finding types no listed fix accounts for |
 | `performance`, `defect`, `maintainability`, `advisory` | Filter findings to one dimension; `performance` also adds the performance queue |
 
 `only` aliases: `biomarkers` -> `findings`, `accuracy` -> `defect_accuracy`, `refactoring` -> `refactoring_plans`. Dimension names have no single key and land in `unknown_only_keys`, beside `unknown_only_keys_hint`; for `signals` in targeted mode, name `metrics`.

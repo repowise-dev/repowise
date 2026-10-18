@@ -249,10 +249,9 @@ async def _read_test_paths(
 async def _read_hotspot_paths(
     session: Any, repository: Any, pop: Population, req: HealthRequest
 ) -> set[str]:
-    """Hotspot paths for the canonical hotspot-health KPI.
-
-    Skipped in targeted mode, which builds no ``kpis`` block."""
-    if pop.scoped or not req.wants("kpis"):
+    """Hotspot paths for the hotspot-health KPI and the what-if block's hotspot gains."""
+    what_if = "what_if" in req.include_set and req.wants("what_if")
+    if not what_if and (pop.scoped or not req.wants("kpis")):
         return set()
     return await get_hotspot_file_paths(session, repository.id)
 

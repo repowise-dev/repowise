@@ -164,14 +164,14 @@ async def get_health(
 
     No ``targets``: a dashboard led by ``fix_first``, what to fix first;
     targets rank files and findings.
-    Never recomputes health: commit, then run ``repowise update``.
+    Never recomputes: commit, then run ``repowise update``.
     Every block and accepted value: docs/agent/MCP_TOOLS.md.
 
     Args:
         targets: file paths or ``module:<name>``; misses land in ``unresolved``.
         include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
             ``accuracy``|``signals``|``churn_complexity``|``doc_drift``|
-            ``semantics``|``recipe``, or a dimension incl. ``advisory``;
+            ``semantics``|``recipe``|``what_if``, or a dimension incl. ``advisory``;
             ``performance`` and ``refactoring`` add queues.
         only: keys to keep; identity, totals, recovery survive.
             ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
