@@ -97,7 +97,7 @@ export function AskAnythingRow({
             key={s}
             type="button"
             onClick={() => ask(s)}
-            className="rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-[11px] text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-model)] hover:text-[var(--color-model)]"
+            className="max-w-full rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-left text-[11px] [overflow-wrap:anywhere] text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-model)] hover:text-[var(--color-model)]"
           >
             {s}
           </button>

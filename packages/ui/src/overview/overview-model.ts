@@ -268,7 +268,7 @@ export function buildExploreCards(
       key: "contributors",
       label: "Ownership",
       value: formatNumber(stats.silo_count),
-      caption: plural(stats.silo_count, "area where one person owns over 80% of files", "areas where one person owns over 80% of files"),
+      caption: plural(stats.silo_count, "top-level folder where one person owns over 80% of files", "top-level folders where one person owns over 80% of files"),
       href: `${base}/owners`,
     },
     {
@@ -288,8 +288,8 @@ export function buildExploreCards(
     {
       key: "docs",
       label: "Docs",
-      value: formatNumber(docPages),
-      caption: plural(docPages, "documentation page", "documentation pages"),
+      ...(docPages > 0 ? { value: formatNumber(docPages) } : {}),
+      caption: docPages > 0 ? plural(docPages, "documentation page", "documentation pages") : "No documentation pages yet",
       href: `${base}/docs`,
     },
   ];

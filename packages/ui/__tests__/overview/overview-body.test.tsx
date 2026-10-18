@@ -163,7 +163,7 @@ describe("OverviewBody", () => {
     expect(map).toHaveTextContent("1,059");
     expect(map).toHaveTextContent("hotspots across 6,328 files");
     expect(screen.getByRole("link", { name: /Ownership/ })).toHaveTextContent(
-      "3areas where one person owns over 80% of files",
+      "3top-level folders where one person owns over 80% of files",
     );
     expect(screen.getByRole("link", { name: /^Commits/ })).toHaveTextContent("abc1234");
     // Doors a card covers are not repeated in the line of further links.
