@@ -722,3 +722,30 @@ async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path,
     assert found["src/core/Ky.ts"].tests == ["test/x.test.ts"]
     assert found["src/core/Ky.ts"].via == "import-graph"
     assert "src/retry.ts" not in found
+
+
+async def test_reached_files_are_walked_once_per_index_state(async_session, monkeypatch):
+    import repowise.core.analysis.test_reachability as tr
+
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_a.py": True, "src/a.py": False, "src/b.py": False},
+        edges=[*_calls("tests/test_a.py", "src/a.py")],
+    )
+    loads = 0
+    real = tr.call_graph_from_db
+
+    async def counting(session, repo_id):
+        nonlocal loads
+        loads += 1
+        return await real(session, repo_id)
+
+    monkeypatch.setattr(tr, "call_graph_from_db", counting)
+
+    first = await tr.cached_files_reached_by_tests(async_session, repo.id)
+    second = await tr.cached_files_reached_by_tests(async_session, repo.id)
+
+    assert first == second == frozenset({"src/a.py"})
+    assert loads == 1
