@@ -135,3 +135,25 @@ def test_a_function_that_shrank_in_place_counts_as_improved(make_repo):
     assert delta.introduced_total == 0
     assert delta.worsened_total == 0
     assert delta.improved_total >= 1
+
+
+def test_two_markers_on_one_origin_pair_by_what_they_measured():
+    base = [
+        finding("tool.py", "knot", ccn=20, line=10),
+        finding("tool.py", "knot", ccn=30, line=90),
+    ]
+    head = [finding("pkg/knot.py", "knot", ccn=30, line=5), finding("pkg/knot.py", "knot", ccn=20)]
+
+    result = FindingMatcher(moves=KNOT_MOVED).match(base, head)
+
+    pairs = {m.head.details["ccn"]: m.base.details["ccn"] for m in result.matched}
+    assert pairs == {20: 20, 30: 30}
+    assert [m.kind for m in result.matched] == ["moved", "moved"]
+
+
+def test_a_nesting_drop_within_one_band_is_improved():
+    base, head = finding("app.py", "walk"), finding("app.py", "walk")
+    base.biomarker_type = head.biomarker_type = "deep_nesting"
+    base.details, head.details = {"max_nesting": 6}, {"max_nesting": 5}
+
+    assert [m.kind for m in FindingMatcher().match([base], [head]).matched] == ["improved"]

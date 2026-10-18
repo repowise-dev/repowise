@@ -55,7 +55,7 @@ class FindingAttributor:
             return Attribution(
                 "moved",
                 ATTRIBUTION_CONFIDENCE["moved"],
-                f"Moved here from {moved_from[0]} ({moved_from[1]}), and measures worse.",
+                f"Moved here from {moved_from[0]} ({moved_from[1]}).",
             )
         change = self.changes.get(finding.file_path)
         if change is None:

@@ -16,7 +16,7 @@ from .moves import MoveMap, SymbolKey
 _IMPACT_EPSILON = 0.01
 
 #: Measured values a finding's details may carry, compared for "improved".
-_METRICS = ("ccn", "nloc", "nesting", "params", "lines")
+_METRICS = ("ccn", "nloc", "max_nesting", "params")
 
 
 @dataclass(slots=True)
@@ -104,15 +104,15 @@ class FindingMatcher:
         """Pair introduced head findings with the resolved finding of their code's origin."""
         if not self.moves.moved_total:
             return
-        candidates = [
-            (_shape_gap(b, m.head), mi, bi)
-            for mi, m in enumerate(result.matched)
-            if m.base is None
-            and (origin := self.moves.origin_of(m.head.file_path, m.head.function_name))
-            for bi, b in enumerate(result.resolved)
-            if (b.file_path, b.function_name) == origin
-            and (b.dimension, b.biomarker_type) == (m.head.dimension, m.head.biomarker_type)
-        ]
+        candidates = []
+        for mi, m in enumerate(result.matched):
+            origin = self.moves.origin_of(m.head.file_path, m.head.function_name)
+            if m.base is None and origin is not None:
+                candidates += [
+                    (_shape_gap(b, m.head), mi, bi)
+                    for bi, b in enumerate(result.resolved)
+                    if _same_marker_at(b, m.head, origin)
+                ]
         peers = _closest_first(candidates)
         for mi, bi in peers.items():
             m, base = result.matched[mi], result.resolved[bi]
@@ -207,18 +207,23 @@ def _closest_first(candidates: Iterable[tuple[int, int, int]]) -> dict[int, int]
     return peers
 
 
+def _same_marker_at(base: HealthFindingData, head: HealthFindingData, origin: SymbolKey) -> bool:
+    """*base* is *head*'s marker on the symbol *origin* names."""
+    return (base.file_path, base.function_name) == origin and (
+        base.dimension,
+        base.biomarker_type,
+    ) == (head.dimension, head.biomarker_type)
+
+
 def _shape_gap(base: HealthFindingData, head: HealthFindingData) -> int:
     """0 when both measured the same, else 1; line numbers do not travel across files."""
-    return 0 if measured_shape(base, path="") == measured_shape(head, path="") else 1
+    return 0 if measured_shape(base, path=head.file_path) == measured_shape(head) else 1
 
 
 def _classify(
     base: HealthFindingData | None, head: HealthFindingData, *, carried: ChangeKind = "unchanged"
 ) -> ChangeKind:
-    """Introduced when nothing matched; worsened or improved only on a real difference.
-
-    *carried* names a pair whose shape held: ``unchanged`` in place, ``moved`` across files.
-    """
+    """Introduced when unmatched, worsened or improved on a real difference, else *carried*."""
     if base is None:
         return "introduced"
     rank = severity_rank(head.severity) - severity_rank(base.severity)
