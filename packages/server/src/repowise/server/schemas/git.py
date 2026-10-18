@@ -301,7 +301,7 @@ class CommitHealthResponse(BaseModel):
     resolved_count: int
     #: Findings whose metric dropped, at the same place or after a move.
     improved_count: int = 0
-    #: Findings carried to another file with their code (they overlap the other counts).
+    #: Findings carried to another file with their code; a worsened or improved one is in that count too.
     moved_count: int = 0
     files_analyzed: int
     files_skipped: int

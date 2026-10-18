@@ -1,12 +1,6 @@
 """Improved and moved totals, and move origins, on stored commit health.
 
-``git_commit_health_deltas`` gains ``improved_count`` and ``moved_count``;
-``git_commit_health_findings`` gains ``moved_from_path`` and
-``moved_from_symbol`` for a finding whose code the commit moved from another
-file. Rows scanned before this read 0 and NULL.
-
-Local SQLite stores never run Alembic; ``init_db`` adds the columns there from
-the model.
+Rows scanned before this read 0 and NULL; local SQLite gets the columns from ``init_db``.
 
 Revision ID: 0115
 Revises: 0114

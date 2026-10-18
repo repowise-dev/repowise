@@ -220,7 +220,7 @@ export interface CommitHealth {
   resolved_count: number;
   /** Findings whose metric dropped, at the same place or after a move. */
   improved_count?: number;
-  /** Findings carried to another file with their code; overlaps the other counts. */
+  /** Findings carried to another file with their code; a worsened or improved one is in that count too. */
   moved_count?: number;
   files_analyzed: number;
   files_skipped: number;
