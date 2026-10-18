@@ -29,9 +29,16 @@ const SUGGESTION_KEYS = [
  * purpose: this is the one row that does something rather than reporting
  * something, and it needs to look different enough to be found.
  */
-export function AskAnythingRow({ repoId }: { repoId: string }) {
+export function AskAnythingRow({
+  repoId,
+  suggestions: given,
+}: {
+  repoId: string;
+  /** Openers built from this repo's data; the generic ones when omitted. */
+  suggestions?: string[];
+}) {
   const t = useTranslations("overview");
-  const suggestions = SUGGESTION_KEYS.map((key) => t(key));
+  const suggestions = given ?? SUGGESTION_KEYS.map((key) => t(key));
   const router = useRouter();
   const [question, setQuestion] = useState("");
 

@@ -1093,7 +1093,11 @@
       "suggestion2": "重试逻辑在哪里？",
       "suggestion3": "这个模块为什么这样组织？",
       "label": "就这个代码库提问",
-      "submit": "提问"
+      "submit": "提问",
+      "hotspotOwners": "谁最熟悉 {path}？它为什么改动这么频繁？",
+      "worstFile": "{path} 为什么是得分最低的文件？",
+      "decision": "我们为什么决定「{title}」？",
+      "trend": "自上次索引以来，代码健康度有什么变化？"
     }
   },
   "risk": {

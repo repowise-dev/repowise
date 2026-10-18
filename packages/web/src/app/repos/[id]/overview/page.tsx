@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { getOverviewSummary } from "@/lib/api/overview";
 import { ApiClientError } from "@/lib/api/client";
 import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { getActions } from "@/lib/api/actions";
 import { getProviders } from "@/lib/api/providers";
+import { overviewAskSuggestions } from "@/lib/overview-ask";
 import { FirstIndexExperience } from "@/components/repos/first-index-experience";
 import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrapper";
 import { AskAnythingRow } from "@/components/overview/ask-anything-row";
@@ -90,6 +92,7 @@ export default async function OverviewPage({ params }: Props) {
   ]);
   if (!summary) notFound();
 
+  const tOverview = await getTranslations("overview");
   const { repo, stats, health, sync } = summary;
   const isFresh = stats.file_count === 0;
   const base = `/repos/${id}`;
@@ -151,7 +154,7 @@ export default async function OverviewPage({ params }: Props) {
       LinkComponent={Link}
       slots={{
         header,
-        ask: <AskAnythingRow repoId={id} />,
+        ask: <AskAnythingRow repoId={id} suggestions={overviewAskSuggestions(summary, tOverview)} />,
         beforeExplore: <PublishOverviewSection repoId={id} />,
         // A server that predates actions returns 404; the page then keeps the
         // attention areas in their old place rather than showing an empty list.

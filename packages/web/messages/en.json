@@ -1093,7 +1093,11 @@
       "suggestion2": "Where is the retry logic?",
       "suggestion3": "Why is this module structured this way?",
       "label": "Ask a question about this codebase",
-      "submit": "Ask"
+      "submit": "Ask",
+      "hotspotOwners": "Who knows {path} best, and why does it change so often?",
+      "worstFile": "What makes {path} the lowest-scoring file?",
+      "decision": "Why did we decide \"{title}\"?",
+      "trend": "How has code health moved since the previous index?"
     }
   },
   "risk": {

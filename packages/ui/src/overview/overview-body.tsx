@@ -8,12 +8,13 @@ import { AttentionAreas } from "./attention-areas";
 import { AttentionRows } from "./attention-rows";
 import type { CommitRow } from "./activity-lists";
 import { ChangeLine } from "./change-line";
-import { ExploreList } from "./explore-list";
+import { ExploreCards } from "./explore-cards";
 import { HealthLede } from "./health-lede";
 import { HotspotTable } from "./hotspot-table";
 import {
   buildChangeStats,
   buildExplore,
+  buildExploreCards,
   buildReads,
   previousSnapshotAt,
   resolveOverviewRoutes,
@@ -33,12 +34,11 @@ export interface OverviewBodySlots {
   header?: React.ReactNode;
   /** Under the reads column. Hosted puts its MCP connect card here. */
   afterReads?: React.ReactNode;
-  /** A section above Explore. Hosted's index-coverage
-   *  panel. */
+  /** A section after Do next and recent wins. Hosted's index-coverage
+   *  panel, OSS's publish panel. */
   beforeExplore?: React.ReactNode;
-  /** Contents of the "Ask this codebase" section. Omitted where the host
-   *  routes to a chat page from Explore instead, and the section then does not
-   *  render at all rather than rendering empty. */
+  /** The ask box, full width under the health lede. Omitted where the host
+   *  routes to a chat page from Explore instead. */
   ask?: React.ReactNode;
   /** The "Do next" list, bound to the host's routes and write path. When
    *  present it leads the page and the per-detector areas fold into an
@@ -59,7 +59,19 @@ export interface OverviewBodyProps {
   totalNloc?: number | null;
   LinkComponent?: React.ElementType;
   slots?: OverviewBodySlots;
+  /** Section titles and labels. English by default. */
+  copy?: Partial<OverviewBodyCopy>;
 }
+
+export interface OverviewBodyCopy {
+  exploreTitle: string;
+  exploreMore: string;
+}
+
+export const OVERVIEW_BODY_COPY: OverviewBodyCopy = {
+  exploreTitle: "Explore this codebase",
+  exploreMore: "Also",
+};
 
 /**
  * The repo Overview, once its data has arrived.
@@ -72,8 +84,8 @@ export interface OverviewBodyProps {
  * token), so anything that fetches cannot be shared, and anything that does
  * not fetch can.
  *
- * Short and action-first: the health reading, then what to do now, then
- * what got better, then doors into the pages that own each subject. Anything
+ * Short and action-first: the health reading, the ask box, doors into the
+ * pages that own each subject, then what to do now and what got better. Anything
  * a deeper page already shows in full (commit lists, decisions, size and
  * language figures) is a link from Explore rather than a copy here.
  *
@@ -85,13 +97,17 @@ export function OverviewBody({
   routes,
   LinkComponent,
   slots = {},
+  copy,
 }: OverviewBodyProps) {
+  const c = { ...OVERVIEW_BODY_COPY, ...copy };
   const resolved = resolveOverviewRoutes(routes);
   const { base } = resolved;
   const { stats, health } = summary;
 
   const reads = buildReads(summary, routes);
-  const explore = buildExplore(summary, routes);
+  const cards = buildExploreCards(summary, routes);
+  const carded = new Set(cards.map((card) => card.key));
+  const moreDoors = buildExplore(summary, routes).filter((e) => !carded.has(e.key));
   const changeStats = buildChangeStats(summary);
 
   // The list is capped per source server-side, so its length is not a total.
@@ -157,6 +173,17 @@ export function OverviewBody({
         </div>
       </div>
 
+      {slots.ask}
+
+      <OverviewSection title={c.exploreTitle}>
+        <ExploreCards
+          cards={cards}
+          more={moreDoors}
+          moreLabel={c.exploreMore}
+          LinkComponent={LinkComponent}
+        />
+      </OverviewSection>
+
       {slots.actions ?? (hasAttention && attention(false))}
 
       {slots.wins}
@@ -183,18 +210,11 @@ export function OverviewBody({
         </OverviewSection>
       )}
 
-      {/* The areas, now as the inventory behind "Do next": every detector's
-          count and its worst example, folded because the list above already
-          says what to do. */}
-      {slots.actions && hasAttention && attention(true)}
-
       {slots.beforeExplore}
 
-      {slots.ask && <OverviewSection title="Ask this codebase">{slots.ask}</OverviewSection>}
-
-      <OverviewSection title="Explore this codebase">
-        <ExploreList entries={explore} LinkComponent={LinkComponent} />
-      </OverviewSection>
+      {/* The areas as the inventory behind "Do next", folded at the bottom
+          because the list above already says what to do. */}
+      {slots.actions && hasAttention && attention(true)}
     </PageFrame>
   );
 }

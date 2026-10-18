@@ -24,6 +24,7 @@
 
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import type { ChangeStat } from "./change-line";
+import type { ExploreCard } from "./explore-cards";
 import type { ExploreEntry } from "./explore-list";
 import type { ReadItem } from "./reads-column";
 import type { RibbonStat } from "../stats/stat-ribbon";
@@ -232,6 +233,66 @@ export function buildRibbon(
     },
   );
   return ribbon;
+}
+
+/**
+ * The five main doors off Overview, each with one live figure from the
+ * summary payload. Keys match {@link buildExplore}'s, so the list beside the
+ * cards can drop the entries a card already covers.
+ */
+export function buildExploreCards(
+  summary: OverviewSummaryResponse,
+  routes: OverviewRoutes,
+): ExploreCard[] {
+  const { base } = resolveOverviewRoutes(routes);
+  const { stats, repo } = summary;
+  const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+  const docPages = docPageCount(summary);
+  return [
+    stats.hotspot_count > 0
+      ? {
+          key: "code-health",
+          label: "Code health map",
+          value: formatNumber(stats.hotspot_count),
+          caption: `${plural(stats.hotspot_count, "hotspot", "hotspots")} across ${formatNumber(stats.file_count)} files`,
+          href: `${base}/code-health`,
+        }
+      : {
+          key: "code-health",
+          label: "Code health map",
+          value: formatNumber(stats.file_count),
+          caption: "files scored",
+          href: `${base}/code-health`,
+        },
+    {
+      key: "contributors",
+      label: "Ownership",
+      value: formatNumber(stats.silo_count),
+      caption: plural(stats.silo_count, "area where one person owns over 80% of files", "areas where one person owns over 80% of files"),
+      href: `${base}/owners`,
+    },
+    {
+      key: "commits",
+      label: "Commits",
+      ...(repo.head_commit ? { value: repo.head_commit.slice(0, 7), mono: true } : {}),
+      caption: "Each change with what it did to health",
+      href: `${base}/commits`,
+    },
+    {
+      key: "architecture",
+      label: "Architecture",
+      value: formatNumber(stats.module_count),
+      caption: `${plural(stats.module_count, "module", "modules")}, ${formatNumber(stats.entry_point_count)} entry points`,
+      href: `${base}/architecture`,
+    },
+    {
+      key: "docs",
+      label: "Docs",
+      value: formatNumber(docPages),
+      caption: plural(docPages, "documentation page", "documentation pages"),
+      href: `${base}/docs`,
+    },
+  ];
 }
 
 /**

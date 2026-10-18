@@ -4,7 +4,7 @@ import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 
 /**
  * Skeleton mirroring the Overview layout — identity header, change line,
- * health lede beside its reads column, then sections.
+ * health lede beside its reads column, ask box, explore cards, then sections.
  *
  * Shapes and widths track the real page deliberately: a skeleton that does not
  * match causes a visible reflow the moment content lands, which reads as
@@ -41,8 +41,15 @@ export default async function OverviewLoading() {
         </div>
       </div>
 
-      <Skeleton className="h-48" />
-      <Skeleton className="h-40" />
+      {/* Ask box, then the explore cards */}
+      <Skeleton className="h-10 w-full" />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Skeleton key={i} className="h-24" />
+        ))}
+      </div>
+
+      <Skeleton className="h-12" />
     </PageFrame>
     </SkeletonRegion>
   );

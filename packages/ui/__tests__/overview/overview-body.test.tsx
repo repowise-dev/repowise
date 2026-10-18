@@ -130,4 +130,44 @@ describe("OverviewBody", () => {
     }
     expect(screen.getByRole("link", { name: /Decisions/ })).toHaveAttribute("href", "/r/decisions");
   });
+
+  it("orders ask, explore cards, Do next, wins, publish, then the folded inventory", () => {
+    const { container } = render(
+      <OverviewBody
+        summary={{
+          ...summary(),
+          attention_summary: { total: 1, areas: [] },
+          attention: [{ type: "hotspot", title: "x", target: "a.py", severity: "high", score: 1 }],
+        } as unknown as OverviewSummaryResponse}
+        routes={{ base: "/r" }}
+        slots={{
+          ask: <p>ASK</p>,
+          actions: <p>DO NEXT</p>,
+          wins: <p>WINS</p>,
+          beforeExplore: <p>PUBLISH</p>,
+        }}
+      />,
+    );
+    const text = container.textContent ?? "";
+    const order = ["ASK", "Explore this codebase", "DO NEXT", "WINS", "PUBLISH", "Everything we found"].map(
+      (s) => text.indexOf(s),
+    );
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it("gives each main door a live figure from the summary", () => {
+    render(<OverviewBody summary={summary()} routes={{ base: "/r" }} />);
+    const map = screen.getByRole("link", { name: /Code health map/ });
+    expect(map).toHaveAttribute("href", "/r/code-health");
+    expect(map).toHaveTextContent("1,059");
+    expect(map).toHaveTextContent("hotspots across 6,328 files");
+    expect(screen.getByRole("link", { name: /Ownership/ })).toHaveTextContent(
+      "3areas where one person owns over 80% of files",
+    );
+    expect(screen.getByRole("link", { name: /^Commits/ })).toHaveTextContent("abc1234");
+    // Doors a card covers are not repeated in the line of further links.
+    expect(screen.getAllByRole("link", { name: /^Docs/ })).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "Files" })).toHaveAttribute("href", "/r/files");
+  });
 });
