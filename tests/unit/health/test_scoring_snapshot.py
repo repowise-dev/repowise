@@ -239,7 +239,8 @@ def test_organizational_cap_bounds_stream():
 
 def test_history_cap_follows_structure():
     """Each point of code-shape deduction lets history deduct one more, to 3.5."""
-    history = [_result("prior_defect", Severity.CRITICAL) for _ in range(3)]  # 6.0 raw
+    # 2.0 + 0.25 x 10.0 = 4.5 de-stacked
+    history = [_result("prior_defect", Severity.CRITICAL) for _ in range(6)]
     # structure 2.5 (low_cohesion x 3 -> structural cap) -> history cap 3.5
     shaped = [*history, *(_result("low_cohesion", Severity.CRITICAL) for _ in range(3))]
     scores, _ = score_file(shaped)
@@ -250,6 +251,19 @@ def test_history_cap_follows_structure():
     assert round(scores["defect"], 6) == round(10.0 - 0.847 - 1.847, 6)
     # impacts still sum to the deduction the score was computed from
     assert round(sum(ded), 6) == round(0.847 + 1.847, 6)
+
+
+def test_history_markers_destack():
+    """The largest history finding counts whole, every other one at a quarter."""
+    shaped = [_result("low_cohesion", Severity.CRITICAL) for _ in range(3)]  # structure 2.5
+    history = [
+        _result("prior_defect", Severity.CRITICAL),  # 2.0
+        _result("change_entropy", Severity.HIGH),  # 1.2 x 1.51 = 1.812
+    ]
+    scores, ded = score_file([*shaped, *history])
+    # 2.0 + 0.25 x 1.812 = 2.453, under the 3.5 cap
+    assert round(scores["defect"], 6) == round(10.0 - 2.5 - 2.453, 6)
+    assert [round(d, 6) for d in ded[3:]] == [2.0, 0.453]
 
 
 def test_improving_code_never_lowers_score():
