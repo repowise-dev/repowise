@@ -21,6 +21,7 @@ from repowise.core.persistence.models import GitMetadata
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
 from repowise.server.services import overview_payload as sections
+from repowise.server.services.overview_counts import explore_counts
 
 router = APIRouter(
     prefix="/api/repos",
@@ -129,6 +130,8 @@ async def overview_summary(
         "top_hotspots": await _top_hotspots(session, repo_id),
         "recent_decisions": await sections.recent_decisions(session, repo_id),
         "savings": await sections.savings_block(repo.local_path),
+        # The figures the explore cards and inventory share with their pages.
+        "explore": await explore_counts(session, repo_id),
         "sync": await sections.sync_block(
             session, repo_id, repo, page_count=stats["doc_page_count"]
         ),

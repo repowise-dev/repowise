@@ -257,6 +257,24 @@ export interface OverviewSyncStatus {
   index_storage_bytes?: number;
 }
 
+/**
+ * Figures Overview shares with the pages it links to, each read through the
+ * function that page leads with. A block is `null` when its store is absent.
+ */
+export interface OverviewExploreCounts {
+  /** The Decisions page lanes: accepted of total recorded, candidates
+   *  awaiting review, and accepted ones drifting from the code. */
+  decisions: { total: number; accepted: number; candidates: number; needs_review: number } | null;
+  /** The Refactoring page lede: open opportunities, one per file. */
+  refactoring: { opportunities_total: number; files_total: number } | null;
+  /** The Contributors page: files with one author and no second reader. */
+  ownership: { sole_owned_files: number } | null;
+  /** The Security page lede: matches in shipped source versus tests and docs. */
+  security: { total: number; source: number; source_high: number; elsewhere: number } | null;
+  /** The Tests page lede; `null` until a coverage report is ingested. */
+  coverage: { line_coverage_pct: number; ingested_at: string | null } | null;
+}
+
 export interface OverviewSummaryResponse {
   repo: OverviewRepoMeta;
   stats: OverviewStats;
@@ -274,4 +292,6 @@ export interface OverviewSummaryResponse {
   recent_decisions: OverviewDecisionSlim[];
   savings: OverviewSavings;
   sync: OverviewSyncStatus;
+  /** Optional: a server predating it omits the block. */
+  explore?: OverviewExploreCounts;
 }
