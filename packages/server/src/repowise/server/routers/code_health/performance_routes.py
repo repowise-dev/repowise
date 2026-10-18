@@ -92,6 +92,15 @@ async def list_performance_opportunities(
             "so a state picked inside 'worth doing now' stays inside it."
         ),
     ),
+    area: str | None = Query(
+        None, description="One area (a directory) at any depth; absent is the whole repository."
+    ),
+    area_depth: int | None = Query(
+        None,
+        ge=1,
+        le=32,
+        description="Group the area facet at this directory depth; absent chooses one.",
+    ),
     view: str = Query("detail"),
     sort: str = Query("rank"),
     file_paths: str | None = Query(
@@ -125,6 +134,7 @@ async def list_performance_opportunities(
         offset=offset,
         queue=queue,
         lift_defaults=True,
+        area=area,
     )
     page = await _service(session, repo_id, include_unverified=include_unverified).page(
         query,
@@ -135,6 +145,7 @@ async def list_performance_opportunities(
         row_decisions=True,
         # Every count the tab shows sits inside the scope it asked for.
         scoped_facets=True,
+        area_depth=area_depth,
     )
     return {
         "items": label_previews(
@@ -148,6 +159,7 @@ async def list_performance_opportunities(
         "counts": page.counts,
         "gated": page.gated,
         "scopes": page.scopes,
+        "areas": page.areas,
         **({"ignored_arguments": ignored} if ignored else {}),
     }
 

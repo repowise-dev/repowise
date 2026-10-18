@@ -109,6 +109,7 @@ from .performance import (
     list_opportunity_evidence,
     list_performance_opportunities,
     opportunity_details,
+    performance_area_counts,
     performance_facet_counts,
     performance_file_rollups,
 )
@@ -201,6 +202,7 @@ __all__ = [
     "load_ingest_at_commit",
     "load_newest_ingest",
     "opportunity_details",
+    "performance_area_counts",
     "performance_facet_counts",
     "performance_file_rollups",
     "plan_payoff",

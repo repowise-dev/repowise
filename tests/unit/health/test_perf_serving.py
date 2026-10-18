@@ -437,3 +437,37 @@ async def test_scope_counts_equal_what_each_scope_lists(store) -> None:
         )
         assert counts[name] == total, name
     assert counts["now"] <= counts["production"] <= counts["all"]
+
+
+def test_area_facet_ranks_areas_and_splits_their_states() -> None:
+    from repowise.core.analysis.health.perf.serving import area_facet
+
+    groups = [
+        ("pkg/a/x.py", "advisory", 3),
+        ("pkg/a/y.py", "expected", 5),
+        ("pkg/b/z.py", "plan_ready", 1),
+        ("pkg/c/w.py", "investigate", 2),
+    ]
+    facet = area_facet(groups)
+    assert facet["depth"] == 2
+    assert [entry["area"] for entry in facet["items"]] == ["pkg/b", "pkg/a", "pkg/c"]
+    assert facet["items"][1] == {
+        "area": "pkg/a", "total": 8, "actionability": {"advisory": 3, "expected": 5},
+    }
+    assert facet["total"] == sum(entry["total"] for entry in facet["items"]) + facet["more"]
+    # A chosen depth wins; a limit counts the rest in ``more``.
+    assert area_facet(groups, depth=1)["items"] == [
+        {"area": "pkg", "total": 11, "actionability": {"advisory": 3, "expected": 5,
+                                                        "plan_ready": 1, "investigate": 2}},
+    ]
+    assert area_facet(groups, limit=1)["more"] == 10
+
+
+def test_an_area_narrows_by_directory_never_by_a_shared_prefix() -> None:
+    query, _ = parse_query(area="pkg/a/", lift_defaults=True)
+    assert query.area == "pkg/a"
+    assert query.store_filters()["area_prefix"] == "pkg/a/"
+    rows = [{"file_path": "pkg/a/x.py", "status": "open"}, {"file_path": "pkg/ab/y.py", "status": "open"}]
+    only_area = {"status": "open", "area_prefix": query.area_prefix}
+    assert [r["file_path"] for r in rows if keep(r, only_area)] == ["pkg/a/x.py"]
+    assert parse_query(area="")[0].store_filters()["area_prefix"] is None

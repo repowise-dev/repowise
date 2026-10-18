@@ -16,6 +16,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from repowise.core.analysis.areas import choose_depth, normalize_area
+from repowise.core.analysis.areas.paths import area_at
 from repowise.core.analysis.execution_roles import EXECUTION_ROLES
 from repowise.core.analysis.health import queue_rules
 from repowise.core.analysis.health.finding_identity import finding_public_id
@@ -125,6 +127,8 @@ FILTERS: tuple[FilterRule, ...] = (
     FilterRule("proofs", "cost_proof", "in", "set"),
     FilterRule("roles", "execution_role", "in", "set"),
     FilterRule("file_paths", "file_path", "in", "set"),
+    # One area at any depth, as ``<area>/``; the root area is no filter.
+    FilterRule("area_prefix", "file_path", "prefix", "set"),
     # The default queue is the stored judgement (``queue.counts.perf_judgement``).
     FilterRule("queue_eligible", "queue_eligible", "is", "set"),
 )
@@ -200,10 +204,11 @@ def fold_scoped_facets(
     *groups* are ``(*SCOPED_GROUP_FIELDS, count)``. Used by the dashboard;
     the agent surface keeps :func:`fold_facets`.
     """
+    # The aggregate is already narrowed to the query's files and area.
     selection = {
         key: value
         for key, value in query.store_filters(judged=judged).items()
-        if key != "file_paths"
+        if key not in ("file_paths", "area_prefix")
     }
     folded = queue_rules.fold_facets(
         groups,
@@ -233,9 +238,64 @@ def scope_counts(groups: Iterable[Sequence[Any]], *, judged: bool = True) -> dic
     counts: dict[str, int] = {}
     for name, args in SCOPES.items():
         query, _ = parse_query(**args, lift_defaults=True)
-        params = {k: v for k, v in query.store_filters(judged=judged).items() if k != "file_paths"}
+        params = {
+            k: v
+            for k, v in query.store_filters(judged=judged).items()
+            if k not in ("file_paths", "area_prefix")
+        }
         counts[name] = sum(int(row["count"]) for row in rows if keep(row, params))
     return counts
+
+
+AREA_LIMIT = 24
+"""Areas a response names; the rest are counted in ``more``."""
+
+
+def area_facet(
+    groups: Iterable[Sequence[Any]],
+    *,
+    base: str | None = None,
+    depth: int | None = None,
+    limit: int = AREA_LIMIT,
+) -> dict[str, Any]:
+    """The query's causes by area, with each area's actionability split.
+
+    *groups* are ``(file_path, actionability_state, count)`` over the rows the
+    query lists. Areas are directories at *depth* below *base* (chosen by
+    :func:`choose_depth` when not given), ranked by plan-ready causes, then
+    advisory, then size, so the area worth opening first leads.
+    """
+    by_file: dict[str, dict[str, int]] = {}
+    for file_path, state, count in groups:
+        states = by_file.setdefault(file_path, {})
+        states[state] = states.get(state, 0) + int(count)
+    weights = {path: sum(states.values()) for path, states in by_file.items()}
+    root = normalize_area(base)
+    chosen = depth if depth is not None and depth > 0 else choose_depth(weights, base=root)
+    areas: dict[str, dict[str, int]] = {}
+    for path, states in by_file.items():
+        split = areas.setdefault(area_at(path, chosen), {})
+        for state, count in states.items():
+            split[state] = split.get(state, 0) + count
+    ranked = sorted(
+        (
+            {"area": area, "total": sum(split.values()), "actionability": split}
+            for area, split in areas.items()
+        ),
+        key=lambda entry: (
+            -entry["actionability"].get("plan_ready", 0),
+            -entry["actionability"].get("advisory", 0),
+            -entry["total"],
+            entry["area"],
+        ),
+    )
+    shown = ranked[: max(limit, 0)]
+    return {
+        "depth": chosen,
+        "items": shown,
+        "more": sum(entry["total"] for entry in ranked[len(shown) :]),
+        "total": sum(weights.values()),
+    }
 
 
 def fold_facets(
@@ -286,6 +346,12 @@ class PerformanceQuery:
     #: Keep to the stored default-queue verdict whatever else is chosen, so a
     #: state picked inside "worth doing now" stays inside it.
     queue: bool = False
+    #: One area (a directory) at any depth; ``None`` is the whole repository.
+    area: str | None = None
+
+    @property
+    def area_prefix(self) -> str | None:
+        return f"{self.area}/" if self.area else None
 
     @property
     def status(self) -> str:
@@ -329,6 +395,7 @@ class PerformanceQuery:
             "roles": (self.roles or QUEUE_ROLES) if live else self.roles,
             "queue_eligible": None if live else self.queue_eligible,
             "file_paths": self.file_paths,
+            "area_prefix": self.area_prefix,
         }
 
     @property
@@ -394,6 +461,7 @@ def parse_query(
     offset: int = 0,
     queue: bool = False,
     lift_defaults: bool = False,
+    area: str | None = None,
 ) -> tuple[PerformanceQuery, dict[str, str]]:
     """Normalize caller input, reporting anything unrecognized by name.
 
@@ -435,6 +503,7 @@ def parse_query(
             limit=max(0, limit),
             offset=max(0, offset),
             queue=queue,
+            area=normalize_area(area) or None,
         ),
         ignored,
     )
@@ -713,6 +782,7 @@ def evidence_payload(row: Any) -> dict[str, Any]:
 
 __all__ = [
     "ACTIONABILITIES",
+    "AREA_LIMIT",
     "BOUNDARIES",
     "CANONICAL_CONTEXTS",
     "CANONICAL_SORTS",
@@ -732,6 +802,7 @@ __all__ = [
     "PerformanceContext",
     "PerformanceQuery",
     "PlanLink",
+    "area_facet",
     "evidence_payload",
     "facet_counts",
     "fold_facets",

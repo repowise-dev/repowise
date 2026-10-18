@@ -463,9 +463,15 @@ async def test_rest_and_the_agent_surface_project_the_same_rows(
             actionability=None,
             view="detail",
             sort="rank",
+            proof=None,
+            role=None,
+            queue=False,
+            area=None,
+            area_depth=None,
             file_paths=None,
             limit=6,
             offset=0,
+            include_unverified=False,
             session=session,
         )
 

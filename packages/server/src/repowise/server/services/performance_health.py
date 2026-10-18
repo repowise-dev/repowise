@@ -26,6 +26,7 @@ from repowise.core.analysis.health.perf.opportunities import model_state
 from repowise.core.analysis.health.perf.serving import (
     PerformanceQuery,
     PlanLink,
+    area_facet,
     evidence_payload,
     fold_facets,
     fold_scoped_facets,
@@ -45,6 +46,7 @@ from repowise.core.persistence.crud import (
     list_evidence_for_opportunities,
     list_opportunity_evidence,
     list_performance_opportunities,
+    performance_area_counts,
     performance_facet_counts,
 )
 from repowise.core.persistence.crud.analysis.queue_counts import any_unjudged, unit_counts
@@ -68,6 +70,8 @@ class PerformancePage:
     #: Causes per dashboard scope (``now``, ``production``, ``all``) before the
     #: narrowing filters. Only with scoped facets.
     scopes: dict[str, int] = field(default_factory=dict)
+    #: The query's causes by area (``serving.area_facet``). Only with scoped facets.
+    areas: dict[str, Any] = field(default_factory=dict)
 
 
 class PerformanceHealthService:
@@ -101,6 +105,7 @@ class PerformanceHealthService:
         with_summary: bool = False,
         row_decisions: bool = False,
         scoped_facets: bool = False,
+        area_depth: int | None = None,
     ) -> PerformancePage:
         """One page and its plan links, plus whatever else the caller renders.
 
@@ -154,8 +159,11 @@ class PerformanceHealthService:
         emitted = query.offset + len(items)
         facets: dict[str, list[dict[str, Any]]] = {}
         scopes: dict[str, int] = {}
+        areas: dict[str, Any] = {}
         if with_facets and scoped_facets:
-            facets, scopes = await self._scoped_facets(query, judged=judged)
+            facets, scopes, areas = await self._scoped_facets(
+                query, judged=judged, area_depth=area_depth
+            )
         elif with_facets:
             facets = await self._facets(query)
         return PerformancePage(
@@ -165,6 +173,7 @@ class PerformanceHealthService:
             next_offset=emitted if emitted < total else None,
             facets=facets,
             scopes=scopes,
+            areas=areas,
             summary=await self.summary(query.contexts) if with_summary else {},
             counts=(
                 await unit_counts(
@@ -210,21 +219,30 @@ class PerformanceHealthService:
         return links
 
     async def _scoped_facets(
-        self, query: PerformanceQuery, *, judged: bool
-    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
-        """Facets counted inside the query's scope, and each scope's size,
-        from one grouped aggregate."""
+        self, query: PerformanceQuery, *, judged: bool, area_depth: int | None = None
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], dict[str, Any]]:
+        """Facets counted inside the query's scope and area, each scope's size,
+        and the causes by area: one grouped aggregate and one per-file count."""
+        filters = query.store_filters(judged=judged)
         grouped = await performance_facet_counts(
             self._session,
             self._repository_id,
             file_paths=query.file_paths,
+            area_prefix=filters["area_prefix"],
             include_unverified=self._include_unverified,
             scoped=True,
+        )
+        by_file = await performance_area_counts(
+            self._session,
+            self._repository_id,
+            include_unverified=self._include_unverified,
+            **filters,
         )
         queue_judged = not await any_unjudged(self._session, self._repository_id, "causes")
         return (
             fold_scoped_facets(grouped, query, judged=judged),
             scope_counts(grouped, judged=queue_judged),
+            area_facet(by_file, base=query.area, depth=area_depth),
         )
 
     async def _facets(self, query: PerformanceQuery) -> dict[str, list[dict[str, Any]]]:

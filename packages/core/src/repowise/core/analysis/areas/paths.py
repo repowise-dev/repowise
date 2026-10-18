@@ -11,6 +11,7 @@ from __future__ import annotations
 __all__ = [
     "ROOT_AREA",
     "ancestors",
+    "area_at",
     "area_depth",
     "area_name",
     "area_parent",
@@ -31,6 +32,12 @@ def ancestors(file_path: str) -> list[str]:
     """Every area *file_path* belongs to, root first."""
     parts = file_path.split("/")[:-1]
     return [ROOT_AREA, *("/".join(parts[: i + 1]) for i in range(len(parts)))]
+
+
+def area_at(file_path: str, depth: int) -> str:
+    """The area holding *file_path* at *depth*: its first *depth* directories,
+    or its own directory when the file sits shallower than that."""
+    return "/".join(file_path.split("/")[:-1][: max(depth, 0)])
 
 
 def in_area(file_path: str, area: str) -> bool:

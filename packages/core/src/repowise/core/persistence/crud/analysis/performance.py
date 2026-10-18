@@ -574,6 +574,7 @@ async def list_performance_opportunities(
     roles: frozenset[str] | None = None,
     queue_eligible: bool | None = None,
     file_paths: tuple[str, ...] | None = None,
+    area_prefix: str | None = None,
     sort: str = "rank",
     limit: int = 20,
     offset: int = 0,
@@ -596,6 +597,7 @@ async def list_performance_opportunities(
         roles=roles,
         queue_eligible=queue_eligible,
         file_paths=file_paths,
+        area_prefix=area_prefix,
         include_unverified=include_unverified,
     )
     total = int(
@@ -628,6 +630,7 @@ async def performance_facet_counts(
     file_paths: tuple[str, ...] | None = None,
     include_unverified: bool = False,
     scoped: bool = False,
+    area_prefix: str | None = None,
 ) -> list[tuple[Any, ...]]:
     """Grouped counts over every open opportunity, in one aggregate statement.
 
@@ -645,12 +648,36 @@ async def performance_facet_counts(
         select(*columns, func.count())
         .where(
             *_predicates(
-                repository_id, file_paths=file_paths, include_unverified=include_unverified
+                repository_id,
+                file_paths=file_paths,
+                area_prefix=area_prefix,
+                include_unverified=include_unverified,
             )
         )
         .group_by(*columns)
     )
     return [tuple(row) for row in result.all()]
+
+
+async def performance_area_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    include_unverified: bool = False,
+    **filters: Any,
+) -> list[tuple[str, str, int]]:
+    """``(file_path, actionability_state, count)`` over the rows *filters*
+    (the serving layer's ``store_filters``) list, for the area facet."""
+    result = await session.execute(
+        select(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            func.count(),
+        )
+        .where(*_predicates(repository_id, include_unverified=include_unverified, **filters))
+        .group_by(PerformanceOpportunity.file_path, PerformanceOpportunity.actionability_state)
+    )
+    return [(row[0], row[1], int(row[2])) for row in result.all()]
 
 
 _ACTIONABILITY_STATES = ("plan_ready", "advisory", "investigate", "expected")

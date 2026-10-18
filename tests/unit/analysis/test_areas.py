@@ -142,3 +142,30 @@ def test_detail_lists_are_bounded_and_worst_first():
     assert detail["test_reach"]["with_test_file"] == 1
     assert detail["distribution"]["total_files"] == 3
     assert area_detail(index, "nope") is None
+
+
+def test_area_at_and_choose_depth_split_where_the_work_separates() -> None:
+    from repowise.core.analysis.areas import area_at, choose_depth, group_counts
+
+    assert area_at("a/b/c.py", 1) == "a"
+    assert area_at("a/b/c.py", 5) == "a/b"
+    assert area_at("x.py", 2) == ""
+    # One shared chain, then three packages: the split is below the chain.
+    weights = {
+        "pkg/src/core/a.py": 2,
+        "pkg/src/server/b.py": 2,
+        "pkg/src/web/c.ts": 1,
+    }
+    assert choose_depth(weights) == 3
+    assert set(group_counts(weights, 3)) == {"pkg/src/core", "pkg/src/server", "pkg/src/web"}
+    # Above the small-queue line, three areas are needed before a split counts.
+    big = {path: weight * 10 for path, weight in weights.items()}
+    two = {"pkg/a/x.py": 10, "pkg/b/y.py": 10}
+    assert choose_depth(big) == 3
+    assert choose_depth({"pkg/a/x.py": 2, "pkg/b/y.py": 2}) == 2
+    assert choose_depth(two) == 2
+    # Inside an area, the depth is chosen below it.
+    assert choose_depth(weights, base="pkg/src/core") >= 4
+    # No depth splits a lone file; the shallowest is kept.
+    assert choose_depth({"a/b.py": 3}) == 1
+    assert choose_depth({}) == 1
