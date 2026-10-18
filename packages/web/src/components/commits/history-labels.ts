@@ -55,6 +55,7 @@ export function useHistoryFilterLabels(): HistoryFilterLabels {
       area: t("area"),
       moreFilters: t("moreFilters"),
       clearAll: t("clearAll"),
+      impactPending: t("impactPending"),
     }),
     [t],
   );

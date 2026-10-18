@@ -41,6 +41,8 @@ export interface HistoryFilterLabels {
   area: string;
   moreFilters: string;
   clearAll: string;
+  /** Why the impact options cannot act while the window is catching up. */
+  impactPending: string;
 }
 
 const DEFAULT_LABELS: HistoryFilterLabels = {
@@ -62,6 +64,7 @@ const DEFAULT_LABELS: HistoryFilterLabels = {
   area: "Area, e.g. packages/core",
   moreFilters: "More filters",
   clearAll: "Clear all",
+  impactPending: "Counts appear as commits are analysed by the current analyzer",
 };
 
 export interface HistoryFiltersProps {
@@ -78,6 +81,9 @@ export interface HistoryFiltersProps {
    *  chips; their count shows on the closed disclosure. */
   chips?: ActiveFilterChip[] | undefined;
   onClearAll?: (() => void) | undefined;
+  /** True while most of the window is not analysed yet: the impact options
+   *  are disabled with the reason, since their counts cannot act. */
+  impactPending?: boolean | undefined;
   className?: string | undefined;
 }
 
@@ -96,10 +102,12 @@ export function HistoryFilters({
   more,
   chips = [],
   onClearAll,
+  impactPending = false,
   className,
 }: HistoryFiltersProps) {
   const l = { ...DEFAULT_LABELS, ...labels };
   const count = (k: HealthImpact) => counts?.[k]?.toLocaleString();
+  const pending = impactPending ? l.impactPending : undefined;
   return (
     <div className={cn("flex flex-col gap-2.5", className)}>
       <div className="flex flex-wrap items-center gap-2">
@@ -108,9 +116,9 @@ export function HistoryFilters({
           value={value.impact}
           options={[
             { value: "all", label: l.all, count: count("all") },
-            { value: "better", label: l.better, count: count("better") },
-            { value: "worse", label: l.worse, count: count("worse") },
-            { value: "none", label: l.none, count: count("none") },
+            { value: "better", label: l.better, count: count("better"), disabledReason: pending },
+            { value: "worse", label: l.worse, count: count("worse"), disabledReason: pending },
+            { value: "none", label: l.none, count: count("none"), disabledReason: pending },
           ]}
           onChange={(impact) => onChange({ impact })}
         />

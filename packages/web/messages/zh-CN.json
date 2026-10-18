@@ -339,7 +339,8 @@
         "author": "作者邮箱或姓名",
         "area": "区域，例如 packages/core",
         "moreFilters": "更多筛选",
-        "clearAll": "全部清除"
+        "clearAll": "全部清除",
+        "impactPending": "随着当前分析器分析提交，计数会陆续出现"
       },
       "lede": {
         "label": "此提交对代码健康的影响",

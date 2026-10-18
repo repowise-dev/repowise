@@ -339,7 +339,8 @@
         "author": "Author email or name",
         "area": "Area, e.g. packages/core",
         "moreFilters": "More filters",
-        "clearAll": "Clear all"
+        "clearAll": "Clear all",
+        "impactPending": "Counts appear as commits are analysed by the current analyzer"
       },
       "lede": {
         "label": "What this commit did to code health",

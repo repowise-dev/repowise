@@ -42,6 +42,7 @@ export function CommitQueue({
   apiFilters,
   impactCounts,
   narrowed,
+  impactPending,
 }: {
   repoId: string;
   initial: Paginated<CommitResponse>;
@@ -52,6 +53,8 @@ export function CommitQueue({
   /** Per-impact counts under the other filters, from the period summary. */
   impactCounts?: Record<HealthImpact, number> | undefined;
   narrowed: boolean;
+  /** Most of the window is not analysed yet; the impact options wait. */
+  impactPending?: boolean | undefined;
 }) {
   const [query, setQuery] = useState<CommitListQuery>({ sort: "date", kind: "all" });
   const [search, setSearch] = useState("");
@@ -85,6 +88,7 @@ export function CommitQueue({
         labels={filterLabels}
         chips={chips}
         onClearAll={clearAll}
+        impactPending={impactPending}
         more={
           <>
             <CommitSearch value={search} onChange={setSearch} />

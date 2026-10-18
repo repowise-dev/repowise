@@ -116,6 +116,7 @@ export async function CommitsView({
           apiFilters={apiFilters}
           narrowed={narrowed}
           impactCounts={impactCounts(summary)}
+          impactPending={summary ? readPeriodHealth(summary).tone === "catchingUp" : false}
           // Repo-wide figures: shown only when nothing narrows the list, so a
           // chip never counts a different set than the one beneath it.
           counts={
