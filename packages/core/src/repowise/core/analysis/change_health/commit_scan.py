@@ -51,6 +51,8 @@ def _delta_row(sha: str, delta: ChangeHealthDelta, kept: int) -> dict:
         "introduced_count": delta.introduced_total,
         "worsened_count": delta.worsened_total,
         "resolved_count": delta.resolved_total,
+        "improved_count": delta.improved_total,
+        "moved_count": delta.moved_total,
         "files_analyzed": delta.scope.analyzed,
         "files_skipped": delta.scope.skipped,
         "findings_stored": kept,
@@ -90,6 +92,8 @@ def _finding_rows(sha: str, findings: list[ChangeFinding]) -> list[dict]:
             "attribution_basis": f.attribution_basis,
             "health_impact": float(f.health_impact or 0.0),
             "reason": f.reason,
+            "moved_from_path": (f.moved_from or {}).get("path"),
+            "moved_from_symbol": (f.moved_from or {}).get("symbol"),
         }
         for position, f in enumerate(findings)
     ]

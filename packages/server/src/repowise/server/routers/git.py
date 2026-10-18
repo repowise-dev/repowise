@@ -77,6 +77,7 @@ from repowise.server.schemas import (
     RiskHistogramBucket,
     RiskRangeResponse,
 )
+from repowise.server.schemas.git import MovedFromResponse
 from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
@@ -272,6 +273,8 @@ async def _commit_health(
         introduced_count=delta.introduced_count,
         worsened_count=delta.worsened_count,
         resolved_count=delta.resolved_count,
+        improved_count=delta.improved_count,
+        moved_count=delta.moved_count,
         files_analyzed=delta.files_analyzed,
         files_skipped=delta.files_skipped,
         findings=[
@@ -287,6 +290,11 @@ async def _commit_health(
                 line_end=f.line_end,
                 attribution_basis=f.attribution_basis,
                 reason=f.reason,
+                moved_from=(
+                    MovedFromResponse(path=f.moved_from_path, symbol=f.moved_from_symbol)
+                    if f.moved_from_path
+                    else None
+                ),
             )
             for f in rows
         ],

@@ -486,7 +486,9 @@ async def test_commit_detail_reports_what_the_commit_did_to_health(
 
 
 @pytest.mark.asyncio
-async def test_commit_detail_names_where_a_moved_finding_came_from(client: AsyncClient, app) -> None:
+async def test_commit_detail_names_where_a_moved_finding_came_from(
+    client: AsyncClient, app
+) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     async with get_session(app.state.session_factory) as session:
