@@ -21,6 +21,7 @@ import { HighlightedCodeBlock } from "../../shared/code-block";
 import { CommandLine } from "../../shared/command-line";
 import { PlaceholderHint } from "../../refactoring/placeholder-hint";
 import { AiPromptButton } from "../ai-prompt-button";
+import { AGENT_PROMPT_LABEL } from "../ai-prompt-action";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, STATUS_LABEL } from "../labels";
 import { TIER_LABEL, fixLocation, fixPlanLabel, tierReason } from "./scope";
 
@@ -355,7 +356,7 @@ function Actions({
           </Link>
         ) : null}
         {onAiPrompt ? (
-          <AiPromptButton label="Copy prompt for an agent" onClick={() => onAiPrompt(item)} />
+          <AiPromptButton label={AGENT_PROMPT_LABEL} onClick={() => onAiPrompt(item)} />
         ) : null}
       </div>
       {onTriage && findings > 0 ? (
