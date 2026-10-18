@@ -87,6 +87,7 @@ def what_if_block(data: HealthData, req: HealthRequest) -> dict[str, Any]:
 
 
 def _weights(data: HealthData) -> _Weights:
+    """Over ``pop.all_metrics``, the rows ``kpis`` averages, tests included."""
     scored = [m for m in data.pop.all_metrics if m.score is not None]
     hotspots = frozenset(data.hotspot_paths)
     return _Weights(

@@ -2886,6 +2886,8 @@ async def test_what_if_names_the_points_a_fix_recovers(setup_mcp, session, popul
                 "history_deduction": 2.5,
             },
             {"file_path": "src/db/models.py", "score": 9.0, "nloc": 50, "is_test": False},
+            # Off the worst-files list, but inside the headline average.
+            {"file_path": "tests/test_auth.py", "score": 9.0, "nloc": 250, "is_test": True},
         ],
     )
     finding = {
@@ -2908,6 +2910,7 @@ async def test_what_if_names_the_points_a_fix_recovers(setup_mcp, session, popul
 
     plain = await get_health()
     assert "what_if" not in plain
+    assert plain["kpis"]["file_count"] == 3
     block = (await get_health(include=["what_if"], only=["what_if"]))["what_if"]
     row = block["files"][0]
     assert row["file_path"] == "src/auth/service.py"
@@ -2918,6 +2921,6 @@ async def test_what_if_names_the_points_a_fix_recovers(setup_mcp, session, popul
     top = block["top_fixes"][0]
     assert (top["biomarker_type"], top["points"]) == ("complex_method", 2.0)
     # 2.0 structure points also lower history's cap from 2.5 to 2.0: 4.5 -> 7.0,
-    # on 200 of 250 nloc; the only hotspot carries all of it.
-    assert top["gain"] == {"file": 2.5, "average": 2.0, "hotspot": 2.5}
+    # on 200 of the headline's 500 nloc; the only hotspot carries all of it.
+    assert top["gain"] == {"file": 2.5, "average": 1.0, "hotspot": 2.5}
     assert row["fix_all_structure"]["file"] == 4.5
