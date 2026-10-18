@@ -12,11 +12,48 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 DeltaKind = Literal["improved", "worsened", "mixed", "neutral"]
+Currency = Literal["current", "stale", "absent"]
+
+#: Oldest analyzer version whose stored delta a row still shows, flagged stale.
+#: Rows below it come from the change-health model before its per-commit store
+#: was rebuilt (the v21-era rows long-lived indexes still hold); their counts
+#: are not readable next to today's, so they read as never scanned. Raise it
+#: when a version bump changes what a finding means.
+MIN_SHOWN_ANALYZER_VERSION = 40
 
 #: Values the ``delta`` filter accepts. ``improved`` and ``worsened`` each
 #: include ``mixed``: a change that fixed three things and broke one did make
 #: something better, and did make something worse.
 DELTA_FILTERS: tuple[str, ...] = ("improved", "worsened", "mixed", "neutral")
+
+
+@dataclass(frozen=True, slots=True)
+class DeltaStamp:
+    """The analyzer a stored delta was computed by. Counts from two stamps never
+    add up: every aggregate reads rows with the current stamp only."""
+
+    analyzer_version: int
+    rules_fingerprint: str
+    performance_model_version: int
+
+    @classmethod
+    def of(cls, row: Any) -> DeltaStamp:
+        return cls(
+            int(row.analyzer_version or 0),
+            row.rules_fingerprint or "",
+            int(row.performance_model_version or 0),
+        )
+
+
+def delta_currency(row: Any, current: DeltaStamp) -> Currency:
+    """``current`` when *row* has the current stamp; ``stale`` when an older but
+    still readable analyzer wrote it (its sign holds, its magnitude does not
+    compare); ``absent`` below :data:`MIN_SHOWN_ANALYZER_VERSION`."""
+    if DeltaStamp.of(row) == current:
+        return "current"
+    if int(row.analyzer_version or 0) >= MIN_SHOWN_ANALYZER_VERSION:
+        return "stale"
+    return "absent"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,10 +76,12 @@ class HealthDeltaSummary:
     """The counts behind one commit's delta, and which way it went.
 
     ``improved`` is the analyzer's count of findings that measure better
-    without going away; ``None`` until delta rows store it. ``files`` holds
-    per-file score shifts, empty until delta rows store them (the analyzer's
-    ``health_delta.files[]``); both are the seam for that data, read through
-    :func:`summarize_delta` so no caller changes when it lands.
+    without going away; ``None`` until delta rows store it, read through
+    :func:`summarize_delta` so no caller changes when it lands. ``files``
+    holds per-file score shifts; the stored rows never carry them (they are
+    live-only, in ``get_change_risk``), so it stays empty for stored deltas.
+    ``stale`` marks a row an older analyzer wrote: its direction holds, its
+    counts do not compare with current rows.
     """
 
     status: str
@@ -51,6 +90,7 @@ class HealthDeltaSummary:
     resolved: int
     improved: int | None = None
     files: tuple[FileScoreShift, ...] = ()
+    stale: bool = False
 
     @property
     def better(self) -> int:
@@ -85,11 +125,17 @@ def matches_delta(kind: DeltaKind, wanted: str | None) -> bool:
     return kind == wanted
 
 
-def summarize_delta(row: Any) -> HealthDeltaSummary:
-    """A stored ``GitCommitHealthDelta`` row as a :class:`HealthDeltaSummary`."""
+def summarize_delta(row: Any, *, stale: bool = False) -> HealthDeltaSummary:
+    """A stored ``GitCommitHealthDelta`` row as a :class:`HealthDeltaSummary`.
+
+    The one reader of stored rows. Seam: when rows carry ``improved_count``
+    (OSS #4127), read it here as ``improved``, and only when not *stale*: an
+    older analyzer's row stores 0 there, which means unknown, not zero.
+    """
     return HealthDeltaSummary(
         status=row.status,
         introduced=int(row.introduced_count or 0),
         worsened=int(row.worsened_count or 0),
         resolved=int(row.resolved_count or 0),
+        stale=stale,
     )

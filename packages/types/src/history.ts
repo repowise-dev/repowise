@@ -6,9 +6,10 @@
  * (`packages/server/src/repowise/server/schemas/history.py`), so the wire
  * shape cannot drift. A `kind` reads the counts: `improved` only made things
  * better, `worsened` only worse, `mixed` both, `neutral` neither. A null delta
- * or rollup means never scanned, which is not the same claim as `neutral`.
- * `improved` and per-file `files` stay null/empty until stored deltas carry
- * them.
+ * or rollup means not yet analysed, which is not the same claim as `neutral`.
+ * A row's `stale` delta came from an older analyzer: show its direction, not
+ * its counts. Aggregates count current-analyzer rows only. `improved` is null
+ * until stored deltas carry it; `files` stays empty for stored deltas.
  */
 export type {
   ChangeHealthFindingResponse,

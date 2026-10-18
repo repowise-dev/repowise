@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import Query
 
@@ -32,8 +33,9 @@ class HistoryParams:
     delta: str | None
     touches_hotspot: bool
 
-    def commit_filter(self, **feed: str | float | None) -> crud.CommitFilter:
-        """The commit filter, plus the feed's own *authorship* / *kind* / *high_cut*."""
+    def commit_filter(self, **feed: Any) -> crud.CommitFilter:
+        """The commit filter, plus the caller's own fields (the feed's
+        *authorship* / *kind* / *high_cut*, the current analyzer *stamp*)."""
         return crud.CommitFilter(
             **feed,
             author=self.author,

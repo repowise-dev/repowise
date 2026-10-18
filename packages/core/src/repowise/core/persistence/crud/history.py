@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analysis.history.delta import DeltaStamp
 from ..models import (
     GitCommit,
     GitCommitFile,
@@ -41,7 +42,8 @@ class CommitFilter:
     commits. *touches_hotspot* keeps commits that touched a hotspot file.
     *authorship* and *kind* are the feed's attribution and review-priority
     filters; *high_cut* is the repo's high-band boundary that *kind* ``high``
-    compares against.
+    compares against. *stamp* is the current analyzer's; *delta* reads only
+    rows written under it.
     """
 
     authorship: str | None = None
@@ -53,6 +55,7 @@ class CommitFilter:
     until: datetime | None = None
     delta: str | None = None
     touches_hotspot: bool = False
+    stamp: DeltaStamp | None = None
 
 
 def _commit_authorship_clause(authorship: str | None):
@@ -98,12 +101,28 @@ def area_clause(column: Any, area: str) -> Any:
     return or_(column == root, column.like(f"{escape_like(root)}/%", escape=LIKE_ESCAPE))
 
 
-def _delta_clause(wanted: str) -> Any:
-    """SQL twin of :func:`repowise.core.analysis.history.matches_delta`.
+def current_delta_clause(stamp: DeltaStamp | None) -> Any:
+    """``GitCommitHealthDelta`` rows written under *stamp*, the current analyzer.
+
+    Every aggregate and filter reads only these: counts from two analyzer
+    versions never add up. A filter without a stamp is a caller bug.
+    """
+    if stamp is None:
+        raise ValueError("a health delta filter needs the current analyzer stamp")
+    return and_(
+        GitCommitHealthDelta.analyzer_version == stamp.analyzer_version,
+        GitCommitHealthDelta.rules_fingerprint == stamp.rules_fingerprint,
+        GitCommitHealthDelta.performance_model_version == stamp.performance_model_version,
+    )
+
+
+def _delta_clause(wanted: str, stamp: DeltaStamp | None) -> Any:
+    """SQL twin of :func:`repowise.core.analysis.history.matches_delta`, over
+    current-stamp rows only.
 
     Better is ``resolved_count`` (the stored rows carry no improved count),
     exactly as :func:`~repowise.core.analysis.history.summarize_delta` reads a
-    row; ``test_history_crud`` holds the two to the same answer.
+    row; ``test_history_routes`` holds the two to the same answer.
     """
     better = GitCommitHealthDelta.resolved_count > 0
     worse = (GitCommitHealthDelta.introduced_count + GitCommitHealthDelta.worsened_count) > 0
@@ -116,6 +135,7 @@ def _delta_clause(wanted: str) -> Any:
     return exists().where(
         GitCommitHealthDelta.repository_id == GitCommit.repository_id,
         GitCommitHealthDelta.sha == GitCommit.sha,
+        current_delta_clause(stamp),
         condition,
     )
 
@@ -158,7 +178,7 @@ def commit_filter_clauses(where: CommitFilter | None) -> list[Any]:
         if where.author
         else None,
         _commit_area_clause(where.area),
-        _delta_clause(where.delta) if where.delta else None,
+        _delta_clause(where.delta, where.stamp) if where.delta else None,
         _touches_hotspot_clause() if where.touches_hotspot else None,
     ]
     return [c for c in optional if c is not None] + _window_clauses(where.since, where.until)
@@ -280,7 +300,7 @@ async def get_resolving_commits(
     session: AsyncSession, repository_id: str, where: CommitFilter
 ) -> list[tuple[GitCommit, int]]:
     """``(commit, resolved_count)`` for commits under *where* that resolved a
-    finding, most resolved first."""
+    finding, most resolved first; current-stamp rows only (``where.stamp``)."""
     rows = await session.execute(
         select(GitCommit, GitCommitHealthDelta.resolved_count)
         .join(
@@ -293,6 +313,7 @@ async def get_resolving_commits(
         .where(
             GitCommit.repository_id == repository_id,
             GitCommitHealthDelta.resolved_count > 0,
+            current_delta_clause(where.stamp),
             *commit_filter_clauses(where),
         )
         .order_by(GitCommitHealthDelta.resolved_count.desc(), GitCommit.committed_at.desc())

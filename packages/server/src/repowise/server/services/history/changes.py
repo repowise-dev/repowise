@@ -24,7 +24,7 @@ from repowise.core.analysis.history import (
 from repowise.core.persistence import crud
 from repowise.server.schemas.changes import ChangeHealthFindingResponse, ChangeHealthResponse
 
-from .health import finding_fields, rollup_fields, stored_deltas
+from .health import current_stamp, finding_fields, rollup_fields, stored_deltas
 
 #: Worse findings a change detail carries for a fix prompt; the counts are whole.
 DETAIL_FINDINGS = 50
@@ -67,7 +67,9 @@ async def change_health(
 ) -> dict[str, ChangeHealth]:
     """``change_id -> rollup and hotspot touches`` for *changes*, in three reads."""
     shas = [sha for c in changes for sha in c.shas]
-    deltas = await stored_deltas(session, repo_id, shas)
+    # A rollup is an aggregate: current-analyzer rows only, the rest unscanned.
+    stamp = await current_stamp(session, repo_id)
+    deltas = await stored_deltas(session, repo_id, shas, stamp, current_only=True)
     worse_paths = await crud.get_worse_paths_bulk(session, repo_id, list(deltas))
     hotspots = await crud.get_hotspot_paths(session, repo_id)
     out: dict[str, ChangeHealth] = {}

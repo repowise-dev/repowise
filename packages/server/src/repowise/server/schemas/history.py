@@ -25,8 +25,10 @@ class HealthDeltaSummaryResponse(BaseModel):
 
     ``kind`` reads the counts: ``improved`` when it only made things better,
     ``worsened`` when it only made them worse, ``mixed`` for both, ``neutral``
-    for neither. ``improved`` and ``files`` are null and empty until the stored
-    deltas carry the analyzer's improved count and per-file scores.
+    for neither. ``improved`` is null until stored deltas carry the analyzer's
+    improved count; ``files`` stays empty for stored deltas (per-file scores are
+    live-only). ``stale`` means an older analyzer wrote it: the direction holds,
+    the counts do not compare with current rows, and no aggregate counts it.
     """
 
     status: str
@@ -35,6 +37,7 @@ class HealthDeltaSummaryResponse(BaseModel):
     worsened: int
     resolved: int
     improved: int | None = None
+    stale: bool = False
     files: list[FileScoreShiftResponse] = []
 
 
@@ -42,6 +45,7 @@ class HealthRollupResponse(BaseModel):
     """What a change's commits did to health, summed.
 
     ``status`` is ``partial`` when a commit was not scanned or skipped files.
+    Only rows from the current analyzer count; the rest are unscanned.
     ``files_worsened`` counts paths the stored worse findings name (a floor:
     findings are capped per commit). ``files_improved`` is null until stored
     deltas carry per-file scores.
@@ -63,8 +67,9 @@ class PeriodHealthSummaryResponse(BaseModel):
     """A period headline: items that made health better first, then worse.
 
     Items are changes on ``/changes/summary`` and commits on
-    ``/commits/health-summary``. ``unscanned`` items have no stored delta and
-    are in none of the four kinds.
+    ``/commits/health-summary``. ``unscanned`` items have no delta from the
+    current analyzer ("not yet analysed") and are in none of the four kinds;
+    recent commits refill as updates rescan them.
     """
 
     since: datetime | None = None

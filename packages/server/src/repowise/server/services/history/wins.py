@@ -28,6 +28,7 @@ from repowise.server.schemas.history import (
     WinsResolvingCommit,
     WinsResponse,
 )
+from repowise.server.services.history.health import current_stamp
 
 #: Wins the index keeps no history for, so it cannot say they happened.
 UNAVAILABLE = (
@@ -123,7 +124,8 @@ async def build_wins(
     author: str | None,
     top: int,
 ) -> WinsResponse:
-    where = crud.CommitFilter(author=author, since=since, until=until)
+    stamp = await current_stamp(session, repo_id)
+    where = crud.CommitFilter(author=author, since=since, until=until, stamp=stamp)
     touched = await crud.get_touched_paths(session, repo_id, where)
     return WinsResponse(
         since=since,

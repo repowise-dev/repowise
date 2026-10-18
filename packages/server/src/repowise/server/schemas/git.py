@@ -293,6 +293,9 @@ class CommitHealthResponse(BaseModel):
     #: ``available`` when every changed file was compared, ``partial`` when
     #: some were skipped (unsupported language, binary, unreadable).
     status: str
+    #: An older analyzer wrote it: the direction holds, the counts do not
+    #: compare with current rows.
+    stale: bool = False
     introduced_count: int
     worsened_count: int
     resolved_count: int

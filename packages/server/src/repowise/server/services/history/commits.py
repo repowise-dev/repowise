@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.history import HealthDeltaSummary, PeriodHealthSummary, summarize_period
 from repowise.core.persistence import crud
 
-from .health import delta_response, stored_deltas
+from .health import current_stamp, delta_response, stored_deltas
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,9 +29,11 @@ class CommitHistory:
 
 
 async def commit_history(session: AsyncSession, repo_id: str, shas: Sequence[str]) -> CommitHistory:
-    """Two bulk reads for the whole page, whatever its size."""
+    """Two bulk reads for the whole page, whatever its size. A row from an older
+    analyzer shows, flagged stale."""
+    stamp = await current_stamp(session, repo_id)
     return CommitHistory(
-        deltas=await stored_deltas(session, repo_id, shas),
+        deltas=await stored_deltas(session, repo_id, shas, stamp, current_only=False),
         hotspots=await crud.count_hotspot_files_bulk(session, repo_id, shas),
     )
 
@@ -39,7 +41,10 @@ async def commit_history(session: AsyncSession, repo_id: str, shas: Sequence[str
 async def commit_period_summary(
     session: AsyncSession, repo_id: str, where: crud.CommitFilter
 ) -> PeriodHealthSummary:
-    """How many commits under *where* made health better, worse, both or neither."""
+    """How many commits under *where* made health better, worse, both or
+    neither; only current-analyzer rows count (``where.stamp``)."""
+    if where.stamp is None:
+        raise ValueError("a period summary needs the current analyzer stamp")
     shas = await crud.list_commit_shas(session, repo_id, where)
-    deltas = await stored_deltas(session, repo_id, shas)
+    deltas = await stored_deltas(session, repo_id, shas, where.stamp, current_only=True)
     return summarize_period(deltas.get(sha) for sha in shas)

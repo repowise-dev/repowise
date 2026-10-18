@@ -188,6 +188,9 @@ export interface CommitHealthResponse {
   /** `available` when every changed file was compared, `partial` when some
    *  were skipped (unsupported language, binary, unreadable). */
   status: string;
+  /** An older analyzer wrote it: the direction holds, the counts do not
+   *  compare with current rows. */
+  stale?: boolean;
   introduced_count: number;
   worsened_count: number;
   resolved_count: number;

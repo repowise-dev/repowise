@@ -27,6 +27,7 @@ from repowise.core.analysis.change_risk import (
     score_change,
     scores_excluding,
 )
+from repowise.core.analysis.history import DeltaStamp, delta_currency
 from repowise.core.analysis.owners import people_resolver
 from repowise.core.analysis.risk_semantics import change_risk_authority
 from repowise.core.attribution import (
@@ -84,7 +85,11 @@ from repowise.server.services.history.commits import (
     commit_history,
     commit_period_summary,
 )
-from repowise.server.services.history.health import finding_fields, period_response
+from repowise.server.services.history.health import (
+    current_stamp,
+    finding_fields,
+    period_response,
+)
 from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
@@ -267,9 +272,10 @@ async def _commit_files(session: AsyncSession, repo_id: str, sha: str) -> list[C
 
 
 async def _commit_health(
-    session: AsyncSession, repo_id: str, sha: str
+    session: AsyncSession, repo_id: str, sha: str, stamp: DeltaStamp
 ) -> CommitHealthResponse | None:
-    """What the commit did to health. None when it was never scanned."""
+    """What the commit did to health. None when it was never scanned, or only
+    by an analyzer too old to read; ``stale`` when an older one wrote it."""
     try:
         delta = await crud.get_commit_health(session, repo_id, sha)
         rows = await crud.get_commit_health_findings(session, repo_id, sha) if delta else []
@@ -279,10 +285,12 @@ async def _commit_health(
         if not is_missing_table(exc):
             raise
         return None
-    if delta is None:
+    currency = delta_currency(delta, stamp) if delta is not None else "absent"
+    if currency == "absent":
         return None
     return CommitHealthResponse(
         status=delta.status,
+        stale=currency == "stale",
         introduced_count=delta.introduced_count,
         worsened_count=delta.worsened_count,
         resolved_count=delta.resolved_count,
@@ -361,7 +369,12 @@ async def get_commits(
     # The high band is a tercile of the repo's own scores, so the boundary has
     # to be resolved before the page is cut rather than derived per row.
     high_cut = normalizer.high_cut
-    where = params.commit_filter(authorship=authorship, kind=kind, high_cut=high_cut)
+    where = params.commit_filter(
+        authorship=authorship,
+        kind=kind,
+        high_cut=high_cut,
+        stamp=await current_stamp(session, repo_id),
+    )
     total = await crud.count_git_commits(session, repo_id, where=where)
     rows = await crud.get_git_commits(
         session,
@@ -521,7 +534,8 @@ async def get_commit_health_summary(
 ) -> PeriodHealthSummaryResponse:
     """How many commits under the filters made health better, worse, both or
     neither, and the findings behind it; improvements first."""
-    summary = await commit_period_summary(session, repo_id, params.commit_filter())
+    where = params.commit_filter(stamp=await current_stamp(session, repo_id))
+    summary = await commit_period_summary(session, repo_id, where)
     return period_response(summary, params.since, params.until)
 
 
@@ -638,7 +652,9 @@ async def get_commit(
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
     author_counts = await _author_commit_counts(session, repo_id)
     files = await _commit_files(session, repo_id, row.sha)
-    health = await _commit_health(session, repo_id, row.sha)
+    health = await _commit_health(
+        session, repo_id, row.sha, await current_stamp(session, repo_id)
+    )
     return _commit_detail_from_row(
         row,
         normalizer,

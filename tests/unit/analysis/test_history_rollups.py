@@ -7,8 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from repowise.core.analysis.history import (
+    MIN_SHOWN_ANALYZER_VERSION,
+    DeltaStamp,
     FileScoreShift,
     HealthDeltaSummary,
+    delta_currency,
     delta_kind,
     matches_delta,
     parse_score_map,
@@ -123,3 +126,24 @@ def test_an_unreadable_score_map_is_empty(raw) -> None:
 
 def test_a_score_map_skips_values_that_are_not_numbers() -> None:
     assert parse_score_map('{"a.py": 7.5, "b.py": "x", "c.py": 3}') == {"a.py": 7.5, "c.py": 3.0}
+
+
+def test_a_delta_is_current_only_under_the_current_stamp() -> None:
+    current = DeltaStamp(MIN_SHOWN_ANALYZER_VERSION + 1, "rules", 3)
+
+    def row(version: int, rules: str = "rules", perf: int = 3) -> SimpleNamespace:
+        return SimpleNamespace(
+            analyzer_version=version, rules_fingerprint=rules, performance_model_version=perf
+        )
+
+    assert delta_currency(row(current.analyzer_version), current) == "current"
+    assert delta_currency(row(current.analyzer_version, rules="edited"), current) == "stale"
+    assert delta_currency(row(current.analyzer_version, perf=2), current) == "stale"
+    assert delta_currency(row(MIN_SHOWN_ANALYZER_VERSION), current) == "stale"
+    assert delta_currency(row(MIN_SHOWN_ANALYZER_VERSION - 1), current) == "absent"
+
+
+def test_a_stale_reading_keeps_its_direction() -> None:
+    row = SimpleNamespace(status="available", introduced_count=2, worsened_count=0, resolved_count=0)
+    got = summarize_delta(row, stale=True)
+    assert got.stale and got.kind == "worsened"

@@ -12,7 +12,14 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from repowise.core import attribution
-from repowise.core.analysis.history import DELTA_FILTERS, matches_delta, summarize_delta
+from repowise.core.analysis.change_health.commit_scan import current_fingerprint
+from repowise.core.analysis.history import (
+    DELTA_FILTERS,
+    MIN_SHOWN_ANALYZER_VERSION,
+    DeltaStamp,
+    matches_delta,
+    summarize_delta,
+)
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -23,7 +30,7 @@ from repowise.core.persistence.models import (
 )
 from tests.unit.server.conftest import create_test_repo
 
-SHAS = {name: name * 40 for name in "abcd"}
+SHAS = {name: name * 40 for name in "abcde"}
 
 
 def _when(day: int) -> datetime:
@@ -109,6 +116,12 @@ def _change(change_id: str, day: int, keys: str, paths: list[str], author="Ann")
     }
 
 
+async def _current(session, repo_id: str) -> dict:
+    """The stamp a delta computed now carries for this repository."""
+    repo = await crud.get_repository(session, repo_id)
+    return current_fingerprint(repo.local_path)
+
+
 async def _seed(app, repo_id: str) -> None:
     """a: resolves in src/core (Ann); b: introduces in src/core/hot.py, a hotspot
     (Bob); c: neutral in docs (Ann); d: never scanned (Ann)."""
@@ -132,10 +145,15 @@ async def _seed(app, repo_id: str) -> None:
         await crud.upsert_git_metadata(
             session, repository_id=repo_id, file_path="src/core/hot.py", is_hotspot=True
         )
+        stamp = await _current(session, repo_id)
         await crud.upsert_commit_health_bulk(
             session,
             repo_id,
-            [_delta("a", resolved=3), _delta("b", introduced=2, worsened=1), _delta("c")],
+            [
+                {**_delta("a", resolved=3), **stamp},
+                {**_delta("b", introduced=2, worsened=1), **stamp},
+                {**_delta("c"), **stamp},
+            ],
             [_finding("b", "src/core/hot.py"), _finding("b", "src/core/hot.py", 1)],
         )
         await crud.upsert_changes(
@@ -168,6 +186,7 @@ async def test_commit_rows_lead_with_their_health_delta(client: AsyncClient, app
         "worsened": 1,
         "resolved": 0,
         "improved": None,
+        "stale": False,
         "files": [],
     }
     assert rows["c"]["health_delta"]["kind"] == "neutral"
@@ -220,10 +239,10 @@ async def test_the_sql_delta_filter_agrees_with_the_python_reading(
     await _seed(app, repo["id"])
     async with get_session(app.state.session_factory) as session:
         rows = (await session.execute(select(GitCommitHealthDelta))).scalars().all()
+        stamp = DeltaStamp(**await _current(session, repo["id"]))
         for wanted in DELTA_FILTERS:
-            by_sql = set(
-                await crud.list_commit_shas(session, repo["id"], crud.CommitFilter(delta=wanted))
-            )
+            where = crud.CommitFilter(delta=wanted, stamp=stamp)
+            by_sql = set(await crud.list_commit_shas(session, repo["id"], where))
             by_python = {r.sha for r in rows if matches_delta(summarize_delta(r).kind, wanted)}
             assert by_sql == by_python, wanted
 
@@ -420,3 +439,56 @@ async def test_wins_without_snapshots_or_history_are_empty_not_errors(
 @pytest.mark.asyncio
 async def test_wins_for_an_unknown_repo_is_404(client: AsyncClient) -> None:
     assert (await client.get("/api/repos/nope/wins")).status_code == 404
+
+
+async def _add_old_deltas(app, repo_id: str) -> None:
+    """d gets a row from an older readable analyzer (stale); a v21-era row for
+    a fifth commit e stays below the shown floor."""
+    async with get_session(app.state.session_factory) as session:
+        stamp = await _current(session, repo_id)
+        await crud.upsert_git_commits_bulk(session, repo_id, [_commit("e", 5, "Ann")])
+        older = {**stamp, "analyzer_version": MIN_SHOWN_ANALYZER_VERSION, "rules_fingerprint": "old"}
+        ancient = {**stamp, "analyzer_version": MIN_SHOWN_ANALYZER_VERSION - 1}
+        await crud.upsert_commit_health_bulk(
+            session,
+            repo_id,
+            [{**_delta("d", introduced=5), **older}, {**_delta("e", resolved=9), **ancient}],
+            [],
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_older_analyzers_row_shows_stale_and_an_ancient_one_not_at_all(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    await _add_old_deltas(app, repo["id"])
+    base = f"/api/repos/{repo['id']}"
+
+    rows = {i["sha"][0]: i for i in (await client.get(f"{base}/commits")).json()["items"]}
+    assert rows["d"]["health_delta"]["stale"] is True
+    assert rows["d"]["health_delta"]["kind"] == "worsened"
+    assert rows["a"]["health_delta"]["stale"] is False
+    assert rows["e"]["health_delta"] is None
+    detail = (await client.get(f"{base}/commits/{SHAS['d'][:8]}")).json()
+    assert detail["health"]["stale"] is True
+    assert (await client.get(f"{base}/commits/{SHAS['e'][:8]}")).json()["health"] is None
+
+
+@pytest.mark.asyncio
+async def test_aggregates_count_current_analyzer_rows_only(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    await _add_old_deltas(app, repo["id"])
+    base = f"/api/repos/{repo['id']}"
+
+    summary = (await client.get(f"{base}/commits/health-summary")).json()
+    assert (summary["worsened"], summary["unscanned"]) == (1, 2)
+    assert summary["findings_introduced"] == 2
+    worse = (await client.get(f"{base}/commits", params={"delta": "worsened"})).json()
+    assert _shorts(worse) == ["b"]
+    changes = {c["id"]: c for c in (await client.get(f"{base}/changes")).json()["items"]}
+    assert changes["pr-3"]["health"] is None
+    wins = (await client.get(f"{base}/wins", params={"since": "2026-10-01T00:00:00Z"})).json()
+    assert wins["findings_resolved"]["count"] == 3
