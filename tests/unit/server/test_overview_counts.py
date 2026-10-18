@@ -88,7 +88,14 @@ async def test_ownership_and_security_splits(client: AsyncClient, session_factor
                 )
             )
         for i, (path, severity) in enumerate(
-            [("src/a.py", "high"), ("src/b.py", "low"), ("tests/t.py", "high"), ("docs/a.md", "med")]
+            [
+                ("src/a.py", "high"),
+                ("src/b.py", "low"),
+                ("tests/t.py", "high"),
+                ("docs/a.md", "med"),
+                # A code file whose origin is docs_example, not a prose doc.
+                ("examples/demo.py", "high"),
+            ]
         ):
             session.add(
                 SecurityFinding(
@@ -103,13 +110,13 @@ async def test_ownership_and_security_splits(client: AsyncClient, session_factor
 
     explore = (await client.get(f"/api/repos/{rid}/overview-summary")).json()["explore"]
     assert explore["ownership"] == {"sole_owned_files": 2}
-    assert explore["security"] == {"total": 4, "source": 2, "source_high": 1, "elsewhere": 2}
+    assert explore["security"] == {"total": 5, "source": 2, "source_high": 1, "elsewhere": 3}
 
     # The Security page lede reads the same split from its summary, and every
     # listed row carries its class.
     summary = (await client.get(f"/api/repos/{rid}/security/summary")).json()
-    assert summary["total"] == 4
-    assert summary["class_counts"] == {"source": 2, "test": 1, "docs": 1}
+    assert summary["total"] == 5
+    assert summary["class_counts"] == {"source": 2, "test": 1, "docs": 2}
     assert summary["source_high"] == 1
     rows = (await client.get(f"/api/repos/{rid}/security", params={"limit": 10})).json()
     assert {r["file_path"]: r["path_class"] for r in rows} == {
@@ -117,6 +124,7 @@ async def test_ownership_and_security_splits(client: AsyncClient, session_factor
         "src/b.py": "source",
         "tests/t.py": "test",
         "docs/a.md": "docs",
+        "examples/demo.py": "docs",
     }
 
 
