@@ -2289,6 +2289,53 @@ async def test_a_misspelled_control_is_named_rather_than_silently_defaulted(
 
 
 @pytest.mark.asyncio
+async def test_a_value_passed_to_the_other_control_names_the_right_one(
+    setup_mcp, session, populated_db
+):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(
+        targets=["src/auth/service.py"], scope="code_shape", only=["metrics"]
+    )
+    assert result["ignored_arguments"] == {"scope": "code_shape"}
+    assert 'counts="code_shape"' in result["ignored_arguments_hint"]
+    reverse = await get_health(counts="production")
+    assert 'scope="production"' in reverse["ignored_arguments_hint"]
+    plain = await get_health(counts="code-shape")
+    assert "ignored_arguments_hint" not in plain
+
+
+@pytest.mark.asyncio
+async def test_metric_rows_carry_the_structure_and_history_split(
+    setup_mcp, session, populated_db
+):
+    """The two halves the score is ``10 - structure - history`` of, per file."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "score": 3.0,
+                "nloc": 100,
+                "is_test": False,
+                "structure_deduction": 1.0,
+                "history_deduction": 6.0,
+            }
+        ],
+    )
+    row = (await get_health(targets=["src/auth/service.py"]))["metrics"][0]
+    assert (row["structure_deduction"], row["history_deduction"]) == (1.0, 6.0)
+    worst = (await get_health(only=["worst_files"]))["worst_files"][0]
+    assert (worst["structure_deduction"], worst["history_deduction"]) == (1.0, 6.0)
+    shaped = (await get_health(targets=["src/auth/service.py"], counts="code_shape"))["metrics"]
+    assert (shaped[0]["structure_deduction"], shaped[0]["history_deduction"]) == (1.0, 0.0)
+
+
+@pytest.mark.asyncio
 async def test_a_valid_control_is_not_reported_as_ignored(setup_mcp, session, populated_db):
     from repowise.server.mcp_server import get_health
 
