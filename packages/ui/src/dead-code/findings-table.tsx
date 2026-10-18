@@ -305,7 +305,7 @@ export function FindingsTable({
         key: "path",
         header: "File / Symbol",
         sortable: true,
-        cellClassName: "min-w-[200px] max-w-[480px]",
+        cellClassName: "min-w-[200px] max-w-[360px]",
         render: (f) => (
           <FindingIdentity
             finding={f}
