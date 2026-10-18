@@ -24,6 +24,7 @@ from .scoring import (
     biomarker_category,
     biomarker_weight,
     deduction_split,
+    destacked,
     history_cap,
     is_advisory,
     severity_deduction,
@@ -258,7 +259,8 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     already-weighted-and-capped value the scorer produced at index time — so the
     breakdown reproduces the file's score instead of re-deriving it. Only the
     raw (pre-cap) figure is reconstructed, with the same ``base x weight``
-    formula, so a capped category is honest about how much it shed.
+    formula and the same history de-stacking, so a capped category is honest
+    about how much it shed.
 
     Categories are emitted in :data:`CATEGORY_CAPS` order and a category with no
     findings is omitted, not zero-filled.
@@ -280,8 +282,10 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
         entries = per_category.get(category, [])
         if not entries:
             continue
-        cap = history_cap(structure) if category == HISTORY_CATEGORY else static_cap
         raw_each = [finding_raw_deduction(f) for f in entries]
+        cap = static_cap
+        if category == HISTORY_CATEGORY:
+            cap, raw_each = history_cap(structure), destacked(raw_each)
         applied_each = [float(field(f, "health_impact", 0.0) or 0.0) for f in entries]
         raw_sum = sum(raw_each)
         applied_sum = sum(applied_each)

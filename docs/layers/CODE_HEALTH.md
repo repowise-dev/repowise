@@ -215,7 +215,9 @@ governance, a contradictory decision) come from the
 History amplifies code risk and does not stand alone. Git history costs a file at
 most 1.0 point, plus one point for each point its code-shape findings deduct, up
 to 3.5. A simple file that changes often reads as busy, not broken, and never
-drops below 9.0 from history alone.
+drops below 9.0 from history alone. Several history findings on one file count
+the largest in full and the rest at a quarter, because they usually describe the
+same burst of activity.
 
 | Detector | Fires when |
 |---|---|

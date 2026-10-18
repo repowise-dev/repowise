@@ -50,6 +50,8 @@ _LEGACY_CATEGORY_CAPS = {
 # The structure-conditioned history cap, frozen here.
 _HISTORY_CAP_BASE = 1.0
 _HISTORY_CAP_PER_STRUCTURE = 1.0
+# History de-stacking: the largest history finding whole, the rest at this share.
+_HISTORY_STACK_SHARE = 0.25
 
 _LEGACY_SEVERITY_DEDUCTION = {
     Severity.LOW: 0.3,
@@ -121,6 +123,7 @@ _LEGACY_CATEGORY = {
 def _legacy_score_file(results: list[BiomarkerResult]) -> float:
     """The pre-split algorithm, verbatim, against the frozen tables above."""
     raw: dict[str, float] = {}
+    history: list[float] = []
     for r in results:
         cat = _LEGACY_CATEGORY.get(r.biomarker_type, "size_and_complexity")
         base = (
@@ -129,7 +132,13 @@ def _legacy_score_file(results: list[BiomarkerResult]) -> float:
             else _LEGACY_SEVERITY_DEDUCTION.get(r.severity, 0.5)
         )
         weighted = base * _LEGACY_WEIGHT_MULTIPLIER.get(r.biomarker_type, 1.0)
-        raw[cat] = raw.get(cat, 0.0) + weighted
+        if cat == "organizational":
+            history.append(weighted)
+        else:
+            raw[cat] = raw.get(cat, 0.0) + weighted
+    if history:
+        top = max(history)
+        raw["organizational"] = top + _HISTORY_STACK_SHARE * (sum(history) - top)
 
     structure = sum(
         min(cat_sum, _LEGACY_CATEGORY_CAPS.get(cat, 1.0))

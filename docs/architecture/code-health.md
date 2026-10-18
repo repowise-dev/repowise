@@ -339,7 +339,9 @@ number.
 
 ‡ A ceiling. The live cap is `history_cap(structure)`, `min(3.5, 1.0 + structure)`,
 where `structure` is the file's capped deduction from every other defect
-category, so git history alone costs a file at most 1.0.
+category, so git history alone costs a file at most 1.0. Before that cap, the
+history findings de-stack: the largest counts whole and each other one at 0.25
+(`destacked`), since a busy file trips several history markers for one cause.
 
 `hidden_coupling` is advisory: still detected, stored and listed, it deducts
 nothing. On its own it ranks defect-prone files near chance (AUC about 0.55), and

@@ -1,25 +1,14 @@
 """Per-file score aggregation + repo-level KPIs.
 
-Each file starts at 10.0. Biomarker findings deduct; deductions are
-capped per category so no single category can drive the score below the
-cap. Final score is clamped to [1.0, 10.0].
-
-The recalibrated category caps (plan §3.1):
-
-    organizational        -> -3.5   # ceiling; the live cap is history_cap()
-    structural_complexity -> -2.5   # was -3.5
-    test_coverage         -> -2.0
-    size_and_complexity   -> -1.5   # was -2.0
-    duplication           -> -1.0   # was -1.5
-
-Per-biomarker weight multipliers (plan §3.2 Option A) are applied to
-the per-finding raw deduction *before* category capping, so the strongest
-empirical predictors are no longer suppressed by uniform severity values.
+Each file starts at 10.0. Biomarker findings deduct; each finding's severity
+deduction is scaled by its biomarker's weight, then capped per category
+(:data:`CATEGORY_CAPS`; history by :func:`history_cap`). The final score is
+clamped to [1.0, 10.0].
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -90,11 +79,13 @@ HISTORY_CATEGORY = "organizational"
 # broken. History therefore amplifies code risk rather than standing alone: its
 # cap is 1.0 plus one point per point of structure deduction (every other defect
 # category, already capped), up to the category's 3.5. A file with no code-shape
-# finding keeps at least 9.0. Checked against the defect benchmark: no
-# measurable predictive cost. The weights are unchanged; fit the base and slope
-# with them in the next calibration pass.
+# finding keeps at least 9.0. Against a flat 3.5 cap this costs about 0.009
+# defect AUC; it is kept so a refactor can lift a file that history holds down.
 HISTORY_CAP_BASE: float = 1.0
 HISTORY_CAP_PER_STRUCTURE: float = 1.0
+# History markers restate one another (a busy file trips churn, entropy and
+# scatter together), so after the largest each one adds only this share.
+HISTORY_STACK_SHARE: float = 0.25
 
 
 def history_cap(structure: float) -> float:
@@ -104,6 +95,14 @@ def history_cap(structure: float) -> float:
         CATEGORY_CAPS[HISTORY_CATEGORY],
         HISTORY_CAP_BASE + HISTORY_CAP_PER_STRUCTURE * max(structure, 0.0),
     )
+
+
+def destacked(values: Sequence[float]) -> list[float]:
+    """*values* with the largest kept whole and every other one scaled by :data:`HISTORY_STACK_SHARE`."""
+    if not values:
+        return []
+    top = max(range(len(values)), key=values.__getitem__)
+    return [v if i == top else v * HISTORY_STACK_SHARE for i, v in enumerate(values)]
 
 
 # Per-biomarker deduction by severity. The scorer caps the per-category
@@ -125,9 +124,8 @@ _SEVERITY_DEDUCTION: dict[Severity, float] = {
 # L2-regularized logistic regression of "received a bug-fix in (T0,T1]" on the
 # per-biomarker hits PLUS an explicit NLOC control column - so each weight
 # reflects the biomarker's defect lift *beyond file size*. Cross-project
-# (leave-one-repo-out) pooled OOF AUC ~ 0.70. The fit is reproduced by
-# `local-stash/calibrate_health_weights.py`; the runtime stays pure-
-# deterministic / zero-LLM - only these learned constants ship.
+# (leave-one-repo-out) pooled OOF AUC ~ 0.70. Method and later re-fits:
+# docs/architecture/code-health.md. Only these learned constants ship.
 #
 # Mapping policy ("balanced"): positive, well-measured predictors are scaled
 # into [1.0, 1.8] ∝ coefficient; biomarkers that fired widely but were weak/
@@ -152,15 +150,10 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "complex_method": 1.21,
     "function_hotspot": 1.16,
     "god_class": 1.13,
-    # Prior-defect history (recent bug-fix count). NEUTRAL weight by design, not
-    # a boost: on the 13-repo corpus its calibrated coefficient is ~+0.02 (no lift
-    # beyond size + the existing process signals - it correlates +0.59 with
-    # change_entropy, +0.38 with churn) and the effort-aware Popt gain is +0.01
-    # with bootstrap CIs straddling zero. So it ships as an interpretable,
-    # leakage-free finding ("bug-fixed N times recently" - directly actionable,
-    # and it uniquely flags a handful of files the other signals miss), NOT as a
-    # calibrated predictor. See local-stash/{calibrate_health_weights,
-    # measure_prior_defect,diagnose_prior_defect}.py + the progress doc Phase 8.5.
+    # Prior-defect history (recent bug-fix count). Neutral weight: its 21-repo
+    # coefficient is positive (+0.13 keyword labels, CI spans zero; +0.23 SZZ
+    # labels) but it correlates with change_entropy and churn, so it is kept at
+    # 1.0 as an interpretable finding rather than boosted.
     "prior_defect": 1.0,
     # --- kept at prior: benchmark could not fairly measure these ---
     "untested_hotspot": 1.3,  # benchmark ingests no coverage (has_test_file fallback only)
@@ -644,9 +637,10 @@ def _score_dimension(
     category, cap each category, clamp to ``[1.0, 10.0]``. Every dimension runs
     the identical algorithm against its own weight / category / cap tables.
 
-    *conditioned_cap* ``(category, cap_fn)`` replaces that one category's cap
-    with ``cap_fn(sum of every other category's capped total)``; only the
-    defect dimension uses it, for the history category.
+    *conditioned_cap* ``(category, cap_fn)`` de-stacks that one category's
+    findings (:func:`destacked`) and replaces its cap with ``cap_fn(sum of every
+    other category's capped total)``; only the defect dimension uses it, for the
+    history category.
     """
     raw: dict[str, list[tuple[int, float]]] = {}
     for idx, r in enumerate(results_list):
@@ -670,6 +664,9 @@ def _score_dimension(
             if cat != cond_cat
         )
         cap_for[cond_cat] = cap_fn(others)
+        if cond_cat in raw:
+            idxs, values = zip(*raw[cond_cat], strict=True)
+            raw[cond_cat] = list(zip(idxs, destacked(values), strict=True))
     for cat, entries in raw.items():
         cap = cap_for.get(cat, caps.get(cat, 1.0))
         cat_sum = sum(d for _, d in entries)
