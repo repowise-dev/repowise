@@ -960,6 +960,8 @@ export interface HealthMapPerformance {
  * caption can never disagree with the field beside it.
  */
 export interface HealthMapFeed {
+  /** The directory the field is narrowed to; `null` for the whole repository. Absent on older servers. */
+  area?: string | null;
   files: HealthFileMetric[];
   cap: number;
   shown: number;
@@ -985,6 +987,8 @@ export interface HealthMapQuery {
   include_held?: boolean;
   /** Pin files whose path contains this substring. */
   q?: string;
+  /** Narrow the field to this directory; the cap and every count then describe it. */
+  area?: string;
 }
 
 /* ------------------------------------------------------------------ *
