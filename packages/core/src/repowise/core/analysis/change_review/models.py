@@ -228,6 +228,7 @@ def _delta_dict(delta: ChangeHealthDelta) -> dict[str, Any]:
         "unchanged_total": delta.unchanged_total,
         "improved_total": delta.improved_total,
         "moved_total": delta.moved_total,
+        "moved_to": dict(delta.moved_to),
         "uncertain_total": delta.uncertain_total,
         "findings": [asdict(finding) for finding in delta.findings],
         "skipped": dict(delta.skipped),

@@ -25,6 +25,9 @@ TOP_FINDINGS_LIMIT = 3
 #: Reasons carried on the directive.
 REASON_LIMIT = 3
 
+#: Deleted sources listed with where their code went.
+MOVED_TO_LIMIT = 10
+
 #: Findings whose next-action is carried in the default response.
 _ACTIONABLE_FINDINGS = 2
 
@@ -180,6 +183,8 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
         block["findings_reduced_reason"] = "top_findings_cap"
         block["all_findings_via"] = _call(revspec, extra="include=['findings']")
     block.update(_nonzero(improved=delta.improved_total, moved=delta.moved_total))
+    if delta.moved_to:
+        block["moved_to"] = dict(list(delta.moved_to.items())[:MOVED_TO_LIMIT])
     if delta.skipped:
         block["skipped"] = _skipped(delta.skipped)
     if delta.limits:
