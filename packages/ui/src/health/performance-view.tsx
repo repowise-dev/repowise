@@ -176,7 +176,8 @@ export function PerformanceView({
   // An opened area that does not split further lists every loaded cause in it.
   const listAll = focused && groups.length <= 1;
   // A small area's causes may sit past the loaded page; a card asks for its top.
-  const viewKey = serverKey(filters);
+  // Page-independent: the area facet and each card's top do not move with it.
+  const viewKey = serverKey({ ...filters, page: 1 });
   const load = adapter.getPerformanceOpportunities;
   const topRows: AreaTopRows | undefined = useMemo(
     () =>
@@ -338,6 +339,13 @@ export function PerformanceView({
               preview={listAll ? Number.POSITIVE_INFINITY : AREA_PREVIEW}
               topRows={topRows}
             />
+            {data.areas && data.areas.more > 0 ? (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                {data.areas.more.toLocaleString()} more{" "}
+                {data.areas.more === 1 ? "cause sits" : "causes sit"} in smaller areas not
+                listed here.
+              </p>
+            ) : null}
           </div>
         )}
 

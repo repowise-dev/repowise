@@ -277,9 +277,16 @@ def area_facet(
         split = areas.setdefault(area_at(path, chosen), {})
         for state, count in states.items():
             split[state] = split.get(state, 0) + count
+    # Files directly in the base sit in an area equal to it: its own files,
+    # which opening again would not narrow.
     ranked = sorted(
         (
-            {"area": area, "total": sum(split.values()), "actionability": split}
+            {
+                "area": area,
+                "total": sum(split.values()),
+                "actionability": split,
+                **({"own": True} if area == root else {}),
+            }
             for area, split in areas.items()
         ),
         key=lambda entry: (

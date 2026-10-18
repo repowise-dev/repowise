@@ -669,3 +669,16 @@ async def test_a_finding_stored_before_role_owner_is_keyed_on_its_loop_owner(
     assert details["src/c.py"]["execution_role"] == "request"
     assert details["src/e.py"]["role_owner"] == "src/e.py::load"
     assert details["src/e.py"]["execution_role"] == "event_consumer"
+
+
+async def test_an_opened_area_narrows_the_rows_but_not_the_scope_sizes(
+    app, client: AsyncClient
+) -> None:
+    repo_id, _ = await _seed(app, client)
+    whole = await _page(client, repo_id, **_EVERYTHING)
+    assert whole["areas"]["total"] == whole["total"]
+    assert sum(entry["total"] for entry in whole["areas"]["items"]) + whole["areas"]["more"] == whole["total"]
+    area = whole["areas"]["items"][0]["area"]
+    opened = await _page(client, repo_id, **_EVERYTHING, area=area)
+    assert opened["total"] == whole["areas"]["items"][0]["total"]
+    assert opened["scopes"] == whole["scopes"]

@@ -461,6 +461,10 @@ def test_area_facet_ranks_areas_and_splits_their_states() -> None:
                                                         "plan_ready": 1, "investigate": 2}},
     ]
     assert area_facet(groups, limit=1)["more"] == 10
+    # Files directly in the opened area are its own files, flagged as such.
+    inside = area_facet([("pkg/a/x.py", "advisory", 1), ("pkg/a/b/y.py", "advisory", 1)], base="pkg/a")
+    own = [entry for entry in inside["items"] if entry.get("own")]
+    assert [entry["area"] for entry in own] == ["pkg/a"]
 
 
 def test_an_area_narrows_by_directory_never_by_a_shared_prefix() -> None:

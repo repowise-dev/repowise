@@ -45,6 +45,8 @@ export interface PerformanceAreaGroup {
   counts: ActionabilityCounts;
   /** Causes the area holds in the scope and filters. */
   total: number;
+  /** The opened area's own files, which "Show all" would not narrow. */
+  own?: boolean;
 }
 
 /**
@@ -59,6 +61,7 @@ export function facetAreaGroups(
   return facet.items.map((entry) => ({
     area: entry.area,
     total: entry.total,
+    ...(entry.own ? { own: true } : {}),
     counts: countsFromFacet(
       Object.entries(entry.actionability).map(([value, total]) => ({ value, total: total ?? 0 })),
     ),

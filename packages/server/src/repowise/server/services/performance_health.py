@@ -238,10 +238,23 @@ class PerformanceHealthService:
             include_unverified=self._include_unverified,
             **filters,
         )
+        # The scope sizes describe the whole repository, so an opened area
+        # does not shrink the scope control; that needs the unnarrowed groups.
+        whole = (
+            grouped
+            if query.area is None
+            else await performance_facet_counts(
+                self._session,
+                self._repository_id,
+                file_paths=query.file_paths,
+                include_unverified=self._include_unverified,
+                scoped=True,
+            )
+        )
         queue_judged = not await any_unjudged(self._session, self._repository_id, "causes")
         return (
             fold_scoped_facets(grouped, query, judged=judged),
-            scope_counts(grouped, judged=queue_judged),
+            scope_counts(whole, judged=queue_judged),
             area_facet(by_file, base=query.area, depth=area_depth),
         )
 

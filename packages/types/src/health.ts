@@ -732,6 +732,8 @@ export type PerformanceScope = "now" | "production" | "all";
 export interface PerformanceAreaFacetEntry {
   area: string;
   total: number;
+  /** The opened area's (or the root's) own files: opening it again narrows nothing. */
+  own?: boolean;
   actionability: Partial<Record<PerformanceActionabilityState, number>>;
 }
 

@@ -26,6 +26,15 @@ export function areaLabel(area: string): string {
   return area || "Repository root";
 }
 
+/** A card's heading: an area, or the opened area's own files. */
+function cardLabel(group: PerformanceAreaGroup): string {
+  if (!group.own) return areaLabel(group.area);
+  return group.area ? `Files directly in ${group.area}` : "Files at the repository root";
+}
+
+/** Cards past this many never fetch their own rows, so a wide scope is not a burst. */
+const FETCHING_CARDS = 8;
+
 function countsLine(group: PerformanceAreaGroup): string {
   const parts = (["plan_ready", "advisory", "investigate", "expected"] as const)
     .filter((state) => group.counts[state] > 0)
@@ -67,10 +76,11 @@ export function AreaGroups({
 }) {
   return (
     <div className="space-y-4">
-      {groups.map((group) => (
+      {groups.map((group, index) => (
         <AreaCard
-          key={group.area}
+          key={`${group.own ? "own:" : ""}${group.area}`}
           group={group}
+          mayFetch={index < FETCHING_CARDS}
           adapter={adapter}
           selectedId={selectedId}
           callbacks={callbacks}
@@ -93,9 +103,11 @@ const AreaCard = memo(function AreaCard({
   onAreaPrompt,
   preview,
   topRows,
+  mayFetch,
 }: {
   group: PerformanceAreaGroup;
   topRows?: AreaTopRows | undefined;
+  mayFetch: boolean;
   adapter: PerformanceViewAdapter;
   selectedId: string | null;
   callbacks: RowCallbacks;
@@ -105,9 +117,10 @@ const AreaCard = memo(function AreaCard({
   preview: number;
 }) {
   const [open, setOpen] = useState(true);
-  const label = areaLabel(group.area);
+  const label = cardLabel(group);
   // The loaded page may hold none of a small area's causes; ask for them.
-  const short = group.items.length < Math.min(preview, group.total);
+  // An own-files card cannot be asked for by area, which would list its subareas too.
+  const short = group.items.length === 0 && group.total > 0 && !group.own && mayFetch;
   const { data: fetched } = useSWR<PerformanceOpportunity[]>(
     open && short && topRows ? `performance-area-top:${topRows.key}:${group.area}` : null,
     () => topRows!.load(group.area),
@@ -153,7 +166,7 @@ const AreaCard = memo(function AreaCard({
             callbacks={callbacks}
             label={`Causes in ${label}`}
           />
-          {rest > 0 ? (
+          {rest > 0 && !group.own ? (
             <button
               type="button"
               onClick={() => onOpenArea(group.area)}
