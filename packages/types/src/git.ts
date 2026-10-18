@@ -7,6 +7,8 @@
  * adapter before passing data to components.
  */
 
+import type { HealthDeltaSummaryResponse } from "./generated/http.js";
+
 export interface FileAuthor {
   name: string;
   email: string;
@@ -164,6 +166,10 @@ export interface Commit {
   agent_confidence?: string | null;
   /** agent / human_attested / unknown; null when attribution is off. */
   attribution?: CommitAttribution | null;
+  /** What the commit did to health, the row's lead; null when never scanned. */
+  health_delta?: HealthDeltaSummaryResponse | null;
+  /** Hotspot files (as flagged now) the commit touched. */
+  touches_hotspot?: number;
 }
 
 export type CommitAttribution = "agent" | "human_attested" | "unknown";
@@ -215,6 +221,9 @@ export interface CommitHealth {
   /** `available` when every changed file was compared, `partial` when some
    *  were skipped (unsupported language, binary, unreadable). */
   status: string;
+  /** An older analyzer wrote it: the direction holds, the counts do not
+   *  compare with current rows. */
+  stale?: boolean;
   introduced_count: number;
   worsened_count: number;
   resolved_count: number;

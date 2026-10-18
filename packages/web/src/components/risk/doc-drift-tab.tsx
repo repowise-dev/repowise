@@ -10,6 +10,7 @@
 
 import { useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { DocDriftView, type DocDriftAdapter } from "@repowise-dev/ui/doc-drift";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { getDocDrift, getDocDriftReferences } from "@/lib/api/doc-drift";
@@ -37,12 +38,14 @@ export function DocDriftTab({
   initialDocument,
 }: {
   repoId: string;
-  /** From `?document=` on the code-health page. */
+  /** From `?document=` on the Docs drift page. */
   initialDocument?: string | undefined;
 }) {
   const adapter = useDocDriftAdapter(repoId);
+  const t = useTranslations("views.docDrift");
   return (
     <DocDriftView
+      clean={{ title: t("cleanTitle"), description: t("cleanBody") }}
       // Remount on a new deep link: the view reads it once, as initial state.
       key={initialDocument ?? ""}
       adapter={adapter}

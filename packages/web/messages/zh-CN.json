@@ -151,7 +151,11 @@
     "contracts": "契约",
     "coChanges": "共变分析",
     "groupPeopleAndHistory": "人员与历史",
-    "groupSettings": "设置"
+    "groupSettings": "设置",
+    "groupUnderstand": "理解",
+    "groupCodeQuality": "代码质量",
+    "tests": "测试",
+    "security": "安全"
   },
   "breadcrumb": {
     "overview": "概览",
@@ -182,7 +186,9 @@
     "settings": "设置",
     "knowledgeGraph": "知识图谱",
     "zoom": "缩放地图",
-    "files": "文件"
+    "files": "文件",
+    "tests": "测试",
+    "docDrift": "文档漂移"
   },
   "errors": {
     "workspaceErrorTitle": "无法加载工作区",
@@ -282,7 +288,9 @@
       "viewLabel": "历史视图",
       "viewByChange": "按变更",
       "viewByCommit": "按提交",
-      "viewEvents": "事件"
+      "viewEvents": "事件",
+      "viewReview": "审查变更",
+      "reviewDescription": "选择一次变更涉及的文件，查看依赖它们的代码、常与它们一起变更的文件，以及合适的审查者。"
     },
     "changes": {
       "description": "主线上每个已合并的变更，均从 git 历史读取：拉取请求、合并请求、Gerrit 变更和单独提交，以及每个变更带入的文件。",
@@ -422,14 +430,10 @@
       "coChangeNoticeLess": "收起",
       "coChangeNoticeBody": "一些误报已被移除：方法之间不共享状态的类不再被判为低内聚，链式三元表达式和条件表达式不再计为深层嵌套，导入循环只统计实际运行的导入，预期异常的测试和带 noqa 的行不再被标记为吞掉异常，因此许多文件的分数会升高。定义在其他函数内部的函数现在也会被度量，pytest 不会收集的、以测试命名的 Python 模块会按生产代码评分，因此部分文件的分数会降低。PHP 文件现在会进行复杂度、内聚性和测试断言检查，因此 PHP 的分数也会变化。",
       "tabs": {
-        "triage": "总览",
         "performance": "性能",
         "findings": "发现",
-        "coverage": "测试",
         "deadCode": "死代码",
-        "docDrift": "文档漂移",
-        "security": "安全",
-        "impact": "影响范围"
+        "map": "地图"
       }
     },
     "knowledgeGraph": {
@@ -649,6 +653,27 @@
         "low": "低",
         "info": "信息"
       }
+    },
+    "security": {
+      "title": "安全",
+      "description": "模式扫描匹配到的密钥与危险调用，已发布代码优先列出。"
+    },
+    "tests": {
+      "title": "测试",
+      "description": "你的测试覆盖了哪些代码：已导入覆盖率报告时为实测结果，否则根据依赖图推断。",
+      "promptAction": "为你的智能体复制提示词",
+      "cleanTitle": "{files} 个已测量文件中没有未测试的热点",
+      "cleanBody": "所有频繁变更或被大量代码依赖的文件都有测试覆盖。",
+      "batchPromptAction": "为这 {count} 项复制提示词"
+    },
+    "docDrift": {
+      "cleanTitle": "未发现文档漂移",
+      "cleanBody": "文档中提到的每个文件路径仍然有效。每次更新都会重新检查，重命名或移动文件后值得再看一次。"
+    },
+    "docsTabs": {
+      "explorer": "浏览",
+      "freshness": "文档新鲜度",
+      "drift": "文档漂移"
     }
   },
   "settings": {
@@ -1100,7 +1125,8 @@
       "notScannedBody": "密钥与危险调用的模式扫描会在仓库同步时运行。点击「重新扫描」启动一次，或在仓库中运行 repowise update。",
       "capped": "仅显示前 {count} 条发现项。本页的计数只涵盖这 {count} 条。",
       "byDirectory": "按目录",
-      "byDirectoryBody": "匹配集中的位置，按数量从多到少排列。"
+      "byDirectoryBody": "匹配集中的位置，按数量从多到少排列。",
+      "clearTitleScoped": "{files} 个文件中没有安全发现项"
     },
     "deadCodeLede": {
       "label": "可删除",
@@ -1125,7 +1151,16 @@
     "allFindings": "全部发现项",
     "findingsCount": "{count} 条发现项",
     "promptTitle": "AI 修复提示词",
-    "promptDescription": "一段可直接粘贴的提示词，引导 AI 智能体确认并修复这条安全发现项。"
+    "promptDescription": "一段可直接粘贴的提示词，引导 AI 智能体确认并修复这条安全发现项。",
+    "rescan": "重新扫描",
+    "rescanning": "正在重新扫描…",
+    "promptAction": "为你的智能体复制提示词",
+    "deadCodeClean": {
+      "title": "未发现死代码",
+      "titleScoped": "{files} 个文件中没有死代码",
+      "body": "没有不可达文件、未使用的导出或僵尸依赖包。"
+    },
+    "batchPromptAction": "为这 {count} 项复制提示词"
   },
   "symbols": {
     "clearFileFilter": "清除文件筛选",

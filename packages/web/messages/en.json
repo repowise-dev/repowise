@@ -151,7 +151,11 @@
     "contracts": "Contracts",
     "coChanges": "Co-Changes",
     "groupPeopleAndHistory": "People & History",
-    "groupSettings": "Settings"
+    "groupSettings": "Settings",
+    "groupUnderstand": "Understand",
+    "groupCodeQuality": "Code quality",
+    "tests": "Tests",
+    "security": "Security"
   },
   "breadcrumb": {
     "overview": "Overview",
@@ -182,7 +186,9 @@
     "settings": "Settings",
     "knowledgeGraph": "Knowledge Graph",
     "zoom": "Zoom Map",
-    "files": "Files"
+    "files": "Files",
+    "tests": "Tests",
+    "docDrift": "Doc drift"
   },
   "errors": {
     "workspaceErrorTitle": "Failed to load the workspace",
@@ -282,7 +288,9 @@
       "viewLabel": "History view",
       "viewByChange": "By change",
       "viewByCommit": "By commit",
-      "viewEvents": "Events"
+      "viewEvents": "Events",
+      "viewReview": "Review a change",
+      "reviewDescription": "Pick the files a change touches to see what depends on them, what tends to change with them, and who should review."
     },
     "changes": {
       "description": "Every merged change on the main line, read back from git: pull and merge requests, Gerrit changes and lone commits, with the files each one landed.",
@@ -422,14 +430,10 @@
       "coChangeNoticeLess": "Hide",
       "coChangeNoticeBody": "Several false findings are gone: classes whose methods share no state no longer read as low cohesion, chained ternaries and conditional expressions no longer count as deep nesting, import cycles count only imports that run, and expected-exception tests and noqa lines no longer flag swallowed exceptions, so many files score higher. Functions defined inside other functions are now measured, and a test-named Python module that pytest does not collect is scored as production code, so some files score lower. PHP files now get complexity, cohesion and test-assertion checks, so PHP scores move as well.",
       "tabs": {
-        "triage": "Overview",
         "performance": "Performance",
         "findings": "Findings",
-        "coverage": "Tests",
         "deadCode": "Dead code",
-        "docDrift": "Doc drift",
-        "security": "Security",
-        "impact": "Blast radius"
+        "map": "Map"
       }
     },
     "knowledgeGraph": {
@@ -649,6 +653,27 @@
         "low": "low",
         "info": "info"
       }
+    },
+    "security": {
+      "title": "Security",
+      "description": "Secrets and dangerous calls the pattern scan matched, shipped code first."
+    },
+    "tests": {
+      "title": "Tests",
+      "description": "Which code your tests reach: measured from a coverage report when one is ingested, inferred from the dependency graph otherwise.",
+      "promptAction": "Copy prompt for your agent",
+      "cleanTitle": "No untested hotspots across {files} measured files",
+      "cleanBody": "Every file that changes often or that much of the code depends on has tests watching it.",
+      "batchPromptAction": "Copy prompt for these {count}"
+    },
+    "docDrift": {
+      "cleanTitle": "No documentation drift found",
+      "cleanBody": "Every file path the documentation names still resolves. It re-checks on each update, so look again after a rename or a move."
+    },
+    "docsTabs": {
+      "explorer": "Explorer",
+      "freshness": "Doc freshness",
+      "drift": "Doc drift"
     }
   },
   "settings": {
@@ -1100,7 +1125,8 @@
       "notScannedBody": "The pattern scan for secrets and dangerous calls runs when the repository syncs. Start one with Re-scan, or run repowise update in the repository.",
       "capped": "Showing the first {count} findings. The counts on this page cover those {count}.",
       "byDirectory": "By directory",
-      "byDirectoryBody": "Where the matches concentrate, busiest directories first."
+      "byDirectoryBody": "Where the matches concentrate, busiest directories first.",
+      "clearTitleScoped": "No security findings across {files} files"
     },
     "deadCodeLede": {
       "label": "Deletion-ready",
@@ -1125,7 +1151,16 @@
     "allFindings": "All findings",
     "findingsCount": "{count} findings",
     "promptTitle": "AI fix prompt",
-    "promptDescription": "A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding."
+    "promptDescription": "A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding.",
+    "rescan": "Re-scan",
+    "rescanning": "Re-scanning…",
+    "promptAction": "Copy prompt for your agent",
+    "deadCodeClean": {
+      "title": "No dead code found",
+      "titleScoped": "No dead code across {files} files",
+      "body": "No unreachable files, unused exports or zombie packages."
+    },
+    "batchPromptAction": "Copy prompt for these {count}"
   },
   "symbols": {
     "clearFileFilter": "Clear file filter",

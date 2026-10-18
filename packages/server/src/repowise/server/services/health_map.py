@@ -26,6 +26,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.areas import in_area
 from repowise.core.analysis.finding_registry import HELD_ORIGINS
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.counts import project as project_counts
@@ -92,11 +93,14 @@ class HealthMapFeed:
     #: Which half of the repository the field describes.
     scope: str = DEFAULT_SCOPE
     counts: str = DEFAULT_COUNTS
+    #: The directory the field is narrowed to, ``None`` for the whole repository.
+    area: str | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
             "scope": self.scope,
             "counts": self.counts,
+            "area": self.area,
             "files": self.files,
             "cap": self.cap,
             "shown": self.shown,
@@ -144,10 +148,16 @@ class HealthMapService:
         counts: str = DEFAULT_COUNTS,
         include_held: bool = False,
         query: str | None = None,
+        area: str | None = None,
     ) -> HealthMapFeed:
         session, repo_id = self._session, self._repository_id
         metrics = await crud.get_health_metrics(session, repo_id)
         rollups = await crud.performance_file_rollups(session, repo_id)
+        if area:
+            # A drilled area is its own field: every count, the cap and the
+            # performance totals below describe the area, never the repository.
+            metrics = [m for m in metrics if in_area(m.file_path, area)]
+            rollups = [r for r in rollups if in_area(r.file_path, area)]
         languages = await crud.get_file_language_map(session, repo_id)
         summary = await crud.get_performance_summary(session, repo_id)
         perf_languages = supported_perf_languages()
@@ -315,6 +325,7 @@ class HealthMapService:
             ),
             scope=DEFAULT_SCOPE if not scope_narrowed else "production",
             counts=counts,
+            area=area or None,
         )
 
     def _row(

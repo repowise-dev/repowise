@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from repowise.core.attribution import file_share
 from repowise.core.co_change import parse_partners
+from repowise.server.schemas.history import HealthDeltaSummaryResponse
 from repowise.server.schemas.risk_semantics import RiskAuthority
 
 
@@ -245,6 +246,11 @@ class CommitResponse(BaseModel):
     agent_autonomy_tier: int | None = None
     agent_confidence: str | None = None
     attribution: str | None = None
+    #: What the commit did to health, the row's lead. ``None`` when it was
+    #: never scanned, which is not the same claim as "changed nothing".
+    health_delta: HealthDeltaSummaryResponse | None = None
+    #: Hotspot files (as flagged now) the commit touched.
+    touches_hotspot: int = 0
 
 
 class RiskDriverResponse(BaseModel):
@@ -296,6 +302,9 @@ class CommitHealthResponse(BaseModel):
     #: ``available`` when every changed file was compared, ``partial`` when
     #: some were skipped (unsupported language, binary, unreadable).
     status: str
+    #: An older analyzer wrote it: the direction holds, the counts do not
+    #: compare with current rows.
+    stale: bool = False
     introduced_count: int
     worsened_count: int
     resolved_count: int

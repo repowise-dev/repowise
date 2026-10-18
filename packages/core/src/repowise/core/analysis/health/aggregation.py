@@ -38,6 +38,7 @@ __all__ = [
     "biomarker_breakdown",
     "finding_base_deduction",
     "finding_raw_deduction",
+    "group_rollup",
     "module_label",
     "module_labels",
     "module_rollups",
@@ -137,25 +138,34 @@ def module_rollups(
         if module:
             buckets.setdefault(str(module), []).append(row)
 
-    rows: list[dict[str, Any]] = []
-    for name, group in buckets.items():
-        # Weight floors at 1 per file, so a non-empty group always has weight
-        # and the average never divides by zero.
-        total_weight = sum(max(_nloc(row), 1) for row in group)
-        average = sum(_score(row) * max(_nloc(row), 1) for row in group) / total_weight
-        worst = worst_metric(group, deductions or {})
-        rows.append(
-            {
-                "module": name,
-                "file_count": len(group),
-                "nloc": sum(_nloc(row) for row in group),
-                "average_health": round(average, 2),
-                "worst_performer_path": field(worst, "file_path", None),
-                "worst_performer_score": round(_score(worst), 2),
-            }
-        )
+    rows = [
+        {"module": name, **group_rollup(group, deductions)} for name, group in buckets.items()
+    ]
     rows.sort(key=lambda row: (row["average_health"], row["module"]))
     return rows
+
+
+def group_rollup(
+    group: Sequence[Any], deductions: Mapping[str, float] | None = None
+) -> dict[str, Any]:
+    """One NLOC-weighted rollup over a non-empty group of scored rows.
+
+    The fold :func:`module_rollups` applies per module, shared with any surface
+    that buckets files another way (a directory at any depth) so the average
+    and the worst performer mean the same thing everywhere.
+    """
+    # Weight floors at 1 per file, so a non-empty group always has weight
+    # and the average never divides by zero.
+    total_weight = sum(max(_nloc(row), 1) for row in group)
+    average = sum(_score(row) * max(_nloc(row), 1) for row in group) / total_weight
+    worst = worst_metric(group, deductions or {})
+    return {
+        "file_count": len(group),
+        "nloc": sum(_nloc(row) for row in group),
+        "average_health": round(average, 2),
+        "worst_performer_path": field(worst, "file_path", None),
+        "worst_performer_score": round(_score(worst), 2),
+    }
 
 
 def severity_breakdown(findings: Iterable[Any]) -> dict[str, int]:

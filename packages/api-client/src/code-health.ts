@@ -185,6 +185,7 @@ export async function getHealthMap(
     counts: opts.counts,
     include_held: opts.include_held || undefined,
     q: opts.q?.trim() || undefined,
+    area: opts.area || undefined,
   });
 }
 

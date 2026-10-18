@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from httpx import AsyncClient
 
+from repowise.core.analysis.change_health.commit_scan import current_fingerprint
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from tests.unit.server.conftest import create_test_repo
@@ -434,11 +435,13 @@ async def test_commit_detail_reports_what_the_commit_did_to_health(
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     async with get_session(app.state.session_factory) as session:
+        stored = await crud.get_repository(session, repo["id"])
         await crud.upsert_commit_health_bulk(
             session,
             repo["id"],
             [
                 {
+                    **current_fingerprint(stored.local_path),
                     "sha": "bbbbbbbb22",
                     "status": "partial",
                     "introduced_count": 2,
@@ -492,11 +495,13 @@ async def test_commit_detail_names_where_a_moved_finding_came_from(
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     async with get_session(app.state.session_factory) as session:
+        stored = await crud.get_repository(session, repo["id"])
         await crud.upsert_commit_health_bulk(
             session,
             repo["id"],
             [
                 {
+                    **current_fingerprint(stored.local_path),
                     "sha": "bbbbbbbb22",
                     "status": "available",
                     "worsened_count": 1,

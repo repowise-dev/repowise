@@ -29,6 +29,8 @@ export * from "./health-file-drawer";
 export * from "./ai-prompt-builder";
 export * from "./ai-prompt-modal";
 export * from "./ai-prompt-button";
+export * from "./ai-prompt-action";
+export * from "./row-prompt-action";
 export * from "./hot-functions-panel";
 export * from "./hidden-coupling-list";
 export * from "./defect-accuracy-card";

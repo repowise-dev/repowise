@@ -8,7 +8,8 @@ import { EmptyState } from "../shared/empty-state";
 import { CiHint } from "../shared/ci-hint";
 import { Segmented } from "../shared/segmented";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
-import { AiPromptButton } from "../health/ai-prompt-button";
+import { PromptForRowsButton, RowPromptAction } from "../health/row-prompt-action";
+import { AGENT_PROMPT_LABEL } from "../health/ai-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { formatDate, formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
@@ -121,11 +122,27 @@ function FindingLocation({ finding }: { finding: SecurityFinding }) {
 export interface SecurityFindingsTableProps {
   findings: SecurityFinding[];
   onSelect?: (finding: SecurityFinding) => void;
-  /** When set, each row shows an "AI fix prompt" action that calls this. */
+  /**
+   * When set, each row leads with an agent-prompt action that calls this:
+   * the row's primary verb, since fixes happen through the reader's agent.
+   */
   onGeneratePrompt?: (finding: SecurityFinding) => void;
+  /** The prompt action's label. */
+  promptLabel?: string;
+  /** One prompt over every finding the current filters show. */
+  onGenerateBatchPrompt?: (findings: SecurityFinding[]) => void;
+  /** The batch action's label for `n` findings. */
+  batchPromptLabel?: (count: number) => string;
 }
 
-export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: SecurityFindingsTableProps) {
+export function SecurityFindingsTable({
+  findings,
+  onSelect,
+  onGeneratePrompt,
+  promptLabel = AGENT_PROMPT_LABEL,
+  onGenerateBatchPrompt,
+  batchPromptLabel,
+}: SecurityFindingsTableProps) {
   const [q, setQ] = useState("");
   const [sev, setSev] = useState<SeverityFilter>("all");
 
@@ -182,7 +199,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
         priority: 2,
         render: (f) => (
           <span
-            className="block max-w-[320px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
+            className="block max-w-[240px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
             title={f.snippet ?? ""}
           >
             {f.snippet || "—"}
@@ -221,21 +238,13 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
       cols.push({
         key: "actions",
         header: "",
-        headerClassName: "w-10",
-        hideInCard: true,
         render: (f) => (
-          <span onClick={(e) => e.stopPropagation()}>
-            <AiPromptButton
-              variant="icon"
-              label="AI fix prompt"
-              onClick={() => onGeneratePrompt(f)}
-            />
-          </span>
+          <RowPromptAction label={promptLabel} subject={f.file_path} onClick={() => onGeneratePrompt(f)} />
         ),
       });
     }
     return cols;
-  }, [onGeneratePrompt]);
+  }, [onGeneratePrompt, promptLabel]);
 
   if (findings.length === 0) {
     return (
@@ -271,6 +280,14 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
           />
         </div>
         <Segmented label="Severity" value={sev} onChange={setSev} options={options} />
+        {onGenerateBatchPrompt && (
+          <PromptForRowsButton
+            count={filtered.length}
+            onClick={() => onGenerateBatchPrompt(filtered)}
+            {...(batchPromptLabel ? { label: batchPromptLabel } : {})}
+            className="sm:ml-auto"
+          />
+        )}
       </div>
 
       {/* Scrolls sideways inside its own frame on a phone rather than

@@ -217,7 +217,7 @@ export function OverviewBody({
           title="Where the risk concentrates"
           description="Ranked by prior bug fixes and change frequency, mined from full git history rather than from the code alone."
           action={
-            <SectionLink href={`${base}/code-health?tab=triage`} LinkComponent={LinkComponent}>
+            <SectionLink href={`${base}/code-health`} LinkComponent={LinkComponent}>
               {`All ${formatNumber(stats.hotspot_count)} hotspots`}
             </SectionLink>
           }
