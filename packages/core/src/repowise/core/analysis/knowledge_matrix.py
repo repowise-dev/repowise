@@ -24,6 +24,7 @@ from typing import Any
 from repowise.core.analysis.health.rows import field as row_field
 from repowise.core.analysis.health.rows import json_field
 from repowise.core.analysis.owners import OwnerAccumulator, is_active
+from repowise.core.analysis.ownership_concentration import person_owner
 from repowise.core.author_identity import IdentityResolver
 
 #: Authors kept per file, strongest first.
@@ -48,16 +49,6 @@ def file_author_shares(
     total = commits.total()
     ranked = sorted(commits.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
     return [(key, n / total) for key, n in ranked]
-
-
-def primary_owner_key(row: Any, resolve: IdentityResolver) -> str | None:
-    """The file's primary owner as a person's key; ``None`` for automation."""
-    name = row_field(row, "primary_owner_name")
-    email = row_field(row, "primary_owner_email")
-    if not (name or email):
-        return None
-    key = resolve(name, email)
-    return key if key and not resolve.is_bot(key) else None
 
 
 class _Index:
@@ -106,7 +97,7 @@ def build_knowledge_matrix(
     seen: Counter[str] = Counter()
     for m in sorted(git_rows, key=lambda r: row_field(r, "file_path")):
         shares = file_author_shares(m, resolve)
-        primary = primary_owner_key(m, resolve)
+        primary = person_owner(m, resolve)
         seen.update({key for key, _ in shares} | ({primary} if primary else set()))
         shaped.append((m, shares, primary))
 
@@ -141,5 +132,4 @@ __all__ = [
     "TOP_AUTHORS",
     "build_knowledge_matrix",
     "file_author_shares",
-    "primary_owner_key",
 ]

@@ -52,16 +52,24 @@ class ModuleSilo:
         return self.owned / self.file_count
 
 
+def person_owner(row: Any, resolve: IdentityResolver) -> str | None:
+    """The row's primary owner as a person's key; ``None`` for automation or nobody.
+
+    Keyed as the owner fold keys it, so an email-only owner counts too.
+    """
+    name = row_field(row, "primary_owner_name")
+    email = row_field(row, "primary_owner_email")
+    if not (name or email):
+        return None
+    key = resolve(name, email)
+    return key if key and not resolve.is_bot(key) else None
+
+
 def owned_files(rows: Iterable[Any], resolve: IdentityResolver) -> OwnedFiles:
     """Fold git rows into per-person primary ownership."""
     out = OwnedFiles()
     for m in rows:
-        name = row_field(m, "primary_owner_name")
-        email = row_field(m, "primary_owner_email")
-        # Keyed as the owner fold keys it, so an email-only owner counts too.
-        owner = resolve(name, email) if (name or email) else None
-        if owner and resolve.is_bot(owner):
-            owner = None
+        owner = person_owner(m, resolve)
         if (row_field(m, "bus_factor") or 0) == 1:
             out.single_owner_files += 1
         module = module_label(row_field(m, "file_path"))
@@ -115,6 +123,7 @@ __all__ = [
     "OwnedFiles",
     "module_silos",
     "owned_files",
+    "person_owner",
     "top_owners",
     "truck_factor",
 ]

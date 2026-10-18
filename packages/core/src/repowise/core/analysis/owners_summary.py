@@ -23,6 +23,7 @@ from repowise.core.analysis.owners import (
     is_quiet,
 )
 from repowise.core.analysis.ownership_concentration import (
+    OwnedFiles,
     module_silos,
     owned_files,
     top_owners,
@@ -41,32 +42,29 @@ def _iso(acc: OwnerAccumulator | None) -> str | None:
     return at.isoformat() if at else None
 
 
-def _person(accs: Mapping[str, OwnerAccumulator], key: str, resolve: IdentityResolver) -> dict:
+Accs = Mapping[str, OwnerAccumulator]
+
+
+def _person(accs: Accs, key: str, resolve: IdentityResolver) -> dict:
     acc = accs.get(key)
     return {"key": key, "name": acc.name if acc else resolve.display_name(key)}
 
 
-def build_owner_summary(
-    git_rows: Iterable[Any],
-    resolve: IdentityResolver,
-    accs: Mapping[str, OwnerAccumulator],
-) -> dict[str, Any]:
-    """The summary payload; see ``OwnersSummaryResponse`` for the fields."""
-    rows = list(git_rows)
-    owned = owned_files(rows, resolve)
-    owned_total = owned.owned_total
-
+def _concentration(owned: OwnedFiles, accs: Accs, resolve: IdentityResolver) -> dict[str, Any]:
+    total = owned.owned_total
     top = top_owners(owned, CONCENTRATION_TOP_N)
-    concentration = {
+    return {
         "top_n": CONCENTRATION_TOP_N,
-        "share": (sum(n for _, n in top) / owned_total) if owned_total else None,
+        "share": (sum(n for _, n in top) / total) if total else None,
         "owners": [
-            {**_person(accs, key, resolve), "files_owned": n, "share": n / owned_total}
+            {**_person(accs, key, resolve), "files_owned": n, "share": n / total}
             for key, n in top
         ],
     }
 
-    silos = [
+
+def _silos(owned: OwnedFiles, accs: Accs, resolve: IdentityResolver) -> list[dict[str, Any]]:
+    return [
         {
             "module": s.module,
             "owner": _person(accs, s.owner, resolve),
@@ -77,32 +75,18 @@ def build_owner_summary(
         for s in module_silos(owned)
     ]
 
-    people = [a for a in accs.values() if a.key and a.kind == "human"]
-    activity_known = any(a.commit_count_90d is not None for a in people)
+
+def _activity(people: list[OwnerAccumulator]) -> dict[str, Any]:
+    """Who is active, and who has gone quiet while owning files that still change."""
     quiet = sorted(
         (a for a in people if is_quiet(a) and a.owned_changing_files > 0),
         key=lambda a: (-a.owned_changing_files, -a.files_owned, a.key),
     )
-
     return {
-        "truck_factor": truck_factor(owned),
-        "people": len(people),
-        "automation_identities": sum(1 for a in accs.values() if a.key and a.kind != "human"),
-        "owners": len(owned.by_owner),
-        "tracked_files": sum(owned.module_totals.values()),
-        "owned_files": owned_total,
-        "single_owner_files": owned.single_owner_files,
-        "single_owner_hotspots": sum(
-            1
-            for m in rows
-            if (row_field(m, "bus_factor") or 0) == 1 and row_field(m, "is_hotspot")
-        ),
-        "concentration": concentration,
-        "silo_modules": silos,
         "activity_window_days": ACTIVITY_WINDOW_DAYS,
         # A floor when the indexed commits stop inside the window.
         "active_contributors": sum(1 for a in people if is_active(a)),
-        "activity_complete": activity_known,
+        "activity_complete": any(a.commit_count_90d is not None for a in people),
         "quiet_owners": [
             {
                 "key": a.key,
@@ -114,6 +98,35 @@ def build_owner_summary(
             for a in quiet[:QUIET_OWNERS_CAP]
         ],
         "quiet_owners_total": len(quiet),
+    }
+
+
+def build_owner_summary(
+    git_rows: Iterable[Any],
+    resolve: IdentityResolver,
+    accs: Accs,
+) -> dict[str, Any]:
+    """The summary payload; see ``OwnersSummaryResponse`` for the fields."""
+    rows = list(git_rows)
+    owned = owned_files(rows, resolve)
+    identities = [a for a in accs.values() if a.key]
+    people = [a for a in identities if a.kind == "human"]
+    return {
+        "truck_factor": truck_factor(owned),
+        "people": len(people),
+        "automation_identities": len(identities) - len(people),
+        "owners": len(owned.by_owner),
+        "tracked_files": sum(owned.module_totals.values()),
+        "owned_files": owned.owned_total,
+        "single_owner_files": owned.single_owner_files,
+        "single_owner_hotspots": sum(
+            1
+            for m in rows
+            if (row_field(m, "bus_factor") or 0) == 1 and row_field(m, "is_hotspot")
+        ),
+        "concentration": _concentration(owned, accs, resolve),
+        "silo_modules": _silos(owned, accs, resolve),
+        **_activity(people),
     }
 
 

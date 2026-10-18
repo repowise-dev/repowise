@@ -11,13 +11,13 @@ from datetime import UTC, datetime, timedelta
 from repowise.core.analysis.knowledge_matrix import (
     build_knowledge_matrix,
     file_author_shares,
-    primary_owner_key,
 )
 from repowise.core.analysis.owners import aggregate_owners, people_resolver
 from repowise.core.analysis.owners_summary import build_owner_summary
 from repowise.core.analysis.ownership_concentration import (
     module_silos,
     owned_files,
+    person_owner,
     top_owners,
     truck_factor,
 )
@@ -212,8 +212,8 @@ def test_file_author_shares_merge_people_and_drop_automation() -> None:
     # Ada's two addresses are one author holding the whole file.
     assert file_author_shares(ROWS[1], resolve) == [("ada@example.com", 1.0)]
     assert file_author_shares(ROWS[6], resolve) == []
-    assert primary_owner_key(ROWS[1], resolve) == "ada@example.com"
-    assert primary_owner_key(ROWS[6], resolve) is None
+    assert person_owner(ROWS[1], resolve) == "ada@example.com"
+    assert person_owner(ROWS[6], resolve) is None
 
 
 def test_file_author_shares_keep_the_top_n() -> None:
@@ -252,4 +252,4 @@ def test_an_email_only_owner_owns_files_on_every_surface() -> None:
     accs, _ = aggregate_owners(rows, [], resolve=resolve)
     assert accs["solo@example.com"].files_owned == 1
     assert dict(owned_files(rows, resolve).by_owner) == {"solo@example.com": 1}
-    assert primary_owner_key(rows[0], resolve) == "solo@example.com"
+    assert person_owner(rows[0], resolve) == "solo@example.com"
