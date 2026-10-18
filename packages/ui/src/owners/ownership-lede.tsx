@@ -20,7 +20,8 @@ export interface OwnershipLedeProps {
   LinkComponent?: React.ElementType | undefined;
 }
 
-const pct = (share: number) => `${Math.round(share * 100)}%`;
+/** Whole percent, floored below 100 so a share short of everything never reads "100%". */
+const pct = (share: number) => `${share >= 1 ? 100 : Math.min(99, Math.round(share * 100))}%`;
 
 /** The reads beside the lede, each present only when it has something to point at. */
 function ownershipReads(summary: OwnersSummary, hrefForTab: OwnershipLedeProps["hrefForTab"]): ReadItem[] {
@@ -109,11 +110,10 @@ export function OwnershipLede({ coverage, summary, hrefForTab, repoName, LinkCom
           {...(good ? { valueColor: "var(--color-success)", band: { label: "Well shared", color: "var(--color-success)" } } : {})}
         >
           <p>
-            {pct(share)} {scope} changed in the last {summary.activity_window_days} days has two or more people
-            who know it: {coverage.sharedFiles.toLocaleString()} of {coverage.files.toLocaleString()} changing
-            files.
+            {pct(share)} {scope} changed in the last {summary.activity_window_days} days
+            {coverage.basis === "nloc" ? ", by lines," : ""} has two or more people who know it.
             {coverage.singleHolderFiles > 0 &&
-              ` The other ${coverage.singleHolderFiles.toLocaleString()} have one main author; your agent can plan how a second person learns them.`}
+              ` ${coverage.singleHolderFiles.toLocaleString()} of the ${coverage.files.toLocaleString()} changing files have one main author; your agent can plan how a second person learns them.`}
           </p>
           {coverage.singleHolderFiles > 0 && (
             <AiPromptButton className="mt-3" onClick={spreadPrompt} label={AGENT_PROMPT_LABEL} />
