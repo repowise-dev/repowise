@@ -354,9 +354,13 @@ performance dimension a single `performance` category capped at 2.0. See §6.
 `large_assertion_block` and `duplicated_assertion_block` are the two
 **test-quality** smells (see §5.3). They fire only on test files and sit in
 a deliberately small category so a noisy test can't dominate its own score.
-`large_method` is now gated on a minimal CCN floor (≥ 2) so a long-but-flat
-body (a big data literal) reads as layout, not a complexity smell: a small
-step toward decoupling the score from raw file size.
+`large_method` is gated on a minimal judged CCN (≥ 3) so a long-but-flat
+body (a big data literal, a dispatch of one-line arms) reads as layout, not a
+complexity smell. In `.tsx` / `.jsx` it counts code lines only: a line holding
+nothing but JSX tags, attributes or text is markup, while a line with a `{...}`
+expression is code. Its reason gives both measures, "N lines of code (M with
+blanks and comments)", and `details.span` carries M. `complex_method` reports
+the judged CCN that sets its severity and adds the raw CCN when they differ.
 
 `ownership_risk` (long-run minor-contributor dispersion, Bird et al.) and
 `churn_risk` (size-normalized relative churn, Nagappan-Ball) are git-only
