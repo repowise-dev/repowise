@@ -17,11 +17,15 @@ DeltaStatus = Literal[
     "stale_baseline",
 ]
 
-ChangeKind = Literal["introduced", "worsened", "unchanged", "resolved", "uncertain"]
+#: ``moved`` is a finding carried to another file with its code, shape unchanged.
+ChangeKind = Literal[
+    "introduced", "worsened", "improved", "moved", "unchanged", "resolved", "uncertain"
+]
 
 #: How a head-side finding is tied to the change. Ordered most to least direct;
 #: ``unknown`` never claims the change caused the finding.
 AttributionBasis = Literal[
+    "moved",
     "added_lines",
     "changed_symbol",
     "changed_call_edge",
@@ -32,6 +36,7 @@ AttributionBasis = Literal[
 ]
 
 ATTRIBUTION_CONFIDENCE: dict[str, str] = {
+    "moved": "high",
     "added_lines": "high",
     "changed_symbol": "high",
     "new_file": "high",
@@ -142,6 +147,8 @@ class ChangeFinding:
     opportunity_rank: int | None = None
     #: Canonical typed reference, only when the head finding exists in storage.
     health_reference: dict[str, Any] | None = None
+    #: ``{"path", "symbol"}`` the finding's code was moved from, when it moved.
+    moved_from: dict[str, str] | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
@@ -180,6 +187,10 @@ class ChangeHealthDelta:
     resolved_total: int = 0
     unchanged_total: int = 0
     uncertain_total: int = 0
+    #: Findings paired with a lower-metric peer at the same place or across a move.
+    improved_total: int = 0
+    #: Findings that moved to another file with their code, whatever their shape did.
+    moved_total: int = 0
     #: ``{path: reason}``. Any reason outside ``NO_CODE_GAP`` means the run was partial.
     skipped: dict[str, str] = field(default_factory=dict)
     timing_ms: float = 0.0

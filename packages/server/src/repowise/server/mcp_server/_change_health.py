@@ -179,6 +179,11 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
     if len(delta.findings) > len(emitted):
         block["findings_reduced_reason"] = "top_findings_cap"
         block["all_findings_via"] = _call(revspec, extra="include=['findings']")
+    # Only when nonzero, so an ordinary change's block does not grow.
+    if delta.improved_total:
+        block["improved"] = delta.improved_total
+    if delta.moved_total:
+        block["moved"] = delta.moved_total
     if delta.skipped:
         block["skipped"] = _skipped(delta.skipped)
     if delta.limits:
@@ -211,6 +216,8 @@ def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
         row["lines"] = [finding.line_start, finding.line_end or finding.line_start]
     if finding.severity_before:
         row["severity_before"] = finding.severity_before
+    if finding.moved_from:
+        row["moved_from"] = finding.moved_from
     if finding.opportunity_id:
         row["opportunity_id"] = finding.opportunity_id
         row["opportunity_rank"] = finding.opportunity_rank
@@ -229,12 +236,6 @@ def finding_detail(finding: ChangeFinding, revspec: str | None) -> dict[str, Any
 
 
 # -- internals --------------------------------------------------------------
-
-
-
-
-
-
 
 
 def _counts(findings: list[ChangeFinding], attribute: str) -> dict[str, int]:

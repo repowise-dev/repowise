@@ -93,6 +93,18 @@ def symbol_bodies(path: str, raw: bytes, symbols: Iterable[Symbol]) -> list[Symb
     return out
 
 
+def bodies_for(
+    sources: Mapping[str, bytes], symbols: Mapping[str, Iterable[Symbol]]
+) -> list[SymbolBody]:
+    """Every symbol body across the files in *symbols*, read from *sources*."""
+    return [
+        body
+        for path, file_symbols in symbols.items()
+        if path in sources
+        for body in symbol_bodies(path, sources[path], file_symbols)
+    ]
+
+
 def build_move_map(
     base: Iterable[SymbolBody],
     head: Iterable[SymbolBody],
