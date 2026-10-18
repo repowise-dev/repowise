@@ -147,7 +147,8 @@ def walk_file(
     # The grammar follows the path, the language tag does not: everything
     # below still selects its dialects by ``language``. ``engine.py`` keys the
     # walk cache on this same tag, so the two must not drift.
-    grammar = _get_language(grammar_tag_for(language, abs_path))
+    grammar_tag = grammar_tag_for(language, abs_path)
+    grammar = _get_language(grammar_tag)
     if grammar is None:
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
@@ -177,7 +178,7 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
-    markup = markup_rows(tree.root_node, language, source)
+    markup = markup_rows(tree.root_node, grammar_tag, source)
     flags = module_false_constants(tree.root_node, source, language)
     facts_of = _facts_reader(abs_path, language, lmap)
     fn_nodes = _collect_function_nodes(tree.root_node, lmap)
