@@ -550,55 +550,25 @@ def build_people(git_metadata: Iterable[Row], commits: Iterable[Row] = ()) -> di
 
     Owners are people, not display names: each file's primary owner goes
     through :func:`people_resolver`, so one person under two names or emails
-    is one owner, and automation owns nothing here.
+    is one owner, and automation owns nothing here. The counting itself lives
+    in :mod:`repowise.core.analysis.ownership_concentration`, shared with the
+    owners summary.
     """
-    from repowise.core.analysis.health.aggregation import module_label
     from repowise.core.analysis.owners import people_resolver
-
-    rows = list(git_metadata)
-    resolve = people_resolver(rows, commits)
-    owners: Counter[str] = Counter()
-    single_owner_files = 0
-    module_owner_files: dict[str, Counter[str]] = {}
-    module_file_totals: Counter[str] = Counter()
-
-    for m in rows:
-        name = m.get("primary_owner_name")
-        owner = resolve(name, m.get("primary_owner_email")) if name else None
-        if owner and resolve.is_bot(owner):
-            owner = None
-        if _int(m.get("bus_factor")) == 1:
-            single_owner_files += 1
-        module = module_label(m.get("file_path"))
-        module_file_totals[module] += 1
-        if owner:
-            owners[owner] += 1
-            module_owner_files.setdefault(module, Counter())[owner] += 1
-
-    silo_count = sum(
-        1
-        for module, mowners in module_owner_files.items()
-        if max(mowners.values()) / module_file_totals[module] > 0.8
+    from repowise.core.analysis.ownership_concentration import (
+        module_silos,
+        owned_files,
+        truck_factor,
     )
 
-    # Fewest primary owners who together hold more than half the owned files.
-    owned_total = sum(owners.values())
-    truck_factor: int | None = None
-    if owned_total:
-        cumulative = 0
-        truck_factor = 0
-        for count in sorted(owners.values(), reverse=True):
-            cumulative += count
-            truck_factor += 1
-            if cumulative * 2 > owned_total:
-                break
-
+    rows = list(git_metadata)
+    owned = owned_files(rows, people_resolver(rows, commits))
     return {
-        "owner_count": len(owners),
-        "tracked_files": sum(module_file_totals.values()),
-        "single_owner_files": single_owner_files,
-        "silo_count": silo_count,
-        "truck_factor": truck_factor,
+        "owner_count": len(owned.by_owner),
+        "tracked_files": sum(owned.module_totals.values()),
+        "single_owner_files": owned.single_owner_files,
+        "silo_count": len(module_silos(owned)),
+        "truck_factor": truck_factor(owned),
     }
 
 

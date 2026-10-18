@@ -14,17 +14,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
+    KnowledgeMatrixResponse,
+    OwnerAliases,
     OwnerCoAuthor,
     OwnerFileEntry,
     OwnerListEntry,
     OwnerModuleRollup,
     OwnerProfileResponse,
+    OwnersSummaryResponse,
     Paginated,
 )
 from repowise.server.services.owner_profile import (
     _OwnerAccumulator,
     aggregate_owners,
+    knowledge_matrix,
     module_share,
+    owner_summary,
     silo_modules,
 )
 
@@ -45,6 +50,7 @@ def _to_list_entry(acc: _OwnerAccumulator, module_totals: dict[str, int]) -> Own
         key=acc.key,
         name=acc.name,
         email=acc.email,
+        kind=acc.kind,
         files_owned=acc.files_owned,
         hotspots_owned=acc.hotspots_owned,
         silo_modules=silo_modules(acc, module_totals),
@@ -80,7 +86,7 @@ def _to_profile(acc: _OwnerAccumulator, module_totals: dict[str, int]) -> OwnerP
         acc.files_touched,
         key=lambda fp: (
             acc.files_touched[fp],
-            (acc.file_meta[fp].churn_percentile or 0.0),
+            (acc.file_meta[fp]["churn_percentile"] or 0.0),
         ),
         reverse=True,
     )[:50]
@@ -90,11 +96,11 @@ def _to_profile(acc: _OwnerAccumulator, module_totals: dict[str, int]) -> OwnerP
             OwnerFileEntry(
                 file_path=fp,
                 commit_count_90d=acc.files_touched[fp],
-                churn_percentile=(m.churn_percentile or 0.0) * 100.0,
-                bus_factor=m.bus_factor or 0,
-                is_hotspot=bool(m.is_hotspot),
-                last_commit_at=m.last_commit_at,
-                primary_owner_commit_pct=m.primary_owner_commit_pct,
+                churn_percentile=(m["churn_percentile"] or 0.0) * 100.0,
+                bus_factor=m["bus_factor"] or 0,
+                is_hotspot=bool(m["is_hotspot"]),
+                last_commit_at=m["last_commit_at"],
+                primary_owner_commit_pct=m["primary_owner_commit_pct"],
             )
         )
 
@@ -115,6 +121,8 @@ def _to_profile(acc: _OwnerAccumulator, module_totals: dict[str, int]) -> OwnerP
         key=acc.key,
         name=acc.name,
         email=acc.email,
+        kind=acc.kind,
+        aliases=OwnerAliases(names=acc.alias_names, emails=acc.alias_emails),
         files_owned=acc.files_owned,
         hotspots_owned=acc.hotspots_owned,
         silo_modules=silo_modules(acc, module_totals),
@@ -184,6 +192,24 @@ async def list_owners(
         has_more=next_offset is not None,
         next_offset=next_offset,
     )
+
+
+@router.get("/{repo_id}/owners/summary", response_model=OwnersSummaryResponse)
+async def get_owners_summary(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Truck factor, single-owner files, silos, concentration and activity, people only."""
+    return await owner_summary(session, repo_id)
+
+
+@router.get("/{repo_id}/owners/knowledge-matrix", response_model=KnowledgeMatrixResponse)
+async def get_knowledge_matrix(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Every code file's top authors and risk facts, for client-side off-boarding."""
+    return await knowledge_matrix(session, repo_id)
 
 
 @router.get(

@@ -1,0 +1,120 @@
+"""The repository-level knowledge-risk summary behind the Contributors page.
+
+One server-side reading, so the page never derives these figures from a
+partial page of owners: the truck factor, single-owner files, silo modules,
+how concentrated ownership is, who is active, and who has gone quiet while
+still owning files that change. People only: automation owns nothing and is
+counted separately.
+
+Sync, no I/O, no clock. Reads the owner fold's accumulators and the same git
+rows and identity resolver the fold was built from.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+from repowise.core.analysis.health.rows import field as row_field
+from repowise.core.analysis.owners import (
+    ACTIVITY_WINDOW_DAYS,
+    OwnerAccumulator,
+    is_active,
+    is_quiet,
+)
+from repowise.core.analysis.ownership_concentration import (
+    module_silos,
+    owned_files,
+    top_owners,
+    truck_factor,
+)
+from repowise.core.author_identity import IdentityResolver
+
+#: Owners counted in the concentration figure.
+CONCENTRATION_TOP_N = 3
+#: Longest quiet-owner list returned; ``quiet_owners_total`` carries the rest.
+QUIET_OWNERS_CAP = 25
+
+
+def _iso(acc: OwnerAccumulator | None) -> str | None:
+    at = acc.last_commit_at if acc else None
+    return at.isoformat() if at else None
+
+
+def _person(accs: Mapping[str, OwnerAccumulator], key: str, resolve: IdentityResolver) -> dict:
+    acc = accs.get(key)
+    return {"key": key, "name": acc.name if acc else resolve.display_name(key)}
+
+
+def build_owner_summary(
+    git_rows: Iterable[Any],
+    resolve: IdentityResolver,
+    accs: Mapping[str, OwnerAccumulator],
+) -> dict[str, Any]:
+    """The summary payload; see ``OwnersSummaryResponse`` for the fields."""
+    rows = list(git_rows)
+    owned = owned_files(rows, resolve)
+    owned_total = owned.owned_total
+
+    top = top_owners(owned, CONCENTRATION_TOP_N)
+    concentration = {
+        "top_n": CONCENTRATION_TOP_N,
+        "share": (sum(n for _, n in top) / owned_total) if owned_total else None,
+        "owners": [
+            {**_person(accs, key, resolve), "files_owned": n, "share": n / owned_total}
+            for key, n in top
+        ],
+    }
+
+    silos = [
+        {
+            "module": s.module,
+            "owner": _person(accs, s.owner, resolve),
+            "owned_files": s.owned,
+            "file_count": s.file_count,
+            "share": s.share,
+        }
+        for s in module_silos(owned)
+    ]
+
+    people = [a for a in accs.values() if a.key and a.kind == "human"]
+    activity_known = any(a.commit_count_90d is not None for a in people)
+    quiet = sorted(
+        (a for a in people if is_quiet(a) and a.owned_changing_files > 0),
+        key=lambda a: (-a.owned_changing_files, -a.files_owned, a.key),
+    )
+
+    return {
+        "truck_factor": truck_factor(owned),
+        "people": len(people),
+        "automation_identities": sum(1 for a in accs.values() if a.key and a.kind != "human"),
+        "owners": len(owned.by_owner),
+        "tracked_files": sum(owned.module_totals.values()),
+        "owned_files": owned_total,
+        "single_owner_files": owned.single_owner_files,
+        "single_owner_hotspots": sum(
+            1
+            for m in rows
+            if (row_field(m, "bus_factor") or 0) == 1 and row_field(m, "is_hotspot")
+        ),
+        "concentration": concentration,
+        "silo_modules": silos,
+        "activity_window_days": ACTIVITY_WINDOW_DAYS,
+        # A floor when the indexed commits stop inside the window.
+        "active_contributors": sum(1 for a in people if is_active(a)),
+        "activity_complete": activity_known,
+        "quiet_owners": [
+            {
+                "key": a.key,
+                "name": a.name,
+                "last_commit_at": _iso(a),
+                "files_owned": a.files_owned,
+                "changing_files_owned": a.owned_changing_files,
+            }
+            for a in quiet[:QUIET_OWNERS_CAP]
+        ],
+        "quiet_owners_total": len(quiet),
+    }
+
+
+__all__ = ["CONCENTRATION_TOP_N", "QUIET_OWNERS_CAP", "build_owner_summary"]

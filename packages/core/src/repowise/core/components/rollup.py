@@ -3,7 +3,7 @@
 Sync, no I/O. Every figure carries ``basis`` (``measured``, ``inferred`` or
 ``unavailable``) and a ``method`` saying what it rests on. The arithmetic is
 the existing one: health is :func:`module_rollups` over the component's files,
-the bus factor is the repository truck factor (:func:`build_people`) taken
+the bus factor is the repository truck factor (:func:`truck_factor`) taken
 over the component's files. Health and dead code leave out files in languages
 :data:`LANGUAGE_GATES` holds back on that layer, the same registry the
 ``ungated`` SQL filter reads, and say how many. No figure names a person.
@@ -18,7 +18,7 @@ from repowise.core.analysis.finding_registry import gate_for
 from repowise.core.analysis.health.aggregation import module_rollups
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.owners import people_resolver
-from repowise.core.stats_highlights import build_people
+from repowise.core.analysis.ownership_concentration import owned_files, truck_factor
 
 _TOP_HOTSPOTS = 5
 #: Below this many owned files a truck factor is an anecdote, not a measure.
@@ -107,22 +107,17 @@ def _hotspots(paths: list[str], git_rows: Mapping[str, Mapping[str, Any]]) -> di
 
 def _bus_factor(paths: list[str], git_rows: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     rows = [git_rows[p] for p in paths if p in git_rows]
-    people = build_people(rows)
-    if people["truck_factor"] is None:
+    owned_rows = owned_files(rows, people_resolver(rows))
+    value = truck_factor(owned_rows)
+    if value is None:
         return _unavailable("no file in this component has a known primary owner")
-    # Owned the way build_people counts it: a primary owner who is not a bot.
-    resolve = people_resolver(rows)
-    owned = 0
-    for m in rows:
-        name = m.get("primary_owner_name")
-        if name and not resolve.is_bot(resolve(name, m.get("primary_owner_email"))):
-            owned += 1
+    owned = owned_rows.owned_total
     out: dict[str, Any] = {
-        "value": people["truck_factor"],
+        "value": value,
         "owned_files": owned,
         "file_count": len(paths),
         "coverage": round(owned / len(paths), 2) if paths else 0.0,
-        "single_owner_files": people["single_owner_files"],
+        "single_owner_files": owned_rows.single_owner_files,
         "basis": "measured",
         "method": "fewest primary owners who together own over half the owned files",
     }

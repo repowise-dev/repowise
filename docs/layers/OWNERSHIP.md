@@ -78,6 +78,16 @@ the most files in it. A module is a **silo** when one person owns more than 80%
 of its files. Per file, the dashboard and REST API mark a silo when the primary
 owner holds more than 80% of the file's commits.
 
+### Repository summary and knowledge matrix
+
+`/api/repos/<id>/owners/summary` returns the truck factor, single-owner files,
+silo modules, the share of owned files held by the top three people, active
+contributors, and quiet owners (no commit in 90 days, still owning files that
+changed in that window). `/api/repos/<id>/owners/knowledge-matrix` returns every
+code file's top five people with their share of its commits, for off-boarding
+what-ifs. Both count people only: bots and coding agents own nothing and hold no
+share, and each contributor carries a `kind` (`human`, `bot`, `agent`).
+
 ### Detectors
 
 Three code-health detectors turn these fields into findings. They run with the

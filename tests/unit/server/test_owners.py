@@ -280,3 +280,76 @@ async def test_commits_90d_counts_the_owners_own_commits(client: AsyncClient, ap
     assert by_name["Alice"]["commit_count_90d"] == 2
     assert by_name["Bob"]["commit_count_90d"] == 0
     assert by_name["Bob"]["last_commit_at"].startswith("2024-03-01")
+
+
+@pytest.mark.asyncio
+async def test_list_and_profile_carry_kind_and_merged_identities(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _seed(app.state.session_factory, repo["id"])
+
+    items = (await client.get(f"/api/repos/{repo['id']}/owners")).json()["items"]
+    assert {i["kind"] for i in items} == {"human"}
+
+    key = quote("alice@example.com", safe="")
+    data = (await client.get(f"/api/repos/{repo['id']}/owners/{key}")).json()
+    assert data["kind"] == "human"
+    assert data["aliases"] == {"names": ["Alice"], "emails": ["alice@example.com"]}
+
+
+@pytest.mark.asyncio
+async def test_owners_summary(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _seed(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/owners/summary")
+    assert resp.status_code == 200
+    data = resp.json()
+    # Alice and Bob own one file each: it takes both to pass half.
+    assert data["truck_factor"] == 2
+    assert (data["owned_files"], data["tracked_files"]) == (2, 2)
+    assert (data["single_owner_files"], data["single_owner_hotspots"]) == (1, 1)
+    assert data["concentration"]["share"] == 1.0
+    # Two people split src evenly, so it is no silo.
+    assert data["silo_modules"] == []
+    assert data["activity_complete"] is False
+    assert data["quiet_owners"] == []
+
+
+@pytest.mark.asyncio
+async def test_knowledge_matrix(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _seed(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/owners/knowledge-matrix")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["dirs"] == ["src"]
+    keys = [a["key"] for a in data["authors"]]
+    assert sorted(keys) == ["alice@example.com", "bob@example.com"]
+    a, b = keys.index("alice@example.com"), keys.index("bob@example.com")
+    main = next(f for f in data["files"] if f[1] == "main.py")
+    # No health row: score null, nloc 0.
+    assert main == [0, "main.py", 0, None, True, 1, a, [[a, 0.7], [b, 0.3]]]
+
+
+@pytest.mark.asyncio
+async def test_owner_fold_is_built_once_per_index_state(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.server.services import owner_profile
+
+    calls = []
+    real = owner_profile._load_owner_data
+
+    async def counting(session, repo_id):
+        calls.append(repo_id)
+        return await real(session, repo_id)
+
+    monkeypatch.setattr(owner_profile, "_load_owner_data", counting)
+    repo = await create_test_repo(client)
+    await _seed(app.state.session_factory, repo["id"])
+
+    base = f"/api/repos/{repo['id']}/owners"
+    for url in (base, f"{base}/summary", f"{base}/knowledge-matrix", base):
+        assert (await client.get(url)).status_code == 200
+    assert calls == [repo["id"]]
