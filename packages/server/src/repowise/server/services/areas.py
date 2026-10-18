@@ -44,6 +44,7 @@ from repowise.core.persistence.models import (
     HealthFinding,
     HealthSnapshot,
 )
+from repowise.server.services.coupling import coupled_areas_for, coupling_answer
 
 __all__ = [
     "MAX_TREE_DEPTH",
@@ -300,5 +301,8 @@ async def area_detail_payload(
         score = area_score(_keep(_score_map(snap.per_file_scores_json), kept), area, model.weights)
         if score is not None:
             trend.append({"taken_at": _iso(snap.taken_at), "health": score})
-    detail = area_detail(model.index, area, trend=trend)
+    coupled = await coupling_answer(
+        session, repo_id, ("coupled", area), lambda m: coupled_areas_for(m, area)
+    )
+    detail = area_detail(model.index, area, trend=trend, coupled=coupled)
     return _details.remember(key, {**detail, "delta_window": _delta_window(model)})

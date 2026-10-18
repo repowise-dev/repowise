@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from .coupling import CouplingAreaSummary
 
 Band = Literal["at_risk", "needs_work", "fair", "good", "excellent"]
 
@@ -181,3 +183,6 @@ class AreaDetailResponse(BaseModel):
     top_findings: list[AreaFinding]
     test_reach: AreaTestReach
     delta_window: AreaDeltaWindow
+    #: Areas outside this one its files change with, strongest first; test
+    #: material left out. Each named at this area's own depth.
+    coupled_areas: list[CouplingAreaSummary] = Field(default_factory=list)

@@ -30,6 +30,7 @@
     "./git": "./src/git/index.ts",
     "./git/*": "./src/git/*.tsx",
     "./commits": "./src/commits/index.ts",
+    "./commits/health-delta": "./src/commits/health-delta.ts",
     "./commits/*": "./src/commits/*.tsx",
     "./dead-code": "./src/dead-code/index.ts",
     "./dead-code/*": "./src/dead-code/*.tsx",
