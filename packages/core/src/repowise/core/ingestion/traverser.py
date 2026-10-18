@@ -20,10 +20,11 @@ import functools
 import os
 import re
 import threading
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import NamedTuple
 
 import pathspec
@@ -518,6 +519,10 @@ class FileTraverser:
     @property
     def _distribution_inits(self) -> frozenset[str]:
         return self._console_script_tables().package_inits
+
+    def get_cached_file_content(self, rel_path: str) -> str | None:
+        """Text of any config or manifest file read during traversal discovery."""
+        return self._console_script_tables().config_texts.get(rel_path)
 
     # ------------------------------------------------------------------
     # Public API
@@ -1228,6 +1233,8 @@ class ConsoleScriptTables(NamedTuple):
     """.NET test projects, which govern .cs files beneath them."""
     js_test_roots: JsTestRoots = JsTestRoots()
     """Where Vitest or Jest collects tests, which decides custom-pattern JS/TS tests."""
+    config_texts: Mapping[str, str] = MappingProxyType({})
+    """Cached text of project config and manifest files read during discovery."""
 
 
 def _collect_console_scripts(
@@ -1255,6 +1262,7 @@ def _collect_console_scripts(
     unreadable: list[str] = []
     csproj_files: list[tuple[str, str]] = []
     js_configs: list[tuple[str, dict]] = []
+    config_texts: dict[str, str] = {}
     all_config_names = (*PYTEST_CONFIG_NAMES, *JS_TEST_CONFIG_NAMES, "*.csproj")
     try:
         config_files = list(
@@ -1269,11 +1277,14 @@ def _collect_console_scripts(
             try:
                 text = config_file.read_text(encoding="utf-8", errors="replace")
                 csproj_files.append((rel, text))
+                config_texts[rel] = text
             except Exception:
                 csproj_files.append((rel, ""))
             continue
         if name in PYTEST_CONFIG_NAMES:
-            project, options, parsed = _read_python_config(config_file)
+            project, options, parsed, text = _read_python_config(config_file)
+            if parsed:
+                config_texts[rel] = text
             if options is not None:
                 pytest_configs.append((rel, options))
             if not parsed:
@@ -1286,13 +1297,20 @@ def _collect_console_scripts(
                         inits.add(init)
                 _add_script_targets(project, names, modules)
         if name in JS_TEST_CONFIG_NAMES:
-            try:
-                text = config_file.read_text(encoding="utf-8")
-                js_opts = js_test_options(name, text)
-                if js_opts is not None:
-                    js_configs.append((rel, js_opts))
-            except Exception:
-                pass
+            text = config_texts.get(rel)
+            if text is None:
+                try:
+                    text = config_file.read_text(encoding="utf-8")
+                    config_texts[rel] = text
+                except Exception:
+                    text = None
+            if text:
+                try:
+                    js_opts = js_test_options(name, text)
+                    if js_opts is not None:
+                        js_configs.append((rel, js_opts))
+                except Exception:
+                    pass
     return ConsoleScriptTables(
         frozenset(names),
         frozenset(modules),
@@ -1301,6 +1319,7 @@ def _collect_console_scripts(
         pytest_roots(pytest_configs, unreadable),
         read_dotnet_test_projects(csproj_files),
         js_test_roots(js_configs),
+        config_texts,
     )
 
 
@@ -1319,8 +1338,8 @@ def _distribution_init(repo_root: Path, base: Path, dist: str) -> str | None:
     return init.relative_to(repo_root).as_posix()
 
 
-def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None, bool]:
-    """``([project] table, pytest options, parsed)`` of one config.
+def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None, bool, str]:
+    """``([project] table, pytest options, parsed, text)`` of one config.
 
     The first two are None if absent or unreadable; *parsed* is False when the
     file could not be read or parsed, so what it collects is unknown.
@@ -1330,13 +1349,13 @@ def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None, bo
     try:
         text = config_file.read_text(encoding="utf-8")
         if config_file.name != "pyproject.toml":
-            return None, parse_pytest_options(config_file.name, text), True
+            return None, parse_pytest_options(config_file.name, text), True, text
         data = tomllib.loads(text)
     except Exception:
-        return None, None, False
+        return None, None, False, ""
     project = data.get("project")
     options = pytest_options(config_file.name, toml=data)
-    return (project if isinstance(project, dict) else None), options, True
+    return (project if isinstance(project, dict) else None), options, True, text
 
 
 def _add_script_targets(project: dict, names: set[str], modules: set[str]) -> None:

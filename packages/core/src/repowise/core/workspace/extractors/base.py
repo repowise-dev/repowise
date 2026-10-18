@@ -152,11 +152,15 @@ def iter_source_files(
             continue
         if exclude is not None and exclude(info.path):
             continue
-        try:
-            raw = Path(info.abs_path).read_bytes()
-        except OSError:
-            continue
-        content = raw.decode("utf-8", errors="replace")
+        cached = traverser.get_cached_file_content(info.path)
+        if cached is not None:
+            content = cached
+        else:
+            try:
+                raw = Path(info.abs_path).read_bytes()
+            except OSError:
+                continue
+            content = raw.decode("utf-8", errors="replace")
         # Universal newlines, as ``read_text`` applied before this read moved
         # to bytes. Dialect regexes are written against ``\n``.
         if "\r" in content:
