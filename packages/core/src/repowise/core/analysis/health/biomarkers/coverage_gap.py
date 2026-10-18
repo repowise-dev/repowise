@@ -31,7 +31,7 @@ class CoverageGapDetector:
             return []
         if ctx.total_coverable_lines <= 0:
             return []
-        if ctx.is_test_material:
+        if ctx.is_test_material or ctx.reexport_only:
             return []
 
         cov = ctx.line_coverage_pct

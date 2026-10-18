@@ -399,6 +399,8 @@ is **silent when no coverage report was ingested** (`line_coverage_pct is None`)
 absent coverage is never imputed as uncovered. It lives in its own capped
 category (`test_coverage_gradient`, −2.0) so the additive continuous signal
 neither squeezes nor is squeezed by the binary gates, and it skips test files.
+It and `coverage_gap` also skip a file that holds only a docstring, imports and
+export lists (`__all__`): a package `__init__.py` or an `index.ts` barrel.
 Calibrated offline against the defect corpus, it recovers **+0.043 corpus AUC
 [95% CI +0.023, +0.061]** on the covered subset (≈65% of the continuous-feature
 ceiling), Popt-neutral, and is exactly zero on repos without ingested coverage:
