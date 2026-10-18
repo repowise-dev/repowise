@@ -7,8 +7,8 @@ the Overview figure and the page figure cannot disagree:
 - refactoring: the stored rollup the Refactoring page lede reads;
 - ownership: files with bus factor exactly 1, the Contributors page's
   "Sole-owned files";
-- security: matches split by :func:`security_path_class`, the Security page's
-  "in shipped source" versus tests and docs;
+- security: :func:`security_class_counts`, the split the Security page lede
+  reads, "in shipped source" versus tests and docs;
 - coverage: the newest ingested report, the Tests page lede.
 
 The reads are grouped counts, a primary-key read and the decision lanes'
@@ -18,7 +18,6 @@ so a store that fails costs its own block rather than the page.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -31,39 +30,8 @@ from repowise.core.persistence.crud.analysis.coverage import load_newest_ingest
 from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     get_refactoring_summary,
 )
-from repowise.core.persistence.models import GitMetadata, SecurityFinding
-
-# Mirrors `securityPathClass` in packages/ui/src/security/posture.tsx, which
-# the Security page uses for its lede. Change both together.
-_TEST_SEGMENTS = frozenset(
-    {
-        "test",
-        "tests",
-        "__tests__",
-        "__test__",
-        "testdata",
-        "e2e",
-        "spec",
-        "specs",
-        "fixtures",
-        "__fixtures__",
-    }
-)
-_DOCS_SEGMENTS = frozenset({"docs", "doc", "documentation", "example", "examples"})
-_MOCK_SEGMENT = re.compile(r"^(__)?mocks?(__)?$")
-_TEST_FILE = re.compile(r"(^test_|_test\.|\.test\.|\.spec\.|_spec\.)", re.IGNORECASE)
-_DOCS_FILE = re.compile(r"\.(md|mdx|rst|adoc)$", re.IGNORECASE)
-
-
-def security_path_class(path: str) -> str:
-    """``source``, ``test`` or ``docs``, judged from the path."""
-    parts = path.replace("\\", "/").lower().split("/")
-    name = parts[-1] if parts else ""
-    if any(p in _TEST_SEGMENTS or _MOCK_SEGMENT.match(p) for p in parts) or _TEST_FILE.search(name):
-        return "test"
-    if any(p in _DOCS_SEGMENTS for p in parts) or _DOCS_FILE.search(name):
-        return "docs"
-    return "source"
+from repowise.core.persistence.models import GitMetadata
+from repowise.server.services.security_classes import security_class_counts
 
 
 async def _decisions(session: AsyncSession, repo_id: str) -> dict[str, int]:
@@ -104,26 +72,13 @@ async def _ownership(session: AsyncSession, repo_id: str) -> dict[str, int]:
 
 
 async def _security(session: AsyncSession, repo_id: str) -> dict[str, int]:
-    # Grouped by path and severity, so the classifier runs once per file.
-    groups = (
-        await session.execute(
-            select(SecurityFinding.file_path, SecurityFinding.severity, func.count())
-            .where(SecurityFinding.repository_id == repo_id)
-            .group_by(SecurityFinding.file_path, SecurityFinding.severity)
-        )
-    ).all()
-    total = source = source_high = 0
-    for path, severity, n in groups:
-        total += n
-        if security_path_class(path or "") == "source":
-            source += n
-            if severity == "high":
-                source_high += n
+    counts = await security_class_counts(session, repo_id)
+    classes = counts["class_counts"]
     return {
-        "total": total,
-        "source": source,
-        "source_high": source_high,
-        "elsewhere": total - source,
+        "total": counts["total"],
+        "source": classes["source"],
+        "source_high": counts["source_high"],
+        "elsewhere": classes["test"] + classes["docs"],
     }
 
 

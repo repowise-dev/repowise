@@ -4045,10 +4045,14 @@ export interface SecurityFindingResponse {
   commit_sha: string | null;
   commit_at: string | null;
   found_in_history: boolean;
+  path_class?: "source" | "test" | "docs";
 }
 
 export interface SecuritySummaryResponse {
   scanned_at?: string | null;
+  total?: number;
+  class_counts?: Record<string, number>;
+  source_high?: number;
 }
 
 export interface SelectionProvenance {

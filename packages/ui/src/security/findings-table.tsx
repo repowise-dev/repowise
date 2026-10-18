@@ -13,7 +13,7 @@ import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { formatDate, formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
 import { FilePath } from "../shared/file-path";
-import { securityLevel, securityPathClass, type SecurityLevel } from "./posture";
+import { securityLevel, type SecurityLevel } from "./posture";
 import type { SecurityFinding } from "@repowise-dev/types";
 
 // One declaration of the wire shape, not a third hand-kept copy: this file's
@@ -50,7 +50,7 @@ function FindingLocation({ finding }: { finding: SecurityFinding }) {
   const line = finding.line_number;
   const verified = finding.line_verified;
   // Tests and docs are labelled, never headlined: shipped code ranks first.
-  const where = securityPathClass(finding.file_path);
+  const where = finding.path_class ?? "source";
   const tag =
     where === "source" ? null : (
       <span className="ml-1.5 font-sans text-2xs text-[var(--color-text-tertiary)]">{where}</span>
@@ -129,7 +129,7 @@ export function SecurityFindingsTable({
     // What to do first: shipped source before tests before docs, then severity.
     return [...items].sort(
       (a, b) =>
-        CLASS_RANK[securityPathClass(a.file_path)] - CLASS_RANK[securityPathClass(b.file_path)] ||
+        CLASS_RANK[a.path_class ?? "source"] - CLASS_RANK[b.path_class ?? "source"] ||
         LEVEL_RANK[securityLevel(a.severity)] - LEVEL_RANK[securityLevel(b.severity)],
     );
   }, [findings, q, sev]);

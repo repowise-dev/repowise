@@ -7,35 +7,26 @@ from httpx import AsyncClient
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GitMetadata, SecurityFinding
-from repowise.server.services.overview_counts import security_path_class
+from repowise.server.services.security_classes import path_class
 from tests.unit.server.conftest import create_test_repo
 from tests.unit.server.test_attention_golden import _seed as seed_findings
 from tests.unit.server.test_overview_summary_golden import _seed_index
 
 
 @pytest.mark.parametrize(
-    ("path", "expected"),
+    ("path", "origin", "expected"),
     [
-        ("src/run.py", "source"),
-        ("config/settings.py", "source"),
-        ("tests/test_core.py", "test"),
-        ("pkg/__mocks__/api.ts", "test"),
-        ("web/app.spec.ts", "test"),
-        ("src\\Foo_test.go", "test"),
-        ("docs/setup.md", "docs"),
-        ("README.md", "docs"),
-        ("examples/demo.py", "docs"),
-        ("Tests/Foo.PY", "test"),
-        ("pkg/mocks/a.ts", "test"),
-        ("test_x.py", "test"),
-        ("spec/a.rb", "test"),
-        ("guide/intro.mdx", "docs"),
-        ("test_dir/a.py", "source"),
-        ("tests/docs/a.md", "test"),
+        ("src/run.py", "production", "source"),
+        ("config/settings.py", "production", "source"),
+        ("vendor/x.js", "vendored", "source"),
+        ("tests/test_core.py", "test", "test"),
+        ("tests/fixtures/leak.md", "test", "test"),
+        ("docs/setup.py", "docs_example", "docs"),
+        ("CHANGELOG.md", "production", "docs"),
     ],
 )
-def test_security_path_class_matches_the_security_page(path: str, expected: str) -> None:
-    assert security_path_class(path) == expected
+def test_path_class_reads_the_stored_origin(path: str, origin: str, expected: str) -> None:
+    assert path_class(path, origin) == expected
 
 
 @pytest.mark.asyncio
@@ -113,6 +104,20 @@ async def test_ownership_and_security_splits(client: AsyncClient, session_factor
     explore = (await client.get(f"/api/repos/{rid}/overview-summary")).json()["explore"]
     assert explore["ownership"] == {"sole_owned_files": 2}
     assert explore["security"] == {"total": 4, "source": 2, "source_high": 1, "elsewhere": 2}
+
+    # The Security page lede reads the same split from its summary, and every
+    # listed row carries its class.
+    summary = (await client.get(f"/api/repos/{rid}/security/summary")).json()
+    assert summary["total"] == 4
+    assert summary["class_counts"] == {"source": 2, "test": 1, "docs": 1}
+    assert summary["source_high"] == 1
+    rows = (await client.get(f"/api/repos/{rid}/security", params={"limit": 10})).json()
+    assert {r["file_path"]: r["path_class"] for r in rows} == {
+        "src/a.py": "source",
+        "src/b.py": "source",
+        "tests/t.py": "test",
+        "docs/a.md": "docs",
+    }
 
 
 @pytest.mark.asyncio

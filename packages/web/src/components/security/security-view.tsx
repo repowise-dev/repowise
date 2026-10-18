@@ -16,6 +16,8 @@ import { SeverityDirectoryMatrix } from "@repowise-dev/ui/security/severity-dire
 import {
   SecurityPosture,
   SecurityPostureSkeleton,
+  postureCountsFromSummary,
+  type SecurityPostureCounts,
   type SecurityPostureLabels,
 } from "@repowise-dev/ui/security/posture";
 import {
@@ -150,6 +152,7 @@ export function SecurityView({ repoId }: { repoId: string }) {
     body = (
       <SecurityFindingsBody
         list={list}
+        counts={postureCountsFromSummary(summary)}
         scannedAgo={scannedAgo}
         capped={capped}
         labels={labels}
@@ -219,6 +222,7 @@ function SecurityEmpty({
 
 function SecurityFindingsBody({
   list,
+  counts,
   scannedAgo,
   capped,
   labels,
@@ -227,6 +231,8 @@ function SecurityFindingsBody({
   onGenerateBatchPrompt,
 }: {
   list: SecurityFinding[];
+  /** The server's split over every finding; null on an older server. */
+  counts: SecurityPostureCounts | null;
   scannedAgo: string | null;
   capped: boolean;
   labels: SecurityPostureLabels;
@@ -237,7 +243,13 @@ function SecurityFindingsBody({
   const t = useTranslations("risk");
   return (
     <>
-      <SecurityPosture findings={list} scannedAgo={scannedAgo} capped={capped} labels={labels} />
+      <SecurityPosture
+        counts={counts}
+        findings={list}
+        scannedAgo={scannedAgo}
+        capped={capped}
+        labels={labels}
+      />
       <OverviewSection title={t("allFindings")} description={t("description")}>
         <SecurityFindingsTable
           findings={list}
