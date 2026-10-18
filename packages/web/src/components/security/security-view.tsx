@@ -18,7 +18,7 @@ import {
   SecurityPostureSkeleton,
   type SecurityPostureLabels,
 } from "@repowise-dev/ui/security/posture";
-import { AiPromptModal, buildSecurityAiPrompt, fileChatContext } from "@repowise-dev/ui/health";
+import { AiPromptModal, buildSecurityBatchAiPrompt, fileChatContext } from "@repowise-dev/ui/health";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
@@ -88,7 +88,9 @@ export function SecurityView({ repoId }: { repoId: string }) {
     () => getSecuritySummary(repoId).catch(() => null),
     { revalidateOnFocus: false },
   );
-  const [promptFinding, setPromptFinding] = useState<SecurityFinding | null>(null);
+  // One finding from a row, or every finding the table's filters show.
+  const [promptFindings, setPromptFindings] = useState<SecurityFinding[] | null>(null);
+  const promptFile = promptFindings?.length === 1 ? promptFindings[0]!.file_path : undefined;
   const fileCount = useRepoFileCount(repoId);
 
   const { showFile, dialog } = useFileCardHost(repoId);
@@ -138,7 +140,8 @@ export function SecurityView({ repoId }: { repoId: string }) {
         capped={capped}
         labels={labels}
         onSelect={handleSelect}
-        onGeneratePrompt={setPromptFinding}
+        onGeneratePrompt={(f) => setPromptFindings([f])}
+        onGenerateBatchPrompt={setPromptFindings}
       />
     );
   }
@@ -148,15 +151,15 @@ export function SecurityView({ repoId }: { repoId: string }) {
       {body}
 
       <AiPromptModal
-        open={promptFinding !== null}
-        onOpenChange={(o) => !o && setPromptFinding(null)}
+        open={promptFindings !== null}
+        onOpenChange={(o) => !o && setPromptFindings(null)}
         getPrompt={
-          promptFinding
-            ? (flavor) => buildSecurityAiPrompt({ finding: promptFinding, flavor })
+          promptFindings
+            ? (flavor) => buildSecurityBatchAiPrompt({ findings: promptFindings, flavor })
             : null
         }
-        filePath={promptFinding?.file_path}
-        chatContext={fileChatContext(promptFinding?.file_path)}
+        filePath={promptFile}
+        chatContext={fileChatContext(promptFile)}
         title={t("promptTitle")}
         description={t("promptDescription")}
       />
@@ -219,6 +222,7 @@ function SecurityFindingsBody({
   labels,
   onSelect,
   onGeneratePrompt,
+  onGenerateBatchPrompt,
 }: {
   list: SecurityFinding[];
   scannedAgo: string | null;
@@ -226,6 +230,7 @@ function SecurityFindingsBody({
   labels: SecurityPostureLabels;
   onSelect: (f: SecurityFinding) => void;
   onGeneratePrompt: (f: SecurityFinding) => void;
+  onGenerateBatchPrompt: (findings: SecurityFinding[]) => void;
 }) {
   const t = useTranslations("risk");
   return (
@@ -237,6 +242,8 @@ function SecurityFindingsBody({
           onSelect={onSelect}
           onGeneratePrompt={onGeneratePrompt}
           promptLabel={t("promptAction")}
+          onGenerateBatchPrompt={onGenerateBatchPrompt}
+          batchPromptLabel={(count) => t("batchPromptAction", { count })}
         />
         {capped && (
           <p className="text-xs text-[var(--color-text-tertiary)]">

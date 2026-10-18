@@ -1,7 +1,7 @@
 import { ArrowUpRight } from "lucide-react";
 
 import { coverageBand } from "./tokens";
-import { AiPromptButton } from "./ai-prompt-button";
+import { RowPromptAction } from "./row-prompt-action";
 
 export interface UntestedHotspotEntry {
   file_path: string;
@@ -79,7 +79,7 @@ export function UntestedHotspotWarning({
           return (
             <li
               key={e.file_path}
-              className="flex items-center gap-3 border-b border-[var(--color-border-default)]"
+              className="group/row flex items-center gap-3 border-b border-[var(--color-border-default)]"
             >
               {onSelect ? (
                 <button
@@ -94,10 +94,11 @@ export function UntestedHotspotWarning({
                 <div className="flex min-w-0 flex-1 items-baseline gap-x-4 py-2.5">{body}</div>
               )}
               {onGeneratePrompt && (
-                <AiPromptButton
+                <RowPromptAction
                   label={promptLabel}
+                  subject={e.file_path}
                   onClick={() => onGeneratePrompt(e.file_path)}
-                  className="shrink-0 whitespace-nowrap"
+                  className="shrink-0"
                 />
               )}
             </li>

@@ -653,7 +653,8 @@
       "description": "你的测试覆盖了哪些代码：已导入覆盖率报告时为实测结果，否则根据依赖图推断。",
       "promptAction": "复制智能体提示词",
       "cleanTitle": "{files} 个已测量文件中没有未测试的热点",
-      "cleanBody": "所有频繁变更或被大量代码依赖的文件都有测试覆盖。"
+      "cleanBody": "所有频繁变更或被大量代码依赖的文件都有测试覆盖。",
+      "batchPromptAction": "为这 {count} 项复制提示词"
     },
     "docDrift": {
       "cleanTitle": "未发现文档漂移",
@@ -1148,7 +1149,8 @@
       "title": "未发现死代码",
       "titleScoped": "{files} 个文件中没有死代码",
       "body": "没有不可达文件、未使用的导出或僵尸依赖包。"
-    }
+    },
+    "batchPromptAction": "为这 {count} 项复制提示词"
   },
   "symbols": {
     "clearFileFilter": "清除文件筛选",

@@ -41,7 +41,7 @@ import { ResultsFooter } from "../shared/results-footer";
 import { OverviewSection } from "../overview/section";
 
 import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
-import { AiPromptButton } from "./ai-prompt-button";
+import { PromptForRowsButton, RowPromptAction } from "./row-prompt-action";
 import { CoverageLede } from "./coverage-lede";
 import { CoverageBar } from "./coverage-bar";
 import { ModuleCoverageList } from "./module-coverage-list";
@@ -52,7 +52,7 @@ import {
 import { RiskCoverageScatter } from "./risk-coverage-scatter";
 import { InferredTestsView } from "./inferred-tests-view";
 import {
-  buildCoverageAiPrompt,
+  buildCoverageBatchAiPrompt,
   type CoverageFilePromptInput,
 } from "./ai-prompt-builder";
 import { bandForScore } from "@repowise-dev/types/health";
@@ -73,6 +73,8 @@ import type { CodeHealthAdapter } from "./code-health-adapter";
 export interface CoverageViewCopy {
   /** The primary row action, handing the file's gaps to an agent. */
   promptLabel?: string;
+  /** The header action over every row a list shows, for `n` files. */
+  batchPromptLabel?: (count: number) => string;
   /** "No untested hotspots across N measured files". */
   cleanTitle?: (measuredFiles: number) => string;
   cleanDescription?: string;
@@ -99,7 +101,7 @@ export function CoverageView({
   adapter: CodeHealthAdapter;
   copy?: CoverageViewCopy | undefined;
 }) {
-  const [promptRow, setPromptRow] = useState<CoverageFilePromptInput | null>(null);
+  const [promptRows, setPromptRows] = useState<CoverageFilePromptInput[] | null>(null);
 
   const { data, isLoading, error, mutate } = useSWR<HealthCoverageResponse>(
     `code-health-coverage:${adapter.cacheKey}`,
@@ -153,23 +155,23 @@ export function CoverageView({
           data={data}
           untestedFindings={untestedFindings ?? []}
           onOpenFile={openFilePage}
-          onGeneratePrompt={(r) => setPromptRow(r)}
+          onGeneratePrompt={setPromptRows}
           copy={copy}
         />
       )}
 
       <AiPromptModal
-        open={promptRow !== null}
+        open={promptRows !== null}
         onOpenChange={(open) => {
-          if (!open) setPromptRow(null);
+          if (!open) setPromptRows(null);
         }}
-        filePath={promptRow?.file_path ?? null}
-        chatContext={fileChatContext(promptRow?.file_path)}
+        filePath={promptRows?.length === 1 ? promptRows[0]!.file_path : null}
+        chatContext={fileChatContext(promptRows?.length === 1 ? promptRows[0]!.file_path : undefined)}
         title="AI test prompt"
         description="A ready-to-paste prompt that asks your AI coding agent to add tests for this file's uncovered lines and branches."
         getPrompt={
-          promptRow
-            ? (flavor) => buildCoverageAiPrompt({ row: promptRow, flavor })
+          promptRows
+            ? (flavor) => buildCoverageBatchAiPrompt({ rows: promptRows, flavor })
             : null
         }
       />
@@ -187,7 +189,8 @@ function CoverageBody({
   data: HealthCoverageResponse;
   untestedFindings: HealthFinding[];
   onOpenFile: (path: string) => void;
-  onGeneratePrompt: (row: CoverageFilePromptInput) => void;
+  /** One file or several; the modal builds a single or a batch prompt. */
+  onGeneratePrompt: (rows: CoverageFilePromptInput[]) => void;
   copy?: CoverageViewCopy | undefined;
 }) {
   const promptLabel = copy?.promptLabel ?? "Copy agent prompt";
@@ -255,6 +258,11 @@ function CoverageBody({
         return entry;
       });
   }, [files, filesByPath, untestedFindings]);
+  // The untested entries that have a measured row, which is what a prompt needs.
+  const untestedRows = useMemo(
+    () => untested.flatMap((e) => filesByPath.get(e.file_path) ?? []),
+    [untested, filesByPath],
+  );
 
   const scatterPoints = useMemo(
     () =>
@@ -400,10 +408,10 @@ function CoverageBody({
       priority: 1,
       align: "right",
       render: (f) => (
-        <AiPromptButton
+        <RowPromptAction
           label={promptLabel}
-          onClick={() => onGeneratePrompt(promptInputFor(f))}
-          className="whitespace-nowrap"
+          subject={f.file_path}
+          onClick={() => onGeneratePrompt([promptInputFor(f)])}
         />
       ),
     },
@@ -436,6 +444,13 @@ function CoverageBody({
       <OverviewSection
         title="Untested hotspots"
         description="Files that change often or that much of the codebase depends on, with little or no coverage. A gap here is worth more than the same gap in code nobody touches."
+        action={
+          <PromptForRowsButton
+            count={untestedRows.length}
+            onClick={() => onGeneratePrompt(untestedRows.map(promptInputFor))}
+            {...(copy?.batchPromptLabel ? { label: copy.batchPromptLabel } : {})}
+          />
+        }
       >
         {untested.length > 0 ? (
           <UntestedHotspotWarning
@@ -443,7 +458,7 @@ function CoverageBody({
             onSelect={onOpenFile}
             onGeneratePrompt={(path) => {
               const row = filesByPath.get(path);
-              if (row) onGeneratePrompt(promptInputFor(row));
+              if (row) onGeneratePrompt([promptInputFor(row)]);
             }}
             promptLabel={promptLabel}
           />
@@ -471,8 +486,14 @@ function CoverageBody({
 
       <OverviewSection
         title="Every file"
-        description="Sorted worst first. Click a row for the line-level heatmap, or the prompt icon to draft a brief that has your AI agent write the missing tests."
+        description="Sorted worst first. Click a row for the line-level heatmap, or copy a prompt that has your agent write the missing tests."
         action={
+          <div className="flex flex-wrap items-center gap-2">
+          <PromptForRowsButton
+            count={sortedFiles.length}
+            onClick={() => onGeneratePrompt(sortedFiles.map(promptInputFor))}
+            {...(copy?.batchPromptLabel ? { label: copy.batchPromptLabel } : {})}
+          />
           <input
             value={search}
             onChange={(e) => {
@@ -483,6 +504,7 @@ function CoverageBody({
             aria-label="Filter files by path"
             className="w-48 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-xs focus:border-[var(--color-border-hover)] focus:outline-none sm:w-56"
           />
+          </div>
         }
       >
         <div className="border-t border-[var(--color-border-default)]">

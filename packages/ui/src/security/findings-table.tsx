@@ -8,7 +8,7 @@ import { EmptyState } from "../shared/empty-state";
 import { CiHint } from "../shared/ci-hint";
 import { Segmented } from "../shared/segmented";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
-import { AiPromptButton } from "../health/ai-prompt-button";
+import { PromptForRowsButton, RowPromptAction } from "../health/row-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { formatDate, formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
@@ -128,6 +128,10 @@ export interface SecurityFindingsTableProps {
   onGeneratePrompt?: (finding: SecurityFinding) => void;
   /** The prompt action's label. */
   promptLabel?: string;
+  /** One prompt over every finding the current filters show. */
+  onGenerateBatchPrompt?: (findings: SecurityFinding[]) => void;
+  /** The batch action's label for `n` findings. */
+  batchPromptLabel?: (count: number) => string;
 }
 
 export function SecurityFindingsTable({
@@ -135,6 +139,8 @@ export function SecurityFindingsTable({
   onSelect,
   onGeneratePrompt,
   promptLabel = "Copy agent prompt",
+  onGenerateBatchPrompt,
+  batchPromptLabel,
 }: SecurityFindingsTableProps) {
   const [q, setQ] = useState("");
   const [sev, setSev] = useState<SeverityFilter>("all");
@@ -232,11 +238,7 @@ export function SecurityFindingsTable({
         key: "actions",
         header: "",
         render: (f) => (
-          <AiPromptButton
-            label={promptLabel}
-            onClick={() => onGeneratePrompt(f)}
-            className="whitespace-nowrap"
-          />
+          <RowPromptAction label={promptLabel} subject={f.file_path} onClick={() => onGeneratePrompt(f)} />
         ),
       });
     }
@@ -277,6 +279,14 @@ export function SecurityFindingsTable({
           />
         </div>
         <Segmented label="Severity" value={sev} onChange={setSev} options={options} />
+        {onGenerateBatchPrompt && (
+          <PromptForRowsButton
+            count={filtered.length}
+            onClick={() => onGenerateBatchPrompt(filtered)}
+            {...(batchPromptLabel ? { label: batchPromptLabel } : {})}
+            className="sm:ml-auto"
+          />
+        )}
       </div>
 
       {/* Scrolls sideways inside its own frame on a phone rather than

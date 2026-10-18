@@ -653,7 +653,8 @@
       "description": "Which code your tests reach: measured from a coverage report when one is ingested, inferred from the dependency graph otherwise.",
       "promptAction": "Copy agent prompt",
       "cleanTitle": "No untested hotspots across {files} measured files",
-      "cleanBody": "Every file that changes often or that much of the code depends on has tests watching it."
+      "cleanBody": "Every file that changes often or that much of the code depends on has tests watching it.",
+      "batchPromptAction": "Copy prompt for these {count}"
     },
     "docDrift": {
       "cleanTitle": "No documentation drift found",
@@ -1148,7 +1149,8 @@
       "title": "No dead code found",
       "titleScoped": "No dead code across {files} files",
       "body": "No unreachable files, unused exports or zombie packages."
-    }
+    },
+    "batchPromptAction": "Copy prompt for these {count}"
   },
   "symbols": {
     "clearFileFilter": "Clear file filter",

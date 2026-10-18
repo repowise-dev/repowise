@@ -48,6 +48,7 @@ export function TestsView({ repoId: id }: { repoId: string }) {
   const copy = useMemo<CoverageViewCopy>(
     () => ({
       promptLabel: t("promptAction"),
+      batchPromptLabel: (count) => t("batchPromptAction", { count }),
       cleanTitle: (files) => t("cleanTitle", { files: formatNumber(files) }),
       cleanDescription: t("cleanBody"),
     }),
