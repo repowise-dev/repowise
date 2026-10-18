@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Flame } from "lucide-react";
 import { Input } from "../ui/input";
 import { Segmented } from "../shared/segmented";
+import { ActiveFilterChips, MoreFilters, type ActiveFilterChip } from "../shared/more-filters";
 import { cn } from "../lib/cn";
 
 /** What a commit or change did to health, as the quick filter names it. */
@@ -38,6 +39,8 @@ export interface HistoryFilterLabels {
   to: string;
   author: string;
   area: string;
+  moreFilters: string;
+  clearAll: string;
 }
 
 const DEFAULT_LABELS: HistoryFilterLabels = {
@@ -57,6 +60,8 @@ const DEFAULT_LABELS: HistoryFilterLabels = {
   to: "To",
   author: "Author email or name",
   area: "Area, e.g. packages/core",
+  moreFilters: "More filters",
+  clearAll: "Clear all",
 };
 
 export interface HistoryFiltersProps {
@@ -66,16 +71,33 @@ export interface HistoryFiltersProps {
    *  hides its alternatives' sizes. */
   counts?: Record<HealthImpact, number> | undefined;
   labels?: Partial<HistoryFilterLabels> | undefined;
+  /** The host's own secondary controls, placed under "More filters" after
+   *  author and area (search, sort and the like). */
+  more?: ReactNode;
+  /** Every active secondary filter, author and area included, as removable
+   *  chips; their count shows on the closed disclosure. */
+  chips?: ActiveFilterChip[] | undefined;
+  onClearAll?: (() => void) | undefined;
   className?: string | undefined;
 }
 
 /**
- * The quick filters over a history list: health impact first, then hotspots,
- * the time window, author and area. Controlled and server-driven: the host
+ * The quick filters over a history list: health impact, hotspots and the
+ * time window in one row; author, area and the host's secondary controls
+ * behind "More filters", each active one a removable chip. Controlled and server-driven: the host
  * writes each change to the URL and refetches, so the counts and the list
  * always describe the same set.
  */
-export function HistoryFilters({ value, onChange, counts, labels, className }: HistoryFiltersProps) {
+export function HistoryFilters({
+  value,
+  onChange,
+  counts,
+  labels,
+  more,
+  chips = [],
+  onClearAll,
+  className,
+}: HistoryFiltersProps) {
   const l = { ...DEFAULT_LABELS, ...labels };
   const count = (k: HealthImpact) => counts?.[k]?.toLocaleString();
   return (
@@ -97,17 +119,15 @@ export function HistoryFilters({ value, onChange, counts, labels, className }: H
           aria-pressed={value.hotspots}
           onClick={() => onChange({ hotspots: !value.hotspots })}
           className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors",
+            "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
             value.hotspots
-              ? "border-[var(--color-accent-primary)] text-[var(--color-text-primary)]"
+              ? "border-[var(--color-border-hover)] bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
               : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
           )}
         >
           <Flame aria-hidden className="h-3.5 w-3.5" />
           {l.hotspots}
         </button>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
         <Segmented<HistoryWindow>
           label={l.windowLabel}
           value={value.window}
@@ -126,9 +146,13 @@ export function HistoryFilters({ value, onChange, counts, labels, className }: H
             <DateField label={l.to} value={value.until} onCommit={(until) => onChange({ until })} />
           </>
         )}
+      </div>
+      <MoreFilters active={chips.length} label={l.moreFilters}>
         <TextField label={l.author} value={value.author} onCommit={(author) => onChange({ author })} />
         <TextField label={l.area} value={value.area} onCommit={(area) => onChange({ area })} mono />
-      </div>
+        {more}
+      </MoreFilters>
+      {onClearAll && <ActiveFilterChips chips={chips} onClearAll={onClearAll} clearAllLabel={l.clearAll} />}
     </div>
   );
 }

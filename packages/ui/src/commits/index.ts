@@ -20,3 +20,5 @@ export * from "./period-health-headline";
 export * from "./recent-wins";
 export * from "./history-filters";
 export * from "./commit-health-copy";
+export * from "./commit-columns";
+export * from "./health-delta-lede";

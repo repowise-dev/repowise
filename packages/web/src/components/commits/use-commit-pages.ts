@@ -2,16 +2,17 @@
 
 import { useMemo } from "react";
 import useSWRInfinite from "swr/infinite";
-import type { CommitAuthorship, CommitKind, CommitSort } from "@repowise-dev/ui/commits/commit-table";
+import type { CommitKind, CommitSort } from "@repowise-dev/ui/commits/commit-table";
 import type { HistoryFilters } from "@repowise-dev/types/history";
 import { getCommitsPage } from "@/lib/api/git";
 import type { CommitResponse, Paginated } from "@/lib/api/types";
 
 const PAGE_SIZE = 50;
 
+/** The list's own refinements. No authorship: agent-vs-human is never a
+ *  filter on this page. */
 export interface CommitListQuery {
   sort: CommitSort;
-  authorship: CommitAuthorship;
   kind: CommitKind;
 }
 
@@ -28,13 +29,13 @@ export function useCommitPages(
   query: CommitListQuery,
   initial: Paginated<CommitResponse>,
 ) {
-  const pristine = query.sort === "date" && query.authorship === "all" && query.kind === "all";
+  const pristine = query.sort === "date" && query.kind === "all";
   const filterKey = JSON.stringify(filters);
 
   const { data, setSize, isLoading, isValidating } = useSWRInfinite<Paginated<CommitResponse>>(
     (pageIndex, previous) => {
       if (previous && !previous.has_more) return null;
-      return `commits:${repoId}:${query.sort}:${query.authorship}:${query.kind}:${filterKey}:${pageIndex}`;
+      return `commits:${repoId}:${query.sort}:${query.kind}:${filterKey}:${pageIndex}`;
     },
     (key) => {
       const pageIndex = parseInt(key.split(":").pop() as string, 10);

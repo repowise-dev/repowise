@@ -113,8 +113,10 @@ export function RecentWins({ wins, routes, scope, copy, LinkComponent, className
   return (
     <section className={className} aria-label={c.title}>
       <div className="mb-3.5 flex items-baseline justify-between gap-3">
-        <h2 className="text-[15px] font-semibold text-[var(--color-text-primary)]">{c.title}</h2>
-        <span className="text-[11px] text-[var(--color-text-tertiary)]">{scope}</span>
+        <h2 className="shrink-0 text-[15px] font-semibold text-[var(--color-text-primary)]">{c.title}</h2>
+        <span className="min-w-0 text-right text-[11px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+          {scope}
+        </span>
       </div>
       {reads.length > 0 ? (
         <ReadsColumn items={reads} LinkComponent={LinkComponent} />
