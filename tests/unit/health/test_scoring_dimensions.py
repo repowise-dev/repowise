@@ -75,7 +75,7 @@ _LEGACY_WEIGHT_MULTIPLIER = {
     "developer_congestion": 0.5,
     "low_cohesion": 0.5,
     "brain_method": 0.5,
-    "bumpy_road": 0.5,
+    "repeated_nesting": 0.5,
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,
@@ -90,7 +90,7 @@ _LEGACY_CATEGORY = {
     "low_cohesion": "structural_complexity",
     "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
-    "bumpy_road": "structural_complexity",
+    "repeated_nesting": "structural_complexity",
     "complex_conditional": "structural_complexity",
     "complex_method": "size_and_complexity",
     "large_method": "size_and_complexity",
@@ -216,7 +216,7 @@ def test_code_shape_markers_reach_maintainability():
     else, which left the pillar a reader watches while refactoring blind to the
     most common thing a refactor removes.
     """
-    for marker in ("complex_method", "complex_conditional", "bumpy_road"):
+    for marker in ("complex_method", "complex_conditional", "repeated_nesting"):
         scores, _ = score_file([_r(marker, Severity.CRITICAL)])
         assert scores["maintainability"] < 10.0, marker
 

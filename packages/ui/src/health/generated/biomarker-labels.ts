@@ -6,7 +6,7 @@
 export const BIOMARKER_LABELS = {
   brain_method: "Brain method",
   nested_complexity: "Nested complexity",
-  bumpy_road: "Bumpy road",
+  repeated_nesting: "Repeated nesting",
   complex_method: "Complex method",
   large_method: "Large method",
   primitive_obsession: "Long parameter list",

@@ -7,10 +7,12 @@ glossary, which keeps its categories and descriptions beside them.
 
 from __future__ import annotations
 
+from .biomarker_names import canonical_biomarker
+
 BIOMARKER_LABELS: dict[str, str] = {
     "brain_method": "Brain method",
     "nested_complexity": "Nested complexity",
-    "bumpy_road": "Bumpy road",
+    "repeated_nesting": "Repeated nesting",
     "complex_method": "Complex method",
     "large_method": "Large method",
     "primitive_obsession": "Long parameter list",
@@ -63,4 +65,5 @@ BIOMARKER_LABELS: dict[str, str] = {
 
 def biomarker_label(name: str) -> str:
     """The glossary label; an id it does not know reads with spaces for underscores."""
+    name = canonical_biomarker(name)
     return BIOMARKER_LABELS.get(name) or name.replace("_", " ")

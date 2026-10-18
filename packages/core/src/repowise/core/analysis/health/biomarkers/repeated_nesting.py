@@ -1,13 +1,9 @@
-"""Bumpy Road — many independent regions of nested control flow.
+"""Repeated nesting: several separate nested blocks side by side in one function.
 
-A "bumpy road" function is one with several distinct nesting humps —
-not one deep block (that's `nested_complexity`) and not one big linear
-list of branches (that's `complex_method`) but multiple medium-depth
-blocks sitting side by side.
-
-We use the walker's ``bumps`` metric — the count of top-level body
-statements that reach nesting depth ≥ 2 — and fire when it crosses a
-configurable threshold while CCN is also non-trivial.
+Not one deep block (``nested_complexity``) and not one long list of branches
+(``complex_method``): multiple medium-depth blocks in sequence. Reads the
+walker's ``bumps`` count, the top-level body statements that reach nesting
+depth 2 or more, and fires when it crosses a threshold while CCN is non-trivial.
 """
 
 from __future__ import annotations
@@ -17,8 +13,8 @@ from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
 
-class BumpyRoadDetector:
-    name = "bumpy_road"
+class RepeatedNestingDetector:
+    name = "repeated_nesting"
     category = "structural_complexity"
 
     _BUMP_THRESHOLD = 3
@@ -51,11 +47,11 @@ class BumpyRoadDetector:
                         "max_nesting": fn.max_nesting,
                     },
                     reason=(
-                        f"{fn.name} has {fn.bumps} nested blocks at the same level (bumpy road)"
+                        f"{fn.name} has {fn.bumps} nested blocks at the same level"
                     ),
                 )
             )
         return out
 
 
-BIOMARKER = BumpyRoadDetector()
+BIOMARKER = RepeatedNestingDetector()

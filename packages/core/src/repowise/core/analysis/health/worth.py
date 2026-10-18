@@ -28,7 +28,7 @@ SIZE_NLOC = (100, 200, 400, 800)
 SIZE_NESTING = (5, 6, 8, 99)
 #: Findings that measure one function's size.
 SIZE_MARKERS = frozenset(
-    {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
+    {"complex_method", "nested_complexity", "brain_method", "large_method", "repeated_nesting"}
 )
 #: How far past its bars (see :func:`worth_size`) a function must sit to be
 #: worth doing first: CCN 40, 200 lines or nesting 6. The same size from which

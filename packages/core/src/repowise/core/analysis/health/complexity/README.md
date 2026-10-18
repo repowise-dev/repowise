@@ -36,7 +36,7 @@ Tree-sitter AST walker. Single AST pass per file computes:
   (each level adds an incrementing penalty, plus +1 for each break in
   control flow).
 - **bumps** — count of branches at the same nesting depth as their
-  sibling branches. Feeds `bumpy_road`.
+  sibling branches. Feeds `repeated_nesting`.
 - **param_count** — formal parameter count. Feeds `primitive_obsession`.
 - **nloc** — non-comment lines of code per function.
 - **assertion_blocks** — runs of ≥ 2 consecutive assertion statements,

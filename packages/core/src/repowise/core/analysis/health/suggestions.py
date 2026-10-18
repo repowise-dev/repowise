@@ -48,11 +48,10 @@ _TEMPLATES: dict[str, str] = {
         "conditional axes; if it dispatches on a type tag, replace the "
         "if/elif ladder with polymorphism or a lookup table."
     ),
-    "bumpy_road": (
-        "Smooth the road. Multiple branches at the same nesting depth "
-        "usually means the function is doing several jobs — split it "
-        "into stages so each stage stays at a single level of "
-        "abstraction."
+    "repeated_nesting": (
+        "Several nested blocks side by side usually mean the function "
+        "does several jobs. Split it into stages so each stage stays at "
+        "a single level of abstraction."
     ),
     "large_method": (
         "Shorten the function. Extract paragraphs (each comment block "

@@ -70,7 +70,7 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
     # floored - fired widely but weak/non-predictive at T0
     "developer_congestion": 0.5,
     "low_cohesion": 0.5,
-    "bumpy_road": 0.5,
+    "repeated_nesting": 0.5,
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,
@@ -89,7 +89,7 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "low_cohesion": "structural_complexity",
     "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
-    "bumpy_road": "structural_complexity",
+    "repeated_nesting": "structural_complexity",
     "complex_conditional": "structural_complexity",
     "complex_method": "size_and_complexity",
     "large_method": "size_and_complexity",

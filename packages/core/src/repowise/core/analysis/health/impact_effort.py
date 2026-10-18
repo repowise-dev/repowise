@@ -22,6 +22,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from repowise.core.analysis.health.biomarker_names import canonical_biomarker
 from repowise.core.analysis.health.effort import EFFORT_WEIGHT, effort_bucket
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.queue.eligibility import MIN_WORTH
@@ -199,9 +200,10 @@ def _finding_filter(
     # serialization from silently emptying the queue behind a 200.
     picked = {v.strip().lower() for v in (severity or "").split(",") if v.strip()}
     floor = _SEVERITY_ORDER.get(min_severity, 0) if min_severity else None
+    marker = canonical_biomarker(biomarker) if biomarker else None
 
     def keep(f: Any) -> bool:
-        if biomarker and f.biomarker_type != biomarker:
+        if marker and f.biomarker_type != marker:
             return False
         if picked:
             return (f.severity or "").lower() in picked

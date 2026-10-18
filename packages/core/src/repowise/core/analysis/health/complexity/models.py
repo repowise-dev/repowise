@@ -43,7 +43,7 @@ class FunctionComplexity:
     cognitive: int
     nloc: int  # non-blank lines inside the body
     # Number of top-level body sub-blocks whose internal nesting reached
-    # ≥ 2 — used by ``bumpy_road``. A flat function has 0 bumps.
+    # ≥ 2 — used by ``repeated_nesting``. A flat function has 0 bumps.
     bumps: int = 0
     # Number of declared parameters on the function signature — used by
     # ``primitive_obsession``. Counted via the tree-sitter ``parameters``
