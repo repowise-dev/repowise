@@ -44,6 +44,7 @@ from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
 
 from .codegen import _generate_refactoring_code
+from .live_score import analyzer_config
 from .persist import (
     _load_fix_first,
     _load_persisted_coverage_map,
@@ -179,6 +180,19 @@ FIX_FIRST_ROWS = 3
     help="Print a ready-to-paste health badge (Markdown) for this repo's README.",
 )
 @click.option(
+    "--score",
+    "score_paths",
+    multiple=True,
+    type=click.Path(),
+    help="Score these files as they are on disk now (repeatable), with history "
+    "and coverage from the index. No update needed.",
+)
+@click.option(
+    "--against",
+    default=None,
+    help="With --score: also score the files at this revision and show the change.",
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -200,6 +214,8 @@ def health_command(
     counts: str,
     trend_view: bool,
     badge_view: bool,
+    score_paths: tuple[str, ...],
+    against: str | None,
     verbose: bool,
 ) -> None:
     """Code-health scores from markers (CCN, nesting, brain-method).
@@ -229,6 +245,11 @@ def health_command(
 
     repo_path = _resolve_repo_path(path, no_workspace, repo_alias, status)
     status.print(f"[bold]repowise health[/bold] — {repo_path}")
+    if score_paths:
+        _render_score_view(repo_path, score_paths, against, opts, badge_view)
+        return
+    if against is not None:
+        raise click.UsageError("--against needs --score <paths>.")
     if _render_stored_view(repo_path, status, opts):
         return
 
@@ -267,6 +288,18 @@ def _withheld(finding: Any, excluded: frozenset[str]) -> bool:
     return not is_served("health", finding.biomarker_type, finding.file_path, excluded)
 
 
+def _render_score_view(
+    repo_path: Path, paths: tuple[str, ...], against: str | None, opts: _Options, badge: bool
+) -> None:
+    """``--score``: the files as they are on disk, beside *against* when given."""
+    from .live_score import render_live, repo_paths, score_live
+
+    clashing = opts.view_flags() + (["--badge"] if badge else [])
+    if clashing:
+        raise click.UsageError(f"--score does not combine with {', '.join(clashing)}.")
+    render_live(score_live(repo_path, repo_paths(repo_path, paths), against), opts.fmt)
+
+
 @dataclass(frozen=True)
 class _Options:
     """The options that pick a view and narrow the report."""
@@ -288,6 +321,20 @@ class _Options:
         return (
             parse_scope(self.scope) != DEFAULT_SCOPE or parse_counts(self.counts) != DEFAULT_COUNTS
         )
+
+    def view_flags(self) -> list[str]:
+        """The view and narrowing flags that were passed, by their CLI names."""
+        flags = {
+            "--file": self.file_filter,
+            "--module": self.module_filter,
+            "--refactoring-targets": self.refactoring_targets,
+            "--plan": self.plan_id,
+            "--recompute": self.recompute,
+            "--generate-code": self.generate_code,
+            "--trend": self.trend_view,
+            "--scope/--counts": self.controls_set,
+        }
+        return [name for name, value in flags.items() if value]
 
     def keeps(self, file_path: str) -> bool:
         """Whether ``--file`` and ``--module`` keep a row on *file_path*."""
@@ -611,8 +658,6 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
     """
     from repowise.core.analysis.communities import file_community_labels
     from repowise.core.analysis.health import HealthAnalyzer
-    from repowise.core.analysis.health.config import HealthConfig
-
     graph_builder, parsed_files = _parse_tree(repo_path)
     git_meta_map: dict = {}
     try:
@@ -634,14 +679,9 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
         duplication_cache_dir=Path(repo_path) / ".repowise",
         repo_root=repo_path,
     )
-    # Any .repowise/health-rules.json the user keeps in the repo.
-    health_cfg = HealthConfig.load(repo_path)
-    analyzer_cfg = (
-        health_cfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-        if (health_cfg.disabled_biomarkers or health_cfg.rules)
-        else None
+    report = analyzer.analyze(
+        analyzer_config(repo_path, [pf.file_info.path for pf in parsed_files])
     )
-    report = analyzer.analyze(analyzer_cfg)
     if persist:
         _persist_health(repo_path, report=report)
     hotspots = {p for p, m in git_meta_map.items() if m.get("is_hotspot")}

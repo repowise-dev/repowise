@@ -540,6 +540,7 @@ class HealthAnalyzer:
         source_reader: SourceReader | None = None,
         stored_blame_findings: dict[str, list[Any]] | None = None,
         file_dependents: dict[str, int] | None = None,
+        tested_files: set[str] | frozenset[str] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -591,6 +592,8 @@ class HealthAnalyzer:
         # revision comparison passes the other side's, so a file crossing a
         # centrality gate inside a partial graph is not read as a code change.
         self._file_dependents_override = file_dependents
+        # Files the index records as tested (paired or reached), for a pass holding no tests.
+        self._tested_files = frozenset(tested_files or ())
         self._package_roots_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
         self.test_index = RepoTestIndex(self.graph, self.parsed_files, self._execution_graph)
@@ -929,7 +932,8 @@ class HealthAnalyzer:
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         return FileEvaluator(
             self,
-            paired_tests=self.test_index.paired(analyzed_paths),
+            paired_tests=self.test_index.paired(analyzed_paths)
+            | (self._tested_files & analyzed_paths),
             package_roots=self._package_boundaries(analyzed_paths),
             dup_report=dup_report,
             run=run,

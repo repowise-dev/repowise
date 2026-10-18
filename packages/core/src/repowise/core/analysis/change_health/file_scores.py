@@ -7,7 +7,7 @@ as ``counts="code_shape"`` reads the index): comparable side to side.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -76,15 +76,20 @@ def file_score_deltas(
     rename: Mapping[str, str],
     *,
     departed: Mapping[str, list[str]] | None = None,
+    full: bool = False,
 ) -> list[FileScoreDelta]:
     """A row per head path, largest structure move first. *rename* is ``{base: head}``.
 
     *departed* maps each deleted file to where its code moved; it gets a base-only row.
+    *full* keeps each side's whole score, for a pass that read history and coverage.
     """
     base_of = {new: old for old, new in rename.items()}
-    rows = [_row(path, base.get(base_of.get(path, path)), head.get(path)) for path in paths]
+    score = _full_score if full else _shape_score
+    rows = [
+        _row(path, base.get(base_of.get(path, path)), head.get(path), score) for path in paths
+    ]
     rows += [
-        replace(_row(path, base.get(path), None), moved_to=tuple(moved))
+        replace(_row(path, base.get(path), None, score), moved_to=tuple(moved))
         for path, moved in (departed or {}).items()
     ]
     return sorted(rows, key=lambda r: (-abs(r.structure_change), r.path))
@@ -119,12 +124,15 @@ def score_change(rows: Iterable[FileScoreDelta]) -> ScoreChange | None:
 
 
 def _row(
-    path: str, base: HealthFileMetricData | None, head: HealthFileMetricData | None
+    path: str,
+    base: HealthFileMetricData | None,
+    head: HealthFileMetricData | None,
+    score: Callable[[HealthFileMetricData | None], float | None],
 ) -> FileScoreDelta:
     return FileScoreDelta(
         path=path,
-        base_score=_shape_score(base),
-        head_score=_shape_score(head),
+        base_score=score(base),
+        head_score=score(head),
         base_structure=base.structure_deduction if base else None,
         head_structure=head.structure_deduction if head else None,
         nloc_base=base.nloc if base else None,
@@ -136,6 +144,10 @@ def _shape_score(metric: HealthFileMetricData | None) -> float | None:
     if metric is None or metric.score is None:
         return None
     return code_shape_score(metric.structure_deduction)
+
+
+def _full_score(metric: HealthFileMetricData | None) -> float | None:
+    return metric.score if metric is not None else None
 
 
 def _round(value: float | None) -> float | None:
