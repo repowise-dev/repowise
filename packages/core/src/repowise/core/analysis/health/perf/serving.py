@@ -226,12 +226,13 @@ SCOPES: dict[str, dict[str, Any]] = {
 
 
 def scope_counts(groups: Iterable[Sequence[Any]], *, judged: bool = True) -> dict[str, int]:
-    """How many causes each scope holds, unfiltered, from the same
-    ``(*SCOPED_GROUP_FIELDS, count)`` groups the scoped facets fold."""
+    """How many causes each scope holds before the narrowing filters, from the
+    same ``(*SCOPED_GROUP_FIELDS, count)`` groups the scoped facets fold, so
+    within whatever file scope and language gate those groups carry."""
     rows = [dict(zip((*SCOPED_GROUP_FIELDS, "count"), group, strict=True)) for group in groups]
     counts: dict[str, int] = {}
     for name, args in SCOPES.items():
-        query, _ = parse_query(**args)
+        query, _ = parse_query(**args, lift_defaults=True)
         params = {k: v for k, v in query.store_filters(judged=judged).items() if k != "file_paths"}
         counts[name] = sum(int(row["count"]) for row in rows if keep(row, params))
     return counts
@@ -324,8 +325,8 @@ class PerformanceQuery:
             "actionabilities": (self.actionabilities or DEFAULT_ACTIONABILITIES)
             if live
             else self.actionabilities,
-            "proofs": DEFAULT_QUEUE_PROOFS if live else self.proofs,
-            "roles": QUEUE_ROLES if live else self.roles,
+            "proofs": (self.proofs or DEFAULT_QUEUE_PROOFS) if live else self.proofs,
+            "roles": (self.roles or QUEUE_ROLES) if live else self.roles,
             "queue_eligible": None if live else self.queue_eligible,
             "file_paths": self.file_paths,
         }
@@ -392,11 +393,15 @@ def parse_query(
     limit: int = 20,
     offset: int = 0,
     queue: bool = False,
+    lift_defaults: bool = False,
 ) -> tuple[PerformanceQuery, dict[str, str]]:
     """Normalize caller input, reporting anything unrecognized by name.
 
     An unknown filter value must not read as an empty repository, so it is
     dropped from the query and named in the returned map instead.
+
+    ``lift_defaults`` accepts ``all`` for state and proof, the dashboard's
+    scopes; the agent surface leaves it off and keeps its vocabulary.
     """
     ignored: dict[str, str] = {}
 
@@ -416,9 +421,13 @@ def parse_query(
             boundary=pick("performance_boundary", boundary, BOUNDARIES),
             confidence=pick("performance_confidence", confidence, CONFIDENCES),
             actionability=pick(
-                "performance_actionability", actionability, (*ACTIONABILITIES, ANY)
+                "performance_actionability",
+                actionability,
+                (*ACTIONABILITIES, ANY) if lift_defaults else ACTIONABILITIES,
             ),
-            proof=pick("performance_proof", proof, (*QUEUE_PROOFS, ANY)),
+            proof=pick(
+                "performance_proof", proof, (*QUEUE_PROOFS, ANY) if lift_defaults else QUEUE_PROOFS
+            ),
             role=pick("performance_role", role, ROLES),
             view=pick("performance_view", view, CANONICAL_VIEWS) or "detail",
             sort=pick("performance_sort", sort, CANONICAL_SORTS) or DEFAULT_SORT,

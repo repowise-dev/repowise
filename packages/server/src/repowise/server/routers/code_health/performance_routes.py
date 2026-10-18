@@ -124,6 +124,7 @@ async def list_performance_opportunities(
         limit=limit,
         offset=offset,
         queue=queue,
+        lift_defaults=True,
     )
     page = await _service(session, repo_id, include_unverified=include_unverified).page(
         query,

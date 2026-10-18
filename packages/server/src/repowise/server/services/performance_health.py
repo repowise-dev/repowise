@@ -65,8 +65,8 @@ class PerformancePage:
     counts: dict[str, Any] = field(default_factory=dict)
     #: Open opportunities a language gate held back, ``{language: {count, ...}}``.
     gated: dict[str, dict] = field(default_factory=dict)
-    #: Causes per dashboard scope (``now``, ``production``, ``all``), unfiltered.
-    #: Only with scoped facets.
+    #: Causes per dashboard scope (``now``, ``production``, ``all``) before the
+    #: narrowing filters. Only with scoped facets.
     scopes: dict[str, int] = field(default_factory=dict)
 
 

@@ -385,7 +385,7 @@ async def test_scoped_facets_sum_to_the_rows_the_scope_returns(store, args) -> N
     )
 
     session, repository_id = store
-    query, ignored = parse_query(**args, limit=100)
+    query, ignored = parse_query(**args, limit=100, lift_defaults=True)
     assert not ignored
     _, total = await list_performance_opportunities(
         session, repository_id, **query.store_filters(), sort=query.sort, limit=100
@@ -403,13 +403,19 @@ async def test_scoped_facets_sum_to_the_rows_the_scope_returns(store, args) -> N
 
 
 def test_all_lifts_the_default_state_and_proof() -> None:
-    query, ignored = parse_query(actionability="all", proof="all", role="all")
+    query, ignored = parse_query(actionability="all", proof="all", role="all", lift_defaults=True)
     assert not ignored
     assert (query.actionabilities, query.proofs, query.roles) == (None, None, None)
     assert query.queue_eligible is None
     held, _ = parse_query(queue=True, actionability="investigate")
     assert held.queue_eligible is True
     assert held.actionabilities == {"investigate"}
+    # The agent surface keeps its vocabulary: "all" is named, not applied.
+    _, ignored = parse_query(actionability="all", proof="all")
+    assert set(ignored) == {"performance_actionability", "performance_proof"}
+    # An explicit proof survives the live default-queue rule on an unjudged store.
+    live, _ = parse_query(queue=True, actionability="advisory", proof="proven")
+    assert live.store_filters(judged=False)["proofs"] == {"proven"}
 
 
 async def test_scope_counts_equal_what_each_scope_lists(store) -> None:
@@ -425,7 +431,7 @@ async def test_scope_counts_equal_what_each_scope_lists(store) -> None:
     counts = scope_counts(grouped)
     assert set(counts) == {"now", "production", "all"}
     for name, args in SCOPES.items():
-        query, _ = parse_query(**args, limit=100)
+        query, _ = parse_query(**args, limit=100, lift_defaults=True)
         _, total = await list_performance_opportunities(
             session, repository_id, **query.store_filters(), sort=query.sort, limit=100
         )
