@@ -20,9 +20,16 @@ import {
   writeDirectoryFilters,
 } from "./use-contributors-url";
 
-const LIMIT = 30;
+/** Rows shown before "Show all", then the page size the rest loads in. */
+const FIRST_PAGE = 10;
+const REST_PAGE = 50;
 
-/** The collapsed "All contributors" table: people only unless the reader asks for automation. */
+const pageRange = (pageIndex: number) =>
+  pageIndex === 0
+    ? { offset: 0, limit: FIRST_PAGE }
+    : { offset: FIRST_PAGE + (pageIndex - 1) * REST_PAGE, limit: REST_PAGE };
+
+/** The Overview's "Everyone" table: people only unless the reader asks for automation. */
 export function AllContributors({ repoId, automationCount }: { repoId: string; automationCount: number }) {
   const t = useTranslations("views.contributors");
   const tCommon = useTranslations("common");
@@ -79,14 +86,14 @@ export function AllContributors({ repoId, automationCount }: { repoId: string; a
         q: debouncedQ || undefined,
         sort: filters.sort,
         ...(filters.includeAutomation ? {} : { kind: "human" as const }),
-        limit: LIMIT,
-        offset: pageIndex * LIMIT,
+        ...pageRange(pageIndex),
       });
     },
     { revalidateOnFocus: false, revalidateFirstPage: false },
   );
 
   const items = useMemo(() => (data ? data.flatMap((p) => p.items) : []), [data]);
+  const total = data?.[0]?.total ?? 0;
   const hrefFor = (o: OwnerListEntry) => `/repos/${repoId}/owners/${encodeURIComponent(o.key)}`;
 
   return (
@@ -94,11 +101,11 @@ export function AllContributors({ repoId, automationCount }: { repoId: string; a
       owners={items}
       isLoading={isLoading}
       isValidating={isValidating}
-      total={data?.[0]?.total ?? 0}
+      total={total}
       hasMore={data ? data[data.length - 1]!.has_more : false}
       filters={filters}
       onFiltersChange={setFilters}
-      onLoadMore={() => setSize(size + 1)}
+      onShowAll={() => void setSize(Math.max(size, 1 + Math.ceil(Math.max(0, total - FIRST_PAGE) / REST_PAGE)))}
       automationCount={automationCount}
       hrefFor={hrefFor}
       LinkComponent={Link}

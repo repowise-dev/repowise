@@ -54,6 +54,7 @@
     "./symbols/*": "./src/symbols/*.tsx",
     "./owners": "./src/owners/index.ts",
     "./owners/offboarding": "./src/owners/offboarding.ts",
+    "./owners/knowledge-coverage": "./src/owners/knowledge-coverage.ts",
     "./owners/*": "./src/owners/*.tsx",
     "./modules": "./src/modules/index.ts",
     "./modules/*": "./src/modules/*.tsx",

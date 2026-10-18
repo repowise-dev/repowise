@@ -8,7 +8,8 @@ import type { SWRResponse } from "swr";
 import type { KnowledgeMatrix, OwnersSummary } from "@repowise-dev/types/owners";
 import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { ContributorsLede } from "@repowise-dev/ui/owners/contributors-lede";
+import { OwnershipLede } from "@repowise-dev/ui/owners/ownership-lede";
+import { knowledgeCoverage } from "@repowise-dev/ui/owners/knowledge-coverage";
 import type { OffboardingScenario } from "@repowise-dev/ui/owners/offboarding-view";
 import { AllContributors } from "./all-contributors";
 import { useKnowledgeMatrix } from "./use-knowledge-matrix";
@@ -37,24 +38,25 @@ interface PanelProps {
 }
 
 /**
- * The active Contributors tab. The overview reads only the summary; the
- * other three read the knowledge matrix, which loads the first time one of
- * them opens and is split out of the landing chunk.
+ * The active Ownership tab. Every tab reads the summary and the knowledge
+ * matrix (one fetch each, shared with the person page); the three matrix
+ * views are split out of the landing chunk.
  */
 export function ContributorsPanel({ tab, repoId, summary, scenario, onScenarioChange }: PanelProps) {
   const t = useTranslations("views.contributors");
   const tCommon = useTranslations("common");
   const base = `/repos/${repoId}`;
-  const matrix = useKnowledgeMatrix(repoId, tab !== "overview");
+  const matrix = useKnowledgeMatrix(repoId);
   const s = summary.data;
+  const coverage = useMemo(() => (matrix.data ? knowledgeCoverage(matrix.data) : null), [matrix.data]);
 
   const loadError = (onRetry: () => void, message: string) => (
     <ApiError title={t("loadFailedTitle")} message={message} retryLabel={tCommon("retry")} onRetry={onRetry} />
   );
-  const ready = (render: (m: KnowledgeMatrix, s: OwnersSummary) => ReactNode) => {
+  const ready = (render: (m: KnowledgeMatrix, s: OwnersSummary) => ReactNode, fallback = <TabFallback />) => {
     if (summary.error) return loadError(() => void summary.mutate(), t("loadFailed"));
     if (matrix.error) return loadError(() => void matrix.mutate(), t("matrixLoadFailed"));
-    return matrix.data && s ? render(matrix.data, s) : <TabFallback />;
+    return matrix.data && s ? render(matrix.data, s) : fallback;
   };
 
   // The people behind the truck factor, as the one-click starting scenario.
@@ -68,16 +70,17 @@ export function ContributorsPanel({ tab, repoId, summary, scenario, onScenarioCh
   const panels: Record<ContributorTab, () => ReactNode> = {
     overview: () => (
       <>
-        {summary.error ? (
-          loadError(() => void summary.mutate(), t("loadFailed"))
-        ) : s ? (
-          <ContributorsLede
-            summary={s}
-            hrefForTab={(next, leave) => contributorsHref(base, next, leave)}
-            LinkComponent={Link}
-          />
-        ) : (
-          <Skeleton className="h-40 w-full rounded-lg" />
+        {ready(
+          (_, sum) =>
+            coverage && (
+              <OwnershipLede
+                coverage={coverage}
+                summary={sum}
+                hrefForTab={(next, leave) => contributorsHref(base, next, leave)}
+                LinkComponent={Link}
+              />
+            ),
+          <Skeleton className="h-40 w-full rounded-lg" />,
         )}
         <AllContributors repoId={repoId} automationCount={s?.automation_identities ?? 0} />
       </>

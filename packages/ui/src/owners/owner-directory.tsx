@@ -7,7 +7,6 @@ import { Input } from "../ui/input";
 import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
 import { EmptyState } from "../shared/empty-state";
-import { ResultsFooter } from "../shared/results-footer";
 import { OverviewSection } from "../overview/section";
 import { OwnerTable, type OwnerSortKey } from "./owner-table";
 
@@ -28,7 +27,8 @@ export interface OwnerDirectoryProps {
   hasMore: boolean;
   filters: OwnerDirectoryFilters;
   onFiltersChange: (next: OwnerDirectoryFilters) => void;
-  onLoadMore: () => void;
+  /** Load every remaining row; offered while `hasMore`. */
+  onShowAll: () => void;
   onSelect: (owner: OwnerListEntry) => void;
   /** Bot and agent identities in the index; the toggle shows only when there are some. */
   automationCount?: number;
@@ -40,9 +40,9 @@ export interface OwnerDirectoryProps {
 }
 
 /**
- * Everyone, as one aligned table, collapsed under the page's lede and tabs:
- * the table is disclosure, the lede is the reading. People only by default;
- * bots and coding agents are a toggle away.
+ * Everyone, as one aligned table under the page's lede: the first rows, then
+ * "Show all N". People only by default; bots and coding agents are a toggle
+ * away.
  */
 export function OwnerDirectory({
   owners,
@@ -52,7 +52,7 @@ export function OwnerDirectory({
   hasMore,
   filters,
   onFiltersChange,
-  onLoadMore,
+  onShowAll,
   onSelect,
   automationCount = 0,
   hrefFor,
@@ -64,14 +64,10 @@ export function OwnerDirectory({
     : total === 1 ? "person" : "people";
   return (
     <OverviewSection
-      title="All contributors"
+      title="Everyone"
       description="A dot marks sole-owned files held by someone who has stopped committing, so a clean column means nothing to chase."
-      collapsible
-      // Collapsed by default: the table is disclosure. A link that carries a
-      // search or the automation toggle opens on the result it asked for.
-      defaultOpen={filters.q !== "" || filters.includeAutomation}
-      hint={
-        <span className="font-mono uppercase tracking-[0.12em]">
+      action={
+        <span className="font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           {total.toLocaleString()} {noun}
         </span>
       }
@@ -132,14 +128,16 @@ export function OwnerDirectory({
         />
       )}
 
-      <ResultsFooter
-        shown={owners.length}
-        total={total}
-        hasMore={hasMore}
-        loading={isValidating && !isLoading}
-        onLoadMore={onLoadMore}
-        noun="contributor"
-      />
+      {hasMore && (
+        <button
+          type="button"
+          onClick={onShowAll}
+          disabled={isValidating}
+          className="self-start text-xs text-[var(--color-accent-primary)] hover:underline disabled:text-[var(--color-text-tertiary)] disabled:no-underline"
+        >
+          {isValidating ? "Loading…" : `Show all ${total.toLocaleString()} ${noun}`}
+        </button>
+      )}
     </OverviewSection>
   );
 }

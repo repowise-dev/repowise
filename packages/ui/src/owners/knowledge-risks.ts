@@ -51,12 +51,16 @@ export interface KnowledgeRisks {
   trackedFiles: number;
 }
 
-/** The file as a knowledge risk, or null when it has a second author or does not matter now. */
-function riskFile(matrix: KnowledgeMatrix, row: KnowledgeMatrixFile): KnowledgeRiskFile | null {
+/** The file as held by one person, or null when it has a second author or `keep` passes on it. */
+function riskFile(
+  matrix: KnowledgeMatrix,
+  row: KnowledgeMatrixFile,
+  keep: (facts: KnowledgeFileFacts) => boolean,
+): KnowledgeRiskFile | null {
   const [top, next] = row[7];
   if (!isSingleOwner(row[5]) || !top) return null;
   const facts = fileFacts(matrix, row);
-  if (!facts.isHotspot && !facts.lowHealth) return null;
+  if (!keep(facts)) return null;
   return {
     ...facts,
     holder: { ...personAt(matrix, top[0]), share: top[1] },
@@ -78,9 +82,22 @@ function riskArea(dir: string, files: KnowledgeRiskFile[]): KnowledgeRiskArea {
   };
 }
 
-export function knowledgeRisks(matrix: KnowledgeMatrix): KnowledgeRisks {
-  const files = matrix.files.flatMap((row) => riskFile(matrix, row) ?? []);
+/**
+ * Single-holder files that pass `keep`, grouped by directory, most severe
+ * first. Knowledge risks keeps hotspots and weak files; knowledge coverage
+ * keeps code changed lately.
+ */
+export function singleHolderFiles(
+  matrix: KnowledgeMatrix,
+  keep: (facts: KnowledgeFileFacts) => boolean,
+): { files: KnowledgeRiskFile[]; areas: KnowledgeRiskArea[] } {
+  const files = matrix.files.flatMap((row) => riskFile(matrix, row, keep) ?? []);
   const areas = Array.from(groupByDir(files), ([dir, group]) => riskArea(dir, group)).sort(compareAreas);
+  return { files, areas };
+}
+
+export function knowledgeRisks(matrix: KnowledgeMatrix): KnowledgeRisks {
+  const { files, areas } = singleHolderFiles(matrix, (f) => f.isHotspot || f.lowHealth);
   return {
     areas,
     files: files.length,

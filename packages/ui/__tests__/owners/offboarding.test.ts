@@ -9,6 +9,7 @@ import {
   simulateOffboarding,
 } from "../../src/owners/offboarding";
 import { knowledgeRisks } from "../../src/owners/knowledge-risks";
+import { isSharedKnowledge, knowledgeCoverage } from "../../src/owners/knowledge-coverage";
 import { quietOwnerExposure } from "../../src/owners/knowledge-loss";
 import { isLowHealth, isSingleOwner } from "../../src/owners/knowledge-files";
 import {
@@ -112,6 +113,30 @@ describe("knowledgeRisks", () => {
     expect(r.areas.map((a) => a.dir)).toEqual(["src/api", ""]);
     expect(r.areas[0]?.holder).toMatchObject({ person: { key: "ana" }, files: 1 });
     expect(r.areas[1]?.files[0]).toMatchObject({ path: "setup.py", lowHealth: true, second: null });
+  });
+});
+
+describe("knowledgeCoverage", () => {
+  it("weighs changing code with history by lines, shared when two or more hold it", () => {
+    const c = knowledgeCoverage(MATRIX);
+    // routes (100, one holder), view (80, shared), setup (20, one holder); auth and empty did not change.
+    expect(c).toMatchObject({ files: 3, sharedFiles: 1, nloc: 200, sharedNloc: 80, basis: "nloc" });
+    expect(c.share).toBeCloseTo(0.4);
+    expect(c.singleHolderFiles).toBe(2);
+    expect(c.singleHolderAreas.map((a) => a.dir)).toEqual(["src/api", ""]);
+  });
+
+  it("falls back to file counts without sizes and is null when nothing changed", () => {
+    const sizeless = { ...MATRIX, files: MATRIX.files.map((f) => [f[0], f[1], 0, ...f.slice(3)] as typeof f) };
+    expect(knowledgeCoverage(sizeless)).toMatchObject({ basis: "files", share: 1 / 3 });
+    const still = { ...MATRIX, files: MATRIX.files.map((f) => [...f.slice(0, 8), false] as unknown as typeof f) };
+    expect(knowledgeCoverage(still).share).toBeNull();
+  });
+
+  it("never counts a file without history as shared", () => {
+    expect(isSharedKnowledge(0)).toBe(false);
+    expect(isSharedKnowledge(1)).toBe(false);
+    expect(isSharedKnowledge(2)).toBe(true);
   });
 });
 

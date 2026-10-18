@@ -49,6 +49,19 @@ export interface BuildHandoverPromptOptions {
   repoName?: string;
   /** `handover`: the share the people who stay fall below (0-1). Default 0.5. */
   threshold?: number;
+  /** `spread`: why these files matter now. Default: hotspots or weak health. */
+  spreadReason?: string;
+}
+
+/** Named people past which the prompt says "and N others". */
+const MAX_NAMED = 4;
+
+function namePeople(people: readonly string[]): string {
+  const named =
+    people.length > MAX_NAMED
+      ? [...people.slice(0, MAX_NAMED), `${people.length - MAX_NAMED} others`]
+      : people;
+  return joinNames(named) || "the selected people";
 }
 
 /** Past these the prompt says how many more there are instead of listing them. */
@@ -106,11 +119,12 @@ export function buildHandoverPrompt({
   flavor = "generic",
   repoName,
   threshold = 0.5,
+  spreadReason = "each one is a hotspot or in a weak health band",
 }: BuildHandoverPromptOptions): string {
   const shown = areas.slice(0, MAX_AREAS);
   const hidden = areas.length - shown.length;
   const files = areas.reduce((s, a) => s + a.files.length, 0);
-  const names = joinNames(people) || "the selected people";
+  const names = namePeople(people);
   const heading =
     purpose === "handover"
       ? `## Knowledge handover from ${names}${repoSuffix(repoName)}`
@@ -118,7 +132,7 @@ export function buildHandoverPrompt({
   const situation =
     purpose === "handover"
       ? `Without ${names}, the people who stay would hold less than ${Math.round(threshold * 100)}% of the commits behind these ${files} file${pluralS(files)}.`
-      : `${names} made at least 80% of the commits behind these ${files} file${pluralS(files)}, and each one is a hotspot or in a weak health band.`;
+      : `One person made at least 80% of the commits behind each of these ${files} file${pluralS(files)} (${names}), and ${spreadReason}.`;
   // joinSections drops "" entries, so each section carries its own blank line.
   return joinSections([
     preamble(flavor, PARTS),
