@@ -19,6 +19,12 @@ export interface AttentionSectionProps {
   LinkComponent?: React.ElementType | undefined;
 }
 
+/** Areas count different things, so the header counts areas, not their sum. */
+function scopeLabel(summary: OverviewSummaryResponse, areaCount: number): string {
+  if (areaCount > 0) return `${formatNumber(areaCount)} ${areaCount === 1 ? "area" : "areas"}`;
+  return `${formatNumber(summary.attention_summary?.total ?? summary.attention.length)} open`;
+}
+
 /**
  * Every detector's open findings by area of work. Leads the page on a host
  * without "Do next"; folds into an inventory below it otherwise. Renders
@@ -35,10 +41,7 @@ export function AttentionSection({
   // opportunities), so the header counts areas rather than summing them.
   const areas = inventoryRows(summary);
   const hasAttention = areas.length > 0 || summary.attention.length > 0;
-  const scope =
-    areas.length > 0
-      ? `${formatNumber(areas.length)} ${areas.length === 1 ? "area" : "areas"}`
-      : `${formatNumber(summary.attention_summary?.total ?? summary.attention.length)} open`;
+  const scope = scopeLabel(summary, areas.length);
 
   if (!hasAttention) return null;
   return (

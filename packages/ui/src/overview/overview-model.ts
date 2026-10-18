@@ -274,65 +274,59 @@ export function buildExploreCards(
   routes: OverviewRoutes,
 ): ExploreCard[] {
   const { base } = resolveOverviewRoutes(routes);
-  const { stats } = summary;
-  const explore = summary.explore;
-  const sole = explore?.ownership?.sole_owned_files;
-  const decisions = explore?.decisions;
-  const refactoring = explore?.refactoring;
+  const { stats, explore } = summary;
   return [
-    {
-      key: "code-health",
-      label: "Code health map",
-      ...(stats.hotspot_count > 0
-        ? {
-            value: formatNumber(stats.hotspot_count),
-            caption: `${plural(stats.hotspot_count, "hotspot", "hotspots")} across ${formatNumber(stats.file_count)} files`,
-          }
-        : { value: formatNumber(stats.file_count), caption: "files scored" }),
-      href: `${base}/code-health`,
-    },
-    {
-      key: "contributors",
-      label: "Ownership",
-      ...(sole != null
-        ? {
-            value: formatNumber(sole),
-            caption: `sole-owned ${plural(sole, "file", "files")}: one author, no second reader`,
-          }
-        : { caption: "Who knows each file, and what depends on them" }),
-      href: `${base}/owners`,
-    },
+    { key: "code-health", label: "Code health map", href: `${base}/code-health`, ...healthFigure(stats) },
+    { key: "contributors", label: "Ownership", href: `${base}/owners`, ...ownershipFigure(explore) },
     {
       key: "architecture",
       label: "Architecture",
+      href: `${base}/architecture`,
       value: formatNumber(stats.module_count),
       caption: `${plural(stats.module_count, "module", "modules")}, ${formatNumber(stats.entry_point_count)} entry points`,
-      href: `${base}/architecture`,
     },
-    {
-      key: "decisions",
-      label: "Decisions",
-      ...(decisions && decisions.total > 0
-        ? {
-            value: formatNumber(decisions.total),
-            caption: `recorded, of which ${formatNumber(decisions.accepted)} accepted and ${formatNumber(decisions.candidates)} awaiting review`,
-          }
-        : { caption: "No decisions recorded yet" }),
-      href: `${base}/decisions`,
-    },
-    {
-      key: "refactoring",
-      label: "Refactoring",
-      ...(refactoring
-        ? {
-            value: formatNumber(refactoring.opportunities_total),
-            caption: `open ${plural(refactoring.opportunities_total, "opportunity", "opportunities")}, one per file`,
-          }
-        : { caption: "No refactoring analysis yet" }),
-      href: `${base}/refactoring`,
-    },
+    { key: "decisions", label: "Decisions", href: `${base}/decisions`, ...decisionsFigure(explore) },
+    { key: "refactoring", label: "Refactoring", href: `${base}/refactoring`, ...refactoringFigure(explore) },
     testsCard(explore, base),
   ];
+}
+
+type CardFigure = Pick<ExploreCard, "value" | "caption">;
+type Explore = OverviewSummaryResponse["explore"];
+
+function healthFigure(stats: OverviewSummaryResponse["stats"]): CardFigure {
+  if (stats.hotspot_count === 0) return { value: formatNumber(stats.file_count), caption: "files scored" };
+  return {
+    value: formatNumber(stats.hotspot_count),
+    caption: `${plural(stats.hotspot_count, "hotspot", "hotspots")} across ${formatNumber(stats.file_count)} files`,
+  };
+}
+
+function ownershipFigure(explore: Explore): CardFigure {
+  const sole = explore?.ownership?.sole_owned_files;
+  if (sole == null) return { caption: "Who knows each file, and what depends on them" };
+  return {
+    value: formatNumber(sole),
+    caption: `sole-owned ${plural(sole, "file", "files")}: one author, no second reader`,
+  };
+}
+
+function decisionsFigure(explore: Explore): CardFigure {
+  const d = explore?.decisions;
+  if (!d || d.total === 0) return { caption: "No decisions recorded yet" };
+  return {
+    value: formatNumber(d.total),
+    caption: `recorded, of which ${formatNumber(d.accepted)} accepted and ${formatNumber(d.candidates)} awaiting review`,
+  };
+}
+
+function refactoringFigure(explore: Explore): CardFigure {
+  const r = explore?.refactoring;
+  if (!r) return { caption: "No refactoring analysis yet" };
+  return {
+    value: formatNumber(r.opportunities_total),
+    caption: `open ${plural(r.opportunities_total, "opportunity", "opportunities")}, one per file`,
+  };
 }
 
 /**
