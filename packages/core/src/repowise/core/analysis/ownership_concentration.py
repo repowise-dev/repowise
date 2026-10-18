@@ -57,7 +57,9 @@ def owned_files(rows: Iterable[Any], resolve: IdentityResolver) -> OwnedFiles:
     out = OwnedFiles()
     for m in rows:
         name = row_field(m, "primary_owner_name")
-        owner = resolve(name, row_field(m, "primary_owner_email")) if name else None
+        email = row_field(m, "primary_owner_email")
+        # Keyed as the owner fold keys it, so an email-only owner counts too.
+        owner = resolve(name, email) if (name or email) else None
         if owner and resolve.is_bot(owner):
             owner = None
         if (row_field(m, "bus_factor") or 0) == 1:

@@ -244,3 +244,12 @@ def test_knowledge_matrix_rows_are_positional_and_indexed() -> None:
     assert files["lib/x.py"][2:4] == (40, None)
     # A bot-owned file keeps its row, with no owner and no authors.
     assert files["deps/lock.py"][6:] == (None, [])
+
+
+def test_an_email_only_owner_owns_files_on_every_surface() -> None:
+    rows = [_row("a.py", ("", "solo@example.com"), [_author(("", "solo@example.com"), 3)])]
+    resolve = people_resolver(rows)
+    accs, _ = aggregate_owners(rows, [], resolve=resolve)
+    assert accs["solo@example.com"].files_owned == 1
+    assert dict(owned_files(rows, resolve).by_owner) == {"solo@example.com": 1}
+    assert primary_owner_key(rows[0], resolve) == "solo@example.com"
