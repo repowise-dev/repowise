@@ -14,6 +14,10 @@ export interface ScoreSplitParts {
   coverage: number;
 }
 
+export const SHORT_HISTORY_LABEL = "Short history";
+export const SHORT_HISTORY_DETAIL =
+  "fewer than 5 commits recorded, too few to count, so this score is mostly about code shape";
+
 const COVERAGE_CATEGORIES = new Set(["test_coverage", "test_coverage_gradient"]);
 
 /** A file's deduction in three parts: code shape, change history, test coverage. */
@@ -79,8 +83,7 @@ export function ScoreSplit({ categories, signals }: ScoreSplitProps) {
       ) : null}
       {short ? (
         <p className="text-xs text-[var(--color-text-tertiary)]">
-          Short history: fewer than 5 commits recorded, too few to count, so this score is mostly
-          about code shape.
+          {SHORT_HISTORY_LABEL}: {SHORT_HISTORY_DETAIL}.
         </p>
       ) : null}
     </div>

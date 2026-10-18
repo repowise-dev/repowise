@@ -2,6 +2,7 @@
 
 import type { FileSignals } from "@repowise-dev/types/health";
 import { formatRelativeTimeOrNull, ordinal } from "../lib/format";
+import { SHORT_HISTORY_DETAIL, SHORT_HISTORY_LABEL } from "./score-split";
 
 export interface FileSignalsPanelProps {
   signals: FileSignals | null | undefined;
@@ -76,6 +77,9 @@ export function FileSignalsPanel({
             caption="first seen in git history"
             present={signals.age_days != null}
           />
+          {signals.history === "short" ? (
+            <Row value={SHORT_HISTORY_LABEL} caption={SHORT_HISTORY_DETAIL} present />
+          ) : null}
         </Group>
         ) : null}
 
@@ -137,7 +141,8 @@ export function hasAnySignal(
       (s.prior_defect_count != null ||
         s.change_entropy_pct != null ||
         s.commit_count_90d != null ||
-        s.age_days != null)) ||
+        s.age_days != null ||
+        s.history === "short")) ||
     (groups.includes("people") &&
       (s.primary_owner_name != null || s.recent_owner_name != null)) ||
     (groups.includes("topology") && (s.in_degree != null || s.out_degree != null))
