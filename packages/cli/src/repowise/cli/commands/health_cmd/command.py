@@ -26,7 +26,7 @@ from repowise.cli.helpers import (
     run_async,
     silence_logs_for_machine_output_until_close,
 )
-from repowise.core.analysis.finding_registry import preview_lines
+from repowise.core.analysis.finding_registry import excluded_types, is_served, preview_lines
 from repowise.core.analysis.health.counts import (
     COUNTS,
     DEFAULT_COUNTS,
@@ -231,8 +231,12 @@ def health_command(
         return
 
     report, hotspots, languages = _load_report(repo_path, opts)
-    metrics, findings, unanalysed = _scope_report(report, hotspots, opts)
+    metrics, scored, unanalysed = _scope_report(report, hotspots, opts)
     metrics_sorted = sorted(metrics, key=lambda m: m.score)
+    # JSON explains the score with every finding it counted; the rest list
+    # what MCP and the web UI list.
+    excluded = excluded_types()
+    findings = [f for f in scored if not _withheld(f, excluded)]
 
     if generate_code is not None:
         suggestions = _scoped_suggestions(report, opts)
@@ -247,13 +251,18 @@ def health_command(
     elif badge_view:
         _render_badge(report.kpis.get("average_health"), report.kpis.get("analysed_share"))
     elif fmt == "json":
-        _render_json(repo_path, report, metrics_sorted, findings, opts)
+        _render_json(repo_path, report, metrics_sorted, scored, opts)
     elif fmt == "md":
         _render_md(report, findings)
     else:
         _render_table(
             repo_path, report, (metrics, metrics_sorted), findings, unanalysed, languages, opts
         )
+
+
+def _withheld(finding: Any, excluded: frozenset[str]) -> bool:
+    """A finding the registry or a language gate keeps off default surfaces."""
+    return not is_served("health", finding.biomarker_type, finding.file_path, excluded)
 
 
 @dataclass(frozen=True)
@@ -421,6 +430,7 @@ def _scoped_suggestions(report: Any, opts: _Options) -> list[Any]:
 def _render_json(
     repo_path: Path, report: Any, metrics_sorted: list[Any], findings: list[Any], opts: _Options
 ) -> None:
+    excluded = excluded_types()
     click.echo(
         json.dumps(
             {
@@ -453,6 +463,7 @@ def _render_json(
                         "health_impact": f.health_impact,
                         "details": detail_map(f),
                         "reason": f.reason,
+                        **({"withheld": True} if _withheld(f, excluded) else {}),
                     }
                     for f in findings
                 ],
@@ -496,7 +507,7 @@ def _render_table(
     _render_defect_accuracy_line(report)
     # Lead with the finding count, density and coverage, not the bounded /10
     # average. Metrics carry no language, so it comes with the report.
-    _render_performance_section(report, languages)
+    _render_performance_section(report, findings, languages)
     _render_files_table(metrics_sorted)
     _render_findings_table(findings)
 

@@ -41,7 +41,9 @@ def _render_fix_first(loaded: tuple[Any, Any] | None) -> None:
             console.print(f"    [dim]verify:[/dim] {escape(item.verify.command)}")
 
 
-def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> None:
+def _render_performance_section(
+    report: Any, findings: list[Any], lang_by_path: dict[str, str]
+) -> None:
     """Honest performance headline: risk count + density + coverage + scope.
 
     Leads with the open-risk count and how much of the analyzed code a perf
@@ -55,7 +57,7 @@ def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> No
     if not coverage.analyzed_files:
         return
     perf_findings = sum(
-        1 for f in report.findings if getattr(f, "dimension", "defect") == "performance"
+        1 for f in findings if getattr(f, "dimension", "defect") == "performance"
     )
     perf_avg = report.kpis.get("performance_average")
 
