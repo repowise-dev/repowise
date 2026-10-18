@@ -32,8 +32,10 @@ class HistoryParams:
     delta: str | None
     touches_hotspot: bool
 
-    def commit_filter(self) -> crud.CommitFilter:
+    def commit_filter(self, **feed: str | float | None) -> crud.CommitFilter:
+        """The commit filter, plus the feed's own *authorship* / *kind* / *high_cut*."""
         return crud.CommitFilter(
+            **feed,
             author=self.author,
             area=self.area,
             since=self.since,

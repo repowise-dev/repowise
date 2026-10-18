@@ -53,6 +53,14 @@ class HealthRollup:
         return delta_kind(self.resolved + (self.improved or 0), self.introduced + self.worsened)
 
 
+def _net_score_change(deltas: Sequence[HealthDeltaSummary]) -> dict[str, float]:
+    """``path -> summed score change`` over the deltas' stored per-file shifts."""
+    net: dict[str, float] = {}
+    for shift in (s for d in deltas for s in d.files if s.change is not None):
+        net[shift.path] = net.get(shift.path, 0.0) + shift.change
+    return net
+
+
 def rollup_deltas(
     deltas: Sequence[HealthDeltaSummary | None], worse_paths: Iterable[str] = ()
 ) -> HealthRollup | None:
@@ -66,11 +74,7 @@ def rollup_deltas(
         return None
     unscanned = len(deltas) - len(scanned)
     improved_known = [d.improved for d in scanned if d.improved is not None]
-    net_by_path: dict[str, float] = {}
-    for d in scanned:
-        for shift in d.files:
-            if shift.change is not None:
-                net_by_path[shift.path] = net_by_path.get(shift.path, 0.0) + shift.change
+    net_by_path = _net_score_change(scanned)
     falling = {p for p, net in net_by_path.items() if net < 0}
     complete = unscanned == 0 and all(d.status == "available" for d in scanned)
     return HealthRollup(

@@ -174,6 +174,15 @@ async def _author_commit_counts(session: AsyncSession, repo_id: str) -> dict[str
     return counts
 
 
+def _attribution_fields(r: GitCommit) -> dict:
+    return {
+        "agent_name": r.agent_name,
+        "agent_autonomy_tier": r.agent_autonomy_tier,
+        "agent_confidence": r.agent_confidence,
+        "attribution": commit_label(r.attribution, r.agent_name),
+    }
+
+
 def _commit_fields(
     r: GitCommit,
     normalizer: RiskNormalizer,
@@ -214,16 +223,7 @@ def _commit_fields(
             if author_counts is not None
             else None
         ),
-        **(
-            {
-                "agent_name": r.agent_name,
-                "agent_autonomy_tier": r.agent_autonomy_tier,
-                "agent_confidence": r.agent_confidence,
-                "attribution": commit_label(r.attribution, r.agent_name),
-            }
-            if attribution_on
-            else {}
-        ),
+        **(_attribution_fields(r) if attribution_on else {}),
         **(history.fields(r.sha) if history is not None else {}),
     }
 
@@ -361,19 +361,14 @@ async def get_commits(
     # The high band is a tercile of the repo's own scores, so the boundary has
     # to be resolved before the page is cut rather than derived per row.
     high_cut = normalizer.high_cut
-    where = params.commit_filter()
-    total = await crud.count_git_commits(
-        session, repo_id, authorship=authorship, kind=kind, high_cut=high_cut, where=where
-    )
+    where = params.commit_filter(authorship=authorship, kind=kind, high_cut=high_cut)
+    total = await crud.count_git_commits(session, repo_id, where=where)
     rows = await crud.get_git_commits(
         session,
         repo_id,
         limit=limit,
         offset=offset,
         sort=sort,
-        authorship=authorship,
-        kind=kind,
-        high_cut=high_cut,
         where=where,
     )
     author_counts = await _author_commit_counts(session, repo_id)

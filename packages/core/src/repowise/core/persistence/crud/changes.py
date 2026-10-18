@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import Change, GitCommit
 from ..sql import LIKE_ESCAPE, escape_like
 from ._shared import _BATCH_SIZE, _batch_upsert_keyed, _row_inserter, _row_updater
+from .history import author_clause
 
 _update_change = _row_updater("change_id")
 
@@ -101,6 +102,16 @@ def _files_json_area(area: str) -> Any:
     )
 
 
+def _who_and_where(where: ChangeFilter) -> list[Any]:
+    """The author and area predicates *where* asks for."""
+    clauses = []
+    if where.author:
+        clauses.append(author_clause(Change.author_name, Change.author_email, where.author))
+    if where.area and where.area.strip().strip("/"):
+        clauses.append(_files_json_area(where.area))
+    return clauses
+
+
 def _filters(repository_id: str, where: ChangeFilter) -> list[Any]:
     clauses = [Change.repository_id == repository_id]
     if where.attention:
@@ -121,15 +132,7 @@ def _filters(repository_id: str, where: ChangeFilter) -> list[Any]:
         clauses.append(Change.category == where.category)
     if where.shape:
         clauses.append(Change.shape == where.shape)
-    if where.author:
-        clauses.append(
-            or_(
-                func.lower(Change.author_email) == where.author.strip().lower(),
-                Change.author_name == where.author.strip(),
-            )
-        )
-    if where.area and where.area.strip().strip("/"):
-        clauses.append(_files_json_area(where.area))
+    clauses.extend(_who_and_where(where))
     if where.q:
         like = f"%{escape_like(where.q)}%"
         clauses.append(

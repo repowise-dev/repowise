@@ -39,14 +39,57 @@ class CommitFilter:
     inclusive and *until* exclusive, on ``committed_at``. *delta* is one of
     :data:`repowise.core.analysis.history.DELTA_FILTERS`; it keeps only scanned
     commits. *touches_hotspot* keeps commits that touched a hotspot file.
+    *authorship* and *kind* are the feed's attribution and review-priority
+    filters; *high_cut* is the repo's high-band boundary that *kind* ``high``
+    compares against.
     """
 
+    authorship: str | None = None
+    kind: str | None = None
+    high_cut: float | None = None
     author: str | None = None
     area: str | None = None
     since: datetime | None = None
     until: datetime | None = None
     delta: str | None = None
     touches_hotspot: bool = False
+
+
+def _commit_authorship_clause(authorship: str | None):
+    """Optional authorship predicate over the three-state label: ``agent``,
+    ``human`` (human-attested only; a commit without a marker is never human)
+    or ``unknown``. ``None`` / ``"all"`` means no filtering."""
+    if authorship == "agent":
+        return GitCommit.agent_name.is_not(None)
+    if authorship == "human":
+        return GitCommit.attribution == "human_attested"
+    if authorship == "unknown":
+        return and_(
+            GitCommit.agent_name.is_(None),
+            or_(GitCommit.attribution.is_(None), GitCommit.attribution == "unknown"),
+        )
+    return None
+
+
+def _commit_kind_clause(kind: str | None, high_cut: float | None):
+    """Optional predicate for the review-priority band or bug-fix commits.
+
+    ``high`` compares against the repo's own moderate/high boundary on the
+    score axis, which is where the tercile actually falls; deriving it per row
+    would mean ranking every commit before paging any of them.
+    """
+    if kind == "fixes":
+        return GitCommit.is_fix.is_(True)
+    if kind == "high":
+        if high_cut is None:
+            return None
+        return GitCommit.change_risk_score >= high_cut
+    return None
+
+
+def author_clause(name_column: Any, email_column: Any, author: str) -> Any:
+    """The author email (any case) or exact name is *author*."""
+    return or_(func.lower(email_column) == author.strip().lower(), name_column == author.strip())
 
 
 def area_clause(column: Any, area: str) -> Any:
@@ -87,35 +130,38 @@ def _touches_hotspot_clause() -> Any:
     )
 
 
+def _commit_area_clause(area: str | None) -> Any:
+    if not area or not area.strip().strip("/"):
+        return None
+    return exists().where(
+        GitCommitFile.repository_id == GitCommit.repository_id,
+        GitCommitFile.sha == GitCommit.sha,
+        area_clause(GitCommitFile.file_path, area),
+    )
+
+
+def _window_clauses(since: datetime | None, until: datetime | None) -> list[Any]:
+    return [
+        *([GitCommit.committed_at >= since] if since is not None else []),
+        *([GitCommit.committed_at < until] if until is not None else []),
+    ]
+
+
 def commit_filter_clauses(where: CommitFilter | None) -> list[Any]:
     """The ``GitCommit`` predicates *where* asks for (repository scoping is the caller's)."""
     if where is None:
         return []
-    clauses: list[Any] = []
-    if where.author:
-        clauses.append(
-            or_(
-                func.lower(GitCommit.author_email) == where.author.strip().lower(),
-                GitCommit.author_name == where.author.strip(),
-            )
-        )
-    if where.area and where.area.strip().strip("/"):
-        clauses.append(
-            exists().where(
-                GitCommitFile.repository_id == GitCommit.repository_id,
-                GitCommitFile.sha == GitCommit.sha,
-                area_clause(GitCommitFile.file_path, where.area),
-            )
-        )
-    if where.since is not None:
-        clauses.append(GitCommit.committed_at >= where.since)
-    if where.until is not None:
-        clauses.append(GitCommit.committed_at < where.until)
-    if where.delta:
-        clauses.append(_delta_clause(where.delta))
-    if where.touches_hotspot:
-        clauses.append(_touches_hotspot_clause())
-    return clauses
+    optional = [
+        _commit_authorship_clause(where.authorship),
+        _commit_kind_clause(where.kind, where.high_cut),
+        author_clause(GitCommit.author_name, GitCommit.author_email, where.author)
+        if where.author
+        else None,
+        _commit_area_clause(where.area),
+        _delta_clause(where.delta) if where.delta else None,
+        _touches_hotspot_clause() if where.touches_hotspot else None,
+    ]
+    return [c for c in optional if c is not None] + _window_clauses(where.since, where.until)
 
 
 def _chunks(shas: Sequence[str]) -> list[list[str]]:
