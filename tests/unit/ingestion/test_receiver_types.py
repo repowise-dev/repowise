@@ -1201,3 +1201,46 @@ class PlainParamViewModel(
     )
     # Nested class property does NOT see outer constructor parameter
     assert "App.kt::Nested::nestedData" not in calls_by_caller
+
+
+def test_kotlin_plain_constructor_parameter_after_default_lambda(tmp_path: Path) -> None:
+    """A plain constructor parameter following a default lambda expression is typed for property initializers."""
+    from repowise.core.ingestion.call_resolver import CallResolver
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import parse_file
+
+    source = """
+class UserDataRepository {
+    fun userData(): String = "data"
+}
+
+class PlainParamLambdaViewModel(
+    callback: () -> Unit = {},
+    repository: UserDataRepository,
+) {
+    val data = repository.userData()
+}
+"""
+    path = tmp_path / "App.kt"
+    path.write_text(source, encoding="utf-8")
+    info = FileInfo(
+        path="App.kt",
+        abs_path=str(path),
+        language="kotlin",
+        size_bytes=len(source),
+        git_hash="",
+        last_modified=None,
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    parsed = {"App.kt": parse_file(info, source.encode("utf-8"))}
+    resolver = CallResolver(parsed, {"App.kt": set()}, repo_path=str(tmp_path))
+    calls_by_caller = {
+        rc.caller_id: rc.callee_id for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)
+    }
+    assert (
+        calls_by_caller.get("App.kt::PlainParamLambdaViewModel::data")
+        == "App.kt::UserDataRepository::userData"
+    )

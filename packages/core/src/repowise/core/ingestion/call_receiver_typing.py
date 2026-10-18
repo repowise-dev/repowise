@@ -212,6 +212,42 @@ def _header_type_parameters(header: str) -> set[str]:
     return names
 
 
+def _kotlin_class_body_start(lines: list[str], start_line: int, end_line: int) -> int:
+    """First line of the class body opening brace, ignoring braces inside primary constructor parameter parens."""
+    in_paren = 0
+    in_str = False
+    quote = ""
+    for line_idx in range(start_line - 1, min(len(lines), end_line)):
+        line = lines[line_idx]
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if in_str:
+                if ch == "\\" and i + 1 < len(line):
+                    i += 2
+                    continue
+                if ch == quote:
+                    in_str = False
+                i += 1
+                continue
+            if ch in ('"', "'"):
+                in_str = True
+                quote = ch
+                i += 1
+                continue
+            if ch == "/" and i + 1 < len(line) and line[i + 1] == "/":
+                break
+            if ch == "(":
+                in_paren += 1
+            elif ch == ")":
+                if in_paren > 0:
+                    in_paren -= 1
+            elif ch == "{" and in_paren == 0:
+                return line_idx + 1
+            i += 1
+    return end_line
+
+
 class ReceiverTypingMixin:
     """Typed-receiver and C# extension strategies, with the source caches they read."""
 
@@ -1117,16 +1153,8 @@ class ReceiverTypingMixin:
                 )
                 if parent_class is not None:
                     lines = self._text_of(file_path).splitlines()
-                    body_start = next(
-                        (
-                            i
-                            for i, line in enumerate(
-                                lines[parent_class.start_line - 1 : parent_class.end_line],
-                                start=parent_class.start_line,
-                            )
-                            if "{" in line
-                        ),
-                        parent_class.end_line,
+                    body_start = _kotlin_class_body_start(
+                        lines, parent_class.start_line, parent_class.end_line
                     )
                     header_decls = [
                         d
