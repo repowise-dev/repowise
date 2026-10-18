@@ -53,16 +53,15 @@ async def session():
 
 
 async def test_fast_index_then_full_upgrade(
-    sample_repo_path: Path,
+    sample_repo_copy: Path,
     session: AsyncSession,
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # --- 1. Fast index + persist (ESSENTIAL git, no docs). ---
-    repo = await upsert_repository(session, name="sample", local_path=str(sample_repo_path))
+    repo = await upsert_repository(session, name="sample", local_path=str(sample_repo_copy))
     repo_id = repo.id
 
-    result = await run_pipeline(sample_repo_path, mode=OrchestratorMode.FAST)
+    result = await run_pipeline(sample_repo_copy, mode=OrchestratorMode.FAST)
     assert result.generated_pages is None  # FAST never generates docs
     assert result.git_metadata_list, "expected git metadata for the sample repo"
     assert all(
@@ -89,14 +88,14 @@ async def test_fast_index_then_full_upgrade(
     monkeypatch.setattr(GraphBuilder, "build", _spy_build)
 
     # --- 3. Rehydrate the graph from SQL — equivalence + zero resolution. ---
-    rehydrated = await rehydrate_graph_builder(session, repo_id, sample_repo_path)
+    rehydrated = await rehydrate_graph_builder(session, repo_id, sample_repo_copy)
     assert rehydrated.graph().number_of_nodes() == original_nodes
     assert rehydrated.graph().number_of_edges() == original_edges
     assert rehydrated.pagerank() == original_pagerank
     assert build_calls["n"] == 0, "rehydration must not re-resolve the graph"
 
     # --- 4. Backfill the git tier ESSENTIAL -> FULL (resumable via JobStore). ---
-    indexer = GitIndexer(sample_repo_path, tier=GitIndexTier.FULL)
+    indexer = GitIndexer(sample_repo_copy, tier=GitIndexTier.FULL)
     job_store = SqlJobStore(session)
     summary, git_results = await backfill_full_tier(indexer, repo_id, job_store=job_store)
     await session.commit()
@@ -107,10 +106,10 @@ async def test_fast_index_then_full_upgrade(
     assert summary.files_indexed >= 0
 
     # --- 5. Generate docs against the rehydrated graph (mock LLM). The jobs
-    # dir is routed to tmp_path so the sample fixture stays clean. ---
+    # dir stays in the same isolated copy as the earlier pipeline stages. ---
     git_meta_map = {m["file_path"]: m for m in git_results if m.get("file_path")}
     pages = await run_generation(
-        repo_path=tmp_path,
+        repo_path=sample_repo_copy,
         parsed_files=result.parsed_files,
         source_map=result.source_map,
         graph_builder=rehydrated,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -246,6 +247,22 @@ def sample_repo_path(repo_root: Path) -> Path:
     assert path.exists(), (
         f"Sample repo not found at {path}. Run 'make install' to ensure test fixtures are in place."
     )
+    return path
+
+
+@pytest.fixture
+def sample_repo_copy(sample_repo_path: Path, tmp_path: Path) -> Path:
+    """An isolated sample repo for tests that write index or pipeline state."""
+    from git import Actor, Repo
+
+    path = tmp_path / "repo"
+    shutil.copytree(sample_repo_path, path)
+    # Preserve the pipeline tests' real git-metadata assertions without relying
+    # on the enclosing source checkout's history.
+    with Repo.init(path) as repo:
+        repo.git.add(A=True)
+        actor = Actor("Repowise Tests", "tests@example.com")
+        repo.index.commit("Initialize sample fixture", author=actor, committer=actor, skip_hooks=True)
     return path
 
 
