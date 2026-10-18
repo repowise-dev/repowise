@@ -84,7 +84,8 @@ export function CommitDetailSheet({ repoId }: { repoId: string }) {
                 className="pt-1"
                 commit={detail}
                 healthLabels={healthLabels}
-                findingHref={(f) => `${fileEntityPath(`/repos/${repoId}`, f.path)}?tab=health`}
+                fileHref={(path) => `${fileEntityPath(`/repos/${repoId}`, path)}?tab=health`}
+                openFileLabel={t("detail.openFile")}
                 LinkComponent={Link}
                 action={
                   <AiPromptButton

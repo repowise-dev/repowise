@@ -5,14 +5,14 @@ import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge
 import { PriorityBadge } from "./priority-badge";
 import { RiskDriverBreakdown, describeDriver } from "./risk-driver-breakdown";
 import { CommitFilesTable } from "./commit-files-table";
-import { CommitHealthTable } from "./commit-health-table";
+import { FindingsByFile } from "./findings-by-file";
 import { readCommitHealth, verdictSentence, worseSentence } from "./commit-health-copy";
 import type { HealthDeltaLabels } from "./health-delta-mark";
 import type { HealthDeltaKind } from "./health-delta";
 import { PageLede } from "../shared/page-lede";
 import { OverviewSection } from "../overview/section";
 import { formatDateTime } from "../lib/format";
-import type { CommitDetail, CommitHealthFinding } from "@repowise-dev/types/git";
+import type { CommitDetail } from "@repowise-dev/types/git";
 
 /** Above this many files, the list starts collapsed. */
 const LONG_FILE_LIST = 10;
@@ -26,8 +26,11 @@ export interface CommitDetailCardProps {
   action?: React.ReactNode;
   /** Words for the verdict; the host's translations of the health chip. */
   healthLabels?: Partial<HealthDeltaLabels> | undefined;
-  /** Where to fix one finding (its file at that line). */
-  findingHref?: ((f: CommitHealthFinding) => string) | undefined;
+  /** Where to fix a file's findings (its health view). Without it the
+   *  "Got worse" groups carry no link. */
+  fileHref?: ((path: string) => string) | undefined;
+  /** The file link's word; English by default. */
+  openFileLabel?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
   className?: string;
 }
@@ -56,10 +59,12 @@ export function CommitDetailCard({
   fixPercentile,
   action,
   healthLabels,
-  findingHref,
+  fileHref,
+  openFileLabel = "Open file",
   LinkComponent,
   className,
 }: CommitDetailCardProps) {
+  const A = LinkComponent ?? "a";
   const c = commit;
   const files = c.files ?? [];
   const health = c.health ?? null;
@@ -107,10 +112,18 @@ export function CommitDetailCard({
 
       {counted && health && health.findings.length > 0 && (
         <OverviewSection className="mt-7" title="Got worse" description={worseSentence(health)}>
-          <CommitHealthTable
+          <FindingsByFile
             findings={health.findings}
-            findingHref={findingHref}
-            LinkComponent={LinkComponent}
+            fileAction={(g) =>
+              fileHref ? (
+                <A
+                  href={fileHref(g.path)}
+                  className="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)]"
+                >
+                  {openFileLabel}
+                </A>
+              ) : null
+            }
           />
         </OverviewSection>
       )}

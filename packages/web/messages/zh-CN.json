@@ -1095,7 +1095,8 @@
       "fixPromptDescription": "一段可直接粘贴的提示词，让你的 AI 智能体在对应的文件和行修复此提交引入或加重的问题，而不撤销该提交。",
       "reviewPromptLabel": "复制审查提示词给你的智能体",
       "reviewPromptTitle": "AI 提交审查",
-      "reviewPromptDescription": "一段可直接粘贴的提示词，让你的 AI 智能体审查此提交的变更风险，指出需要仔细检查的地方，并推荐审查者。"
+      "reviewPromptDescription": "一段可直接粘贴的提示词，让你的 AI 智能体审查此提交的变更风险，指出需要仔细检查的地方，并推荐审查者。",
+      "openFile": "打开文件"
     }
   },
   "coupling": {

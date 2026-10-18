@@ -129,7 +129,7 @@ describe("commit detail card", () => {
     expect(
       screen.getAllByText(/sync_store has cyclomatic complexity 26/).length,
     ).toBeGreaterThan(0);
-    expect(screen.getAllByText(/sync_store — core\/workspace\/update\.py:42/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("sync_store · L42").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/was high/).length).toBeGreaterThan(0);
   });
 
@@ -137,7 +137,7 @@ describe("commit detail card", () => {
     render(<CommitDetailCard commit={{ ...commit, health }} />);
 
     expect(
-      screen.getAllByText(/in a file this commit touched, not on a line it wrote/).length,
+      screen.getAllByText(/file touched, not a line it wrote/).length,
     ).toBeGreaterThan(0);
   });
 

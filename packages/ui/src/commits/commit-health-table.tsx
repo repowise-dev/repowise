@@ -1,6 +1,5 @@
 "use client";
 
-import type * as React from "react";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
@@ -12,10 +11,6 @@ export interface CommitHealthTableProps {
   /** What the findings belong to, as the copy names it: a commit, or a
    *  merged change made of several. */
   noun?: string;
-  /** Where to fix a finding (its file at that line). Without it the
-   *  location is plain text. */
-  findingHref?: ((f: CommitHealthFinding) => string) | undefined;
-  LinkComponent?: React.ElementType | undefined;
   className?: string;
 }
 
@@ -43,11 +38,7 @@ function where(f: CommitHealthFinding): string {
   return f.symbol ? `${f.symbol} — ${f.path}${at}` : `${f.path}${at}`;
 }
 
-function columns(
-  noun: string,
-  findingHref: ((f: CommitHealthFinding) => string) | undefined,
-  A: React.ElementType,
-): ResponsiveColumn<CommitHealthFinding>[] {
+function columns(noun: string): ResponsiveColumn<CommitHealthFinding>[] {
   return [
     {
       key: "severity",
@@ -83,17 +74,7 @@ function columns(
       header: "Where",
       cellClassName: "font-mono text-[11px] [overflow-wrap:anywhere]",
       headerClassName: "w-64",
-      render: (f) =>
-        findingHref ? (
-          <A
-            href={findingHref(f)}
-            className="text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)]"
-          >
-            {where(f)}
-          </A>
-        ) : (
-          where(f)
-        ),
+      render: where,
     },
   ];
 }
@@ -105,19 +86,13 @@ function columns(
  * no location worth pointing at any more, so it is counted in the section
  * heading instead of given a row here.
  */
-export function CommitHealthTable({
-  findings,
-  noun = "commit",
-  findingHref,
-  LinkComponent,
-  className,
-}: CommitHealthTableProps) {
+export function CommitHealthTable({ findings, noun = "commit", className }: CommitHealthTableProps) {
   if (findings.length === 0) return null;
 
   return (
     <ResponsiveTable
       className={className}
-      columns={columns(noun, findingHref, LinkComponent ?? "a")}
+      columns={columns(noun)}
       rows={findings}
       rowKey={(f) => `${f.path}:${f.line_start ?? 0}:${f.biomarker_type}:${f.symbol ?? ""}`}
       caption={`Code-health findings this ${noun} introduced or made worse`}

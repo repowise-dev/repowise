@@ -1095,7 +1095,8 @@
       "fixPromptDescription": "A ready-to-paste prompt that has your AI agent fix the findings this commit introduced or made more severe, at their files and lines, without undoing the commit.",
       "reviewPromptLabel": "Copy review prompt for your agent",
       "reviewPromptTitle": "AI commit review",
-      "reviewPromptDescription": "A ready-to-paste prompt that has your AI agent review this commit's change-risk, flag what to scrutinize, and suggest reviewers."
+      "reviewPromptDescription": "A ready-to-paste prompt that has your AI agent review this commit's change-risk, flag what to scrutinize, and suggest reviewers.",
+      "openFile": "Open file"
     }
   },
   "coupling": {
