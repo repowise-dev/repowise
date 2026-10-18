@@ -61,6 +61,8 @@ def _loads_list(raw: str | None) -> list:
 class ChangeHealth:
     rollup: HealthRollup | None
     touches_hotspot: int
+    # The commits the rollup counted, so detail findings come from the same rows.
+    counted_shas: tuple[str, ...] = ()
 
 
 async def change_health(
@@ -80,7 +82,11 @@ async def change_health(
             [deltas.get(sha) for sha in c.shas],
             (path for sha in c.shas for path in worse_paths.get(sha, ())),
         )
-        out[c.change_id] = ChangeHealth(rollup, sum(1 for p in set(c.paths) if p in hotspots))
+        out[c.change_id] = ChangeHealth(
+            rollup,
+            sum(1 for p in set(c.paths) if p in hotspots),
+            tuple(sha for sha in c.shas if sha in deltas),
+        )
     return out
 
 
@@ -158,7 +164,7 @@ async def change_detail_health(
     if got.rollup is None:
         return None, got.touches_hotspot
     rows = await crud.get_commit_findings_bulk(
-        session, repo_id, change.shas, limit=DETAIL_FINDINGS
+        session, repo_id, got.counted_shas, limit=DETAIL_FINDINGS
     )
     findings = [ChangeHealthFindingResponse(sha=f.sha, **finding_fields(f)) for f in rows]
     return ChangeHealthResponse(**rollup_fields(got.rollup), findings=findings), got.touches_hotspot

@@ -492,3 +492,26 @@ async def test_aggregates_count_current_analyzer_rows_only(client: AsyncClient, 
     assert changes["pr-3"]["health"] is None
     wins = (await client.get(f"{base}/wins", params={"since": "2026-10-01T00:00:00Z"})).json()
     assert wins["findings_resolved"]["count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_change_detail_findings_come_from_the_commits_its_counts_read(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        stamp = await _current(session, repo["id"])
+        older = {**stamp, "analyzer_version": MIN_SHOWN_ANALYZER_VERSION, "rules_fingerprint": "old"}
+        await crud.upsert_commit_health_bulk(
+            session,
+            repo["id"],
+            [{**_delta("d", introduced=1), **older}],
+            [_finding("d", "src/corex/d.py")],
+        )
+        await crud.upsert_changes(
+            session, repo["id"], [_change("pr-4", 5, "bd", ["src/core/hot.py", "src/corex/d.py"])]
+        )
+    health = (await client.get(f"/api/repos/{repo['id']}/changes/pr-4")).json()["health"]
+    assert (health["introduced"], health["scanned_commits"]) == (2, 1)
+    assert {f["sha"] for f in health["findings"]} == {SHAS["b"]}
