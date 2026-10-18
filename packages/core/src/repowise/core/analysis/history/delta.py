@@ -76,8 +76,9 @@ class HealthDeltaSummary:
     """The counts behind one commit's delta, and which way it went.
 
     ``improved`` is the analyzer's count of findings that measure better
-    without going away; ``None`` until delta rows store it, read through
-    :func:`summarize_delta` so no caller changes when it lands. ``files``
+    without going away, and ``moved`` the findings carried to another file
+    with their code (never counted as introduced). Both are ``None`` on a
+    stale row, where the stored 0 means unknown. ``files``
     holds per-file score shifts; the stored rows never carry them (they are
     live-only, in ``get_change_risk``), so it stays empty for stored deltas.
     ``stale`` marks a row an older analyzer wrote: its direction holds, its
@@ -89,6 +90,7 @@ class HealthDeltaSummary:
     worsened: int
     resolved: int
     improved: int | None = None
+    moved: int | None = None
     files: tuple[FileScoreShift, ...] = ()
     stale: bool = False
 
@@ -128,14 +130,16 @@ def matches_delta(kind: DeltaKind, wanted: str | None) -> bool:
 def summarize_delta(row: Any, *, stale: bool = False) -> HealthDeltaSummary:
     """A stored ``GitCommitHealthDelta`` row as a :class:`HealthDeltaSummary`.
 
-    The one reader of stored rows. Seam: when rows carry ``improved_count``
-    (OSS #4127), read it here as ``improved``, and only when not *stale*: an
-    older analyzer's row stores 0 there, which means unknown, not zero.
+    The one reader of stored rows. ``improved_count`` and ``moved_count`` are
+    read only when not *stale*: an older analyzer's row stores 0 there, which
+    means unknown, not zero.
     """
     return HealthDeltaSummary(
         status=row.status,
         introduced=int(row.introduced_count or 0),
         worsened=int(row.worsened_count or 0),
         resolved=int(row.resolved_count or 0),
+        improved=None if stale else int(row.improved_count or 0),
+        moved=None if stale else int(row.moved_count or 0),
         stale=stale,
     )

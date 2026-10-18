@@ -458,6 +458,7 @@ export interface ChangeHealthResponse {
   worsened: number;
   resolved: number;
   improved?: number | null;
+  moved?: number | null;
   files_improved?: number | null;
   files_worsened: number;
   findings?: ChangeHealthFindingResponse[];
@@ -2233,8 +2234,8 @@ export interface HealthBadgeResponse {
  *
  * ``kind`` reads the counts: ``improved`` when it only made things better,
  * ``worsened`` when it only made them worse, ``mixed`` for both, ``neutral``
- * for neither. ``improved`` is null until stored deltas carry the analyzer's
- * improved count; ``files`` stays empty for stored deltas (per-file scores are
+ * for neither. ``improved`` (findings that measure better) and ``moved`` are
+ * null on a stale row, where the stored 0 means unknown; ``files`` stays empty for stored deltas (per-file scores are
  * live-only). ``stale`` means an older analyzer wrote it: the direction holds,
  * the counts do not compare with current rows, and no aggregate counts it.
  */
@@ -2245,6 +2246,7 @@ export interface HealthDeltaSummaryResponse {
   worsened: number;
   resolved: number;
   improved?: number | null;
+  moved?: number | null;
   stale?: boolean;
   files?: FileScoreShiftResponse[];
 }
@@ -2325,6 +2327,7 @@ export interface HealthRollupResponse {
   worsened: number;
   resolved: number;
   improved?: number | null;
+  moved?: number | null;
   files_improved?: number | null;
   files_worsened: number;
 }

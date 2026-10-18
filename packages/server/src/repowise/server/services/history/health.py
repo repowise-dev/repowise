@@ -82,6 +82,7 @@ def delta_response(delta: HealthDeltaSummary | None) -> HealthDeltaSummaryRespon
         worsened=delta.worsened,
         resolved=delta.resolved,
         improved=delta.improved,
+        moved=delta.moved,
         stale=delta.stale,
         files=[
             FileScoreShiftResponse(path=f.path, before=f.before, after=f.after, change=f.change)

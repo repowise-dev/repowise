@@ -120,11 +120,11 @@ def _delta_clause(wanted: str, stamp: DeltaStamp | None) -> Any:
     """SQL twin of :func:`repowise.core.analysis.history.matches_delta`, over
     current-stamp rows only.
 
-    Better is ``resolved_count`` (the stored rows carry no improved count),
-    exactly as :func:`~repowise.core.analysis.history.summarize_delta` reads a
+    Better is resolved plus improved, exactly as
+    :func:`~repowise.core.analysis.history.summarize_delta` reads a current
     row; ``test_history_routes`` holds the two to the same answer.
     """
-    better = GitCommitHealthDelta.resolved_count > 0
+    better = (GitCommitHealthDelta.resolved_count + GitCommitHealthDelta.improved_count) > 0
     worse = (GitCommitHealthDelta.introduced_count + GitCommitHealthDelta.worsened_count) > 0
     condition = {
         "improved": better,

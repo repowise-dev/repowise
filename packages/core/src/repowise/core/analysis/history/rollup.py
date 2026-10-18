@@ -45,6 +45,7 @@ class HealthRollup:
     worsened: int
     resolved: int
     improved: int | None
+    moved: int | None
     files_improved: int | None
     files_worsened: int
 
@@ -74,6 +75,7 @@ def rollup_deltas(
         return None
     unscanned = len(deltas) - len(scanned)
     improved_known = [d.improved for d in scanned if d.improved is not None]
+    moved_known = [d.moved for d in scanned if d.moved is not None]
     net_by_path = _net_score_change(scanned)
     falling = {p for p, net in net_by_path.items() if net < 0}
     complete = unscanned == 0 and all(d.status == "available" for d in scanned)
@@ -85,6 +87,7 @@ def rollup_deltas(
         worsened=sum(d.worsened for d in scanned),
         resolved=sum(d.resolved for d in scanned),
         improved=sum(improved_known) if improved_known else None,
+        moved=sum(moved_known) if moved_known else None,
         files_improved=(sum(1 for net in net_by_path.values() if net > 0) if net_by_path else None),
         files_worsened=len(set(worse_paths) | falling),
     )

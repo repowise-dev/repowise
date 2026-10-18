@@ -185,7 +185,8 @@ async def test_commit_rows_lead_with_their_health_delta(client: AsyncClient, app
         "introduced": 2,
         "worsened": 1,
         "resolved": 0,
-        "improved": None,
+        "improved": 0,
+        "moved": 0,
         "stale": False,
         "files": [],
     }
@@ -515,3 +516,45 @@ async def test_change_detail_findings_come_from_the_commits_its_counts_read(
     health = (await client.get(f"/api/repos/{repo['id']}/changes/pr-4")).json()["health"]
     assert (health["introduced"], health["scanned_commits"]) == (2, 1)
     assert {f["sha"] for f in health["findings"]} == {SHAS["b"]}
+
+
+@pytest.mark.asyncio
+async def test_improved_findings_make_a_commit_better_and_moved_ones_name_their_origin(
+    client: AsyncClient, app
+) -> None:
+    """e only shrank a function (improved) and carried another to a new file,
+    where it measures worse: worsened with its origin, never introduced."""
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        stamp = await _current(session, repo["id"])
+        await crud.upsert_git_commits_bulk(session, repo["id"], [_commit("e", 5, "Ann")])
+        await crud.upsert_changes(session, repo["id"], [_change("pr-5", 5, "e", ["src/pkg/b.py"])])
+        moved = {
+            **_finding("e", "src/pkg/b.py"),
+            "change_kind": "worsened",
+            "attribution_basis": "moved",
+            "moved_from_path": "src/pkg/a.py",
+            "moved_from_symbol": "run",
+        }
+        await crud.upsert_commit_health_bulk(
+            session,
+            repo["id"],
+            [{**_delta("e", worsened=1), "improved_count": 2, "moved_count": 3, **stamp}],
+            [moved],
+        )
+    base = f"/api/repos/{repo['id']}"
+
+    row = next(
+        i for i in (await client.get(f"{base}/commits")).json()["items"] if i["sha"] == SHAS["e"]
+    )
+    assert row["health_delta"]["improved"] == 2 and row["health_delta"]["moved"] == 3
+    assert row["health_delta"]["introduced"] == 0
+    assert row["health_delta"]["kind"] == "mixed"
+    better = (await client.get(f"{base}/commits", params={"delta": "improved"})).json()
+    assert "e" in _shorts(better)
+
+    detail = (await client.get(f"{base}/changes/pr-5")).json()["health"]
+    assert (detail["improved"], detail["moved"], detail["introduced"]) == (2, 3, 0)
+    (finding,) = detail["findings"]
+    assert finding["moved_from"] == {"path": "src/pkg/a.py", "symbol": "run"}

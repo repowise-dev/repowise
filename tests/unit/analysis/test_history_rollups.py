@@ -22,6 +22,19 @@ from repowise.core.analysis.history import (
 )
 
 
+def _row(**over) -> SimpleNamespace:
+    """A stored delta row; every count 0 unless given."""
+    base = {
+        "status": "available",
+        "introduced_count": 0,
+        "worsened_count": 0,
+        "resolved_count": 0,
+        "improved_count": 0,
+        "moved_count": 0,
+    }
+    return SimpleNamespace(**{**base, **over})
+
+
 def _d(introduced=0, worsened=0, resolved=0, status="available", **over) -> HealthDeltaSummary:
     return HealthDeltaSummary(status, introduced, worsened, resolved, **over)
 
@@ -51,10 +64,20 @@ def test_improved_and_worsened_filters_include_mixed(kind, wanted, passes) -> No
 
 
 def test_a_stored_row_reads_as_counts_and_kind() -> None:
-    row = SimpleNamespace(status="partial", introduced_count=1, worsened_count=None, resolved_count=4)
+    row = _row(status="partial", introduced_count=1, worsened_count=None, resolved_count=4)
     got = summarize_delta(row)
-    assert (got.introduced, got.worsened, got.resolved, got.improved) == (1, 0, 4, None)
+    assert (got.introduced, got.worsened, got.resolved, got.improved, got.moved) == (1, 0, 4, 0, 0)
     assert got.kind == "mixed" and got.files == ()
+
+
+def test_a_current_row_counts_improved_and_moved_findings() -> None:
+    got = summarize_delta(_row(improved_count=3, moved_count=2))
+    assert (got.improved, got.moved, got.kind) == (3, 2, "improved")
+
+
+def test_a_stale_row_reads_improved_and_moved_as_unknown() -> None:
+    got = summarize_delta(_row(improved_count=0, moved_count=0, introduced_count=1), stale=True)
+    assert (got.improved, got.moved, got.kind) == (None, None, "worsened")
 
 
 def test_the_improved_count_makes_a_commit_better_once_stored() -> None:
@@ -64,7 +87,7 @@ def test_the_improved_count_makes_a_commit_better_once_stored() -> None:
 
 def test_rollup_sums_scanned_commits_and_marks_gaps_partial() -> None:
     rollup = rollup_deltas([_d(introduced=2), None, _d(resolved=3)], ["a.py", "a.py", "b.py"])
-    assert rollup is not None
+    assert rollup is not None and rollup.moved is None
     assert (rollup.introduced, rollup.resolved) == (2, 3)
     assert (rollup.scanned_commits, rollup.unscanned_commits) == (2, 1)
     assert rollup.status == "partial" and rollup.kind == "mixed"
@@ -144,6 +167,5 @@ def test_a_delta_is_current_only_under_the_current_stamp() -> None:
 
 
 def test_a_stale_reading_keeps_its_direction() -> None:
-    row = SimpleNamespace(status="available", introduced_count=2, worsened_count=0, resolved_count=0)
-    got = summarize_delta(row, stale=True)
+    got = summarize_delta(_row(introduced_count=2), stale=True)
     assert got.stale and got.kind == "worsened"

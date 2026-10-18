@@ -25,8 +25,8 @@ class HealthDeltaSummaryResponse(BaseModel):
 
     ``kind`` reads the counts: ``improved`` when it only made things better,
     ``worsened`` when it only made them worse, ``mixed`` for both, ``neutral``
-    for neither. ``improved`` is null until stored deltas carry the analyzer's
-    improved count; ``files`` stays empty for stored deltas (per-file scores are
+    for neither. ``improved`` (findings that measure better) and ``moved`` are
+    null on a stale row, where the stored 0 means unknown; ``files`` stays empty for stored deltas (per-file scores are
     live-only). ``stale`` means an older analyzer wrote it: the direction holds,
     the counts do not compare with current rows, and no aggregate counts it.
     """
@@ -37,6 +37,8 @@ class HealthDeltaSummaryResponse(BaseModel):
     worsened: int
     resolved: int
     improved: int | None = None
+    #: Findings carried to another file with their code; never introduced.
+    moved: int | None = None
     stale: bool = False
     files: list[FileScoreShiftResponse] = []
 
@@ -59,6 +61,7 @@ class HealthRollupResponse(BaseModel):
     worsened: int
     resolved: int
     improved: int | None = None
+    moved: int | None = None
     files_improved: int | None = None
     files_worsened: int
 
