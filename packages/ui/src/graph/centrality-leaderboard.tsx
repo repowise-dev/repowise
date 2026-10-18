@@ -4,6 +4,8 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, Crown, Info } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../lib/cn";
+import { FilePath } from "../shared/file-path";
+import { isFileNodeId } from "./node-id";
 
 export interface CentralityNode {
   node_id: string;
@@ -149,9 +151,13 @@ export function CentralityLeaderboard({
                       {i + 1}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">
-                        {n.label ?? n.node_id}
-                      </p>
+                      {n.label || !isFileNodeId(n.node_id) ? (
+                        <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">
+                          {n.label ?? n.node_id}
+                        </p>
+                      ) : (
+                        <FilePath path={n.node_id} fold className="flex text-[var(--color-text-primary)]" />
+                      )}
                       <div className="mt-0.5 h-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
                         <div
                           className="h-full bg-[var(--color-accent-primary)]"

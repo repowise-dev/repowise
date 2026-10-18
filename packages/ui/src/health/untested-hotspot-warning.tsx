@@ -1,6 +1,7 @@
 import { ArrowUpRight } from "lucide-react";
 
 import { coverageBand } from "./tokens";
+import { FilePath } from "../shared/file-path";
 import { RowPromptAction } from "./row-prompt-action";
 import { AGENT_PROMPT_LABEL } from "./ai-prompt-action";
 
@@ -48,9 +49,7 @@ export function UntestedHotspotWarning({
         {shown.map((e) => {
           const body = (
             <>
-              <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--color-text-primary)]">
-                {e.file_path}
-              </span>
+              <FilePath path={e.file_path} fold className="flex-1 text-[var(--color-text-primary)]" />
               <span className="shrink-0 tabular-nums text-xs text-[var(--color-text-tertiary)]">
                 {e.dependents_count != null && `${e.dependents_count} dependents`}
                 {e.dependents_count != null &&

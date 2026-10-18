@@ -25,6 +25,7 @@
 import * as React from "react";
 
 import { formatNumber } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { typeMeta } from "./meta";
 import { PreviewBadge } from "../health/preview-badge";
 import {
@@ -148,7 +149,6 @@ function OpportunityRow({
   const effort = EFFORT_WORD[opportunity.effort_bucket] ?? opportunity.effort_bucket;
   const href = fileHref?.(opportunity.file_path);
   const gain = opportunity.recoverable_health;
-  const name = opportunity.file_path.split("/").pop() ?? opportunity.file_path;
 
   // Optimistic, with the server's answer as the authority. A triage click that
   // waits for a round trip reads as a dead control on a list this long.
@@ -204,14 +204,13 @@ function OpportunityRow({
         onBlur={() => onHighlight?.(null)}
         className="group order-1 col-span-2 min-w-0 text-left lg:order-none lg:col-span-1"
       >
-        <span className="block break-words font-mono text-sm font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
-          {name}
-        </span>
-        {/* Full path, no ellipsis: a truncated title reports a layout decision
-            to the reader as missing content. */}
-        <span className="mt-0.5 block break-all font-mono text-xs text-[var(--color-text-tertiary)]">
-          {opportunity.file_path}
-        </span>
+        {/* One line: the file name never clips, the directory gives way
+            first, and the tooltip carries the whole path. */}
+        <FilePath
+          path={opportunity.file_path}
+          fold
+          className="flex text-sm text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]"
+        />
         <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
           {opportunityLede(opportunity)}
         </span>

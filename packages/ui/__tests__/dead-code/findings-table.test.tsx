@@ -192,7 +192,7 @@ describe("FindingsTable sort and search", () => {
     return inTable()
       .getAllByRole("row")
       .slice(1)
-      .map((r) => r.querySelector("a,span[title]")?.getAttribute("title"))
+      .map((r) => r.querySelector("[data-path]")?.getAttribute("data-path"))
       .filter(Boolean);
   }
 
