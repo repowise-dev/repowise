@@ -99,6 +99,9 @@ function changeFacts(c: ChangePromptInput): string {
     `Files (${c.files.length}): ${shown.join(", ")}${more}`,
     c.resolved > 0 ? `It also resolved ${c.resolved} existing finding${pluralS(c.resolved)}; keep those fixes.` : null,
     c.complete ? null : `Part of this ${w.noun} could not be compared, so the list below may be incomplete.`,
+    c.omitted
+      ? `${c.omitted} more finding${pluralS(c.omitted)} this ${w.noun} made worse ${c.omitted === 1 ? "is" : "are"} not listed below (the list keeps the worst first); after these, check the files above for the rest.`
+      : null,
   ]);
 }
 
@@ -112,7 +115,7 @@ export function buildChangeAiPrompt({
   flavor = "generic",
   repoName,
 }: BuildChangePromptOptions): string {
-  const fixing = c.findings.length > 0;
+  const fixing = changePromptFixes(c);
   const w = UNIT_WORDS[c.unit ?? "change"];
   const lead = preamble(flavor, {
     source: fixing
@@ -123,9 +126,10 @@ export function buildChangeAiPrompt({
       "Call `get_context([...])` on the files named below and `get_risk(changed_files=[...])` for blast radius and test gaps before reading by hand.",
   });
 
-  const work = fixing
-    ? [`## What this ${w.noun} made worse`, "", bulletList(c.findings.map(findingLine)), ""]
-    : [];
+  const work =
+    c.findings.length > 0
+      ? [`## What this ${w.noun} made worse`, "", bulletList(c.findings.map(findingLine)), ""]
+      : [];
   const flagged = c.attention.length > 0 ? ["## Flagged for a look", "", bulletList(c.attention), ""] : [];
 
   const constraints = fixing

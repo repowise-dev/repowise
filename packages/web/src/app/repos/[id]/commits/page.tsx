@@ -16,7 +16,8 @@ export const metadata: Metadata = { title: "Commits" };
  * (`CommitsView`) is the default and leads with what the work did to code
  * health; `?view=changes` groups the history by merged change
  * (`ByChangeView`), `?view=events` lists what moved between index runs
- * (`EventsView`). Each view is a server component; what stays interactive is
+ * (`EventsView`), `?view=review` shows a change's blast radius before it
+ * lands (`ImpactTab`). Each view is a server component; what stays interactive is
  * small islands sharing state through the URL.
  */
 export default async function CommitsPage({
@@ -35,7 +36,9 @@ export default async function CommitsPage({
       ? (await getTranslations("views.changes"))("description")
       : view === "events"
         ? (await getTranslations("views.events"))("description")
-        : t("description");
+        : view === "review"
+          ? t("reviewDescription")
+          : t("description");
 
   return (
     <PageShell
@@ -48,6 +51,8 @@ export default async function CommitsPage({
         <ByChangeView repoId={id} params={sp} />
       ) : view === "events" ? (
         <EventsView repoId={id} />
+      ) : view === "review" ? (
+        <ImpactTab repoId={id} />
       ) : (
         <CommitsView repoId={id} searchParams={sp} />
       )}
