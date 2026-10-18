@@ -211,19 +211,8 @@ class ChangeHealthDeltaService:
     def _compare_uncached(self, request: DeltaRequest, pair: RevisionPair) -> ChangeHealthDelta:
         started = time.perf_counter()
         changes = _filter(pair.changes, request)
-        eligible = [c for c in changes if c.head_path and language_for(c.head_path)]
-        # Deleted files go on the base side only, so code split out of them
-        # pairs with its new home instead of reading as introduced.
-        departed = [
-            c for c in changes if c.head_path is None and c.base_path and language_for(c.base_path)
-        ]
+        eligible, departed, skipped = _partition(changes)
         scope = ScopeCounts(changed=len(changes), eligible=len(eligible) + len(departed))
-        skipped = {
-            c.head_path or c.base_path or "": _skip_reason(c)
-            for c in changes
-            if c not in eligible and c not in departed
-        }
-        skipped.pop("", None)
         base_id, head_id = _revision_ids(pair)
 
         if not scope.eligible:
@@ -259,6 +248,11 @@ class ChangeHealthDeltaService:
         subject = {
             p for p in sides.head_run.analyzed if p in set(sides.head_paths) and p not in skipped
         }
+        moves = build_move_map(
+            bodies_for(sides.base_sources, sides.base_run.symbols),
+            bodies_for(sides.head_sources, sides.head_run.symbols),
+            rename_map=sides.rename,
+        )
         gone = {c.base_path for c in departed if c.base_path and c.base_path not in skipped}
 
         scope.analyzed = len(subject) + len(gone)
@@ -266,16 +260,10 @@ class ChangeHealthDeltaService:
         scope.failed = sum(
             1 for r in skipped.values() if r.removeprefix("base_") in {"parse_failed", "unreadable"}
         )
-
-        moves = build_move_map(
-            bodies_for(sides.base_sources, sides.base_run.symbols),
-            bodies_for(sides.head_sources, sides.head_run.symbols),
-            rename_map=sides.rename,
-        )
         match = _match(sides, subject, gone, FindingMatcher(sides.rename, _hunks(eligible), moves))
         findings = self._surface(match, eligible, sides.head_run.findings_for(subject), pair)
 
-        status, explanation = _status_for(scope, skipped, findings)
+        status, explanation = _status_for(scope, skipped, findings, deleted=len(gone))
         delta = ChangeHealthDelta(
             status=status,
             explanation=explanation,
@@ -299,7 +287,11 @@ class ChangeHealthDeltaService:
     def _analyze(
         self, pair: RevisionPair, eligible: list[FileChange], departed: list[FileChange]
     ) -> _Sides:
-        """Read and analyse both sides; the base side also covers *departed* files."""
+        """Read and analyse both sides; *departed* (deleted) files go on the base side only.
+
+        Code split out of a deleted file then pairs with its new home instead of
+        reading as introduced.
+        """
         head_paths = [c.head_path for c in eligible if c.head_path]
         base_paths = [c.base_path for c in eligible + departed if c.base_path]
         head_sources = (
@@ -399,6 +391,23 @@ class _Sides:
     rename: dict[str, str]
 
 
+def _partition(
+    changes: list[FileChange],
+) -> tuple[list[FileChange], list[FileChange], dict[str, str]]:
+    """``(eligible, departed, skipped)``: analysable on head, deleted but analysable, the rest."""
+    eligible = [c for c in changes if c.head_path and language_for(c.head_path)]
+    departed = [
+        c for c in changes if c.head_path is None and c.base_path and language_for(c.base_path)
+    ]
+    skipped = {
+        c.head_path or c.base_path or "": _skip_reason(c)
+        for c in changes
+        if c not in eligible and c not in departed
+    }
+    skipped.pop("", None)
+    return eligible, departed, skipped
+
+
 def _revision_ids(pair: RevisionPair) -> tuple[RevisionId, RevisionId]:
     base = RevisionId(pair.base_ref, pair.base_sha, "commit")
     head = RevisionId(
@@ -442,7 +451,11 @@ def _match(
         and _comparable(f, withheld)
     ]
     head_findings = [f for f in sides.head_run.findings_for(subject) if _comparable(f, withheld)]
-    return matcher.match(base_findings, head_findings)
+    match = matcher.match(base_findings, head_findings)
+    # A deleted file's unpaired findings may have moved somewhere this run did
+    # not read (an excluded or unparsed file), so they never count as resolved.
+    match.resolved = [f for f in match.resolved if f.file_path not in gone]
+    return match
 
 
 def _filter(changes: list[FileChange], request: DeltaRequest) -> list[FileChange]:
@@ -507,7 +520,7 @@ def _skip_reason(change: FileChange) -> str:
 
 
 def _status_for(
-    scope: ScopeCounts, skipped: dict[str, str], findings: list[ChangeFinding]
+    scope: ScopeCounts, skipped: dict[str, str], findings: list[ChangeFinding], *, deleted: int = 0
 ) -> tuple[str, str]:
     if scope.analyzed == 0:
         return "unavailable", (
@@ -527,7 +540,8 @@ def _status_for(
             "available",
             "No supported new findings surfaced in the analyzed scope.",
         )
-    return "available", f"Compared {scope.analyzed} changed files on both sides."
+    both = f"Compared {scope.analyzed - deleted} changed files on both sides"
+    return "available", f"{both} and {deleted} deleted on the base side." if deleted else f"{both}."
 
 
 def _limits(head_findings: list[HealthFindingData]) -> list[str]:

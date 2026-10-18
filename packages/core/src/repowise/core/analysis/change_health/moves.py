@@ -68,25 +68,33 @@ class MoveMap:
     by_new: Mapping[SymbolKey, SymbolKey] = field(default_factory=lambda: MappingProxyType({}))
     #: Moved keys whose body also changed on the way.
     edited: frozenset[SymbolKey] = frozenset()
-    #: Line spans of the moved symbols, by new key and by origin key.
-    spans: Mapping[SymbolKey, tuple[int, int]] = field(default_factory=lambda: MappingProxyType({}))
+    #: Line spans of the moved symbols at head, by new key.
+    new_spans: Mapping[SymbolKey, tuple[int, int]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    #: Line spans of their origins on the base side, by origin key.
+    old_spans: Mapping[SymbolKey, tuple[int, int]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def origin_of(self, path: str, symbol: str | None) -> SymbolKey | None:
         return self.by_new.get((path, symbol)) if symbol else None
 
     def locate(self, path: str, symbol: str | None, line: int | None) -> SymbolKey | None:
-        """The moved key that owns a finding: its named symbol, else the innermost span at *line*."""
+        """The moved key owning a finding: its symbol, else the innermost span at *line*."""
         if symbol:
             return (path, symbol) if (path, symbol) in self.by_new else None
-        held = [k for k in self.by_new if k[0] == path and _within(self.spans.get(k), line)]
-        return min(held, key=lambda k: _length(self.spans[k]), default=None)
+        held = [k for k, span in self.new_spans.items() if k[0] == path and _within(span, line)]
+        return min(held, key=lambda k: _length(self.new_spans[k]), default=None)
 
-    def offset(self, key: SymbolKey, line: int | None) -> int:
+    def offset(self, key: SymbolKey, line: int | None, *, old: bool = False) -> int:
         """*line* relative to the start of *key*'s span, which travels with the code."""
-        return (line or 0) - self.spans.get(key, (0, 0))[0]
+        spans = self.old_spans if old else self.new_spans
+        return (line or 0) - spans.get(key, (0, 0))[0]
 
-    def holds(self, key: SymbolKey, line: int | None) -> bool:
-        return _within(self.spans.get(key), line)
+    def holds(self, old_key: SymbolKey, line: int | None) -> bool:
+        """True when *line* falls inside the origin symbol *old_key*."""
+        return _within(self.old_spans.get(old_key), line)
 
     @property
     def moved_total(self) -> int:
@@ -158,11 +166,11 @@ def build_move_map(
         if _similar(old, new)
     ]
     by_new = {new.key: old.key for old, new in verbatim + edited}
-    spans = {body.key: body.span for pair in verbatim + edited for body in pair}
     return MoveMap(
         MappingProxyType(by_new),
         frozenset(new.key for _, new in edited),
-        MappingProxyType(spans),
+        MappingProxyType({new.key: new.span for _, new in verbatim + edited}),
+        MappingProxyType({old.key: old.span for old, _ in verbatim + edited}),
     )
 
 

@@ -28,8 +28,9 @@ def split(make_repo, *, extra: str = ""):
         {
             "tool/__init__.py": "from .a import tangle\nfrom .b import knot\n",
             "tool/a.py": parts[0],
-            "tool/b.py": parts[1] + extra,
+            "tool/b.py": parts[1],
             "tool/c.py": parts[2],
+            **({"tool/d.py": extra} if extra else {}),
         },
     )
     return repo
@@ -80,7 +81,8 @@ def unnamed(path: str, line: int) -> HealthFindingData:
 def test_a_finding_with_no_symbol_moves_with_the_symbol_whose_lines_hold_it():
     moves = MoveMap(
         MappingProxyType({("pkg/run.py", "run"): ("tool.py", "run")}),
-        spans=MappingProxyType({("pkg/run.py", "run"): (1, 30), ("tool.py", "run"): (200, 229)}),
+        new_spans=MappingProxyType({("pkg/run.py", "run"): (1, 30)}),
+        old_spans=MappingProxyType({("tool.py", "run"): (200, 229)}),
     )
     base = [unnamed("tool.py", 205), unnamed("tool.py", 220), unnamed("tool.py", 400)]
     head = [unnamed("pkg/run.py", 21), unnamed("pkg/run.py", 6)]
@@ -91,3 +93,28 @@ def test_a_finding_with_no_symbol_moves_with_the_symbol_whose_lines_hold_it():
     assert pairs == {6: 205, 21: 220}
     assert [m.kind for m in result.matched] == ["moved", "moved"]
     assert [f.line_start for f in result.resolved] == [400]
+
+
+def test_a_split_beside_new_code_names_both_sides_in_its_explanation(make_repo):
+    delta = compare(split(make_repo, extra="\n\n" + python_complex("fresh", 14)))
+
+    assert delta.explanation == (
+        "Compared 5 changed files on both sides and 1 deleted on the base side."
+    )
+
+
+def test_a_deleted_source_that_fails_to_parse_on_base_leaves_a_gap(make_repo, monkeypatch):
+    from repowise.core.analysis.change_health import analyzer
+
+    real = analyzer.parse_file
+
+    def failing(info, raw):
+        if info.path == "tool.py":
+            raise ValueError("boom")
+        return real(info, raw)
+
+    monkeypatch.setattr(analyzer, "parse_file", failing)
+    delta = compare(split(make_repo))
+
+    assert delta.skipped.get("tool.py") == "base_parse_failed"
+    assert delta.status == "partial"

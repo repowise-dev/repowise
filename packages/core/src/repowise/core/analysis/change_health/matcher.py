@@ -138,7 +138,8 @@ class FindingMatcher:
     ) -> tuple[int, int]:
         """Shape first, then where each sits inside its symbol: offsets travel, lines do not."""
         offsets = abs(
-            self.moves.offset(old, base.line_start) - self.moves.offset(new, head.line_start)
+            self.moves.offset(old, base.line_start, old=True)
+            - self.moves.offset(new, head.line_start)
         )
         return (_shape_gap(base, head), offsets)
 

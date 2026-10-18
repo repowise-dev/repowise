@@ -110,8 +110,9 @@ def test_deleting_a_file_compares_its_base_side_and_surfaces_nothing(make_repo):
 
     assert delta.introduced_total == 0
     assert "app.py" not in delta.skipped
-    assert delta.resolved_total >= 1
+    assert delta.resolved_total == 0
     assert delta.status == "available"
+    assert delta.explanation == "No supported new findings surfaced in the analyzed scope."
 
 
 def test_a_deleted_file_with_no_health_dialect_is_still_recorded_as_skipped(make_repo):
