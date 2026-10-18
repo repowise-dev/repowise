@@ -40,7 +40,7 @@ export function AttentionAreas({
   LinkComponent,
 }: {
   /** `unit` names what the count is in, e.g. "open findings". */
-  areas: (OverviewAttentionAreaRow & { unit?: string })[];
+  areas: InventoryArea[];
   prefix: string;
   LinkComponent?: React.ElementType | undefined;
 }) {
@@ -54,7 +54,6 @@ export function AttentionAreas({
   return (
     <ul className="m-0 list-none divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)] p-0">
       {areas.map((area) => {
-        const kind = area.lead ? leadKind(area.lead) : "";
         return (
           <li key={area.key}>
             <A
@@ -73,34 +72,7 @@ export function AttentionAreas({
               </span>
 
               <span className="min-w-0 flex-1 text-[var(--color-text-tertiary)]">
-                {area.lead ? (
-                  <>
-                    <SeverityMark severity={area.severity} className="mr-2" />
-                    {kind && <span className="text-[var(--color-text-secondary)]">{kind} · </span>}
-                    {area.lead.target_id && area.lead.title === area.lead.target_id ? (
-                      <FilePath
-                        path={area.lead.title}
-                        fold
-                        className="min-w-0 align-baseline text-[var(--color-text-secondary)]"
-                      />
-                    ) : (
-                      <span className="text-[var(--color-text-secondary)]">{area.lead.title}</span>
-                    )}
-                    <span className="mt-0.5 block truncate text-[11px] [text-wrap:pretty]">
-                      {/* The composition wins the second line where there is
-                          one: knowing that most security matches sit in tests
-                          and docs changes what the number means more than one
-                          more example would. */}
-                      {area.detail || area.lead.description}
-                    </span>
-                  </>
-                ) : (
-                  area.detail && (
-                    <span className="block truncate text-[11px] [text-wrap:pretty]">
-                      {area.detail}
-                    </span>
-                  )
-                )}
+                <AreaLead area={area} />
               </span>
 
               <span
@@ -114,5 +86,40 @@ export function AttentionAreas({
         );
       })}
     </ul>
+  );
+}
+
+type InventoryArea = OverviewAttentionAreaRow & { unit?: string };
+
+/** The worst item in an area, its severity, and what the count is made of. */
+function AreaLead({ area }: { area: InventoryArea }) {
+  const lead = area.lead;
+  if (!lead) {
+    return area.detail ? (
+      <span className="block truncate text-[11px] [text-wrap:pretty]">{area.detail}</span>
+    ) : null;
+  }
+  const kind = leadKind(lead);
+  const isPath = !!lead.target_id && lead.title === lead.target_id;
+  return (
+    <>
+      <SeverityMark severity={area.severity} className="mr-2" />
+      {kind && <span className="text-[var(--color-text-secondary)]">{kind} · </span>}
+      {isPath ? (
+        <FilePath
+          path={lead.title}
+          fold
+          className="min-w-0 align-baseline text-[var(--color-text-secondary)]"
+        />
+      ) : (
+        <span className="text-[var(--color-text-secondary)]">{lead.title}</span>
+      )}
+      {/* The composition wins the second line where there is one: knowing that
+          most security matches sit in tests and docs changes what the number
+          means more than one more example would. */}
+      <span className="mt-0.5 block truncate text-[11px] [text-wrap:pretty]">
+        {area.detail || lead.description}
+      </span>
+    </>
   );
 }
