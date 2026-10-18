@@ -75,6 +75,8 @@ class ChangeFilter:
     *since* is inclusive and *until* exclusive, on ``merged_at``. *attention*
     keeps changes whose kept checklist may flag attention (a prefilter; the
     caller confirms on the parsed evidence). *change_ids* keeps only those.
+    *author* matches the author email (any case) or exact name; *area* keeps
+    changes with a stored file at or under that path.
     """
 
     category: str | None = None
@@ -84,6 +86,18 @@ class ChangeFilter:
     until: datetime | None = None
     attention: bool = False
     change_ids: Sequence[str] | None = None
+    author: str | None = None
+    area: str | None = None
+
+
+def _files_json_area(area: str) -> Any:
+    """``files_json`` names a path at or under *area*, matched in its stored layout."""
+    root = area.strip().strip("/")
+    key = '"path": ' + json.dumps(root)[:-1]
+    return or_(
+        Change.files_json.like(f'%{escape_like(key)}"%', escape=LIKE_ESCAPE),
+        Change.files_json.like(f"%{escape_like(key)}/%", escape=LIKE_ESCAPE),
+    )
 
 
 def _filters(repository_id: str, where: ChangeFilter) -> list[Any]:
@@ -106,6 +120,15 @@ def _filters(repository_id: str, where: ChangeFilter) -> list[Any]:
         clauses.append(Change.category == where.category)
     if where.shape:
         clauses.append(Change.shape == where.shape)
+    if where.author:
+        clauses.append(
+            or_(
+                func.lower(Change.author_email) == where.author.strip().lower(),
+                Change.author_name == where.author.strip(),
+            )
+        )
+    if where.area and where.area.strip().strip("/"):
+        clauses.append(_files_json_area(where.area))
     if where.q:
         like = f"%{escape_like(where.q)}%"
         clauses.append(
@@ -179,6 +202,19 @@ async def list_change_keys(
         .order_by(Change.merged_at.desc().nulls_last(), Change.change_id)
     )
     return [(cid, bool(kept)) for cid, kept in rows.tuples()]
+
+
+async def list_change_health_inputs(
+    session: AsyncSession, repository_id: str, where: ChangeFilter | None = None
+) -> list[tuple[str, str, str]]:
+    """``(change_id, commit_shas_json, files_json)`` of every change matching
+    *where*, newest merged first: what a health rollup reads, and nothing else."""
+    rows = await session.execute(
+        select(Change.change_id, Change.commit_shas_json, Change.files_json)
+        .where(*_filters(repository_id, where or ChangeFilter()))
+        .order_by(Change.merged_at.desc().nulls_last(), Change.change_id)
+    )
+    return list(rows.tuples())
 
 
 async def keep_evidence_if_unchanged(

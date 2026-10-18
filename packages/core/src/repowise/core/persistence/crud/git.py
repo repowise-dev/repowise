@@ -36,6 +36,7 @@ from ._shared import (
     _row_inserter,
     _row_updater,
 )
+from .history import CommitFilter, commit_filter_clauses
 
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
@@ -833,6 +834,7 @@ async def count_git_commits(
     authorship: str | None = None,
     kind: str | None = None,
     high_cut: float | None = None,
+    where: CommitFilter | None = None,
 ) -> int:
     """Count persisted commits for a repository, under the same filters."""
     stmt = (
@@ -841,6 +843,7 @@ async def count_git_commits(
     for clause in (
         _commit_authorship_clause(authorship),
         _commit_kind_clause(kind, high_cut),
+        *commit_filter_clauses(where),
     ):
         if clause is not None:
             stmt = stmt.where(clause)
@@ -898,6 +901,7 @@ async def get_git_commits(
     authorship: str | None = None,
     kind: str | None = None,
     high_cut: float | None = None,
+    where: CommitFilter | None = None,
 ) -> list[GitCommit]:
     """Return a page of commits, sorted by change-risk (default) or recency.
 
@@ -906,13 +910,15 @@ async def get_git_commits(
     ``authorship`` narrows to ``agent`` / ``human`` / ``unknown``; ``kind`` narrows to the
     ``high`` review-priority band or to ``fixes``. Both filter the repository
     rather than the page, so a filter still answers when the page it would
-    have filtered is uniform.
+    have filtered is uniform. *where* adds the history filters
+    (:class:`~repowise.core.persistence.crud.history.CommitFilter`).
     """
     order = GitCommit.committed_at.desc() if sort == "date" else GitCommit.change_risk_score.desc()
     stmt = select(GitCommit).where(GitCommit.repository_id == repository_id)
     for clause in (
         _commit_authorship_clause(authorship),
         _commit_kind_clause(kind, high_cut),
+        *commit_filter_clauses(where),
     ):
         if clause is not None:
             stmt = stmt.where(clause)
