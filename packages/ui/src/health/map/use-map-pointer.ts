@@ -17,9 +17,10 @@ import type {
 } from "react";
 
 import { panByScreen, screenToWorld, zoomAbout } from "../../zoom/camera";
+import { discAt } from "./area-view";
 import { hitTest, type HitGrid } from "./hit-test";
 import type { FieldScene } from "./paint";
-import type { CodeHealthMapFile, Galaxy } from "./types";
+import type { CodeHealthMapFile } from "./types";
 import { MIN_NODE_PX, type Invalidate, type LoopState } from "./use-field-canvas";
 import { clampCam } from "./use-map-camera";
 
@@ -28,11 +29,10 @@ const HIT_SLOP_PX = 3;
 /** Movement before a press counts as a drag rather than a click. */
 const DRAG_PX = 4;
 
-export interface Hover {
-  file: CodeHealthMapFile;
-  x: number;
-  y: number;
-}
+/** What the pointer is over: a file dot, or an area's disc. */
+export type Hover =
+  | { kind: "file"; file: CodeHealthMapFile; x: number; y: number }
+  | { kind: "area"; path: string; slot: boolean; x: number; y: number };
 
 interface Point {
   x: number;
@@ -47,19 +47,6 @@ interface Drag extends Point {
 
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
-/** The smallest galaxy whose ring contains a world point. */
-function galaxyAt(galaxies: Galaxy[], wx: number, wy: number): string | null {
-  let inside: string | null = null;
-  let best = Infinity;
-  for (const g of galaxies) {
-    if (Math.hypot(wx - g.cx, wy - g.cy) <= g.R && g.R < best) {
-      inside = g.module;
-      best = g.R;
-    }
-  }
-  return inside;
-}
-
 /** Scroll distance in px, whatever unit the device reported it in. */
 function wheelPixels(e: WheelEvent, pageHeight: number): number {
   if (e.deltaMode === 1) return e.deltaY * 16;
@@ -67,17 +54,26 @@ function wheelPixels(e: WheelEvent, pageHeight: number): number {
   return e.deltaY;
 }
 
-/** Hover state, and a setter that only re-renders when the file changes. */
+/** Hover state, and a setter that only re-renders when the target changes. */
 export function useHover(onHoverFile: ((file: CodeHealthMapFile | null) => void) | undefined) {
   const [hover, setHover] = useState<Hover | null>(null);
-  const hovered = useRef<CodeHealthMapFile | null>(null);
+  const current = useRef<string | null>(null);
   const onHoverRef = useRef(onHoverFile);
   onHoverRef.current = onHoverFile;
-  const setHovered = useCallback((file: CodeHealthMapFile | null, x = 0, y = 0) => {
-    if (hovered.current === file) return;
-    hovered.current = file;
-    setHover(file ? { file, x, y } : null);
-    onHoverRef.current?.(file);
+  const setHovered = useCallback((next: Hover | null) => {
+    const key = next ? (next.kind === "file" ? `f:${next.file.file_path}` : `a:${next.slot}:${next.path}`) : null;
+    if (current.current === key) {
+      // A big disc is hovered for a long way: let its card follow, coarsely.
+      setHover((prev) =>
+        next && prev && Math.hypot(next.x - prev.x, next.y - prev.y) > 24 ? next : prev,
+      );
+      return;
+    }
+    const wasFile = current.current?.startsWith("f:") ?? false;
+    current.current = key;
+    setHover(next);
+    if (next?.kind === "file") onHoverRef.current?.(next.file);
+    else if (wasFile) onHoverRef.current?.(null);
   }, []);
   return { hover, setHovered };
 }
@@ -89,14 +85,11 @@ export function useMapPointer(opts: {
   scene: FieldScene;
   grid: HitGrid;
   minNodeR: number;
-  galaxies: Galaxy[];
-  focusModule: string | null;
-  focusOn: (module: string | null) => void;
-  onSelect: (path: string) => void;
-  setHovered: (file: CodeHealthMapFile | null, x?: number, y?: number) => void;
+  onSelectFile: (path: string) => void;
+  onSelectArea: (path: string) => void;
+  setHovered: (hover: Hover | null) => void;
 }) {
-  const { container, loop, invalidate, scene, grid, minNodeR, galaxies, focusModule, focusOn, onSelect, setHovered } =
-    opts;
+  const { container, loop, invalidate, scene, grid, minNodeR, onSelectFile, onSelectArea, setHovered } = opts;
   const pointers = useRef(new Map<number, Point>());
   const drag = useRef<Drag | null>(null);
   // The reader is working in the map, so the wheel zooms instead of scrolling.
@@ -111,14 +104,21 @@ export function useMapPointer(opts: {
     [container],
   );
 
+  /** The drawn file or area disc under a point, as the last frame drew them. */
   const pick = useCallback(
-    (p: Point) => {
-      const { cam, view } = loop.current;
+    (p: Point): Hover | null => {
+      const { cam, view, field } = loop.current;
+      if (!field) return null;
       const w = screenToWorld(cam, view, p.x, p.y);
       const slop = (HIT_SLOP_PX + Math.max(0, MIN_NODE_PX - minNodeR * cam.scale)) / cam.scale;
-      return { node: hitTest(grid, w.wx, w.wy, slop), world: w };
+      const node = hitTest(grid, w.wx, w.wy, slop);
+      if (node >= 0 && field.drawnHosts[scene.hostOfNode[node]!]) {
+        return { kind: "file", file: scene.nodes[node]!.file, x: p.x, y: p.y };
+      }
+      const disc = discAt(field, p.x, p.y);
+      return disc ? { kind: "area", path: disc.path, slot: disc.state === "slot", x: p.x, y: p.y } : null;
     },
-    [loop, grid, minNodeR],
+    [loop, grid, minNodeR, scene],
   );
 
   /** Apply a camera the pointer produced and repaint everything. */
@@ -200,11 +200,9 @@ export function useMapPointer(opts: {
   const onMouseMove = useCallback(
     (e: ReactMouseEvent) => {
       if (drag.current?.moved) return;
-      const p = localPoint(e.clientX, e.clientY);
-      const { node } = pick(p);
-      setHovered(node >= 0 ? scene.nodes[node]!.file : null, p.x, p.y);
+      setHovered(pick(localPoint(e.clientX, e.clientY)));
     },
-    [localPoint, pick, scene, setHovered],
+    [localPoint, pick, setHovered],
   );
 
   const onMouseLeave = useCallback(() => {
@@ -219,17 +217,11 @@ export function useMapPointer(opts: {
         return;
       }
       engaged.current = true;
-      const { node, world } = pick(localPoint(e.clientX, e.clientY));
-      if (node >= 0) {
-        onSelect(scene.nodes[node]!.file.file_path);
-        return;
-      }
-      // Inside a galaxy's ring zooms to it; empty space returns to the whole.
-      const inside = galaxyAt(galaxies, world.wx, world.wy);
-      if (inside && inside !== focusModule) focusOn(inside);
-      else if (focusModule) focusOn(null);
+      const hit = pick(localPoint(e.clientX, e.clientY));
+      if (hit?.kind === "file") onSelectFile(hit.file.file_path);
+      else if (hit) onSelectArea(hit.path);
     },
-    [localPoint, pick, onSelect, scene, galaxies, focusModule, focusOn],
+    [localPoint, pick, onSelectFile, onSelectArea],
   );
 
   // Wheel zooms once the reader is working in the map (or pinches a

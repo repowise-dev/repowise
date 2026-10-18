@@ -31,7 +31,8 @@ import {
   sortChangesBySeverity,
   type BreakingChangeLinks,
 } from "./breaking-change-row";
-import { ContractIdentity, FilePathText, distinctService } from "./contract-identity";
+import { ContractIdentity, distinctService } from "./contract-identity";
+import { FilePath } from "../shared/file-path";
 import { ContractPromptButton } from "./contract-prompt-button";
 import { ContractTestsSection } from "./contract-tests-section";
 import { contractTypeLabel } from "./contract-type-label";
@@ -218,10 +219,10 @@ function Body({
                   href={fileHref}
                   className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
                 >
-                  <FilePathText path={contract.file_path} line={contract.line} accent />
+                  <FilePath path={contract.file_path} line={contract.line} mode="full" accent />
                 </a>
               ) : (
-                <FilePathText path={contract.file_path} line={contract.line} />
+                <FilePath path={contract.file_path} line={contract.line} mode="full" />
               )}
             </Fact>
             {contract.symbol_name ? (
@@ -443,7 +444,7 @@ function CounterpartRow({
         ) : null}
       </span>
       <span className="block">
-        <FilePathText path={file} />
+        <FilePath path={file} mode="full" />
       </span>
       {symbol ? (
         <span className="block font-mono text-[10px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">

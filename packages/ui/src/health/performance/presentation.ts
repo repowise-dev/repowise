@@ -12,7 +12,7 @@ import {
 import type { C4IoKind } from "@repowise-dev/types/external-systems";
 
 import { biomarkerLabel } from "../biomarker-glossary";
-import { CONFIDENCE_LABEL } from "../labels";
+import { CONFIDENCE_LABEL, EFFORT_LABEL } from "../labels";
 
 /**
  * Display derivations for the performance queue. Everything here reads fields
@@ -350,6 +350,32 @@ export function planPresentation(opportunity: PerformanceOpportunity): PlanPrese
     };
   }
   return { label: "No safe plan", detail: opportunity.plan_reason, actionable: false };
+}
+
+/** Each fix strategy as the change a person would make (`actionability.FixStrategy`). */
+const FIX_STRATEGY_LABEL: Record<string, string> = {
+  parallelize_independent_awaits: "Run the independent awaits together",
+  replace_membership_collection: "Use a set for the membership test",
+  buffer_string_accumulation: "Build the string once with a buffer",
+  batch_or_prefetch_io: "Batch or prefetch the calls",
+  shrink_lock_scope: "Move the work out of the lock",
+  push_reduction_into_query: "Do the reduction in the query",
+  eager_load_relationship: "Load the relationship eagerly",
+};
+
+export function fixStrategyLabel(strategy: string): string {
+  return FIX_STRATEGY_LABEL[strategy] ?? humanizeToken(strategy);
+}
+
+export const FIX_SAFETY_LABEL: Record<"proven" | "advisory", string> = {
+  proven: "Proven safe",
+  advisory: "Not proven safe",
+};
+
+/** The stored plan's effort bucket as a word, or null when nothing sized it. */
+export function effortLabel(opportunity: PerformanceOpportunity): string | null {
+  const effort = opportunity.plan_economics?.effort_bucket;
+  return effort && effort in EFFORT_LABEL ? EFFORT_LABEL[effort as keyof typeof EFFORT_LABEL] : null;
 }
 
 /**

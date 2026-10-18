@@ -374,3 +374,18 @@ async def test_a_query_pins_the_files_whose_path_contains_it(app, client):
     assert "src/needle_here.py" in [f["file_path"] for f in feed["files"]]
     assert feed["selection"]["query_matches"] == 1
     assert feed["selection"]["query_shown"] == 1
+
+
+async def test_rows_flag_the_hotspots_the_kpi_averages_over(app, client):
+    # The hotspot health lens greys every file that is not a hotspot, so the
+    # flag has to come from the same set ``hotspot_health`` averages over.
+    repo_id = await _seed(app, client)
+    async with app.state.session_factory() as session:
+        await crud.upsert_git_metadata(
+            session, repository_id=repo_id, file_path="src/big0.py", is_hotspot=True
+        )
+        await session.commit()
+    feed = await _feed(client, repo_id, cap=100)
+    flags = {f["file_path"]: f["is_hotspot"] for f in feed["files"]}
+    assert flags["src/big0.py"] is True
+    assert flags["src/tiny.py"] is False

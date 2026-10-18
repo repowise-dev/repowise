@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.areas import normalize_area
 from repowise.server.deps import get_db_session
+from repowise.server.routers.held_origins import HOLD_QUERY, INCLUDE_QUERY
+from repowise.server.services.areas import held_origins
 from repowise.server.services.health_map import (
     DEFAULT_MAP_CAP,
     MAX_MAP_CAP,
@@ -57,6 +59,8 @@ async def get_health_map(
     ),
     scope: str = ScopeQuery,
     counts: str = CountsQuery,
+    hold: str = HOLD_QUERY,
+    include: str = INCLUDE_QUERY,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """One bounded field plus the exact scope of what the cap left out."""
@@ -68,5 +72,6 @@ async def get_health_map(
         include_held=include_held,
         query=q,
         area=normalize_area(area) or None,
+        held=held_origins(hold, include) if hold == "map" else None,
     )
     return feed.payload()

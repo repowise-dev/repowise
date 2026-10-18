@@ -26,9 +26,12 @@ def fresh_test_map_cache():
     index stamp, so the process-wide index-state caches start empty per test."""
     from repowise.core.analysis.test_reachability import clear_test_map_cache
     from repowise.server.services.areas import clear_area_cache
+    from repowise.server.services.coupling import clear_coupling_cache
 
     clear_test_map_cache()
     clear_area_cache()
+    clear_coupling_cache()
     yield
     clear_test_map_cache()
     clear_area_cache()
+    clear_coupling_cache()

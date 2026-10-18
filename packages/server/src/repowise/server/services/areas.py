@@ -33,6 +33,7 @@ from repowise.core.analysis.areas import (
     nloc_weights,
 )
 from repowise.core.analysis.areas.trend import DELTA_WINDOW_DAYS
+from repowise.core.analysis.finding_registry import MAP_HELD_ORIGINS, map_held, stored_origin
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.database import get_session
@@ -43,6 +44,7 @@ from repowise.core.persistence.models import (
     HealthFinding,
     HealthSnapshot,
 )
+from repowise.server.services.coupling import coupled_areas_for, coupling_answer
 
 __all__ = [
     "MAX_TREE_DEPTH",
@@ -51,6 +53,7 @@ __all__ = [
     "area_detail_payload",
     "area_tree_payload",
     "clear_area_cache",
+    "held_origins",
     "load_area_model",
     "warm_area_model",
 ]
@@ -63,9 +66,9 @@ MAX_TREE_DEPTH = 4
 #: Snapshots an area trend reads, newest last; the repo trend's default window.
 TREND_POINTS = 20
 
-#: Folded indexes, one per repository (older states are dropped): a few MB
-#: each on a 6k-file repository.
-_models = IndexStampCache(4)
+#: Folded indexes per repository and held-origin set (older index states are
+#: dropped): a few MB each on a 6k-file repository.
+_models = IndexStampCache(8)
 #: Area cards, the ones a reader opens.
 _details = IndexStampCache(128)
 #: One build per repository at a time; a concurrent caller waits and reads the
@@ -86,6 +89,35 @@ class AreaReadModel:
     weights: dict[str, int]
     latest_at: datetime | None
     baseline_at: datetime | None
+    #: Origins left out of every figure, empty for the whole repository.
+    held: frozenset[str] = frozenset()
+    #: Files per held origin, repository-wide, so a toggle can name its count.
+    held_counts: dict[str, int] | None = None
+
+
+def held_origins(hold: str, include: str) -> frozenset[str]:
+    """The origins a request leaves out: none by default, or the map's held set
+    (:data:`MAP_HELD_ORIGINS`) less the ones the reader brought back."""
+    if hold != "map":
+        return frozenset()
+    return map_held(o.strip().lower() for o in include.split(",") if o.strip())
+
+
+def _origin(metric: Any) -> str:
+    return stored_origin(getattr(metric, "code_origin", None), getattr(metric, "is_test", None))
+
+
+def _held_counts(metrics: list[Any]) -> dict[str, int]:
+    counts = dict.fromkeys(MAP_HELD_ORIGINS, 0)
+    for m in metrics:
+        origin = _origin(m)
+        if origin in counts and (m.nloc or 0) > 0:
+            counts[origin] += 1
+    return counts
+
+
+def _keep(score_map: dict[str, float], kept: set[str] | None) -> dict[str, float]:
+    return score_map if kept is None else {p: s for p, s in score_map.items() if p in kept}
 
 
 async def _area_stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
@@ -142,40 +174,54 @@ async def _commit_rows(session: AsyncSession, repo_id: str) -> list[Any]:
     return list((await session.execute(q)).all())
 
 
-async def _build(session: AsyncSession, repo_id: str) -> AreaReadModel:
-    metrics = await crud.get_health_metrics(session, repo_id)
+async def _build(session: AsyncSession, repo_id: str, held: frozenset[str]) -> AreaReadModel:
+    every = await crud.get_health_metrics(session, repo_id)
+    # Held origins leave every figure, not just the drawing: scores, counts,
+    # findings, owners and the snapshot deltas all describe the kept files.
+    metrics = [m for m in every if _origin(m) not in held] if held else every
+    kept = {m.file_path for m in metrics} if held else None
+    findings = await crud.get_health_findings(session, repo_id)
+    if kept is not None:
+        findings = [f for f in findings if f.file_path in kept]
     git_rows = await _git_rows(session, repo_id)
     index = build_area_index(
         metrics,
         git_rows=git_rows,
         owners=file_owners(git_rows, await _commit_rows(session, repo_id)),
-        findings=await crud.get_health_findings(session, repo_id),
+        findings=findings,
         deductions=await crud.get_deduction_by_path(session, repo_id),
     )
     weights = nloc_weights(metrics)
+    counts = _held_counts(every)
     history = await crud.list_health_snapshots(session, repo_id, file_maps=False)
     base = baseline_index([s.taken_at for s in history])
     if base is None:
-        return AreaReadModel(index, weights, None, None)
+        return AreaReadModel(index, weights, None, None, held, counts)
     latest, baseline = history[-1], history[base]
     attach_deltas(
         index.nodes,
-        area_scores(await _snapshot_map(session, latest), weights),
-        area_scores(await _snapshot_map(session, baseline), weights),
+        area_scores(_keep(await _snapshot_map(session, latest), kept), weights),
+        area_scores(_keep(await _snapshot_map(session, baseline), kept), weights),
     )
-    return AreaReadModel(index, weights, latest.taken_at, baseline.taken_at)
+    return AreaReadModel(index, weights, latest.taken_at, baseline.taken_at, held, counts)
 
 
-async def load_area_model(session: AsyncSession, repo_id: str) -> AreaReadModel:
-    """The folded area index for *repo_id*, built once per index and findings state."""
-    key = await _models.key(session, repo_id, await _area_stamp(session, repo_id))
+async def load_area_model(
+    session: AsyncSession, repo_id: str, held: frozenset[str] = frozenset()
+) -> AreaReadModel:
+    """The folded area index for *repo_id*, built once per index and findings
+    state and per held-origin set."""
+    stamp = await _area_stamp(session, repo_id)
+    key = await _models.key(session, repo_id, stamp, tuple(sorted(held)))
     if key in _models:
         return _models.get(key)
     async with _locks.setdefault(repo_id, asyncio.Lock()):
         if key in _models:
             return _models.get(key)
-        model = await _build(session, repo_id)
-        _models.drop_repo(repo_id)
+        model = await _build(session, repo_id, held)
+        # An older index state is never asked for again; other held sets of
+        # this state are, as the reader toggles groups back in.
+        _models.drop_repo_except(repo_id, key[:-1])
         return _models.remember(key, model)
 
 
@@ -188,7 +234,8 @@ async def warm_area_model(
     the CLI) is still folded on first read."""
     try:
         async with get_session(session_factory) as session:
-            await load_area_model(session, repo_id)
+            # The map's default view, which is what the first reader opens.
+            await load_area_model(session, repo_id, frozenset(MAP_HELD_ORIGINS))
     except Exception:
         logger.warning("areas_warm_failed", repo_id=repo_id, exc_info=True)
 
@@ -223,6 +270,17 @@ def area_tree_payload(model: AreaReadModel, root: str, depth: int) -> dict[str, 
         "depth": depth,
         "nodes": below,
         "delta_window": _delta_window(model),
+        "held": _held_block(model),
+    }
+
+
+def _held_block(model: AreaReadModel) -> dict[str, Any]:
+    """Which origins the map holds by default, which this answer left out, and
+    how many files each holds, so a toggle can name its count."""
+    return {
+        "default": list(MAP_HELD_ORIGINS),
+        "excluded": sorted(model.held),
+        "counts": model.held_counts or {},
     }
 
 
@@ -232,13 +290,19 @@ async def area_detail_payload(
     """The area card, its trend read from the newest :data:`TREND_POINTS` snapshots."""
     if area not in model.index.nodes:
         return None
-    key = await _details.key(session, repo_id, area, await _area_stamp(session, repo_id))
+    key = await _details.key(
+        session, repo_id, area, await _area_stamp(session, repo_id), tuple(sorted(model.held))
+    )
     if key in _details:
         return _details.get(key)
     trend = []
+    kept = set(model.weights) if model.held else None
     for snap in await crud.list_health_snapshots(session, repo_id, limit=TREND_POINTS):
-        score = area_score(_score_map(snap.per_file_scores_json), area, model.weights)
+        score = area_score(_keep(_score_map(snap.per_file_scores_json), kept), area, model.weights)
         if score is not None:
             trend.append({"taken_at": _iso(snap.taken_at), "health": score})
-    detail = area_detail(model.index, area, trend=trend)
+    coupled = await coupling_answer(
+        session, repo_id, ("coupled", area), lambda m: coupled_areas_for(m, area)
+    )
+    detail = area_detail(model.index, area, trend=trend, coupled=coupled)
     return _details.remember(key, {**detail, "delta_window": _delta_window(model)})

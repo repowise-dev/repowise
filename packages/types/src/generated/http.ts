@@ -293,6 +293,7 @@ export interface AreaDetailResponse {
   top_findings: AreaFinding[];
   test_reach: AreaTestReach;
   delta_window: AreaDeltaWindow;
+  coupled_areas?: CouplingAreaSummary[];
 }
 
 export interface AreaDistribution {
@@ -317,6 +318,13 @@ export interface AreaFinding {
   line_start: number | null;
   health_impact: number | null;
   reason: string | null;
+}
+
+/** The origins the map holds out by default, and what this answer left out. */
+export interface AreaHeld {
+  default: string[];
+  excluded: string[];
+  counts: Record<string, number>;
 }
 
 export interface AreaHotspots {
@@ -378,6 +386,7 @@ export interface AreaTreeResponse {
   depth: number;
   nodes: AreaNode[];
   delta_window: AreaDeltaWindow;
+  held?: AreaHeld | null;
 }
 
 export interface AreaTrendPoint {
@@ -1231,6 +1240,52 @@ export interface CostSummaryResponse {
   since: string | null;
 }
 
+/** Two areas whose files change together; ``source == target`` for same-area pairs. */
+export interface CouplingAreaPair {
+  pairs: number;
+  unexplained_pairs: number;
+  unexplained_share: number;
+  strength: number;
+  co_changes: number;
+  last_co_change?: string | null;
+  linked?: boolean | null;
+  hidden?: boolean | null;
+  source: string;
+  target: string;
+  top_pairs?: CouplingEdgeResponse[];
+}
+
+/** One area's coupling: every kept pair with a file in it. */
+export interface CouplingAreaSummary {
+  pairs: number;
+  unexplained_pairs: number;
+  unexplained_share: number;
+  strength: number;
+  co_changes: number;
+  last_co_change?: string | null;
+  linked?: boolean | null;
+  hidden?: boolean | null;
+  path: string;
+}
+
+export interface CouplingAreaTotals {
+  pairs: number;
+  cross_area_pairs: number;
+  unexplained_pairs: number;
+  area_pairs: number;
+  unexplained_area_pairs: number;
+  hidden_area_pairs: number;
+  unlabelled_pairs: number;
+}
+
+export interface CouplingAreasResponse {
+  root: string;
+  depth: number;
+  totals: CouplingAreaTotals;
+  areas?: CouplingAreaSummary[];
+  area_pairs?: CouplingAreaPair[];
+}
+
 export interface CouplingEdgeResponse {
   source: string;
   target: string;
@@ -1241,6 +1296,7 @@ export interface CouplingEdgeResponse {
   confidence_ba?: number | null;
   structural?: "corroborated" | "unexplained" | "not_applicable" | null;
   dependency_kind?: string | null;
+  cross_area?: boolean | null;
 }
 
 export interface CouplingGraphResponse {
@@ -1249,6 +1305,7 @@ export interface CouplingGraphResponse {
   total_edges?: number;
   coupled_files?: number;
   total_files?: number;
+  depth?: number | null;
 }
 
 export interface CouplingNodeResponse {

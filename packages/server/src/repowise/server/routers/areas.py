@@ -14,11 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.areas import ROOT_AREA, normalize_area
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.routers.held_origins import HOLD_QUERY, INCLUDE_QUERY
 from repowise.server.schemas.areas import AreaDetailResponse, AreaTreeResponse
 from repowise.server.services.areas import (
     MAX_TREE_DEPTH,
     area_detail_payload,
     area_tree_payload,
+    held_origins,
     load_area_model,
 )
 
@@ -48,6 +50,8 @@ async def get_area_tree(
         ROOT_AREA, max_length=1024, description="Area to unfold; the repo root by default."
     ),
     depth: int = Query(1, ge=1, le=MAX_TREE_DEPTH, description="Levels below the root to include."),
+    hold: str = HOLD_QUERY,
+    include: str = INCLUDE_QUERY,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """The root area's rollup plus every directory up to *depth* levels below it.
@@ -56,7 +60,8 @@ async def get_area_tree(
     """
     await _require_repo(session, repo_id)
     area = normalize_area(root)
-    payload = area_tree_payload(await load_area_model(session, repo_id), area, depth)
+    model = await load_area_model(session, repo_id, held_origins(hold, include))
+    payload = area_tree_payload(model, area, depth)
     if payload is None:
         raise _no_area(area)
     return payload
@@ -67,12 +72,14 @@ async def get_area_tree(
 async def get_area_detail(
     repo_id: str,
     area_path: str = ROOT_AREA,
+    hold: str = HOLD_QUERY,
+    include: str = INCLUDE_QUERY,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """One area's card: rollup, worst files, hotspots, owners, trend, findings, test reach."""
     await _require_repo(session, repo_id)
     area = normalize_area(area_path)
-    model = await load_area_model(session, repo_id)
+    model = await load_area_model(session, repo_id, held_origins(hold, include))
     payload = await area_detail_payload(session, repo_id, model, area)
     if payload is None:
         raise _no_area(area)
