@@ -1,6 +1,7 @@
 import { ArrowUpRight } from "lucide-react";
 
 import { coverageBand } from "./tokens";
+import { AiPromptButton } from "./ai-prompt-button";
 
 export interface UntestedHotspotEntry {
   file_path: string;
@@ -15,6 +16,10 @@ export interface UntestedHotspotWarningProps {
   limit?: number;
   /** Open a file's coverage page. When set, rows become clickable. */
   onSelect?: ((filePath: string) => void) | undefined;
+  /** Hand one file's gap to an agent. When set, each row leads with it. */
+  onGeneratePrompt?: ((filePath: string) => void) | undefined;
+  /** The prompt action's label. */
+  promptLabel?: string;
 }
 
 /**
@@ -30,6 +35,8 @@ export function UntestedHotspotWarning({
   entries,
   limit = 6,
   onSelect,
+  onGeneratePrompt,
+  promptLabel = "Copy agent prompt",
 }: UntestedHotspotWarningProps) {
   if (entries.length === 0) return null;
   const shown = entries.slice(0, limit);
@@ -72,19 +79,26 @@ export function UntestedHotspotWarning({
           return (
             <li
               key={e.file_path}
-              className="border-b border-[var(--color-border-default)]"
+              className="flex items-center gap-3 border-b border-[var(--color-border-default)]"
             >
               {onSelect ? (
                 <button
                   type="button"
                   onClick={() => onSelect(e.file_path)}
-                  className="group/row flex w-full items-baseline gap-x-4 py-2.5 text-left hover:bg-[var(--color-bg-elevated)]"
+                  className="group/row flex min-w-0 flex-1 items-baseline gap-x-4 py-2.5 text-left hover:bg-[var(--color-bg-elevated)]"
                 >
                   {body}
                   <ArrowUpRight className="h-3 w-3 shrink-0 self-center text-[var(--color-text-tertiary)] group-hover/row:text-[var(--color-accent-primary)]" />
                 </button>
               ) : (
-                <div className="flex w-full items-baseline gap-x-4 py-2.5">{body}</div>
+                <div className="flex min-w-0 flex-1 items-baseline gap-x-4 py-2.5">{body}</div>
+              )}
+              {onGeneratePrompt && (
+                <AiPromptButton
+                  label={promptLabel}
+                  onClick={() => onGeneratePrompt(e.file_path)}
+                  className="shrink-0 whitespace-nowrap"
+                />
               )}
             </li>
           );

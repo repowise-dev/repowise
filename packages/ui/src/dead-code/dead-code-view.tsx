@@ -32,6 +32,7 @@ import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ApiError } from "../shared/api-error";
 import { EmptyState } from "../shared/empty-state";
+import { CleanState, type CleanStateCopy } from "../shared/clean-state";
 import { Segmented } from "../shared/segmented";
 import { OverviewSection } from "../overview/section";
 import { AiPromptModal } from "../health/ai-prompt-modal";
@@ -75,10 +76,13 @@ function RetryCard({
 export function DeadCodeView({
   adapter,
   ledeLabels,
+  clean: cleanCopy,
 }: {
   adapter: DeadCodeAdapter;
   /** The lede's copy, for a host that translates it. */
   ledeLabels?: Partial<DeadCodeLedeLabels>;
+  /** The clean state's copy, for a host that translates it or knows the file count. */
+  clean?: CleanStateCopy;
 }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [promptIds, setPromptIds] = useState<string[] | null>(null);
@@ -364,14 +368,13 @@ export function DeadCodeView({
             {...(ledeLabels ? { labels: ledeLabels } : {})}
           >
             {clean ? (
-              <EmptyState
-                tone="positive"
-                className="items-start px-0 py-0 text-left"
-                title="No dead code found"
+              <CleanState
+                align="start"
+                title={cleanCopy?.title ?? "No dead code found"}
                 description={
                   <>
-                    No unreachable files, unused exports or zombie packages across this
-                    repository.
+                    {cleanCopy?.description ??
+                      "No unreachable files, unused exports or zombie packages across this repository."}
                     <AnalysedAt at={summary.analyzed_at} />
                   </>
                 }

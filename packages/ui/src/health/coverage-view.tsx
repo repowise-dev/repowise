@@ -19,7 +19,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { ArrowUpRight, Sparkles } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
 import useSWR from "swr";
 import { GOOD_MIN } from "@repowise-dev/types/health";
 import type {
@@ -32,6 +32,8 @@ import type {
 
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
+import { CleanState } from "../shared/clean-state";
+import { formatNumber } from "../lib/format";
 import { ApiError } from "../shared/api-error";
 import { toFriendlyMessage } from "../lib/errors";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
@@ -39,6 +41,7 @@ import { ResultsFooter } from "../shared/results-footer";
 import { OverviewSection } from "../overview/section";
 
 import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
+import { AiPromptButton } from "./ai-prompt-button";
 import { CoverageLede } from "./coverage-lede";
 import { CoverageBar } from "./coverage-bar";
 import { ModuleCoverageList } from "./module-coverage-list";
@@ -66,7 +69,36 @@ import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
 import { CiHint } from "../shared/ci-hint";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
-export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
+/** Copy a host can override: the agent-prompt action and the clean state. */
+export interface CoverageViewCopy {
+  /** The primary row action, handing the file's gaps to an agent. */
+  promptLabel?: string;
+  /** "No untested hotspots across N measured files". */
+  cleanTitle?: (measuredFiles: number) => string;
+  cleanDescription?: string;
+}
+
+/** The prompt input for one file row. */
+function promptInputFor(f: CoverageFileRow): CoverageFilePromptInput {
+  return {
+    file_path: f.file_path,
+    line_coverage_pct: f.line_coverage_pct,
+    branch_coverage_pct: f.branch_coverage_pct,
+    total_coverable_lines: f.total_coverable_lines,
+    ...(f.covered_lines && { covered_lines: f.covered_lines }),
+    source_format: f.source_format,
+    health_score: f.health_score ?? null,
+    nloc: f.nloc ?? null,
+  };
+}
+
+export function CoverageView({
+  adapter,
+  copy,
+}: {
+  adapter: CodeHealthAdapter;
+  copy?: CoverageViewCopy | undefined;
+}) {
   const [promptRow, setPromptRow] = useState<CoverageFilePromptInput | null>(null);
 
   const { data, isLoading, error, mutate } = useSWR<HealthCoverageResponse>(
@@ -122,6 +154,7 @@ export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
           untestedFindings={untestedFindings ?? []}
           onOpenFile={openFilePage}
           onGeneratePrompt={(r) => setPromptRow(r)}
+          copy={copy}
         />
       )}
 
@@ -149,12 +182,15 @@ function CoverageBody({
   untestedFindings,
   onOpenFile,
   onGeneratePrompt,
+  copy,
 }: {
   data: HealthCoverageResponse;
   untestedFindings: HealthFinding[];
   onOpenFile: (path: string) => void;
   onGeneratePrompt: (row: CoverageFilePromptInput) => void;
+  copy?: CoverageViewCopy | undefined;
 }) {
+  const promptLabel = copy?.promptLabel ?? "Copy agent prompt";
   const { summary, files, modules } = data;
   // The true count, not the length of what came back. They differ only if the
   // rollup was capped, but the lede claims to describe the repo.
@@ -182,8 +218,9 @@ function CoverageBody({
   // Untested hotspots: prefer the real biomarker findings (which carry
   // dependents/commit context); fall back to the low-coverage × low-score
   // heuristic when the biomarker never fired (e.g. coverage just ingested).
+  const filesByPath = useMemo(() => new Map(files.map((f) => [f.file_path, f])), [files]);
   const untested = useMemo<UntestedHotspotEntry[]>(() => {
-    const covByPath = new Map(files.map((f) => [f.file_path, f]));
+    const covByPath = filesByPath;
     if (untestedFindings.length > 0) {
       return untestedFindings.slice(0, 10).map((f) => {
         const cov = covByPath.get(f.file_path);
@@ -217,7 +254,7 @@ function CoverageBody({
         if (f.health_score != null) entry.health_score = f.health_score;
         return entry;
       });
-  }, [files, untestedFindings]);
+  }, [files, filesByPath, untestedFindings]);
 
   const scatterPoints = useMemo(
     () =>
@@ -363,26 +400,11 @@ function CoverageBody({
       priority: 1,
       align: "right",
       render: (f) => (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onGeneratePrompt({
-              file_path: f.file_path,
-              line_coverage_pct: f.line_coverage_pct,
-              branch_coverage_pct: f.branch_coverage_pct,
-              total_coverable_lines: f.total_coverable_lines,
-              ...(f.covered_lines && { covered_lines: f.covered_lines }),
-              source_format: f.source_format,
-              health_score: f.health_score ?? null,
-              nloc: f.nloc ?? null,
-            });
-          }}
-          title="Generate AI test prompt for this file"
-          className="inline-flex items-center justify-center rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-model)] hover:bg-[var(--color-model-muted)] transition-colors"
-        >
-          <Sparkles className="h-3.5 w-3.5" />
-        </button>
+        <AiPromptButton
+          label={promptLabel}
+          onClick={() => onGeneratePrompt(promptInputFor(f))}
+          className="whitespace-nowrap"
+        />
       ),
     },
   ];
@@ -411,14 +433,34 @@ function CoverageBody({
         />
       </OverviewSection>
 
-      {untested.length > 0 ? (
-        <OverviewSection
-          title="Untested hotspots"
-          description="Files that change often or that much of the codebase depends on, with little or no coverage. A gap here is worth more than the same gap in code nobody touches."
-        >
-          <UntestedHotspotWarning entries={untested} onSelect={onOpenFile} />
-        </OverviewSection>
-      ) : null}
+      <OverviewSection
+        title="Untested hotspots"
+        description="Files that change often or that much of the codebase depends on, with little or no coverage. A gap here is worth more than the same gap in code nobody touches."
+      >
+        {untested.length > 0 ? (
+          <UntestedHotspotWarning
+            entries={untested}
+            onSelect={onOpenFile}
+            onGeneratePrompt={(path) => {
+              const row = filesByPath.get(path);
+              if (row) onGeneratePrompt(promptInputFor(row));
+            }}
+            promptLabel={promptLabel}
+          />
+        ) : (
+          <CleanState
+            align="start"
+            title={
+              copy?.cleanTitle?.(summary.file_count) ??
+              `No untested hotspots across ${formatNumber(summary.file_count)} measured files`
+            }
+            description={
+              copy?.cleanDescription ??
+              "Every file that changes often or that much of the code depends on has tests watching it."
+            }
+          />
+        )}
+      </OverviewSection>
 
       <OverviewSection
         title="Module coverage"

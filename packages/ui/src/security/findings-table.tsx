@@ -121,11 +121,21 @@ function FindingLocation({ finding }: { finding: SecurityFinding }) {
 export interface SecurityFindingsTableProps {
   findings: SecurityFinding[];
   onSelect?: (finding: SecurityFinding) => void;
-  /** When set, each row shows an "AI fix prompt" action that calls this. */
+  /**
+   * When set, each row leads with an agent-prompt action that calls this:
+   * the row's primary verb, since fixes happen through the reader's agent.
+   */
   onGeneratePrompt?: (finding: SecurityFinding) => void;
+  /** The prompt action's label. */
+  promptLabel?: string;
 }
 
-export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: SecurityFindingsTableProps) {
+export function SecurityFindingsTable({
+  findings,
+  onSelect,
+  onGeneratePrompt,
+  promptLabel = "Copy agent prompt",
+}: SecurityFindingsTableProps) {
   const [q, setQ] = useState("");
   const [sev, setSev] = useState<SeverityFilter>("all");
 
@@ -221,21 +231,17 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
       cols.push({
         key: "actions",
         header: "",
-        headerClassName: "w-10",
-        hideInCard: true,
         render: (f) => (
-          <span onClick={(e) => e.stopPropagation()}>
-            <AiPromptButton
-              variant="icon"
-              label="AI fix prompt"
-              onClick={() => onGeneratePrompt(f)}
-            />
-          </span>
+          <AiPromptButton
+            label={promptLabel}
+            onClick={() => onGeneratePrompt(f)}
+            className="whitespace-nowrap"
+          />
         ),
       });
     }
     return cols;
-  }, [onGeneratePrompt]);
+  }, [onGeneratePrompt, promptLabel]);
 
   if (findings.length === 0) {
     return (
