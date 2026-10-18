@@ -450,7 +450,6 @@
     "last_resync_at": null,
     "last_sync_model": null,
     "active_job_id": null,
-    "page_count": 2,
-    "index_storage_bytes": 0
+    "page_count": 2
   }
 }

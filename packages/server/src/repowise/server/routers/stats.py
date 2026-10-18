@@ -27,6 +27,7 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.services.index_storage import index_storage_bytes
 
 router = APIRouter(
     prefix="/api/repos",
@@ -249,4 +250,5 @@ async def stats_highlights(
         "rhythm": rhythm,
         "people": people,
         "records": records,
+        "index_storage_bytes": await index_storage_bytes(repo.local_path),
     }
