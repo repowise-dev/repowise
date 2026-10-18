@@ -97,11 +97,11 @@ class RevisionHealthAnalyzer:
         remainder are closure context that shapes resolution without being
         charged to the change.
 
-        *dependents* is the other side's :attr:`RevisionAnalysis.dependents`.
-        Both sides see only the changed files, so a file's dependents count
-        here is a slice of its real one, and an import added between two
-        changed files can carry it across a centrality gate. Scoring both
-        sides against one count keeps that from reading as a code change.
+        *dependents* is one count both sides score against: the index's when
+        there is one, else the other side's :attr:`RevisionAnalysis.dependents`.
+        Both sides see only the changed files, so a local count is a slice of
+        the real one, and an import added between two changed files can carry
+        a file across a centrality gate without any change to its code.
         """
         result = RevisionAnalysis()
         parsed, usable = self._parse(sources, result)

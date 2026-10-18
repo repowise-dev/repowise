@@ -11,6 +11,7 @@ import hashlib
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -87,6 +88,8 @@ class DeltaRequest:
     exclude_patterns: tuple[str, ...] = ()
     #: Gitignore-style paths to keep; empty keeps every path.
     include_paths: tuple[str, ...] = ()
+    #: ``{path: dependents}`` from the index, scored on both sides when given.
+    dependents: Mapping[str, int] | None = None
 
 
 class ChangeHealthDeltaService:
@@ -182,6 +185,7 @@ class ChangeHealthDeltaService:
             repr(tuple(request.extensions)),
             repr(tuple(request.exclude_patterns)),
             repr(tuple(request.include_paths)),
+            _dependents_digest(request.dependents),
         )
         return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
@@ -243,7 +247,8 @@ class ChangeHealthDeltaService:
                 fingerprint=self.fingerprint,
             )
 
-        sides = self._analyze(pair, eligible, departed)
+        index = _index_dependents(request.dependents, pair.rename_map())
+        sides = self._analyze(pair, eligible, departed, index)
         skipped.update(sides.head_run.skipped)
         skipped.update(_held_origins(sides.head_sources, self.repo_path))
         skipped.update(_base_failures(eligible + departed, sides.base_run, skipped))
@@ -282,6 +287,7 @@ class ChangeHealthDeltaService:
             skipped=skipped,
             moved_to={old: new for old, new in moves.destinations().items() if old in gone},
             limits=_limits(sides.head_run.findings_for(subject)),
+            context="index_dependents" if index is not None else "changed_files",
             files=file_score_deltas(
                 sides.base_run.metrics,
                 sides.head_run.metrics,
@@ -294,7 +300,11 @@ class ChangeHealthDeltaService:
         return delta
 
     def _analyze(
-        self, pair: RevisionPair, eligible: list[FileChange], departed: list[FileChange]
+        self,
+        pair: RevisionPair,
+        eligible: list[FileChange],
+        departed: list[FileChange],
+        index: dict[str, int] | None,
     ) -> _Sides:
         """Read and analyse both sides; *departed* (deleted) files go on the base side only.
 
@@ -310,9 +320,13 @@ class ChangeHealthDeltaService:
         )
         base_sources = self.source.read(pair.base_sha, base_paths)
         rename = pair.rename_map()
-        head_run = self.analyzer.analyze(head_sources, subject_paths=set(head_paths))
+        head_run = self.analyzer.analyze(
+            head_sources, subject_paths=set(head_paths), dependents=index
+        )
         base_run = self.analyzer.analyze(
-            base_sources, subject_paths=set(base_paths), dependents=_on_base(head_run, rename)
+            base_sources,
+            subject_paths=set(base_paths),
+            dependents=index if index is not None else _on_base(head_run, rename),
         )
         return _Sides(head_paths, head_sources, base_sources, head_run, base_run, rename)
 
@@ -581,6 +595,30 @@ def _on_base(head_run: RevisionAnalysis, rename: dict[str, str]) -> dict[str, in
     """
     to_base = {head: base for base, head in rename.items()}
     return {to_base.get(path, path): count for path, count in head_run.dependents.items()}
+
+
+def _index_dependents(
+    dependents: Mapping[str, int] | None, rename: dict[str, str]
+) -> dict[str, int] | None:
+    """The index's counts with each renamed file under both of its paths."""
+    if dependents is None:
+        return None
+    merged = dict(dependents)
+    for old, new in rename.items():
+        count = dependents.get(old, dependents.get(new))
+        if count is not None:
+            merged.setdefault(old, count)
+            merged.setdefault(new, count)
+    return merged
+
+
+def _dependents_digest(dependents: Mapping[str, int] | None) -> str:
+    if dependents is None:
+        return ""
+    digest = hashlib.sha256()
+    for path, count in sorted(dependents.items()):
+        digest.update(f"{path}\t{count}\n".encode())
+    return digest.hexdigest()
 
 
 def _hunks(changes: list[FileChange]) -> dict[str, list[tuple[int, int, int, int]]]:

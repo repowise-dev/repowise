@@ -200,6 +200,8 @@ class ChangeHealthDelta:
     timing_ms: float = 0.0
     cache_hit: bool = False
     limits: list[str] = field(default_factory=list)
+    #: Where centrality gates read dependents: ``index_dependents`` or ``changed_files``.
+    context: str = "changed_files"
     #: Per-file scores on both sides, largest structure move first.
     files: list[FileScoreDelta] = field(default_factory=list)
 

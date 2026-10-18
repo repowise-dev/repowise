@@ -185,7 +185,7 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
     if delta.head is not None:
         block["head"] = delta.head.as_dict()
     if delta.fingerprint is not None:
-        block["analyzer"] = delta.fingerprint.as_dict()
+        block["analyzer"] = {**delta.fingerprint.as_dict(), "context": delta.context}
     if len(delta.findings) > len(emitted):
         block["findings_reduced_reason"] = "top_findings_cap"
         block["all_findings_via"] = _call(revspec, extra="include=['findings']")
