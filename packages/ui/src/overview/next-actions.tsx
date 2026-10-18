@@ -13,7 +13,9 @@ import {
   type NextAction,
 } from "@repowise-dev/types/actions";
 
+import { useAiPromptAction } from "../health/ai-prompt-action";
 import { EFFORT_LABEL } from "../health/labels";
+import { RowPromptAction } from "../health/row-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../shared/responsive-table";
 import { RowOverflow } from "../shared/row-overflow";
@@ -133,6 +135,7 @@ export function NextActions({
   // knows its time frame once a re-read drops the row.
   const [answered, setAnswered] = useState<ReadonlyMap<string, NextAction>>(new Map());
   const [opened, setOpened] = useState<NextAction | null>(null);
+  const { openPrompt, promptModal } = useAiPromptAction();
 
   const rows = useMemo(
     () => (data ? data.horizons[horizon].actions.filter((a) => !answered.has(a.id)) : []),
@@ -220,6 +223,16 @@ export function NextActions({
                     action={action}
                     selected={opened?.id === action.id}
                     onOpen={() => setOpened(action)}
+                    onPrompt={
+                      loadPrompt
+                        ? () =>
+                            openPrompt({
+                              title: action.title.replace(/`/g, ""),
+                              filePath: action.target.path || null,
+                              promptSource: (flavor) => loadPrompt(action, flavor),
+                            })
+                        : undefined
+                    }
                     onAnswer={onSetState ? (state, message) => answer(action, state, message) : undefined}
                   />
                 ))}
@@ -281,6 +294,7 @@ export function NextActions({
         LinkComponent={LinkComponent}
         renderTitle={renderActionTitle}
       />
+      {promptModal}
     </OverviewSection>
   );
 }
@@ -316,12 +330,15 @@ export function ActionRow({
   action,
   onOpen,
   selected = false,
+  onPrompt,
   onAnswer,
 }: {
   action: NextAction;
   /** Open the action's drawer; the whole row is the trigger. */
   onOpen: () => void;
   selected?: boolean | undefined;
+  /** Open the agent prompt for this action. Omit to hide the row's prompt verb. */
+  onPrompt?: (() => void) | undefined;
   onAnswer?: ((state: ActionStateValue, message: string) => void) | undefined;
 }) {
   const plainTitle = action.title.replace(/`/g, "");
@@ -352,7 +369,8 @@ export function ActionRow({
     <li
       aria-label={`Open ${plainTitle}`}
       aria-current={selected ? "true" : undefined}
-      className={`${CLICKABLE_ROW_CLS} group flex items-start gap-3 px-1 py-3.5 sm:gap-4 ${
+      data-selected={selected ? "true" : undefined}
+      className={`${CLICKABLE_ROW_CLS} group group/row flex items-start gap-3 px-1 py-3.5 sm:gap-4 ${
         selected ? "bg-[var(--color-bg-elevated)]" : "hover:bg-[var(--color-bg-elevated)]"
       }`}
       {...clickableRowProps(onOpen)}
@@ -404,6 +422,7 @@ export function ActionRow({
             </>
           )}
         </span>
+        {onPrompt && <RowPromptAction subject={plainTitle} onClick={onPrompt} />}
         <RowOverflow label={`More for ${plainTitle}`} items={items} />
       </div>
     </li>

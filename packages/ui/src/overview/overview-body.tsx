@@ -4,21 +4,17 @@ import { getDefaultHref } from "../dashboard/attention-href";
 import { formatNumber } from "../lib/format";
 import { fileEntityPath } from "../shared/entity";
 import { PageFrame } from "../shared/page-shell";
-import { StatRibbon } from "../stats/stat-ribbon";
 import { AttentionAreas } from "./attention-areas";
 import { AttentionRows } from "./attention-rows";
-import { CommitRows, DecisionRows, type CommitRow } from "./activity-lists";
+import type { CommitRow } from "./activity-lists";
 import { ChangeLine } from "./change-line";
 import { ExploreList } from "./explore-list";
 import { HealthLede } from "./health-lede";
 import { HotspotTable } from "./hotspot-table";
-import { LanguageBar } from "./language-bar";
 import {
   buildChangeStats,
   buildExplore,
-  buildLanguageDistribution,
   buildReads,
-  buildRibbon,
   previousSnapshotAt,
   resolveOverviewRoutes,
   type OverviewRoutes,
@@ -28,7 +24,6 @@ import { OverviewSection, SectionLink } from "./section";
 
 /** How many rows each list section shows before deferring to its own page. */
 const ATTENTION_ROWS = 6;
-const DECISION_ROWS = 6;
 const HOTSPOT_ROWS = 5;
 
 export interface OverviewBodySlots {
@@ -50,15 +45,17 @@ export interface OverviewBodySlots {
    *  inventory lower down; when absent (a host not yet serving actions) the
    *  areas keep their old place. */
   actions?: React.ReactNode;
+  /** What got better recently, directly under "Do next". Omitted, nothing
+   *  renders in its place. */
+  wins?: React.ReactNode;
 }
 
 export interface OverviewBodyProps {
   summary: OverviewSummaryResponse;
   routes: OverviewRoutes;
-  /** Recent commits, already fetched and bounded by the host. */
+  /** @deprecated Ignored; recent commits live on the Commits page. */
   commits?: CommitRow[];
-  /** Total lines of code. The two hosts source this differently, so it is a
-   *  prop rather than a payload read. */
+  /** @deprecated Ignored; size figures live on the Stats page. */
   totalNloc?: number | null;
   LinkComponent?: React.ElementType;
   slots?: OverviewBodySlots;
@@ -75,21 +72,17 @@ export interface OverviewBodyProps {
  * token), so anything that fetches cannot be shared, and anything that does
  * not fetch can.
  *
- * Section order answers three questions in sequence: what state is this
- * repository in, what needs me, and where do I go. "Needs attention" sits
- * directly under the health hero rather than fourth, because the page is
- * mostly opened by someone who was here last week and wants the delta, not by
- * a stranger who wants the tour.
+ * Short and action-first: the health reading, then what to do now, then
+ * what got better, then doors into the pages that own each subject. Anything
+ * a deeper page already shows in full (commit lists, decisions, size and
+ * language figures) is a link from Explore rather than a copy here.
  *
- * When the host supplies actions, "Do next" takes that place: a few things to
- * do, each with its reason, instead of a count per detector. The per-detector
- * areas stay reachable as a folded inventory further down.
+ * When the host supplies actions, "Do next" leads and the per-detector areas
+ * fold into an inventory below it.
  */
 export function OverviewBody({
   summary,
   routes,
-  commits = [],
-  totalNloc,
   LinkComponent,
   slots = {},
 }: OverviewBodyProps) {
@@ -98,10 +91,8 @@ export function OverviewBody({
   const { stats, health } = summary;
 
   const reads = buildReads(summary, routes);
-  const ribbon = buildRibbon(summary, routes, totalNloc);
   const explore = buildExplore(summary, routes);
   const changeStats = buildChangeStats(summary);
-  const langDistribution = buildLanguageDistribution(summary);
 
   // The list is capped per source server-side, so its length is not a total.
   // Falling back to the row count on a server that predates the summary keeps
@@ -116,8 +107,8 @@ export function OverviewBody({
       title={inventory ? "Everything we found" : "Needs attention"}
       description={
         inventory
-          ? "Every detector's open count by area, each with its worst example. An inventory, not a to-do list: the actions above are the part worth doing."
-          : "Every detector, by area of work, each leading with the worst thing in it: code health and the test-quality biomarkers, security, refactoring, documentation drift, decision records, ownership, and dead code."
+          ? "Every detector's open count by area. The actions above are the part worth doing."
+          : "Each area of work, led by the worst thing in it."
       }
       collapsible={inventory}
       defaultOpen={!inventory}
@@ -151,15 +142,9 @@ export function OverviewBody({
 
       <ChangeLine since={previousSnapshotAt(summary)} stats={changeStats} />
 
-      {/* Health keeps the largest number and the leftmost position. The column
-          beside it carries the other reasons someone opens Overview, so a
-          visitor who came for docs or costs finds their figure at the same
-          altitude rather than three scrolls down. */}
       <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
         <HealthLede
           score={health.average_health}
-          maintainability={health.maintainability_average}
-          performance={health.performance_average}
           hotspotHealth={health.hotspot_health}
           hotspotCount={stats.hotspot_count}
           fileCount={stats.file_count}
@@ -174,39 +159,7 @@ export function OverviewBody({
 
       {slots.actions ?? (hasAttention && attention(false))}
 
-      <StatRibbon stats={ribbon} LinkComponent={LinkComponent} />
-
-      <OverviewSection
-        title="Recent activity"
-        action={
-          <SectionLink href={`${base}/commits`} LinkComponent={LinkComponent}>
-            All commits
-          </SectionLink>
-        }
-      >
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-10">
-          <div className="flex min-w-0 flex-col gap-2">
-            <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              Commits
-            </h3>
-            <CommitRows
-              commits={commits}
-              hrefFor={(sha) => `${base}/commits?commit=${sha}`}
-              LinkComponent={LinkComponent}
-            />
-          </div>
-          <div className="flex min-w-0 flex-col gap-2">
-            <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              Decisions
-            </h3>
-            <DecisionRows
-              decisions={summary.recent_decisions.slice(0, DECISION_ROWS)}
-              hrefFor={(decisionId) => `${base}/decisions/${encodeURIComponent(decisionId)}`}
-              LinkComponent={LinkComponent}
-            />
-          </div>
-        </div>
-      </OverviewSection>
+      {slots.wins}
 
       {/* A host without actions keeps the hotspot table: with "Do next", its
           files arrive as fragile-file and bug-fix concentration actions with
@@ -234,22 +187,6 @@ export function OverviewBody({
           count and its worst example, folded because the list above already
           says what to do. */}
       {slots.actions && hasAttention && attention(true)}
-
-      {summary.languages.length > 0 && (
-        <OverviewSection
-          title="Composition"
-          action={
-            <SectionLink
-              href={resolved.languageGraph}
-              LinkComponent={LinkComponent}
-            >
-              Open the graph
-            </SectionLink>
-          }
-        >
-          <LanguageBar distribution={langDistribution} />
-        </OverviewSection>
-      )}
 
       {slots.beforeExplore}
 

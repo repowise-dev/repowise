@@ -15,10 +15,8 @@
  * SWR and cannot be a server component) can both call it.
  *
  * Host-specific rows need no flags. Every one of them is already gated on a
- * field the payload either carries or does not: local index size is absent on
- * hosted because hosted has no `.repowise/` directory, agent savings are
- * absent because they come from a CLI-written sidecar, and score validation is
- * absent on OSS because nothing backtests it there. Asking "is the data here"
+ * field the payload either carries or does not: score validation, for example,
+ * is absent on OSS because nothing backtests it there. Asking "is the data here"
  * gets the right answer on both hosts without either one declaring which host
  * it is. The one thing that genuinely cannot be inferred is routing, which is
  * why {@link OverviewRoutes} exists and is the whole capability surface.
@@ -29,13 +27,7 @@ import type { ChangeStat } from "./change-line";
 import type { ExploreEntry } from "./explore-list";
 import type { ReadItem } from "./reads-column";
 import type { RibbonStat } from "../stats/stat-ribbon";
-import {
-  formatBytes,
-  formatCost,
-  formatLOC,
-  formatNumber,
-  formatTokens,
-} from "../lib/format";
+import { formatLOC, formatNumber } from "../lib/format";
 
 /**
  * Where this host's links go.
@@ -61,10 +53,9 @@ export interface OverviewRoutes {
   languageGraph?: string;
   /** Scoped chat. Hosted only; OSS puts an ask box on the page instead. */
   chat?: string;
-  /** Local settings, where the on-disk index lives. OSS only. */
+  /** @deprecated Nothing on Overview links to settings. */
   settings?: string;
-  /** Indexing cost breakdown. Linked from the savings read on both hosts, and
-   *  listed under Explore only where the page exists. */
+  /** Indexing cost breakdown, listed under Explore only where the page exists. */
   costs?: string;
 }
 
@@ -135,12 +126,12 @@ export function docPageCount(summary: OverviewSummaryResponse): number {
 }
 
 /**
- * The column beside the health hero: the other reasons someone opens this
- * page, at the same altitude as the score.
+ * The column beside the health hero: documentation, and on hosts that
+ * backtest it, how well the health ranking predicted bug fixes.
  */
 export function buildReads(summary: OverviewSummaryResponse, routes: OverviewRoutes): ReadItem[] {
   const r = resolveOverviewRoutes(routes);
-  const { stats, health, sync, savings } = summary;
+  const { stats, health } = summary;
   const docPages = docPageCount(summary);
   const prosePages = stats.doc_prose_page_count;
   const reads: ReadItem[] = [];
@@ -197,50 +188,6 @@ export function buildReads(summary: OverviewSummaryResponse, routes: OverviewRou
       ...(accuracy.lift ? { unit: `${accuracy.lift.toFixed(1)}× baseline` } : {}),
       href: `${r.base}/code-health`,
       why: "Top-ranked files that did go on to need a bug fix",
-    });
-  }
-
-  // From a CLI-written `.repowise/omissions` sidecar, so this row is simply
-  // absent wherever that sidecar cannot exist. No flag, no empty state
-  // pitching a CLI the viewer is not running.
-  const savedTokens = savings.saved_input_tokens ?? 0;
-  if (savings.available && savedTokens > 0 && r.costs) {
-    // "Estimated" while any of the total rests on a counterfactual rather than
-    // a measured before and after. The two are different claims, and the row
-    // is too small to show the split, so it qualifies the label instead.
-    const inferred = savings.inferred_saved_input_tokens ?? 0;
-    reads.push({
-      key: "savings",
-      label: inferred > 0 ? "Estimated agent savings" : "Agent savings",
-      value: formatTokens(savedTokens),
-      ...(savings.estimated_usd_saved ? { unit: formatCost(savings.estimated_usd_saved) } : {}),
-      href: r.costs,
-      why:
-        inferred > 0
-          ? "Input tokens your agent did not have to read, part of it estimated"
-          : "Input tokens your agent did not have to read",
-    });
-  }
-
-  if (stats.dead_export_count > 0) {
-    reads.push({
-      key: "dead-code",
-      label: "Dead code",
-      value: formatNumber(stats.dead_export_count),
-      unit: "exports",
-      href: `${r.base}/code-health?tab=dead-code`,
-      why: "Unused exports that nothing in the graph reaches",
-    });
-  }
-
-  // A local-disk figure. Hosted stores indexes elsewhere and never has it.
-  if (sync.index_storage_bytes && r.settings) {
-    reads.push({
-      key: "index",
-      label: "Index",
-      value: formatBytes(sync.index_storage_bytes),
-      href: r.settings,
-      why: `Wiki, symbols and vectors on disk · ${Math.round(stats.doc_coverage_pct)}% average doc confidence`,
     });
   }
 
@@ -356,6 +303,12 @@ export function buildExplore(
       label: "Commits",
       href: `${r.base}/commits`,
       description: "Change-risk ranked history with agent provenance",
+    },
+    {
+      key: "decisions",
+      label: "Decisions",
+      href: `${r.base}/decisions`,
+      description: "Why the code is shaped this way, from decision records and git history",
     },
     {
       key: "contributors",
