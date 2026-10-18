@@ -1,13 +1,8 @@
 """Large Method — function bodies that exceed a healthy line budget.
 
-Fires on lines of code once a function carries *some* branching, so it measures
-length-with-substance rather than pure size. A long but flat body (a big
-config/data literal, a wall of sequential assignments) is a layout artefact,
-excluded by the ``_CCN_FLOOR`` gate on the judged CCN, which also reads a long
-dispatch of one-line arms as flat (``complexity/dispatch.py``). Lines holding
-only JSX markup are not code here. The short-but-tangled case is
-``complex_method``; both can fire on one function, and the scorer caps their
-shared category.
+Counts lines of code, JSX markup lines excluded, once the judged CCN shows some
+branching: a long flat body (a data literal, a dispatch of one-line arms) is
+layout. ``complex_method`` covers short but tangled functions.
 """
 
 from __future__ import annotations
@@ -52,11 +47,14 @@ class LargeMethodDetector:
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
             code_lines = fn.nloc - fn.markup_nloc
-            severity = self.severity_for(judged_ccn(fn), code_lines)
+            judged = judged_ccn(fn)
+            severity = self.severity_for(judged, code_lines)
             if severity is None:
                 continue
             span = fn.end_line - fn.start_line + 1
             details = {"nloc": fn.nloc, "ccn": fn.ccn, "span": span, **shape_details(fn)}
+            if judged != fn.ccn:
+                details["judged_ccn"] = judged
             if fn.markup_nloc:
                 details["markup_nloc"] = fn.markup_nloc
             out.append(
