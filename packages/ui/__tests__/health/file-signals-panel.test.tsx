@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { FileSignals } from "@repowise-dev/types/health";
-import { FileSignalsPanel } from "../../src/health/file-signals-panel.js";
+import { FileSignalsPanel, hasAnySignal } from "../../src/health/file-signals-panel.js";
 
 function sig(partial: Partial<FileSignals>): FileSignals {
   return {
@@ -143,5 +143,18 @@ describe("FileSignalsPanel magnet recency guard", () => {
 
     expect(screen.getByText("No bug-fixes")).toBeInTheDocument();
     expect(screen.queryByText("Bug magnet")).not.toBeInTheDocument();
+  });
+});
+
+describe("FileSignalsPanel short history", () => {
+  it("says the history is too short to count, even when it is the only signal", () => {
+    render(<FileSignalsPanel signals={sig({ history: "short" })} />);
+    expect(screen.getByText("Short history")).toBeInTheDocument();
+    expect(screen.getByText(/fewer than 5 commits recorded/)).toBeInTheDocument();
+  });
+
+  it("counts short history as a process signal only", () => {
+    expect(hasAnySignal(sig({ history: "short" }), ["process"])).toBe(true);
+    expect(hasAnySignal(sig({ history: "short" }), ["topology"])).toBe(false);
   });
 });
