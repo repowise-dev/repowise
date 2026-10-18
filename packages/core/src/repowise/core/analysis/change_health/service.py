@@ -395,16 +395,16 @@ def _partition(
     changes: list[FileChange],
 ) -> tuple[list[FileChange], list[FileChange], dict[str, str]]:
     """``(eligible, departed, skipped)``: analysable on head, deleted but analysable, the rest."""
-    eligible = [c for c in changes if c.head_path and language_for(c.head_path)]
-    departed = [
-        c for c in changes if c.head_path is None and c.base_path and language_for(c.base_path)
-    ]
-    skipped = {
-        c.head_path or c.base_path or "": _skip_reason(c)
-        for c in changes
-        if c not in eligible and c not in departed
-    }
-    skipped.pop("", None)
+    eligible: list[FileChange] = []
+    departed: list[FileChange] = []
+    skipped: dict[str, str] = {}
+    for change in changes:
+        if change.head_path and language_for(change.head_path):
+            eligible.append(change)
+        elif change.head_path is None and language_for(change.base_path or ""):
+            departed.append(change)
+        elif path := change.head_path or change.base_path:
+            skipped[path] = _skip_reason(change)
     return eligible, departed, skipped
 
 
