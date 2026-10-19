@@ -50,19 +50,20 @@ async def _index(
     edges: list[tuple[str, str, str]] = (),
     coverage: list | None = None,
     measured_at: str | None = None,
+    db_file: Path | None = None,
 ):
     """An index built at *base*: file nodes (``True`` test, ``str`` always-run reason), edges."""
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-    from sqlalchemy.pool import StaticPool
+    from sqlalchemy.pool import NullPool, StaticPool
 
     from repowise.core.persistence.crud import save_test_coverage
     from repowise.core.persistence.database import init_db
     from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
 
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        f"sqlite+aiosqlite:///{db_file.as_posix()}" if db_file else "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        poolclass=NullPool if db_file else StaticPool,
     )
     await init_db(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -466,7 +467,11 @@ async def test_a_repeated_selection_is_reused_until_the_tree_or_index_moves(
     from repowise.server.mcp_server import _test_selection
 
     repo, base = _repo(tmp_path, _STATUS)
-    factory = await _index(base, {"src/status.py": False, "tests/test_status.py": True})
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        db_file=tmp_path / "wiki.db",
+    )
     threads: list[int] = []
     real = _test_selection._select_here
 
@@ -483,7 +488,7 @@ async def test_a_repeated_selection_is_reused_until_the_tree_or_index_moves(
 
     first = await _select()
     assert await _select() is first
-    # Off the loop: the selection's CPU work no longer stalls other calls' queries.
+    # The selection ran on a worker thread, off the server's loop.
     assert threads == [threads[0]] and threads[0] != threading.get_ident()
 
     (repo / "src" / "status.py").write_text("def status():\n    return 2\n", encoding="utf-8")

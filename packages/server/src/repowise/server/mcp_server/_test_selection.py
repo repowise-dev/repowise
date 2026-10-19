@@ -112,7 +112,8 @@ async def select_change_tests(
             "`repowise impacted-tests` for this change.",
         )
     selected = flight.task.result()
-    if done_key is not None:
+    # A checkout edited while the selection read it is not cached under the old stamp.
+    if done_key is not None and done_key == await _done_key(key, session_factory, change, config):
         _DONE[done_key] = selected
         while len(_DONE) > _DONE_CAPACITY:
             _DONE.popitem(last=False)
@@ -151,15 +152,10 @@ def _change_identity(change: Any) -> str:
 
 
 def _tree_stamp(root: str) -> str | None:
-    """What the checkout's dirty paths are and when each last changed; ``None`` when git fails.
-
-    Ceiling: a file added inside an untracked directory moves only that
-    directory's mtime when it is the direct parent; ``--untracked-files=all``
-    is the upgrade if that ever matters.
-    """
+    """What the checkout's dirty paths are and when each last changed; ``None`` when git fails."""
     try:
         out = subprocess.run(
-            ["git", "status", "--porcelain", "-z"],
+            ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
             cwd=root,
             capture_output=True,
             stdin=subprocess.DEVNULL,
@@ -221,10 +217,11 @@ async def _select(
 ) -> tuple:
     """Run the selection on a worker thread with its own event loop.
 
-    The selection is mostly pure-Python CPU work; on the server's loop it held
-    every awaited query of every other call until it finished. A pooled
+    The selection is mostly pure-Python CPU work, which on the server's loop
+    would hold every other call's queries until it finished. A pooled
     engine's connections belong to the loop that opened them, so only an
-    engine that opens one per checkout (every SQLite one) moves off the loop.
+    engine that opens one per checkout (``NullPool``, as every file SQLite
+    store uses) moves off the loop.
     """
     if not _loop_agnostic(session_factory):
         return await _select_here(repo_path, session_factory, change, config, cancel)
@@ -234,12 +231,10 @@ async def _select(
 
 
 def _loop_agnostic(session_factory: Any) -> bool:
-    from sqlalchemy.pool import NullPool, StaticPool
+    from sqlalchemy.pool import NullPool
 
     bind = getattr(session_factory, "kw", {}).get("bind")
-    pool = getattr(getattr(bind, "sync_engine", None), "pool", None)
-    sqlite = getattr(getattr(bind, "dialect", None), "name", None) == "sqlite"
-    return isinstance(pool, NullPool) or (sqlite and isinstance(pool, StaticPool))
+    return isinstance(getattr(getattr(bind, "sync_engine", None), "pool", None), NullPool)
 
 
 async def _select_here(
