@@ -679,3 +679,13 @@ def test_history_matches_the_items_qualified_symbol() -> None:
     # File-level rows and items keep everything; a bare name matches by name.
     assert _about(None, "Engine.run") and _about("Other.run", None)
     assert _about("run", "Engine.run") and not _about("walk", "Engine.run")
+
+
+def test_a_plan_targets_its_symbol_span_like_a_finding_does() -> None:
+    """The target is the function's own span for every kind; the first edit's
+    line belongs to the first step."""
+    by_kind = {i.kind: i for i in _build(limit=None).items}
+    refactor, finding = by_kind["refactor"], by_kind["finding"]
+    assert (refactor.target.line_start, refactor.target.line_end) == (10, 60)
+    assert refactor.action.steps[0].line == 20
+    assert (finding.target.line_start, finding.target.line_end) == (5, 40)
