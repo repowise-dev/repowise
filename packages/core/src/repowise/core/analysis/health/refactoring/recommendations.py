@@ -694,6 +694,19 @@ def _characterization_step(suggestion: RefactoringSuggestion, file_tests: int = 
     return f"No test reaches `{symbol}`; add a characterization test before the edit."
 
 
+def _prerequisite(
+    suggestion: RefactoringSuggestion,
+    basis: ValidationBasis,
+    nearest: list[tuple[MappedTest, str]] | None,
+    file_tests: int,
+) -> str | None:
+    """The characterization step when no test reaches the change, also when
+    tests reach the file (*file_tests* of them) but none a function it changes."""
+    if nearest == []:
+        return _characterization_step(suggestion, file_tests)
+    return _characterization_step(suggestion) if basis == "unknown" else None
+
+
 def _line_ranges(suggestion: RefactoringSuggestion) -> dict[str, set[int] | None]:
     """Lines each affected file changes, or ``None`` when the plan says only the file.
 
@@ -932,9 +945,6 @@ def build_validation_plan(
             shown, total=aggregate_total, runs=facts.test_runs
         )
     files = affected_files(suggestion)
-    # Summed per file, a test reaching two files counts twice: no count then.
-    exact = identities_complete or len(target_rows) == 1
-    file_tests = aggregate_total if nearest == [] and exact else 0
     return ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
@@ -947,11 +957,12 @@ def build_validation_plan(
         targets=target_rows,
         reasons=reasons if order_tests else {},
         test_runs=plan_runs(shown, facts.test_runs),
-        # Also when tests reach the file but none reaches a function it changes.
-        prerequisite=(
-            _characterization_step(suggestion, file_tests)
-            if aggregate_basis == "unknown" or nearest == []
-            else None
+        prerequisite=_prerequisite(
+            suggestion,
+            aggregate_basis,
+            nearest,
+            # Summed per file, a test reaching two files counts twice: no count then.
+            aggregate_total if identities_complete or len(target_rows) == 1 else 0,
         ),
     )
 
