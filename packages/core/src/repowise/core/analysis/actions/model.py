@@ -15,7 +15,7 @@ from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when a rule's output changes meaning or shape; stored views built
 #: under another version are rebuilt.
-ACTIONS_MODEL_VERSION = 2
+ACTIONS_MODEL_VERSION = 3
 
 ActionRule = Literal[
     "live_secret",
