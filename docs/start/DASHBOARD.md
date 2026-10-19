@@ -68,9 +68,6 @@ page shows it, and a small History card beside the page summarises owners,
 hotspots and fix history. You can attach human notes to a page,
 and those notes survive regeneration.
 
-The sidebar auto-collapses to icons here so the page gets the width, and
-restores when you leave.
-
 ### Present mode (the hidden one)
 
 Inside the docs header there is a **Present** button. It turns the wiki you
