@@ -82,7 +82,7 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
         "kpis": lambda: _compute_kpis(
             all_metrics,
             hotspot_paths=data.hotspot_paths,
-            performance_findings=data.perf_findings_count,
+            performance_causes=data.perf_causes,
             coverage=data.perf_coverage,
             unanalysed=len(pop.unanalysed_paths),
             deductions=data.deductions,

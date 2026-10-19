@@ -196,3 +196,23 @@ def test_the_headline_names_production_code_while_tests_are_in_it() -> None:
     # Narrowed to production, the two figures are one.
     narrowed = headline(**base, production_file_count=2)
     assert "Production code" not in narrowed and "Hotspot: ?/10" in narrowed
+
+
+def test_the_performance_line_leads_with_the_causes_worth_fixing_now() -> None:
+    """The stored headline every surface prints, not a raw finding count."""
+    from repowise.cli.commands.health_cmd.summary import _render_performance_section
+    from repowise.core.analysis.health.perf.coverage import PerfCoverage
+    from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
+
+    coverage = PerfCoverage(
+        analyzed_files=10, covered_files=9, covered_nloc=9000, total_nloc=10000
+    )
+    report = SimpleNamespace(kpis={"performance_average": 9.7})
+    console = Console(file=io.StringIO(), width=400, force_terminal=False)
+    with patch("repowise.cli.commands.health_cmd.summary.console", console):
+        _render_performance_section(report, coverage, PerformanceHeadline(4, 415, 926, 9.03))
+    out = console.file.getvalue()
+    assert (
+        "4 causes worth fixing now · 415 open in production code · 926 overall · "
+        "9.03/10K covered LOC · avg score 9.7/10" in out
+    )

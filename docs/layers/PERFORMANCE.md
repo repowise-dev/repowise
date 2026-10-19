@@ -128,6 +128,14 @@ read it as production.
 Performance work also appears in [Fix first](CODE_HEALTH.md#fix-first), where it
 competes with other kinds of work.
 
+Every headline counts causes the same way, in the three scopes of the Performance
+tab: `now` (the default queue, worth fixing now), `production` (every open
+production cause) and `all`, plus `per_10k_loc` (every cause per 10K lines a
+detector ran on). The generated CLAUDE.md and AGENTS.md, `get_health` `kpis`,
+`repowise health`, `repowise status`, the Overview card and the Code Health page
+lead with `now`. The map's performance lens colours a file by its causes in the
+default queue.
+
 ## Reading it
 
 | Surface | How |

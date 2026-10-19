@@ -297,13 +297,6 @@ export interface HealthFileMetric {
    */
   code_origin?: string | null;
   /**
-   * Open performance-risk findings on this file. The performance lens on the
-   * code-health map colors by this count (+ `performance_analyzed`), not by the
-   * [9,10]-compressed `performance_score`, so a file with 40 N+1s reads
-   * differently from one with 1. Absent on payloads predating the perf pass.
-   */
-  performance_findings?: number | null;
-  /**
    * Whether a performance detector actually ran on this file (its language has a
    * registered perf dialect). `false` = unsupported language, the perf pass never
    * looked — a silent 10.0 — so the map greys the file as "not analyzed" instead
@@ -794,6 +787,19 @@ export interface BiomarkerBreakdownRow {
  * Overview
  * ------------------------------------------------------------------ */
 
+/**
+ * The performance headline every surface prints, in the Performance view's
+ * three scopes: `now` (the default queue, worth fixing now) leads, and
+ * `production` and `all` open causes give it context.
+ */
+export interface PerformanceCauses {
+  now: number;
+  production: number;
+  all: number;
+  /** Every open cause per 10K lines a performance detector ran on. */
+  per_10k_loc: number | null;
+}
+
 export interface HealthOverviewSummary {
   file_count: number;
   /** `null` when no file is scored: every file is in a language health has no
@@ -839,10 +845,11 @@ export interface HealthOverviewSummary {
    */
   performance_average?: number | null;
   performance_hotspot?: number | null;
-  /** Open findings homing under the maintainability / performance pillars — the
-   *  per-pillar actionable counts. Absent on payloads predating the split. */
+  /** Open findings homing under the maintainability pillar. Absent on payloads
+   *  predating the split. */
   maintainability_findings?: number;
-  performance_findings?: number;
+  /** Open performance causes, as every surface counts them; `null` with no files. */
+  performance_causes?: PerformanceCauses | null;
   /** Lowest-scoring file by performance risk, surfaced only when score < 10
    *  (a clean repo returns `null` rather than a misleading "worst" at 10.0). */
   worst_performance_path?: string | null;

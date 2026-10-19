@@ -376,7 +376,7 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 
 | Field | Meaning |
 |-------|---------|
-| `kpis` | Hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `production_average` (production code alone; only while tests are in `average_health`), `worst_performer_path`, `worst_test_path` |
+| `kpis` | Hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `production_average` (production code alone; only while tests are in `average_health`), `worst_performer_path`, `worst_test_path`, `performance_causes` (`now` in the default queue, `production`, `all`, and `per_10k_loc` over covered lines; see [PERFORMANCE.md](../layers/PERFORMANCE.md#the-default-queue)) |
 | `unanalysed_file_count` | Files in a language health has no dialect for, stored with no score and left out of every figure; absent when there are none |
 | `kpis.band`, `kpis.analysed_share` | The headline band is `null` when fewer than half the code files were analysed, since the average then speaks for a sample; `analysed_share` (scored over all code files) appears when some were left out. `get_overview` reports `code_health` the same way |
 | `gap_analysis` | Weighted points the average must recover to reach 8.0, files below it, `files_to_reach_target`, `files_for_half_gap`, `weighted_gap_points`, `weighted_gross_gap_points` |
