@@ -69,7 +69,7 @@ Each opportunity gets one state:
 | `plan_ready` | A fix strategy whose transformation is proven safe |
 | `advisory` | A strategy with a prerequisite Repowise cannot prove, such as bounded concurrency before parallelizing awaits against a database |
 | `investigate` | No supported strategy; a person has to decide |
-| `expected` | The repetition is real and nothing should change, such as deleting N files, or the function is switched off by a constant flag (reason `gated_off`) or runs once per deploy, boot or incident (reason `cold_path`), or its loop runs a fixed number of times (reason `bounded_loop`) |
+| `expected` | The repetition is real and nothing should change, such as deleting N files, or the function is switched off by a constant flag (reason `gated_off`) or runs once per deploy, boot or incident (reason `cold_path`), or its loop runs a fixed number of times (reason `bounded_loop`) or grows only by reading tables that do not grow with the repository (reason `small_table`) |
 
 A plan lists its edits, one step per call site and loop, each naming the call it
 repeats and the kind of I/O that call does (database, network, file system or
@@ -86,6 +86,13 @@ they grow with the data or are bounded; a loop whose size the code does not show
 stays unknown and is never treated as bounded. A loop that stops at the first call
 that answers, or feeds each call's result into the next, gets no batch advice
 (reason `loop_not_batchable`).
+
+A loop that grows only by reading SQLAlchemy tables is judged by those models' declared
+columns. In a schema keyed by files, commits, graph nodes or symbols, a table with
+such a key (or a foreign key to one) grows with the repository and one without
+(registered repositories, decision records) is small, so the loop is bounded and
+names the tables (`loop_small_tables`). Elsewhere, a registry table name alone
+leaves the loop unknown.
 
 ## The default queue
 

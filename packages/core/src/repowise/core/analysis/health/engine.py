@@ -98,6 +98,8 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
+# v41 (also): a loop that grows only by reading tables that do not grow with
+# the repository is bounded (``perf.table_scale``), so its causes leave the queue.
 # v41 (also): ``docs`` / ``docs_src`` count as a docs root only at the
 # repository root or beside a docs-site generator's config, so a product's
 # ``app/docs/`` route is production and stored ``code_origin`` is re-read.
