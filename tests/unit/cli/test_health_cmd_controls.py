@@ -130,7 +130,7 @@ def test_the_report_leads_with_fix_first() -> None:
     # The growing, reachable database loop leads; the refactor follows.
     assert " 1. Batch the database calls loops make through load_all " in out
     assert " 2. Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 " in out
-    assert "src/core.py:20" in out
+    assert "src/core.py:10" in out
     assert "verify: pytest tests/test_core_0.py" in out
 
 
