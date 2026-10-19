@@ -41,11 +41,10 @@ DEFAULT_COMMIT_LIMIT = 150
 DEFAULT_BUDGET_SECONDS = 300.0
 
 #: Wall clock one update may spend. An update runs on every commit through the
-#: post-commit hook, so it gets a fifth of the full index's budget. A commit
-#: costs ~5 s on this repository under load (~2 s idle), so this covers about a
-#: dozen commits per run, a normal push in one update, and a longer gap drains
-#: over the next few updates instead of stalling one for five minutes.
-UPDATE_BUDGET_SECONDS = 60.0
+#: post-commit hook, so this covers the new commit or two and a backlog (a long
+#: gap, an analyzer bump) drains a few commits per later update instead of
+#: adding a minute to each one.
+UPDATE_BUDGET_SECONDS = 10.0
 
 
 def _env_number(name: str, default: float) -> float:
