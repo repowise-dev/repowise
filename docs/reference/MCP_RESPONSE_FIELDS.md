@@ -266,7 +266,7 @@ Every float is rounded to 4 significant digits. Direct rows' `structural_score` 
 
 | Field | Meaning |
 |-------|---------|
-| `directive` | `status` (`review_required`, `review_recommended`, `clear_in_analyzed_scope`, `unknown`), a headline, reasons, next actions |
+| `directive` | `status` (`review_required`, `review_recommended`, `clear_in_analyzed_scope`, `unknown`), a headline, reasons, next actions. Findings that gate the verdict (high or critical, not performance) lead the reasons, the inspect actions and `top_findings`, so the headline's finding comes first in each; its count reads "N of M" when other findings are lower. The headline ends with the changed code's health on both sides |
 | `health_delta` | What the change newly made worse. See below |
 | `risk_percentile` | The change's diff size and spread ranked against the repo's recent commits. Size, not a verdict: `directive.status` is the verdict. `include=["scales"]` adds the `review_priority` tercile and its `classification` (`Below-typical`, `Typical` or `Above-typical diff size`) |
 | `is_fix` | Present only when the change is a bug fix |

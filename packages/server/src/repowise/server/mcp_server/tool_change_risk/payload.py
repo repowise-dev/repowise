@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from repowise.core.analysis.change_risk.render import LIMITS, size_text
+from repowise.core.analysis.review_directive import review_order
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
@@ -126,7 +127,7 @@ def _attach_health(
     if expand:
         from repowise.server.mcp_server._change_health import finding_row
 
-        block["top_findings"] = [finding_row(f, revspec) for f in delta.findings]
+        block["top_findings"] = [finding_row(f, revspec) for f in review_order(delta.findings)]
         block["findings_emitted"] = len(delta.findings)
         block.pop("findings_reduced_reason", None)
         block.pop("all_findings_via", None)
@@ -156,7 +157,7 @@ def _drill_down(payload: dict, delta: Any, finding_id: str, revspec: str | None)
         return {
             "error": f"No change finding {finding_id!r} in {payload.get('ref', 'this change')}.",
             "hint": "Ids are scoped to one comparison; re-run without finding_id to list them.",
-            "available": [f.change_finding_id for f in delta.findings[:10]],
+            "available": [f.change_finding_id for f in review_order(delta.findings)[:10]],
         }
     return {
         "finding": _finding_detail(match, revspec),

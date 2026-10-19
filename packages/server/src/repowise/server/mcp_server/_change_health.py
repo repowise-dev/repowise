@@ -20,6 +20,7 @@ from repowise.core.analysis.review_directive import (
     ReviewAction,
     ReviewDirective,
     review_directive,
+    review_order,
 )
 from repowise.server.mcp_server._test_selection import UNAVAILABLE_REASON
 
@@ -165,7 +166,7 @@ def _scope_words(label: str) -> str:
 
 def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict[str, Any]:
     """The compact delta: what got worse, how much was compared, and how sure."""
-    emitted = delta.findings[:TOP_FINDINGS_LIMIT]
+    emitted = review_order(delta.findings)[:TOP_FINDINGS_LIMIT]
     block: dict[str, Any] = {
         "status": delta.status,
         "explanation": delta.explanation,
