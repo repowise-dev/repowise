@@ -596,9 +596,6 @@ CODE_SHAPE_CATEGORIES: frozenset[str] = frozenset(
 )
 
 #: The most severe a code-shape marker reads where work is ranked or listed.
-#: Detectors tag a long method critical, and an active repository writes dozens
-#: a week; critical there would outrank a defect. The stored severity keeps
-#: its calibrated deduction (``_SEVERITY_DEDUCTION``).
 SHAPE_SEVERITY_CAP = "high"
 
 
@@ -612,7 +609,12 @@ def is_code_shape(name: str) -> bool:
 
 def ranked_severity(name: str, severity: str | None) -> str | None:
     """*severity* as work is ranked and shown: a critical code-shape marker
-    reads :data:`SHAPE_SEVERITY_CAP`."""
+    reads :data:`SHAPE_SEVERITY_CAP`.
+
+    Detectors tag a long method critical, and an active repository writes many
+    a week; ranked as critical they would outrank a defect. The stored severity
+    keeps its calibrated deduction (``_SEVERITY_DEDUCTION``).
+    """
     if severity == "critical" and is_code_shape(name):
         return SHAPE_SEVERITY_CAP
     return severity
