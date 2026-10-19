@@ -211,7 +211,7 @@ See [MCP Server →](mcp-server) for editor-specific configuration.
 Start the API server and web dashboard.
 
 ```bash
-repowise serve [PATH] [OPTIONS]
+repowise serve [OPTIONS]
 ```
 
 ### Options
