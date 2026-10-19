@@ -1448,8 +1448,8 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
     """Whether the stored dead-code findings still stand and nothing this run reads new ones.
 
     True only when every changed file is prose, no analyzer, parser, renderer,
-    history or config change forces a re-score, and neither a page render nor a
-    knowledge-graph rebuild in this run consumes the report.
+    history or config change forces a re-score, and no page render in this run
+    consumes the report. (The knowledge graph takes the report but does not read it.)
     """
     config = run.config
     if (
@@ -1462,19 +1462,7 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
         return False
     changed = [path for fd in run.file_diffs for path in (fd.path, fd.old_path) if path]
     rendered = run.affected.regenerate if run.affected is not None else []
-    if not all(map(_is_prose, [*changed, *rendered])) or run.stale_deterministic_ids:
-        return False
-    from repowise.core.analysis.knowledge_graph import (
-        compute_kg_fingerprint,
-        should_skip_kg_rebuild,
-    )
-
-    prior = (run.state.get("knowledge_graph") or {}).get("fingerprint")
-    kg_path = Path(run.repo_path) / ".repowise" / "knowledge-graph.json"
-    try:
-        return should_skip_kg_rebuild(prior, compute_kg_fingerprint(run.graph_builder), kg_path)
-    except Exception:
-        return False
+    return all(map(_is_prose, [*changed, *rendered])) and not run.stale_deterministic_ids
 
 
 def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
