@@ -59,8 +59,7 @@ def refresh_replayed(
     complexity can, so a function that no longer clears the floor is dropped.
     Two same-named functions in one file are told apart by the stored
     ``line_start``; the nearest start covers a function that has since moved.
-    *claimed* holds the start lines already matched in this file, so two rows
-    never land on one function after its twin is deleted.
+    *claimed* holds start lines already matched, so each function is matched once.
     """
     claimed = set() if claimed is None else claimed
     named = [

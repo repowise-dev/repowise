@@ -183,9 +183,7 @@ def summary_counts(
 ) -> dict[str, Any]:
     """Counts over every shown open finding; merge per-repo parts with
     :func:`merge_summary_counts` so no caller holds every repo's rows at once.
-
-    *withdrawn* names findings the cross-repo cut un-safes (see
-    :func:`cross_repo_withdraws`), so the safe counts agree with the tiers.
+    *withdrawn* (see :func:`cross_repo_withdraws`) keeps safe counts in step with the tiers.
     """
     by_kind: dict[str, int] = {}
     for f in shown:

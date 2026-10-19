@@ -62,8 +62,7 @@ def _cross_repo_lookup() -> CrossRepoLookup | None:
 def _adjust_cross_repo(
     findings: list[dict], filters: FindingFilters, repo_alias: str | None
 ) -> list[dict]:
-    """Apply the cross-repo confidence cut before tiering; re-apply ``safe_only``,
-    since a cross-repo consumer withdraws ``safe_to_delete``."""
+    """The cross-repo cut, then ``safe_only`` again, since the cut withdraws safety."""
     adjust_cross_repo(findings, _cross_repo_lookup(), repo_alias)
     if filters.safe_only:
         return [f for f in findings if f["safe_to_delete"]]
