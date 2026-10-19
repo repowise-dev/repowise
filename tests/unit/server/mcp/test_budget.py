@@ -568,12 +568,12 @@ async def test_get_overview_stays_under_a_narrowed_host_cap(
 
     mcp_mod._repo_path = str(repo_root)
     budgeted = tool_middleware(get_overview)
-    full = await budgeted()
+    full = await budgeted(include=["tools"])
     assert "truncated" not in full  # normal cap: nothing sheds
     assert full["tool_surface"]["recipes"]
 
     monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "700")
-    trimmed = await budgeted()
+    trimmed = await budgeted(include=["tools"])
 
     assert trimmed["truncated"] is True
     assert not trimmed.get("tool_surface", {}).get("recipes")

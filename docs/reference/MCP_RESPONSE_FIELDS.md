@@ -18,7 +18,7 @@ The field dictionary for every repowise MCP tool response. [MCP_TOOLS.md](../age
 
 Every response carries `_meta`. Fields are present only when they carry a signal, so read absence as "nothing to report", never as an error.
 
-Routine responses carry a lean envelope. `get_overview`, called once per session, keeps the full one: `contract_version`, `timing_ms`, `response_budget` and `completeness` on every call, and the whole `index_scope`. Setting `REPOWISE_MCP_DEBUG_META=1` in the server's environment restores the diagnostic fields on every tool (`contract_version`, `timing_ms`, `response_budget`, `completeness`, `tokens_saved`, `replaced_tokens`) for diagnosis; it is read per call, so no restart is needed.
+Routine responses carry a lean envelope. `get_overview`, called once per session, keeps the full one: `contract_version`, `timing_ms`, `response_budget` and `completeness` on every call, and the whole `index_scope` with `include=["scope"]`. Setting `REPOWISE_MCP_DEBUG_META=1` in the server's environment restores the diagnostic fields on every tool (`contract_version`, `timing_ms`, `response_budget`, `completeness`, `tokens_saved`, `replaced_tokens`) for diagnosis; it is read per call, so no restart is needed.
 
 | Field | When present | Meaning |
 |-------|--------------|---------|
@@ -32,7 +32,7 @@ Routine responses carry a lean envelope. `get_overview`, called once per session
 | `index_behind` | When the live-versus-indexed comparison ran | `true` if HEAD moved, `false` if it matches. Absent means the comparison could not run |
 | `stale_warning` | Only on a real signal | HEAD moved and the move changed files this response serves, a file this response serves has uncommitted edits the index has not seen or was indexed from uncommitted edits since reverted, or the index is very old and git is unreachable. Two commits with identical trees set `index_behind` with no warning |
 | `working_tree_dirty` | Only when above zero | How many served targets have uncommitted edits no `repowise update --working-tree` has indexed. Source reads are live; graph and index facts for those files predate the edit. A dirty tree elsewhere never sets it |
-| `index_scope` | When the index records it and its `status` is not `complete` (whole object on `get_overview`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`) | Compact description of how the index was built: run mode, provenance, git tier, whether it is whole |
+| `index_scope` | When the index records it and its `status` is not `complete` (whole object on `get_overview(include=["scope"])`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`) | Compact description of how the index was built: run mode, provenance, git tier, whether it is whole |
 | `embedder_degraded` | When an embedder is resolved | `true` or `false` |
 | `embedder`, `embedder_warning` | Only when the embedder fell back to a mock or degraded mode, or the semantic index on disk could not be opened | Which embedder, and why |
 | `newer_release` | Once per server process | A newer repowise is published; restart the MCP server after upgrading |
@@ -328,12 +328,13 @@ The `candidates` and `history` lanes shed first under budget pressure, so an abs
 | `key_modules` | Name, path, and outline section |
 | `entry_points` | Detected entry points |
 | `architecture` | Layer names and file counts in stack order, test layer left out |
-| `code_health`, `git_health` | Repo-level health and history summaries |
-| `next_actions` | Per horizon (week, quarter): the first three stored actions (`id`, `tier`, `title`, `impact`, `done_when`, `target`) with `total` and `by_tier`. `get_health(fix_id="act_...")` opens one in full |
+| `code_health` | Headline score and band, `production_average` (non-test files, when the reading holds tests), hotspot health, worst file, open findings, `code_files` (every code file health read; `files_scored` when some carry no score) and `files_by_band` |
+| `git_health` | Hotspot count, churn trend and `riskiest_files`: five paths, bug magnets first, then fix mass, then churn |
+| `next_actions` | The first three stored actions (`id`, `tier`, `title`, a one-line `impact`, `target`) for the week, or the quarter when the week is empty, with each horizon's `total`. `include=["actions"]` serves both horizons with `done_when` and `by_tier`. `get_health(fix_id="act_...")` opens one in full |
 | `more` | Names the opt-in blocks |
 | `workspace` | Workspace mode footer |
 
-Opt-in blocks: `outline` (wiki page tree, two levels), `tour` (`guided_tour`, `reading_order`), `decisions` (`key_decisions`), `graph` (`community_summary`), `ownership` (`knowledge_map`), `components`, `changes`. They are not computed unless named.
+Opt-in blocks: `outline` (wiki page tree, two levels), `tour` (`guided_tour`, `reading_order`), `decisions` (`key_decisions`), `graph` (`community_summary`), `ownership` (`knowledge_map`), `components`, `changes`, `actions`, `tools` (`tool_surface`), `scope` (the whole `_meta.index_scope`). They are not computed unless named.
 
 **changes.** Change Records over a 90-day `window` ending at the newest merged change (`since`, `until`): `total`, `by_category` (largest first), `by_week` (`{week, changes}` per week starting Monday, zero weeks included) and `provenance` over changes: `agent_changes`, `human_attested_changes`, `unknown_changes`, `coverage`, `agent_share` and `summary`. Below 30% coverage `agent_share` is null with `suppressed_reason`, and the agent and human-attested counts are left out. A change stored without a label counts as unknown, never human. `{"total": 0}` when no Change Records are stored; `provenance` is `{"unavailable": "attribution_off"}` with attribution off. Grouped by change and category only, never by person.
 

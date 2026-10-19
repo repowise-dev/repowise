@@ -369,7 +369,7 @@ def index_scope_fingerprint(scope: Mapping[str, Any]) -> str:
 
 
 def compact_index_scope(
-    scope: Mapping[str, Any] | None, *, full_hint: str = "get_overview()"
+    scope: Mapping[str, Any] | None, *, full_hint: str = 'get_overview(include=["scope"])'
 ) -> dict[str, Any] | None:
     """The routine-response projection of a canonical scope.
 

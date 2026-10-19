@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from collections.abc import Awaitable
 from typing import Any
 
@@ -26,6 +27,8 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
     resolve_enum_argument,
 )
+from repowise.server.mcp_server._meta import MCP_CONTRACT_VERSION
+from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import (
     build_meta_with_full_scope as _build_meta_with_full_scope,
 )
@@ -63,31 +66,37 @@ from repowise.server.mcp_server.tool_overview.workspace import (
 
 #: The ``include`` values get_overview serves; anything else is named, not applied.
 _INCLUDE_BLOCKS = frozenset(
-    {"content", "outline", "tour", "decisions", "graph", "ownership", "components", "changes"}
+    {
+        "content",
+        "outline",
+        "tour",
+        "decisions",
+        "graph",
+        "ownership",
+        "components",
+        "changes",
+        "tools",
+        "actions",
+        "scope",
+    }
 )
 
 
 @mcp.tool(surface_order=80, artifact_type="overview", presentation="overview")
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
-    """Architecture map for an unfamiliar repo — first call when you don't know your way around.
+    """Orientation for an unfamiliar repo: packages, entry points, riskiest files, top actions.
 
-    Returns the overview summary, key modules, entry points, architecture
-    layers and package dependencies, code health, repo-wide git health, and
-    ``next_actions`` (top work for the week and quarter).
-    Skip it on later calls; go straight to ``get_context`` / ``get_answer``.
-
-    Compact by default: ``content_md`` carries only the essay's summary
-    section; other blocks ship on request, named in ``more``.
+    Once per session; then use ``get_context`` or ``get_answer``.
+    Compact by default: ``content_md`` is the essay's summary section and
+    ``next_actions`` the week's top three; other blocks ship on request,
+    named in ``more``.
 
     Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
     carry counts and recovery status in ``_meta``.
     Include-gated blocks are projections, not omissions.
 
-    In workspace mode:
-    - Omit ``repo`` for the default repo's overview plus a workspace footer.
-    - ``repo="all"`` returns the cross-repo topology (co-changes, package deps,
-      API contracts) — no single-repo detail.
-    - ``repo="<alias>"`` targets one specific repo.
+    In a workspace, omit ``repo`` for the default repo, ``repo='<alias>'`` for
+    another, ``repo='all'`` for cross-repo links.
 
     Args:
         repo: Repository alias, path, or ID, or ``"all"``.
@@ -100,9 +109,20 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
             ``"ownership"`` — ``knowledge_map``: top 3 owners by files owned.
             ``"components"`` — component list with file counts.
             ``"changes"`` — changes by category, week and source, with coverage.
+            ``"tools"`` — ``tool_surface``: enabled tools, opt-ins, recipes.
+            ``"actions"`` — ``next_actions`` for the quarter too, with ``done_when``.
+            ``"scope"`` — the whole ``_meta.index_scope`` (provider, coverage).
     """
+    ignored: list[dict[str, Any]] = []
+    want = {
+        k
+        for k in include or []
+        if resolve_enum_argument(k, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    }
     if repo == "all":
-        return await _workspace_overview()
+        result = await _workspace_overview(tools="tools" in want)
+        attach_ignored_arguments(result, ignored)
+        return result
 
     ctx = await _resolve_repo_context(repo)
     exclude_spec = _get_exclude_spec(ctx.path)
@@ -111,14 +131,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     collector = OmissionCollector("get_overview", repo_root=ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        ignored: list[dict[str, Any]] = []
-        want = {
-            k
-            for k in include or []
-            if resolve_enum_argument(k, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
-        }
         result = await _repo_overview(
-            session, ctx.session_factory, repository, exclude_spec, want, collector
+            session, ctx.session_factory, repository, exclude_spec, want, collector, ctx.path
         )
         if "components" in want:
             result["components"] = await component_list(
@@ -132,9 +146,15 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         if "changes" in want:
             result["changes"] = await overview_changes(session, repository)
 
-        # Made once per session, so this is where the full scope that every
-        # other response's compact projection points at is worth its bytes.
-        result["_meta"] = _build_meta_with_full_scope(repository=repository)
+        # The whole scope that every compact projection points at ships on
+        # request; by default the overview carries the same digest as the rest.
+        if "scope" in want:
+            result["_meta"] = _build_meta_with_full_scope(repository=repository)
+        else:
+            result["_meta"] = {
+                "contract_version": MCP_CONTRACT_VERSION,
+                **_build_meta(repository=repository),
+            }
         collector.attach(result)
         attach_ignored_arguments(result, ignored)
         return result
@@ -147,13 +167,14 @@ async def _repo_overview(
     exclude_spec: Any,
     want: set[str],
     collector: OmissionCollector,
+    repo_root: Any = None,
 ) -> dict[str, Any]:
     """Every single-repo block, in payload order; empty optional blocks are left out.
 
     Code health and the next actions are the slow reads and need nothing else
     here, so each runs on its own read session while the rest is read.
     """
-    slow = _slow_reads(session, session_factory, repository)
+    slow = _slow_reads(session, session_factory, repository, full_actions="actions" in want)
     try:
         overview_page = await _load_overview_page(session, repository)
         module_pages = await _load_module_pages(session, repository, collector)
@@ -186,12 +207,13 @@ async def _repo_overview(
             for p in module_pages
         ],
         "entry_points": _capped_entry_points(entry_point_ids, collector),
-        "git_health": _build_git_health(all_git),
+        "git_health": _build_git_health(all_git, repo_root),
         "more": (
             'get_overview(include=[...]) also serves: "outline" (the wiki '
             'page tree), "tour" (guided_tour + reading_order), "decisions", '
             '"graph" (code communities), "ownership" (top owners, silos), '
-            '"content" (the full essay).'
+            '"content" (the full essay), "actions" (the quarter), "tools" '
+            '(the tool surface), "scope" (the whole index scope).'
         ),
     }
     optional = {
@@ -216,27 +238,31 @@ async def _repo_overview(
     if ws_footer:
         result["workspace"] = ws_footer
 
-    result["tool_surface"] = _tool_surface_guide(is_workspace=_state._registry is not None)
+    if "tools" in want:
+        result["tool_surface"] = _tool_surface_guide(is_workspace=_state._registry is not None)
     return result
 
 
-def _slow_reads(session: Any, session_factory: Any, repository: Any) -> Awaitable[Any]:
+def _slow_reads(
+    session: Any, session_factory: Any, repository: Any, *, full_actions: bool = False
+) -> Awaitable[Any]:
     """``(code health, next actions)``: started now on their own sessions, or,
     on a store whose sessions share one connection, read later on *session*."""
+    actions = functools.partial(_build_next_actions, full=full_actions)
     if not _own_connections(session_factory):
-        return _in_turn(session, repository)
+        return _in_turn(session, repository, actions)
 
     async def apart(build: Any) -> Any:
         async with get_session(session_factory) as own:
             return await build(own, repository)
 
-    return asyncio.gather(apart(_build_code_health), apart(_build_next_actions))
+    return asyncio.gather(apart(_build_code_health), apart(actions))
 
 
-async def _in_turn(session: Any, repository: Any) -> tuple[Any, Any]:
+async def _in_turn(session: Any, repository: Any, actions: Any) -> tuple[Any, Any]:
     return (
         await _build_code_health(session, repository),
-        await _build_next_actions(session, repository),
+        await actions(session, repository),
     )
 
 
@@ -279,12 +305,14 @@ _READING_ORDER_HINT = (
 #: most of a warm overview on a large repository.
 _GIT_ROW_COLUMNS = (
     GitMetadata.file_path,
-    GitMetadata.bus_factor,
     GitMetadata.is_hotspot,
     GitMetadata.commit_count_30d,
     GitMetadata.commit_count_90d,
     GitMetadata.primary_owner_email,
     GitMetadata.primary_owner_name,
+    GitMetadata.bug_magnet,
+    GitMetadata.fix_mass,
+    GitMetadata.churn_percentile,
 )
 
 

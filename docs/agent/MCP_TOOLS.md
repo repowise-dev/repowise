@@ -307,14 +307,14 @@ get_why()
 
 ### `get_overview`
 
-The architecture map: summary, key modules, entry points, layers, code and git health, and the next actions for the week and quarter. Call it once, first, in an unfamiliar repo. Skip it afterwards; it does not change within a session.
+Orientation for an unfamiliar repo: summary, key modules, entry points, layers, code health, the riskiest files and this week's top actions. Call it once, first. Skip it afterwards; it does not change within a session.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners), `components` (declared and derived components with file counts), `changes` (Change Records by category and week, and the agent share of changes with coverage) |
+| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners), `components` (declared and derived components with file counts), `changes` (Change Records by category and week, and the agent share of changes with coverage), `actions` (the quarter's actions too, with `done_when`), `tools` (`tool_surface`: enabled tools, opt-ins and recipes), `scope` (the whole `_meta.index_scope`) |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` for the cross-repo topology |
 
-**Key return fields:** `title`, `content_md` (summary section by default), `key_modules`, `entry_points`, `architecture` (layers in stack order, plus `dependencies`: the ten heaviest package-to-package edges with `from`, `to`, `verb` and `weight`, and `edges_total` when more exist; absent in a single-package repo), `code_health`, `git_health`, `next_actions`, `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.
+**Key return fields:** `title`, `content_md` (summary section by default), `key_modules`, `entry_points`, `architecture` (layers in stack order, plus `dependencies`: the ten heaviest package-to-package edges with `from`, `to`, `verb` and `weight`, and `edges_total` when more exist; absent in a single-package repo), `code_health`, `git_health` (`riskiest_files`), `next_actions` (top three for the week, or the quarter when the week is empty), `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.
 
 ```
 get_overview()

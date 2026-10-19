@@ -2868,8 +2868,8 @@ async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, hea
     repo = SimpleNamespace(id=health_data)
     full = await _build_code_health(session, repo)
     assert full["band"] is not None
-    assert "unanalysed_file_count" not in full
-    assert "analysed_share" not in full
+    assert full["code_files"] == 2
+    assert "files_scored" not in full
 
     for i in range(3):
         session.add(
@@ -2884,9 +2884,8 @@ async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, hea
     await session.flush()
 
     partial = await _build_code_health(session, repo)
-    assert partial["file_count"] == 2
-    assert partial["unanalysed_file_count"] == 3
-    assert partial["analysed_share"] == 0.4
+    assert partial["code_files"] == 5
+    assert partial["files_scored"] == 2
     assert partial["band"] is None
 
 

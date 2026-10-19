@@ -1072,7 +1072,7 @@ Defined in `tool_health/tool.py`, which dispatches to one module per mode and bl
   2 markers (each with a `suggestion` string), a coverage block, and a
   null-dropped `signals` block (process/people/topology, see §8).
 - `get_overview()`: adds a `code_health` block: avg, repo `band`, hotspot,
-  worst performer, open finding count, and the NLOC-weighted `distribution`.
+  worst performer, open finding count, and the file count per band.
 
 Every response carries the standard `_meta` envelope via `build_meta()`.
 

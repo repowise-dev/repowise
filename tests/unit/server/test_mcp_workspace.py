@@ -912,14 +912,13 @@ async def workspace_mcp_with_enricher(workspace_mcp, enricher_data):
 
 
 @pytest.mark.asyncio
-async def test_overview_footer_includes_cross_repo(workspace_mcp_with_enricher):
+async def test_overview_footer_points_at_the_cross_repo_view(workspace_mcp_with_enricher):
     from repowise.server.mcp_server import get_overview
 
     result = await get_overview()
-    assert "workspace" in result
     ws = result["workspace"]
-    assert "cross_repo" in ws
-    assert ws["cross_repo"]["co_change_count"] == 1
+    assert "cross_repo" not in ws
+    assert "repo='all'" in ws["hint"]
 
 
 @pytest.mark.asyncio

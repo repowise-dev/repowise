@@ -258,8 +258,9 @@ async def test_happy_path_shapes_unchanged(workspace_mcp):  # noqa: F811
     overview = await get_overview(repo="all")
     assert set(overview) == {
         "workspace", "workspace_root", "total_repos", "total_files", "total_symbols",
-        "repos", "hint", "tool_surface", "_meta",
+        "repos", "hint", "_meta",
     }
+    assert "tool_surface" in await get_overview(repo="all", include=["tools"])
     assert overview["total_repos"] == 2
     assert all("stale" not in r for r in overview["repos"])
 

@@ -303,6 +303,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             ("graph", ("community_summary",)),
             ("ownership", ("knowledge_map",)),
             ("content", ("content_md",)),
+            ("tools", ("tool_surface.opt_in", "tool_surface.tools[]",
+                       "tool_surface.recipes[]", "tool_surface")),
+            ("actions", ("next_actions.quarter.actions[]",)),
         ),
     ),
     "get_health": ResponseBudgetContract(

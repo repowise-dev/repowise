@@ -18,7 +18,7 @@ from repowise.server.mcp_server.tool_overview.pages import _load_overview_page
 from repowise.server.mcp_server.tool_overview.surface import _tool_surface_guide
 
 
-async def _workspace_overview() -> dict:
+async def _workspace_overview(*, tools: bool = False) -> dict:
     """Build a concise workspace-level overview across all repos."""
     registry = _state._registry
     fed = Federation()
@@ -34,9 +34,10 @@ async def _workspace_overview() -> dict:
         "total_symbols": totals["symbol_count"],
         "repos": repos_info,
         "hint": ("Use repo='<alias>' to query a specific repo. Omit repo to use the default."),
-        "tool_surface": _tool_surface_guide(is_workspace=True),
         "_meta": _build_meta(),
     }
+    if tools:
+        result["tool_surface"] = _tool_surface_guide(is_workspace=True)
     if cross_repo_topology:
         result["cross_repo_topology"] = cross_repo_topology
 
@@ -107,22 +108,14 @@ def _build_workspace_footer() -> dict | None:
     if not other_repos:
         return None
 
-    footer: dict[str, Any] = {
+    # Names only: the cross-repo links are what repo="all" serves, so the
+    # footer points there rather than restating them.
+    return {
         "workspace_root": str(registry.workspace_root),
         "default_repo": default_alias,
         "other_repos": other_repos,
         "hint": (
-            "This repo is part of a workspace. "
-            f"Other repos: {', '.join(other_repos)}. "
-            "Use repo='<alias>' to query another repo, "
-            "or repo='all' for workspace-wide results."
+            "Use repo='<alias>' for another repo, "
+            "or repo='all' for cross-repo links and contracts."
         ),
     }
-
-    enricher = _enricher_with_data()
-    if enricher is not None:
-        footer["cross_repo"] = enricher.get_cross_repo_summary()
-        if enricher.has_contract_data:
-            footer["contract_links"] = enricher.get_contract_summary()
-
-    return footer
