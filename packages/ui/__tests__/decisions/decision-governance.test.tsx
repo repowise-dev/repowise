@@ -171,7 +171,7 @@ describe("GovernedFiles", () => {
         ]}
       />,
     );
-    expect(screen.getByText("src/api.ts").className).toContain("font-mono");
+    expect(screen.getByText("src/api.ts").closest(".font-mono")).not.toBeNull();
     expect(screen.getByText("12").className).toContain("tabular-nums");
     // The bar is proportional to the leader, not to an arbitrary ceiling.
     const bars = container.querySelectorAll('[style*="width"]');

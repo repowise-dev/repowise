@@ -1171,6 +1171,28 @@ class TestVendorShapeEdges:
     def test_key_names_and_templates_are_not_secrets(self, source: str) -> None:
         assert "hardcoded_secret" not in self._kinds(source)
 
+    @pytest.mark.parametrize(
+        "value",
+        ["COMFY_CLOUD_API_KEY", "NO_REPLY", "HEARTBEAT_OK", "AWS_V2_API_KEY", "TOKEN_123_KEY", "_PRIVATE_KEY"],
+    )
+    @pytest.mark.parametrize("path", ["config.py", "config.ts", ".env"])
+    def test_uppercase_identifiers_are_not_secrets(self, value: str, path: str) -> None:
+        assert "hardcoded_secret" not in self._kinds(f'API_KEY = "{value}"\n', path)
+
+    @pytest.mark.parametrize(
+        "value",
+        ["ABCD_1234_EFGH", "ABCD_1234567890_EFGH", "ABCD_eFGH_12", "ABCD-EFGH-1234"],
+    )
+    def test_credential_shaped_values_still_fire(self, value: str) -> None:
+        assert "hardcoded_secret" in self._kinds(f'API_KEY = "{value}"\n')
+
+    def test_uppercase_password_is_not_exempted(self) -> None:
+        assert "hardcoded_password" in self._kinds('password = "SECRET_PHRASE"\n')
+
+    def test_vendor_key_is_not_exempted_by_uppercase_identifier(self) -> None:
+        key = "AKIA" + "BCDEFGHIJKLMNOPQ"
+        assert "aws_access_key" in self._kinds(f'API_KEY = "{key}"\n')
+
     def test_vendor_shape_and_keyword_report_one_finding(self) -> None:
         source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'  # pragma: allowlist secret
         assert self._kinds(source) == ["github_token"]

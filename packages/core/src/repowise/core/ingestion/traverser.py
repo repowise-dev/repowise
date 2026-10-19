@@ -240,13 +240,6 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
         ".eggs",
         "site-packages",
         ".cache",
-        # Unity generated state / editor data
-        "Library",
-        "Temp",
-        "Logs",
-        "UserSettings",
-        "MemoryCaptures",
-        "Builds",
         ".idea",
         ".vscode",
         # Test dirs (tests/, spec/, __tests__/, e2e/) are indexed on purpose
@@ -351,6 +344,13 @@ _SKIP_GENERATED_CHECK: frozenset[str] = _LANG_REGISTRY.unparseable_data_language
 #: no ignore file can re-include a pruned directory yet. A ``package.json`` is
 #: no evidence: bundlers write one beside their output.
 _OUTPUT_DIR_NAMES: frozenset[str] = frozenset({"build", "coverage", "dist", "target"})
+
+#: Unity generated state and editor data. Pruned only directly inside a Unity
+#: project root (see :func:`is_unity_state_dir`): .NET and C++ repos keep
+#: source in ``Library/``, ``Logs/`` and ``Builds/`` folders.
+_UNITY_STATE_DIR_NAMES: frozenset[str] = frozenset(
+    {"Library", "Temp", "Logs", "UserSettings", "MemoryCaptures", "Builds"}
+)
 
 #: Languages a build or report writes (bundles, generated C, HTML reports),
 #: so their files are no evidence that an output-named directory is source.
@@ -674,7 +674,7 @@ class FileTraverser:
             return self._in_blocked_dir(rel_str, dir_ignore)
         if self._is_dir_ignored(dirname, rel_str, dir_ignore):
             return True
-        if dirname in _OUTPUT_DIR_NAMES:
+        if dirname in _OUTPUT_DIR_NAMES or dirname in _UNITY_STATE_DIR_NAMES:
             return self._in_blocked_dir(rel_str, dir_ignore)
         return False
 
@@ -1480,6 +1480,21 @@ def is_output_dir(abs_dir: Path) -> bool:
         return False
 
 
+def is_unity_state_dir(abs_dir: Path) -> bool:
+    """Whether *abs_dir* is a Unity state directory (see ``_UNITY_STATE_DIR_NAMES``).
+
+    Its parent must be a Unity project root: ``ProjectSettings/ProjectVersion.txt``,
+    or ``ProjectSettings/`` beside ``Assets/``. Checking the parent, not the
+    repo root, also covers a Unity project nested in a monorepo.
+    """
+    if abs_dir.name not in _UNITY_STATE_DIR_NAMES:
+        return False
+    settings = abs_dir.parent / "ProjectSettings"
+    return (settings / "ProjectVersion.txt").is_file() or (
+        settings.is_dir() and (abs_dir.parent / "Assets").is_dir()
+    )
+
+
 def _compile_reincluded_patterns(lines: Iterable[str]) -> tuple[re.Pattern[str], ...]:
     """Compile '!' gitignore patterns to exact directory matchers.
 
@@ -1600,7 +1615,8 @@ def _is_segment_blocked(
     """Whether directory segment *part* at *depth* within *dirs* is blocked."""
     is_blocked_name = part in _BLOCKED_DIRS
     is_output_name = part in _OUTPUT_DIR_NAMES
-    if not is_blocked_name and not is_output_name:
+    is_unity_name = part in _UNITY_STATE_DIR_NAMES
+    if not (is_blocked_name or is_output_name or is_unity_name):
         return False
 
     cur_rel = "/".join(dirs[:depth])
@@ -1617,6 +1633,8 @@ def _is_segment_blocked(
         return True
 
     abs_dir = repo_root.joinpath(*dirs[:depth])
+    if is_unity_name:
+        return is_unity_state_dir(abs_dir)
     is_leaf = not is_dir and depth == len(dirs)
     return _check_output_dir_cached(abs_dir, is_leaf, leaf_name, cache)
 

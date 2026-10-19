@@ -25,6 +25,7 @@ from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.server import __version__
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
@@ -706,6 +707,9 @@ mcp = _RepowiseMCP(
     ),
     lifespan=_lifespan,
 )
+# FastMCP takes no version argument, and without one the handshake's
+# serverInfo.version reports the installed ``mcp`` SDK's version.
+mcp._mcp_server.version = __version__
 
 
 # ---------------------------------------------------------------------------

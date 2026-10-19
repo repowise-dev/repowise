@@ -314,6 +314,10 @@ class LanguageNodeMap:
     #     decorator words saying the parameter list belongs to another
     #     declaration: an override, a native or generated binding, a
     #     data-driven test whose arguments the runner supplies.
+    #   * ``bound_param_markers`` -- annotation words on one parameter saying
+    #     a framework fills it from the request route or the data format
+    #     (``@PathVariable``), so the route, not a caller, chose it. Object
+    #     binders (``@RequestBody``) stay out: that parameter is the value object.
     #   * ``explicit_impl_kinds`` / ``trait_impl_kinds`` -- an explicit
     #     interface implementation on the member, an enclosing trait impl.
     #   * ``public_api_modifiers`` / ``public_api_type_kinds`` -- a member
@@ -326,6 +330,7 @@ class LanguageNodeMap:
     ctor_kinds: frozenset[str] = frozenset()
     ctor_names: frozenset[str] = frozenset()
     fixed_signature_markers: frozenset[str] = frozenset()
+    bound_param_markers: frozenset[str] = frozenset()
     explicit_impl_kinds: frozenset[str] = frozenset()
     trait_impl_kinds: frozenset[str] = frozenset()
     public_api_modifiers: frozenset[str] = frozenset()
@@ -516,9 +521,19 @@ _GO = LanguageNodeMap(
     continue_kinds=frozenset({"continue_statement"}),
 )
 
+# Spring MVC, JAX-RS, MaxMind and Jackson creator parameter bindings.
+_JVM_BOUND_PARAM_MARKERS = frozenset(
+    {
+        "PathVariable", "RequestParam", "RequestHeader", "CookieValue", "MatrixVariable", "RequestPart",
+        "PathParam", "QueryParam", "HeaderParam", "CookieParam", "FormParam", "MatrixParam",
+        "MaxMindDbParameter", "JsonProperty",
+    }
+)
+
 _JAVA = LanguageNodeMap(
     ctor_kinds=frozenset({"constructor_declaration"}),
     fixed_signature_markers=frozenset({"Override"}),
+    bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset({"boolean", "byte", "short", "int", "long", "float", "double", "char", "String", "Boolean", "Byte", "Short", "Integer", "Long", "Float", "Double", "Character"}),
     function_kinds=frozenset({"method_declaration", "constructor_declaration"}),
     lambda_kinds=frozenset({"lambda_expression"}),
@@ -669,6 +684,7 @@ _RUST = LanguageNodeMap(
 _KOTLIN = LanguageNodeMap(
     ctor_kinds=frozenset({"secondary_constructor"}),
     fixed_signature_markers=frozenset({"override"}),
+    bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset(
         {"Int", "Long", "Short", "Byte", "Boolean", "Char", "Float", "Double", "String", "UInt", "ULong"}
     ),
@@ -1361,6 +1377,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     # ingestion/sfc_source.py), so the TS node map applies verbatim.
     "svelte": _TS,
     "vue": _TS,
+    "astro": _TS,
     # Razor reaches the walker as a C# buffer (its ``@code`` / ``@{ }``
     # regions projected by the same sfc_source seam), so the C# node map
     # applies verbatim.

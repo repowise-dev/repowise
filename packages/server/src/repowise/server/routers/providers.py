@@ -6,14 +6,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
+from repowise.core.providers.llm.resolve import validate_base_url
 from repowise.server.deps import resolve_session_factory, verify_api_key
 from repowise.server.provider_config import (
+    PROVIDER_CATALOG,
     _redact_key,
     list_provider_status,
     set_active_provider,
     set_api_key,
 )
+from repowise.server.provider_models import list_provider_models
 from repowise.server.schemas import (
+    ProviderModelsResponse,
     ProviderStatusResponse,
     ProviderValidationResponse,
     SetActiveProviderRequest,
@@ -159,3 +163,30 @@ async def validate_provider(
         }
 
     return {"ok": True, "provider": provider_name, "model": model_name, "error": None}
+
+
+@router.get("/{provider_id}/models", response_model=ProviderModelsResponse)
+async def get_provider_models(
+    provider_id: str,
+    request: Request,
+    repo_id: str | None = None,
+    base_url: str | None = None,
+    refresh: bool = False,
+):
+    """Models the provider offers, listed live where it can.
+
+    Uses the key and endpoint resolved for ``repo_id``. ``base_url`` tests an
+    endpoint before it is saved (the "Test connection" button); the stored key
+    is never sent to a URL it was not saved for. On any failure the built-in
+    list comes back with ``source: "catalog"`` and ``error`` saying why.
+    """
+    if provider_id not in {p["id"] for p in PROVIDER_CATALOG}:
+        raise HTTPException(404, f"Unknown provider: {provider_id}")
+    try:
+        probe_url = validate_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    repo_path = await _repo_path_for(request, repo_id)
+    return await list_provider_models(
+        provider_id, repo_path, base_url=probe_url, refresh=refresh
+    )

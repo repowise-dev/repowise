@@ -6,8 +6,8 @@ the normal input price on cache hits.
 
 Recommended models (as of 2026):
     - claude-haiku-5-5   — fastest and cheapest (default; ample for doc pages)
-    - claude-sonnet-4-6  — best quality/cost ratio
-    - claude-opus-4-6    — highest quality, most expensive
+    - claude-sonnet-5-5  — best quality/cost ratio
+    - claude-opus-5-5    — highest quality, most expensive
 """
 
 from __future__ import annotations

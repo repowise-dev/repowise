@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTranslator } from "next-intl";
 import type { EvidenceItem } from "@repowise-dev/types/changes";
-import { type ChangesTranslator, evidenceValueText, evidenceWord } from "./changes";
+import { type ChangesTranslator, commitsViewHref, evidenceValueText, evidenceWord, parseCommitsView } from "./changes";
 import en from "../../messages/en.json";
 import zhCN from "../../messages/zh-CN.json";
 
@@ -72,4 +72,17 @@ it("says how many changed files a test reaches and how many are not known", () =
     item("reaching_tests", { files: 23, reached: 22, absent: 0, unknown: 1 }),
   );
   expect(text).toBe("22 of 23 changed files reached by a test; 1 not known");
+});
+
+describe("Commits page views", () => {
+  it("reads only the known views and keeps the commit view param-free", () => {
+    expect(parseCommitsView("changes")).toBe("changes");
+    expect(parseCommitsView("events")).toBe("events");
+    expect(parseCommitsView("review")).toBe("review");
+    expect(parseCommitsView(undefined)).toBe("commits");
+    expect(parseCommitsView("anything")).toBe("commits");
+    expect(commitsViewHref("r1", "commits")).toBe("/repos/r1/commits");
+    expect(commitsViewHref("r1", "events")).toBe("/repos/r1/commits?view=events");
+    expect(commitsViewHref("r1", "review")).toBe("/repos/r1/commits?view=review");
+  });
 });

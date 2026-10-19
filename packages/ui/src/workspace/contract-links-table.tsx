@@ -2,7 +2,8 @@
 
 import { memo, useMemo } from "react";
 import { ContractTypeBadge } from "./contract-type-badge";
-import { ContractIdentity, FilePathText, distinctService } from "./contract-identity";
+import { ContractIdentity, distinctService } from "./contract-identity";
+import { FilePath } from "../shared/file-path";
 import { LINK_CONFIDENCE_NOTE } from "./contract-facts";
 import { EmptyState } from "../shared/empty-state";
 import { InfoTip } from "../shared/info-tip";
@@ -36,7 +37,7 @@ function Side({
           </span>
         ) : null}
       </span>
-      <FilePathText path={file} />
+      <FilePath path={file} fold className="max-w-[28rem]" />
     </div>
   );
 }

@@ -2,8 +2,9 @@
 
 A read-only aggregate for the repo Stats page. The derivations live in
 :mod:`repowise.core.stats_highlights` so the hosted backend can build the same
-payload from its artifacts; this module only reads rows. Every read is a narrow
-column select or a capped ordered query, and nothing recomputes analysis.
+payload from its artifacts; this module reads rows plus one threaded size walk
+of ``.repowise/``. Every read is a narrow column select or a capped ordered
+query, and nothing recomputes analysis.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.services.index_storage import index_storage_bytes
 
 router = APIRouter(
     prefix="/api/repos",
@@ -241,6 +243,8 @@ async def stats_highlights(
         "chronotypes": activity["chronotypes"],
         "arrivals": activity["arrivals"],
     }
+    # Absent, not zero, where no local index exists to measure.
+    index_size = await index_storage_bytes(repo.local_path)
     return {
         "repo": {"id": repo.id, "name": repo.name},
         "scale": sh.build_scale(file_nodes, metrics),
@@ -249,4 +253,5 @@ async def stats_highlights(
         "rhythm": rhythm,
         "people": people,
         "records": records,
+        **({"index_storage_bytes": index_size} if index_size is not None else {}),
     }

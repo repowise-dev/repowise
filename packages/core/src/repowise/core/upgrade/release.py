@@ -17,10 +17,14 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .changelog import ChangelogEntry, parse_changelog
 
 PYPI_URL = "https://pypi.org/pypi/repowise/json"
+
+#: The changelog on main, read only to name what a newer release brings.
+CHANGELOG_URL = "https://raw.githubusercontent.com/repowise-dev/repowise/main/docs/CHANGELOG.md"
 
 #: Default freshness window for the cached PyPI check (hours). Within it the last
 #: fetched ``latest_version`` is reused so routine calls never hit the network.
@@ -30,8 +34,16 @@ DEFAULT_TTL_HOURS = 24.0
 #: ``repowise whats-new`` and the web what's-new view work offline.
 BUNDLED_CHANGELOG_PATH = Path(__file__).parent / "_data" / "CHANGELOG.md"
 
+#: Per-release figures ("By the numbers"), keyed by version, written by
+#: ``scripts/release_stats.py`` and bundled beside the changelog.
+RELEASE_STATS_PATH = Path(__file__).parent / "_data" / "release_stats.json"
+
 #: Shared cache file (also written by the CLI advisory) under the user-global dir.
 _CACHE_PATH = Path.home() / ".repowise" / "update-check.json"
+
+#: Highlight titles of the newer release. A file of its own because the CLI
+#: rewrites ``update-check.json`` whole.
+_HIGHLIGHTS_CACHE_PATH = Path.home() / ".repowise" / "release-highlights.json"
 
 
 # --- version comparison ---------------------------------------------------
@@ -159,25 +171,109 @@ def _write_cached_latest(latest: str | None, error: str | None) -> None:
         )
 
 
-# --- bundled changelog ----------------------------------------------------
+# --- newer release highlights ---------------------------------------------
+
+
+def fetch_release_highlights(version: str, timeout: float = 2.0) -> list[str] | None:
+    """Highlight titles *version* lists in the changelog on main. Never raises.
+
+    ``None`` on any network or parse failure, so the caller keeps its plain
+    wording. Nothing is sent but the GET.
+    """
+    import httpx
+
+    try:
+        resp = httpx.get(CHANGELOG_URL, timeout=timeout)
+        resp.raise_for_status()
+    except httpx.HTTPError:  # offline, timeout, non-2xx
+        return None
+    for entry in parse_changelog(resp.text):
+        if entry.version == version:
+            return [h.title for h in entry.highlights]
+    return []
+
+
+_EMPTY_TTL_HOURS = 0.25
+
+
+def latest_highlights_cached(
+    version: str,
+    *,
+    ttl_hours: float = DEFAULT_TTL_HOURS,
+    timeout: float = 2.0,
+) -> list[str]:
+    """TTL-cached :func:`fetch_release_highlights`, ``[]`` when unknown.
+
+    An empty or failed lookup is kept for :data:`_EMPTY_TTL_HOURS` only, so an
+    offline machine does not retry on every request but a flaky first check
+    does not hide the titles for a whole day.
+    """
+    try:
+        cached = json.loads(_HIGHLIGHTS_CACHE_PATH.read_text(encoding="utf-8"))
+        age = time.time() - float(cached["checked_at"])
+        titles = list(cached.get("titles") or [])
+        ttl = ttl_hours if titles else min(ttl_hours, _EMPTY_TTL_HOURS)
+        if cached.get("version") == version and 0 <= age < ttl * 3600:
+            return titles
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass  # no cache yet, or a malformed one: fetch
+    titles = fetch_release_highlights(version, timeout=timeout)
+    with contextlib.suppress(OSError):  # a read-only home only costs a refetch
+        _HIGHLIGHTS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _HIGHLIGHTS_CACHE_PATH.write_text(
+            json.dumps({"checked_at": time.time(), "version": version, "titles": titles or []}),
+            encoding="utf-8",
+        )
+    return titles or []
+
+
+# --- bundled changelog and release stats ----------------------------------
+
+# Parsed files keyed by path, reused while the file's mtime is unchanged, so a
+# request does not re-read and re-parse a 3,000-line changelog.
+_FILE_CACHE: dict[Path, tuple[float, Any]] = {}
+
+
+def _load_cached(path: Path, parse):
+    mtime = path.stat().st_mtime
+    hit = _FILE_CACHE.get(path)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    value = parse(path.read_text(encoding="utf-8"))
+    _FILE_CACHE[path] = (mtime, value)
+    return value
 
 
 def load_bundled_changelog() -> list[ChangelogEntry]:
     """Parse repowise's bundled changelog, or ``[]`` if it cannot be read."""
     try:
-        return parse_changelog(BUNDLED_CHANGELOG_PATH.read_text(encoding="utf-8"))
-    except Exception:
+        return list(_load_cached(BUNDLED_CHANGELOG_PATH, parse_changelog))
+    except (OSError, UnicodeDecodeError):  # missing from an unusual install
         return []
+
+
+def load_release_stats() -> dict[str, dict[str, Any]]:
+    """Bundled "By the numbers" figures keyed by version, or ``{}``."""
+    try:
+        data = _load_cached(RELEASE_STATS_PATH, json.loads)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):  # missing, or not JSON
+        return {}
 
 
 __all__ = [
     "BUNDLED_CHANGELOG_PATH",
+    "CHANGELOG_URL",
     "DEFAULT_TTL_HOURS",
     "PYPI_URL",
+    "RELEASE_STATS_PATH",
     "ReleaseCheck",
     "check_latest_version_cached",
     "fetch_latest_version",
+    "fetch_release_highlights",
     "is_newer_version",
+    "latest_highlights_cached",
     "load_bundled_changelog",
+    "load_release_stats",
     "parse_release",
 ]

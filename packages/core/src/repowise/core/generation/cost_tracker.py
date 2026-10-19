@@ -23,15 +23,18 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _PRICING: dict[str, dict[str, float]] = {
-    # Anthropic — Opus tier $5/$25, Sonnet $3/$15, Haiku $1/$5 per 1M. The 5 and
-    # 4-x entries are the models the session detector surfaces from current
-    # Claude Code transcripts. Opus used to be listed at $15/$75 here, which is
-    # the Opus 3 rate and overstated every Opus session by 3x.
+    # Anthropic — Opus tier $5/$25, Sonnet $3/$15, Haiku $1/$5 per 1M; the 5.x
+    # Sonnets bill $2/$10 and Opus 5.5 $4/$20. The 5 and 4-x entries are the
+    # models the session detector surfaces from current Claude Code transcripts.
+    # Opus used to be listed at $15/$75 here, which is the Opus 3 rate and
+    # overstated every Opus session by 3x.
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0},
     "claude-opus-5": {"input": 5.0, "output": 25.0},
     "claude-opus-4-8": {"input": 5.0, "output": 25.0},
     "claude-opus-4-7": {"input": 5.0, "output": 25.0},
     "claude-opus-4-6": {"input": 5.0, "output": 25.0},
-    "claude-sonnet-5": {"input": 3.0, "output": 15.0},
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0},
+    "claude-sonnet-5": {"input": 2.0, "output": 10.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
     # Prompts over 100K tokens bill at $0.50/$2.50; doc-page prompts stay under.
@@ -53,6 +56,12 @@ _PRICING: dict[str, dict[str, float]] = {
     # gpt-5 branch prices it at the flagship $2.50/$15 tier, 12.5x over on
     # output, with no unknown-model warning to notice it by.
     "gpt-5.6-luna": {"input": 0.20, "output": 1.20},
+    # GPT-6 has no family fallback below, so an unlisted variant takes the
+    # flat fallback and warns.
+    "gpt-6-luna": {"input": 0.10, "output": 0.50},
+    "gpt-6-sol": {"input": 2.0, "output": 10.0},
+    "gpt-6.1-sol": {"input": 2.0, "output": 10.0},
+    "gpt-6-astra": {"input": 10.0, "output": 50.0},
     "gpt-4o": {"input": 2.5, "output": 10.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6},
     # Google Gemini
@@ -65,16 +74,21 @@ _PRICING: dict[str, dict[str, float]] = {
     # Gemini preview / experimental models
     "gemini-3.1-flash-lite-preview": {"input": 0.075, "output": 0.30},
     "gemini-3-flash-preview": {"input": 0.075, "output": 0.30},
-    "gemini-3.5-flash-lite": {"input": 0.25, "output": 1.50},
+    "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
+    # Standard rates; introductory prices run until year end.
+    "gemini-3.8-flash": {"input": 1.50, "output": 7.50},
+    "gemini-4-argon": {"input": 4.0, "output": 20.0},
     # DeepSeek — https://api-docs.deepseek.com/quick_start/pricing
-    "deepseek-v4-flash": {"input": 0.27, "output": 1.10},
+    # Peak-hour rates; the legacy flash name bills as V4.1 Flash.
+    "deepseek-flash": {"input": 0.30, "output": 1.20},
+    "deepseek-v4-flash": {"input": 0.30, "output": 1.20},
     "deepseek-v4-pro": {"input": 0.55, "output": 2.19},
     "deepseek-chat": {"input": 0.27, "output": 1.10},
     "deepseek-reasoner": {"input": 0.55, "output": 2.19},
     # Kimi / Moonshot — https://platform.moonshot.cn/docs/pricing/chat
     "kimi-for-coding": {"input": 0.60, "output": 2.40},
     "kimi-k2.5": {"input": 0.60, "output": 2.40},
-    "kimi-k2.6": {"input": 0.60, "output": 2.40},
+    "kimi-k2.6": {"input": 0.95, "output": 4.00},
 }
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
@@ -128,7 +142,9 @@ def is_local_model(model: str) -> bool:
 #: the Sonnet fallback rate, which would undercount the agent savings it earned
 #: by ~5x. Ordered longest/most-specific prefix first.
 _CLAUDE_FAMILY_PRICING: tuple[tuple[str, dict[str, float]], ...] = (
+    ("claude-opus-5-5", {"input": 4.0, "output": 20.0}),
     ("claude-opus", {"input": 5.0, "output": 25.0}),
+    ("claude-sonnet-5", {"input": 2.0, "output": 10.0}),
     ("claude-sonnet", {"input": 3.0, "output": 15.0}),
     ("claude-haiku", {"input": 1.0, "output": 5.0}),
 )

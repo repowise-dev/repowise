@@ -79,12 +79,37 @@ describe("ByChangeView", () => {
       evidence: true,
       needs_attention: undefined,
     });
+    // Only the exception is marked: a clean or unbuilt checklist renders nothing,
+    // and unknowns are left to the change page.
     expect(screen.getAllByText("2 need attention").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("1 unknown").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Nothing flagged").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Not built").length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("link", { name: "#1" })[0]!.getAttribute("href")).toBe("/repos/r1/changes/pr-1");
+    expect(screen.queryByText(/unknown/i)).toBeNull();
+    expect(screen.queryByText("Nothing flagged")).toBeNull();
+    expect(screen.queryByText("Not built")).toBeNull();
+    // The title is the link; the id is a quiet prefix, not a link.
+    expect(screen.getAllByRole("link", { name: "change pr-1" })[0]!.getAttribute("href")).toBe(
+      "/repos/r1/changes/pr-1",
+    );
+    expect(screen.queryByRole("link", { name: "#1" })).toBeNull();
     expect(screen.queryByText(/Only changes with a built checklist/)).toBeNull();
+    // No row carries a health rollup yet, so the column is not drawn.
+    expect(screen.queryByText("Code health")).toBeNull();
+  });
+
+  it("leads each row with its health rollup once the server sends one", async () => {
+    listChanges.mockResolvedValue(
+      page([
+        row("pr-1", { health: { kind: "improved", status: "available", introduced: 0, worsened: 0, resolved: 3 } } as never),
+        row("pr-2", { health: { kind: "worsened", status: "available", introduced: 1, worsened: 1, resolved: 0 } } as never),
+        row("pr-3", { health: null } as never),
+      ]),
+    );
+    await show();
+    expect(screen.getAllByText("Code health").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Better").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("+3").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Worse").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("−2").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Not yet analysed").length).toBeGreaterThan(0);
   });
 
   it("filters to changes needing attention and says what the filter covers", async () => {
@@ -143,7 +168,8 @@ describe("ByChangeView", () => {
     listChanges.mockResolvedValue({ ...page([]), checklists_built: { built: 1, changes: 505 } });
     await show({ attention: "1" });
     expect(screen.getByText(/Checklists built for 1 of 505 changes\./)).toBeTruthy();
-    expect(screen.getByText(/repowise changes show REF/)).toBeTruthy();
+    // How one gets built sits behind the scope line's info tip.
+    expect(screen.getByRole("button", { name: "More info" })).toBeTruthy();
   });
 
   it("names every category chip in both locales", () => {

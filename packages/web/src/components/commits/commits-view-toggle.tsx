@@ -16,6 +16,8 @@ export function CommitsViewToggle({ repoId, view }: { repoId: string; view: Comm
       options={[
         { value: "changes", label: t("viewByChange") },
         { value: "commits", label: t("viewByCommit") },
+        { value: "events", label: t("viewEvents") },
+        { value: "review", label: t("viewReview") },
       ]}
       onChange={(next) => router.push(commitsViewHref(repoId, next))}
     />

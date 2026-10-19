@@ -40,10 +40,13 @@ _HELD_MODELS: dict[str, tuple[Any, ...]] = {
 }
 
 
-def _file_holds(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[str, Any]]:
+def _file_holds(
+    layer: GateLayer, path_col: Any, kind_col: Any, *, hold_history: bool = True
+) -> list[tuple[str, Any]]:
     """``(FILE_HOLDS key, row matches it)`` for health findings and plans, read
     from the file's stored metric row; ahead of the language cells, as
-    ``file_hold`` is."""
+    ``file_hold`` is. ``hold_history=False`` keeps history markers on
+    production files, for a view that is about history."""
     model = getattr(path_col, "class_", None)
     if model not in _HELD_MODELS.get(layer, ()):
         return []
@@ -63,23 +66,27 @@ def _file_holds(layer: GateLayer, path_col: Any, kind_col: Any) -> list[tuple[st
         return [("test", on_file(HealthFileMetric.is_test.is_(True)))]
     cells = [(origin, on_file(HealthFileMetric.code_origin == origin)) for origin in HELD_ORIGINS]
     if kind_col is not None:
-        cells.append(
-            (
-                "test_history",
-                and_(
-                    kind_col.in_(sorted(history_kinds())),
-                    on_file(HealthFileMetric.is_test.is_(True)),
-                ),
-            )
-        )
+        history = kind_col.in_(sorted(history_kinds()))
+        cells.append(("test_history", and_(history, on_file(HealthFileMetric.is_test.is_(True)))))
+        if hold_history:
+            # ``file_hold``'s ``is_test is not True``: an unknown flag is not a test.
+            not_test = HealthFileMetric.is_test.is_not(True)
+            cells.append(("history", and_(history, on_file(not_test))))
     return cells
 
 
 def _cells(
-    layer: GateLayer, path_col: Any, kind_col: Any, *, file_holds: bool = True
+    layer: GateLayer,
+    path_col: Any,
+    kind_col: Any,
+    *,
+    file_holds: bool = True,
+    hold_history: bool = True,
 ) -> list[tuple[str, Any]]:
     """``(key, row matches it)`` for each file hold, then each gate on *layer*."""
-    cells = _file_holds(layer, path_col, kind_col) if file_holds else []
+    cells = (
+        _file_holds(layer, path_col, kind_col, hold_history=hold_history) if file_holds else []
+    )
     for gate in gates_on(layer):
         match = or_(*(path_col.ilike(f"%{ext}") for ext in gated_extensions(gate.language)))
         if gate.kinds is not None:
@@ -95,11 +102,17 @@ def ungated(
     *,
     include_unverified: bool = False,
     file_holds: bool = True,
+    hold_history: bool = True,
 ) -> Any:
     """Rows of *layer* no language gate or file hold keeps back (everything when
-    opted in). ``file_holds=False`` applies the language gates alone."""
+    opted in). ``file_holds=False`` applies the language gates alone;
+    ``hold_history=False`` keeps history markers on production files."""
     cells = (
-        [] if include_unverified else _cells(layer, path_col, kind_col, file_holds=file_holds)
+        []
+        if include_unverified
+        else _cells(
+            layer, path_col, kind_col, file_holds=file_holds, hold_history=hold_history
+        )
     )
     return not_(or_(*(match for _, match in cells))) if cells else true()
 
@@ -112,6 +125,7 @@ def shown(
     requested: Iterable[str] = (),
     include_unverified: bool = False,
     file_holds: bool = True,
+    hold_history: bool = True,
 ) -> Any:
     """Rows whose type the registry shows and whose language no gate holds back.
 
@@ -129,6 +143,7 @@ def shown(
             kind_col,
             include_unverified=include_unverified,
             file_holds=file_holds,
+            hold_history=hold_history,
         ),
     )
 
@@ -140,6 +155,7 @@ async def gated_counts(
     *where: Any,
     kind_col: Any = None,
     include_unverified: bool = False,
+    hold_history: bool = True,
 ) -> dict[str, dict]:
     """What the gates on *layer* hold back among *model* rows matching *where*.
 
@@ -147,7 +163,11 @@ async def gated_counts(
     surface can say how many rows it left out and why instead of reading empty.
     Empty when ``include_unverified``: nothing was held back.
     """
-    cells = [] if include_unverified else _cells(layer, model.file_path, kind_col)
+    cells = (
+        []
+        if include_unverified
+        else _cells(layer, model.file_path, kind_col, hold_history=hold_history)
+    )
     if not cells:
         return {}
     language = case(*((match, lang) for lang, match in cells))

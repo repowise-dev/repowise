@@ -417,3 +417,24 @@ describe("RefactoringDrawer risks", () => {
     expect(screen.queryByText("Before you start")).toBeNull();
   });
 });
+
+describe("OpportunityDrawer preview", () => {
+  const NOTE = "preview, measured 22% precision on 55 judged plans from 2 Java repos, 2026-10-15";
+
+  it("marks a preview opportunity and its preview plan", () => {
+    renderDrawer(
+      detail({
+        preview: NOTE,
+        steps: [STEP],
+        steps_emitted: 1,
+        plans: [{ ...PLAN, preview: NOTE }],
+      }),
+    );
+    expect(screen.getAllByRole("button", { name: `Preview: ${NOTE}` })).toHaveLength(2);
+  });
+
+  it("carries no mark for a validated cell", () => {
+    renderDrawer(detail({ steps: [STEP], steps_emitted: 1, plans: [PLAN] }));
+    expect(document.querySelector("[data-preview]")).toBeNull();
+  });
+});

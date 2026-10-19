@@ -30,17 +30,17 @@ def _parsed_file(path: str) -> SimpleNamespace:
 
 
 class _CaptureEvaluator(HealthAnalyzer):
-    """Engine whose ``_evaluate_file`` records the p80 override instead of
+    """Engine that records the p80 each file is evaluated with instead of
     doing real biomarker work."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.captured_p80s: list[int | None] = []
 
-    def _evaluate_file(self, *args, **kwargs):
-        self.captured_p80s.append(kwargs.get("repo_function_mod_p80"))
-        pf = args[0]
-        return SimpleNamespace(file_path=pf.file_info.path, nloc=0, score=10.0), [], []
+    def _evaluate_all(self, evaluator, walked, on_step):
+        self.captured_p80s.extend(evaluator.function_mod_p80 for _ in walked)
+        metrics = [SimpleNamespace(file_path=pf.file_info.path, nloc=0, score=10.0) for pf, _ in walked]
+        return metrics, [], []
 
 
 def test_incremental_analyze_uses_override_not_walked_subset():

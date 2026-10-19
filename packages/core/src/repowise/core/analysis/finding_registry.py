@@ -22,13 +22,17 @@ layer an audit measured below the bar on a language is kept off every default
 surface for files of that language, while other languages keep it. The opt-in
 is the same as for provisional types (:data:`UNVERIFIED_LABEL`). A gated row is
 still computed, stored and addressable by id, so the cell stays measurable and
-ungating it is deleting its row here after a re-audit clears it.
+ungating it is deleting its row here after a re-audit clears it. A row in the
+``preview`` state is served by default and counted as served, labelled with its
+measurement (:func:`preview_note`) instead of held back. A language with no row
+is served unlabelled.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -96,85 +100,104 @@ REGISTRY: dict[str, FindingTypeStatus] = {
 #: opportunities; ``dead_code`` is every dead-code finding, safe-to-delete or not.
 GateLayer = Literal["health", "refactoring", "performance", "dead_code"]
 
+#: ``gated`` holds the layer back on the language (opt-in to see it);
+#: ``preview`` serves it by default, labelled with its measurement.
+GateState = Literal["gated", "preview"]
+
 
 @dataclass(frozen=True)
 class LanguageGate:
     layer: GateLayer
     #: An ``EXTENSION_TO_LANGUAGE`` tag; a file's extension decides its language.
     language: str
-    #: Measured precision on the sample that failed the bar, ``None`` when the
-    #: evidence was a share of wrong rows rather than a judged sample. Kept for
-    #: the record: served text never quotes it.
+    #: The share the judged sample scored on ``measure``, ``None`` when nothing
+    #: was served to judge or the evidence was not a judged sample. A gated
+    #: row's served text never quotes it; a preview row's note does.
     precision: float | None
     #: What the measurement ran on, in words (no repository names).
     corpus: str
     #: ISO date of the measurement.
     measured_on: str
-    #: Why the layer failed there, for maintainers; served text says only
-    #: that the layer is held back pending verification.
+    #: Why the layer falls short there, for maintainers; served text never
+    #: quotes it (a gated row says only that it is held back pending
+    #: verification).
     cause: str
     #: The kinds gated, or ``None`` for every kind of the layer.
     kinds: frozenset[str] | None = None
+    state: GateState = "gated"
+    #: What ``precision`` measured (``precision`` or ``not wrong``), as the preview note words it.
+    measure: str = "precision"
 
 
 _AUDIT_DATE = "2026-10-02"
-_JAVA = "hand-judged sample of a 34k-file Java search engine"
-_DOTNET = "hand-judged samples of a 59k-file C#/C/C++ runtime and an 8k-file C#/C++ suite"
+_REAUDIT_DATE = "2026-10-15"
+_PREVIEW = "preview"
 _NO_PLAN = "No judged plan was acceptable as written."
 _NOT_A_COST = "Most judged opportunities were not real costs."
+_FEW_PLANS = "Most judged plans were not acceptable as written."
+_NONE_SERVED = "No opportunity was served to judge."
+_IN_MEMORY = "In-memory lookups are read as database calls."
+_ONE_PLAN = "One judged plan was not acceptable as written."
+_NOT_WRONG = "not wrong"
+_VENDORED_HEADER = "A vendored single-header library is not classed vendored."
 
-# Every layer measured below 90% on every audited language, so whole layers
-# are gated (``kinds=None``). Precision is the lowest share of true positives
-# in a judged sample (debatable counted as a miss). Columns: layer, language,
-# precision, corpus, cause.
-_GATE_ROWS: tuple[tuple[GateLayer, str, float, str, str], ...] = (
-    ("health", "java", 0.09, _JAVA, "Field reads without `this.` and Java idioms read as defects."),
-    ("health", "csharp", 0.06, _DOTNET, "Implicit member access and stubs read as defects."),
-    ("health", "c", 0.09, _DOTNET, "Vendored and generated C read as defects."),
-    ("health", "cpp", 0.09, _DOTNET, "Implicit member access and vendored code read as defects."),
-    ("refactoring", "java", 0.0, _JAVA, _NO_PLAN),
-    ("refactoring", "csharp", 0.09, _DOTNET, _NO_PLAN),
-    ("refactoring", "c", 0.0, _DOTNET, _NO_PLAN),
-    ("refactoring", "cpp", 0.09, _DOTNET, _NO_PLAN),
-    ("performance", "java", 0.32, _JAVA, "In-memory lookups are read as database calls."),
-    ("performance", "csharp", 0.06, _DOTNET, _NOT_A_COST),
-    ("performance", "c", 0.06, _DOTNET, _NOT_A_COST),
-    ("performance", "cpp", 0.0, _DOTNET, _NOT_A_COST),
-    ("dead_code", "java", 0.20, _JAVA, "Reflection and plugin entry points are unseen."),
-    ("dead_code", "csharp", 0.07, _DOTNET, "A `using` reaches one file of its namespace."),
-    ("dead_code", "c", 0.04, _DOTNET, "P/Invoke, call-table and typedef uses are unseen."),
-    ("dead_code", "cpp", 0.04, _DOTNET, "Uses through DLL tables, COM and callbacks are unseen."),
+# Each row covers a whole layer on one language (``kinds=None``). Precision is
+# the share of true positives in a judged sample (debatable counted as a miss)
+# unless the row names another measure. Columns: layer, language, precision,
+# corpus, cause, then optionally the state, its measurement date (default
+# gated, ``_AUDIT_DATE``) and the measure. ``_PREVIEW`` serves a row labelled
+# with its measurement, ``"gated"`` in its place holds the layer back again,
+# and deleting the row ungates it.
+_GateRow = (
+    tuple[GateLayer, str, float | None, str, str]
+    | tuple[GateLayer, str, float | None, str, str, GateState, str]
+    | tuple[GateLayer, str, float | None, str, str, GateState, str, str]
+)
+_GATE_ROWS: tuple[_GateRow, ...] = (
+    # Health ships on a not-wrong bar (debatable counts as not wrong): Java,
+    # C# and C cleared 0.90 on every corpus on 2026-10-15 and are ungated.
+    ("health", "cpp", 0.825, "the lower of 2 C++ repos, 40 judged each", _VENDORED_HEADER, _PREVIEW, _REAUDIT_DATE, _NOT_WRONG),
+    ("refactoring", "java", 0.22, "55 judged plans from 2 Java repos", _FEW_PLANS, _PREVIEW, _REAUDIT_DATE),
+    ("refactoring", "csharp", 0.83, "6 judged plans from 1 C# repo", _ONE_PLAN, _PREVIEW, _REAUDIT_DATE),
+    ("refactoring", "c", 0.0, "1 judged plan from 1 C repo", _NO_PLAN, _PREVIEW, _REAUDIT_DATE),
+    ("refactoring", "cpp", 0.33, "3 judged plans from 1 C++ repo", _FEW_PLANS, _PREVIEW, _REAUDIT_DATE),
+    ("performance", "java", 0.0, "1 judged opportunity from 4 Java repos", _IN_MEMORY, _PREVIEW, _REAUDIT_DATE),
+    ("performance", "csharp", 0.0, "1 judged opportunity from 2 C# repos", _NOT_A_COST, _PREVIEW, _REAUDIT_DATE),
+    ("performance", "c", None, "no served opportunities on 2 C repos", _NONE_SERVED, _PREVIEW, _REAUDIT_DATE),
+    ("performance", "cpp", None, "no served opportunities on 2 C++ repos", _NONE_SERVED, _PREVIEW, _REAUDIT_DATE),
+    # Dead code: pooled precision, with the lowest corpus in the corpus words.
+    ("dead_code", "java", 0.37, "30 judged findings from 3 Java repos (lowest 0%)", "Android manifest and layout uses are unseen.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "csharp", 0.26, "80 judged findings from 2 C# repos (lowest 5%)", "Custom MEF export attributes and C# 14 extension blocks are unseen.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "c", 0.66, "35 judged findings from 2 C repos (lowest 0%)", "P/Invoke exports are unseen.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "cpp", 0.68, "25 judged findings from 1 C++ repo", "Build-listed translation units and macro uses are unseen.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "kotlin", 0.18, "34 judged findings from 2 Kotlin repos (lowest 0%)", "DI-bound classes are not roots.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "swift", 0.44, "71 judged findings from 2 Swift repos (lowest 10%)", "Cross-module function and extension-member uses are unseen.", _PREVIEW, _REAUDIT_DATE),
 )
 
-LANGUAGE_GATES: tuple[LanguageGate, ...] = (
-    *(
-        LanguageGate(layer, language, precision, corpus, _AUDIT_DATE, cause)
-        for layer, language, precision, corpus, cause in _GATE_ROWS
-    ),
-    # Dead code only: health on these languages is not gated.
-    LanguageGate(
-        "dead_code",
-        "kotlin",
-        2 / 47,
-        "hand-judged findings on a Kotlin/Android sample app",
-        "2026-10-13",
-        "45 of 47 judged findings were wrong.",
-    ),
-    LanguageGate(
-        "dead_code",
-        "swift",
-        None,
-        "unreachable-file findings on a SwiftUI app",
-        "2026-10-13",
-        "132 of 431 files reported unreachable at confidence 1.0 were reachable.",
-    ),
-)
+
+def _row_gate(
+    layer: GateLayer,
+    language: str,
+    precision: float | None,
+    corpus: str,
+    cause: str,
+    state: GateState = "gated",
+    measured_on: str = _AUDIT_DATE,
+    measure: str = "precision",
+) -> LanguageGate:
+    return LanguageGate(
+        layer, language, precision, corpus, measured_on, cause, state=state, measure=measure
+    )
+
+
+LANGUAGE_GATES: tuple[LanguageGate, ...] = tuple(_row_gate(*row) for row in _GATE_ROWS)
 
 
 #: Why a health finding is held back by the file it sits on rather than by its
 #: language: vendored and generated code is not the reader's to change, and a
 #: history marker on a test file describes how the test changes, not a defect
-#: in it. A refactoring plan or opportunity on a test file is held back too:
+#: in it. On any other file a history marker is context (it orders hotspots and
+#: Fix first) rather than a finding to list. A refactoring plan or opportunity on a test file is held back too:
 #: Fix first never offers one, and no other plan surface does either. Read from
 #: the file's stored ``code_origin`` and ``is_test``, so it holds on every
 #: language, with the same opt-in as a language gate.
@@ -182,54 +205,143 @@ FILE_HOLDS: dict[str, str] = {
     "vendored": "Held back on vendored files: the code is maintained upstream.",
     "generated": "Held back on generated files: change what generates them instead.",
     "test_history": "History markers held back on test files: they describe change, not a defect.",
+    "history": "History markers are context: they order hotspots and Fix first, not the defect list.",
     "test": "Plans held back on test files: tests change with the code they cover.",
 }
 
 #: The stored ``code_origin`` values a health finding is never served on.
 HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
 
+#: The stored ``code_origin`` values the area map leaves out until the reader
+#: brings them back: tests, docs examples and build files, plus everything no
+#: health finding is served on. Prose docs have no health row, so never appear.
+MAP_HELD_ORIGINS: tuple[str, ...] = ("test", "docs_example", "build", *HELD_ORIGINS)
+
+
+def stored_origin(code_origin: Any, is_test: Any) -> str:
+    """A row's origin, reading a row stamped before ``code_origin`` off ``is_test``."""
+    if isinstance(code_origin, str) and code_origin:
+        return code_origin
+    return "test" if is_test is True else "production"
+
+
+def map_held(include: Iterable[str]) -> frozenset[str]:
+    """The origins the map holds out when the reader has brought back *include*."""
+    return frozenset(MAP_HELD_ORIGINS) - frozenset(include)
+
 
 def history_kinds() -> frozenset[str]:
-    """The health markers read from git history alone (the ``test_history`` hold)."""
+    """The health markers read from git history alone (the history holds)."""
     # Deferred: the health package imports this module.
     from repowise.core.analysis.health.scoring import history_biomarkers
 
     return history_biomarkers()
 
 
-def file_hold(layer: GateLayer, kind: Any, code_origin: Any, is_test: Any) -> str | None:
+def file_hold(
+    layer: GateLayer, kind: Any, code_origin: Any, is_test: Any, *, hold_history: bool = True
+) -> str | None:
     """The :data:`FILE_HOLDS` key holding back a *layer* row of *kind* on a file
-    with that stored origin and test flag, or ``None``."""
+    with that stored origin and test flag, or ``None``. ``hold_history=False``
+    keeps history markers on production files (shown.py's flag of that name)."""
     if layer == "refactoring":
         return "test" if is_test is True else None
     if layer != "health":
         return None
     if code_origin in HELD_ORIGINS:
         return str(code_origin)
-    if is_test is True and kind in history_kinds():
-        return "test_history"
+    if kind in history_kinds():
+        if is_test is True:
+            return "test_history"
+        return "history" if hold_history else None
     return None
 
 
 def gates_on(layer: GateLayer) -> tuple[LanguageGate, ...]:
-    """The gates on *layer*, read from :data:`LANGUAGE_GATES` at call time."""
-    return tuple(gate for gate in LANGUAGE_GATES if gate.layer == layer)
+    """The gates holding *layer* back, read from :data:`LANGUAGE_GATES` at call
+    time. Preview rows are served, so they are not among them."""
+    return tuple(g for g in LANGUAGE_GATES if g.layer == layer and g.state == "gated")
+
+
+def previews_on(layer: GateLayer) -> tuple[LanguageGate, ...]:
+    """The preview rows on *layer*: served by default, labelled."""
+    return tuple(g for g in LANGUAGE_GATES if g.layer == layer and g.state == "preview")
+
+
+@lru_cache(maxsize=1 << 16)
+def _suffix(path: str) -> str:
+    # Cached: a gate pass asks once per finding, so a file's path repeats.
+    return PurePosixPath(path).suffix.lower()
 
 
 def language_of(path: str) -> str | None:
     """The language tag a stored path's extension maps to, or ``None``."""
-    return EXTENSION_TO_LANGUAGE.get(PurePosixPath(path or "").suffix.lower())
+    return EXTENSION_TO_LANGUAGE.get(_suffix(path or ""))
+
+
+def _match(
+    gates: Iterable[LanguageGate], path: str, kind: str | None
+) -> LanguageGate | None:
+    language = language_of(path)
+    if language is None:
+        return None
+    for gate in gates:
+        if gate.language == language and (gate.kinds is None or kind in gate.kinds):
+            return gate
+    return None
 
 
 def gate_for(layer: GateLayer, path: str, kind: str | None = None) -> LanguageGate | None:
     """The gate keeping a *layer* row on *path* (of *kind*) off default surfaces."""
-    language = language_of(path)
-    if language is None:
-        return None
-    for gate in gates_on(layer):
-        if gate.language == language and (gate.kinds is None or kind in gate.kinds):
-            return gate
-    return None
+    return _match(gates_on(layer), path, kind)
+
+
+def preview_for(layer: GateLayer, path: str, kind: str | None = None) -> LanguageGate | None:
+    """The preview row a served *layer* row on *path* (of *kind*) is labelled by."""
+    return _match(previews_on(layer), path, kind)
+
+
+def preview_note(gate: LanguageGate) -> str:
+    """The one-line label a preview row's findings carry."""
+    if gate.precision is None:
+        return f"preview, not measured: {gate.corpus}, {gate.measured_on}"
+    return (
+        f"preview, measured {round(gate.precision * 100)}% {gate.measure} "
+        f"on {gate.corpus}, {gate.measured_on}"
+    )
+
+
+def preview_label(layer: GateLayer, path: str, kind: str | None = None) -> str | None:
+    """:func:`preview_note` for a served *layer* row on *path*, else ``None``."""
+    gate = preview_for(layer, path, kind)
+    return preview_note(gate) if gate is not None else None
+
+
+def label_previews(layer: GateLayer, rows: Iterable[dict], *, kind: str) -> list[dict]:
+    """*rows* (dicts with ``file_path``), each on a preview language copied
+    with ``preview`` set to its note; the others unchanged."""
+    out: list[dict] = []
+    for row in rows:
+        note = preview_label(layer, row.get("file_path") or "", row.get(kind))
+        out.append({**row, "preview": note} if note else row)
+    return out
+
+
+def served_previews(
+    layer: GateLayer,
+    rows: Iterable[Any],
+    *,
+    kind: str,
+    get: Callable[[Any, str], Any] = getattr,
+) -> dict[str, str]:
+    """``{language: preview_note}`` for each preview language among served
+    *rows*, so a response labels only the cells it actually lists."""
+    out: dict[str, str] = {}
+    for row in rows:
+        gate = preview_for(layer, get(row, "file_path") or "", get(row, kind))
+        if gate is not None:
+            out.setdefault(gate.language, preview_note(gate))
+    return out
 
 
 def is_served(
@@ -239,6 +351,29 @@ def is_served(
     not in *excluded* (an :func:`excluded_types` result) and no gate holds back
     *layer* on its language."""
     return finding_type not in excluded and gate_for(layer, path, finding_type) is None
+
+
+_LAYER_LABEL: dict[str, str] = {
+    "health": "Health",
+    "refactoring": "Refactoring",
+    "performance": "Performance",
+    "dead_code": "Dead code",
+}
+
+
+def preview_lines(
+    layer: GateLayer,
+    rows: Iterable[Any],
+    *,
+    kind: str,
+    get: Callable[[Any, str], Any] = getattr,
+) -> list[str]:
+    """One ``"<Layer> on <Language>: <note>"`` line per preview language among
+    the listed *rows*, for a terminal report to print under its list."""
+    return [
+        f"{_LAYER_LABEL[layer]} on {language_label(language)}: {note}"
+        for language, note in served_previews(layer, rows, kind=kind, get=get).items()
+    ]
 
 
 def gated_extensions(language: str) -> tuple[str, ...]:
@@ -284,6 +419,7 @@ def row_hold(
     *,
     kind: str,
     get: Callable[[Any, str], Any] = getattr,
+    hold_history: bool = True,
 ) -> str | None:
     """The :data:`FILE_HOLDS` key on *row*, read off its file's metric row in
     *files* (``code_origin``, ``is_test``); a path missing from it is not held."""
@@ -291,7 +427,11 @@ def row_hold(
     if metric is None:
         return None
     return file_hold(
-        layer, get(row, kind), getattr(metric, "code_origin", None), getattr(metric, "is_test", None)
+        layer,
+        get(row, kind),
+        getattr(metric, "code_origin", None),
+        getattr(metric, "is_test", None),
+        hold_history=hold_history,
     )
 
 
@@ -324,20 +464,22 @@ def split_gated(
     get: Callable[[Any, str], Any] = getattr,
     include_unverified: bool = False,
     files: Mapping[str, Any] | None = None,
+    hold_history: bool = True,
 ) -> tuple[list[Any], dict[str, dict]]:
     """``(rows no gate holds back, gated_summary)`` for rows already in memory.
 
     *kind* names the row field holding the finding type; *get* reads a field.
     *files* maps a path to its health metric row so the :data:`FILE_HOLDS`
     apply too (:func:`row_hold`). ``include_unverified`` keeps every row and
-    reports nothing held back.
+    reports nothing held back; ``hold_history=False`` keeps history markers on
+    production files.
     """
     if include_unverified:
         return list(rows), {}
     shown: list[Any] = []
     counts: dict[str, int] = {}
     for row in rows:
-        held = row_hold(layer, row, files, kind=kind, get=get)
+        held = row_hold(layer, row, files, kind=kind, get=get, hold_history=hold_history)
         gate = None if held else gate_for(layer, get(row, "file_path") or "", get(row, kind))
         key = held or (gate.language if gate is not None else None)
         if key is None:
@@ -394,11 +536,13 @@ __all__ = [
     "FILE_HOLDS",
     "HELD_ORIGINS",
     "LANGUAGE_GATES",
+    "MAP_HELD_ORIGINS",
     "REGISTRY",
     "UNVERIFIED_LABEL",
     "FindingStatus",
     "FindingTypeStatus",
     "GateLayer",
+    "GateState",
     "LanguageGate",
     "excluded_types",
     "file_hold",
@@ -409,11 +553,20 @@ __all__ = [
     "history_kinds",
     "is_served",
     "is_shown",
+    "label_previews",
     "language_of",
+    "map_held",
+    "preview_for",
+    "preview_label",
+    "preview_lines",
+    "preview_note",
+    "previews_on",
     "row_hold",
+    "served_previews",
     "split_gated",
     "split_held",
     "status_of",
+    "stored_origin",
     "verification_label",
     "withheld_summary",
 ]

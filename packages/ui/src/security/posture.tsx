@@ -1,40 +1,9 @@
 import * as React from "react";
 import { PageLede } from "../shared/page-lede";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
-import type { SecurityFinding } from "@repowise-dev/types";
+import type { SecurityFinding, SecuritySummary } from "@repowise-dev/types";
 
-export type SecurityPathClass = "source" | "test" | "docs";
-
-// Client-side guess at where a match lives, mirroring the scanner's own
-// low-severity path tokens. Ceiling: a heuristic on the path alone. Hosted
-// serves a server-side `path_class`; switch to it once the OSS endpoint
-// carries one.
-const TEST_SEGMENTS = new Set([
-  "test",
-  "tests",
-  "__tests__",
-  "__test__",
-  "testdata",
-  "e2e",
-  "spec",
-  "specs",
-  "fixtures",
-  "__fixtures__",
-]);
-const DOCS_SEGMENTS = new Set(["docs", "doc", "documentation", "example", "examples"]);
-// Mock directories (`mock`, `mocks`, `__mocks__`) as a pattern: the bare word reads as a provider name to the UI guard.
-const MOCK_SEGMENT = /^(__)?mocks?(__)?$/;
-const TEST_FILE = /(^test_|_test\.|\.test\.|\.spec\.|_spec\.)/i;
-const DOCS_FILE = /\.(md|mdx|rst|adoc)$/i;
-
-/** Shipped source, tests, or docs, judged from the path. */
-export function securityPathClass(path: string): SecurityPathClass {
-  const parts = path.replace(/\\/g, "/").toLowerCase().split("/");
-  const name = parts[parts.length - 1] ?? "";
-  if (parts.some((p) => TEST_SEGMENTS.has(p) || MOCK_SEGMENT.test(p)) || TEST_FILE.test(name)) return "test";
-  if (parts.some((p) => DOCS_SEGMENTS.has(p)) || DOCS_FILE.test(name)) return "docs";
-  return "source";
-}
+export type { SecurityPathClass } from "@repowise-dev/types";
 
 /** The scanner's three severities; anything unrecognised counts as low. */
 export type SecurityLevel = "high" | "med" | "low";
@@ -50,27 +19,30 @@ export interface SecurityPostureCounts {
   /** Matches in tests and docs. */
   elsewhere: number;
   sourceHigh: number;
-  high: number;
-  med: number;
-  low: number;
 }
 
-export function countSecurityFindings(findings: SecurityFinding[]): SecurityPostureCounts {
-  const c: SecurityPostureCounts = {
-    total: findings.length,
-    source: 0,
-    elsewhere: 0,
-    sourceHigh: 0,
-    high: 0,
-    med: 0,
-    low: 0,
+/** The lede's counts from the server's summary; `null` on a server without them. */
+export function postureCountsFromSummary(
+  summary: SecuritySummary | null | undefined,
+): SecurityPostureCounts | null {
+  const c = summary?.class_counts;
+  if (!c || summary?.total == null) return null;
+  const source = c.source ?? 0;
+  return {
+    total: summary.total,
+    source,
+    elsewhere: (c.test ?? 0) + (c.docs ?? 0),
+    sourceHigh: summary.source_high ?? 0,
   };
+}
+
+/** The same counts over listed rows, by the class the server gave each one. */
+export function countSecurityFindings(findings: SecurityFinding[]): SecurityPostureCounts {
+  const c: SecurityPostureCounts = { total: findings.length, source: 0, elsewhere: 0, sourceHigh: 0 };
   for (const f of findings) {
-    const level = securityLevel(f.severity);
-    c[level] += 1;
-    if (securityPathClass(f.file_path) === "source") {
+    if ((f.path_class ?? "source") === "source") {
       c.source += 1;
-      if (level === "high") c.sourceHigh += 1;
+      if (securityLevel(f.severity) === "high") c.sourceHigh += 1;
     } else {
       c.elsewhere += 1;
     }
@@ -116,7 +88,10 @@ export const DEFAULT_SECURITY_POSTURE_LABELS: SecurityPostureLabels = {
 };
 
 export interface SecurityPostureProps {
-  findings: SecurityFinding[];
+  /** The server's counts (`postureCountsFromSummary`); preferred over `findings`. */
+  counts?: SecurityPostureCounts | null;
+  /** Listed rows, counted when the server sent no counts. */
+  findings?: SecurityFinding[];
   /** Relative scan time ("3 days ago"), or null when the server has none. */
   scannedAgo: string | null;
   /** True when the list was cut at the request limit, so counts are a floor. */
@@ -130,16 +105,23 @@ export interface SecurityPostureProps {
  * Never coloured: a pattern match is a lead to confirm, not a live path to
  * harm.
  */
-export function SecurityPosture({ findings, scannedAgo, capped = false, labels }: SecurityPostureProps) {
+export function SecurityPosture({
+  counts,
+  findings,
+  scannedAgo,
+  capped = false,
+  labels,
+}: SecurityPostureProps) {
   const l = { ...DEFAULT_SECURITY_POSTURE_LABELS, ...labels };
-  const c = React.useMemo(() => countSecurityFindings(findings), [findings]);
+  const listed = React.useMemo(() => countSecurityFindings(findings ?? []), [findings]);
+  const c = counts ?? listed;
 
   return (
     <PageLede
       label={l.figure}
       labelHint={l.figureHint}
       value={n(c.source)}
-      unit={l.unit(c.total, capped)}
+      unit={l.unit(c.total, !counts && capped)}
       layout="beside"
     >
       {/* One paragraph so the scan line stays under the sentence when the

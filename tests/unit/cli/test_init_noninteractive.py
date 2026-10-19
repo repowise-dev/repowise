@@ -239,7 +239,7 @@ class TestProseFlag:
 
         resolver = Mock(return_value=None)
         monkeypatch.setattr(
-            "repowise.cli.commands.init_cmd.command.resolve_provider", resolver
+            "repowise.cli.commands.init_cmd._prepare.resolve_provider", resolver
         )
         result = runner.invoke(cli, ["init", str(tmp_path), *flags, "--yes"])
         assert result.exit_code == 0, result.output
@@ -253,7 +253,7 @@ class TestProseFlag:
 
         resolver = Mock(return_value=None)
         monkeypatch.setattr(
-            "repowise.cli.commands.init_cmd.command.resolve_provider", resolver
+            "repowise.cli.commands.init_cmd._prepare.resolve_provider", resolver
         )
         flags = ["--provider", "openai"] if opt_in == "provider" else []
         if opt_in == "key":

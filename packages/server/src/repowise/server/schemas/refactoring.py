@@ -15,6 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from repowise.core.analysis.health.queue.counts import QueueCounts
 
+from .preview import PreviewLabelled
+
 
 class RefactoringHiddenCounts(BaseModel):
     """What the ``fix_first`` scope leaves out of a page's filtered set."""
@@ -76,7 +78,7 @@ class RefactoringPlanStatusResponse(BaseModel):
     status_changed_at: str | None = None
 
 
-class RefactoringOpportunityDetailResponse(BaseModel):
+class RefactoringOpportunityDetailResponse(PreviewLabelled, BaseModel):
     """One opportunity: its ordered steps, evidence, validation and plans.
 
     ``extra="allow"``: the base row is composed in core and this response
@@ -102,12 +104,14 @@ class RefactoringOpportunityDetailResponse(BaseModel):
     plans: list[dict[str, Any]] | None = None
     #: Present when a step names a symbol an earlier step moves.
     ordering_note: str | None = None
+    #: The measurement note on a language refactoring is served as a preview on.
+    preview: str | None = None
 
 
 # Plan-level shapes: the plan lists, one plan, triage bodies and code generation.
 
 
-class RefactoringPlanResponse(BaseModel):
+class RefactoringPlanResponse(PreviewLabelled, BaseModel):
     """One ranked refactoring plan, with its open ``plan`` / ``evidence`` /
     ``blast_radius`` dicts re-hydrated from the persisted ``*_json`` columns."""
 
@@ -146,6 +150,8 @@ class RefactoringPlanResponse(BaseModel):
     file_nloc: int = 0
     file_weighted_deficit: int = 0
     validation: dict[str, Any] = Field(default_factory=dict)
+    #: The measurement note on a language refactoring is served as a preview on.
+    preview: str | None = None
 
 
 class PlanRiskResponse(BaseModel):

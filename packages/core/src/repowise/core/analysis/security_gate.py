@@ -30,7 +30,6 @@ from __future__ import annotations
 import hashlib
 import re
 import string
-import subprocess
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -43,6 +42,7 @@ from repowise.core.support_paths import DOC_EXTENSIONS
 
 from .change_risk.features import GIT_TIMEOUT_SECONDS, _git, revspec_head, split_revspec
 from .changed_lines import DIFF_ARGS, parse_unified_diff
+from .git_cat_file import cat_file_batch
 from .secret_allowlist import secret_path_allowlist
 from .security_scan import (
     SECRET_KINDS,
@@ -364,31 +364,17 @@ def _read_blobs(root: str, specs: Sequence[str]) -> list[str | None]:
     """
     if not specs:
         return []
-    proc = subprocess.run(
-        ["git", "cat-file", "--batch"],
-        cwd=root,
-        input=("\n".join(specs) + "\n").encode("utf-8"),
-        capture_output=True,
-        timeout=GIT_TIMEOUT_SECONDS,
-        check=True,
-    )
-    out, pos, texts = proc.stdout, 0, []
-    for spec in specs:
-        nl = out.index(b"\n", pos)
-        header = out[pos:nl].split()
-        pos = nl + 1
-        # "<sha> <type> <size>", "<sha> submodule" for a gitlink, else
-        # "<spec> missing" (the spec may hold spaces).
-        if len(header) == 2 and header[1] == b"submodule":
-            texts.append(None)
-            continue
-        if len(header) != 3 or not header[2].isdigit():
-            raise MissingObjectError(f"git has no object for {spec!r}")
-        size = int(header[2])
-        body = out[pos : pos + size]
-        pos += size + 1
-        texts.append(_text(body) if header[1] == b"blob" else None)
-    return texts
+    try:
+        read = cat_file_batch(
+            root, specs, on_missing="raise", timeout=GIT_TIMEOUT_SECONDS, check=True
+        )
+    except ValueError as exc:
+        raise MissingObjectError(str(exc)) from exc
+    if read is None or len(read) != len(specs):
+        raise MissingObjectError(
+            f"git cat-file returned incomplete batch for {len(specs)} specs"
+        )
+    return [_text(blob) if blob is not None else None for _, blob in read]
 
 
 def _custom_spans(

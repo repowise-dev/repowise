@@ -14,14 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from repowise.core.fts_query import meaningful_terms
 
-from .git_text import read_change_texts
+from .git_text import _git, read_change_texts
 from .rank import Candidate, SuspectContext, Symptom, prepare, rank_suspects
 
 #: The window the measurement used (prereg/suspects.md): 14 days before the symptom.
@@ -39,14 +38,7 @@ def _aware(value: datetime) -> datetime:
 
 
 def _tracked_files(repo_path: Path) -> frozenset[str]:
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(repo_path), "ls-files"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return frozenset()
-    return frozenset(out.splitlines())
+    return frozenset((_git(repo_path, "ls-files") or "").splitlines())
 
 
 async def _imports(session: Any, repo_id: str) -> dict[str, set[str]]:

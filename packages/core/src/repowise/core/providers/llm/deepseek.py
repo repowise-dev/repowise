@@ -6,7 +6,7 @@ uses the openai Python SDK with a custom base_url, following the same pattern
 as OpenRouterProvider.
 
 Models:
-    - deepseek-v4-flash  — fast, economical (284B total / 13B active params) [default]
+    - deepseek-flash     — fast, economical (V4.1 Flash) [default]
     - deepseek-v4-pro    — highest quality, full reasoning
 """
 
