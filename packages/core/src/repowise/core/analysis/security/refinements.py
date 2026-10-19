@@ -63,6 +63,38 @@ def _call_text(masked: list[str], lineno: int, start: int, limit: int = 600) -> 
     return code
 
 
+# A digest cut to a few characters right where it is computed is an id, not a
+# control: ``md5(x).hexdigest()[:8]``, ``createHash("md5").update(x)
+# .digest("hex").slice(0, 8)``. Read from the masked code after the call.
+_TRUNCATED_DIGEST = re.compile(
+    r"\A(?:\s*\.\s*update\s*\([^()]*(?:\([^()]*\)[^()]*)*\))*"
+    r"\s*\.\s*(?:hex)?digest\s*\([^()]*\)\s*"
+    r"(?:\[\s*0?\s*:\s*\d+\s*\]|\.\s*(?:slice|substring|substr)\s*\(\s*0\s*,\s*\d+\s*\))"
+)
+# A digest stored under a cache key, an ETag or a slug names content; it guards
+# nothing. Never when the line also handles a credential: a password or a token
+# hashed with md5 is the finding, whatever it is called.
+_DIGEST_KEY_NAME = re.compile(r"(?i)(?<![a-z])(?:e_?tag|cache_?key|slug)s?(?![a-z])")
+_CREDENTIAL_WORD = re.compile(r"(?i)passw|pwd|secret|token|credential|api_?key|auth")
+
+
+def _weak_hash_is_an_id(line: str, masked: list[str], lineno: int, start: int) -> bool:
+    """Whether the weak hash at *start* on *line* is a declared non-security
+    use: ``usedforsecurity=False``, a digest truncated where it is computed,
+    or one assigned to a cache key, ETag or slug. A line that names a
+    credential is only ever exempt by ``usedforsecurity=False``."""
+    call = _call_text(masked, lineno, start)
+    if _NOT_FOR_SECURITY.search(call):
+        return True
+    if _CREDENTIAL_WORD.search(line):
+        return False
+    if "\n" not in call:
+        code = masked[lineno - 1] if lineno <= len(masked) else line
+        if _TRUNCATED_DIGEST.match(code[start + len(call) :]):
+            return True
+    return bool(_DIGEST_KEY_NAME.search(line[:start]))
+
+
 _TS_TYPE_VALUE = re.compile(
     r"(?:string|number|boolean|any|unknown|never|undefined|null|TrustedHTML)\b"
     r"(?:\s*\|\s*[\w$.]+)*\s*"

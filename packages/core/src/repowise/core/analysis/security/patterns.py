@@ -11,7 +11,7 @@ import re
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
-SECURITY_SCANNER_VERSION = 3
+SECURITY_SCANNER_VERSION = 4
 
 
 # ---------------------------------------------------------------------------
