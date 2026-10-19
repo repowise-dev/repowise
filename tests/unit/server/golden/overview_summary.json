@@ -55,7 +55,7 @@
     "worst_performance_score": 9.5,
     "severity_breakdown": {
       "critical": 0,
-      "high": 5,
+      "high": 4,
       "medium": 0,
       "low": 0
     },
@@ -399,7 +399,9 @@
       "prior_defect_count": 0,
       "bug_magnet": false,
       "last_fix_at": null,
-      "original_path": null
+      "original_path": null,
+      "accelerating": false,
+      "rank": null
     },
     {
       "file_path": "web/app.ts",
@@ -429,7 +431,9 @@
       "prior_defect_count": 0,
       "bug_magnet": false,
       "last_fix_at": null,
-      "original_path": null
+      "original_path": null,
+      "accelerating": false,
+      "rank": null
     }
   ],
   "recent_decisions": [
@@ -445,12 +449,30 @@
   "savings": {
     "available": false
   },
+  "explore": {
+    "decisions": {
+      "total": 1,
+      "accepted": 0,
+      "candidates": 1,
+      "needs_review": 0
+    },
+    "refactoring": null,
+    "ownership": {
+      "sole_owned_files": 0
+    },
+    "security": {
+      "total": 3,
+      "source": 3,
+      "source_high": 2,
+      "elsewhere": 0
+    },
+    "coverage": null
+  },
   "sync": {
     "last_sync_at": "2026-09-02T12:00:00",
     "last_resync_at": null,
     "last_sync_model": null,
     "active_job_id": null,
-    "page_count": 2,
-    "index_storage_bytes": 0
+    "page_count": 2
   }
 }

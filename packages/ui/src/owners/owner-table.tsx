@@ -1,6 +1,7 @@
 import * as React from "react";
-import type { OwnerListEntry } from "@repowise-dev/types/owners";
+import type { IdentityKind, OwnerListEntry } from "@repowise-dev/types/owners";
 import { formatRelativeTimeOrNull } from "../lib/format";
+import { ownershipLabels, type OwnershipLabels } from "./labels";
 import { OwnerAvatar } from "./owner-avatar";
 
 export type OwnerSortKey =
@@ -20,14 +21,21 @@ interface Column {
 
 // Sole-owned files are `bus_factor_risk_files` under a name a person would
 // use. "Bus factor" is jargon that names the metaphor rather than the fact.
-const COLUMNS: Column[] = [
-  { key: "files_owned", label: "Files owned", hint: "Files where this person wrote most of the surviving lines", numeric: true },
-  { key: "hotspots_owned", label: "Hotspots", hint: "Owned files that are also high-churn", numeric: true },
-  { key: "bus_factor_risk_files", label: "Sole owner", hint: "Owned files nobody else has touched", numeric: true },
-  { key: "dead_code_lines_owned", label: "Dead lines", hint: "Unreachable lines still attributed here", numeric: true },
-  { key: "commit_count_90d", label: "Commits 90d", numeric: true },
-  { key: null, label: "Last touched", numeric: false },
-];
+function columns(l: OwnershipLabels): Column[] {
+  return [
+    { key: "files_owned", label: l.colFilesOwned, hint: l.colFilesOwnedHint, numeric: true },
+    { key: "hotspots_owned", label: l.colHotspots, hint: l.colHotspotsHint, numeric: true },
+    { key: "bus_factor_risk_files", label: l.colSoleOwner, hint: l.colSoleOwnerHint, numeric: true },
+    { key: "dead_code_lines_owned", label: l.colDeadLines, hint: l.colDeadLinesHint, numeric: true },
+    { key: "commit_count_90d", label: l.colCommits90d, numeric: true },
+    { key: null, label: l.colLastTouched, numeric: false },
+  ];
+}
+
+/** Automation is named; people, the default, carry no label. */
+function kindLabel(kind: IdentityKind, l: OwnershipLabels): string {
+  return { human: l.kindPerson, bot: l.kindBot, agent: l.kindAgent }[kind];
+}
 
 export interface OwnerTableProps {
   owners: OwnerListEntry[];
@@ -38,6 +46,7 @@ export interface OwnerTableProps {
   hrefFor?: ((owner: OwnerListEntry) => string) | undefined;
   onSelect?: ((owner: OwnerListEntry) => void) | undefined;
   LinkComponent?: React.ElementType | undefined;
+  labels?: Partial<OwnershipLabels> | undefined;
 }
 
 /**
@@ -64,8 +73,10 @@ export function OwnerTable({
   hrefFor,
   onSelect,
   LinkComponent,
+  labels: overrides,
 }: OwnerTableProps) {
   const A = LinkComponent ?? "a";
+  const labels = ownershipLabels(overrides);
 
   return (
     <div className="-mx-[var(--page-pad)] overflow-x-auto px-[var(--page-pad)] sm:mx-0 sm:px-0">
@@ -76,9 +87,9 @@ export function OwnerTable({
               scope="col"
               className="border-b border-[var(--color-border-default)] pb-2 pr-3 text-left font-mono text-[10px] font-normal uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
             >
-              Contributor
+              {labels.colContributor}
             </th>
-            {COLUMNS.map((c) => {
+            {columns(labels).map((c) => {
               const active = c.key != null && c.key === sort;
               const head = (
                 <span title={c.hint} className={c.hint ? "cursor-help" : undefined}>
@@ -145,6 +156,11 @@ export function OwnerTable({
                           {displayName}
                         </span>
                       )}
+                      {o.kind !== "human" && (
+                        <span className="mt-0.5 block font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                          {kindLabel(o.kind, labels)}
+                        </span>
+                      )}
                       {o.email && o.email !== o.name && (
                         <span className="mt-0.5 block font-mono text-[11.5px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
                           {o.email}
@@ -163,13 +179,13 @@ export function OwnerTable({
                   // committing: that is knowledge with no second reader and
                   // nobody left to ask.
                   marker={o.bus_factor_risk_files > 0 && o.commit_count_90d === 0}
-                  markerTitle="Sole-owned files held by someone inactive for 90 days"
+                  markerTitle={labels.soleInactiveTitle}
                 />
                 <Num value={o.dead_code_lines_owned} />
                 <Num
                   value={o.commit_count_90d}
                   atLeast={o.commit_count_90d_at_least}
-                  atLeastTitle="At least this many: the indexed commits stop inside the 90 days"
+                  atLeastTitle={labels.atLeastTitle}
                 />
                 <td className="whitespace-nowrap py-2.5 pl-3 align-top text-[var(--color-text-tertiary)]">
                   {formatRelativeTimeOrNull(o.last_commit_at) ?? "—"}

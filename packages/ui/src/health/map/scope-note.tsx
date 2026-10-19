@@ -13,6 +13,7 @@
 
 import type { ReactNode } from "react";
 import type { MapScope } from "./types";
+import type { MapCanvasLabels } from "./canvas-labels";
 
 const ACTION =
   "pointer-events-auto rounded px-1 text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:cursor-wait disabled:opacity-60";
@@ -159,6 +160,94 @@ export function MapScopeNote({
           onFindUndrawn={onFindUndrawn}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The lazily loaded field's scope: how many files are drawn so far against
+ * the repository, and how to see the rest. Every area is complete once loaded,
+ * so the only thing to say is how far the reader has zoomed in.
+ */
+/**
+ * The groups the map holds out by default (tests, build files, ...), each a
+ * toggle that brings it back. The server names the groups and counts them;
+ * the host keeps which are brought back in the URL.
+ */
+export interface HeldGroups {
+  /** The held origins, in the server's order. */
+  default: readonly string[];
+  /** Files per held origin, repository-wide. */
+  counts: Readonly<Record<string, number>>;
+  /** Origins brought back. */
+  include: readonly string[];
+  onChange: (include: string[]) => void;
+}
+
+function HeldToggles({ groups, labels }: { groups: HeldGroups; labels: MapCanvasLabels }) {
+  const present = groups.default.filter((o) => (groups.counts[o] ?? 0) > 0);
+  if (present.length === 0) return null;
+  return (
+    <>
+      {present.map((origin) => {
+        const on = groups.include.includes(origin);
+        const name = labels.originName(origin);
+        const next = on ? groups.include.filter((o) => o !== origin) : [...groups.include, origin];
+        return (
+          <Part key={origin}>
+            <button
+              type="button"
+              onClick={() => groups.onChange(next)}
+              className={ACTION}
+            >
+              {on ? labels.hideHeld(name) : labels.showHeld(name, groups.counts[origin] ?? 0)}
+            </button>
+          </Part>
+        );
+      })}
+    </>
+  );
+}
+
+export function LoadedNote({
+  loaded,
+  total,
+  matches,
+  held,
+  labels,
+}: {
+  loaded: number;
+  total: number;
+  /** Search matches among the loaded files, or null with no search. */
+  matches: number | null;
+  held?: HeldGroups | undefined;
+  labels: MapCanvasLabels;
+}) {
+  return (
+    <div
+      data-testid="map-scope"
+      className="pointer-events-none absolute bottom-3 right-3 z-20 max-w-[64%] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-2.5 py-1.5 text-right text-xs text-[var(--color-text-tertiary)] shadow-sm backdrop-blur-sm sm:max-w-[52%]"
+    >
+      {loaded === 0 ? (
+        <>
+          <span className="font-mono tabular-nums">{total.toLocaleString()}</span> files in folders ·
+          zoom into one to see its files
+        </>
+      ) : (
+        <>
+          <span className="font-mono tabular-nums">
+            {loaded.toLocaleString()} of {total.toLocaleString()}
+          </span>{" "}
+          files loaded{loaded < total ? " · zoom in for more" : ""}
+        </>
+      )}
+      {matches !== null ? (
+        <Part>
+          <span className="tabular-nums">{matches.toLocaleString()}</span>{" "}
+          {plural(matches, "match", "matches")} loaded
+        </Part>
+      ) : null}
+      {held ? <HeldToggles groups={held} labels={labels} /> : null}
     </div>
   );
 }

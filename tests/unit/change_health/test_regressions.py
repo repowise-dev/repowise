@@ -211,6 +211,8 @@ def _scored(specs: list[tuple[str, str, int]]) -> list[HealthFindingData]:
             self.biomarker_type = marker
             self.severity = Severity.MEDIUM
             self.deduction = None
+            self.function_name = None
+            self.details: dict = {}
 
     _score, impacts = score_file([_R(m) for m, _sym, _line in specs])
     return [

@@ -28,8 +28,11 @@ export function HealthFileDrawerHost({
   onClose,
   lens,
   counts,
+  inline,
 }: {
   repoId: string;
+  /** Render in place (the map's rail) instead of in a sheet. */
+  inline?: boolean;
   filePath: string | null;
   onClose: () => void;
   /** The reading the row that opened this drawer was scored under. */
@@ -81,6 +84,7 @@ export function HealthFileDrawerHost({
   return (
     <HealthFileDrawer
       open={filePath !== null}
+      inline={inline ?? false}
       opportunity={opportunity}
       refactoringOpportunityHref={(id) => refactoringOpportunityHref(repoId, id)}
       related={related.data?.files?.[0]}

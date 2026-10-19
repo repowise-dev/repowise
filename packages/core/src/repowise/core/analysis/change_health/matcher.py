@@ -105,21 +105,45 @@ class FindingMatcher:
         if not self.moves.moved_total:
             return
         candidates = []
+        origins: dict[int, SymbolKey] = {}
         for mi, m in enumerate(result.matched):
-            origin = self.moves.origin_of(m.head.file_path, m.head.function_name)
-            if m.base is None and origin is not None:
+            new = self.moves.locate(m.head.file_path, m.head.function_name, m.head.line_start)
+            if m.base is None and new is not None:
+                origins[mi] = old = self.moves.by_new[new]
                 candidates += [
-                    (_shape_gap(b, m.head), mi, bi)
+                    (self._move_distance(b, m.head, new, old), mi, bi)
                     for bi, b in enumerate(result.resolved)
-                    if _same_marker_at(b, m.head, origin)
+                    if self._held_by(b, m.head, old)
                 ]
         peers = _closest_first(candidates)
         for mi, bi in peers.items():
             m, base = result.matched[mi], result.resolved[bi]
             m.base, m.kind = base, _classify(base, m.head, carried="moved")
-            m.moved_from = (base.file_path, str(base.function_name))
+            m.moved_from = origins[mi]
         claimed = {id(result.resolved[bi]) for bi in peers.values()}
         result.resolved = [f for f in result.resolved if id(f) not in claimed]
+
+    def _held_by(self, base: HealthFindingData, head: HealthFindingData, old: SymbolKey) -> bool:
+        """*base* is *head*'s marker, inside the symbol *old* names."""
+        if (base.dimension, base.biomarker_type) != (head.dimension, head.biomarker_type):
+            return False
+        if base.file_path != old[0]:
+            return False
+        if base.function_name == old[1]:
+            return True
+        # An unnamed marker on either side is placed by its line instead.
+        named_both = bool(base.function_name and head.function_name)
+        return not named_both and self.moves.holds(old, base.line_start)
+
+    def _move_distance(
+        self, base: HealthFindingData, head: HealthFindingData, new: SymbolKey, old: SymbolKey
+    ) -> tuple[int, int]:
+        """Shape first, then where each sits inside its symbol: offsets travel, lines do not."""
+        offsets = abs(
+            self.moves.offset(old, base.line_start, old=True)
+            - self.moves.offset(new, head.line_start)
+        )
+        return (_shape_gap(base, head), offsets)
 
     def _pair_renames(self, result: MatchResult) -> None:
         """Pair introduced head findings with resolved base findings of one shape.
@@ -205,14 +229,6 @@ def _closest_first(candidates: Iterable[tuple[int, int, int]]) -> dict[int, int]
         peers[head_index] = base_index
         taken.add(base_index)
     return peers
-
-
-def _same_marker_at(base: HealthFindingData, head: HealthFindingData, origin: SymbolKey) -> bool:
-    """*base* is *head*'s marker on the symbol *origin* names."""
-    return (base.file_path, base.function_name) == origin and (
-        base.dimension,
-        base.biomarker_type,
-    ) == (head.dimension, head.biomarker_type)
 
 
 def _shape_gap(base: HealthFindingData, head: HealthFindingData) -> int:

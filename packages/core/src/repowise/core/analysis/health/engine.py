@@ -98,9 +98,14 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp (v41): parameter counts exclude every comment kind and discover
-# C/C++ declarators and Kotlin lists. Cached walks must refresh the total,
-# typed and scalar counts, enabling primitive_obsession in those languages.
+# v41: ``brain_method`` is advisory, so every stored score that carried one
+# moves. Parameter counts exclude every comment kind and discover C/C++
+# declarators and Kotlin lists; cached walks refresh the total, typed and scalar
+# counts, enabling primitive_obsession in those languages.
+# History findings de-stack before the history cap (``scoring.destacked``).
+# Defect code categories follow a saturating curve scaled by their cap, findings on
+# one function group, and critical size findings scale past their threshold
+# (``shape_curve``).
 #
 # v40: an Extract Method plan names its helper with a placeholder
 # (``extracted_helper``, numbered when taken in scope) and asks the agent applying
@@ -388,7 +393,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 40
+HEALTH_ANALYZER_VERSION = 41
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
@@ -538,6 +543,7 @@ class HealthAnalyzer:
         source_reader: SourceReader | None = None,
         stored_blame_findings: dict[str, list[Any]] | None = None,
         file_dependents: dict[str, int] | None = None,
+        tested_files: set[str] | frozenset[str] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -589,6 +595,8 @@ class HealthAnalyzer:
         # revision comparison passes the other side's, so a file crossing a
         # centrality gate inside a partial graph is not read as a code change.
         self._file_dependents_override = file_dependents
+        # Files the index records as tested (paired or reached), for a pass holding no tests.
+        self._tested_files = frozenset(tested_files or ())
         self._package_roots_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
         self.test_index = RepoTestIndex(self.graph, self.parsed_files, self._execution_graph)
@@ -927,7 +935,8 @@ class HealthAnalyzer:
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         return FileEvaluator(
             self,
-            paired_tests=self.test_index.paired(analyzed_paths),
+            paired_tests=self.test_index.paired(analyzed_paths)
+            | (self._tested_files & analyzed_paths),
             package_roots=self._package_boundaries(analyzed_paths),
             dup_report=dup_report,
             run=run,

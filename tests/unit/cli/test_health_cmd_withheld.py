@@ -70,6 +70,7 @@ def _run(monkeypatch, *args: str) -> tuple[str, str]:
             patch.object(health_module, "resolve_command_target") as resolve,
             patch.object(health_module, "_load_fix_first", return_value=None),
             patch.object(health_module, "_load_queue_counts", return_value=None),
+            patch.object(health_module, "_load_short_history", return_value=set()),
             patch.object(health_module, "console", console),
         ):
             resolve.return_value = SimpleNamespace(

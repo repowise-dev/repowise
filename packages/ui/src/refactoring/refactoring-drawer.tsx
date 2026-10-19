@@ -25,7 +25,8 @@ import { Layers, Sparkles, TrendingUp, Wand2 } from "lucide-react";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
-import { formatNumber } from "../lib/format";
+import { disambiguateBasenames, formatNumber } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { PlanComparison } from "./plan-comparison";
 import { GenerateCodePanel } from "./generate-code-panel";
 import { RefactoringModelToggle, type RefactoringModelToggleProps } from "./refactoring-settings-card";
@@ -140,6 +141,11 @@ function DrawerBody({
   const wins = planWins(plan);
   const blast = blastFiles(plan).filter((f) => f !== plan.file_path);
   const blastN = blastCount(plan);
+  const blastLabels = disambiguateBasenames(blast);
+  const lines =
+    plan.line_start && plan.line_end
+      ? `${plan.line_start}–${plan.line_end}`
+      : plan.line_start || null;
   const name = plan.file_path.split("/").pop() ?? plan.file_path;
 
   // One line of words, in the order a reader asks: how big, how sure, how far,
@@ -157,11 +163,13 @@ function DrawerBody({
         <SheetTitle className="mt-0.5 break-words font-mono text-[15px] font-semibold text-[var(--color-text-primary)]">
           {plan.target_symbol || name}
         </SheetTitle>
-        <p className="mt-1 break-all font-mono text-[11.5px] text-[var(--color-text-tertiary)]">
-          {plan.file_path}
-          {plan.line_start ? `:${plan.line_start}` : ""}
-          {plan.line_start && plan.line_end ? `–${plan.line_end}` : ""}
-        </p>
+        <FilePath
+          path={plan.file_path}
+          line={lines}
+          mode="full"
+          copyable
+          className="mt-1 block text-[11.5px] text-[var(--color-text-tertiary)]"
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-[var(--color-border-default)] px-5 py-2.5 text-[12.5px] text-[var(--color-text-secondary)]">
@@ -299,13 +307,13 @@ function DrawerBody({
                     {href ? (
                       <a
                         href={href}
-                        className="break-all font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
+                        className="flex min-w-0 text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
                       >
-                        {f}
+                        <FilePath path={f} mode="distinguishing" labels={blastLabels} />
                       </a>
                     ) : (
-                      <span className="break-all font-mono text-xs text-[var(--color-text-secondary)]">
-                        {f}
+                      <span className="flex min-w-0 text-[var(--color-text-secondary)]">
+                        <FilePath path={f} mode="distinguishing" labels={blastLabels} />
                       </span>
                     )}
                   </li>

@@ -145,7 +145,7 @@ describe("FixFirstSection", () => {
     getFixFirstItemPrompt.mockResolvedValue({ flavor: "generic", text: "Core prompt text" });
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Copy prompt for an agent" })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "Copy prompt for your agent" })[0]!);
     expect(await screen.findByText("Core prompt text")).toBeTruthy();
     expect(getFixFirstItemPrompt).toHaveBeenCalledWith("r1", "fix1_a", {
       flavor: expect.any(String),

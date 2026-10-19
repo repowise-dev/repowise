@@ -131,3 +131,51 @@ export function buildCoverageAiPrompt({
     explorationCloser(flavor, row.file_path, "coverage"),
   ]);
 }
+
+/** Files listed in a batch prompt; the rest are counted, not dropped silently. */
+const MAX_BATCH_FILES = 25;
+
+export interface BuildCoverageBatchPromptOptions {
+  rows: CoverageFilePromptInput[];
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+/** One prompt over several files, e.g. every row the current filter shows. */
+export function buildCoverageBatchAiPrompt({
+  rows,
+  flavor = "generic",
+  repoName,
+}: BuildCoverageBatchPromptOptions): string {
+  const only = rows.length === 1 ? rows[0] : undefined;
+  if (only) return buildCoverageAiPrompt({ row: only, flavor, ...(repoName ? { repoName } : {}) });
+  const shown = rows.slice(0, MAX_BATCH_FILES);
+  const hidden = rows.length - shown.length;
+  const pct = (v: number | null) => (v == null ? "no data" : `${v.toFixed(1)}%`);
+
+  return joinSections([
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Target files${repoSuffix(repoName)}`,
+    "",
+    bulletList(
+      shown.map(
+        (r) =>
+          `\`${r.file_path}\` — line coverage ${pct(r.line_coverage_pct)}${
+            r.health_score != null ? `, health ${r.health_score.toFixed(1)}/10` : ""
+          }`,
+      ),
+    ),
+    hidden > 0 ? `…and ${hidden} more in the same list (open the Tests page in repowise for all of them).` : "",
+    "",
+    "## Your task",
+    "",
+    bulletList([
+      "Add tests for these files, weakest coverage and lowest health first, covering their riskiest paths rather than padding the number.",
+      "Work one file at a time and finish each before starting the next.",
+    ]),
+    "",
+    ...closingSections(CONSTRAINTS, EXPECTED),
+    explorationCloser(flavor, shown[0]?.file_path ?? "", "coverage"),
+  ]);
+}

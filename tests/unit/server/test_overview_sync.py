@@ -18,6 +18,7 @@ from sqlalchemy import select
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob
+from repowise.server.services.index_storage import index_storage_bytes
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -127,14 +128,17 @@ async def test_head_commit_falls_back_to_db_without_state_json(
 
 
 @pytest.mark.asyncio
-async def test_sync_includes_index_storage_bytes(client: AsyncClient, tmp_path) -> None:
-    """overview-summary reports total .repowise on-disk footprint."""
+async def test_index_storage_bytes_moves_to_stats(client: AsyncClient, tmp_path) -> None:
+    """The .repowise footprint is measured for Stats; overview no longer walks it."""
     repo = await create_test_repo(client, tmp_path)
-    repo_dir = Path(repo["local_path"])
-    repowise = repo_dir / ".repowise"
+    repowise = Path(repo["local_path"]) / ".repowise"
     repowise.mkdir()
     (repowise / "wiki.db").write_bytes(b"x" * 100)
 
-    resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
-    assert resp.status_code == 200
-    assert resp.json()["sync"]["index_storage_bytes"] == 100
+    assert await index_storage_bytes(repo["local_path"]) == 100
+    assert await index_storage_bytes(None) is None
+    assert await index_storage_bytes(str(tmp_path / "no-index")) is None
+
+    overview = await client.get(f"/api/repos/{repo['id']}/overview-summary")
+    assert overview.status_code == 200
+    assert "index_storage_bytes" not in overview.json()["sync"]

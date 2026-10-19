@@ -42,6 +42,9 @@ _PLUMBING: dict[str, str] = {
     "repowise/core/persistence/models.py": "the column",
     "repowise/core/persistence/crud/analysis/health/snapshots.py": "writes/reads the column",
     "repowise/core/persistence/crud/git.py": "supplies the hotspot path set, not the score",
+    "repowise/server/services/health_map.py": (
+        "reads the hotspot path set for the map's hotspot lens, not the score"
+    ),
     "repowise/core/persistence/stores/_sql_analysis.py": "passthrough to the crud writer",
     "repowise/core/workspace/store.py": "copies the latest snapshot column into the workspace store",
     "repowise/core/persistence/_interfaces/_analysis.py": "the store ABC's parameter name",

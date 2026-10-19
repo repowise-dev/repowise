@@ -34,7 +34,7 @@ _SKIPPED_KINDS = frozenset({"module", "impl"})
 MIN_RENAMED_TOKENS = 20
 
 #: An edited move may grow or shrink by at most this factor.
-_MAX_EDITED_GROWTH = 2
+_MAX_EDITED_GROWTH = 3
 
 #: An edited move keeps at least this share of its adjacent token pairs.
 _MIN_EDITED_OVERLAP = 0.5
@@ -53,6 +53,8 @@ class SymbolBody:
     tokens: int
     #: Adjacent token pairs, hashed; how much of the body an edit kept.
     pairs: frozenset[int] = field(default=frozenset(), compare=False, repr=False)
+    #: ``(start_line, end_line)`` in its file.
+    span: tuple[int, int] = field(default=(0, 0), compare=False)
 
     @property
     def key(self) -> SymbolKey:
@@ -66,13 +68,44 @@ class MoveMap:
     by_new: Mapping[SymbolKey, SymbolKey] = field(default_factory=lambda: MappingProxyType({}))
     #: Moved keys whose body also changed on the way.
     edited: frozenset[SymbolKey] = frozenset()
+    #: Line spans of the moved symbols at head, by new key.
+    new_spans: Mapping[SymbolKey, tuple[int, int]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    #: Line spans of their origins on the base side, by origin key.
+    old_spans: Mapping[SymbolKey, tuple[int, int]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def origin_of(self, path: str, symbol: str | None) -> SymbolKey | None:
         return self.by_new.get((path, symbol)) if symbol else None
 
+    def locate(self, path: str, symbol: str | None, line: int | None) -> SymbolKey | None:
+        """The moved key owning a finding: its symbol, else the innermost span at *line*."""
+        if symbol:
+            return (path, symbol) if (path, symbol) in self.by_new else None
+        held = [k for k, span in self.new_spans.items() if k[0] == path and _within(span, line)]
+        return min(held, key=lambda k: _length(self.new_spans[k]), default=None)
+
+    def offset(self, key: SymbolKey, line: int | None, *, old: bool = False) -> int:
+        """*line* relative to the start of *key*'s span, which travels with the code."""
+        spans = self.old_spans if old else self.new_spans
+        return (line or 0) - spans.get(key, (0, 0))[0]
+
+    def holds(self, old_key: SymbolKey, line: int | None) -> bool:
+        """True when *line* falls inside the origin symbol *old_key*."""
+        return _within(self.old_spans.get(old_key), line)
+
     @property
     def moved_total(self) -> int:
         return len(self.by_new)
+
+    def destinations(self) -> dict[str, list[str]]:
+        """``{old_path: [new_path, ...]}``: where each source file's moved symbols went."""
+        out: dict[str, set[str]] = {}
+        for (new_path, _), (old_path, _) in self.by_new.items():
+            out.setdefault(old_path, set()).add(new_path)
+        return {old: sorted(new) for old, new in sorted(out.items())}
 
 
 def symbol_bodies(path: str, raw: bytes, symbols: Iterable[Symbol]) -> list[SymbolBody]:
@@ -89,7 +122,7 @@ def symbol_bodies(path: str, raw: bytes, symbols: Iterable[Symbol]) -> list[Symb
         # Line-bounded: code sharing a line with the symbol joins its body.
         span = rows[bisect_left(starts, symbol.start_line) : bisect_right(starts, symbol.end_line)]
         if span:
-            out.append(_body(path, symbol.name, raw, span))
+            out.append(_body(symbol, path, raw, span))
     return out
 
 
@@ -133,7 +166,12 @@ def build_move_map(
         if _similar(old, new)
     ]
     by_new = {new.key: old.key for old, new in verbatim + edited}
-    return MoveMap(MappingProxyType(by_new), frozenset(new.key for _, new in edited))
+    return MoveMap(
+        MappingProxyType(by_new),
+        frozenset(new.key for _, new in edited),
+        MappingProxyType({new.key: new.span for _, new in verbatim + edited}),
+        MappingProxyType({old.key: old.span for old, _ in verbatim + edited}),
+    )
 
 
 def _pair_unique(
@@ -176,11 +214,21 @@ def _similar(old: SymbolBody, new: SymbolBody) -> bool:
     return shared >= _MIN_EDITED_OVERLAP * max(len(old.pairs), len(new.pairs), 1)
 
 
-def _body(path: str, name: str, raw: bytes, rows: list[TokenRow]) -> SymbolBody:
+def _within(span: tuple[int, int] | None, line: int | None) -> bool:
+    return span is not None and line is not None and span[0] <= line <= span[1]
+
+
+def _length(span: tuple[int, int]) -> int:
+    return span[1] - span[0]
+
+
+def _body(symbol: Symbol, path: str, raw: bytes, rows: list[TokenRow]) -> SymbolBody:
+    name = symbol.name
     parts = [_NAME_MARK if row[5] == name else raw[row[3] : row[4]] for row in rows]
     digest = hashlib.blake2b(_SEPARATOR.join(parts), digest_size=16).hexdigest()
     pairs = frozenset(hash(pair) for pair in pairwise(parts))
-    return SymbolBody(path, name, digest, len(parts), pairs)
+    span = (symbol.start_line, symbol.end_line)
+    return SymbolBody(path, name, digest, len(parts), pairs, span)
 
 
 def _order(body: SymbolBody) -> tuple[str, str, str]:

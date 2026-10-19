@@ -7,10 +7,8 @@ payload field for field, so a builder's keys and their order are its contract.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
@@ -405,33 +403,6 @@ async def savings_block(repo_local_path: str | None) -> dict:
     }
 
 
-def walk_index_storage_bytes(repowise_dir: Path) -> int:
-    """Total on-disk size of a repo's ``.repowise/`` directory."""
-    if not repowise_dir.is_dir():
-        return 0
-    total = 0
-    for path in repowise_dir.rglob("*"):
-        if path.is_file():
-            with contextlib.suppress(OSError):
-                total += path.stat().st_size
-    return total
-
-
-async def index_storage_bytes(repowise_dir: Path) -> int:
-    """``walk_index_storage_bytes`` off the event loop.
-
-    The walk is a full recursive stat of a directory that holds the vectors,
-    the wiki and the symbol store, routinely hundreds of megabytes and tens of
-    thousands of files. Run inline in an ``async def`` it blocks the worker's
-    event loop for its whole duration, stalling every other request in flight.
-
-    Ceiling: a thread is the cheap fix, and the walk still happens once per
-    page load. The real fix is to stamp the size when the index is written and
-    read the number back; do that if this ever shows up in a profile again.
-    """
-    return await asyncio.to_thread(walk_index_storage_bytes, repowise_dir)
-
-
 def sync_times(job_rows: list[Any], repo_updated_at: Any) -> dict:
     """Last sync, last full re-index, its model and any active job id.
 
@@ -479,7 +450,7 @@ def sync_times(job_rows: list[Any], repo_updated_at: Any) -> dict:
 
 
 async def sync_block(session: AsyncSession, repo_id: str, repo: Any, page_count: int) -> dict:
-    """Sync status from the last 30 jobs, plus page count and index size."""
+    """Sync status from the last 30 jobs, plus the page count."""
     job_rows = (
         (
             await session.execute(
@@ -492,9 +463,4 @@ async def sync_block(session: AsyncSession, repo_id: str, repo: Any, page_count:
         .scalars()
         .all()
     )
-    repowise_dir = Path(repo.local_path) / ".repowise" if repo.local_path else Path(".repowise")
-    return {
-        **sync_times(job_rows, repo.updated_at),
-        "page_count": page_count,
-        "index_storage_bytes": await index_storage_bytes(repowise_dir),
-    }
+    return {**sync_times(job_rows, repo.updated_at), "page_count": page_count}

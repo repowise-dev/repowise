@@ -29,6 +29,7 @@ import structlog
 
 from repowise.core.changes.evidence import (
     EVIDENCE_SCHEMA_VERSION,
+    SUMMARY_SKIPPED_KINDS,
     ChangeEvidence,
     EvidenceInputs,
     EvidenceItem,
@@ -381,12 +382,18 @@ def cached_evidence(row: Any) -> ChangeEvidence | None:
 
 
 def evidence_summary(row: Any) -> dict[str, Any] | None:
-    """Status counts of the kept checklist, or ``None`` when none is kept."""
+    """Status counts of the kept checklist, or ``None`` when none is kept.
+
+    Kinds in ``SUMMARY_SKIPPED_KINDS`` are not counted, so the list's attention
+    mark and the needs-attention filter agree on one set of rows.
+    """
     evidence = cached_evidence(row)
     if evidence is None:
         return None
     counts = {"generated_at": evidence.generated_at, "ok": 0, "attention": 0, "unknown": 0}
     for item in evidence.items:
+        if item.kind in SUMMARY_SKIPPED_KINDS:
+            continue
         # A status this reader does not know is not a pass.
         counts[item.status if item.status in ("ok", "attention") else "unknown"] += 1
     return counts

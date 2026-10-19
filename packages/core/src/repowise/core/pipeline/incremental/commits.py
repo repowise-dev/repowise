@@ -318,22 +318,22 @@ def _recompute_commit_experience(stored: list[dict]) -> list[dict]:
 async def persist_incremental_fix_events(session: Any, repo_id: str, indexer: Any) -> None:
     """Trace + upsert ``fix_events`` for fix commits this index has not seen.
 
-    Two halves, and both are needed for an update to converge on what a fresh
-    index would produce: append the fix commits missing from the table, then drop
-    the ones that have aged out of the trailing defect window. Without the prune
-    the stored set only ever grows past the window's trailing edge; without the
-    append it goes stale. Failure-isolated, like every other git-phase refresh.
+    Both halves are needed for an update to converge on what a fresh index would
+    produce: append the fix commits missing from the table, then drop the ones that
+    aged out of the window, lost their file, or the fix rule no longer names.
+    Failure-isolated, like every other git-phase refresh.
     """
     from repowise.core.persistence.crud import (
         get_fix_event_shas,
         prune_fix_events_before,
         prune_fix_events_for_missing_paths,
+        prune_fix_events_for_shas,
         upsert_fix_events_bulk,
     )
 
     try:
         known = await get_fix_event_shas(session, repo_id)
-        rows, oldest_ts, tracked = await asyncio.to_thread(
+        rows, oldest_ts, tracked, retracted = await asyncio.to_thread(
             indexer.capture_new_fix_events, known_shas=known
         )
     except Exception as exc:
@@ -350,6 +350,7 @@ async def persist_incremental_fix_events(session: Any, repo_id: str, indexer: An
         await prune_fix_events_before(session, repo_id, datetime.fromtimestamp(oldest_ts, tz=UTC))
     if tracked:
         await prune_fix_events_for_missing_paths(session, repo_id, tracked)
+    await prune_fix_events_for_shas(session, repo_id, retracted)
 
     # Recompute over the whole stored window, not just the rows this update
     # appended: decay ages every file's mass whether or not the file changed.

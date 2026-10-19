@@ -85,6 +85,22 @@ async def list_performance_opportunities(
             "tooling and test, whose loops run once per process."
         ),
     ),
+    queue: bool = Query(
+        False,
+        description=(
+            "Keep to the default queue's stored verdict whatever state is chosen, "
+            "so a state picked inside 'worth doing now' stays inside it."
+        ),
+    ),
+    area: str | None = Query(
+        None, description="One area (a directory) at any depth; absent is the whole repository."
+    ),
+    area_depth: int | None = Query(
+        None,
+        ge=1,
+        le=32,
+        description="Group the area facet at this directory depth; absent chooses one.",
+    ),
     view: str = Query("detail"),
     sort: str = Query("rank"),
     file_paths: str | None = Query(
@@ -116,9 +132,20 @@ async def list_performance_opportunities(
         file_paths=_paths(file_paths),
         limit=limit,
         offset=offset,
+        queue=queue,
+        lift_defaults=True,
+        area=area,
     )
     page = await _service(session, repo_id, include_unverified=include_unverified).page(
-        query, evidence_per_item=_EVIDENCE_PER_ITEM, with_facets=True, with_summary=True
+        query,
+        evidence_per_item=_EVIDENCE_PER_ITEM,
+        with_facets=True,
+        with_summary=True,
+        # The tab acts on summary rows, so they carry fix, gain and effort.
+        row_decisions=True,
+        # Every count the tab shows sits inside the scope it asked for.
+        scoped_facets=True,
+        area_depth=area_depth,
     )
     return {
         "items": label_previews(
@@ -131,6 +158,8 @@ async def list_performance_opportunities(
         "summary": page.summary,
         "counts": page.counts,
         "gated": page.gated,
+        "scopes": page.scopes,
+        "areas": page.areas,
         **({"ignored_arguments": ignored} if ignored else {}),
     }
 
