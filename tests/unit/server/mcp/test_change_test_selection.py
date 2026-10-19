@@ -451,3 +451,47 @@ async def test_both_tools_list_tests_in_the_selections_run_order(tmp_path, monke
     order = ["tests/test_z.py", "tests/test_status.py", "tests/test_walks.py"]
     assert it["tests_to_run"] == order and list(it["why"]) == order
     assert directive["tests_to_run"] == order
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_selection_is_reused_until_the_tree_or_index_moves(
+    tmp_path, monkeypatch
+) -> None:
+    import threading
+    from collections import OrderedDict
+
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server import _test_selection
+
+    repo, base = _repo(tmp_path, _STATUS)
+    factory = await _index(base, {"src/status.py": False, "tests/test_status.py": True})
+    threads: list[int] = []
+    real = _test_selection._select_here
+
+    async def _recording(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(_test_selection, "_select_here", _recording)
+    monkeypatch.setattr(_test_selection, "_DONE", OrderedDict())
+
+    async def _select() -> tuple:
+        change = _test_selection.files_change(repo, ["src/status.py"])
+        return await _test_selection.select_change_tests(repo, factory, change)
+
+    first = await _select()
+    assert await _select() is first
+    # Off the loop: the selection's CPU work no longer stalls other calls' queries.
+    assert threads == [threads[0]] and threads[0] != threading.get_ident()
+
+    (repo / "src" / "status.py").write_text("def status():\n    return 2\n", encoding="utf-8")
+    dirty = await _select()
+    assert dirty is not first and len(threads) == 2
+    assert await _select() is dirty
+
+    async with factory() as session:
+        await session.execute(update(Repository).values(head_commit="moved"))
+        await session.commit()
+    assert await _select() is not dirty and len(threads) == 3
