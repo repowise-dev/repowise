@@ -146,6 +146,29 @@ async def test_update_path_recomputes_co_change_partners(tmp_path) -> None:
     assert meta["change_entropy"] > 0.0
 
 
+async def test_update_path_keeps_non_code_co_change_partner(tmp_path) -> None:
+    """The update walk reads the tracked-file set the full index does, so a
+    template that changes with a module stays one of its partners."""
+    import json
+
+    import git as gitpython
+
+    _build_repo_with_cochange(tmp_path)
+    repo = gitpython.Repo(tmp_path)
+    for i in range(4):
+        (tmp_path / "a.py").write_text(f"x = {i + 100}\n")
+        (tmp_path / "t.html").write_text(f"<p>{i}</p>\n")
+        repo.index.add(["a.py", "t.html"])
+        repo.index.commit(f"feat: change module and template together {i}")
+    repo.close()
+
+    upd = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+    (meta,) = await upd.index_changed_files(["a.py"], all_files={"a.py", "b.py"})
+
+    partners = {p["file_path"] for p in json.loads(meta["co_change_partners_json"])}
+    assert "t.html" in partners
+
+
 async def test_update_path_essential_tier_skips_co_change_walk(tmp_path) -> None:
     _build_repo_with_cochange(tmp_path)
 

@@ -407,13 +407,19 @@ contributors only.
 
 ### `git/hotspot-table` â€” `HotspotTable`
 
-Searchable, filterable, sortable table of hotspots. Filter chips:
-`all` / `hot` / `risk` / `accelerating`. Sortable columns:
-`commits` / `churn` / `trend`. UI-local state â€” no fetch coupling.
+Server-driven table of hotspots: the host owns search, filter, sort and
+paging (the table debounces the search box and reports settled values).
+Chips (`all` / `bus_factor_1` / `accelerating` / `bug_magnet`) show the
+server's `facets` as "N of total"; sortable columns (`score` / `commits` /
+`fixes` / `churn`) render only with `onSortChange`. One quiet per-row agent
+prompt and a header "Copy prompt for these N".
 
 | Prop | Type | Required |
 |------|------|----------|
 | `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
+| `total`, `facets` | `number`, `HotspotFacets` | no |
+| `query` / `filter` / `sort` and their `on*Change` | controlled state | no |
+| `onGeneratePrompt`, `onGenerateBatchPrompt` | callbacks | no |
 
 ### `git/ownership-table` â€” `OwnershipTable`
 

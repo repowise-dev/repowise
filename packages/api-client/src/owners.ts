@@ -1,3 +1,4 @@
+import type { IdentityKind, KnowledgeMatrix, OwnersSummary } from "@repowise-dev/types/owners";
 import { apiGet } from "./client";
 import { fetchAllPaginated } from "./pagination";
 import type {
@@ -17,6 +18,8 @@ export interface ListOwnersParams {
   repoId: string;
   q?: string;
   sort?: OwnerSortKey;
+  /** Only this kind of identity; omitted lists every kind. */
+  kind?: IdentityKind;
   limit?: number;
   offset?: number;
 }
@@ -50,4 +53,14 @@ export async function getOwnerProfile(
   return apiGet<OwnerProfileResponse>(
     `/api/repos/${repoId}/owners/${encodeURIComponent(ownerKey)}`,
   );
+}
+
+/** Truck factor, silos, concentration and activity; people only, built once per index. */
+export async function getOwnersSummary(repoId: string): Promise<OwnersSummary> {
+  return apiGet<OwnersSummary>(`/api/repos/${repoId}/owners/summary`);
+}
+
+/** Every code file's top authors and risk facts, for client-side off-boarding. */
+export async function getKnowledgeMatrix(repoId: string): Promise<KnowledgeMatrix> {
+  return apiGet<KnowledgeMatrix>(`/api/repos/${repoId}/owners/knowledge-matrix`);
 }

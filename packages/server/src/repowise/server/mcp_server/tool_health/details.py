@@ -87,8 +87,10 @@ async def _detail_response(
 
 async def _lower_priority(session: Any, repository_id: str, finding: Any) -> str | None:
     """The finding's tier reason, measured over its file's open findings as
-    the list measured it."""
-    peers = await get_health_findings(session, repository_id, file_path=finding.file_path)
+    the list measured it: file-held rows included, as the list reads them."""
+    peers = await get_health_findings(
+        session, repository_id, file_path=finding.file_path, file_holds=False
+    )
     reasons = dict(zip((f.id for f in peers), finding_priorities(peers), strict=True))
     return LOW_PRIORITY_LABEL.get(reasons.get(finding.id) or "")
 

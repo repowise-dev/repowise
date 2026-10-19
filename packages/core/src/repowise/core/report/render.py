@@ -179,10 +179,63 @@ def render_html(document: dict[str, Any]) -> str:
     return "\n".join(out) + "\n"
 
 
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def spreadsheet_cell(value: Any) -> str:
+    """*value* as text safe to open in a spreadsheet: a leading formula sign is quoted.
+
+    Titles and evidence quote commit messages, which anyone can write.
+    """
+    text = "" if value is None else str(value)
+    return f"'{text}" if text.startswith(_FORMULA_LEAD) else text
+
+
+_CSV_COLUMNS = ("section", "repo", "check", "score", "basis", "reason", "details")
+
+
+def render_csv(document: dict[str, Any]) -> str:
+    """One row per check. A check whose ``data`` holds a ``row`` mapping (one
+    change, say) adds its keys as further columns, in first-seen order."""
+    import csv
+    import io
+
+    checks = [(s, c) for s in document["sections"] for c in s["checks"]]
+    extra: dict[str, None] = {}
+    for _section, c in checks:
+        extra.update(dict.fromkeys((c.get("data") or {}).get("row") or {}))
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow([*_CSV_COLUMNS, *extra])
+    for section, c in checks:
+        row = (c.get("data") or {}).get("row") or {}
+        cells = [
+            section["id"],
+            section.get("repo"),
+            c["name"],
+            _score(c["score"]),
+            c["basis"],
+            c["reason"],
+            " | ".join(map(str, c["details"])),
+            *(row.get(k) for k in extra),
+        ]
+        writer.writerow(spreadsheet_cell(v) for v in cells)
+    return buf.getvalue()
+
+
 report_renderers: SeamRegistry[Renderer] = SeamRegistry("report-renderer")
 report_renderers.register("json", render_json, default=True)
 report_renderers.register("markdown", render_markdown)
 report_renderers.register("html", render_html)
+report_renderers.register("csv", render_csv)
 
 
-__all__ = ["Renderer", "render_html", "render_json", "render_markdown", "report_renderers"]
+__all__ = [
+    "Renderer",
+    "render_csv",
+    "render_html",
+    "render_json",
+    "render_markdown",
+    "report_renderers",
+    "spreadsheet_cell",
+]

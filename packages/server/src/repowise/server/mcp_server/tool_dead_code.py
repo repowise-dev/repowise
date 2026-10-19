@@ -27,7 +27,7 @@ from repowise.core.analysis.dead_code.serving import (
     serialize_finding,
     summary_counts,
 )
-from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.finding_registry import excluded_types, served_previews
 from repowise.core.persistence.crud import get_dead_code_findings
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GitMetadata
@@ -111,6 +111,7 @@ async def _get_dead_code_all_repos(
     }
     apply_limit_note(result_ws)
     result_ws["_meta"] = _build_meta()
+    _attach_preview(result_ws)
     fed.annotate(result_ws, merged_findings)
     return result_ws
 
@@ -355,6 +356,22 @@ async def get_dead_code(
     )
 
     result["_meta"] = _build_meta(repository=repository)
+    _attach_preview(result)
     attach_ignored_arguments(result, ignored)
     collector.attach(result)
     return result
+
+
+def _attach_preview(result: dict[str, Any]) -> None:
+    """``_meta.preview = {"dead_code": {language: note}}`` for the preview
+    languages the tiers list a finding on; absent when none."""
+    rows = (
+        f
+        for t in result.get("tiers", {}).values()
+        if isinstance(t, dict)
+        for f in t.get("findings", [])
+        if isinstance(f, dict)
+    )
+    served = served_previews("dead_code", rows, kind="kind", get=lambda r, k: r.get(k))
+    if served:
+        result["_meta"]["preview"] = {"dead_code": served}

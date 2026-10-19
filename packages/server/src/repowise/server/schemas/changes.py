@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, model_serializer
+from pydantic import BaseModel, Field, model_serializer
+
+from repowise.server.schemas.git import CommitHealthFindingResponse
+from repowise.server.schemas.history import HealthRollupResponse
 
 
 class ChangeIdentity(BaseModel):
@@ -68,6 +71,18 @@ class ChangeSummary(BaseModel):
     category: str
     # Null while AI attribution is off, or on rows indexed before it.
     provenance: ChangeProvenance | None = None
+    #: What the change's commits did to health, the row's lead. Null when
+    #: none of them was scanned.
+    health: HealthRollupResponse | None = None
+    #: Files the change touched that are hotspots now.
+    touches_hotspot: int = 0
+
+
+class EvidenceLine(BaseModel):
+    """An item's value as a message key and its parameters, for a client to word."""
+
+    key: str
+    params: dict[str, Any]
 
 
 class EvidenceItem(BaseModel):
@@ -80,6 +95,8 @@ class EvidenceItem(BaseModel):
     value: Any = None
     details: list[dict[str, Any]]
     source: str
+    #: ``value`` for a reader (``repowise.core.changes.evidence.item_line``).
+    line: EvidenceLine | None = None
 
 
 class ChangeEvidence(BaseModel):
@@ -93,7 +110,21 @@ class ChangeEvidence(BaseModel):
     items: list[EvidenceItem]
 
 
+class ChangeHealthFindingResponse(CommitHealthFindingResponse):
+    """A finding a change's commit introduced or worsened, with that commit."""
+
+    sha: str
+
+
+class ChangeHealthResponse(HealthRollupResponse):
+    """A change's health rollup plus its worse findings, worst first and
+    capped: file, lines, symbol and biomarker, enough for a fix prompt."""
+
+    findings: list[ChangeHealthFindingResponse] = Field(default_factory=list)
+
+
 class ChangeRecord(ChangeSummary):
+    health: ChangeHealthResponse | None = None
     commits: list[str]
     files: list[ChangeFile]
     metadata: ChangeForgeMetadata
@@ -155,3 +186,46 @@ def summary_from_record(record: dict) -> ChangeListItem:
         **{k: v for k, v in record.items() if k in ChangeSummary.model_fields},
         commit_count=len(record["commits"]),
     )
+
+
+class SuspectsRequest(BaseModel):
+    """A symptom and the window to rank the changes merged in."""
+
+    symptom: str = Field("", max_length=20_000)
+    files: list[str] = Field([], max_length=50)
+    trace: str = Field("", max_length=20_000)
+    #: ISO 8601; default 14 days before ``until``.
+    since: str | None = None
+    #: ISO 8601, when the symptom was seen; default now.
+    until: str | None = None
+    limit: int = Field(10, ge=1, le=200)
+
+
+class SuspectSignal(BaseModel):
+    rank: int
+    evidence: list[str]
+
+
+class Suspect(BaseModel):
+    """One change in reading order; ``signals`` holds each signal that fired."""
+
+    id: str
+    ref: str | None = None
+    title: str
+    merged_at: str | None = None
+    category: str
+    head_sha: str
+    files_changed: int
+    provenance: str | None = None
+    rank: int
+    signals: dict[str, SuspectSignal]
+
+
+class SuspectsResponse(BaseModel):
+    window: dict[str, str]
+    candidates: int
+    #: Changes git could not read; they are ranked on title and files alone.
+    texts_missing: int = 0
+    symptom_files: list[str] = []
+    suspects: list[Suspect]
+    note: str

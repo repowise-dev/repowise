@@ -78,6 +78,16 @@ the most files in it. A module is a **silo** when one person owns more than 80%
 of its files. Per file, the dashboard and REST API mark a silo when the primary
 owner holds more than 80% of the file's commits.
 
+### Repository summary and knowledge matrix
+
+`/api/repos/<id>/owners/summary` returns the truck factor, single-owner files,
+silo modules, the share of owned files held by the top three people, active
+contributors, and quiet owners (no commit in 90 days, still owning files that
+changed in that window). `/api/repos/<id>/owners/knowledge-matrix` returns every
+code file's top five people with their share of its commits, for off-boarding
+what-ifs. Both count people only: bots and coding agents own nothing and hold no
+share, and each contributor carries a `kind` (`human`, `bot`, `agent`).
+
 ### Detectors
 
 Three code-health detectors turn these fields into findings. They run with the
@@ -148,7 +158,7 @@ The detectors use the code-health rules file, `.repowise/health-rules.json`:
 - `severity_overrides` sets a detector's label; an explicit entry wins over the
   profile.
 - History depth: `repowise init --commit-limit N` sets how many commits per file
-  are read (default 500, maximum 10000). `--follow-renames` follows a file
+  are read (default 5000, maximum 10000). `--follow-renames` follows a file
   across renames, so ownership survives a move. Both are saved to config.
 - `--mode fast` skips blame. Owners then come from commit counts alone and
   `owner_line_pct` stays empty.
@@ -192,7 +202,7 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 | `repowise risk` | `--target PATH` | Score a file's history, including owners and bus factor |
 | `repowise risk` | `--changed-file PATH` | With `--target`: PR mode; `--format json` includes `recommended_reviewers` |
 | `repowise health` | `--file PATH` | One file's findings, including the ownership detectors |
-| `repowise init` | `--commit-limit N` | Commits read per file (default 500, max 10000) |
+| `repowise init` | `--commit-limit N` | Commits read per file (default 5000, max 10000) |
 | `repowise init` | `--follow-renames` | Track files across renames |
 | `repowise init` | `--mode fast` | Skip blame; commit-count ownership only |
 

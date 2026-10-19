@@ -27,6 +27,11 @@ from sqlalchemy import case, func, or_, select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
+from repowise.core.stack_trace import (
+    frame_basenames,
+    map_to_repo_paths,
+    parse_trace,
+)
 from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._graph_files import per_index
 from repowise.server.mcp_server._helpers import (
@@ -48,11 +53,6 @@ from repowise.server.mcp_server._retrieval_rank import (
     _identifier_words,
     path_word_counts,
     path_words,
-)
-from repowise.server.mcp_server._stack_trace import (
-    frame_basenames,
-    map_to_repo_paths,
-    parse_trace,
 )
 from repowise.server.mcp_server._symbol_lookup import symbol_rank_key
 

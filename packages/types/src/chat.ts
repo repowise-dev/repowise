@@ -148,6 +148,8 @@ export interface ChatMessage {
     diagnostics?: {
       figures_checked?: number;
       figures_unverified?: number;
+      /** Verified figures worked out from others (a ratio or a sum) rather than read. */
+      figures_derived?: number;
       /** Figures left unchecked because the evidence was past the read cap. */
       figures_not_checked?: number;
     };

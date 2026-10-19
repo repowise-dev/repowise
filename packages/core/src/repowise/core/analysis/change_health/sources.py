@@ -8,14 +8,14 @@ checks out, resets, or writes to the caller's tree.
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
 from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff, untracked_diffs
-from ..git_cli import path_filter, split_revspec, untracked_paths
+from ..git_cat_file import cat_file_batch
+from ..git_cli import path_filter, run_git, split_revspec, untracked_paths
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -129,15 +129,7 @@ class RevisionSource(Protocol):
 
 
 def _git(args: list[str], repo_path: str, *, check: bool = True) -> str:
-    proc = subprocess.run(
-        ["git", "-C", repo_path, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
+    proc = run_git(["-C", repo_path, *args], timeout=GIT_TIMEOUT_SECONDS)
     if check and proc.returncode != 0:
         raise ValueError((proc.stderr or "").strip() or f"git {args[0]} failed")
     return proc.stdout
@@ -164,7 +156,7 @@ class GitRevisionSource:
             return self._resolve_range(*parts)
         return self._resolve_commit(revspec)
 
-    def _sha(self, ref: str) -> str:
+    def commit_sha(self, ref: str) -> str:
         out = _git(
             ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
             self.repo_path,
@@ -175,7 +167,7 @@ class GitRevisionSource:
         return out
 
     def _resolve_working_tree(self) -> RevisionPair:
-        head = self._sha("HEAD")
+        head = self.commit_sha("HEAD")
         # Untracked files are part of the uncommitted change, as change risk
         # and the changed lines count them.
         if self.hunks:
@@ -196,7 +188,7 @@ class GitRevisionSource:
         )
 
     def _resolve_commit(self, ref: str) -> RevisionPair:
-        head = self._sha(ref)
+        head = self.commit_sha(ref)
         parent = _git(
             ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}^"],
             self.repo_path,
@@ -217,8 +209,8 @@ class GitRevisionSource:
         )
 
     def _resolve_range(self, base: str, sep: str, head: str) -> RevisionPair:
-        base_sha = self._sha(base)
-        head_sha = self._sha(head)
+        base_sha = self.commit_sha(base)
+        head_sha = self.commit_sha(head)
         if sep == "...":
             # Same meaning as change risk and changed lines: no merge-base (a
             # shallow clone) is an error, not a silent two-dot diff.
@@ -390,34 +382,8 @@ def read_blobs(repo_path: str, specs: list[tuple[str, str]]) -> dict[tuple[str, 
     An object missing at its revision, or one that is not a file (a submodule),
     is omitted instead of raising.
     """
-    request = "\n".join(f"{rev}:{path}" for rev, path in specs) + "\n"
-    proc = subprocess.run(
-        ["git", "-C", repo_path, "cat-file", "--batch"],
-        input=request.encode("utf-8"),
-        capture_output=True,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
-    if proc.returncode != 0:
+    req_specs = [f"{rev}:{path}" for rev, path in specs]
+    read = cat_file_batch(repo_path, req_specs, on_missing="omit", timeout=GIT_TIMEOUT_SECONDS)
+    if read is None:
         return None
-    out: dict[tuple[str, str], bytes] = {}
-    data, cursor = proc.stdout, 0
-    for spec in specs:
-        newline = data.find(b"\n", cursor)
-        if newline == -1:
-            break
-        header = data[cursor:newline]
-        # A missing object echoes the whole spec back: "<sha>:<path> missing".
-        # Match the suffix, not the field count, because a path may hold spaces.
-        # A submodule whose commit this repository lacks: "<sha> submodule", no body.
-        fields = header.decode("utf-8", "replace").split()
-        if header.endswith(b" missing") or fields[1:] == ["submodule"]:
-            cursor = newline + 1
-            continue
-        if len(fields) < 3 or not fields[2].isdigit():
-            break  # unparseable header: stop rather than misread the stream
-        size = int(fields[2])
-        start = newline + 1
-        if fields[1] == "blob":  # a submodule whose commit is here reads as that commit
-            out[spec] = data[start : start + size]
-        cursor = start + size + 1  # trailing newline
-    return out
+    return {spec: blob for spec, (_, blob) in zip(specs, read, strict=True) if blob is not None}

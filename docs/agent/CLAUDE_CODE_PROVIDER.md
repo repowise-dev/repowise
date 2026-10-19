@@ -87,14 +87,14 @@ booked into the `llm_costs` ledger (at $0.00) so `repowise costs` shows the run.
 whose docstring calls haiku "ample for doc pages". To choose another:
 
 ```bash
-repowise init --provider claude_cli --model claude_cli/claude-sonnet-4-6
+repowise init --provider claude_cli --model claude_cli/claude-sonnet-5-5
 ```
 
 The `claude_cli/` prefix is optional on input — a bare slug works too, and both
 round-trip through `.repowise/config.yaml`:
 
 ```bash
-repowise init --provider claude_cli --model claude-opus-4-6
+repowise init --provider claude_cli --model claude-opus-5-5
 ```
 
 ### Concurrency

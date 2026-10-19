@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Iterable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any
 
 import pytest
@@ -772,3 +772,311 @@ async def test_an_answer_without_figures_stores_no_check(store):
     assert "diagnostics" not in [e["type"] for e in events]
     content = (await store.messages(session.id))[-1].content
     assert "figures" not in content and "diagnostics" not in content
+
+
+# ---------------------------------------------------------------------------
+# find_suspects: chat-only, local backend, follows get_context's admission
+# ---------------------------------------------------------------------------
+
+
+async def test_find_suspects_is_offered_on_the_local_backend_and_runs(store, monkeypatch):
+    import repowise.server.chat_session as chat_session_mod
+    from repowise.server.chat_suspects import SUSPECTS_TOOL
+    from repowise.server.chat_tools import LocalToolBackend
+
+    class FakeLocal(LocalToolBackend):
+        def __init__(self) -> None:
+            super().__init__("/tmp/demo", repo_alias="demo")
+            self.inner = FakeTools()
+
+        def catalog_for(self, policy, principal):
+            return self.inner.catalog_for(policy, principal)
+
+        async def execute(self, name, arguments):
+            return await self.inner.execute(name, arguments)
+
+    seen: list = []
+
+    async def fake_run(arguments, repo):
+        seen.append((arguments, repo))
+        return {"suspects": [{"id": "pr-2", "rank": 1, "signals": {"text": {"rank": 1, "evidence": []}}}]}
+
+    monkeypatch.setattr(chat_session_mod, "run_find_suspects", fake_run)
+    provider = ScriptedProvider([[_tool("t1", SUSPECTS_TOOL, {"symptom": "login fails"})], [_text("pr-2")]])
+    session = await _open(store, provider, tools=FakeLocal())
+    result = await session.send("what broke login?")
+
+    assert SUSPECTS_TOOL in provider.calls[0]["tools"]
+    assert seen == [({"symptom": "login fails"}, "demo")]
+    assert [t.ok for t in result.tool_trace] == [True]
+
+    narrow = ScriptedProvider([[_text("x")]])
+    await (
+        await _open(store, narrow, tools=FakeLocal(), policy=SessionPolicy(tool_allowlist=frozenset({"get_risk"})))
+    ).send("q")
+    assert SUSPECTS_TOOL not in narrow.calls[0]["tools"]
+
+
+# ---------------------------------------------------------------------------
+# chart: chat-only, local backend, one call to a stored view
+# ---------------------------------------------------------------------------
+
+
+class _FakeLocal:
+    """A local backend over FakeTools; built lazily so the import stays in the test."""
+
+    @staticmethod
+    def make():
+        from repowise.server.chat_tools import LocalToolBackend
+
+        class FakeLocal(LocalToolBackend):
+            def __init__(self) -> None:
+                super().__init__("/tmp/demo", repo_alias="demo")
+                self.inner = FakeTools()
+
+            def catalog_for(self, policy, principal):
+                return self.inner.catalog_for(policy, principal)
+
+            async def execute(self, name, arguments):
+                return await self.inner.execute(name, arguments)
+
+        return FakeLocal()
+
+
+async def test_chart_draws_a_dataset_and_the_next_turn_redraws_it(store, monkeypatch):
+    import repowise.server.chat_chart as chat_chart_mod
+    from repowise.server.chat_datasets import DatasetRows
+    from repowise.server.chat_references import CHART_TOOL
+
+    rows = [{"health_band": band} for band in ("good", "good", "fair")]
+
+    async def fake_rows(name, repo):
+        assert (name, repo) == ("files", "demo")
+        return DatasetRows(rows=rows, as_of="4c1e31fe3a9b", stale=False)
+
+    monkeypatch.setattr(chat_chart_mod, "load_rows", fake_rows)
+    spec = {"dataset": "files", "x": "health_band", "kind": "pie"}
+    provider = ScriptedProvider([[_tool("t1", CHART_TOOL, spec)], [_text("two thirds are good")]])
+    session = await _open(store, provider, tools=_FakeLocal.make())
+    events = await _collect(session.stream("health bands as a donut"))
+
+    assert CHART_TOOL in provider.calls[0]["tools"]
+    view = next(e for e in events if e["type"] == "view")["view"]
+    assert view["chart_type"] == "donut" and view["source"]["tool_name"] == CHART_TOOL
+    receipt = json.loads(provider.calls[1]["messages"][-1]["content"])
+    assert receipt["figures"]["total"] == 3 and "kind 'pie' read as 'donut'" in receipt["notes"]
+    stored = (await store.messages(session.id))[-1].content
+    assert [v["chart_type"] for v in stored["views"]] == ["donut"]
+
+    redraw = {"artifact_id": "v1", "view": "chart", "options": {"kind": "table"}}
+    again = ScriptedProvider([[_tool("t2", SHOW_VIEW_TOOL, redraw)], [_text("as a table")]])
+    result = await (
+        await _open(store, again, tools=_FakeLocal.make(), conversation_id=session.id)
+    ).send("show that as a table")
+    assert [v["kind"] for v in result.views] == ["table"]
+    assert result.views[0]["rows"] == view["data"]["rows"]
+
+
+async def test_chart_is_offered_only_on_the_local_backend(store):
+    from repowise.server.chat_references import CHART_TOOL
+
+    remote = ScriptedProvider([[_text("x")]])
+    await (await _open(store, remote)).send("q")
+    assert CHART_TOOL not in remote.calls[0]["tools"]
+
+    narrow = ScriptedProvider([[_text("x")]])
+    policy = SessionPolicy(tool_allowlist=frozenset({"get_risk", SHOW_VIEW_TOOL}))
+    await (await _open(store, narrow, tools=_FakeLocal.make(), policy=policy)).send("q")
+    assert CHART_TOOL not in narrow.calls[0]["tools"]
+
+
+# ---------------------------------------------------------------------------
+# show_view references across the conversation
+# ---------------------------------------------------------------------------
+
+
+def _table(reference: str) -> dict:
+    return {"artifact_id": reference, "view": "table", "options": {"path": "files"}}
+
+
+async def test_a_view_cites_a_result_from_an_earlier_turn_by_its_replayed_id(store):
+    first = ScriptedProvider([[_tool("t1", "get_risk")], [_text("read it")]])
+    session = await _open(store, first)
+    await session.send("risk?")
+
+    def turns(index: int) -> list:
+        if index == 0:
+            replayed = next(m for m in second.calls[0]["messages"] if m["role"] == "tool")
+            # The id is the first key, so an excerpt of a long result still shows it.
+            assert replayed["content"].startswith('{"artifact_id": "')
+            artifact_id = json.loads(replayed["content"])["artifact_id"]
+            return [_tool("t2", SHOW_VIEW_TOOL, _table(artifact_id))]
+        return [_text("charted")]
+
+    second = ScriptedProvider(turns)
+    tools = FakeTools()
+    result = await (await _open(store, second, tools=tools, conversation_id=session.id)).send(
+        "now as a table"
+    )
+
+    assert tools.executed == []
+    assert [view["kind"] for view in result.views] == ["table"]
+    stored = (await store.messages(session.id))[1].content["tool_calls"][0]["artifact"]
+    assert result.views[0]["source"]["artifact_id"] == stored["id"]
+
+
+async def test_latest_reference_resolves_a_call_made_earlier_in_the_same_round(store):
+    provider = ScriptedProvider(
+        [
+            [_tool("t1", "get_risk"), _tool("t2", SHOW_VIEW_TOOL, _table("latest:get_risk"))],
+            [_text("done")],
+        ]
+    )
+    result = await (await _open(store, provider)).send("table of risk")
+    assert [view["kind"] for view in result.views] == ["table"]
+
+
+async def test_an_unknown_reference_lists_the_valid_ones_for_one_retry(store):
+    first = ScriptedProvider([[_tool("t1", "get_risk")], [_text("ok")]])
+    session = await _open(store, first)
+    await session.send("risk?")
+
+    second = ScriptedProvider(
+        [[_tool("t2", SHOW_VIEW_TOOL, _table("placeholder"))], [_text("sorry")]]
+    )
+    await (await _open(store, second, conversation_id=session.id)).send("table")
+
+    error = json.loads(second.calls[1]["messages"][-1]["content"])
+    assert error["error_code"] == "unknown_artifact"
+    assert "latest:<tool_name>" in error["error"]
+    assert [(ref["tool"], ref["age"]) for ref in error["available"]] == [("get_risk", "1 turn ago")]
+
+
+# ---------------------------------------------------------------------------
+# Failures a person can fix end the turn with a plain message, not a crash
+# ---------------------------------------------------------------------------
+
+
+async def test_a_tool_result_holding_a_datetime_is_sent_streamed_and_stored(store):
+    from datetime import UTC, datetime
+
+    class DatedTools(FakeTools):
+        async def execute(self, name, arguments):
+            return {"files": [{"path": "src/a.py", "changed": datetime(2026, 10, 1, tzinfo=UTC)}]}
+
+    provider = ScriptedProvider([[_tool("t1", "get_risk")], [_text("ok")]])
+    session = await _open(store, provider, tools=DatedTools())
+    events = await _collect(session.stream("when?"))
+
+    assert events[-1]["type"] == "done"
+    json.dumps(events)
+    stored = (await store.messages(session.id))[-1].content["tool_calls"][0]["artifact"]["data"]
+    assert stored["files"][0]["changed"].startswith("2026-10-01")
+
+
+_KEY = "sk-ant-" + "a1b2c3d4e5f6g7h8"  # pragma: allowlist secret
+_GOOGLE_URL = "https://generativelanguage.googleapis.com/v1/models?key=AIza" + "SyA1b2c3d4e5f6"
+
+
+def _sdk_status_error(status: int, message: str):
+    import anthropic
+    import httpx
+
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(status, request=request)
+    error = anthropic.AuthenticationError if status == 401 else anthropic.APIStatusError
+    return error(message, response=response, body=None)
+
+
+async def test_an_sdk_auth_error_says_to_check_the_api_key(store):
+    provider = ScriptedProvider([_sdk_status_error(401, f"invalid x-api-key {_KEY}")])
+    result = await (await _open(store, provider)).send("hi")
+
+    assert result.stop_reason == "error"
+    assert "rejected its API key" in result.error
+    assert "Settings" in result.error
+    assert _KEY not in result.error
+
+
+async def test_an_sdk_error_body_is_not_echoed_to_the_person(store):
+    provider = ScriptedProvider([_sdk_status_error(400, f"bad request, echoed key {_KEY}")])
+    result = await (await _open(store, provider)).send("hi")
+
+    assert result.error == (
+        "The test provider failed (APIStatusError, HTTP 400). See the server log for details."
+    )
+
+
+async def test_an_httpx_error_is_not_labelled_a_provider_failure_and_its_key_is_redacted(store):
+    import httpx
+
+    request = httpx.Request("GET", _GOOGLE_URL)
+    leaked = httpx.HTTPStatusError(
+        f"Client error for url {_GOOGLE_URL}", request=request, response=httpx.Response(400)
+    )
+    provider = ScriptedProvider([leaked])
+    result = await (await _open(store, provider)).send("hi")
+
+    assert result.error.startswith("Internal error: HTTPStatusError")
+    assert "provider failed" not in result.error
+    assert "AIza" not in result.error and "key=[redacted]" in result.error
+
+
+async def test_a_provider_that_runs_tools_itself_gets_stamped_json_safe_results(store):
+    from datetime import UTC, datetime
+
+    class DatedTools(FakeTools):
+        async def execute(self, name, arguments):
+            return {"files": [{"path": "src/a.py", "changed": datetime(2026, 10, 1, tzinfo=UTC)}]}
+
+    seen: list = []
+
+    class LoopingProvider(ScriptedProvider):
+        """Runs its tool calls through ``tool_executor``, the way Gemini does."""
+
+        async def stream_chat(self, **kwargs):
+            self.calls.append({"tools": [t["function"]["name"] for t in kwargs["tools"]]})
+            call = ChatToolCall(id="g1", name="get_risk", arguments={})
+            yield ChatStreamEvent(type="tool_start", tool_call=call)
+            result = await kwargs["tool_executor"]("get_risk", {})
+            seen.append(result)
+            yield ChatStreamEvent(type="tool_result", tool_call=call, tool_result_data=result)
+            yield _text("done")
+
+    session = await _open(store, LoopingProvider([]), tools=DatedTools())
+    result = await session.send("when?")
+
+    assert next(iter(seen[0])) == "artifact_id"
+    json.dumps(seen[0])
+    assert [t.ok for t in result.tool_trace] == [True]
+
+
+async def test_a_bug_outside_the_provider_stays_an_internal_error(store):
+    provider = ScriptedProvider([KeyError("boom")])
+    result = await (await _open(store, provider)).send("hi")
+    assert result.error.startswith("Internal error: KeyError")
+
+
+async def test_a_session_without_a_provider_ends_with_a_setup_message(store):
+    from repowise.server.chat_errors import NO_PROVIDER_MESSAGE
+
+    session = await _open(store, None)
+    events = await _collect(session.stream("hi"))
+    assert events == [{"type": "error", "message": NO_PROVIDER_MESSAGE}]
+    assert (await session.send("hi")).error == NO_PROVIDER_MESSAGE
+
+
+async def test_a_citation_line_that_is_not_a_number_is_dropped_not_fatal(store):
+    from repowise.server.schemas.chat import ChatTurnResultResponse
+
+    class RangeTools(FakeTools):
+        async def execute(self, name, arguments):
+            return {"citations": [{"file_path": "src/a.py", "start_line": "10-20", "end_line": 20}]}
+
+    provider = ScriptedProvider([[_tool("t1", "get_risk")], [_text("ok")]])
+    result = await (await _open(store, provider, tools=RangeTools())).send("where?")
+
+    assert [(c["file_path"], c.get("start_line"), c["end_line"]) for c in result.citations] == [
+        ("src/a.py", None, 20)
+    ]
+    ChatTurnResultResponse.model_validate(asdict(result))

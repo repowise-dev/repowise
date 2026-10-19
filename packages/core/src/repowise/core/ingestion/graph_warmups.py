@@ -92,7 +92,7 @@ def _default_package_definers(graph: Any, index: Any, names: set[str]) -> set[st
 
 
 def _warmup_jvm(ctx: ResolverContext) -> None:
-    from .resolvers.jvm_workspace import get_or_build_jvm_index
+    from .resolvers.jvm_workspace import get_or_build_jvm_index, resource_class_names
 
     index = get_or_build_jvm_index(ctx)
     graph = getattr(ctx, "graph", None)
@@ -116,6 +116,9 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
     from .resolvers.jvm_gradle import build_script_class_names
 
     entry_fqns.update(build_script_class_names(ctx))
+    # Classes a main resource file names for a framework to load (Hibernate,
+    # H2 aliases, MyBatis type handlers, P6Spy).
+    entry_fqns.update(resource_class_names(ctx))
 
     root_paths = {path for fqn in entry_fqns for path in index.files_for_fqn(fqn)}
     # A bare name is a default-package class, which the index does not key.

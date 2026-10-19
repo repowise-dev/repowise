@@ -474,13 +474,14 @@ def _registry_shown_plan() -> Any:
     )
 
 
-def shown_plan_predicate(*, include_unverified: bool = False) -> Any:
+def shown_plan_predicate(*, include_unverified: bool = False, file_holds: bool = True) -> Any:
     """Plans whose source biomarker the finding registry does not withhold, on
     files of a language no gate holds refactoring back on.
 
     Plans are persisted whatever the registry says; every surface that lists
     them filters here. A plan with no source biomarker (structural) is shown.
-    ``include_unverified`` opts into the gated languages.
+    ``include_unverified`` opts into the gated languages and the plans on test
+    files; ``file_holds=False`` keeps the test-file plans without that opt-in.
     """
     return and_(
         _registry_shown_plan(),
@@ -489,6 +490,7 @@ def shown_plan_predicate(*, include_unverified: bool = False) -> Any:
             RefactoringSuggestion.file_path,
             RefactoringSuggestion.refactoring_type,
             include_unverified=include_unverified,
+            file_holds=file_holds,
         ),
     )
 

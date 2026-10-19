@@ -33,6 +33,11 @@ const LABELS: Record<ReviewPriority, string> = {
   low: "Below typical",
 };
 
+/** The tercile's word, for a caller that shows priority as quiet context. */
+export function priorityLabel(priority: ReviewPriority): string {
+  return LABELS[priority] ?? LABELS.moderate;
+}
+
 /**
  * Size-and-spread pill. The priority is **repo-relative** (where the commit
  * sits in its own repo's diff-size distribution), not an absolute danger score

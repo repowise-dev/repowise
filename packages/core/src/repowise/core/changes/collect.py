@@ -29,6 +29,7 @@ import structlog
 
 from repowise.core.changes.evidence import (
     EVIDENCE_SCHEMA_VERSION,
+    SUMMARY_SKIPPED_KINDS,
     ChangeEvidence,
     EvidenceInputs,
     EvidenceItem,
@@ -381,12 +382,18 @@ def cached_evidence(row: Any) -> ChangeEvidence | None:
 
 
 def evidence_summary(row: Any) -> dict[str, Any] | None:
-    """Status counts of the kept checklist, or ``None`` when none is kept."""
+    """Status counts of the kept checklist, or ``None`` when none is kept.
+
+    Kinds in ``SUMMARY_SKIPPED_KINDS`` are not counted, so the list's attention
+    mark and the needs-attention filter agree on one set of rows.
+    """
     evidence = cached_evidence(row)
     if evidence is None:
         return None
     counts = {"generated_at": evidence.generated_at, "ok": 0, "attention": 0, "unknown": 0}
     for item in evidence.items:
+        if item.kind in SUMMARY_SKIPPED_KINDS:
+            continue
         # A status this reader does not know is not a pass.
         counts[item.status if item.status in ("ok", "attention") else "unknown"] += 1
     return counts
@@ -719,7 +726,7 @@ async def _provenance(
         return Unavailable("AI attribution is off for this repository")
     if not shas:
         return Unavailable("uncommitted work carries no commit markers")
-    stored: dict[str, tuple[str | None, str | None, int | None]] = {}
+    stored: dict[str, tuple[str | None, str | None, int | None, str | None]] = {}
     for i in range(0, len(shas), 500):
         found = await session.execute(
             select(
@@ -727,15 +734,19 @@ async def _provenance(
                 GitCommit.attribution,
                 GitCommit.agent_name,
                 GitCommit.agent_autonomy_tier,
+                GitCommit.agent_model_id,
             ).where(GitCommit.repository_id == repo_id, GitCommit.sha.in_(shas[i : i + 500]))
         )
-        for sha, attribution, agent, tier in found.tuples():
-            stored[sha] = (attribution, agent, tier)
+        for sha, attribution, agent, tier, model in found.tuples():
+            stored[sha] = (attribution, agent, tier, model)
     commits = []
     for sha in shas:
-        attribution, agent, tier = stored.get(sha, (None, None, None))
+        attribution, agent, tier, model = stored.get(sha, (None, None, None, None))
         label = commit_label(attribution, agent) if sha in stored else UNKNOWN
-        commits.append({"sha": sha, "label": label, "tier": tier if label == "agent" else None})
+        entry = {"sha": sha, "label": label, "tier": tier if label == "agent" else None}
+        if label == "agent":
+            entry.update({k: v for k, v in (("agent", agent), ("model", model)) if v})
+        commits.append(entry)
     block = None
     if row is not None and row.provenance is not None:
         block = provenance_block(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,20 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     # update after every init into a full rebuild.
     "state_only": frozenset({"distill", "editor_files", "events", "hooks", "mcp"}),
 }
+
+
+def _dependency_keys() -> dict[str, frozenset[str]]:
+    """:data:`CONFIG_DEPENDENCY_KEYS` plus the per-provider endpoint sections.
+
+    ``openai: {base_url: ...}`` says where requests go, not what a page says,
+    so moving an endpoint (the web UI's base URL field) must not rebuild the
+    index. Imported here, not at module load: this file is on the hook path.
+    """
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    keys = dict(CONFIG_DEPENDENCY_KEYS)
+    keys["state_only"] = keys["state_only"] | frozenset(PROVIDER_SPECS)
+    return keys
 
 
 class RepoConfigError(ValueError):
@@ -117,6 +132,8 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
 
     import yaml  # type: ignore[import-untyped]
 
+    from repowise.core.fsutils import replace_with_retry
+
     cfg_dir = get_repowise_dir(repo_path)
     cfg_dir.mkdir(parents=True, exist_ok=True)
     target = cfg_dir / CONFIG_FILENAME
@@ -131,11 +148,17 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_name, target)
+        replace_with_retry(tmp_name, target)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
+    # Drop the resolver's parsed copy. Looked up, not imported: when the
+    # resolver was never loaded there is no cache, and importing it here would
+    # pull the provider stack into every config write.
+    resolver = sys.modules.get("repowise.core.providers.llm.resolve")
+    if resolver is not None:
+        resolver.forget_cached(target)
 
 
 def config_fingerprint(repo_path: Path | str) -> str:
@@ -185,10 +208,11 @@ def config_dependency_fingerprints(
     """
     if config is None:
         config = load_repo_config(repo_path)
-    known = set().union(*CONFIG_DEPENDENCY_KEYS.values())
+    dependency_keys = _dependency_keys()
+    known = set().union(*dependency_keys.values())
     grouped: dict[str, Any] = {
         name: {key: config[key] for key in sorted(keys) if key in config}
-        for name, keys in CONFIG_DEPENDENCY_KEYS.items()
+        for name, keys in dependency_keys.items()
     }
     grouped["other"] = {key: config[key] for key in sorted(config) if key not in known}
 

@@ -1,8 +1,9 @@
 """Change Records on the MCP surface.
 
 ``change:<id>`` cards for get_context, recent changes per file behind
-``include=["changes"]`` (get_context, get_risk) and the get_overview change
-summary. All of it is opt-in.
+``include=["changes"]`` (get_context, get_risk), ranked suspects behind
+get_context's ``include=["suspects"]`` and the get_overview change summary.
+All of it is opt-in.
 
 Provenance follows :mod:`repowise.core.attribution`: three-state, coverage
 beside every share, unknown never counted as human, and nothing about AI while
@@ -292,3 +293,30 @@ async def overview_changes(session: Any, repository: Any) -> dict[str, Any]:
         share = attribution_share(labels[AGENT], labels[HUMAN_ATTESTED], len(rows))
         block["provenance"] = _share_block(share, unit="changes")
     return block
+
+
+# -- get_context(include=["suspects"]) -----------------------------------------
+
+#: Suspects listed; ``candidates`` counts the whole window.
+SUSPECTS_CAP = 5
+
+
+async def suspects_block(session: Any, repository: Any, targets: list[str]) -> dict[str, Any]:
+    """Changes merged in the last 14 days ranked against the targets as a symptom.
+
+    File and symbol targets name the symptom's files; every target's text
+    feeds the text signal. A ``change:`` or ``component:`` target is not part
+    of the symptom.
+    """
+    from repowise.core.suspects import Symptom
+    from repowise.core.suspects.index import find_suspects
+
+    symptom_targets = [t for t in targets if not is_change_target(t) and not t.startswith("component:")]
+    files = tuple(dict.fromkeys(t.split("::", 1)[0] for t in symptom_targets))
+    return await find_suspects(
+        session,
+        repository.id,
+        repository.local_path,
+        Symptom(text=" ".join(symptom_targets), files=files),
+        limit=SUSPECTS_CAP,
+    )

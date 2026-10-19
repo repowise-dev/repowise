@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from ..spec import LanguageSpec
 from .asciidoc import SPEC as _ASCIIDOC
+from .astro import SPEC as _ASTRO
 from .c import SPEC as _C
 from .clojure import SPEC as _CLOJURE
 from .cobol import SPEC as _COBOL
@@ -80,6 +81,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # registry built so far, so typescript's grammar has to be loaded first.
     _SVELTE,
     _VUE,
+    _ASTRO,
     _GO,
     _RUST,
     _JAVA,

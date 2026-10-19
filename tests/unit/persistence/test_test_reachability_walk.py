@@ -19,6 +19,8 @@ from repowise.core.analysis.test_reachability import (
     ReachDistance,
     call_graph_from_db,
     call_graph_from_graph,
+    direct_dependents,
+    direct_importers,
     imported_names_by_test,
     reach_into_symbols,
 )
@@ -722,3 +724,87 @@ async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path,
     assert found["src/core/Ky.ts"].tests == ["test/x.test.ts"]
     assert found["src/core/Ky.ts"].via == "import-graph"
     assert "src/retry.ts" not in found
+
+
+async def test_reached_files_are_walked_once_per_index_state(async_session, monkeypatch):
+    import repowise.core.analysis.test_reachability as tr
+
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_a.py": True, "src/a.py": False, "src/b.py": False},
+        edges=[*_calls("tests/test_a.py", "src/a.py")],
+    )
+    loads = 0
+    real = tr.call_graph_from_db
+
+    async def counting(session, repo_id):
+        nonlocal loads
+        loads += 1
+        return await real(session, repo_id)
+
+    monkeypatch.setattr(tr, "call_graph_from_db", counting)
+
+    first = await tr.cached_files_reached_by_tests(async_session, repo.id)
+    second = await tr.cached_files_reached_by_tests(async_session, repo.id)
+
+    assert first == second == frozenset({"src/a.py"})
+    assert loads == 1
+
+
+async def test_reads_over_more_files_than_one_statement_can_bind(async_session):
+    """A repository-wide read binds a variable per file or symbol, past what one
+    SQLite statement accepts (SQLITE_MAX_VARIABLE_NUMBER, 32766)."""
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_a.py": True, "src/a.py": False, "src/b.py": False},
+        edges=[
+            ("tests/test_a.py", "src/a.py", "imports"),
+            ("src/b.py", "src/a.py", "imports"),
+            *_calls("tests/test_a.py", "src/b.py"),
+        ],
+    )
+    files = [f"src/gone_{i}.py" for i in range(40_000)] + ["src/a.py", "src/b.py"]
+    assert await direct_importers(async_session, repo.id, files) == {
+        "tests/test_a.py",
+        "src/b.py",
+    }
+    assert await direct_dependents(async_session, repo.id, files) == {
+        "src/a.py": {"tests/test_a.py", "src/b.py"},
+        "src/b.py": {"tests/test_a.py"},
+    }
+    names = await imported_names_by_test(async_session, repo.id, files, {"tests/test_a.py"})
+    assert names == {"src/a.py": {"tests/test_a.py": frozenset()}}
+
+
+async def test_a_node_listed_twice_across_batches_reads_its_edges_once(async_session):
+    """A repeated input landing in two batches must not repeat its pairs: one
+    ``IN`` list matches a node once however often it is listed."""
+    from repowise.core.analysis.test_reachability import (
+        _IN_BATCH,
+        _edges_from,
+        _edges_into,
+        _imported_names,
+    )
+
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_a.py": True, "src/a.py": False},
+        edges=[("tests/test_a.py", "src/a.py", "imports")],
+    )
+    padding = [f"src/gone_{i}.py" for i in range(_IN_BATCH)]
+    into = await _edges_into(
+        async_session, repo.id, ["src/a.py", *padding, "src/a.py"], ["imports"], frozenset()
+    )
+    assert into == [("tests/test_a.py", "src/a.py")]
+    out = await _edges_from(
+        async_session, repo.id, ["tests/test_a.py", *padding, "tests/test_a.py"], ["imports"]
+    )
+    assert out == [("tests/test_a.py", "src/a.py")]
+    names = await _imported_names(async_session, repo.id, ["src/a.py", *padding, "src/a.py"])
+    assert names == [("tests/test_a.py", "src/a.py", frozenset())]

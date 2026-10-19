@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException, Query, Request
+import json
+
+from fastapi import Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +31,9 @@ from .statuses import (
     parse_status_filter,
 )
 
+#: The findings list's held-back counts (see ``list_health_findings``).
+GATED_HEADER = "X-Repowise-Gated"
+
 
 @router.get(
     "/api/repos/{repo_id}/health/findings",
@@ -36,6 +41,7 @@ from .statuses import (
 )
 async def list_health_findings(
     repo_id: str,
+    response: Response,
     biomarker_type: str | None = Query(None),
     file_path: str | None = Query(None),
     min_severity: str | None = Query(None, description="Severity floor"),
@@ -83,6 +89,10 @@ async def list_health_findings(
     # The exclusion holds for the list that ranks the whole repository against
     # itself. See the docstring for the three ways out.
     ranks_everything = biomarker_type is None and not include_zero_impact
+    # A file's list is the set the work queue counted its row from, and that
+    # queue reads history markers (it counts history-only files itself), so
+    # one file's findings keep them; the repo-wide list holds them back.
+    hold_history = file_path is None
     findings = await crud.get_health_findings(
         session,
         repo_id,
@@ -96,6 +106,7 @@ async def list_health_findings(
             tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if ranks_everything else None
         ),
         include_unverified=include_unverified,
+        hold_history=hold_history,
     )
     # A finding carries a path, not ``is_test``, so narrowing it needs the
     # metric rows that do. Read them only when the answer depends on them:
@@ -108,6 +119,17 @@ async def list_health_findings(
     if parse_counts(counts) == "code_shape":
         findings = split_by_origin(findings)[0]
     shown = findings[:limit]
+    # The body is a list, so what a language gate or file hold left out rides
+    # in a header: ``{key: {count, reason}}``, absent when nothing was held.
+    gated = await crud.gated_health_counts(
+        session,
+        repo_id,
+        file_path=file_path,
+        include_unverified=include_unverified,
+        hold_history=hold_history,
+    )
+    if gated:
+        response.headers[GATED_HEADER] = json.dumps(gated, separators=(",", ":"))
     # Measured over every open finding on each file, whatever this list kept.
     reasons = await crud.health_finding_priorities(session, repo_id, shown)
     return await _attach_symbol_ids(

@@ -51,6 +51,8 @@ class ProviderSpec:
     base_url_envs: tuple[str, ...] = ()
     #: Runs with no API key: out-of-band login, a local model, or a proxy.
     keyless: bool = False
+    #: Runs with no key when ``base_url`` is a local server (LM Studio, vLLM).
+    keyless_on_loopback: bool = False
     #: Shells out with the repo as its working directory.
     needs_repo_cwd: bool = False
     #: Runs on this machine, so high concurrency can time out.
@@ -112,7 +114,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         impl=f"{_LLM}.gemini:GeminiProvider",
         label="Google Gemini",
         default_model="gemini-3.5-flash-lite",
-        models=("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"),
+        models=("gemini-3.5-flash-lite", "gemini-4-argon", "gemini-3.8-flash"),
         api_key_envs=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         base_url_envs=("GEMINI_BASE_URL",),
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=4_000_000),
@@ -127,7 +129,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         impl=f"{_LLM}.anthropic:AnthropicProvider",
         label="Anthropic",
         default_model="claude-haiku-5-5",
-        models=("claude-haiku-5-5", "claude-sonnet-4-6", "claude-opus-4-6"),
+        models=("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"),
         api_key_envs=("ANTHROPIC_API_KEY",),
         base_url_envs=("ANTHROPIC_BASE_URL",),
         rate_limit=RateLimitConfig(requests_per_minute=2_000, tokens_per_minute=1_600_000),
@@ -141,9 +143,10 @@ _SPECS: tuple[ProviderSpec, ...] = (
         impl=f"{_LLM}.openai:OpenAIProvider",
         label="OpenAI",
         default_model="gpt-5.6-luna",
-        models=("gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"),
+        models=("gpt-5.6-luna", "gpt-6-luna", "gpt-6-sol"),
         api_key_envs=("OPENAI_API_KEY",),
         base_url_envs=("OPENAI_BASE_URL",),
+        keyless_on_loopback=True,
         rate_limit=RateLimitConfig(requests_per_minute=5_000, tokens_per_minute=4_000_000),
         package="openai",
         autodetect_rank=1,
@@ -157,9 +160,9 @@ _SPECS: tuple[ProviderSpec, ...] = (
         default_model="google/gemini-3.5-flash-lite",
         models=(
             "google/gemini-3.5-flash-lite",
+            "openai/gpt-6-luna",
             "openai/gpt-5.6-luna",
-            "anthropic/claude-haiku-4-5",
-            "anthropic/claude-sonnet-5",
+            "google/gemini-3.8-flash",
         ),
         api_key_envs=("OPENROUTER_API_KEY",),
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
@@ -172,8 +175,8 @@ _SPECS: tuple[ProviderSpec, ...] = (
         picker_rank=3,
         impl=f"{_LLM}.deepseek:DeepSeekProvider",
         label="DeepSeek",
-        default_model="deepseek-v4-flash",
-        models=("deepseek-v4-flash", "deepseek-v4-pro"),
+        default_model="deepseek-flash",
+        models=("deepseek-flash", "deepseek-v4-pro"),
         api_key_envs=("DEEPSEEK_API_KEY",),
         base_url_envs=("DEEPSEEK_BASE_URL",),
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
@@ -187,7 +190,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         impl=f"{_LLM}.kimi:KimiProvider",
         label="Kimi",
         default_model="kimi-for-coding",
-        models=("kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.5", "kimi-k2.6"),
+        models=("kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6"),
         api_key_envs=("KIMI_API_KEY",),
         base_url_envs=("KIMI_BASE_URL",),
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
@@ -203,9 +206,9 @@ _SPECS: tuple[ProviderSpec, ...] = (
         default_model="mistral/mistral-small-latest",
         models=(
             "mistral/mistral-small-latest",
-            "openai/gpt-4o-mini",
-            "anthropic/claude-haiku-4-5",
-            "google/gemini-2.5-flash",
+            "openai/gpt-latest",
+            "anthropic/claude-sonnet-latest",
+            "vertex/gemini-flash-latest",
         ),
         api_key_envs=("EDENAI_API_KEY",),
         base_url_envs=("EDENAI_BASE_URL",),
@@ -237,8 +240,8 @@ _SPECS: tuple[ProviderSpec, ...] = (
         picker_rank=11,
         impl=f"{_LLM}.litellm:LiteLLMProvider",
         label="LiteLLM",
-        default_model="groq/llama-3.1-70b-versatile",
-        models=("groq/llama-3.1-70b-versatile",),
+        default_model="groq/openai/gpt-oss-120b",
+        models=("groq/openai/gpt-oss-120b",),
         api_key_envs=("LITELLM_API_KEY",),
         base_url_envs=("LITELLM_BASE_URL", "LITELLM_API_BASE"),
         keyless=True,
@@ -255,8 +258,8 @@ _SPECS: tuple[ProviderSpec, ...] = (
         default_model="claude_cli/claude-haiku-5-5",
         models=(
             "claude_cli/claude-haiku-5-5",
-            "claude_cli/claude-sonnet-4-6",
-            "claude_cli/claude-opus-4-6",
+            "claude_cli/claude-sonnet-5-5",
+            "claude_cli/claude-opus-5-5",
         ),
         keyless=True,
         # Not needs_repo_cwd: it runs in a scratch dir so the repo's CLAUDE.md
@@ -287,7 +290,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         impl=f"{_LLM}.opencode:OpenCodeProvider",
         label="OpenCode (Local CLI)",
         default_model="opencode/default",
-        models=("opencode/default", "opencode/openai/gpt-5", "opencode/deepseek/deepseek-v4-pro"),
+        models=("opencode/default", "opencode/openai/gpt-6-luna", "opencode/deepseek/deepseek-v4-pro"),
         keyless=True,
         needs_repo_cwd=True,
         local=True,

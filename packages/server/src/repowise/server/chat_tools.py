@@ -72,15 +72,16 @@ def get_tool_schemas_for_llm(
     return tool_schemas(get_tool_catalog(repo_path, principal))
 
 
-def _make_json_serializable(obj: Any) -> Any:
+def make_json_serializable(obj: Any) -> Any:
+    """*obj* as plain JSON values; a value JSON has no type for becomes its string."""
     if obj is None or isinstance(obj, (bool, int, float, str)):
         return obj
     if isinstance(obj, dict):
-        return {str(key): _make_json_serializable(value) for key, value in obj.items()}
+        return {str(key): make_json_serializable(value) for key, value in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [_make_json_serializable(item) for item in obj]
+        return [make_json_serializable(item) for item in obj]
     if hasattr(obj, "__dict__"):
-        return _make_json_serializable(vars(obj))
+        return make_json_serializable(vars(obj))
     return str(obj)
 
 
@@ -145,7 +146,7 @@ async def execute_entry(
     try:
         scoped_arguments = dict(arguments)
         _scope_repo_arg(entry, scoped_arguments, repo, pinned)
-        return _make_json_serializable(await entry.fn(**scoped_arguments))
+        return make_json_serializable(await entry.fn(**scoped_arguments))
     except Exception as exc:
         logger.exception("Tool execution failed: %s", entry.name)
         return {"error": f"{type(exc).__name__}: {exc}", "error_code": "tool_failed"}

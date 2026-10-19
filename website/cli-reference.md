@@ -59,7 +59,7 @@ repowise init [PATH] [OPTIONS]
 | `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `--resume` | flag | false | Resume from last checkpoint after an interruption |
 | `--force` | flag | false | Regenerate all pages even if up to date |
-| `--commit-limit` | int | 500 | Max commits per file for git analysis (max 5000, saved to config) |
+| `--commit-limit` | int | 5000 | Max commits per file for git analysis (max 10000, saved to config) |
 | `--follow-renames` | flag | false | Track file renames in git history (saved to config) |
 | `--no-claude-md` | flag | false | Skip generating `.claude/CLAUDE.md` |
 | `--agents` / `--no-agents` | flag | config | Generate or skip managed `AGENTS.md` for Codex |
@@ -849,7 +849,7 @@ max_tokens: 16384
 exclude_patterns:
   - vendor/
   - "*.generated.*"
-commit_limit: 500
+commit_limit: 5000
 follow_renames: false
 ```
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -39,6 +39,9 @@ class Population:
     matched_modules: set[str]
     scoped: bool
     effective_targets: list[str]
+    #: Every stored metric row by path, before any narrowing: the file holds
+    #: read a finding's file origin and test flag off it.
+    files: dict[str, Any] = field(default_factory=dict)
 
     @property
     def code_shape(self) -> bool:
@@ -129,4 +132,5 @@ async def load_population(
         matched_modules=matched_modules,
         scoped=scoped,
         effective_targets=file_targets if scoped else [],
+        files={m.file_path: m for m in indexed_rows},
     )

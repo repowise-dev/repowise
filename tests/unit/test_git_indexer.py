@@ -448,6 +448,43 @@ class TestStableClassification:
         assert authors["Alice"]["last_commit_ts"] < authors["Bob"]["last_commit_ts"]
         assert authors["Bob"]["last_commit_ts"] == bob_last
 
+    def test_top_authors_carry_each_authors_own_recent_commit_count(self) -> None:
+        """Each top-author entry records how many of ITS OWN commits on this
+        file fall in the 90-day window, not the file's own window-wide count (#2862)."""
+        import json
+
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo = MagicMock()
+
+        now = datetime.now(UTC)
+        # A bare MagicMock resolves ``float(repo.head.commit.committed_date)``
+        # to 1.0 (its default __float__), anchoring the 90-day window at the
+        # epoch instead of raising and falling back to wall-clock "now" — so
+        # the anchor must be set explicitly for the window to mean anything.
+        mock_repo.head.commit.committed_date = int(now.timestamp())
+        # Alice: one commit 200 days ago (outside the window) and one 10 days
+        # ago (inside). Bob: one commit 150 days ago (outside) only.
+        specs = [
+            ("Alice", "alice@example.com", now - timedelta(days=200)),
+            ("Alice", "alice@example.com", now - timedelta(days=10)),
+            ("Bob", "bob@example.com", now - timedelta(days=150)),
+        ]
+        log_lines = []
+        for i, (name, email, when) in enumerate(specs):
+            ts = int(when.timestamp())
+            log_lines.append(
+                f"\x00sha{i:04d}\x1f{name}\x1f{email}\x1f{name}\x1f{email}\x1f{ts}\x1f{_iso(ts)}\x1f\x1ffeat: c{i}\x1f"
+            )
+        mock_repo.git.log.return_value = "\n".join(log_lines)
+
+        meta = indexer._index_file("shared.py", mock_repo)
+        authors = {a["name"]: a for a in json.loads(meta["top_authors_json"])}
+
+        assert authors["Alice"]["commit_count"] == 2
+        assert authors["Alice"]["recent_commit_count"] == 1
+        assert authors["Bob"]["commit_count"] == 1
+        assert authors["Bob"]["recent_commit_count"] == 0
+
 
 class TestGitWindowAnchor:
     """Recency windows are anchored to the indexed commit by default;

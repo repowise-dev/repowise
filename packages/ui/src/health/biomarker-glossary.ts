@@ -9,7 +9,7 @@
  * map, so agent prompts and the page name a marker the same way.
  */
 
-import { BIOMARKER_LABELS } from "./generated/biomarker-labels";
+import { BIOMARKER_LABELS, canonicalBiomarker } from "./generated/biomarker-labels";
 
 export type BiomarkerCategory =
   | "structural_complexity"
@@ -66,7 +66,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.brain_method,
     category: "structural_complexity",
     description:
-      "A function that knows too much — high cyclomatic complexity, many parameters, and deep nesting all at once. Hard to test, easy to break.",
+      "A function that knows too much — high cyclomatic complexity, many parameters, and deep nesting all at once. Hard to test, easy to break. Advisory: its complexity and size findings already cost this file points, so it costs none of its own.",
   },
   nested_complexity: {
     label: BIOMARKER_LABELS.nested_complexity,
@@ -74,11 +74,11 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "Deeply nested control flow (≥4 levels). Cognitive load grows non-linearly with nesting; flatten with early returns or extracted helpers.",
   },
-  bumpy_road: {
-    label: BIOMARKER_LABELS.bumpy_road,
+  repeated_nesting: {
+    label: BIOMARKER_LABELS.repeated_nesting,
     category: "structural_complexity",
     description:
-      "A function with multiple shallow complexity bumps stitched together. No single block is bad, but the whole reads as a sequence of mini-functions.",
+      "A function with several separate nested blocks stitched together. No single block is bad, but the whole reads as a sequence of mini-functions.",
   },
   complex_method: {
     label: BIOMARKER_LABELS.complex_method,
@@ -366,7 +366,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
   return (
-    BIOMARKER_GLOSSARY[name] ?? {
+    BIOMARKER_GLOSSARY[canonicalBiomarker(name)] ?? {
       label: name.replace(/_/g, " "),
       category: "size_and_complexity",
       description: "",
@@ -395,6 +395,7 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "assertion_free_test",
   "mock_saturated_test",
   "hidden_coupling",
+  "brain_method",
 ]);
 
 /**
@@ -411,7 +412,6 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
  */
 export const MAINTAINABILITY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "low_cohesion",
-  "brain_method",
   "primitive_obsession",
   "dry_violation",
   "error_handling",

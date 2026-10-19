@@ -48,9 +48,18 @@ def _derive(case: dict[str, Any]) -> dict[str, Any]:
     return part
 
 
+@pytest.mark.parametrize("x", [True, math.inf, math.nan])
+def test_a_scatter_x_is_a_finite_number_as_typescript_checks(x: Any) -> None:
+    part = copy.deepcopy(FIXTURE["valid"]["c5"])
+    part["data"]["rows"][0]["max_ccn"] = x
+    with pytest.raises(ValidationError):
+        PART.validate_python(part)
+
+
 def test_the_vocabulary_and_limits_are_shared() -> None:
     assert {
         "schema_version": views.VIEW_SCHEMA_VERSION,
+        "schema_versions": list(views.VIEW_SCHEMA_VERSIONS),
         "max_wire_number": evidence.MAX_WIRE_NUMBER,
         "view_kinds": list(views.VIEW_KINDS),
         "chart_types": list(views.CHART_TYPES),

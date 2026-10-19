@@ -121,7 +121,16 @@ async def test_naming_no_context_asks_about_production(
     assert body["items"][0]["opportunity_id"] == opportunity_id
     assert body["summary"]["repository_total"] == 2
     assert "ignored_arguments" not in body
-    assert {entry["value"] for entry in body["facets"]["context"]} == {"production", "test"}
+    # The dashboard's facets count inside the scope it asked for; the other
+    # contexts are counted by the scope sizes, not by this scope's facets.
+    assert {entry["value"] for entry in body["facets"]["context"]} == {"production"}
+    assert body["scopes"]["all"] == 2
+
+
+#: The dashboard's "Everything" scope: every context, state, proof and role.
+_EVERYTHING = {"context": "all", "actionability": "all", "proof": "all", "role": "all"}
+#: Every production cause.
+_PRODUCTION = {"actionability": "all", "proof": "all", "role": "all"}
 
 
 async def test_opportunities_are_grouped_bounded_and_split_by_context(
@@ -250,11 +259,22 @@ async def test_facets_keep_the_alternatives_a_selected_filter_would_erase(
 ) -> None:
     """A facet counted under its own filter reports every other value as zero."""
     repo_id, _ = await _seed(app, client)
-    facets = (await _page(client, repo_id, context="test"))["facets"]
+    facets = (await _page(client, repo_id, **{**_EVERYTHING, "context": "test"}))["facets"]
     assert {entry["value"] for entry in facets["context"]} == {"production", "test"}
     assert {entry["value"]: entry["total"] for entry in facets["context"]}["production"] == 1
     # A filter on another dimension does narrow this one.
-    assert (await _page(client, repo_id, boundary="network"))["facets"]["context"] == []
+    narrowed = await _page(client, repo_id, **_EVERYTHING, boundary="network")
+    assert narrowed["facets"]["context"] == []
+
+
+async def test_scoped_facets_sum_to_the_total_the_scope_lists(app, client: AsyncClient) -> None:
+    """The lede figure is the scope's total, and the actionability bar sums to it."""
+    repo_id, _ = await _seed(app, client)
+    for params, scope in (({}, "now"), (_PRODUCTION, "production"), (_EVERYTHING, "all")):
+        page = await _page(client, repo_id, **params)
+        assert page["total"] == page["scopes"][scope], scope
+        states = sum(entry["total"] for entry in page["facets"]["actionability"])
+        assert states == page["total"], scope
 
 
 def _filesystem_finding(path: str, line: int, path_nodes: list[str]) -> HealthFindingData:
@@ -298,7 +318,8 @@ async def test_expected_sits_out_of_the_default_queue_but_not_the_facet(
     assert all(item["actionability_state"] != "expected" for item in default["items"])
     assert default["summary"]["repository_total"] >= default["total"]
 
-    facets = default["facets"]
+    # Counted inside the production scope, where it can be listed.
+    facets = (await _page(client, repo_id, **_PRODUCTION))["facets"]
     assert {entry["value"]: entry["total"] for entry in facets["actionability"]}.get(
         "expected"
     ) == 1
@@ -349,7 +370,8 @@ async def test_the_default_queue_reports_what_it_leaves_out(app, client: AsyncCl
             "background_unproven": 0,
         },
     }
-    proof = {entry["value"]: entry["total"] for entry in default["facets"]["proof"]}
+    production = await _page(client, repo_id, **_PRODUCTION)
+    proof = {entry["value"]: entry["total"] for entry in production["facets"]["proof"]}
     assert proof["unproven"] >= 1
     asked = await _page(client, repo_id, actionability="investigate")
     assert [item["intervention_symbol"] for item in asked["items"]] == ["src/clients.py::each"]
@@ -563,7 +585,8 @@ async def test_cold_and_unproven_background_roles_sit_one_filter_away(
     assert [item["intervention_symbol"] for item in default["items"]] == ["src/c.py::run"]
     excluded = default["summary"]["default_queue"]["excluded"]
     assert (excluded["cold_role"], excluded["background_unproven"]) == (1, 1)
-    roles = {entry["value"]: entry["total"] for entry in default["facets"]["role"]}
+    production = await _page(client, repo_id, **_PRODUCTION)
+    roles = {entry["value"]: entry["total"] for entry in production["facets"]["role"]}
     assert roles == {"request": 1, "cli": 1, "scheduled_job": 1}
     assert default["items"][0]["facets"]["execution_role"] == "request"
 
@@ -646,3 +669,16 @@ async def test_a_finding_stored_before_role_owner_is_keyed_on_its_loop_owner(
     assert details["src/c.py"]["execution_role"] == "request"
     assert details["src/e.py"]["role_owner"] == "src/e.py::load"
     assert details["src/e.py"]["execution_role"] == "event_consumer"
+
+
+async def test_an_opened_area_narrows_the_rows_but_not_the_scope_sizes(
+    app, client: AsyncClient
+) -> None:
+    repo_id, _ = await _seed(app, client)
+    whole = await _page(client, repo_id, **_EVERYTHING)
+    assert whole["areas"]["total"] == whole["total"]
+    assert sum(entry["total"] for entry in whole["areas"]["items"]) + whole["areas"]["more"] == whole["total"]
+    area = whole["areas"]["items"][0]["area"]
+    opened = await _page(client, repo_id, **_EVERYTHING, area=area)
+    assert opened["total"] == whole["areas"]["items"][0]["total"]
+    assert opened["scopes"] == whole["scopes"]

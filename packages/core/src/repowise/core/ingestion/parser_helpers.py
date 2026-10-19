@@ -1,7 +1,7 @@
 """Stateless AST helper functions used by :class:`~.parser.ASTParser`.
 
 Language-neutral tree-sitter utilities live here; per-language helpers live in
-:mod:`.lang_helpers` and are re-exported so ``parser.py`` imports one module.
+:mod:`.lang_helpers` and are re-exported so the ``parser`` package imports one module.
 No imports from ``parser``, so there is no import cycle.
 """
 
@@ -344,6 +344,9 @@ def _count_arguments(arg_node: Node) -> int:
     ways (``comment``, ``line_comment``, ``block_comment``), hence the
     substring test rather than a fixed set.
     """
+    if arg_node.type == "annotated_lambda":
+        # Kotlin ``foo { .. }``: the lambda is the only argument.
+        return 1
     skip_types = frozenset({"(", ")", ",", "[", "]"})
     listed = sum(
         1

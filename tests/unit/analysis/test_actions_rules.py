@@ -173,9 +173,56 @@ def test_regressions_over_three_files_roll_up() -> None:
     out = _run(code.fresh_regressions, _facts(recent_findings=found))
     (a,) = out.actions
     assert a.target_kind == "repo"
-    assert a.severity == "critical"
+    assert a.severity == "high"
     assert a.includes[0] == "src/worst.py"
     assert set(a.includes) == {"src/worst.py", *(f"src/f{i}.py" for i in range(4))}
+
+
+def test_regressions_with_many_critical_findings_top_out_at_high() -> None:
+    """heyputer/everything: 132 detector-critical findings in a week of commits
+    read as a CRITICAL action. The count stays a fact; the label stays high."""
+    found = tuple(
+        _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}") for i in range(40)
+    )
+    (rollup,) = _run(code.fresh_regressions, _facts(recent_findings=found)).actions
+    (single,) = _run(code.fresh_regressions, _facts(recent_findings=found[:1])).actions
+    for a in (rollup, single):
+        assert a.severity == "high"
+        assert dict((w.label, w.value) for w in a.why)["critical findings"] == (
+            "40" if a is rollup else "1"
+        )
+
+
+def test_a_week_with_critical_findings_still_outranks_one_without() -> None:
+    critical = _run(
+        code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py", severity="critical"),))
+    ).actions[0]
+    high = _run(code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py"),))).actions[0]
+    assert critical.effective_value == SEVERITY_VALUE["critical"]
+    assert high.effective_value == SEVERITY_VALUE["high"]
+    assert critical.effective_priority > high.effective_priority
+
+
+def test_only_a_live_credential_is_critical() -> None:
+    """Every rule over facts that would push it hardest: the one critical
+    action is the credential in the working tree."""
+    hot = _file(
+        "src/hot.py", commits_90d=80, fix_commits_90d=40, dependents=50, lead=_LEAD,
+        last_commit_at=ANCHOR - timedelta(days=1), line_coverage_pct=10.0,
+    )
+    facts = _facts(
+        [hot],
+        recent_findings=tuple(
+            _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}") for i in range(10)
+        ),
+        secrets=(SecretFacts("src/config.py", "hardcoded_secret", 4, 'API_KEY = "sk_live_abc1"'),),
+        fix_first=_fix_items(),
+    )
+    view = compose_actions(facts, now=NOW)
+    week = view["horizons"]["week"]["actions"]
+    assert [a["rule"] for a in week if a["severity"] == "critical"] == ["live_secret"]
+    # The secret still leads, and the week's regressions follow it in the same tier.
+    assert [a["rule"] for a in week[:2]] == ["live_secret", "fresh_regressions"]
 
 
 def test_regressions_unavailable_store() -> None:

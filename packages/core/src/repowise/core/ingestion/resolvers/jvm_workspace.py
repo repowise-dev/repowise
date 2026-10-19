@@ -517,6 +517,64 @@ def _scan_spring_autoconfig(
     return {k: tuple(v) for k, v in result.items()}
 
 
+#: Runtime resource files that name a class for a framework to load: Hibernate
+#: ``metadata_builder_contributor`` in ``application.yml``, an H2 ``CREATE
+#: ALIAS ... FOR "pkg.Cls.method"`` in an init ``.sql``, a MyBatis
+#: ``typeHandler=`` in a mapper ``.xml``, a P6Spy ``logMessageFormat=`` in a
+#: ``.properties``. Main resources only: a class named by test resources alone
+#: is not live code.
+_RESOURCE_CLASS_FILES: tuple[str, ...] = tuple(
+    f"src/main/resources/*{suffix}" for suffix in (".xml", ".yml", ".yaml", ".properties", ".sql")
+)
+#: A dotted name ending in a capitalised segment: ``com.acme.db.JsonTypeHandler``,
+#: also out of ``com.acme.db.JsonTypeHandler.parse``. Only a name that resolves
+#: to a class in the repository counts, so a framework FQN matches nothing.
+_RESOURCE_FQN_RE = re.compile(r"(?<![\w.$])((?:[a-z_][a-z0-9_]*\.)+[A-Z][A-Za-z0-9_]*)")
+#: Comments per resource format: a class named only in one is not loaded.
+#: XML ``<!-- -->``; YAML ``#`` at a line start or after whitespace;
+#: ``.properties`` comment lines (``#`` or ``!``); SQL ``--`` and ``/* */``.
+_YAML_COMMENT_RE = re.compile(r"(?:^|(?<=\s))#[^\n]*")
+_RESOURCE_COMMENT_RE: dict[str, re.Pattern[str]] = {
+    ".xml": re.compile(r"<!--.*?-->", re.DOTALL),
+    ".yml": _YAML_COMMENT_RE,
+    ".yaml": _YAML_COMMENT_RE,
+    ".properties": re.compile(r"^[ \t]*[#!][^\n]*", re.MULTILINE),
+    ".sql": re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL),
+}
+#: Data dumps (a seed ``.sql`` of many megabytes) are skipped unread.
+#: Ceiling: a class named only inside such a file is missed.
+_RESOURCE_MAX_BYTES = 1_000_000
+
+
+def resource_class_names(ctx: ResolverContext) -> set[str]:
+    """Fully qualified class names written in a module's main resource files.
+
+    The resource-file counterpart of ``META-INF/services`` and of the Gradle
+    names in ``jvm_gradle.build_script_class_names``: a framework reads the
+    name and loads the class by reflection, so no source refers to it.
+    """
+    names: set[str] = set()
+    if ctx.repo_path is None:
+        return names
+    for resource in glob_via(
+        getattr(ctx, "walk_snapshot", None),
+        ctx.repo_path,
+        _RESOURCE_CLASS_FILES,
+        prune_nested_git=ctx.prune_nested_git,
+    ):
+        try:
+            if resource.stat().st_size > _RESOURCE_MAX_BYTES:
+                continue
+            text = resource.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        comments = _RESOURCE_COMMENT_RE.get(resource.suffix.lower())
+        if comments is not None:
+            text = comments.sub(" ", text)
+        names.update(_RESOURCE_FQN_RE.findall(text))
+    return names
+
+
 def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
     """Build the JVM workspace index from all ``.java`` and ``.kt`` files in the path set.
 

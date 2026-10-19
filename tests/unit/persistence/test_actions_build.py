@@ -216,7 +216,12 @@ def test_a_store_that_fails_to_build_costs_only_itself() -> None:
     assert facts.secrets
 
 
-def test_only_a_recent_authored_code_shape_regression_is_a_candidate() -> None:
+def test_only_a_recent_authored_code_shape_regression_is_a_candidate(monkeypatch) -> None:
+    # No shipped row is gated: run on the audit's gated table.
+    from repowise.core.analysis import finding_registry
+    from tests.unit.server.mcp.test_language_gates import AUDIT_GATED
+
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", AUDIT_GATED)
     """Each condition alone keeps a commit-health row out of the recent findings."""
     from types import SimpleNamespace
 

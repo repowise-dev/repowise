@@ -113,3 +113,44 @@ django, pandas, litellm and langfuse: 67 of 67 named the change as the cause
 (95% Wilson interval 94.6% to 100%; regression 47, caused by 12, broken by 8). `Fixes #N` (about 2 of
 7), "introduced in #N" (about 5 of 14) and a fix commit quoting a sha (0 of
 15) fell below 90% and are not read.
+
+## Suspects ranking: measured
+
+`repowise suspects` (`core/suspects/`) ranks the Change Records merged before a
+symptom and names no cause, so it stays clear of the inducing-commit claim above.
+It was preregistered (gate: the explicitly named change in the top 5 for at least
+60% of issues pooled, at least 15 points over the better of recency and shared
+files, no repo losing on MRR) with ground truth from reverts and fixes that name
+the change (`This reverts commit`, `Regression in <sha>`, `Fixes: <sha>`), never
+from blame. Each link class was hand-checked blind with 20% decoys (no decoy
+passed); every class used scored at least 95%, and django's `Fixes #N` class
+(25%) was dropped because `#N` names a Trac ticket there.
+
+Symptom: the closed issue's text as filed; candidates: the 14 days before it;
+index facts from a monthly snapshot before the issue. Trailers that name people
+(`Signed-off-by`, `Co-authored-by`, `Reviewed-By`, any trailer with an email)
+are excluded from the text index; the figures below are from the rerun with
+them excluded, on the same items and snapshots (before: node MRR 0.354, pooled
+MRR 0.450, interval +0.256 to +0.535; every hit@5 unchanged).
+
+| Arm (hit@5 / MRR) | django (18) | node (25) | pooled (43) |
+|---|---|---|---|
+| Fused ranking | 0.833 / 0.582 | 0.560 / 0.358 | 0.674 / 0.452 |
+| Shared files | 0.389 / 0.333 | 0.200 / 0.197 | 0.279 / 0.254 |
+| Newest first | 0.111 / 0.103 | 0.160 / 0.127 | 0.140 / 0.117 |
+
+The lift over shared files is +0.395 hit@5 (95% bootstrap interval +0.233 to
++0.558). Two limits come with it: most regressions surface later than 14 days
+(window misses: django 91%, node 62%), and those issues are outside the scored
+set. Text match carries most of the ranking; dropping recency scored higher on
+these repos, but the test repos were scored once and a change to the fusion
+needs a new held-out set.
+
+Known limits: symptom files map onto the files tracked at HEAD, so a file
+renamed or deleted inside the window may name nothing; and the trace signal
+matches frame function names by their last segment only, so a generic name
+(`run`, `get`, `handle`) can match unrelated changes. Changing that matching
+changes the ranking and needs a new freeze. Frame function names are matched against
+the names in diff hunk headers only, so a change that adds a whole file gets
+file-level but not function-level trace evidence.
+

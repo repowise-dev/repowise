@@ -184,3 +184,34 @@
     )
   ) @call.site
 )
+
+; Chained on a call anywhere in the run: ...a(args).b(args).c(args).
+(_
+  (selector
+    (argument_part)
+  )
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.receiver_call
+    )
+  )
+  .
+  (selector
+    (argument_part)
+  )
+  .
+  (selector
+    [
+      (unconditional_assignable_selector (identifier) @call.target)
+      (conditional_assignable_selector (identifier) @call.target)
+    ]
+  )
+  .
+  (selector
+    (argument_part
+      (arguments) @call.arguments
+    )
+  ) @call.site
+)
+

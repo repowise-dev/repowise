@@ -166,6 +166,11 @@ async def test_detail_carries_evidence_only_when_asked_and_keeps_it(
         "value": {"introduced": 0},
         "details": [],
         "source": "change health",
+        # Worded by the client from a key and its numbers.
+        "line": {
+            "key": "health_delta_partial",
+            "params": {"introduced": 0, "worsened": 0, "resolved": 0},
+        },
     }
     # Kept: the next read builds nothing; refresh builds again.
     again = (await client.get(base, params={"evidence": "true"})).json()
@@ -380,3 +385,23 @@ async def test_a_refresh_is_not_swallowed_by_an_outcomes_read_in_flight(
         await asyncio.sleep(0.01)
     done = (await client.get(base, params={"evidence": "true"})).json()
     assert [i["kind"] for i in done["evidence"]["items"]] == ["health_delta", "outcomes"]
+
+
+@pytest.mark.asyncio
+async def test_suspects_rank_the_window_with_evidence(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    url = f"/api/repos/{repo['id']}/suspects"
+
+    got = (
+        await client.post(
+            url, json={"symptom": "crash", "since": "2026-01-01T00:00:00Z", "until": "2026-01-10T00:00:00Z"}
+        )
+    ).json()
+    assert got["candidates"] == 3
+    assert [s["id"] for s in got["suspects"]][:1] == ["pr-2"]
+    assert got["suspects"][0]["signals"]["text"]["evidence"] == ["term crash"]
+    assert "probability" in got["note"]
+
+    assert (await client.post(url, json={})).status_code == 422
+    assert (await client.post(url, json={"symptom": "x", "until": "soon"})).status_code == 422

@@ -12,11 +12,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+
 
 async def index_repo_full(
     repo_path: Path,
     *,
-    commit_depth: int = 500,
+    commit_depth: int = _DEFAULT_COMMIT_LIMIT,
     exclude_patterns: list[str] | None = None,
     include_submodules: bool = False,
     include_nested_repos: bool = False,

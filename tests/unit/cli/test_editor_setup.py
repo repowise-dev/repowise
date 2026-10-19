@@ -1225,7 +1225,7 @@ def test_claude_refresh_project_files_skips_when_options_disable_file(
 def test_update_command_uses_editor_refresh_abstraction() -> None:
     from repowise.cli.commands.update_cmd.command import _finish_outcome, _refresh_editor_stamp
 
-    command_source = inspect.getsource(run_update)
+    command_source = inspect.getsource(inspect.getmodule(run_update))
     finish_source = inspect.getsource(_finish_outcome)
     stamp_source = inspect.getsource(_refresh_editor_stamp)
 
@@ -1327,8 +1327,10 @@ def test_workspace_generation_rebinds_opencode_provider_to_repo(
 
 
 def test_init_command_uses_editor_option_abstraction() -> None:
-    source = inspect.getsource(init_cmd.init_command.callback) + inspect.getsource(
-        init_cmd._workspace_init
+    source = (
+        inspect.getsource(init_cmd.command._editor_options)
+        + inspect.getsource(init_cmd._finish._write_editor_files)
+        + inspect.getsource(init_cmd.workspace._workspace_editor_options)
     )
 
     assert "resolve_editor_setup_options" in source

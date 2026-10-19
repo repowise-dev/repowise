@@ -42,8 +42,9 @@ module-level helpers plus ``result.record`` / ``result.note`` on a collector it
 was handed looked like it envied the collector.
 
 The ``calls`` graph does not see field reads, so own-class use is also read
-off the class's cohesion components: a method that shares a component holding
-fields works on its own class's state and stays. A method that fulfils a
+off the class analysis: a method that reads one of its class's fields (a
+service method using the repository injected into its constructor) or shares
+a component holding fields works on its own class's state and stays. A method that fulfils a
 contract (``@Override``, an ``override`` / ``virtual`` / ``abstract``
 modifier, a member its base class or interface declares, a runtime contract
 name such as ``toString``) cannot move either, since the type it overrides for
@@ -279,9 +280,17 @@ def _uses_own_state(classes: list[Any], parent: str, name: str, line: int | None
 
 
 def _binds_method(cls: Any, name: str) -> bool:
-    """Whether *cls* holds method *name* in place: a contract impl, or a
-    cohesion component with fields or outside calls that contains it."""
+    """Whether *cls* holds method *name* in place: a contract impl, a method
+    that uses an instance field of the class (an injected repository or
+    client, read by bare name in Java), or a cohesion component with fields or
+    outside calls that contains it."""
     if getattr(cls, "contract_impl", False):
+        return True
+    # ``getattr``: a walk cached before the field existed reads as no signal.
+    # Ceiling: only languages with class analysis fill it (Go emits no classes,
+    # so a Go receiver's fields are not read here); static fields such as a
+    # ``static final`` logger never count, being no instance's state.
+    if name in getattr(cls, "field_readers", ()):
         return True
     groups = getattr(cls, "components", None) or ()
     return any(name in g.methods and (g.fields or g.calls) for g in groups)

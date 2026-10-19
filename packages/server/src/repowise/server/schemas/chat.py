@@ -261,6 +261,8 @@ class ChatFigure(BaseModel):
     end: int
     verified: bool
     artifact_id: str | None = None
+    #: Worked out from the answer's matched figures (a ratio or a sum), not read in a result.
+    derived: bool = False
 
 
 class ChatTurnResultResponse(BaseModel):

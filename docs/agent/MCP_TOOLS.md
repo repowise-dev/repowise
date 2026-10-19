@@ -162,7 +162,7 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | required | File paths, module paths, `"path::Symbol"` ids, `"component:<name>"`, `"change:<id>"`, or `"package:<name>"` |
-| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols`, `changes`, `provenance` |
+| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects` |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported (returns an error) |
 
@@ -170,7 +170,7 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 
 A `component:<name>` target returns the component's declared context (owner, system, criticality, tags) and `facts` rolled up over its files: health, hotspots, bus factor, test reach and dead code, each with a `basis` (`measured`, `inferred` or `unavailable`). Components come from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or are derived from the index. With `include=["ownership"]` a component card adds `ownership`: declared teams with their activity over the last 90 days, a count of individual owners, and findings (`critical_no_active_owner`, `declared_owner_inactive`, `critical_bus_factor_one`, `catalog_entry_no_code`). An owner with no identity in the indexed history is `unknown` and raises no finding, so `critical_no_active_owner` does not fire when every owner is unknown; individuals match only by exact git email or forge noreply login. No other `include` applies to component targets. Health and dead code leave out files in gated languages and say how many.
 
-A `change:<id>` target (`change:pr-123`, or a commit sha the change landed) returns the [Change Record](../reference/CLI_REFERENCE.md#repowise-changes): title, forge ref, `merged_at`, category, files and provenance with its coverage. On a file target, `changes` lists the newest Change Records that touched it, and `provenance` gives the file's commits by source (agent, human-attested, unknown) with coverage; the agent share is withheld below 30% coverage. With attribution off, `provenance` reads `{"unavailable": "attribution_off"}` and change rows carry none.
+A `change:<id>` target (`change:pr-123`, or a commit sha the change landed) returns the [Change Record](../reference/CLI_REFERENCE.md#repowise-changes): title, forge ref, `merged_at`, category, files and provenance with its coverage. On a file target, `changes` lists the newest Change Records that touched it, and `provenance` gives the file's commits by source (agent, human-attested, unknown) with coverage; the agent share is withheld below 30% coverage. With attribution off, `provenance` reads `{"unavailable": "attribution_off"}` and change rows carry none. `suspects` adds one top-level block: the changes merged in the last 14 days ranked against the targets as a symptom, at most 5 rows, each with the signals that fired and their evidence, plus the candidate count and window; an order to read changes in, never a cause.
 
 A `package:<name>` target (`package:requests`, or `package:npm:lodash`) returns where that third-party package is imported: its manifest declarations, a summary, the components and declared owner teams, and up to 25 import sites with line, `mapping` (`declared` or `inferred`) and `reachability` (`reachable`, `unreachable`, `test` or `unknown`, with a basis). See [PACKAGE_USAGE.md](../reference/PACKAGE_USAGE.md).
 
@@ -328,7 +328,7 @@ Code-health scores and findings from the stored analysis, across defect risk, ma
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | none (dashboard) | File paths or `module:<name>`. Misses are named in `unresolved` |
-| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe` (with `plan_id`). Dimension filters: `performance`, `defect`, `maintainability`, `advisory` |
+| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe` (with `plan_id`), `what_if`. Dimension filters: `performance`, `defect`, `maintainability`, `advisory` |
 | `only` | list[string] | none | Keep just these top-level keys; identity, totals and recovery fields always survive. An unknown key is named in `unknown_only_keys` with `unknown_only_keys_hint` |
 | `limit` | int | `20` | Max rows in every ranked list, capped at 50; `0` for none. `fix_first` shows five unless `limit` is passed with `only=["fix_first"]`, which pages up to 25; `refactoring_plans` up to 25 |
 | `cursor` | int | `0` | Offset into a ranked list (and into `fix_first` when named in `only`); the `recovery` block names the next call |

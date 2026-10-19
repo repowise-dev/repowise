@@ -47,8 +47,9 @@ _DECISION_SIGNAL_WORDS: frozenset[str] = frozenset(
 
 _MIN_MESSAGE_LEN = 12
 
-# Default per-file commit history depth.
-_DEFAULT_COMMIT_LIMIT: int = 500
+# Default history window: the newest commits walked for per-file history and
+# stored as commit rows. Every default ``commit_limit`` reads this one value.
+_DEFAULT_COMMIT_LIMIT: int = 5000
 
 # Depth of the second, deeper repo-wide log walk that serves files absent
 # from the recent-window commit index. On repos whose history is much
@@ -149,19 +150,15 @@ _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
     ),
 }
 
-# Bug-fix commit classifier — mirrors the defect benchmark's
-# ``lib/defect_counter.find_fix_commits`` (keyword strategy) so the product's
-# ``prior_defect`` signal counts exactly the commits the benchmark labels as
-# fixes (product == benchmark). A commit subject is a fix iff it matches an
-# INCLUDE pattern and NO EXCLUDE pattern; merge commits are excluded upstream
-# (the per-file walk skips ``is_merge``), mirroring the bench's ``--no-merges``.
+# Bug-fix commit classifier: the defect benchmark's
+# ``lib/defect_counter.find_fix_commits`` keyword strategy, byte for byte. A
+# subject is a fix iff it matches an INCLUDE pattern and NO EXCLUDE pattern;
+# merge commits are excluded upstream, mirroring the bench's ``--no-merges``.
+# Accepts verb forms, compounds ("hotfix") and issue references ("fixes #12").
 #
-# Accepts the verb forms ("fix", "fixed", "fixes", "fixing"), compounds
-# ("hotfix", "bugfix"), and issue reference forms ("fixes #12", "fixed #12").
-#
-# The one fix definition: the per-file category counts and the evolution
-# timeline both label a commit "fix" exactly when this rule does, so every
-# fix count the product shows counts the same commits.
+# Commit rows, the per-file category counts and the evolution timeline label a
+# commit "fix" exactly when this rule does. ``prior_defect`` and the change-risk
+# ``is_fix`` flag read the type first instead (``fix_rule.py``).
 _FIX_COMMIT_INCLUDE: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:hot|bug)?fix(?:e[sd]|ing)?\b", re.IGNORECASE),
     re.compile(r"\bbug\b", re.IGNORECASE),
@@ -324,7 +321,8 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: forge bot accounts).
 #: v2: co-change records carry focused_frequency, the shared commits no wider
 #: than the change-entropy sweep cap.
-#: v3: commits carry their category, and changes are rebuilt from history.
+#: v3: commits carry their category, and changes are rebuilt from history; the
+#: default history window grew from 500 to 5,000 commits.
 GIT_HISTORY_VERSION: int = 3
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution

@@ -263,6 +263,21 @@ def test_a_file_nothing_knows_a_test_for_is_not_missing():
     assert fired.outcome == "triggered" and fired.locations == [("src/pay/refund.py", None, None)]
 
 
+def test_a_partly_known_tests_item_still_answers_for_the_files_in_scope():
+    """The checklist reads ``unknown`` when one changed file is not known; rows still decide."""
+    policy = parse_policy(
+        "rules: [{name: t, match: {components: {names: [payments]}}, when: {reaching_tests: present}, action: warn}]"
+    )
+    rows = [
+        {"path": "src/pay/charge.py", "tests": ["t1"]},
+        {"path": "src/pay/refund.py", "tests": ["t2"]},
+        {"path": "docs/a.md", "tests": None},
+    ]
+    partial = _item("reaching_tests", rows, status="unknown", basis="inferred")
+    (result,) = evaluate(policy, _evidence(_components(PAYMENTS), partial))
+    assert result.outcome == "triggered"
+
+
 def test_no_changed_source_file_in_scope_is_not_missing():
     policy = parse_policy("rules: [{name: t, when: {reaching_tests: missing}, action: fail}]")
     (result,) = evaluate(policy, _evidence(_tests()))

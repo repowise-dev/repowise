@@ -34,7 +34,7 @@ a path says otherwise.
 Related: `analysis/finding_registry.py` decides which finding kinds a default
 surface shows (`unused_internal` is `hidden`). Storage and triage live in
 `persistence/crud/analysis/dead_code.py`. The analyzer runs from
-`pipeline/phases/analysis.py` (init), `pipeline/incremental.py` (update), and
+`pipeline/phases/analysis.py` (init), `pipeline/incremental/analysis.py` (update), and
 the CLI's live path in `cli/commands/dead_code_cmd.py`.
 
 ## Flow
@@ -162,7 +162,7 @@ points (`__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`,
 `asgi.py`, `setup.py`, `main.go`), build files (Gradle, Maven, CMake,
 Makefiles, Meson, Bazel, MSBuild, `build.rs`, bundler configs), shell scripts,
 files a CI workflow, task file, manifest or script names by path, framework
-routes (Next.js, SvelteKit, Nuxt, Remix, ASP.NET minimal APIs, Blazor and
+routes (Next.js, SvelteKit, Nuxt, Remix, Astro, ASP.NET minimal APIs, Blazor and
 Razor code-behind), test layouts, generated code (protoc, Qt, Bison/Flex, SWIG,
 Cython, Roslyn `*.g.cs`, Dart `*.g.dart`, `**/generated/**`), reflective
 loading (Alembic and Django migrations, EF configurations, COM class

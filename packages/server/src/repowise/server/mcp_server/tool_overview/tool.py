@@ -22,7 +22,9 @@ from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
+    attach_ignored_arguments,
     filter_rows_by_attr,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import (
     build_meta_with_full_scope as _build_meta_with_full_scope,
@@ -57,6 +59,11 @@ from repowise.server.mcp_server.tool_overview.tour import (
 from repowise.server.mcp_server.tool_overview.workspace import (
     _build_workspace_footer,
     _workspace_overview,
+)
+
+#: The ``include`` values get_overview serves; anything else is named, not applied.
+_INCLUDE_BLOCKS = frozenset(
+    {"content", "outline", "tour", "decisions", "graph", "ownership", "components", "changes"}
 )
 
 
@@ -104,7 +111,12 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     collector = OmissionCollector("get_overview", repo_root=ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        want = set(include or [])
+        ignored: list[dict[str, Any]] = []
+        want = {
+            k
+            for k in include or []
+            if resolve_enum_argument(k, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+        }
         result = await _repo_overview(
             session, ctx.session_factory, repository, exclude_spec, want, collector
         )
@@ -124,6 +136,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         # other response's compact projection points at is worth its bytes.
         result["_meta"] = _build_meta_with_full_scope(repository=repository)
         collector.attach(result)
+        attach_ignored_arguments(result, ignored)
         return result
 
 

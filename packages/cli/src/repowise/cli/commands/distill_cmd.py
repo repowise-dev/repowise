@@ -244,9 +244,11 @@ def _render_command(tokens: tuple[str, ...]) -> str:
                 )
 
     exe = tokens[0]
-    # Windows paths cannot contain `"`, so plain quoting is unambiguous.
+    # Windows paths cannot contain `"`, so plain quoting is unambiguous. A `/`
+    # is quoted too: unquoted, cmd reads `./.venv/Scripts/python.exe` (the
+    # spelling a Git Bash command arrives in) as the program `.` and a switch.
     if '"' not in exe and (
-        any(ch.isspace() for ch in exe) or any(ch in _CMD_METACHARS for ch in exe)
+        any(ch.isspace() for ch in exe) or any(ch in _CMD_METACHARS or ch == "/" for ch in exe)
     ):
         head = f'"{exe}"'
     else:

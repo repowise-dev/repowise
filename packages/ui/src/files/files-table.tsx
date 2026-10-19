@@ -4,7 +4,8 @@ import { useRef, useState } from "react";
 import { ArrowDown, ArrowUp, FlaskConical, LogIn } from "lucide-react";
 import type { FileRow } from "@repowise-dev/types/files";
 import { cn } from "../lib/cn";
-import { formatLOC, truncatePath } from "../lib/format";
+import { formatLOC } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { healthInk } from "../health/tokens";
 
 export type SortKey =
@@ -171,8 +172,6 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
           <div style={{ height: total * ROW_HEIGHT }} className="relative">
             <div style={{ transform: `translateY(${start * ROW_HEIGHT}px)` }}>
               {visible.map((f) => {
-                const name = f.file_path.split("/").pop() ?? f.file_path;
-                const dir = f.file_path.slice(0, f.file_path.length - name.length);
                 return (
                   <a
                     key={f.file_path}
@@ -191,14 +190,11 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
                       {f.is_test && (
                         <FlaskConical className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
                       )}
-                      <span className="min-w-0 truncate font-mono text-[13px]">
-                        <span className="text-[var(--color-text-tertiary)]">
-                          {truncatePath(dir, 40)}
-                        </span>
-                        <span className="text-[var(--color-text-primary)] underline-offset-2 group-hover:underline">
-                          {name}
-                        </span>
-                      </span>
+                      <FilePath
+                        path={f.file_path}
+                        fold
+                        className="text-[13px] text-[var(--color-text-primary)] underline-offset-2 group-hover:underline"
+                      />
                     </span>
 
                     {/* Dependents. One decimal, not `Math.round`: the server

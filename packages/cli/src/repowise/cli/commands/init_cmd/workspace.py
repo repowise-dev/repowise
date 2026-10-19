@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -303,190 +303,245 @@ class _RepoOutcome:
     embed_failed_pages: int = 0
 
 
+@dataclass
+class _RepoIndex:
+    """One workspace repo's pipeline result, timing recorder and bound provider."""
+
+    result: Any
+    callback: Any
+    provider: Any
+
+
+@dataclass
+class _RepoDocs:
+    """What generation did for one workspace repo.
+
+    ``docs_mode`` is "llm" when a model wrote the pages, "deterministic" when
+    they were rendered from templates (index-only, no provider, or a declined
+    cost gate), "none" when nothing was generated (dry run, fast mode, or a
+    generation error). It drives the persisted state so `update` and the web
+    UI see the truth.
+    """
+
+    docs_mode: str = "none"
+    skip_reason: str | None = None
+    pages_generated: int = 0
+    det_embedder: str | None = None
+
+
 def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCtx) -> _RepoOutcome:
     """Index (and optionally generate docs for) one repo in a workspace init.
 
-    Returns a :class:`_RepoOutcome`; on pipeline failure the outcome carries
-    ``error`` and nothing is persisted (mirrors the per-repo try/except + continue
-    the workspace loop used to do inline).
+    On pipeline failure the outcome carries ``error`` and nothing is persisted.
     """
-    from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
-    from repowise.core.pipeline.modes import OrchestratorMode
-
     console.print(
         f"  [{BRAND}][{idx}/{total}][/] Indexing [bold]{repo.alias}[/bold] ({repo.path.name})…"
     )
     ensure_repowise_dir(repo.path)
 
-    # The index phase mines decisions with a model too -- pull requests, git
-    # history and code comments all have a model stage -- so it needs the
-    # provider as much as generation does. Leaving it out made every one of
-    # those sources report "No LLM provider is configured" on a workspace run
-    # that had been given a perfectly good one, while the single-repo path
-    # (which passes its client) mined them normally.
-    #
-    # Bound to this repo rather than reused verbatim: a provider that shells
-    # out with a working directory has to point at the repo being indexed, not
-    # at whichever one resolved the provider first.
+    # The index phase mines decisions with a model too, so it needs the provider,
+    # bound to this repo: a provider that shells out runs in the repo's directory.
     repo_provider = (
         None if ctx.dry_run else _workspace_generation_provider_for_repo(ctx.provider, repo.path)
     )
-
     try:
-        with Progress(
-            SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            MaybeCountColumn(),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress_bar:
-            callback = PhaseTimingRecorder(RichProgressCallback(progress_bar, console))
-
-            _prev_state = load_state(repo.path)
-            _prev_kg_fp = (
-                _prev_state.get("knowledge_graph", {}).get("fingerprint") if not ctx.force else None
-            )
-
-            result = run_async(
-                run_pipeline(
-                    repo.path,
-                    commit_depth=ctx.resolved_commit_limit,
-                    follow_renames=ctx.follow_renames,
-                    exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
-                    include_submodules=ctx.include_submodules,
-                    generate_docs=False,
-                    llm_client=repo_provider,
-                    mode=(
-                        OrchestratorMode.FAST
-                        if ctx.run_mode == "fast"
-                        else OrchestratorMode.STANDARD
-                    ),
-                    progress=callback,
-                    existing_kg_fingerprint=_prev_kg_fp,
-                    derive_environment_facts=True,
-                )
-            )
-        console.print(
-            f"    [{OK}]✓[/] {result.file_count:,} files, {result.symbol_count:,} symbols"
-        )
+        index = _index_repo(repo, ctx, repo_provider)
     except Exception as exc:
         console.print(f"    [{ERR}]✗ Failed: {exc}[/]\n")
         return _RepoOutcome(error=str(exc))
+    result = index.result
 
-    provider = ctx.provider
-    index_only = ctx.index_only
+    docs = _generate_repo_docs(repo, ctx, index)
+    docs_outcome = (len(result.generated_pages or []), docs.skip_reason)
 
-    # Generation phase (per-repo). ``docs_mode`` records what actually happened:
-    # "llm" when a model wrote the pages, "deterministic" when they were rendered
-    # from templates (index-only, no provider, or a declined cost gate), "none"
-    # when nothing was generated (dry run, fast mode, or a generation error).
-    # It drives the persisted state so `update` and the web UI see the truth.
-    docs_mode = "none"
-    skip_reason: str | None = None
-    pages_generated = 0
-    det_embedder: str | None = None
-
-    def _render_from_templates() -> None:
-        """Render the whole wiki from templates and mark this repo deterministic."""
-        nonlocal pages_generated, docs_mode, det_embedder
-        generated_pages, det_embedder = _run_workspace_deterministic_generation(
-            repo_path=repo.path,
-            result=result,
-            embedder_name_resolved=ctx.embedder_name_resolved,
-            embedder_was_requested=ctx.embedder_was_requested,
-            timings=callback.table,
-            concurrency=ctx.concurrency,
-            resume=ctx.resume,
-            onboarding=ctx.onboarding,
-            wiki_style=ctx.wiki_style,
-            language=ctx.language,
-        )
-        result.generated_pages = generated_pages
-        pages_generated = len(generated_pages)
-        docs_mode = "deterministic"
-        console.print(
-            f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure (no model)\n"
+    # A dry run writes nothing for this repo: the index was computed in memory
+    # only so the plan and per-repo counts can be shown.
+    if ctx.dry_run:
+        return _RepoOutcome(
+            file_count=result.file_count,
+            symbol_count=result.symbol_count,
+            pages_generated=docs.pages_generated,
+            docs_outcome=docs_outcome,
         )
 
+    persist_warnings = _persist_repo_index(repo.path, index)
+    head = get_head_commit(repo.path)
+    state = _repo_state(head, repo.path, ctx, index, docs, persist_warnings)
+    # Fully indexed here (concept tree included), so stamp the terminal store
+    # format rather than clamping below the reindex gate.
+    save_state(repo.path, state, full_index=True)
+
+    kg = getattr(result, "knowledge_graph_result", None)
+    if kg is not None:
+        save_knowledge_graph_json(repo.path, kg)
+
+    entry = ctx.ws_config.get_repo(repo.alias)
+    if entry is not None:
+        entry.indexed_at = datetime.now(UTC).isoformat()
+        entry.last_commit_at_index = head
+
+    write_editor_project_files(
+        console,
+        repo.path,
+        options=ctx.editor_options,
+        no_editor_setup=not ctx.editor_setup,
+    )
+    _save_repo_config(repo.path, ctx, docs)
+
+    from repowise.cli.providers import embed_failure_message
+
+    failed = getattr(result, "embed_failed_pages", 0)
+    return _RepoOutcome(
+        file_count=result.file_count,
+        symbol_count=result.symbol_count,
+        pages_generated=docs.pages_generated,
+        docs_outcome=docs_outcome,
+        embed_failed_pages=(
+            failed if embed_failure_message(_scope_embedder(ctx, docs), failed) else 0
+        ),
+    )
+
+
+def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex:
+    """Run the index pipeline (no docs) for one repo under a progress bar."""
+    from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
+    from repowise.core.pipeline.modes import OrchestratorMode
+
+    with Progress(
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MaybeCountColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress_bar:
+        callback = PhaseTimingRecorder(RichProgressCallback(progress_bar, console))
+
+        _prev_state = load_state(repo.path)
+        _prev_kg_fp = (
+            _prev_state.get("knowledge_graph", {}).get("fingerprint") if not ctx.force else None
+        )
+
+        result = run_async(
+            run_pipeline(
+                repo.path,
+                commit_depth=ctx.resolved_commit_limit,
+                follow_renames=ctx.follow_renames,
+                exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
+                include_submodules=ctx.include_submodules,
+                generate_docs=False,
+                llm_client=repo_provider,
+                mode=(
+                    OrchestratorMode.FAST
+                    if ctx.run_mode == "fast"
+                    else OrchestratorMode.STANDARD
+                ),
+                progress=callback,
+                existing_kg_fingerprint=_prev_kg_fp,
+                derive_environment_facts=True,
+            )
+        )
+    console.print(f"    [{OK}]✓[/] {result.file_count:,} files, {result.symbol_count:,} symbols")
+    return _RepoIndex(result=result, callback=callback, provider=repo_provider)
+
+
+def _generate_repo_docs(repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex) -> _RepoDocs:
+    """The per-repo generation phase."""
+    docs = _RepoDocs()
     if ctx.dry_run:
         console.print(
             f"    [{WARN}]Dry run — `.repowise/` created; "
             "no DB, state, or pages written for this repo.[/]\n"
         )
-        skip_reason = "dry run"
+        docs.skip_reason = "dry run"
     elif ctx.run_mode == "fast":
-        # Fast mode is a graph-and-git index by design; it skips the wiki so a
-        # very large repo indexes quickly. Mirror single-repo init.
+        # Fast mode is a graph-and-git index by design, as in single-repo init.
         console.print()
-        skip_reason = "fast mode"
-    elif not index_only and provider is not None:
-        try:
-            # Already bound to this repo above, for the index phase.
-            generated_pages = _run_workspace_generation(
-                repo_path=repo.path,
-                result=result,
-                provider=repo_provider,
-                embedder_name_resolved=ctx.embedder_name_resolved,
-                timings=callback.table,
-                concurrency=ctx.concurrency,
-                yes=ctx.yes,
-                resume=ctx.resume,
-                skip_tests=ctx.skip_tests,
-                skip_infra=ctx.skip_infra,
-                test_run=ctx.test_run,
-                reasoning=ctx.resolved_reasoning,
-                onboarding=ctx.onboarding,
-                wiki_style=ctx.wiki_style,
-                language=ctx.language,
-            )
-            result.generated_pages = generated_pages
-            # (result.vector_store is set inside _run_workspace_generation
-            # so the Phase-2C decision dedup can reuse the same store.)
-            # Excludes placeholders left behind by failed provider calls, which
-            # are members of this list like any other page. The single-repo
-            # flow reports the same split.
-            from repowise.core.generation.models import count_stub_fallbacks
-
-            pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
-            docs_mode = "llm"
-            console.print(f"    [{OK}]✓[/] Generated {pages_generated} pages\n")
-        except CostGateDeclined:
-            # Declining only ever meant "not at that price". Fall back to the
-            # free template renderer rather than leaving the repo with no wiki
-            # at all (parity with single-repo init).
-            console.print(
-                "    [dim]Building this repo's wiki from structure instead. Run "
-                "[bold]repowise update --repo "
-                f"{repo.alias} --full[/bold] to write it with a model later.[/dim]"
-            )
-            _render_from_templates()
-        except Exception as gen_exc:
-            console.print(f"    [{ERR}]✗ Generation failed: {gen_exc}[/]\n")
-            skip_reason = f"generation error: {gen_exc}"
-            result.generated_pages = []
+        docs.skip_reason = "fast mode"
+    elif not ctx.index_only and ctx.provider is not None:
+        _generate_repo_with_model(repo, ctx, index, docs)
     else:
-        # Index-only, or provider setup failed and fell back to index-only: give
-        # the repo a complete template wiki so it is a real, upgradable wiki in
-        # the UI rather than an empty index with no upgrade target.
-        _render_from_templates()
+        # Index-only, or provider setup fell back to index-only: a complete
+        # template wiki rather than an empty index with no upgrade target.
+        _render_repo_from_templates(repo, ctx, index, docs)
+    return docs
 
-    docs_outcome = (len(result.generated_pages or []), skip_reason)
 
-    # A dry run must not touch the database or write any state, mirroring
-    # single-repo init (which skips the resume controller and returns before
-    # persistence). The index was computed in memory above only so the plan
-    # and per-repo counts can be shown; nothing is written for this repo.
-    if ctx.dry_run:
-        return _RepoOutcome(
-            file_count=result.file_count,
-            symbol_count=result.symbol_count,
-            pages_generated=pages_generated,
-            docs_outcome=docs_outcome,
+def _generate_repo_with_model(
+    repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex, docs: _RepoDocs
+) -> None:
+    """Write the repo's wiki with the model; templates when the cost is declined."""
+    result = index.result
+    try:
+        generated_pages = _run_workspace_generation(
+            repo_path=repo.path,
+            result=result,
+            provider=index.provider,
+            embedder_name_resolved=ctx.embedder_name_resolved,
+            timings=index.callback.table,
+            concurrency=ctx.concurrency,
+            yes=ctx.yes,
+            resume=ctx.resume,
+            skip_tests=ctx.skip_tests,
+            skip_infra=ctx.skip_infra,
+            test_run=ctx.test_run,
+            reasoning=ctx.resolved_reasoning,
+            onboarding=ctx.onboarding,
+            wiki_style=ctx.wiki_style,
+            language=ctx.language,
         )
+        result.generated_pages = generated_pages
+        # ``result.vector_store`` is set inside the generation call.
+        # Placeholders left by failed provider calls are not counted, as in
+        # single-repo init.
+        from repowise.core.generation.models import count_stub_fallbacks
 
-    # Persist to repo-local DB
+        docs.pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
+        docs.docs_mode = "llm"
+        console.print(f"    [{OK}]✓[/] Generated {docs.pages_generated} pages\n")
+    except CostGateDeclined:
+        # Declining only meant "not at that price": fall back to the free
+        # template renderer rather than leave the repo with no wiki.
+        console.print(
+            "    [dim]Building this repo's wiki from structure instead. Run "
+            "[bold]repowise update --repo "
+            f"{repo.alias} --full[/bold] to write it with a model later.[/dim]"
+        )
+        _render_repo_from_templates(repo, ctx, index, docs)
+    except Exception as gen_exc:
+        console.print(f"    [{ERR}]✗ Generation failed: {gen_exc}[/]\n")
+        docs.skip_reason = f"generation error: {gen_exc}"
+        result.generated_pages = []
+
+
+def _render_repo_from_templates(
+    repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex, docs: _RepoDocs
+) -> None:
+    """Render the whole wiki from templates and mark this repo deterministic."""
+    generated_pages, docs.det_embedder = _run_workspace_deterministic_generation(
+        repo_path=repo.path,
+        result=index.result,
+        embedder_name_resolved=ctx.embedder_name_resolved,
+        embedder_was_requested=ctx.embedder_was_requested,
+        timings=index.callback.table,
+        concurrency=ctx.concurrency,
+        resume=ctx.resume,
+        onboarding=ctx.onboarding,
+        wiki_style=ctx.wiki_style,
+        language=ctx.language,
+    )
+    index.result.generated_pages = generated_pages
+    docs.pages_generated = len(generated_pages)
+    docs.docs_mode = "deterministic"
+    console.print(
+        f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure (no model)\n"
+    )
+
+
+def _persist_repo_index(repo_path: Path, index: _RepoIndex) -> list[str]:
+    """Persist to the repo-local DB; returns the persist phase's warnings."""
     persist_warnings: list[str] = []
+    callback = index.callback
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -497,7 +552,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         persist_callback = callback.rebind(RichProgressCallback(persist_bar, console))
         persist_callback.on_phase_start("persist", None)
         try:
-            run_async(persist_result(result, repo.path, persist_callback, callback.table))
+            run_async(persist_result(index.result, repo_path, persist_callback, callback.table))
         finally:
             try:
                 persist_callback.on_phase_done("persist")
@@ -505,39 +560,60 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             except RuntimeError as e:
                 if "Event loop is closed" not in str(e):
                     raise
+    return persist_warnings
 
-    # Write state.json so `repowise update` knows the base commit
-    head = get_head_commit(repo.path)
+
+def _scope_embedder(ctx: _WorkspaceCtx, docs: _RepoDocs) -> str | None:
+    """The embedder this repo's pages were embedded with, if any."""
+    if docs.docs_mode == "deterministic":
+        return docs.det_embedder
+    return ctx.embedder_name_resolved if docs.docs_mode == "llm" else None
+
+
+def _repo_state(
+    head: str | None,
+    repo_path: Path,
+    ctx: _WorkspaceCtx,
+    index: _RepoIndex,
+    docs: _RepoDocs,
+    persist_warnings: list[str],
+) -> dict[str, Any]:
+    """state.json for one repo, so `repowise update` knows the base commit."""
+    result = index.result
     pages_count = len(result.generated_pages or [])
     state: dict[str, Any] = {
         "last_sync_commit": head,
         "total_pages": pages_count,
-        # "llm", "deterministic" (template wiki), or "none" — see the generation
-        # phase above. An index-only workspace repo now renders a template wiki
-        # like single-repo init, so it reads as "deterministic", not "none".
-        **docs_mode_state_fields(docs_mode),
+        **docs_mode_state_fields(docs.docs_mode),
     }
-    if docs_mode == "llm" and provider is not None:
-        state["provider"] = provider.provider_name
-        state["model"] = provider.model_name
-    # Read after generation and persistence, not straight off the pipeline:
-    # both write into the same table.
-    repo_phase_timings: dict[str, float] = callback.timings
+    if docs.docs_mode == "llm" and ctx.provider is not None:
+        state["provider"] = ctx.provider.provider_name
+        state["model"] = ctx.provider.model_name
+    # Read after generation and persistence: both write into the same table.
+    repo_phase_timings: dict[str, float] = index.callback.timings
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
     apply_git_history_coverage_state(state, result)
-    from repowise.core.generation.selection import count_documentable_files
-    from repowise.core.index_scope import dropped_files_scope, file_page_scope, stamp_index_scope
+    _stamp_repo_scope(state, repo_path, ctx, index, docs)
+    kg = getattr(result, "knowledge_graph_result", None)
+    if kg is not None:
+        state["knowledge_graph"] = build_kg_state(kg)
+    state.pop("degraded", None)
+    if persist_warnings:
+        state["degraded"] = persist_warnings
+    return state
 
-    scope_config = load_config(repo.path)
+
+def _stamp_repo_scope(
+    state: dict[str, Any], repo_path: Path, ctx: _WorkspaceCtx, index: _RepoIndex, docs: _RepoDocs
+) -> None:
+    """Stamp what this index covers: tiers, file pages, provider and search."""
+    from repowise.core.index_scope import dropped_files_scope, stamp_index_scope
+
+    result, repo_provider, docs_mode = index.result, index.provider, docs.docs_mode
+    scope_config = load_config(repo_path)
     configured_cap = resolve_max_file_pages(config=scope_config)
-    scope_embedder = (
-        det_embedder
-        if docs_mode == "deterministic"
-        else ctx.embedder_name_resolved
-        if docs_mode == "llm"
-        else None
-    )
+    scope_embedder = _scope_embedder(ctx, docs)
     state["run_mode"] = ctx.run_mode
     state["git_tier"] = "essential" if ctx.run_mode == "fast" else "full"
     unavailable = [] if getattr(result, "health_report", None) is not None else ["health"]
@@ -549,27 +625,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         git_tier=state["git_tier"],
         git_commit_cap=ctx.resolved_commit_limit,
         dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
-        file_pages={
-            "configured_cap": configured_cap,
-            **(
-                result.generation_scope
-                if getattr(result, "generation_scope", None)
-                else (
-                    file_page_scope(
-                        configured_cap=configured_cap,
-                        eligible=count_documentable_files(result.parsed_files),
-                        generated_pages=result.generated_pages,
-                    )
-                    if hasattr(result, "parsed_files")
-                    else {
-                        "effective_cap": None,
-                        "eligible": None,
-                        "generated": None,
-                        "omitted": None,
-                    }
-                )
-            ),
-        },
+        file_pages={"configured_cap": configured_cap, **_file_page_fields(result, configured_cap)},
         analysis={
             "unavailable": unavailable,
             "skipped": ["generation"] if ctx.run_mode == "fast" else [],
@@ -596,39 +652,32 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             "completed_stages": [],
         },
     )
-    kg = getattr(result, "knowledge_graph_result", None)
-    if kg is not None:
-        state["knowledge_graph"] = build_kg_state(kg)
-    state.pop("degraded", None)
-    if persist_warnings:
-        state["degraded"] = persist_warnings
-    # A workspace repo is fully indexed here (concept tree included), so stamp
-    # the terminal store format rather than clamping below the reindex gate.
-    save_state(repo.path, state, full_index=True)
 
-    if kg is not None:
-        save_knowledge_graph_json(repo.path, kg)
 
-    # Update workspace config with indexing metadata
-    entry = ctx.ws_config.get_repo(repo.alias)
-    if entry is not None:
-        entry.indexed_at = datetime.now(UTC).isoformat()
-        entry.last_commit_at_index = head
+def _file_page_fields(result: Any, configured_cap: int | None) -> dict[str, Any]:
+    """File-page scope: the generator's own, else counted from the parsed files."""
+    from repowise.core.generation.selection import count_documentable_files
+    from repowise.core.index_scope import file_page_scope
 
-    # MCP config + editor setup files per repo
-    write_editor_project_files(
-        console,
-        repo.path,
-        options=ctx.editor_options,
-        no_editor_setup=not ctx.editor_setup,
-    )
+    if getattr(result, "generation_scope", None):
+        return result.generation_scope
+    if hasattr(result, "parsed_files"):
+        return file_page_scope(
+            configured_cap=configured_cap,
+            eligible=count_documentable_files(result.parsed_files),
+            generated_pages=result.generated_pages,
+        )
+    return {"effective_cap": None, "eligible": None, "generated": None, "omitted": None}
 
-    # Persist provider/model config per-repo when doing full generation
-    if docs_mode == "llm" and provider is not None:
+
+def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> None:
+    """Persist the per-repo config the run's docs mode calls for."""
+    provider = ctx.provider
+    if docs.docs_mode == "llm" and provider is not None:
         from repowise.cli.providers.embedders import resolve_embedding_model
 
         save_config(
-            repo.path,
+            repo_path,
             provider.provider_name,
             provider.model_name,
             ctx.embedder_name_resolved,
@@ -638,40 +687,26 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             reasoning=ctx.resolved_reasoning,
             save_key=ctx.save_key,
         )
-        # Persist the wiki style per repo so update/restyle honor it. Default
-        # omitted to keep config tidy — only an override is recorded.
+        # Only a non-default style or language is recorded, so update and
+        # restyle honor it.
         if ctx.wiki_style != DEFAULT_STYLE:
-            save_config_partial(repo.path, wiki_style=ctx.wiki_style)
-        # Same for the output language, so update regenerates in it.
+            save_config_partial(repo_path, wiki_style=ctx.wiki_style)
         if ctx.language != "en":
-            save_config_partial(repo.path, language=ctx.language)
-    elif docs_mode == "deterministic":
-        # A template wiki still produces (and embeds) pages, so persist the
-        # embedder actually used and the index knobs. Without the embedder,
-        # a later `repowise update` would re-resolve from the environment and
-        # could re-embed the store at a different width, which the LanceDB
-        # writer resolves by dropping the table. Provider/model/style/language
-        # only reach a model, so they are intentionally not written here.
+            save_config_partial(repo_path, language=ctx.language)
+    elif docs.docs_mode == "deterministic":
         from repowise.cli.providers.embedders import resolve_embedding_model
 
+        # A template wiki still embeds pages: persist the embedder actually used,
+        # or a later update could re-embed the store at a different width.
+        # Provider, model, style and language only reach a model.
+        det_embedder = docs.det_embedder
         save_config_partial(
-            repo.path,
+            repo_path,
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit if ctx.resolved_commit_limit else None,
             embedder=det_embedder,
             embedding_model=(resolve_embedding_model(det_embedder) if det_embedder else None),
         )
-
-    from repowise.cli.providers import embed_failure_message
-
-    failed = getattr(result, "embed_failed_pages", 0)
-    return _RepoOutcome(
-        file_count=result.file_count,
-        symbol_count=result.symbol_count,
-        pages_generated=pages_generated,
-        docs_outcome=docs_outcome,
-        embed_failed_pages=failed if embed_failure_message(scope_embedder, failed) else 0,
-    )
 
 
 def _run_cross_repo_analysis(ws_config: Any, root: Any, selected: list[Any], errors: list) -> None:
@@ -686,6 +721,41 @@ def _run_cross_repo_analysis(ws_config: Any, root: Any, selected: list[Any], err
             console.print(f"  [{OK}]✓[/] Cross-repo analysis complete")
         except Exception as exc:
             console.print(f"  [{WARN}]⚠ Cross-repo analysis failed: {exc}[/]")
+
+
+@dataclass
+class _WorkspaceAnswers:
+    """The run settings the mode menu, advanced config and provider setup may change."""
+
+    index_only: bool
+    provider_name: str | None
+    model: str | None
+    reasoning: str | None
+    commit_limit: int | None
+    follow_renames: bool
+    skip_tests: bool
+    skip_infra: bool
+    concurrency: int
+    exclude_patterns: list[str]
+    test_run: bool
+    onboarding: bool
+    wiki_style: str
+    language: str | None
+    embedder_name_resolved: str
+
+
+@dataclass
+class _WorkspaceTotals:
+    """What the per-repo loop indexed, and what failed."""
+
+    total_files: int = 0
+    total_symbols: int = 0
+    total_pages: int = 0
+    errors: list[tuple[str, str]] = field(default_factory=list)
+    #: alias -> (generated_count, skip_reason | None), shown in the completion
+    #: panel so the user never has to guess why a repo has no pages.
+    docs_outcomes: dict[str, tuple[int, str | None]] = field(default_factory=dict)
+    embed_failures: dict[str, int] = field(default_factory=dict)
 
 
 def _workspace_init(
@@ -731,142 +801,253 @@ def _workspace_init(
     """
     setup_logging_silence()
 
-    from repowise.core.workspace import RepoEntry, WorkspaceConfig
-
     start = time.monotonic()
     root = scan.root
 
     print_banner(console, repo_name=f"Workspace: {root.name}")
     console.print(f"  Detected [bold]{len(scan.repos)}[/bold] repositories in {root}\n")
 
-    # Step 1: Select repos to index
-    # --yes or --all: take every detected repo without prompting. So does a
-    # non-terminal stdin: this is the first prompt in the workspace flow, it
-    # runs before any indexing, and asking a pipe would end the run with an
-    # EOFError before the tool had done anything at all. Agents drive init
-    # this way routinely. "Every repo the scan found" is also what --all
-    # means, so the fallback matches the flag a human would have passed.
-    select_all = init_all or yes or not sys.stdin.isatty()
-    selected = (
-        list(scan.repos) if select_all else interactive_repo_select(console, scan.repos, root)
-    )
-
-    if not selected:
-        console.print(f"[{WARN}]No repositories selected. Aborting.[/]")
+    # --yes, --all or a non-terminal stdin take every detected repo (and the
+    # first as primary) without prompting: asking a pipe would end the run with
+    # an EOFError before anything was done, and "every repo" is what --all means.
+    picked = _select_workspace_repos(scan, select_all=init_all or yes or not sys.stdin.isatty())
+    if picked is None:
         return
-
-    # Step 2: Select primary repo
-    # --yes or --all: auto-pick the first repo as primary without prompting.
-    primary_alias = (
-        selected[0].alias if select_all else interactive_primary_select(console, selected)
-    )
-
-    # Determine root path (for provider resolution + dotenv)
-    primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
+    selected, primary_alias, primary_repo = picked
     load_dotenv(primary_repo.path)
 
-    # Step 2b: Mode selection + provider setup
-    # When running interactively with no explicit flags, present the mode menu.
-    # --yes suppresses all interactive prompts: treat as non-interactive.
+    # --yes suppresses every prompt, so it means non-interactive.
     is_interactive = sys.stdin.isatty() and provider_name is None and not index_only and not yes
-
-    embedder_name_resolved = resolve_embedder(embedder_name)
-    # Whether the user actually asked for this embedder, as opposed to
-    # resolve_embedder inferring one from an LLM key in the environment. The
-    # deterministic (index-only) path needs the distinction: it advertises
-    # itself as costing nothing, so it will not put a hosted embedder on the
-    # user's bill unless they named it.
+    answers = _WorkspaceAnswers(
+        index_only=index_only,
+        provider_name=provider_name,
+        model=model,
+        reasoning=reasoning,
+        commit_limit=commit_limit,
+        follow_renames=follow_renames,
+        skip_tests=skip_tests,
+        skip_infra=skip_infra,
+        concurrency=concurrency,
+        exclude_patterns=exclude_patterns,
+        test_run=test_run,
+        onboarding=onboarding,
+        wiki_style=wiki_style,
+        language=language,
+        embedder_name_resolved=resolve_embedder(embedder_name),
+    )
+    # Whether the user named this embedder, rather than resolve_embedder
+    # inferring one from an LLM key: the free template path will not put a
+    # hosted embedder on the user's bill unless they named it.
     embedder_was_requested = bool(embedder_name) or bool(
         os.environ.get("REPOWISE_EMBEDDER", "").strip()
     )
-
     if is_interactive:
-        mode = interactive_mode_select(
-            console,
-            title=f"How much should repowise write for these {len(selected)} repos?",
-        )
-        if mode == "index_only":
-            index_only = True
-        elif mode == "advanced":
-            selection = interactive_provider_config_select(
-                console,
-                model,
-                reasoning,
-                repo_path=primary_repo.path,
-                save_key=save_key,
-            )
-            provider_name = selection.provider_name
-            model = selection.model
-            reasoning = selection.reasoning
-            # Pass the resolved style so the advanced generation section doesn't
-            # add a per-workspace wiki-style prompt (the workspace flow applies
-            # one style uniformly); onboarding still applies.
-            adv = interactive_advanced_config(
-                console, prompt_reasoning=False, wiki_style=wiki_style, language=language
-            )
-            commit_limit = adv.get("commit_limit") or commit_limit
-            follow_renames = adv.get("follow_renames", follow_renames)
-            skip_tests = adv.get("skip_tests", skip_tests)
-            skip_infra = adv.get("skip_infra", skip_infra)
-            concurrency = adv.get("concurrency", concurrency)
-            if adv.get("exclude"):
-                exclude_patterns = list(exclude_patterns) + list(adv["exclude"])
-            test_run = adv.get("test_run", test_run)
-            reasoning = adv.get("reasoning") or reasoning
-            embedder_name_resolved = resolve_embedder(adv.get("embedder") or embedder_name)
-            onboarding = adv.get("onboarding", onboarding)
-            if adv.get("wiki_style"):
-                wiki_style = adv["wiki_style"]
-            if adv.get("language"):
-                language = adv["language"]
-        elif not index_only:
-            # "full" mode
-            selection = interactive_provider_config_select(
-                console,
-                model,
-                reasoning,
-                repo_path=primary_repo.path,
-                save_key=save_key,
-            )
-            provider_name = selection.provider_name
-            model = selection.model
-            reasoning = selection.reasoning
+        _ask_workspace_mode(answers, selected, primary_repo, embedder_name, save_key=save_key)
+    provider, resolved_reasoning = _resolve_workspace_provider(
+        answers, primary_repo, embedder_name, yes=yes, save_key=save_key
+    )
+    ws_config = _workspace_config(selected, root, primary_alias, dry_run=dry_run)
 
-    # Resolve provider once (shared across all repos for generation)
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+
+    ctx = _WorkspaceCtx(
+        provider=provider,
+        ws_config=ws_config,
+        editor_options=_workspace_editor_options(no_claude_md, agents_md, codex_setup),
+        editor_setup=editor_setup,
+        save_key=save_key,
+        index_only=answers.index_only,
+        dry_run=dry_run,
+        force=force,
+        follow_renames=answers.follow_renames,
+        include_submodules=include_submodules,
+        exclude_patterns=answers.exclude_patterns,
+        skip_tests=answers.skip_tests,
+        skip_infra=answers.skip_infra,
+        concurrency=answers.concurrency,
+        test_run=answers.test_run,
+        yes=yes,
+        resume=resume,
+        onboarding=answers.onboarding,
+        wiki_style=answers.wiki_style,
+        language=answers.language or "en",
+        resolved_reasoning=resolved_reasoning,
+        embedder_name_resolved=answers.embedder_name_resolved,
+        embedder_was_requested=embedder_was_requested,
+        resolved_commit_limit=max(1, min(answers.commit_limit or _DEFAULT_COMMIT_LIMIT, 10000)),
+        run_mode=run_mode,
+    )
+    totals = _index_workspace_repos(selected, ctx)
+
+    # A dry run writes nothing for any repo, so nothing at the workspace level.
+    if not dry_run:
+        _save_workspace(ws_config, root, selected, totals.errors, editor_setup=editor_setup)
+
+    show_workspace_completion(
+        selected=selected,
+        errors=totals.errors,
+        total_files=totals.total_files,
+        total_symbols=totals.total_symbols,
+        total_pages=totals.total_pages,
+        primary_alias=primary_alias,
+        elapsed=time.monotonic() - start,
+        index_only=answers.index_only,
+        provider=provider,
+        docs_outcomes=totals.docs_outcomes,
+    )
+    if not dry_run:
+        _offer_workspace_hooks(
+            selected,
+            totals.errors,
+            hook=hook,
+            distill_hook=distill_hook,
+            yes=yes,
+            editor_setup=editor_setup,
+        )
+    console.print()
+    _raise_on_embed_failures(totals.embed_failures)
+
+
+def _select_workspace_repos(scan: Any, *, select_all: bool) -> tuple[list[Any], str, Any] | None:
+    """The repos to index, the primary alias and repo; None when none were selected."""
+    root = scan.root
+    selected = (
+        list(scan.repos) if select_all else interactive_repo_select(console, scan.repos, root)
+    )
+    if not selected:
+        console.print(f"[{WARN}]No repositories selected. Aborting.[/]")
+        return None
+    primary_alias = (
+        selected[0].alias if select_all else interactive_primary_select(console, selected)
+    )
+    primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
+    return selected, primary_alias, primary_repo
+
+
+def _save_workspace(
+    ws_config: Any, root: Path, selected: list[Any], errors: list, *, editor_setup: bool
+) -> None:
+    """Save the indexed timestamps, run cross-repo analysis, register the primary."""
+    ws_config.save(root)
+    _run_cross_repo_analysis(ws_config, root, selected, errors)
+    primary_entry = ws_config.get_primary()
+    if primary_entry:
+        primary_path = (root / primary_entry.path).resolve()
+        register_editor_clients(console, primary_path, no_editor_setup=not editor_setup)
+
+
+def _ask_workspace_mode(
+    answers: _WorkspaceAnswers,
+    selected: list[Any],
+    primary_repo: Any,
+    embedder_name: str | None,
+    *,
+    save_key: bool,
+) -> None:
+    """The mode menu, then the provider (and advanced config) it calls for."""
+    mode = interactive_mode_select(
+        console,
+        title=f"How much should repowise write for these {len(selected)} repos?",
+    )
+    if mode == "index_only":
+        answers.index_only = True
+    elif mode == "advanced":
+        _ask_workspace_provider(answers, primary_repo, save_key=save_key)
+        # The resolved style keeps the advanced section from asking per
+        # workspace: one style applies to every repo.
+        adv = interactive_advanced_config(
+            console,
+            prompt_reasoning=False,
+            wiki_style=answers.wiki_style,
+            language=answers.language,
+        )
+        _apply_workspace_advanced(answers, adv, embedder_name)
+    elif not answers.index_only:
+        _ask_workspace_provider(answers, primary_repo, save_key=save_key)
+
+
+def _ask_workspace_provider(
+    answers: _WorkspaceAnswers, primary_repo: Any, *, save_key: bool
+) -> None:
+    selection = interactive_provider_config_select(
+        console,
+        answers.model,
+        answers.reasoning,
+        repo_path=primary_repo.path,
+        save_key=save_key,
+    )
+    answers.provider_name = selection.provider_name
+    answers.model = selection.model
+    answers.reasoning = selection.reasoning
+
+
+def _apply_workspace_advanced(
+    answers: _WorkspaceAnswers, adv: dict[str, Any], embedder_name: str | None
+) -> None:
+    """Fold the advanced-config answers into the workspace run."""
+    answers.commit_limit = adv.get("commit_limit") or answers.commit_limit
+    answers.follow_renames = adv.get("follow_renames", answers.follow_renames)
+    answers.skip_tests = adv.get("skip_tests", answers.skip_tests)
+    answers.skip_infra = adv.get("skip_infra", answers.skip_infra)
+    answers.concurrency = adv.get("concurrency", answers.concurrency)
+    if adv.get("exclude"):
+        answers.exclude_patterns = list(answers.exclude_patterns) + list(adv["exclude"])
+    answers.test_run = adv.get("test_run", answers.test_run)
+    answers.reasoning = adv.get("reasoning") or answers.reasoning
+    answers.embedder_name_resolved = resolve_embedder(adv.get("embedder") or embedder_name)
+    answers.onboarding = adv.get("onboarding", answers.onboarding)
+    if adv.get("wiki_style"):
+        answers.wiki_style = adv["wiki_style"]
+    if adv.get("language"):
+        answers.language = adv["language"]
+
+
+def _resolve_workspace_provider(
+    answers: _WorkspaceAnswers,
+    primary_repo: Any,
+    embedder_name: str | None,
+    *,
+    yes: bool,
+    save_key: bool,
+) -> tuple[Any, str]:
+    """Resolve the provider once for every repo; index-only when setup fails."""
     primary_cfg = load_config(primary_repo.path)
-    resolved_reasoning = resolve_reasoning(reasoning, primary_cfg)
+    resolved_reasoning = resolve_reasoning(answers.reasoning, primary_cfg)
     provider = None
-    if not index_only:
+    if not answers.index_only:
         try:
             provider = resolve_explicit_provider_or_prompt(
-                provider_name,
-                model,
+                answers.provider_name,
+                answers.model,
                 primary_repo.path,
-                interactive=sys.stdin.isatty() and not yes and not index_only,
+                interactive=sys.stdin.isatty() and not yes and not answers.index_only,
                 save_key=save_key,
             )
-            # Re-resolve the embedder now that interactive provider selection
-            # may have set the provider's API key in os.environ. Without
-            # this, full-mode runs would display "mock" forever because
-            # the initial resolution happened before the key was available.
-            embedder_name_resolved = resolve_embedder(embedder_name)
+            # Re-resolve: interactive provider selection may just have set the
+            # provider's API key in os.environ.
+            answers.embedder_name_resolved = resolve_embedder(embedder_name)
             console.print(
                 f"  Provider: [{VALUE}]{provider.provider_name}[/] / "
                 f"Model: [{VALUE}]{provider.model_name}[/]"
             )
-            console.print(f"  Embedder: [{VALUE}]{embedder_name_resolved}[/]\n")
+            console.print(f"  Embedder: [{VALUE}]{answers.embedder_name_resolved}[/]\n")
             if resolved_reasoning != "auto":
                 console.print(f"  Reasoning: [{VALUE}]{resolved_reasoning}[/]\n")
         except Exception as exc:
-            if provider_name is not None:
+            if answers.provider_name is not None:
                 raise
             console.print(
                 f"  [{WARN}]Provider setup failed ({exc}); falling back to index-only.[/]"
             )
-            index_only = True
+            answers.index_only = True
             provider = None
+    return provider, resolved_reasoning
 
-    # Step 3: Create workspace config
+
+def _workspace_config(selected: list[Any], root: Path, primary_alias: str, *, dry_run: bool) -> Any:
+    """The workspace config for the selected repos, saved unless this is a dry run."""
+    from repowise.core.workspace import RepoEntry, WorkspaceConfig
+
     entries = [
         RepoEntry(
             path=repo.path.relative_to(root).as_posix(),
@@ -881,9 +1062,8 @@ def _workspace_init(
         default_repo=primary_alias,
     )
     if dry_run:
-        # ensure_repowise_dir still creates `.repowise/` per repo (needed so a
-        # later distill-hook decline can gate every selected path); dry-run
-        # only means nothing is *written* into those directories or the workspace.
+        # `.repowise/` is still created per repo, so a later distill-hook
+        # decline can gate every selected path; nothing is written into it.
         console.print(
             f"  [{WARN}]Dry run — `.repowise/` directories are created, "
             "but no config, index, or pages are written.[/]"
@@ -892,22 +1072,18 @@ def _workspace_init(
         config_path = ws_config.save(root)
         console.print(f"  [{OK}]✓[/] Created {config_path.name}")
     console.print()
+    return ws_config
 
-    # Step 4: Index each selected repo (always generate_docs=False; generation is separate)
-    resolved_commit_limit = max(1, min(commit_limit or 500, 10000))
-    total_files = 0
-    total_symbols = 0
-    total_pages = 0
-    errors: list[tuple[str, str]] = []
-    # Per-repo docs outcome, surfaced in the completion panel so the user
-    # never has to guess why the web UI is missing pages for some repos.
-    # Maps alias -> (generated_count, skip_reason | None)
-    docs_outcomes: dict[str, tuple[int, str | None]] = {}
-    # No agent checklist in workspace mode: the question is per repo and this
-    # path indexes many, so asking once would apply one answer everywhere and
-    # asking per repo would be a prompt per repo. Workspace init takes the
-    # defaults and the flags; `repowise agents add` covers the rest.
-    editor_options = resolve_editor_setup_options(
+
+def _workspace_editor_options(
+    no_claude_md: bool, agents_md: bool | None, codex_setup: bool | None
+) -> Any:
+    """Editor files from the defaults and flags.
+
+    No agent checklist here: the question is per repo, so asking once would
+    apply one answer everywhere. `repowise agents add` covers the rest.
+    """
+    return resolve_editor_setup_options(
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
         ),
@@ -919,81 +1095,36 @@ def _workspace_init(
         ),
     )
 
-    ctx = _WorkspaceCtx(
-        provider=provider,
-        ws_config=ws_config,
-        editor_options=editor_options,
-        editor_setup=editor_setup,
-        save_key=save_key,
-        index_only=index_only,
-        dry_run=dry_run,
-        force=force,
-        follow_renames=follow_renames,
-        include_submodules=include_submodules,
-        exclude_patterns=exclude_patterns,
-        skip_tests=skip_tests,
-        skip_infra=skip_infra,
-        concurrency=concurrency,
-        test_run=test_run,
-        yes=yes,
-        resume=resume,
-        onboarding=onboarding,
-        wiki_style=wiki_style,
-        language=language or "en",
-        resolved_reasoning=resolved_reasoning,
-        embedder_name_resolved=embedder_name_resolved,
-        embedder_was_requested=embedder_was_requested,
-        resolved_commit_limit=resolved_commit_limit,
-        run_mode=run_mode,
-    )
 
-    embed_failures: dict[str, int] = {}
+def _index_workspace_repos(selected: list[Any], ctx: _WorkspaceCtx) -> _WorkspaceTotals:
+    """Index (always generate_docs=False; generation is separate) each selected repo."""
+    totals = _WorkspaceTotals()
     for i, repo in enumerate(selected, 1):
         outcome = _ingest_and_generate_repo(repo, i, len(selected), ctx)
         if outcome.error:
-            errors.append((repo.alias, outcome.error))
+            totals.errors.append((repo.alias, outcome.error))
             continue
-        total_files += outcome.file_count
-        total_symbols += outcome.symbol_count
-        total_pages += outcome.pages_generated
-        docs_outcomes[repo.alias] = outcome.docs_outcome
+        totals.total_files += outcome.file_count
+        totals.total_symbols += outcome.symbol_count
+        totals.total_pages += outcome.pages_generated
+        totals.docs_outcomes[repo.alias] = outcome.docs_outcome
         if outcome.embed_failed_pages:
-            embed_failures[repo.alias] = outcome.embed_failed_pages
+            totals.embed_failures[repo.alias] = outcome.embed_failed_pages
+    return totals
 
-    # Save workspace config with updated timestamps. On a dry run nothing is
-    # written for any repo (see _ingest_and_generate_repo), so nothing is
-    # written at the workspace level either.
-    if not dry_run:
-        ws_config.save(root)
 
-        # Step 5: Cross-repo analysis (co-changes, package deps, contracts)
-        _run_cross_repo_analysis(ws_config, root, selected, errors)
-
-        # Step 6: Register primary repo with configured editor clients
-        primary_entry = ws_config.get_primary()
-        if primary_entry:
-            primary_path = (root / primary_entry.path).resolve()
-            register_editor_clients(console, primary_path, no_editor_setup=not editor_setup)
-
-    # Step 7: Completion summary
-    elapsed = time.monotonic() - start
-    show_workspace_completion(
-        selected=selected,
-        errors=errors,
-        total_files=total_files,
-        total_symbols=total_symbols,
-        total_pages=total_pages,
-        primary_alias=primary_alias,
-        elapsed=elapsed,
-        index_only=index_only,
-        provider=provider,
-        docs_outcomes=docs_outcomes,
-    )
-
-    # Post-commit auto-sync hooks, the same default for every indexed repo.
-    # Skipped on a dry run, which must not write anything.
+def _offer_workspace_hooks(
+    selected: list[Any],
+    errors: list[tuple[str, str]],
+    *,
+    hook: bool | None,
+    distill_hook: bool | None,
+    yes: bool,
+    editor_setup: bool,
+) -> None:
+    """Post-commit hooks for the indexed repos, then the distill rewrite hook."""
     indexed_repos = [repo for repo in selected if repo.alias not in [e[0] for e in errors]]
-    if indexed_repos and not dry_run:
+    if indexed_repos:
         offer_hook_install(
             console,
             [r.path for r in indexed_repos],
@@ -1002,24 +1133,22 @@ def _workspace_init(
             yes=yes,
             no_editor_setup=not editor_setup,
         )
-    # Opt-in distill command-rewrite hook for Claude Code: one user-level
-    # install, with the verdict recorded per repo. Applied to *all* selected
-    # repos (not just successfully indexed ones, and even when every repo
-    # failed) because ensure_repowise_dir already created `.repowise/` in
-    # each, and the hook treats any repo with `.repowise/` and no recorded
-    # verdict as enabled — a decline must gate every one of them off.
-    if not dry_run:
-        offer_distill_rewrite_hook(
-            console,
-            [r.path for r in selected],
-            distill_hook,
-            yes=yes,
-            no_editor_setup=not editor_setup,
-        )
-    console.print()
-    # Raised after every repo is persisted, as single-repo init does: the
-    # other repos and full-text search are fine, but a scripted run must see
-    # that these semantic indexes were not built.
+    # Every selected repo, even a failed one: each already has `.repowise/`, and
+    # the hook treats a `.repowise/` with no recorded verdict as enabled.
+    offer_distill_rewrite_hook(
+        console,
+        [r.path for r in selected],
+        distill_hook,
+        yes=yes,
+        no_editor_setup=not editor_setup,
+    )
+
+
+def _raise_on_embed_failures(embed_failures: dict[str, int]) -> None:
+    """Fail a scripted run whose semantic indexes were not built.
+
+    Raised after every repo is persisted, as single-repo init does.
+    """
     if embed_failures:
         import click
 
