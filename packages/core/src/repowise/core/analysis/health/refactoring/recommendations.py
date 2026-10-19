@@ -678,12 +678,20 @@ def _runs_reason(test: MappedTest, symbol: str) -> str:
     return f"calls {label}" if test.hops == 1 else f"reaches {label} in {test.hops} calls"
 
 
-def _characterization_step(suggestion: RefactoringSuggestion) -> str:
-    """The step before an edit no test reaches: pin today's behaviour first."""
-    symbol = suggestion.target_symbol
+def _characterization_step(suggestion: RefactoringSuggestion, file_tests: int = 0) -> str:
+    """The step before an edit no test reaches: pin today's behaviour first.
+
+    *file_tests* counts the listed tests that reach the file but not the
+    changed function, so the step and the list state the same fact.
+    """
+    symbol = (suggestion.target_symbol or "").rsplit("::", 1)[-1]
     if not symbol or not symbol.replace(".", "_").isidentifier():
         symbol = suggestion.file_path.rsplit("/", 1)[-1]
-    return f"No test reaches this; add a characterization test for `{symbol}` before the edit."
+    if file_tests:
+        files = "its files" if len(affected_files(suggestion)) > 1 else "its file"
+        reach = f"{file_tests} reach {files}" if file_tests > 1 else f"1 reaches {files}"
+        return f"No test reaches `{symbol}` ({reach}); add a characterization test first."
+    return f"No test reaches `{symbol}`; add a characterization test before the edit."
 
 
 def _line_ranges(suggestion: RefactoringSuggestion) -> dict[str, set[int] | None]:
@@ -924,6 +932,9 @@ def build_validation_plan(
             shown, total=aggregate_total, runs=facts.test_runs
         )
     files = affected_files(suggestion)
+    # Summed per file, a test reaching two files counts twice: no count then.
+    exact = identities_complete or len(target_rows) == 1
+    file_tests = aggregate_total if nearest == [] and exact else 0
     return ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
@@ -938,7 +949,7 @@ def build_validation_plan(
         test_runs=plan_runs(shown, facts.test_runs),
         # Also when tests reach the file but none reaches a function it changes.
         prerequisite=(
-            _characterization_step(suggestion)
+            _characterization_step(suggestion, file_tests)
             if aggregate_basis == "unknown" or nearest == []
             else None
         ),
