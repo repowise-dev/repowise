@@ -84,8 +84,8 @@ All of the following ship in `pip install repowise` today, free for internal use
   LCOV / Cobertura / Clover / JaCoCo / Go coverprofile like a coverage service,
   then does the half a coverage service structurally cannot: answers *which
   tests reach this file* and *which tests does this diff exercise* **with no
-  report at all**, at **95.7% and 97.5% precision** measured against a real
-  `coverage run --contexts=test`. Measured and inferred rows are labelled and
+  report at all**, at **95.7% and 97.5% precision** measured against real
+  per-test coverage. Measured and inferred rows are labelled and
   never averaged. Zero LLM calls, no CI integration needed.
   ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
 - **Change evidence and governance**: Change Records with an evidence checklist

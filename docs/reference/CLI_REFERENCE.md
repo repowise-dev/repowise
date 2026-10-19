@@ -1363,7 +1363,8 @@ JaCoCo XML, a Go coverprofile (`go test -coverprofile`), or a coverage.py
 `coverage.out`, `target/site/jacoco/jacoco.xml`, and similar reports when no
 path is given, and
 merges multiple reports (hit wins). When the report carries per-test contexts,
-a coverage.py `.coverage` written with `coverage run --contexts=test`, or a
+a coverage.py `.coverage` recorded with per-test contexts
+(`pytest --cov=<package> --cov-context=test`, needs pytest-cov), or a
 per-test lcov, `add` also builds the per-test *test-to-code map*, which test
 covers which source lines. A report without contexts still ingests the
 per-file coverage; it just skips the map.
@@ -1375,7 +1376,7 @@ repowise coverage add web.lcov api.lcov     # merged, hit wins
 repowise coverage add 'artifacts/**/lcov.info'   # every shard's report
 repowise coverage add web/coverage/lcov.info=web # report paths are relative to web/
 repowise coverage add --verbose             # show ingestion debug logs
-coverage run --contexts=test -m pytest      # produce .coverage with contexts
+pytest --cov=<package> --cov-context=test   # produce .coverage with contexts (needs pytest-cov)
 repowise coverage add .coverage             # per-file coverage + per-test map
 repowise coverage status                    # coverage summary + "Test-to-code map" counts
 repowise coverage status --format json      # machine-readable (note: the --format on `coverage add` names the input parser instead)

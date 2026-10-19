@@ -14,6 +14,7 @@ from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.update import (
     RepoUpdateResult,
+    _collect_update_results,
     check_repo_staleness,
     count_commits_between,
     get_head_commit,
@@ -614,6 +615,261 @@ class TestUpdateWorkspace:
         # Stale repos detected but not updated
         updated = [r for r in results if r.updated]
         assert len(updated) == 0
+
+    @pytest.mark.parametrize(
+        "failure_stage",
+        ["start", "mkdir", "lock", "index", "state", "stamp", "pending"],
+    )
+    def test_repo_failure_preserves_alias_and_notifies_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_stage: str
+    ) -> None:
+        """A failed member is named and reported without losing successful siblings."""
+        import asyncio
+
+        from repowise.core.update_lock import update_lock_path, workspace_update_lock_path
+        from repowise.core.workspace.update import workspace_pass
+
+        repos = [_make_git_repo(tmp_path, name) for name in ("web", "core")]
+        entries = []
+        for repo in repos:
+            old_head = get_head_commit(repo)
+            _write_state(repo, old_head)
+            _add_commit(repo, "new.txt")
+            entries.append(RepoEntry(path=repo.name, alias=repo.name, last_commit_at_index=old_head))
+        ws_config = WorkspaceConfig(repos=entries)
+        ws_config.save(tmp_path)
+        done_results: list[RepoUpdateResult] = []
+
+        async def fake_update(path, **_):
+            return RepoUpdateResult(alias="", updated=True, file_count=1, symbol_count=2)
+
+        monkeypatch.setattr(workspace_pass, "update_single_repo_index", fake_update)
+        monkeypatch.setattr(workspace_pass, "reconcile_repo_head_commit", AsyncMock())
+
+        def on_start(alias):
+            if failure_stage == "start" and alias == "web":
+                raise OSError("disk full")
+
+        if failure_stage == "mkdir":
+            real_mkdir = Path.mkdir
+
+            def fail_mkdir(path, *args, **kwargs):
+                if path == repos[0] / ".repowise":
+                    raise OSError("disk full")
+                return real_mkdir(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+        elif failure_stage in {"index", "stamp"}:
+            name = "update_single_repo_index" if failure_stage == "index" else "reconcile_repo_head_commit"
+            original = getattr(workspace_pass, name)
+
+            async def fail_async(path, *args, **kwargs):
+                if path == repos[0]:
+                    raise OSError("disk full")
+                return await original(path, *args, **kwargs)
+
+            monkeypatch.setattr(workspace_pass, name, fail_async)
+        elif failure_stage in {"lock", "state", "pending"}:
+            name = {
+                "lock": "_try_acquire_lock",
+                "state": "_write_repo_state",
+                "pending": "clear_stale_update_pending",
+            }[failure_stage]
+            original = getattr(workspace_pass, name)
+
+            def fail_sync(path, *args, **kwargs):
+                if path == repos[0]:
+                    raise OSError("disk full")
+                return original(path, *args, **kwargs)
+
+            monkeypatch.setattr(workspace_pass, name, fail_sync)
+
+        results = asyncio.run(update_workspace(
+            tmp_path, ws_config, run_hooks=False,
+            on_repo_start=on_start, on_repo_done=done_results.append,
+        ))
+        assert [r.alias for r in results] == ["web", "core"]
+        assert results[0].updated is False
+        assert results[0].error == "disk full"
+        assert results[1].updated is True
+        assert results[1].error is None
+        assert (results[1].file_count, results[1].symbol_count) == (1, 2)
+        assert len(done_results) == 2
+        assert {r.alias: r for r in done_results} == {r.alias: r for r in results}
+        assert not workspace_update_lock_path(tmp_path).exists()
+        assert all(not update_lock_path(repo).exists() for repo in repos)
+
+    @pytest.mark.parametrize("index_error", [None, "index failed"])
+    def test_completion_callback_failure_preserves_alias_and_original_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog, index_error: str | None
+    ) -> None:
+        """A broken reporter is called once; it cannot replace the real failure."""
+        import asyncio
+        import logging
+
+        from repowise.core.workspace.update import workspace_pass
+
+        repo = _make_git_repo(tmp_path, "web")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "new.txt")
+        ws_config = WorkspaceConfig(repos=[RepoEntry(path="web", alias="web")])
+        done_results: list[RepoUpdateResult] = []
+
+        async def fake_update(path, **_):
+            return RepoUpdateResult(alias="", updated=index_error is None, error=index_error)
+
+        def on_done(result):
+            done_results.append(result)
+            raise OSError("progress output failed")
+
+        monkeypatch.setattr(workspace_pass, "update_single_repo_index", fake_update)
+        monkeypatch.setattr(workspace_pass, "reconcile_repo_head_commit", AsyncMock())
+        caplog.set_level(logging.WARNING, logger="repowise.workspace.update")
+        results = asyncio.run(update_workspace(
+            tmp_path, ws_config, run_hooks=False, on_repo_done=on_done,
+        ))
+        assert len(results) == 1
+        assert results[0].alias == "web"
+        assert results[0].updated is False
+        assert results[0].error == (index_error or "progress output failed")
+        assert len(done_results) == 1
+        assert "web" in caplog.text
+        assert "progress output failed" in caplog.text
+
+    @pytest.mark.parametrize("cancel_stage", ["start", "index", "stamp", "done"])
+    def test_member_cancellation_propagates_and_releases_both_locks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_stage: str
+    ) -> None:
+        import asyncio
+
+        from repowise.core.update_lock import update_lock_path, workspace_update_lock_path
+        from repowise.core.workspace.update import workspace_pass
+
+        repo = _make_git_repo(tmp_path, "backend")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "new.txt")
+        ws_config = WorkspaceConfig(repos=[RepoEntry(path="backend", alias="backend")])
+        hooks = AsyncMock()
+        monkeypatch.setattr(workspace_pass, "run_cross_repo_hooks", hooks)
+
+        def cancel():
+            assert workspace_update_lock_path(tmp_path).exists()
+            assert update_lock_path(repo).exists() == (cancel_stage == "index")
+            raise asyncio.CancelledError()
+
+        def on_start(_alias):
+            if cancel_stage == "start":
+                cancel()
+
+        def on_done(_result):
+            if cancel_stage == "done":
+                cancel()
+
+        async def fake_update(path, **_):
+            if cancel_stage == "index":
+                cancel()
+            return RepoUpdateResult(alias="", updated=True)
+
+        async def stamp(*_):
+            if cancel_stage == "stamp":
+                cancel()
+
+        monkeypatch.setattr(workspace_pass, "update_single_repo_index", fake_update)
+        monkeypatch.setattr(workspace_pass, "reconcile_repo_head_commit", stamp)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(update_workspace(
+                tmp_path, ws_config, on_repo_start=on_start, on_repo_done=on_done,
+            ))
+        assert not workspace_update_lock_path(tmp_path).exists()
+        assert not update_lock_path(repo).exists()
+        hooks.assert_not_awaited()
+
+    def test_cancelling_workspace_task_releases_all_member_locks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancelling gather itself cleans up every running member before returning."""
+        import asyncio
+
+        from repowise.core.update_lock import update_lock_path, workspace_update_lock_path
+        from repowise.core.workspace.update import workspace_pass
+
+        repos = [_make_git_repo(tmp_path, name) for name in ("web", "core")]
+        for repo in repos:
+            _write_state(repo, get_head_commit(repo))
+            _add_commit(repo, "new.txt")
+        ws_config = WorkspaceConfig(repos=[RepoEntry(path=r.name, alias=r.name) for r in repos])
+        done = []
+
+        async def run():
+            started = set()
+            all_started = asyncio.Event()
+            blocked = asyncio.Event()
+
+            async def fake_update(path, **_):
+                assert update_lock_path(path).exists()
+                started.add(path)
+                if len(started) == len(repos):
+                    all_started.set()
+                await blocked.wait()
+
+            monkeypatch.setattr(workspace_pass, "update_single_repo_index", fake_update)
+            task = asyncio.create_task(update_workspace(
+                tmp_path, ws_config, run_hooks=False, on_repo_done=done.append,
+            ))
+            try:
+                await asyncio.wait_for(all_started.wait(), timeout=5)
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        asyncio.run(run())
+        assert done == []
+        assert not workspace_update_lock_path(tmp_path).exists()
+        assert all(not update_lock_path(repo).exists() for repo in repos)
+
+
+# ---------------------------------------------------------------------------
+# _collect_update_results
+# ---------------------------------------------------------------------------
+
+
+class TestCollectUpdateResults:
+    @pytest.mark.parametrize("fatal", ["cancel", "interrupt", "exit"])
+    @pytest.mark.parametrize("fatal_first", [False, True])
+    def test_fatal_result_propagates_before_mutating_results(self, fatal: str, fatal_first: bool) -> None:
+        import asyncio
+
+        exception = {
+            "cancel": asyncio.CancelledError(),
+            "interrupt": KeyboardInterrupt(),
+            "exit": SystemExit(),
+        }[fatal]
+        previous = RepoUpdateResult(alias="previous", updated=False, skipped_reason="up_to_date")
+        results = [previous]
+        success = RepoUpdateResult(alias="web", updated=True)
+        gathered = [exception, success] if fatal_first else [success, exception]
+        with pytest.raises(type(exception)) as raised:
+            _collect_update_results(gathered, results)
+        assert raised.value is exception
+        assert results == [previous]
+
+    def test_collects_results_in_input_order_with_last_resort_exception(self) -> None:
+        previous = RepoUpdateResult(alias="previous", updated=False)
+        web = RepoUpdateResult(alias="web", updated=True)
+        skipped = RepoUpdateResult(alias="skipped", updated=False, skipped_reason="in_flight")
+        core = RepoUpdateResult(alias="core", updated=True)
+        results = [previous]
+        changed = _collect_update_results([web, ValueError("disk full"), skipped, core], results)
+        assert changed == ["web", "core"]
+        assert [r.alias for r in results] == ["previous", "web", "unknown", "skipped", "core"]
+        assert results[1] is web
+        assert results[2].updated is False
+        assert results[2].error == "disk full"
+        assert results[3] is skipped
+        assert results[4] is core
 
 
 # ---------------------------------------------------------------------------
