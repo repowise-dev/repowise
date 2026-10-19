@@ -45,7 +45,7 @@ describe("Fix first header", () => {
     // Under the score: the headline keeps the first screen.
     expect(details.open).toBe(false);
     const summary = container.querySelector("summary")!;
-    expect(summary.textContent).toContain("Fix first");
+    expect(summary.textContent).toContain("Highest-interest technical debt");
     expect(summary.textContent).toContain("3 items");
   });
 

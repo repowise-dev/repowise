@@ -25,16 +25,54 @@ per strategy, and it is what the edge carries.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
 
 import structlog
 
+# Moved helpers stay importable from here.
+from .call_barrel_forwarding import (  # noqa: F401
+    BarrelForwardingMixin,
+    _flattened_wildcard_source,
+    _renames_on_the_way,
+)
+from .call_inheritance import (  # noqa: F401
+    _EXTERNAL_PREFIX,
+    _MAX_ANCESTOR_EXPAND_DEPTH,
+    InheritanceMixin,
+    _c3_merge,
+    _extract_class_id,
+    _is_super_call,
+)
+
 # Re-exported: the strategy table is asserted on through this module.
 from .call_language_strategies import _LANGUAGE_CALL_STRATEGIES as _LANGUAGE_CALL_STRATEGIES
 from .call_language_strategies import LanguageStrategiesMixin
+from .call_overload_selection import (  # noqa: F401
+    _JAVA_BOXES,
+    _JAVA_FINAL_PARAMETERS,
+    _JAVA_JUDGED_PARAMETERS,
+    _JAVA_LITERAL_LEVELS,
+    _JAVA_PRIMITIVES,
+    _JAVA_UNBOXED,
+    _JAVA_WIDENING,
+    _UNJUDGED_LEVEL,
+    OverloadSelectionMixin,
+    _argument_fit,
+    _ArgumentTypes,
+    _array_fit,
+    _closest_fit,
+    _java_method_refusing,
+    _kotlin_function_refusing,
+    _overload_phase,
+    _parameter_at,
+    _parameter_taking,
+    _reference_fit,
+    _takes,
+    _unboxed_fit,
+    _untyped_agree,
+)
 from .call_receiver_typing import (
     _FUNCTION_KINDS,
     _SOURCE_CACHE_FILES,
@@ -67,16 +105,8 @@ from .return_types import (
     declared_return_type,
     normalize_return_type,
     signature_parameter_count,
-    signature_parameter_range,
 )
-from .symbol_identity import (
-    erased_parameter_types,
-    erased_type,
-    id_segment_name,
-    outer_scope,
-    pair_overloads,
-    split_symbol_id,
-)
+from .symbol_identity import id_segment_name, outer_scope
 from .type_names import (
     bare_type_name,
     csharp_extension_receiver,
@@ -126,14 +156,6 @@ _MODULE_ONLY_ALIAS_LANGUAGES = frozenset(
 
 # The sentinel an import that binds a whole module's public names carries.
 _WILDCARD_IMPORTED_NAMES = ["*"]
-
-# The graph's prefix for an import target outside the repository. Also marks a
-# Python base class the repository does not declare, in an MRO walk.
-_EXTERNAL_PREFIX = "external:"
-
-# Ancestors within four hops: ``heritage_ancestors`` bounds expansion, not
-# reach, so 3 reaches 4.
-_MAX_ANCESTOR_EXPAND_DEPTH = 3
 
 
 # Kinds that can never be the callee of a call, so the bare-name tiers never
@@ -216,240 +238,11 @@ def _overload_return_types(
     return found
 
 
-def _overload_phase(admitted: tuple[int, int | None], argument_count: int) -> int | None:
-    """The first phase in which a member with *admitted* arguments takes the call.
 
-    0 for exactly that arity, 1 when its defaults admit the count (Java's first
-    phase, C#'s normal form), 2 when its varargs or ``params`` expand to it,
-    and None when it cannot take the call.
-    """
-    fewest, most = admitted
-    if argument_count < fewest:
-        return None
-    if most is None:
-        return 2
-    if argument_count > most:
-        return None
-    return 0 if fewest == most else 1
-
-
-_ArgumentTypes = tuple[str | None, ...] | None
-
-# The Java primitives a value of each type widens to, nearest first.
-_JAVA_WIDENING: dict[str, tuple[str, ...]] = {
-    "boolean": ("boolean",),
-    "byte": ("byte", "short", "int", "long", "float", "double"),
-    "short": ("short", "int", "long", "float", "double"),
-    "char": ("char", "int", "long", "float", "double"),
-    "int": ("int", "long", "float", "double"),
-    "long": ("long", "float", "double"),
-    "float": ("float", "double"),
-    "double": ("double",),
-}
-_JAVA_BOXES = {
-    "boolean": "Boolean",
-    "byte": "Byte",
-    "short": "Short",
-    "char": "Character",
-    "int": "Integer",
-    "long": "Long",
-    "float": "Float",
-    "double": "Double",
-}
-_JAVA_UNBOXED = {box: primitive for primitive, box in _JAVA_BOXES.items()}
-_JAVA_PRIMITIVES = frozenset(_JAVA_WIDENING)
-# Parameter types a literal is judged against; any other (``Object``, a type
-# variable, a class) takes a literal by boxing, or as a ``String``'s supertype.
-_JAVA_JUDGED_PARAMETERS = _JAVA_PRIMITIVES | frozenset(
-    {*_JAVA_BOXES.values(), "String", "CharSequence"}
-)
-# Final classes: a parameter of one takes no other class.
-_JAVA_FINAL_PARAMETERS = frozenset({*_JAVA_BOXES.values(), "String"})
-# {literal: {judged parameter: how it is reached}}: 0 exactly, 1 widened, 2 boxed.
-_JAVA_LITERAL_LEVELS: dict[str, dict[str, int]] = {
-    **{
-        literal: {p: int(p != literal) for p in widened} | {_JAVA_BOXES[literal]: 2}
-        for literal, widened in _JAVA_WIDENING.items()
-    },
-    "String": {"String": 0, "CharSequence": 1},
-    "null": dict.fromkeys(_JAVA_JUDGED_PARAMETERS - _JAVA_PRIMITIVES, 1),
-}
-_UNJUDGED_LEVEL = {**dict.fromkeys(_JAVA_WIDENING, 2), "String": 1, "null": 1}
-
-
-def _argument_fit(parameter: str, argument: str) -> int | None:
-    """How near a Java argument reaches *parameter*: 0 exactly, 1 widened, 2 boxed; None never.
-
-    *argument* is a literal's type or a named argument's declared one; a
-    named ``String`` or primitive takes the literal path. A coarse form of the
-    most-specific rule: a call ``f(true)`` takes ``f(boolean)`` over
-    ``f(Object)``, and ``f('c')`` takes ``f(int)`` over it.
-    """
-    levels = _JAVA_LITERAL_LEVELS.get(argument)
-    if levels is None:
-        return _reference_fit(parameter, argument)
-    if parameter.endswith("[]"):
-        return 1 if argument == "null" else None
-    if parameter not in _JAVA_JUDGED_PARAMETERS:
-        return _UNJUDGED_LEVEL[argument]
-    return levels.get(parameter)
-
-
-def _reference_fit(parameter: str, argument: str) -> int | None:
-    """How a value of class or array type *argument* reaches *parameter*.
-
-    0 as itself; 2 unboxed, 3 unboxed and widened; None where it never can
-    (a primitive, another final class, an array it is not). An array reaches
-    a covariant array at 1 and anything else (``Object``) at 2. Any other
-    parameter may be a supertype or a type variable: 1, which an exact
-    match beats and nothing else tells apart.
-    """
-    if parameter == argument:
-        return 0
-    if parameter in _JAVA_PRIMITIVES:
-        return _unboxed_fit(parameter, argument)
-    if argument.endswith("[]"):
-        return _array_fit(parameter, argument)
-    if parameter in _JAVA_FINAL_PARAMETERS or parameter.endswith("[]"):
-        return None
-    return 1
-
-
-def _unboxed_fit(parameter: str, argument: str) -> int | None:
-    """A box reaching primitive *parameter*: 2 unboxed, 3 unboxed and widened; None never."""
-    unboxed = _JAVA_UNBOXED.get(argument)
-    if unboxed is None or parameter not in _JAVA_WIDENING[unboxed]:
-        return None
-    return 2 if parameter == unboxed else 3
-
-
-def _array_fit(parameter: str, argument: str) -> int | None:
-    """``String[]`` reaches ``Object[]`` (1, covariance) and ``Object`` (2).
-
-    A primitive array reaches no other array, and no array a final class.
-    """
-    if not parameter.endswith("[]"):
-        return None if parameter in _JAVA_FINAL_PARAMETERS else 2
-    element, takes = argument.removesuffix("[]"), parameter.removesuffix("[]")
-    if element in _JAVA_PRIMITIVES or takes in _JAVA_PRIMITIVES:
-        return None
-    return None if _argument_fit(takes, element) is None else 1
-
-
-def _closest_fit(
-    members: list[tuple[str, list[str]]], argument_types: tuple[str | None, ...], expanded: bool
-) -> str | None:
-    """The one member the typed arguments fit most closely, or None on a tie.
-
-    Only where the members agree on every untyped argument's parameter:
-    there the typed ones are all that tells them apart. *expanded* says the
-    members take the call through their varargs.
-    """
-    if not _untyped_agree(members, argument_types, expanded):
-        return None
-    ranked: dict[int, list[str]] = defaultdict(list)
-    for member, parameters in members:
-        fits = [
-            _argument_fit(_parameter_taking(parameters, argument_types, index, expanded), argument)
-            for index, argument in enumerate(argument_types)
-            if argument is not None
-        ]
-        if all(fit is not None for fit in fits):
-            ranked[max(fits, default=0)].append(member)
-    best = ranked[min(ranked)] if ranked else []
-    return best[0] if len(best) == 1 else None
-
-
-def _untyped_agree(
-    members: list[tuple[str, list[str]]], argument_types: tuple[str | None, ...], expanded: bool
-) -> bool:
-    """Whether every member takes each untyped argument as the same parameter type."""
-    return all(
-        len({_parameter_at(parameters, index, expanded) for _, parameters in members}) == 1
-        for index, argument in enumerate(argument_types)
-        if argument is None
-    )
-
-
-def _parameter_taking(
-    parameters: list[str], argument_types: tuple[str | None, ...], index: int, expanded: bool
-) -> str:
-    """The parameter type typed argument *index* is judged against.
-
-    An array that alone fills the varargs position is passed as the array
-    itself (``addChildren(index, children)``), not expanded into it.
-    """
-    argument = argument_types[index] or ""
-    alone = index == len(parameters) - 1 == len(argument_types) - 1
-    if expanded and alone and argument.endswith("[]"):
-        return parameters[-1]
-    return _parameter_at(parameters, index, expanded) or ""
-
-
-def _parameter_at(parameters: list[str], index: int, expanded: bool) -> str | None:
-    """The parameter type that takes argument *index*.
-
-    Through *expanded* varargs, the trailing array's element type takes the
-    argument at its position and every one after it.
-    """
-    if expanded and parameters and index >= len(parameters) - 1:
-        return parameters[-1].removesuffix("[]")
-    return parameters[index] if index < len(parameters) else None
-
-
-def _java_method_refusing(symbol: Symbol | None, argument_count: int | None) -> bool:
-    """Whether *symbol* is a Java method whose parameters cannot take *argument_count*."""
-    if symbol is None or argument_count is None:
-        return False
-    return (
-        symbol.language == "java" and symbol.kind == "method" and not _takes(symbol, argument_count)
-    )
-
-
-def _kotlin_function_refusing(symbol: Symbol | None, argument_count: int | None) -> bool:
-    """Whether *symbol* is a Kotlin function whose parameters cannot take *argument_count*.
-
-    Never an ``override``: it inherits defaults its own list does not write.
-    """
-    if symbol is None or argument_count is None or symbol.language != "kotlin":
-        return False
-    if symbol.kind not in _FUNCTION_KINDS or "override" in symbol.modifiers:
-        return False
-    return not _takes(symbol, argument_count)
-
-
-def _takes(symbol: Symbol, argument_count: int) -> bool:
-    """Whether *symbol*'s parameters admit *argument_count*; an unread signature does."""
-    admitted = signature_parameter_range(symbol.signature or "", symbol.language)
-    return admitted is None or _overload_phase(admitted, argument_count) is not None
-
-
-def _flattened_wildcard_source(imp: Import) -> str | None:
-    """The repository file whose every name *imp* forwards, or None.
-
-    Two shapes qualify: Rust ``pub use foo::*`` (``is_reexport``) and
-    Python/JS ``from foo import *`` (a "*" imported name).
-    """
-    is_wildcard = imp.is_reexport or "*" in imp.imported_names
-    if not is_wildcard or not imp.resolved_file:
-        return None
-    if imp.resolved_file.startswith("external:"):
-        return None
-    # ``export * as ns from "x"`` forwards the module under ``ns``,
-    # so x's names are reachable as ``ns.name`` and are NOT this
-    # file's own exports. Flattening them makes a bare ``name``
-    # resolve into a nested namespace it was never in.
-    if any(b.local_name == "*" and b.exported_name for b in imp.bindings):
-        return None
-    return imp.resolved_file
 
 
 def _admitted_cpp_chain(type_name: str, method_name: str) -> bool:
     return type_name == "future" and method_name == "get"
-
-
-def _renames_on_the_way(binding: NamedBinding | None, name: str) -> bool:
-    return binding is not None and (binding.exported_name or name) != name
 
 
 def _has_internal_linkage(path: str, sym: Symbol) -> bool:
@@ -478,7 +271,13 @@ def _same_translation_unit(decl_file: str, def_file: str) -> bool:
     return decl_file == def_file or PurePosixPath(decl_file).stem == PurePosixPath(def_file).stem
 
 
-class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
+class CallResolver(
+    LanguageStrategiesMixin,
+    ReceiverTypingMixin,
+    OverloadSelectionMixin,
+    BarrelForwardingMixin,
+    InheritanceMixin,
+):
     """Resolve raw CallSites to symbol-level edges.
 
     Constructed once per ``GraphBuilder.build()`` call with the full set of
@@ -635,114 +434,6 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Only a call to one of these has its named arguments typed.
         self._overloaded_names = frozenset(self._symbols_by_id[m].name for m in self._overload_rep)
 
-    def _follow_barrel_exports(self) -> None:
-        """Detect barrel/re-export files and record origin mappings.
-
-        A barrel file imports a name and re-exports it without defining it
-        locally (e.g., ``__init__.py`` with ``from .calculator import Calculator``).
-        When downstream code imports from the barrel, we follow chains to
-        find the actual defining file.
-        """
-        self._record_direct_barrel_origins()
-        wildcard_sources = self._record_wildcard_barrel_origins()
-        self._forward_barrels_over_barrels(wildcard_sources)
-        self._deepen_barrel_chains()
-
-    def _record_direct_barrel_origins(self) -> None:
-        for path, name_to_file in self._import_names.items():
-            file_syms = self._file_symbols.get(path, {})
-            for name, source_file in name_to_file.items():
-                # An origin outside the repo names no file a reader of this
-                # map can look up; the wildcard pass refuses one too.
-                if name not in file_syms and not source_file.startswith("external:"):
-                    self._barrel_origins[path][name] = source_file
-
-    def _record_wildcard_barrel_origins(self) -> dict[str, list[str]]:
-        """Forward every name a wildcard import publishes; return each file's sources.
-
-        This is how package ``__init__.py`` barrels commonly re-export a
-        subpackage. ``build_import_name_maps`` skips the "*" name (it is not a
-        binding), so without this pass the barrel chain dead-ends one hop short
-        of the real definition and a call through the barrel resolves to nothing.
-        """
-        wildcard_sources: dict[str, list[str]] = defaultdict(list)
-        for path, parsed in self._parsed_files.items():
-            file_syms = self._file_symbols.get(path, {})
-            for imp in parsed.imports:
-                resolved = _flattened_wildcard_source(imp)
-                if resolved is None:
-                    continue
-                if resolved != path:
-                    wildcard_sources[path].append(resolved)
-                self._forward_published_names(path, resolved, file_syms)
-        return wildcard_sources
-
-    def _forward_published_names(self, path: str, resolved: str, file_syms: dict[str, str]) -> None:
-        source_syms = self._file_symbols.get(resolved, {})
-        source_parsed = self._parsed_files.get(resolved)
-        published = (
-            (*source_syms, *source_parsed.export_aliases) if source_parsed else tuple(source_syms)
-        )
-        for sym_name in published:
-            if sym_name not in file_syms:
-                self._barrel_origins[path][sym_name] = resolved
-
-    def _forward_barrels_over_barrels(self, wildcard_sources: dict[str, list[str]]) -> None:
-        """Forward what each wildcard source re-exports too, to a fixpoint.
-
-        The wildcard pass forwards only what the source file DECLARES, so a
-        barrel over a barrel forwards nothing and the chain breaks at its
-        first link rather than its last. The multi-hop pass cannot do this
-        job: it deepens entries that exist, and here none do.
-
-        Sorted so that a name two of this file's barrels both forward lands on
-        the same origin whatever order the repository was walked in.
-        """
-        for _ in range(4):
-            changed = False
-            for path, sources in sorted(wildcard_sources.items()):
-                if self._forward_source_origins(path, sources):
-                    changed = True
-            if not changed:
-                break
-
-    def _forward_source_origins(self, path: str, sources: list[str]) -> bool:
-        file_syms = self._file_symbols.get(path, {})
-        origins = self._barrel_origins[path]
-        changed = False
-        for source in sorted(sources):
-            source_bindings = self._import_bindings.get(source, {})
-            for name, declaring in sorted(self._barrel_origins.get(source, {}).items()):
-                if name in file_syms or name in origins or declaring == path:
-                    continue
-                # The map records only the declaring file, not the name the
-                # symbol has there, so a renaming hop could forward a key that
-                # means something else at the far end. Refuse it.
-                if _renames_on_the_way(source_bindings.get(name), name):
-                    continue
-                origins[name] = declaring
-                changed = True
-        return changed
-
-    def _deepen_barrel_chains(self) -> None:
-        """Multi-hop: follow chains up to 5 hops."""
-        for _ in range(4):
-            changed = False
-            for _path, origins in list(self._barrel_origins.items()):
-                if self._deepen_origins(origins):
-                    changed = True
-            if not changed:
-                break
-
-    def _deepen_origins(self, origins: dict[str, str]) -> bool:
-        changed = False
-        for name, source in list(origins.items()):
-            deeper = self._barrel_origins.get(source, {}).get(name)
-            if deeper and deeper != source:
-                origins[name] = deeper
-                changed = True
-        return changed
-
     def _collapse_declarations(self, sym_ids: list[str]) -> set[str]:
         """Fold each declaration onto the definition it was paired with.
 
@@ -880,82 +571,6 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if self._indexed_lines[0] != path:
             self._indexed_lines = (path, self._text_of(path).splitlines())
         return self._indexed_lines[1]
-
-    def _index_overload_sets(self, parsed: ParsedFile) -> dict[str, str]:
-        """Record *parsed*'s overload sets; ``{member id: representative}``.
-
-        Only parameter-count members are narrowed: a build-variant member
-        (``#cfg(...)``) is not chosen by its arguments. Kotlin extensions of
-        different receivers are separate sets: the receiver chooses among them.
-        """
-        members: dict[tuple[str, str | None], list[Symbol]] = defaultdict(list)
-        for sym in parsed.symbols:
-            base, payload = split_symbol_id(sym.id)
-            if payload is not None and payload[0].isdigit():
-                members[(base, sym.extension_receiver)].append(sym)
-        representatives: dict[str, str] = {}
-        for overloads in members.values():
-            overloads.sort(key=lambda sym: sym.start_line)
-            rep = overloads[0].id
-            ranges: dict[str, tuple[int, int | None]] = {}
-            for sym in overloads:
-                representatives[sym.id] = rep
-                admitted = signature_parameter_range(sym.signature or "", sym.language)
-                if admitted is None:
-                    self._unranged_overload_sets.add(rep)
-                else:
-                    ranges.setdefault(sym.id, admitted)
-            self._overload_members[rep] = tuple(ranges.items())
-        self._overload_rep.update(representatives)
-        return representatives
-
-    def _pair_overload_members(self) -> None:
-        """Pair each member of a declared overload set with its definition.
-
-        ``_link_declarations`` pairs a declared set with a defined one by their
-        representatives; the members pair here by parameter count and types
-        (``pair_overloads``), so each declaration records its definition, even
-        when the source defines one plain-id member. The definition also admits
-        the defaults its declaration writes: C++ writes them on the header
-        declaration only, so ``f(int, int)`` alone would refuse the one-argument
-        call ``f(int, int = 0)`` admits.
-        """
-        symbols = self._symbols_by_id
-        for declared, defined in list(self._decl_to_def.items()):
-            declared_members = self._overload_members.get(declared, ())
-            if not declared_members:
-                continue
-            defined_members = self._overload_members.get(defined, ())
-            pairs = pair_overloads(
-                [symbols[member] for member, _ in declared_members],
-                [symbols[member] for member, _ in defined_members] or [symbols[defined]],
-            )
-            for member, target in pairs.items():
-                self._decl_to_def[member] = target
-            # The representative was linked by name alone; a definition its own
-            # signature does not reach belongs to another member.
-            if pairs and declared not in pairs:
-                del self._decl_to_def[declared]
-            if defined_members:
-                self._carry_declared_floors(defined, declared_members, pairs)
-
-    def _carry_declared_floors(
-        self,
-        defined: str,
-        declared_members: tuple[tuple[str, tuple[int, int | None]], ...],
-        pairs: dict[str, str],
-    ) -> None:
-        """Lower each paired definition's fewest arguments to its declaration's."""
-        floors: dict[str, int] = {}
-        for member, (fewest, _most) in declared_members:
-            target = pairs.get(member)
-            if target is not None:
-                floors[target] = min(fewest, floors.get(target, fewest))
-        if floors:
-            self._overload_members[defined] = tuple(
-                (member, (min(fewest, floors.get(member, fewest)), most))
-                for member, (fewest, most) in self._overload_members[defined]
-            )
 
     def _index_extension_methods(
         self, candidates: dict[tuple[str, str], set[tuple[str, str]]]
@@ -1177,244 +792,6 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 results.append(resolved)
 
         return results
-
-    def _narrow_overload(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
-        """Move an edge on an overload set onto the member its arguments call.
-
-        Every tier answers with the set's representative; this is the one place
-        a member is chosen (``_overload_target``). An overload calling itself is
-        recursion, which draws no edge.
-        """
-        rep = self._overload_rep.get(resolved.callee_id)
-        if rep is None:
-            return self._inherited_overload(resolved, call)
-        target = self._overload_target(rep, call.argument_count, call.argument_types)
-        if target == resolved.caller_id:
-            return None
-        return resolved if target == resolved.callee_id else replace(resolved, callee_id=target)
-
-    def _inherited_overload(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
-        """A Java callee that cannot take the call's arguments yields to an inherited overload.
-
-        ``getField(i)`` in a class that overrides only ``getField(int, Chronology)``
-        calls the one-parameter ``getField`` a superclass declares. With no
-        ancestor overload that takes the count, the edge goes: its callee
-        cannot be what the call means, and a constructor inherits none. Java
-        only, where arity is binding. Kotlin binds arity too: a function that
-        cannot take the count (``item(key) { }`` against ``item(a, b, onClick)``)
-        names a library one, so the edge goes.
-        """
-        callee = self._symbols_by_id.get(resolved.callee_id)
-        if _kotlin_function_refusing(callee, call.argument_count):
-            return None
-        if not _java_method_refusing(callee, call.argument_count):
-            return resolved
-        assert callee is not None
-        target = (
-            None if callee.name == callee.parent_name else self._inherited_taker(resolved, call)
-        )
-        return None if target in (None, resolved.caller_id) else replace(resolved, callee_id=target)
-
-    def _inherited_taker(self, resolved: ResolvedCall, call: CallSite) -> str | None:
-        """The ancestor overload of the callee's name that takes *call*, or None.
-
-        Java looks the name up through the whole hierarchy, so a nearer
-        declaration that cannot take the count does not hide a farther one
-        that can. The superclass chain answers nearest first; past it, one
-        other ancestor (an interface default) must be the only taker.
-        """
-        class_id = self._caller_class_id(resolved.callee_id)
-        name = self._symbols_by_id[resolved.callee_id].name
-        chain = tuple(self._superclass_chain(class_id))
-        for ancestor in chain:
-            target = self._taker_in(ancestor, name, call)
-            if target is not None:
-                return target
-        takers = {
-            self._taker_in(ancestor, name, call)
-            for ancestor in self._ancestors_of(class_id)
-            if ancestor not in chain
-        } - {None}
-        return takers.pop() if len(takers) == 1 else None
-
-    def _taker_in(self, type_id: str, name: str, call: CallSite) -> str | None:
-        """The member of *type_id*'s own *name* overloads that takes *call*, or None."""
-        declared = self._declares(type_id, name)
-        if declared is None or self._symbols_by_id[declared].kind != "method":
-            return None
-        count = call.argument_count or 0
-        rep = self._overload_rep.get(declared)
-        target = declared if rep is None else self._overload_target(rep, count, call.argument_types)
-        return target if _takes(self._symbols_by_id[target], count) else None
-
-    def _pick_overload(
-        self, rep: str, argument_count: int | None, argument_types: _ArgumentTypes = None
-    ) -> str | None:
-        """The one member of *rep*'s set a call with *argument_count* arguments means.
-
-        Asked in the order the languages apply: a member of exactly that arity,
-        then one whose defaults admit the count (Java's first phase, C#'s normal
-        form), then one whose varargs or ``params`` expand to it. The first
-        phase with any candidate decides, and two candidates there are a tie.
-        """
-        found = self._deciding_overloads(rep, argument_count, argument_types)
-        return found[0] if len(found) == 1 else None
-
-    def _overload_target(
-        self, rep: str, argument_count: int | None, argument_types: _ArgumentTypes = None
-    ) -> str:
-        """The member of *rep*'s set a call lands on.
-
-        The member ``_pick_overload`` names, else the representative when the
-        count cannot choose: it is unknown (a method reference, a C# method
-        group), no member admits it, or a member's range is unknown, since
-        that member may admit it too. A tie keeps the representative when it
-        is one of the tied members. A tie among others takes the first of them in declaration
-        order, the order the overload index records: ``charset(x)`` over
-        ``charset()``, ``charset(String)`` and ``charset(Charset)`` never means
-        the no-argument representative, but it does mean the set, which dead
-        code judges as one unit and a constructor set needs for any inbound
-        edge at all.
-        """
-        found = self._deciding_overloads(rep, argument_count, argument_types)
-        if len(found) == 1:
-            return found[0]
-        tied = self._tied_without_representative(rep, found)
-        return tied[0] if tied else rep
-
-    def _tied_without_representative(self, rep: str, found: list[str]) -> list[str]:
-        """*found* when it is a tie the representative is not in."""
-        if len(found) > 1 and rep not in found:
-            return found
-        return []
-
-    def _deciding_overloads(
-        self, rep: str, argument_count: int | None, argument_types: _ArgumentTypes = None
-    ) -> list[str]:
-        """The members of the first phase with any candidate for *argument_count*.
-
-        A tie there is broken by *argument_types* when the typed arguments
-        fit exactly one member's parameters (``value(true)`` over ``value(String)``).
-        """
-        if argument_count is None or rep in self._unranged_overload_sets:
-            return []
-        phases: dict[int, list[str]] = defaultdict(list)
-        for member, admitted in self._overload_members.get(rep, ()):
-            phase = _overload_phase(admitted, argument_count)
-            if phase is not None:
-                phases[phase].append(member)
-        phase = min(phases, default=None)
-        found = phases[phase] if phases else []
-        return self._typed_tie_break(found, argument_types, expanded=phase == 2)
-
-    def _typed_tie_break(
-        self, found: list[str], argument_types: _ArgumentTypes, *, expanded: bool
-    ) -> list[str]:
-        """*found* narrowed to the one member its typed arguments fit closest, if one does."""
-        if len(found) < 2 or not argument_types:
-            return found
-        typed = [(m, erased_parameter_types(self._symbols_by_id[m])) for m in found]
-        closest = _closest_fit(typed, argument_types, expanded)
-        return found if closest is None else [closest]
-
-    def _typed_arguments(self, file_path: str, call: CallSite) -> CallSite:
-        """*call* with each named argument's declared type beside its literals' types.
-
-        So ``f(start, n)`` is judged as ``f(1L, 2)`` is. Asked only of a call
-        to a name an overload set carries.
-        """
-        names = call.argument_names
-        if not names or call.target_name not in self._overloaded_names:
-            return call
-        caller_id = call.caller_symbol_id or ""
-        literals = call.argument_types or (None,) * len(names)
-        types = tuple(
-            literal
-            or (self._argument_expr_type(file_path, caller_id, call.line, name) if name else None)
-            for literal, name in zip(literals, names, strict=True)
-        )
-        return replace(call, argument_types=types if any(types) else None)
-
-    def _argument_expr_type(
-        self, file_path: str, caller_id: str, line: int, name: str
-    ) -> str | None:
-        """The declared type of an argument expression: bare name, this.field, or call."""
-        if name.startswith("call:"):
-            call_head, target, count_s = name.rsplit(":", 2)
-            receiver = call_head.removeprefix("call:")
-            probe = CallSite(
-                target_name=target,
-                receiver_name=receiver or None,
-                caller_symbol_id=caller_id,
-                line=line,
-                argument_count=int(count_s),
-            )
-            probe = self._typed_arguments(file_path, probe)
-            resolved = self._resolve_one(file_path, probe)
-            if resolved is None or "global" in resolved.origin:
-                return None
-            narrowed = self._narrow_overload(self._redirect_to_definition(resolved), probe)
-            callee_id = narrowed.callee_id if narrowed else resolved.callee_id
-            type_id = self._returned_type_id(
-                callee_id, awaited=False, argument_count=probe.argument_count
-            )
-            if type_id is None:
-                return None
-            return erased_type(bare_type_name(type_id))
-        if name.startswith("this."):
-            field_name = name[5:]
-            language = self._language_of(file_path) or ""
-            found = self._field_type(
-                file_path, caller_id, language, field_name, builtin_local=False
-            )
-            if found is None or found[0] is None:
-                return None
-            type_name = found[0]
-            if "::" in type_name:
-                return erased_type(bare_type_name(type_name))
-            return erased_type(external_type_name(type_name) or type_name)
-        return self._argument_type(file_path, caller_id, name)
-
-    def _argument_type(self, file_path: str, caller_id: str, name: str) -> str | None:
-        """Argument *name*'s declared type, spelled as an overload id spells a parameter.
-
-        Read as a receiver's is, except that a local of a builtin type stands
-        (a receiver yields it to a field) and a field stands only where the
-        body declares *name* with no type the scan reads: a wrong type here
-        picks a wrong member, and nothing later checks it.
-        """
-        language = self._language_of(file_path) or ""
-        _, body_types = self._typing_scope(file_path, caller_id, language, name)
-        if name in body_types:
-            type_name = body_types[name]
-        else:
-            type_name, scope, _ = self._receiver_type_and_scope(
-                file_path, caller_id, language, name
-            )
-            if scope == "field" and self._declares_name(file_path, caller_id, name):
-                return None
-        if type_name is None:
-            return None
-        if "::" in type_name:
-            return erased_type(bare_type_name(type_name))
-        return erased_type(external_type_name(type_name) or type_name)
-
-    def _overload_sibling_call(self, call: CallSite) -> ResolvedCall | None:
-        """An overload calling another member of its own set, ``f(a)`` inside ``f(a, b)``.
-
-        The tiers answer such a call with the set's representative, which is
-        refused as recursion when the caller is that representative itself.
-        """
-        caller_id = call.caller_symbol_id or ""
-        rep = self._overload_rep.get(caller_id)
-        if rep is None or call.receiver_name not in (None, "this", "self"):
-            return None
-        if self._symbols_by_id[caller_id].name != call.target_name:
-            return None
-        target = self._pick_overload(rep, call.argument_count, call.argument_types)
-        if target is None or target == caller_id:
-            return None
-        return ResolvedCall(caller_id, target, 0.95, call.line, "same_file")
 
     def _resolve_one(self, file_path: str, call: CallSite) -> ResolvedCall | None:
         """Resolve a single CallSite through the three-tier fallback."""
@@ -2445,206 +1822,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
 
-    def _super_call(self, call: CallSite, caller_id: str) -> ResolvedCall | None:
-        """``super().m()``: the first class after the caller's own in its MRO to declare ``m``.
-
-        Java's ``super.m()`` arrives here too, with ``super`` as its receiver.
-
-        Never handed to the bare-name tiers, which answered with whichever
-        same-named method the file declared last. A base outside the
-        repository ends the walk unresolved: it may declare ``m`` itself.
-
-        Ceiling: ``super(C, self)`` is read as the caller's own class, since
-        the call site keeps no argument text. A ``C`` naming another class
-        starts the walk in the wrong place; reading the first argument would
-        close it.
-        """
-        class_id = _extract_class_id(caller_id)
-        skip = 1
-        if call.scope_name:
-            class_id, skip = self._qualified_super(caller_id, call.scope_name)
-        mro = self._mro(class_id) if class_id is not None else None
-        for ancestor in (mro or ())[skip:]:
-            if ancestor.startswith(_EXTERNAL_PREFIX):
-                return None
-            sym_id = self._declares(ancestor, call.target_name)
-            if sym_id is not None:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
-        return None
-
-    def _qualified_super(self, caller_id: str, qualifier: str) -> tuple[str | None, int]:
-        """Where Java's ``S.super.m()`` starts its walk, and how many classes it skips.
-
-        ``S`` names an enclosing class, whose superclass is meant, or a direct
-        superinterface of the caller's class, whose own ``m`` is.
-        """
-
-        def named(type_id: str) -> bool:
-            return getattr(self._symbols_by_id.get(type_id), "name", None) == qualifier
-
-        class_id = self._caller_class_id(caller_id)
-        node = class_id
-        while "::" in node:
-            if named(node):
-                return node, 1
-            node = outer_scope(node)
-        interfaces = [p for p in self._heritage_parents.get(class_id, ()) if named(p)]
-        return (interfaces[0], 0) if len(interfaces) == 1 else (None, 0)
-
-    def _mro(self, class_id: str, visiting: frozenset[str] = frozenset()) -> tuple[str, ...] | None:
-        """Python's C3 linearization of *class_id*, or None when it cannot be built.
-
-        A base outside the repository is kept as an opaque leaf, so the walk
-        can tell where in the order it sits without knowing its own bases.
-        """
-        if class_id in self._mros:
-            return self._mros[class_id]
-        bases = self._declared_bases(class_id)
-        mro: tuple[str, ...] | None = None
-        if bases is not None and class_id not in visiting:
-            inner = visiting | {class_id}
-            chains: list[tuple[str, ...]] = []
-            for base in bases:
-                external = base.startswith(_EXTERNAL_PREFIX)
-                chain = (base,) if external else self._mro(base, inner)
-                if chain is None:
-                    break
-                chains.append(chain)
-            else:
-                merged = _c3_merge([*chains, tuple(bases)])
-                mro = None if merged is None else (class_id, *merged)
-        self._mros[class_id] = mro
-        return mro
-
-    def _declared_bases(self, class_id: str) -> list[str] | None:
-        """*class_id*'s bases in declaration order, each an in-repo class id or an external marker.
-
-        The resolved heritage is an unordered id set, so each declared name is
-        matched back to its id through the symbol's name, or the name an import
-        alias stands for. None when a name matches two ids, or the file
-        declares two classes of this name.
-        """
-        symbol = self._symbols_by_id.get(class_id)
-        file_path = self._symbol_paths_by_id.get(class_id)
-        parsed = self._parsed_files.get(file_path) if file_path else None
-        if symbol is None or file_path is None or parsed is None:
-            return None
-        relations = [r for r in parsed.heritage if r.child_name == symbol.name]
-        if len({r.line for r in relations}) > 1:
-            return None
-        parents = self._heritage_parents.get(class_id, ())
-        bindings = self._import_bindings.get(file_path, {})
-        bases: list[str] = []
-        for relation in relations:
-            binding = bindings.get(relation.parent_name)
-            names = {relation.parent_name, binding.exported_name if binding else None}
-            hits = [
-                p
-                for p in parents
-                if (s := self._symbols_by_id.get(p)) is not None and s.name in names
-            ]
-            if len(hits) > 1:
-                return None
-            bases.append(hits[0] if hits else _EXTERNAL_PREFIX + relation.parent_name)
-        return bases
-
     def _language_of(self, file_path: str) -> str | None:
         parsed = self._parsed_files.get(file_path)
         return parsed.file_info.language if parsed else None
-
-    def _inherited_method(self, caller_id: str, method_name: str) -> str | None:
-        """The method of this name an ancestor of the caller's class declares.
-
-        Ambiguity is terminal: when two ancestors on different branches declare
-        the name there is no way to tell which one the call means, and picking
-        either mints an edge to a class the call may never reach. Refusing
-        costs an edge; guessing costs correctness.
-        """
-        if not self._heritage_parents:
-            return None
-        if _extract_class_id(caller_id) is None:
-            return None
-        class_id = self._caller_class_id(caller_id)
-        # The caller's own class answers even when Strategy 3 declined it for
-        # recursion; an ancestor's declaration of the name is not the target.
-        if self._declares(class_id, method_name) is not None:
-            return None
-        return self._ancestor_method(class_id, method_name, caller_id)
-
-    def _ancestor_method(
-        self, class_id: str, method_name: str, caller_id: str, *, class_chain_first: bool = False
-    ) -> str | None:
-        """The one method of this name *class_id*'s ancestors declare, never the caller.
-
-        With *class_chain_first*, Java's rule: the nearest declaration up the
-        single superclass chain overrides the rest, so it answers before the
-        uniqueness check over every ancestor.
-        """
-        if class_chain_first:
-            nearest = self._superclass_chain_method(class_id, method_name)
-            if nearest is not None:
-                return None if nearest == caller_id else nearest
-        hits = set()
-        for ancestor in self._ancestors_of(class_id):
-            sym_id = self._declares(ancestor, method_name)
-            if sym_id is not None and sym_id != caller_id:
-                hits.add(sym_id)
-        return next(iter(hits)) if len(hits) == 1 else None
-
-    def _superclass_chain_method(self, class_id: str, method_name: str) -> str | None:
-        """The nearest declaration of *method_name* up the single superclass chain."""
-        for node in self._superclass_chain(class_id):
-            sym_id = self._declares(node, method_name)
-            if sym_id is not None:
-                return sym_id
-        return None
-
-    def _superclass_chain(self, class_id: str) -> Iterator[str]:
-        """*class_id*'s superclasses, nearest first.
-
-        The walk stops where a type has no class parent, more than one, or
-        one already seen.
-        """
-        node, seen = class_id, {class_id}
-        while True:
-            parents = [
-                p
-                for p in self._heritage_parents.get(node, ())
-                if getattr(self._symbols_by_id.get(p), "kind", None) == "class"
-            ]
-            if len(parents) != 1 or parents[0] in seen:
-                return
-            seen.add(parents[0])
-            node = parents[0]
-            yield node
-
-    def _declares(self, class_id: str, method_name: str) -> str | None:
-        """The symbol a type node declares under *method_name*, or None.
-
-        Splitting on the *first* separator, not the last: a nested class is
-        ``path::Outer::Inner`` and ``_file_methods`` keys it under ``Inner``
-        in ``path``. A missed lookup would hide an ancestor from the ambiguity
-        check above and let a wrong single candidate through.
-        """
-        file_path, _, name = class_id.partition("::")
-        return self._file_methods.get(file_path, {}).get((name.rpartition("::")[2], method_name))
-
-    def _ancestors_of(self, class_id: str) -> tuple[str, ...]:
-        got = self._ancestors.get(class_id)
-        if got is None:
-            from .heritage_resolver import heritage_ancestors
-
-            # Sorted: the walk expands an anchor only on its first visit, so
-            # branch order decides the result and must be stable.
-            reached = heritage_ancestors(
-                class_id,
-                lambda t: sorted(self._heritage_parents.get(t, ())),
-                max_expand_depth=_MAX_ANCESTOR_EXPAND_DEPTH,
-            )
-            reached.discard(class_id)
-            got = tuple(sorted(reached))
-            self._ancestors[class_id] = got
-        return got
 
     def _receiver_pair_match(
         self,
@@ -2815,46 +1995,6 @@ def _rivals_a_class_method(symbol_id: str) -> bool:
     """
     parts = symbol_id.split("::")
     return len(parts) >= 3 and id_segment_name(parts[-1]) != id_segment_name(parts[-2])
-
-
-def _is_super_call(call: CallSite, language: str) -> bool:
-    """Python's ``super().m()`` (a chained call) or Java's ``super.m()``."""
-    if language == "java":
-        return call.receiver_name == "super"
-    receiver = call.receiver_call
-    return (
-        language == "python"
-        and receiver is not None
-        and receiver.target_name == "super"
-        and receiver.receiver_name is None
-    )
-
-
-def _c3_merge(sequences: list[tuple[str, ...]]) -> list[str] | None:
-    """The C3 merge step of Python's MRO; None when no consistent order exists."""
-    pending = [list(seq) for seq in sequences if seq]
-    merged: list[str] = []
-    while pending:
-        head = next(
-            (seq[0] for seq in pending if not any(seq[0] in other[1:] for other in pending)),
-            None,
-        )
-        if head is None:
-            return None
-        merged.append(head)
-        pending = [rest for seq in pending if (rest := seq[1:] if seq[0] == head else seq)]
-    return merged
-
-
-def _extract_class_id(symbol_id: str) -> str | None:
-    """``path::Cls::meth`` -> ``path::Cls``; None when no class encloses it.
-
-    The heritage graph is keyed on the class's own symbol id, so the class
-    *name* alone cannot be looked up in it — that is the name-keyed shortcut
-    the walk exists to avoid.
-    """
-    parts = symbol_id.split("::")
-    return "::".join(parts[:-1]) if len(parts) >= 3 else None
 
 
 def _extract_class_from_symbol_id(symbol_id: str) -> str | None:

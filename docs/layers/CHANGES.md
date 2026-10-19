@@ -79,8 +79,10 @@ with `REPOWISE_SEAM_CHANGE_METADATA`. See
 | Surface | Use |
 |---|---|
 | CLI | `repowise changes list [--category C] [--shape merge\|squash\|commit] [--grep TEXT]`, `repowise changes show REF [--format table\|json\|in-toto]` |
-| REST | `GET /api/repos/{id}/changes` (filters `category`, `shape`, `q`, `needs_attention`; `evidence=true` adds each row's kept checklist status counts), `GET /api/repos/{id}/changes/{change_id}` |
+| REST | `GET /api/repos/{id}/changes` (filters `category`, `shape`, `q`, `needs_attention`, `author`, `area`, `since`, `until`, `delta`, `touches_hotspot`; `evidence=true` adds each row's kept checklist status counts, leaving out the health row since health leads from the commit rollup), `GET /api/repos/{id}/changes/summary`, `GET /api/repos/{id}/changes/{change_id}` |
 | Web | Commits page, "By change" view: each change with its checklist's attention and unknown counts and a "Needs attention" filter; a detail page per change |
+
+Every row leads with `health`: its commits' stored health deltas summed (introduced, worsened, resolved, files worsened) and a `kind` of `improved`, `worsened`, `mixed` or `neutral`; `null` means no commit was scanned. The `delta` filter's `improved` and `worsened` each include `mixed`. `/changes/summary` counts a period's changes by kind, improvements first, and the detail adds the worse findings (file, lines, symbol, biomarker) behind the counts. `GET /api/repos/{id}/commits` carries the same `health_delta` per commit and takes the same filters, and `GET /api/repos/{id}/wins?since=&author=` lists findings resolved, files whose score rose and refactorings that landed.
 
 `show` and the detail route accept a change id or any commit sha the change landed.
 Full flags: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-changes).

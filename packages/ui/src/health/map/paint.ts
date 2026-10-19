@@ -1,166 +1,97 @@
 /**
  * Painting the field onto a canvas, kept apart from React.
  *
- * The field is a few thousand discs that only change colour when the lens
- * changes and only change place when the camera moves. So the nodes are
- * grouped once into batches that share a fill, each batch becomes one
- * `Path2D` in world units, and a frame is a transform plus one `fill()` per
- * batch: the browser rasterizes the discs and no JavaScript runs per node.
- * Hover, selection, search and the keyboard cursor paint on a second canvas
- * above it, so pointing at a node never repaints the field.
- *
- * Colours arrive as CSS strings (token `var()`s and `color-mix()`es, so the
- * key and the field read one source) and are resolved to RGB once per theme
- * through the browser's own computed style.
+ * Two kinds of mark. Area discs are a few hundred at most and are drawn in
+ * screen space every frame, so a hairline stays a hairline at any zoom. File
+ * dots are thousands that only change colour when the lens changes and only
+ * change place when the camera moves, so they are grouped once per host into
+ * batches that share a fill, each batch is one `Path2D` in world units, and a
+ * frame fills the batches of the hosts it shows: the browser rasterizes the
+ * dots and no JavaScript runs per file. Hover, selection, search and the
+ * keyboard cursor paint on a second canvas above, so pointing at something
+ * never repaints the field.
  */
 
-import type { FileNode, Galaxy } from "./types";
+import type { Host, PlacedFiles } from "./area-layout";
+import type { DiscView, FieldView } from "./area-view";
+import { mixRgb, rgba, type Palette, type Rgb } from "./colour";
+import type { FileNode } from "./types";
 
-export type Rgb = readonly [number, number, number];
+export {
+  createColourResolver,
+  mixRgb,
+  parseCssColour,
+  resolvePalette,
+  rgba,
+  type Palette,
+  type Rgb,
+} from "./colour";
 
-const FALLBACK: Rgb = [128, 128, 128];
-
-/** Parse a computed colour: `rgb()`, `rgba()`, `color(srgb …)` or hex. */
-export function parseCssColour(value: string): Rgb | null {
-  const v = value.trim();
-  let m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(v);
-  if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
-  m = /^color\(srgb\s+([\d.e-]+)\s+([\d.e-]+)\s+([\d.e-]+)/i.exec(v);
-  if (m) return [Number(m[1]) * 255, Number(m[2]) * 255, Number(m[3]) * 255];
-  m = /^#([0-9a-f]{6})$/i.exec(v);
-  if (m) {
-    const n = parseInt(m[1]!, 16);
-    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-  }
-  return null;
-}
-
-/**
- * A cached CSS-colour-to-RGB resolver bound to one element, so `var()` reads
- * the theme in force there. Build a new one when the theme flips.
- */
-export function createColourResolver(host: HTMLElement | null): (css: string) => Rgb {
-  const cache = new Map<string, Rgb>();
-  let probe: HTMLSpanElement | null = null;
-  return (css) => {
-    const hit = cache.get(css);
-    if (hit) return hit;
-    let rgb: Rgb | null = parseCssColour(css);
-    if (!rgb && host && typeof getComputedStyle !== "undefined") {
-      if (!probe) {
-        probe = document.createElement("span");
-        probe.style.display = "none";
-        host.appendChild(probe);
-      }
-      probe.style.color = "";
-      probe.style.color = css;
-      rgb = parseCssColour(getComputedStyle(probe).color);
-    }
-    const out = rgb ?? FALLBACK;
-    cache.set(css, out);
-    return out;
-  };
-}
-
-export function rgba([r, g, b]: Rgb, a = 1): string {
-  return `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${a})`;
-}
-
-export function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
-  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-}
-
-/** Theme colours the field paints with besides the node fills. */
-export interface Palette {
-  ink: Rgb;
-  ring: Rgb;
-  accent: Rgb;
-}
-
-export function resolvePalette(resolve: (css: string) => Rgb): Palette {
-  return {
-    ink: resolve("var(--color-text-primary)"),
-    ring: resolve("var(--color-border-default)"),
-    accent: resolve("var(--color-accent-primary)"),
-  };
-}
-
-/** The laid-out field flattened for drawing: one index space for every node. */
+/** The placed files flattened for drawing: one index space for every node. */
 export interface FieldScene {
-  galaxies: Galaxy[];
   nodes: FileNode[];
-  /** Node index -> galaxy index. */
-  galaxyOf: Int32Array;
+  hosts: Host[];
+  hostIndex: ReadonlyMap<string, number>;
+  /** Node index -> host index. */
+  hostOfNode: Int32Array;
   /** Path -> node index. */
   index: Map<string, number>;
 }
 
-export function buildScene(galaxies: Galaxy[]): FieldScene {
-  const nodes: FileNode[] = [];
-  const owner: number[] = [];
-  galaxies.forEach((g, gi) => {
-    for (const nd of g.nodes) {
-      nodes.push(nd);
-      owner.push(gi);
-    }
-  });
+export function buildScene(placed: PlacedFiles): FieldScene {
   const index = new Map<string, number>();
-  nodes.forEach((nd, i) => index.set(nd.file.file_path, i));
-  return { galaxies, nodes, galaxyOf: Int32Array.from(owner), index };
+  placed.nodes.forEach((nd, i) => index.set(nd.file.file_path, i));
+  return { nodes: placed.nodes, hosts: placed.hosts, hostIndex: placed.hostIndex, hostOfNode: placed.hostOfNode, index };
 }
 
-/** One fill: the nodes that share a colour (or a colour pair, mid-tween). */
+/** One fill within one host: the nodes that share a colour (or a pair, mid-tween). */
 export interface Batch {
+  host: number;
   from: Rgb;
   to: Rgb;
   /** Glow strength at each end, 0 or 1: only files that need attention glow. */
   glowFrom: number;
   glowTo: number;
-  /** Nodes outside the focused galaxy, drawn dimmed. */
-  faded: boolean;
   nodes: Int32Array;
   path: Path2D | null;
   glow: Path2D | null;
 }
 
 /**
- * Group the nodes by what they are filled with. Pure apart from `resolve`,
- * which a test can stub. `from` is the previous lens's fills during a tween,
- * or null at rest; `loud` says whether a fill marks a problem.
+ * Group each host's nodes by what they are filled with, so a frame fills one
+ * path per colour per drawn host. Pure apart from `resolve`, which a test can
+ * stub. `from` is the previous lens's fills during a tween, or null at rest.
  */
 export function groupBatches(
   scene: FieldScene,
   to: readonly string[],
   from: readonly string[] | null,
-  focus: number,
   loud: (fill: string) => boolean,
   resolve: (css: string) => Rgb,
 ): Batch[] {
-  const groups = new Map<string, { list: number[]; f: string; t: string; faded: boolean }>();
+  const groups = new Map<string, { list: number[]; host: number; f: string; t: string }>();
   for (let i = 0; i < scene.nodes.length; i++) {
     const t = to[i]!;
     const f = from ? from[i]! : t;
-    const faded = focus >= 0 && scene.galaxyOf[i] !== focus;
-    const key = `${faded ? 1 : 0}\u0000${f}\u0000${t}`;
+    const host = scene.hostOfNode[i]!;
+    const key = `${host}\u0000${f}\u0000${t}`;
     const g = groups.get(key);
     if (g) g.list.push(i);
-    else groups.set(key, { list: [i], f, t, faded });
+    else groups.set(key, { list: [i], host, f, t });
   }
   const out: Batch[] = [];
   for (const g of groups.values()) {
     out.push({
+      host: g.host,
       from: resolve(g.f),
       to: resolve(g.t),
       glowFrom: loud(g.f) ? 1 : 0,
       glowTo: loud(g.t) ? 1 : 0,
-      faded: g.faded,
       nodes: Int32Array.from(g.list),
       path: null,
       glow: null,
     });
   }
-  // Dimmed galaxies first, so the focused one paints over its neighbours.
-  out.sort((a, b) => Number(b.faded) - Number(a.faded));
   return out;
 }
 
@@ -204,20 +135,24 @@ export interface View {
   dpr: number;
 }
 
-/** What one frame paints with: the field, the camera, the box, the theme. */
+/** What one frame paints with: the files, the camera, the box, the theme. */
 export interface Frame {
   scene: FieldScene;
   cam: Cam;
   view: View;
   palette: Palette;
-  /** Index of the focused galaxy, or -1. */
-  focus: number;
+  /** Which areas show as what, decided for this camera. */
+  field: FieldView;
+  /** An area's resolved fill under the active lens. */
+  areaRgb: (path: string) => Rgb;
 }
 
-/** Opacity of a node outside the focused galaxy. */
-const FADED_ALPHA = 0.16;
 /** Peak opacity of a glow. Soft enough to read as light, not as a ring. */
 const GLOW_ALPHA = 0.16;
+/** A solid area disc: the lens colour, a touch quieter than a file dot. */
+const CLOSED_ALPHA = 0.82;
+/** An own-files slot not yet showing its files. */
+const SLOT_ALPHA = 0.45;
 
 function screen(cam: Cam, view: View, x: number, y: number): [number, number] {
   return [view.w / 2 + (x - cam.cx) * cam.scale, view.h / 2 + (y - cam.cy) * cam.scale];
@@ -234,73 +169,59 @@ function clear(ctx: CanvasRenderingContext2D, view: View): void {
   ctx.clearRect(0, 0, view.w, view.h);
 }
 
-/** How a galaxy's cloud and ring read: dimmed, focused, or at rest. */
-function galaxyTone(gi: number, focus: number): { cloud: number; ring: number; width: number } {
-  if (focus < 0) return { cloud: 0.04, ring: 0.6, width: 1 };
-  if (gi === focus) return { cloud: 0.04, ring: 1, width: 1.25 };
-  return { cloud: 0.012, ring: 0.3, width: 1 };
-}
-
 /**
- * Galaxies are neutral: a soft cloud and a hairline, and no hue, because the
- * nodes inside already speak in red, amber and green.
+ * One area disc. A solid disc carries the lens colour; an open one is a ring
+ * with a breath of ink, so what is inside it does the talking.
  */
-function drawGalaxies(ctx: CanvasRenderingContext2D, f: Frame): void {
-  const { cam, view, palette } = f;
-  f.scene.galaxies.forEach((g, gi) => {
-    const [sx, sy] = screen(cam, view, g.cx, g.cy);
-    const R = g.R * cam.scale;
-    if (R < 1 || offscreen(view, sx, sy, R)) return;
-    const tone = galaxyTone(gi, f.focus);
-    const cloud = ctx.createRadialGradient(sx, sy, 0, sx, sy, R * 1.12);
-    cloud.addColorStop(0, rgba(palette.ink, tone.cloud));
-    cloud.addColorStop(1, rgba(palette.ink, 0));
-    ctx.fillStyle = cloud;
-    ctx.beginPath();
-    ctx.arc(sx, sy, R * 1.12, 0, Math.PI * 2);
+function drawDisc(ctx: CanvasRenderingContext2D, f: Frame, d: DiscView): void {
+  const { palette } = f;
+  ctx.beginPath();
+  ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+  if (d.state === "open") {
+    ctx.fillStyle = rgba(palette.ink, 0.025);
     ctx.fill();
-    ctx.lineWidth = tone.width;
-    ctx.strokeStyle = rgba(palette.ring, tone.ring);
-    ctx.beginPath();
-    ctx.arc(sx, sy, R, 0, Math.PI * 2);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = rgba(palette.ring, 0.7);
     ctx.stroke();
-  });
+    return;
+  }
+  ctx.fillStyle = rgba(f.areaRgb(d.path), d.state === "slot" ? SLOT_ALPHA : CLOSED_ALPHA);
+  ctx.fill();
+  if (d.r >= 6) {
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = rgba(palette.ring, d.state === "slot" ? 0.35 : 0.6);
+    ctx.stroke();
+  }
 }
 
-/** One batch at tween progress `t`: its glow, if it has one, then its discs. */
+/** One batch at tween progress `t`: its glow, if it has one, then its dots. */
 function drawBatch(ctx: CanvasRenderingContext2D, b: Batch, t: number): void {
   if (!b.path) return;
-  const alpha = b.faded ? FADED_ALPHA : 1;
   const fill = rgba(t >= 1 ? b.to : mixRgb(b.from, b.to, t));
   const glow = b.glowFrom + (b.glowTo - b.glowFrom) * t;
   ctx.fillStyle = fill;
   if (b.glow && glow > 0) {
-    ctx.globalAlpha = GLOW_ALPHA * glow * alpha;
+    ctx.globalAlpha = GLOW_ALPHA * glow;
     ctx.fill(b.glow);
   }
-  ctx.globalAlpha = alpha;
+  ctx.globalAlpha = 1;
   ctx.fill(b.path);
 }
 
 /**
- * The base layer: each galaxy's nebula and hairline, then the nodes.
- * `t` is the lens tween's progress, 1 at rest.
+ * The base layer: the area discs, then the file dots of every host this
+ * frame draws. `t` is the lens tween's progress, 1 at rest.
  */
-export function drawField(
-  ctx: CanvasRenderingContext2D,
-  f: Frame,
-  batches: Batch[],
-  t: number,
-): void {
-  const { cam, view } = f;
+export function drawField(ctx: CanvasRenderingContext2D, f: Frame, batches: Batch[], t: number): void {
+  const { cam, view, field } = f;
   clear(ctx, view);
-  drawGalaxies(ctx, f);
+  for (const d of field.discs) drawDisc(ctx, f, d);
   const s = cam.scale;
-  const d = view.dpr;
-  ctx.setTransform(d * s, 0, 0, d * s, d * (view.w / 2 - cam.cx * s), d * (view.h / 2 - cam.cy * s));
-  for (const b of batches) drawBatch(ctx, b, t);
+  const dp = view.dpr;
+  ctx.setTransform(dp * s, 0, 0, dp * s, dp * (view.w / 2 - cam.cx * s), dp * (view.h / 2 - cam.cy * s));
+  for (const b of batches) if (field.drawnHosts[b.host]) drawBatch(ctx, b, t);
   ctx.globalAlpha = 1;
-  ctx.setTransform(d, 0, 0, d, 0, 0);
+  ctx.setTransform(dp, 0, 0, dp, 0, 0);
 }
 
 export interface Marks {
@@ -308,16 +229,20 @@ export interface Marks {
   hovered: number;
   cursor: number;
   matches: readonly number[];
+  /** Discs to ring this frame, when drawn. */
+  selectedArea: DiscView | null;
+  hoveredArea: DiscView | null;
+  cursorArea: DiscView | null;
   /** A node's resolved fill, for repainting it above its neighbours. */
   fillOf: (i: number) => Rgb;
   /** Smallest drawn radius, in px, so a ring hugs a floored dot. */
   floorPx: number;
 }
 
-/** Screen centre and radius of node `i`, or null when it does not exist. */
+/** Screen centre and radius of node `i`, or null when it is not drawn. */
 function nodeOnScreen(f: Frame, i: number, floorPx: number): [number, number, number] | null {
   const nd = f.scene.nodes[i];
-  if (!nd) return null;
+  if (!nd || !f.field.drawnHosts[f.scene.hostOfNode[i]!]) return null;
   const [sx, sy] = screen(f.cam, f.view, nd.x, nd.y);
   return [sx, sy, Math.max(nd.r * f.cam.scale, floorPx)];
 }
@@ -328,15 +253,18 @@ function nodeOnScreen(f: Frame, i: number, floorPx: number): [number, number, nu
  */
 export function drawMarks(ctx: CanvasRenderingContext2D, f: Frame, marks: Marks): void {
   clear(ctx, f.view);
-  const ring = (i: number, pad: number, width: number, colour: string, dash: number[] = []) => {
-    const at = nodeOnScreen(f, i, marks.floorPx);
-    if (!at || offscreen(f.view, at[0], at[1], at[2] + pad)) return;
+  const circle = (x: number, y: number, r: number, width: number, colour: string, dash: number[] = []) => {
+    if (offscreen(f.view, x, y, r)) return;
     ctx.setLineDash(dash);
     ctx.lineWidth = width;
     ctx.strokeStyle = colour;
     ctx.beginPath();
-    ctx.arc(at[0], at[1], at[2] + pad, 0, Math.PI * 2);
+    ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.stroke();
+  };
+  const ring = (i: number, pad: number, width: number, colour: string, dash: number[] = []) => {
+    const at = nodeOnScreen(f, i, marks.floorPx);
+    if (at) circle(at[0], at[1], at[2] + pad, width, colour, dash);
   };
   const solid = (i: number, grow: number) => {
     const at = nodeOnScreen(f, i, marks.floorPx);
@@ -347,10 +275,15 @@ export function drawMarks(ctx: CanvasRenderingContext2D, f: Frame, marks: Marks)
     ctx.fill();
   };
   const accent = rgba(f.palette.accent);
+  const ink = rgba(f.palette.ink, 0.85);
+  const { hoveredArea: hov, selectedArea: sel, cursorArea: cur } = marks;
+  if (hov && hov.path !== sel?.path) circle(hov.x, hov.y, hov.r + 1, 1.5, ink);
+  if (sel) circle(sel.x, sel.y, sel.r + 1.5, 2, accent);
+  if (cur) circle(cur.x, cur.y, cur.r + 4, 2, accent, [3, 2]);
   for (const i of marks.matches) ring(i, 2.5, 1.5, accent);
   if (marks.hovered >= 0 && marks.hovered !== marks.selected) {
     solid(marks.hovered, 1);
-    ring(marks.hovered, 2, 1.5, rgba(f.palette.ink, 0.85));
+    ring(marks.hovered, 2, 1.5, ink);
   }
   if (marks.selected >= 0) {
     solid(marks.selected, 0);

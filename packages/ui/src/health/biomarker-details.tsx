@@ -313,9 +313,9 @@ export function BiomarkerDetails({
           : null,
       );
       break;
-    case "bumpy_road":
+    case "repeated_nesting":
       line = joinStats(
-        num(details.bumps) != null ? `${num(details.bumps)} bumps` : null,
+        num(details.bumps) != null ? `${num(details.bumps)} nested blocks` : null,
         num(details.ccn) != null ? `CCN ${num(details.ccn)}` : null,
         num(details.max_nesting) != null ? `nest ${num(details.max_nesting)}` : null,
       );

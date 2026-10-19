@@ -109,7 +109,7 @@
     "metrics": [
       {
         "file_path": "account.ts",
-        "score": 8.2,
+        "score": 8.42,
         "max_ccn": 17,
         "max_nesting": 3,
         "nloc": 66,
@@ -118,10 +118,10 @@
         "duplication_pct": 97.14,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.2,
+        "defect_score": 8.42,
         "maintainability_score": 8.1,
         "performance_score": 10.0,
-        "structure_deduction": 1.802,
+        "structure_deduction": 1.578,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -147,7 +147,7 @@
       },
       {
         "file_path": "workspace.ts",
-        "score": 8.2,
+        "score": 8.42,
         "max_ccn": 17,
         "max_nesting": 3,
         "nloc": 66,
@@ -156,10 +156,10 @@
         "duplication_pct": 97.14,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.2,
+        "defect_score": 8.42,
         "maintainability_score": 8.1,
         "performance_score": 10.0,
-        "structure_deduction": 1.802,
+        "structure_deduction": 1.578,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -184,7 +184,7 @@
             "end": 52
           }
         },
-        "health_impact": 1.452,
+        "health_impact": 1.247,
         "reason": "parseAccount has cyclomatic complexity 17",
         "dimension": "defect",
         "id": "finding_f79a5d5e8f306abe7ab7"
@@ -203,7 +203,7 @@
           "worst_clone_partner": "workspace.ts",
           "worst_clone_co_change": 0
         },
-        "health_impact": 0.35,
+        "health_impact": 0.331,
         "reason": "97% of file duplicated in other files; worst clone shares 68 lines with workspace.ts",
         "dimension": "maintainability",
         "id": "finding_adecdf1cea8a1aad2796"
@@ -226,7 +226,7 @@
             "end": 52
           }
         },
-        "health_impact": 1.452,
+        "health_impact": 1.247,
         "reason": "parseWorkspace has cyclomatic complexity 17",
         "dimension": "defect",
         "id": "finding_d79d97d650bcedab3ec2"
@@ -245,7 +245,7 @@
           "worst_clone_partner": "account.ts",
           "worst_clone_co_change": 0
         },
-        "health_impact": 0.35,
+        "health_impact": 0.331,
         "reason": "97% of file duplicated in other files; worst clone shares 68 lines with account.ts",
         "dimension": "maintainability",
         "id": "finding_27bf987f937f7819f307"
@@ -253,9 +253,9 @@
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 8.28,
+      "average_health": 8.49,
       "worst_performer_path": "account.ts",
-      "worst_performer_score": 8.2,
+      "worst_performer_score": 8.42,
       "worst_test_path": null,
       "worst_test_score": null,
       "file_count": 3,
@@ -263,11 +263,11 @@
       "maintainability_hotspot": null,
       "performance_average": 10.0,
       "performance_hotspot": null,
-      "structure_average": 1.72,
+      "structure_average": 1.51,
       "structure_hotspot": null,
       "history_average": 0.0,
       "history_hotspot": null,
-      "production_average": 8.28,
+      "production_average": 8.49,
       "production_file_count": 3,
       "unanalysed_file_count": 0,
       "analysed_share": 1.0
@@ -280,7 +280,7 @@
         "target_symbol": "parseAccount",
         "line_start": 15,
         "line_end": 56,
-        "impact_delta": 0.256,
+        "impact_delta": 0.22,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -291,7 +291,7 @@
         "target_symbol": "parseWorkspace",
         "line_start": 15,
         "line_end": 56,
-        "impact_delta": 0.256,
+        "impact_delta": 0.22,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -302,7 +302,7 @@
     "metrics": [
       {
         "file_path": "handlers.py",
-        "score": 8.5,
+        "score": 6.91,
         "max_ccn": 12,
         "max_nesting": 3,
         "nloc": 182,
@@ -311,10 +311,10 @@
         "duplication_pct": 85.42,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.5,
+        "defect_score": 6.91,
         "maintainability_score": 8.0,
         "performance_score": 10.0,
-        "structure_deduction": 1.5,
+        "structure_deduction": 3.084,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -339,7 +339,7 @@
             "end": 46
           }
         },
-        "health_impact": 0.25,
+        "health_impact": 0.514,
         "reason": "read_account has cyclomatic complexity 12",
         "dimension": "defect",
         "id": "finding_c58a781745af6691c556"
@@ -362,7 +362,7 @@
             "end": 67
           }
         },
-        "health_impact": 0.25,
+        "health_impact": 0.514,
         "reason": "close_account has cyclomatic complexity 10",
         "dimension": "defect",
         "id": "finding_8b967d56d3c522a17535"
@@ -385,7 +385,7 @@
             "end": 110
           }
         },
-        "health_impact": 0.25,
+        "health_impact": 0.514,
         "reason": "read_workspace has cyclomatic complexity 12",
         "dimension": "defect",
         "id": "finding_0b6ecfa0a2ac9cd7addc"
@@ -408,7 +408,7 @@
             "end": 131
           }
         },
-        "health_impact": 0.25,
+        "health_impact": 0.514,
         "reason": "close_workspace has cyclomatic complexity 10",
         "dimension": "defect",
         "id": "finding_4934d3ca94e412af4fb3"
@@ -431,7 +431,7 @@
             "end": 174
           }
         },
-        "health_impact": 0.25,
+        "health_impact": 0.514,
         "reason": "read_project has cyclomatic complexity 12",
         "dimension": "defect",
         "id": "finding_39991e29869edf38f6d2"
@@ -454,7 +454,7 @@
             "end": 195
           }
         },
-        "health_impact": 0.25,
+        "health_impact": 0.514,
         "reason": "close_project has cyclomatic complexity 10",
         "dimension": "defect",
         "id": "finding_ebd7768c22e919caee2c"
@@ -462,9 +462,9 @@
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 8.5,
+      "average_health": 6.91,
       "worst_performer_path": "handlers.py",
-      "worst_performer_score": 8.5,
+      "worst_performer_score": 6.91,
       "worst_test_path": null,
       "worst_test_score": null,
       "file_count": 1,
@@ -472,11 +472,11 @@
       "maintainability_hotspot": null,
       "performance_average": 10.0,
       "performance_hotspot": null,
-      "structure_average": 1.5,
+      "structure_average": 3.08,
       "structure_hotspot": null,
       "history_average": 0.0,
       "history_hotspot": null,
-      "production_average": 8.5,
+      "production_average": 6.91,
       "production_file_count": 1,
       "unanalysed_file_count": 0,
       "analysed_share": 1.0
@@ -489,7 +489,7 @@
         "target_symbol": "read_account",
         "line_start": 22,
         "line_end": 48,
-        "impact_delta": 0.083,
+        "impact_delta": 0.171,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -500,7 +500,7 @@
         "target_symbol": "read_project",
         "line_start": 150,
         "line_end": 176,
-        "impact_delta": 0.083,
+        "impact_delta": 0.171,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -511,7 +511,7 @@
         "target_symbol": "read_workspace",
         "line_start": 86,
         "line_end": 112,
-        "impact_delta": 0.083,
+        "impact_delta": 0.171,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -582,7 +582,7 @@
       },
       {
         "file_path": "cpp/nested.cpp",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 24,
@@ -591,10 +591,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -658,7 +658,7 @@
       },
       {
         "file_path": "csharp/nested.cs",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 34,
@@ -667,10 +667,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -715,7 +715,7 @@
       },
       {
         "file_path": "dart/nested.dart",
-        "score": 8.21,
+        "score": 8.34,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 24,
@@ -724,10 +724,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.21,
+        "defect_score": 8.34,
         "maintainability_score": 8.6,
         "performance_score": 10.0,
-        "structure_deduction": 1.785,
+        "structure_deduction": 1.657,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -753,7 +753,7 @@
       },
       {
         "file_path": "go/conditionals.go",
-        "score": 9.2,
+        "score": 9.24,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 19,
@@ -762,17 +762,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
+        "defect_score": 9.24,
         "maintainability_score": 9.4,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.758,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "go/nested.go",
-        "score": 8.39,
+        "score": 8.55,
         "max_ccn": 6,
         "max_nesting": 5,
         "nloc": 19,
@@ -781,17 +781,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.39,
+        "defect_score": 8.55,
         "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.608,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "go/perf_io_in_loop.go",
-        "score": 9.85,
+        "score": 9.86,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 56,
@@ -800,17 +800,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.85,
+        "defect_score": 9.86,
         "maintainability_score": 9.7,
         "performance_score": 8.0,
-        "structure_deduction": 0.15,
+        "structure_deduction": 0.143,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "java/Conditionals.java",
-        "score": 9.2,
+        "score": 9.24,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 20,
@@ -819,17 +819,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
+        "defect_score": 9.24,
         "maintainability_score": 9.4,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.758,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "java/Nested.java",
-        "score": 8.24,
+        "score": 8.41,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 23,
@@ -838,10 +838,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.24,
+        "defect_score": 8.41,
         "maintainability_score": 8.5,
         "performance_score": 10.0,
-        "structure_deduction": 1.758,
+        "structure_deduction": 1.595,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -867,7 +867,7 @@
       },
       {
         "file_path": "javascript/nested.js",
-        "score": 8.24,
+        "score": 8.41,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 20,
@@ -876,10 +876,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.24,
+        "defect_score": 8.41,
         "maintainability_score": 8.5,
         "performance_score": 10.0,
-        "structure_deduction": 1.758,
+        "structure_deduction": 1.595,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -943,7 +943,7 @@
       },
       {
         "file_path": "kotlin/nested.kt",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 24,
@@ -952,10 +952,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1038,7 +1038,7 @@
       },
       {
         "file_path": "pascal/complex.pas",
-        "score": 9.15,
+        "score": 9.23,
         "max_ccn": 13,
         "max_nesting": 1,
         "nloc": 40,
@@ -1047,17 +1047,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.15,
+        "defect_score": 9.23,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.847,
+        "structure_deduction": 0.774,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "pascal/nested.pas",
-        "score": 8.39,
+        "score": 8.55,
         "max_ccn": 6,
         "max_nesting": 5,
         "nloc": 32,
@@ -1066,10 +1066,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.39,
+        "defect_score": 8.55,
         "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.608,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1133,7 +1133,7 @@
       },
       {
         "file_path": "php/nested.php",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 7,
         "max_nesting": 4,
         "nloc": 89,
@@ -1142,10 +1142,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1171,7 +1171,7 @@
       },
       {
         "file_path": "python/classes.py",
-        "score": 9.65,
+        "score": 9.66,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 34,
@@ -1180,17 +1180,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.65,
+        "defect_score": 9.66,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.35,
+        "structure_deduction": 0.342,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "python/complex.py",
-        "score": 8.55,
+        "score": 8.75,
         "max_ccn": 15,
         "max_nesting": 2,
         "nloc": 21,
@@ -1199,17 +1199,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.55,
+        "defect_score": 8.75,
         "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.452,
+        "structure_deduction": 1.247,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "python/conditionals.py",
-        "score": 9.2,
+        "score": 9.24,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 12,
@@ -1218,10 +1218,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
+        "defect_score": 9.24,
         "maintainability_score": 9.4,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.758,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1247,7 +1247,7 @@
       },
       {
         "file_path": "python/nested.py",
-        "score": 8.09,
+        "score": 8.28,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 14,
@@ -1256,10 +1256,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.09,
+        "defect_score": 8.28,
         "maintainability_score": 8.2,
         "performance_score": 10.0,
-        "structure_deduction": 1.908,
+        "structure_deduction": 1.724,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1342,7 +1342,7 @@
       },
       {
         "file_path": "ruby/nested.rb",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 7,
         "max_nesting": 4,
         "nloc": 81,
@@ -1351,10 +1351,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1380,7 +1380,7 @@
       },
       {
         "file_path": "rust/conditionals.rs",
-        "score": 9.2,
+        "score": 9.24,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 18,
@@ -1389,10 +1389,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
+        "defect_score": 9.24,
         "maintainability_score": 9.4,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.758,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1418,7 +1418,7 @@
       },
       {
         "file_path": "rust/nested.rs",
-        "score": 8.39,
+        "score": 8.55,
         "max_ccn": 6,
         "max_nesting": 5,
         "nloc": 19,
@@ -1427,10 +1427,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.39,
+        "defect_score": 8.55,
         "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.608,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1475,7 +1475,7 @@
       },
       {
         "file_path": "scala/classes.scala",
-        "score": 9.65,
+        "score": 9.66,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 50,
@@ -1484,17 +1484,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.65,
+        "defect_score": 9.66,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.35,
+        "structure_deduction": 0.342,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "scala/nested.scala",
-        "score": 7.54,
+        "score": 7.77,
         "max_ccn": 9,
         "max_nesting": 5,
         "nloc": 49,
@@ -1503,10 +1503,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 7.54,
+        "defect_score": 7.77,
         "maintainability_score": 8.1,
         "performance_score": 10.0,
-        "structure_deduction": 2.455,
+        "structure_deduction": 2.226,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1532,7 +1532,7 @@
       },
       {
         "file_path": "shell/control_flow.sh",
-        "score": 9.15,
+        "score": 9.23,
         "max_ccn": 10,
         "max_nesting": 1,
         "nloc": 30,
@@ -1541,10 +1541,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.15,
+        "defect_score": 9.23,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.847,
+        "structure_deduction": 0.774,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1646,7 +1646,7 @@
       },
       {
         "file_path": "swift/nested.swift",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 24,
@@ -1655,10 +1655,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1684,7 +1684,7 @@
       },
       {
         "file_path": "typescript/classes.ts",
-        "score": 9.65,
+        "score": 9.66,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 37,
@@ -1693,17 +1693,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.65,
+        "defect_score": 9.66,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.35,
+        "structure_deduction": 0.342,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "typescript/conditionals.ts",
-        "score": 9.2,
+        "score": 9.24,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 26,
@@ -1712,17 +1712,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
+        "defect_score": 9.24,
         "maintainability_score": 9.4,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.758,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "typescript/nested.ts",
-        "score": 8.24,
+        "score": 8.41,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 21,
@@ -1731,10 +1731,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.24,
+        "defect_score": 8.41,
         "maintainability_score": 8.5,
         "performance_score": 10.0,
-        "structure_deduction": 1.758,
+        "structure_deduction": 1.595,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1835,7 +1835,7 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_7336de57febe95c93630"
@@ -2035,7 +2035,7 @@
             "end": 16
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "DeeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_525e8162089608e8a869"
@@ -2058,7 +2058,7 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_14da5768ef44be629cdb"
@@ -2081,7 +2081,7 @@
             "end": 21
           }
         },
-        "health_impact": 0.847,
+        "health_impact": 0.774,
         "reason": "manyBranches has cyclomatic complexity 9",
         "dimension": "defect",
         "id": "finding_75e1face476206b793af"
@@ -2208,7 +2208,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 3
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "if condition combines 3 boolean operators",
         "dimension": "defect",
         "id": "finding_b4706faf8eea57f3c000"
@@ -2227,7 +2227,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 10
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "for condition combines 6 boolean operators",
         "dimension": "defect",
         "id": "finding_ed03ae737c057c537559"
@@ -2250,7 +2250,7 @@
             "end": 12
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "DeeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_8a94b5551a568cc7522f"
@@ -2267,7 +2267,7 @@
           "symbol_line": 36,
           "symbol": "deferInLoop"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.143,
         "reason": "error value is checked then ignored, or discarded via the blank identifier",
         "dimension": "maintainability",
         "id": "finding_ae2ad6b7dd45e467cae7"
@@ -2439,7 +2439,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 2
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "if condition combines 3 boolean operators",
         "dimension": "defect",
         "id": "finding_92b0b6c1f3be5fe497d3"
@@ -2458,7 +2458,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 9
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "while condition combines 6 boolean operators",
         "dimension": "defect",
         "id": "finding_13a165fcb9f91a97a666"
@@ -2481,7 +2481,7 @@
             "end": 12
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_716ef8994749727b5d74"
@@ -2498,7 +2498,7 @@
           "symbol_line": 2,
           "symbol": "deeplyNested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.143,
         "reason": "caught exception is swallowed without any handling",
         "dimension": "maintainability",
         "id": "finding_45419b3eb06537a00ce0"
@@ -2654,7 +2654,7 @@
             "end": 10
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_bd08c69b932b606b18c9"
@@ -2671,7 +2671,7 @@
           "symbol_line": 1,
           "symbol": "deeplyNested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.143,
         "reason": "caught exception is swallowed without any handling",
         "dimension": "maintainability",
         "id": "finding_4614b0ce342fb6f1e7f8"
@@ -2694,7 +2694,7 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_341db9359cf919b9c51c"
@@ -2717,7 +2717,7 @@
             "end": 28
           }
         },
-        "health_impact": 0.847,
+        "health_impact": 0.774,
         "reason": "ManyBranches has cyclomatic complexity 13",
         "dimension": "defect",
         "id": "finding_cdb1bfd5e7f5961c0f48"
@@ -2740,7 +2740,7 @@
             "end": 23
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "DeeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_472f3545d0b4e4e51dcb"
@@ -2763,7 +2763,7 @@
             "end": 11
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeply_nested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_08fb66e3bd4471dcc116"
@@ -2782,7 +2782,7 @@
           "field_count": 2,
           "symbol_line": 26
         },
-        "health_impact": 0.35,
+        "health_impact": 0.342,
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
         "dimension": "maintainability",
         "id": "finding_2c342a6d7294a6f43a48"
@@ -2805,7 +2805,7 @@
             "end": 20
           }
         },
-        "health_impact": 1.452,
+        "health_impact": 1.247,
         "reason": "many_branches has cyclomatic complexity 15",
         "dimension": "defect",
         "id": "finding_0218dfee9ddbbc3acb0c"
@@ -2824,7 +2824,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 1
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "if condition combines 3 boolean operators",
         "dimension": "defect",
         "id": "finding_c86a6881aaec275e9ff1"
@@ -2843,7 +2843,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 7
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "while condition combines 6 boolean operators",
         "dimension": "defect",
         "id": "finding_3ce2bf004e5ad8e70bed"
@@ -2866,7 +2866,7 @@
             "end": 10
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeply_nested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_d4ee38f48a43bc6c92fd"
@@ -2883,7 +2883,7 @@
           "symbol_line": 1,
           "symbol": "deeply_nested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.136,
         "reason": "caught exception is swallowed without any handling",
         "dimension": "maintainability",
         "id": "finding_a2c98dd353bdd9aa22b3"
@@ -2900,7 +2900,7 @@
           "symbol_line": 1,
           "symbol": "deeply_nested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.136,
         "reason": "broad `except Exception` catches unrelated errors and can hide bugs",
         "dimension": "maintainability",
         "id": "finding_61df1a80f37292b7b485"
@@ -3074,7 +3074,7 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeply_nested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_980163708d497ecefb31"
@@ -3400,7 +3400,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 1
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "if condition combines 3 boolean operators",
         "dimension": "defect",
         "id": "finding_5e2e7ed7cf94318d223b"
@@ -3419,7 +3419,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 8
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "while condition combines 6 boolean operators",
         "dimension": "defect",
         "id": "finding_a4bb8ffa6c328be7035f"
@@ -3442,7 +3442,7 @@
             "end": 11
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeply_nested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_51c3d3fb3a7baa49f5d1"
@@ -3613,7 +3613,7 @@
           "field_count": 2,
           "symbol_line": 30
         },
-        "health_impact": 0.35,
+        "health_impact": 0.342,
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
         "dimension": "maintainability",
         "id": "finding_37149d90e97e94d08056"
@@ -3636,7 +3636,7 @@
             "end": 13
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_8444c612b6ad7c705ffd"
@@ -3659,7 +3659,7 @@
             "end": 25
           }
         },
-        "health_impact": 0.847,
+        "health_impact": 0.774,
         "reason": "manyBranches has cyclomatic complexity 9",
         "dimension": "defect",
         "id": "finding_35278d63e4c3bf59be37"
@@ -3846,7 +3846,7 @@
             "end": 13
           }
         },
-        "health_impact": 0.847,
+        "health_impact": 0.774,
         "reason": "process has cyclomatic complexity 10",
         "dimension": "defect",
         "id": "finding_d2fe951005c971f897c1"
@@ -3869,7 +3869,7 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_d407fd3ab687e2789f32"
@@ -3888,7 +3888,7 @@
           "field_count": 2,
           "symbol_line": 28
         },
-        "health_impact": 0.35,
+        "health_impact": 0.342,
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
         "dimension": "maintainability",
         "id": "finding_71eaf8ee511ffe4dce0d"
@@ -3907,7 +3907,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 1
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "if condition combines 3 boolean operators",
         "dimension": "defect",
         "id": "finding_5da1fdb1c287eae427a0"
@@ -3926,7 +3926,7 @@
           "dispatch_share": 0.0,
           "symbol_line": 8
         },
-        "health_impact": 0.399,
+        "health_impact": 0.379,
         "reason": "while condition combines 6 boolean operators",
         "dimension": "defect",
         "id": "finding_35d87c20e1ce38c81d46"
@@ -3949,7 +3949,7 @@
             "end": 12
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_28aa3ceec6692a33ea1e"
@@ -3966,7 +3966,7 @@
           "symbol_line": 1,
           "symbol": "deeplyNested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.143,
         "reason": "caught exception is swallowed without any handling",
         "dimension": "maintainability",
         "id": "finding_a35ce27fd3a48728b788"
@@ -4043,9 +4043,9 @@
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 9.55,
+      "average_health": 9.59,
       "worst_performer_path": "scala/nested.scala",
-      "worst_performer_score": 7.54,
+      "worst_performer_score": 7.77,
       "worst_test_path": null,
       "worst_test_score": null,
       "file_count": 63,
@@ -4053,11 +4053,11 @@
       "maintainability_hotspot": null,
       "performance_average": 9.5,
       "performance_hotspot": null,
-      "structure_average": 0.45,
+      "structure_average": 0.41,
       "structure_hotspot": null,
       "history_average": 0.0,
       "history_hotspot": null,
-      "production_average": 9.55,
+      "production_average": 9.59,
       "production_file_count": 63,
       "unanalysed_file_count": 4,
       "analysed_share": 0.9403

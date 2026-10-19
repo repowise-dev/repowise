@@ -73,6 +73,11 @@ describe("StatsReport", () => {
     expect(screen.getByText("70 lines of tests")).toBeInTheDocument();
   });
 
+  it("states the index size when the server measured it", () => {
+    render(<StatsReport data={{ ...makeData(), index_storage_bytes: 5 * 1024 * 1024 }} />);
+    expect(document.body.textContent).toMatch(/Repowise index .* takes 5(\.0)? MB on disk/);
+  });
+
   it("counts merge commits apart from the commit total", () => {
     const data = makeData();
     render(<StatsReport data={{ ...data, origin: { ...data.origin, total_merge_commits: 312 } }} />);

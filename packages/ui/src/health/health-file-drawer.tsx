@@ -94,6 +94,11 @@ export interface HealthDrawerMetric {
 
 export interface HealthFileDrawerProps extends RelatedWorkSlotProps {
   open: boolean;
+  /**
+   * Render the same content in place, for a host that has a rail for it (the
+   * area map), instead of in a sheet. `onClose` is then the host's to offer.
+   */
+  inline?: boolean;
   onClose: () => void;
   /**
    * The file the reader asked for. Optional: without it the header follows
@@ -179,6 +184,35 @@ function drawerView(props: HealthFileDrawerProps) {
 export function HealthFileDrawer(props: HealthFileDrawerProps) {
   const { open, onClose, loading, metric } = props;
   const { headerPath, stale } = drawerView(props);
+  const body = (
+    <div
+      className={cn(
+        "flex flex-col gap-6 transition-opacity motion-reduce:transition-none",
+        props.inline ? "py-2" : "px-4 py-4",
+        stale && "pointer-events-none opacity-60",
+      )}
+      aria-busy={stale || Boolean(loading && !metric)}
+      // The previous file's body is a placeholder, not a surface: a triage
+      // write from it would revalidate the new file's key and leave the old
+      // one's cache stale.
+      inert={stale}
+    >
+      <DrawerContent props={props} headerPath={headerPath} />
+    </div>
+  );
+  if (props.inline) {
+    if (!open) return null;
+    return (
+      <section data-testid="file-detail-inline" className="flex min-w-0 flex-col">
+        {headerPath ? (
+          <h3 className="flex min-w-0 flex-col gap-0.5">
+            <FileTitle path={headerPath} />
+          </h3>
+        ) : null}
+        {body}
+      </section>
+    );
+  }
   return (
     <AdaptivePanel
       open={open}
@@ -194,19 +228,7 @@ export function HealthFileDrawer(props: HealthFileDrawerProps) {
       titleClassName="mt-0.5 flex min-w-0 flex-col gap-0.5"
       widthClassName="md:max-w-[560px]"
     >
-      <div
-        className={cn(
-          "flex flex-col gap-6 px-4 py-4 transition-opacity motion-reduce:transition-none",
-          stale && "pointer-events-none opacity-60",
-        )}
-        aria-busy={stale || Boolean(loading && !metric)}
-        // The previous file's body is a placeholder, not a surface: a triage
-        // write from it would revalidate the new file's key and leave the old
-        // one's cache stale.
-        inert={stale}
-      >
-        <DrawerContent props={props} headerPath={headerPath} />
-      </div>
+      {body}
     </AdaptivePanel>
   );
 }
@@ -316,6 +338,8 @@ function DrawerBody(props: HealthFileDrawerProps & { metric: HealthDrawerMetric 
       <VerdictSection
         metric={metric}
         trend={props.trend}
+        breakdown={props.breakdown}
+        signals={signals}
         model={model}
         planTarget={planTarget}
         fullPage={props.permalinkHref ?? props.fileViewHref}

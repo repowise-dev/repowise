@@ -8,6 +8,7 @@ guard, since its monkeypatch runs after this one.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import subprocess
@@ -42,6 +43,10 @@ def guard_real_calls(monkeypatch: pytest.MonkeyPatch, *, allow_git: bool = False
     Windows asyncio loop) and the OS-assigned port fallback use, and they
     never claim a real port.
     """
+    # The first scipy.sparse import (networkx pagerank) probes the CPU with lscpu on Linux.
+    with contextlib.suppress(ImportError):
+        import scipy.sparse  # noqa: F401
+
     real_popen_init = subprocess.Popen.__init__
 
     def _popen_init(self, args, *a, **kw):

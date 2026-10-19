@@ -346,7 +346,7 @@ class TestUpdateWorkspace:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ):
@@ -382,7 +382,7 @@ class TestUpdateWorkspace:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ) as mocked:
@@ -413,7 +413,7 @@ class TestUpdateWorkspace:
 
         async def _run() -> int:
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ) as mocked:
@@ -546,7 +546,7 @@ class TestUpdateWorkspace:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ):
@@ -646,7 +646,7 @@ class TestWorkspaceSingleFlight:
 
             async def _run():
                 with patch(
-                    "repowise.core.workspace.update.update_single_repo_index",
+                    "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                     new_callable=AsyncMock,
                     return_value=mock_result,
                 ):
@@ -688,7 +688,7 @@ class TestWorkspaceSingleFlight:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ):
@@ -731,9 +731,9 @@ class TestCrossRepoHooks:
         import asyncio
 
         with (
-            patch("repowise.core.workspace.update._run_phases", _phases),
+            patch("repowise.core.workspace.update.phases._run_phases", _phases),
             patch("repowise.core.workspace.store.refresh_workspace_store", AsyncMock()),
-            patch("repowise.core.workspace.update._refresh_contract_facts", _refresh),
+            patch("repowise.core.workspace.update.phases._refresh_contract_facts", _refresh),
         ):
             asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, ["api"]))
         assert order == ["phases", "api"]

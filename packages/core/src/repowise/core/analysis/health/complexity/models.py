@@ -43,7 +43,7 @@ class FunctionComplexity:
     cognitive: int
     nloc: int  # non-blank lines inside the body
     # Number of top-level body sub-blocks whose internal nesting reached
-    # ≥ 2 — used by ``bumpy_road``. A flat function has 0 bumps.
+    # ≥ 2 — used by ``repeated_nesting``. A flat function has 0 bumps.
     bumps: int = 0
     # Number of declared parameters on the function signature — used by
     # ``primitive_obsession``. Counted via the tree-sitter ``parameters``
@@ -142,6 +142,8 @@ class FunctionComplexity:
     # function symbol by the health writer. ``dataflow.slice.function_facts``;
     # None means not computed (a language with no map, or a failed read).
     facts: FunctionFacts | None = None
+    # Of ``nloc``, the lines holding only JSX markup. ``complexity/markup.py``.
+    markup_nloc: int = 0
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:

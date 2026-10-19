@@ -63,6 +63,7 @@ from .dispatch import dispatch_points, dispatch_share
 from .file_scan import scan_file
 from .gating import is_gated_off, module_false_constants
 from .languages import get_language_map
+from .markup import markup_rows, rows_within
 from .mock_walk import _count_mock_setup, file_may_contain_mocks
 
 # Re-exported so the package façade (``__init__``) and downstream consumers
@@ -146,7 +147,8 @@ def walk_file(
     # The grammar follows the path, the language tag does not: everything
     # below still selects its dialects by ``language``. ``engine.py`` keys the
     # walk cache on this same tag, so the two must not drift.
-    grammar = _get_language(grammar_tag_for(language, abs_path))
+    grammar_tag = grammar_tag_for(language, abs_path)
+    grammar = _get_language(grammar_tag)
     if grammar is None:
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
@@ -176,6 +178,7 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
+    markup = markup_rows(tree.root_node, grammar_tag, source)
     flags = module_false_constants(tree.root_node, source, language)
     facts_of = _facts_reader(abs_path, language, lmap)
     fn_nodes = _collect_function_nodes(tree.root_node, lmap)
@@ -214,6 +217,7 @@ def walk_file(
             max_nesting=max_nest,
             cognitive=cognitive,
             nloc=scan.lines.count(body, source),
+            markup_nloc=rows_within(markup, body) if markup else 0,
             bumps=bumps,
             param_count=_count_parameters(fn_node),
             typed_param_count=typed,

@@ -53,6 +53,11 @@ export interface CouplingEdge {
    * written before the kind was recorded.
    */
   dependency_kind: string | null;
+  /**
+   * Whether the two files sit in different areas at the response's `depth`.
+   * Absent from a server older than area coupling.
+   */
+  cross_area?: boolean | null;
 }
 
 /** What the dependency graph says about a co-changing pair. */
@@ -68,4 +73,32 @@ export interface CouplingGraphResponse {
   coupled_files: number;
   /** Files with any commit history: the denominator `coupled_files` is a share of. */
   total_files: number;
+  /** Area depth `cross_area` was placed at. */
+  depth?: number | null;
+}
+
+/**
+ * Area-level coupling (`GET /api/repos/{repo_id}/coupling/areas`) and the
+ * area card's `coupled_areas`. Generated from the server's response models.
+ */
+export type {
+  CouplingAreaPair,
+  CouplingAreaSummary,
+  CouplingAreaTotals,
+  CouplingAreasResponse,
+} from "./generated/http.js";
+
+/**
+ * The filters `/coupling` and `/coupling/areas` share. `depth` is chosen by
+ * the server when omitted; `recentDays` counts back from the newest co-change
+ * in the index, not from today.
+ */
+export interface CouplingFilters {
+  depth?: number;
+  root?: string;
+  minSupport?: number;
+  unexplained?: boolean;
+  crossArea?: boolean;
+  excludeTests?: boolean;
+  recentDays?: number;
 }

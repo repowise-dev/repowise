@@ -15,7 +15,6 @@ import {
   whyRankedLabel,
   whyRankedPhrase,
 } from "../../src/health/performance/presentation";
-import { contiguousSections } from "../../src/health/performance/queue";
 import { opportunity } from "./fixtures/performance";
 
 describe("performance presentation", () => {
@@ -151,40 +150,6 @@ describe("performance presentation", () => {
     expect(humanizeToken("query_supports_group_selection")).toBe(
       "Query supports group selection",
     );
-  });
-});
-
-describe("queue sections", () => {
-  it("splits the page into runs without moving a single row", () => {
-    const items = [
-      opportunity({ opportunity_id: "a", actionability_state: "plan_ready" }),
-      opportunity({ opportunity_id: "b", actionability_state: "advisory" }),
-      opportunity({ opportunity_id: "c", actionability_state: "advisory" }),
-      opportunity({ opportunity_id: "d", actionability_state: "investigate" }),
-    ];
-    const sections = contiguousSections(items);
-    expect(sections.map((s) => s.state)).toEqual(["plan_ready", "advisory", "investigate"]);
-    expect(sections.flatMap((s) => s.items.map((i) => i.opportunity_id))).toEqual([
-      "a",
-      "b",
-      "c",
-      "d",
-    ]);
-  });
-
-  it("keeps an interleaved order intact rather than regrouping it", () => {
-    const items = [
-      opportunity({ opportunity_id: "a", actionability_state: "advisory" }),
-      opportunity({ opportunity_id: "b", actionability_state: "investigate" }),
-      opportunity({ opportunity_id: "c", actionability_state: "advisory" }),
-    ];
-    const sections = contiguousSections(items);
-    expect(sections).toHaveLength(3);
-    expect(sections.flatMap((s) => s.items.map((i) => i.opportunity_id))).toEqual(["a", "b", "c"]);
-  });
-
-  it("returns nothing for an empty page", () => {
-    expect(contiguousSections([])).toEqual([]);
   });
 });
 

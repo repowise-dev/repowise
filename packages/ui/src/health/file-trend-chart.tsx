@@ -2,7 +2,7 @@
 
 import { TrendingDown } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
-import type { FileHealthTrend } from "@repowise-dev/types/health";
+import { SCORE_FLOOR, type FileHealthTrend } from "@repowise-dev/types/health";
 import { formatDate } from "../lib/format";
 import { deltaColor, formatDelta, scoreTextColor } from "./tokens";
 
@@ -12,9 +12,6 @@ export interface FileTrendChartProps {
   /** Hide the bordered card chrome (e.g. when embedding inside another card). */
   bare?: boolean;
 }
-
-/** The score floor. Below it the visible score stops moving; see `plotted`. */
-const SCORE_FLOOR = 1;
 
 /**
  * The value actually drawn for a point: the score with the floor undone where

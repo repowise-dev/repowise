@@ -26,7 +26,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.finding_registry import HELD_ORIGINS
+from repowise.core.analysis.areas import in_area
+from repowise.core.analysis.finding_registry import HELD_ORIGINS, stored_origin
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.perf.coverage import supported_perf_languages
@@ -92,11 +93,14 @@ class HealthMapFeed:
     #: Which half of the repository the field describes.
     scope: str = DEFAULT_SCOPE
     counts: str = DEFAULT_COUNTS
+    #: The directory the field is narrowed to, ``None`` for the whole repository.
+    area: str | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
             "scope": self.scope,
             "counts": self.counts,
+            "area": self.area,
             "files": self.files,
             "cap": self.cap,
             "shown": self.shown,
@@ -144,11 +148,28 @@ class HealthMapService:
         counts: str = DEFAULT_COUNTS,
         include_held: bool = False,
         query: str | None = None,
+        area: str | None = None,
+        held: frozenset[str] | None = None,
     ) -> HealthMapFeed:
         session, repo_id = self._session, self._repository_id
         metrics = await crud.get_health_metrics(session, repo_id)
         rollups = await crud.performance_file_rollups(session, repo_id)
+        if area:
+            # A drilled area is its own field: every count, the cap and the
+            # performance totals below describe the area, never the repository.
+            metrics = [m for m in metrics if in_area(m.file_path, area)]
+            rollups = [r for r in rollups if in_area(r.file_path, area)]
+        if held is not None:
+            # The area map's held origins (``hold=map``) leave the field before
+            # any count, as they leave the area rollups beside it; the held set
+            # then decides vendored and generated too, even when every group
+            # was brought back and the set is empty.
+            metrics = [m for m in metrics if stored_origin(m.code_origin, m.is_test) not in held]
+            include_held = True
         languages = await crud.get_file_language_map(session, repo_id)
+        # The same set ``hotspot_health`` averages over, so the hotspot lens
+        # and that KPI can never disagree about which files are hotspots.
+        hotspots = await crud.get_hotspot_file_paths(session, repo_id)
         summary = await crud.get_performance_summary(session, repo_id)
         perf_languages = supported_perf_languages()
 
@@ -182,7 +203,7 @@ class HealthMapService:
             for m in drawable
             if include_held or m.code_origin not in HELD_ORIGINS or m.file_path in pinned
         ]
-        held = len(drawable) - len(eligible)
+        held_out = len(drawable) - len(eligible)
         eligible_paths = {m.file_path for m in eligible}
         burden = {r.file_path: r for r in rollups}
 
@@ -243,7 +264,7 @@ class HealthMapService:
 
         drawn = [by_path[path] for path in chosen]
         files = [
-            self._row(metric, burden.get(metric.file_path), languages, perf_languages)
+            self._row(metric, burden.get(metric.file_path), languages, perf_languages, hotspots)
             for metric in drawn
         ]
 
@@ -259,7 +280,7 @@ class HealthMapService:
             "opportunities": sum(r.opportunities - r.expected for r in undrawn_perf),
             "observations": sum(r.observations for r in undrawn_perf),
             # Drawable, and left out by the vendored/generated hold, not the cap.
-            "held": held,
+            "held": held_out,
         }
         # What the bands after the pins admitted, split the way older readers
         # count it: the performance band, and everything else.
@@ -315,6 +336,7 @@ class HealthMapService:
             ),
             scope=DEFAULT_SCOPE if not scope_narrowed else "production",
             counts=counts,
+            area=area or None,
         )
 
     def _row(
@@ -323,6 +345,7 @@ class HealthMapService:
         rollup: Any,
         languages: dict[str, str | None],
         perf_languages: Any,
+        hotspots: set[str],
     ) -> dict[str, Any]:
         """One node. The lens reads the rollup; everything else is geometry.
 
@@ -345,6 +368,7 @@ class HealthMapService:
             "performance_opportunities": rollup.opportunities - rollup.expected if rollup else 0,
             "performance_observations": rollup.observations if rollup else 0,
             "code_origin": metric.code_origin,
+            "is_hotspot": metric.file_path in hotspots,
         }
         actionability = _leading_actionability(rollup)
         if actionability is not None:

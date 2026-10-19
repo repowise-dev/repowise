@@ -18,6 +18,7 @@ from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.complexity.dispatch import judged_ccn, judged_nesting
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
+from repowise.core.analysis.health.file_evaluator import FileEvaluator
 from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 
@@ -452,14 +453,12 @@ def _evaluate(path: str):
         ),
         symbols=[],
     )
-    return HealthAnalyzer(graph=None)._evaluate_file(
-        pf,
-        fcx,
+    return FileEvaluator(
+        HealthAnalyzer(graph=None),
         paired_tests=set(),
         package_roots=set(),
-        disabled=[],
         dup_report=DuplicationReport(),
-    )
+    ).evaluate(pf, fcx)
 
 
 def test_complexity_findings_carry_dispatch_share_and_deprecated() -> None:

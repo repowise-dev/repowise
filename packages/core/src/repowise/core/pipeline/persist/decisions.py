@@ -6,7 +6,7 @@ Shared steps of every path that persists decision records.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import structlog
@@ -14,12 +14,26 @@ import structlog
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
 
-async def repair_decision_store(session: Any, repo_id: str, *, vector_store: Any = None) -> None:
-    """Run the idempotent store repairs, in order, each failure logged and skipped.
+async def repair_decision_store(
+    session: Any,
+    repo_id: str,
+    *,
+    vector_store: Any = None,
+    skip: Callable[[str, Exception], None] | None = None,
+) -> None:
+    """Run the idempotent store repairs, in order, each failure skipped.
 
     Runs whether or not the caller has new decisions: every repair fixes rows
-    an earlier run left behind.
+    an earlier run left behind. A failure goes to ``skip(step, exc)`` when
+    given, else to the debug log.
     """
+
+    def _skipped(step: str, event: str, exc: Exception) -> None:
+        if skip is not None:
+            skip(step, exc)
+        else:
+            logger.debug(event, error=str(exc))
+
     # Restore records the semantic supersession detector retired before it was
     # turned off. ``superseded`` is a protected status, so nothing else will
     # ever walk these back, and a store that only stops retiring is still a
@@ -36,7 +50,7 @@ async def repair_decision_store(session: Any, repo_id: str, *, vector_store: Any
 
         await unretire_auto_superseded(session)
     except Exception as _unretire_err:
-        logger.debug("decision_unretire_skipped", error=str(_unretire_err))
+        _skipped("Decision unretire", "decision_unretire_skipped", _unretire_err)
 
     # One-shot drain of proposals left by retired extraction sources; without
     # this, DBs indexed before a removal keep a flooded review queue forever
@@ -48,7 +62,7 @@ async def repair_decision_store(session: Any, repo_id: str, *, vector_store: Any
         for _retired in RETIRED_SOURCES:
             await purge_proposed_decisions_by_source(session, repo_id, _retired)
     except Exception as _purge_err:
-        logger.debug("decision_purge_skipped", error=str(_purge_err))
+        _skipped("Retired-source decision purge", "decision_purge_skipped", _purge_err)
 
     # Re-stamp evidence rows left on a previous SOURCE_RANK ladder. Local stores
     # are created by ``init_db`` and never see Alembic, so the migration alone
@@ -60,7 +74,7 @@ async def repair_decision_store(session: Any, repo_id: str, *, vector_store: Any
 
         await reconcile_source_ranks(session)
     except Exception as _rank_err:
-        logger.debug("decision_rank_reconcile_skipped", error=str(_rank_err))
+        _skipped("Decision source-rank repair", "decision_rank_reconcile_skipped", _rank_err)
 
     # The same repair for the scoring formula, which leaves every input valid
     # and every stored score stale, so no filter can find it. Its own try, so
@@ -70,7 +84,7 @@ async def repair_decision_store(session: Any, repo_id: str, *, vector_store: Any
 
         await reconcile_decision_confidence(session)
     except Exception as _conf_err:
-        logger.debug("decision_confidence_reconcile_skipped", error=str(_conf_err))
+        _skipped("Decision confidence repair", "decision_confidence_reconcile_skipped", _conf_err)
 
     # Move legacy records onto ids derived from their own identity, before
     # anything else reads or writes one. A random id is re-minted whenever a
@@ -81,7 +95,7 @@ async def repair_decision_store(session: Any, repo_id: str, *, vector_store: Any
 
         await apply_id_migration(session, repo_id, vector_store=vector_store)
     except Exception as _id_err:
-        logger.debug("decision_id_migration_skipped", error=str(_id_err))
+        _skipped("Decision id migration", "decision_id_migration_skipped", _id_err)
 
     # Classify legacy rows against the entity split. A record promoted by
     # recurrence rather than by a person becomes a candidate, which visibly
@@ -107,7 +121,7 @@ async def repair_decision_store(session: Any, repo_id: str, *, vector_store: Any
         await backfill_session_scope_basis(session, repo_id)
         await backfill_decision_node_links(session, repo_id)
     except Exception as _migrate_err:
-        logger.debug("decision_entity_migration_skipped", error=str(_migrate_err))
+        _skipped("Decision entity migration", "decision_entity_migration_skipped", _migrate_err)
 
 
 async def store_decisions(
@@ -180,10 +194,17 @@ async def store_decisions(
     return touched_ids
 
 
-async def apply_decision_lifecycle(session: Any, repo_id: str, repo_path: Any) -> None:
+async def apply_decision_lifecycle(
+    session: Any,
+    repo_id: str,
+    repo_path: Any,
+    *,
+    skip: Callable[[str, Exception], None] | None = None,
+) -> None:
     """Retire decisions whose commits were reverted or whose HEAD artifacts are gone.
 
-    Every run, whether or not it stored decisions. Each pass is best-effort.
+    Every run, whether or not it stored decisions. Each pass is best-effort: a
+    failure goes to ``skip(step, exc)`` when given, else to the debug log.
     """
     # Retire records whose commits were reverted. Not tied to new records: a
     # new revert retires a decision stored by an earlier run just as well.
@@ -192,10 +213,16 @@ async def apply_decision_lifecycle(session: Any, repo_id: str, repo_path: Any) -
 
         await apply_revert_supersession(session, repo_id, repo_path)
     except Exception as _revert_err:
-        logger.debug("revert_supersession_skipped", error=str(_revert_err))
+        if skip is not None:
+            skip("Revert supersession", _revert_err)
+        else:
+            logger.debug("revert_supersession_skipped", error=str(_revert_err))
     try:
         from repowise.core.analysis.decisions.head_artifacts import apply_head_artifact_check
 
         await apply_head_artifact_check(session, repo_id, repo_path)
     except Exception as _artifact_err:
-        logger.debug("head_artifact_check_skipped", error=str(_artifact_err))
+        if skip is not None:
+            skip("Decision HEAD artifact check", _artifact_err)
+        else:
+            logger.debug("head_artifact_check_skipped", error=str(_artifact_err))

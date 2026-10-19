@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from repowise.core.analysis.health.counts import DEFAULT_COUNTS
-from repowise.core.analysis.health.scope import DEFAULT_SCOPE
+from repowise.core.analysis.health.counts import COUNTS, DEFAULT_COUNTS
+from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES
 from repowise.server.mcp_server.tool_health.paging import _stamp_collection
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 
@@ -28,6 +28,7 @@ _ALWAYS_KEPT = frozenset(
         "unknown_include_keys_emitted",
         # A rejected filter value is a caller-error report too.
         "ignored_arguments",
+        "ignored_arguments_hint",
         "recovery",
     }
 )
@@ -38,6 +39,9 @@ _UNKNOWN_ONLY_HINT = (
     "performance_opportunities or refactoring_plans; a dimension such as "
     "performance is an `include` value. See docs/agent/MCP_TOOLS.md."
 )
+
+#: Which control accepts each value, to name the right one for a swapped value.
+_CONTROL_OF_VALUE = {**dict.fromkeys(COUNTS, "counts"), **dict.fromkeys(SCOPES, "scope")}
 
 _PLAN_COMPANIONS = frozenset(
     {"refactoring_plans_status", "refactoring_plans_opportunities_total"}
@@ -60,6 +64,13 @@ def _name_rejected_controls(
     }
     if rejected:
         result["ignored_arguments"] = {**result.get("ignored_arguments", {}), **rejected}
+    swapped = [
+        f'{name}="{raw}" is a {other} value: did you mean {other}="{raw}"?'
+        for name, raw in rejected.items()
+        if (other := _CONTROL_OF_VALUE.get(raw)) and other != name
+    ]
+    if swapped:
+        result["ignored_arguments_hint"] = " ".join(swapped)
 
 
 def _name_uncounted_blocks(result: dict[str, Any], reported_counts: str) -> None:

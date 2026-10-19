@@ -305,11 +305,11 @@ class TestInitYesFlag:
                 return_value=fake_scan,
             ),
             patch(
-                "repowise.cli.commands.init_cmd.command.prompt_wiki_style",
+                "repowise.cli.commands.init_cmd._questions.prompt_wiki_style",
                 side_effect=_fake_prompt_wiki_style,
             ),
             patch(
-                "repowise.cli.commands.init_cmd.command.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare.resolve_provider",
                 side_effect=Exception("stop early"),
             ),
         ):
@@ -339,12 +339,12 @@ class TestInitYesFlag:
             ),
             patch("sys.stdin.isatty", return_value=True),
             patch(
-                "repowise.cli.commands.init_cmd.command.interactive_mode_select",
+                "repowise.cli.commands.init_cmd._questions.interactive_mode_select",
                 side_effect=lambda *_a, **_kw: mode_select_called.append(True),
             ),
             # Stop before the real pipeline runs.
             patch(
-                "repowise.cli.commands.init_cmd.command.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare.resolve_provider",
                 side_effect=Exception("stop early"),
             ),
         ):

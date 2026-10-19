@@ -353,8 +353,8 @@ describe("SystemMapDrawer", () => {
         contractHref={() => "/c"}
       />,
     );
-    expect(screen.getByText("web/app/services/overview.py")).toBeInTheDocument();
-    expect(screen.getByText("with api/src/lib/api/types.ts")).toBeInTheDocument();
+    expect(document.body.textContent).toContain("web/app/services/overview.py");
+    expect(document.body.textContent).toContain("with api/src/lib/api/types.ts");
     expect(screen.queryByRole("link", { name: /overview\.py/ })).not.toBeInTheDocument();
   });
 

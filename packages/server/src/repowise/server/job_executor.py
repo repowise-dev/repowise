@@ -59,6 +59,8 @@ from repowise.server.job_state import (
     _persist_initial_index_state,
     _stamp_last_sync_commit,
 )
+from repowise.server.services.areas import warm_area_model
+from repowise.server.services.coupling import warm_coupling_model
 
 logger = structlog.get_logger(__name__)
 
@@ -571,6 +573,10 @@ async def _run_index_job(run: _JobRun, app_state: Any) -> None:
     pages_generated = await _record_index_completion(run, result, all_pages, elapsed)
     await _write_index_state(run, docs, total_pages=len(all_pages))
     await _reload_cross_repo_enricher(app_state, spec.job_id)
+    # The area rollup and the coupling fold are read on the first dashboard
+    # load after an index; fold them here, in the job's own task, instead.
+    await warm_area_model(run.session_factory, spec.repo_id)
+    await warm_coupling_model(run.session_factory, spec.repo_id)
 
     logger.info(
         "job_completed",
