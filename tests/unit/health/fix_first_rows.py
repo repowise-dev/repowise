@@ -103,7 +103,7 @@ def _perf(opp: str, sink: str, **over) -> dict:
         "opportunity_id": opp, "rank_position": 0, "rank_score": 20,
         "execution_context": "production", "execution_role": "request", "boundary_kind": "db",
         "biomarker_type": "io_in_loop",
-        "actionability_state": "advisory", "plan_state": "available",
+        "actionability_state": "plan_ready", "plan_state": "available",
         "fix_strategy": "batch_or_prefetch_io", "fix_safety": "advisory",
         "file_path": "src/repo.py", "intervention_symbol": "src/repo.py::load_all",
         "terminal_sink": sink, "affected_call_sites_total": 3, "affected_files_total": 2,

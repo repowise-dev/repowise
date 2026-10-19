@@ -127,7 +127,7 @@ read it as production.
 
 Performance work also appears in [Fix first](CODE_HEALTH.md#fix-first), where it
 competes with other kinds of work. Fix first, Do next and the queue's lead name only
-a default-queue cause whose growth a loop outside a registry and a cold path shows
+a `plan_ready` default-queue cause whose growth a loop outside a registry and a cold path shows
 (facet `growth_source = loop`) and, when no role is known, that an entry point reaches.
 Every other cause stays in the Performance view and is counted in Fix first as
 `unconfirmed_cost`.

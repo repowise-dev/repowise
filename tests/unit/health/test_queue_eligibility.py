@@ -133,6 +133,14 @@ def test_a_confident_cause_is_a_queued_one_whose_growth_a_warm_loop_shows(facets
     assert perf_confident_verdict(row).reason == reason
 
 
+def test_an_advisory_cause_is_queued_but_never_confident() -> None:
+    from repowise.core.analysis.health.queue.eligibility import perf_queue_verdict
+
+    advisory = _cause(actionability_state="advisory")
+    assert perf_queue_verdict(advisory).eligible
+    assert perf_confident_verdict(advisory).reason == "unconfirmed_cost"
+
+
 def test_a_per_call_cause_is_confident_only_once_an_entry_point_reaches_it() -> None:
     hot = {"loop_magnitude": "n/a", "growth_source": "n/a", "execution_role": "request"}
     reached = _cause(biomarker_type="hot_path_sync_io", facets={**hot, "exposure": "entry_reachable"})

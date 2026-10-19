@@ -130,7 +130,7 @@ def test_an_excluded_plan_leaves_the_files_findings_to_compete() -> None:
 def test_tiers_follow_value_confidence_and_readiness() -> None:
     by_kind = {i.kind: i for i in _build().items}
     assert by_kind["refactor"].tier == "now"
-    assert by_kind["perf_fix"].tier == "next"  # advisory plan: needs judgment
+    assert by_kind["perf_fix"].tier == "now"  # a plan-ready cause with a proven plan
     assert by_kind["finding"].tier == "later"
     assert all(i.why_ranked[-1].factor == "tier" for i in by_kind.values())
 

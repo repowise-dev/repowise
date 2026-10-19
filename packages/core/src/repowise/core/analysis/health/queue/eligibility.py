@@ -502,8 +502,14 @@ def _unconfirmed(item: Any) -> bool:
     Its cost must be one that may lead (:func:`worth.lead_reason`); a loop's
     growth must come from a loop outside a registry and a cold path
     (``opportunity_rank.growth_source``, absent on rows stored before it); and
-    with no known role, an entry point must reach it.
+    with no known role, an entry point must reach it. Only a ``plan_ready``
+    cause qualifies.
     """
+    # Deliberate ceiling: advisory causes in the default queue labelled 0 TRUE
+    # of 14 on our index, dify-api and polar-server (2026-10-19). Admit
+    # advisory once a blind held-out sample of it clears 90%.
+    if field(item, "actionability_state") != "plan_ready":
+        return True
     facets = perf_facets(item)
     if lead_reason(field(item, "biomarker_type"), facets) is not None:
         return True

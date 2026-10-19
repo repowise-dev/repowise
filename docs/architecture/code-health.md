@@ -779,8 +779,9 @@ The default queue holds production `plan_ready` and `advisory` with
 Excluded reasons are counted in `default_queue`. A cause whose loop size nothing
 measured is stored as `cost_proof = unproven`: it never leads, and the `proof`
 filter and facet expose it. Fix first, Do next and the queue's lead take only the
-queued causes `queue.eligibility.perf_confident_verdict` confirms (facet
-`growth_source = loop`); the rest stay in the queue.
+queued `plan_ready` causes `queue.eligibility.perf_confident_verdict` confirms
+(facet `growth_source = loop`); advisory causes measured 0 true of 14 on three
+repositories, so they stay in the queue.
 
 **Plans.** Proven means the transformation, not the runtime: parallelizing awaits
 against a DB or network client is advisory with a `bounded_concurrency`
