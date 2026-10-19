@@ -1,6 +1,6 @@
 /**
- * Fix first renders core's queue as it arrives: the section starts open
- * with its count, the header states the scope exactly, exclusions sit in a
+ * Fix first renders core's queue as it arrives: the section starts closed
+ * with its count on the toggle, the header states the scope exactly, exclusions sit in a
  * popover, each row is two scan
  * lines that open onto the why, steps and Verify, and actions appear only
  * where the item can back them.
@@ -39,12 +39,13 @@ function openRow(item: FixItem) {
 }
 
 describe("Fix first header", () => {
-  it("starts open, with the title and the item count on the toggle", () => {
+  it("starts closed, with the title and the item count on the toggle", () => {
     const { container } = renderList();
     const details = container.querySelector("details")!;
-    expect(details.open).toBe(true);
+    // Under the score: the headline keeps the first screen.
+    expect(details.open).toBe(false);
     const summary = container.querySelector("summary")!;
-    expect(summary.textContent).toContain("Fix first");
+    expect(summary.textContent).toContain("Highest-interest technical debt");
     expect(summary.textContent).toContain("3 items");
   });
 
@@ -148,10 +149,46 @@ describe("Fix first items", () => {
     expect(screen.getByText(/No guarding tests found/)).toBeTruthy();
   });
 
+  it("shows a due item's first step on the closed row, and the plan's own words when open", () => {
+    const first = "No test reaches this; add a characterization test for `run` before the edit.";
+    const step = {
+      ...REFACTOR.action.steps[0]!,
+      signature: "def _<name>(repo_path):",
+      call: "info = _<name>(repo_path)",
+      command: "pytest tests/unit/cli/test_repo_scanner.py",
+    };
+    const item: FixItem = {
+      ...REFACTOR,
+      action: { ...REFACTOR.action, steps: [step] },
+      verify: { tests: [], tests_total: 0, command: null, basis: "unknown", prerequisite: first },
+    };
+    renderList({ queue: { ...FIX_FIRST_QUEUE, items: [item], lead: item } });
+    expect(screen.getByText(step.text)).toBeTruthy();
+    openRow(item);
+    // Open, the line gives way to the step itself, with what it writes and checks.
+    expect(screen.getAllByText(step.text).length).toBe(1);
+    expect(screen.getByText("New helper")).toBeTruthy();
+    expect(screen.getByText("info = _<name>(repo_path)")).toBeTruthy();
+    expect(screen.getByText(/with a name for what the lines do/)).toBeTruthy();
+    expect(screen.getByText(step.command)).toBeTruthy();
+    expect(screen.getByText(first)).toBeTruthy();
+  });
+
+  it("keeps a later item's closed row to two lines", () => {
+    const later: FixItem = { ...FINDING, tier: "later" };
+    renderList({ queue: { ...FIX_FIRST_QUEUE, items: [later], lead: later } });
+    expect(screen.queryByText("First step")).toBeNull();
+    expect(screen.queryByText(later.action.steps[0]!.text)).toBeNull();
+  });
+
   it("names the plan by its unit, and offers none for a bare finding", () => {
     expect(fixPlanLabel(REFACTOR)).toBe("Open the refactoring plan");
     expect(fixPlanLabel(PERF)).toBe("Open the performance fix");
     expect(fixPlanLabel(FINDING)).toBeNull();
+    expect(fixPlanLabel({ kind: "finding", source: { ...FINDING.source, plan_ids: [] } })).toBeNull();
+    expect(fixPlanLabel({ kind: "finding", source: { ...FINDING.source, plan_ids: ["refac2_big"] } })).toBe(
+      "Open the refactoring plan",
+    );
     renderList();
     openRow(REFACTOR);
     expect(screen.getByRole("link", { name: "Open the refactoring plan" }).getAttribute("href")).toBe(

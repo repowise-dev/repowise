@@ -129,10 +129,6 @@ def observation_facts(row: Any) -> ObservationFacts:
     )
 
 
-def performance_facts(rows: list[Any]) -> list[ObservationFacts]:
-    return [observation_facts(row) for row in rows if is_performance(row)]
-
-
 def evidence_row(facts: ObservationFacts) -> dict[str, Any]:
     """One public evidence entry.
 
@@ -154,6 +150,8 @@ def evidence_row(facts: ObservationFacts) -> dict[str, Any]:
         # walk stored none, so older evidence reads unchanged.
         **({"loop_line": loop} if (loop := facts.details.get("loop_line")) else {}),
         **({"sink_call": call} if (call := facts.details.get("sink_call")) else {}),
+        **({"subject": subject} if (subject := facts.details.get("subject")) else {}),
+        **({"loop_iterates": what} if (what := facts.details.get("loop_iterates")) else {}),
     }
 
 
@@ -164,5 +162,4 @@ __all__ = [
     "field",
     "is_performance",
     "observation_facts",
-    "performance_facts",
 ]

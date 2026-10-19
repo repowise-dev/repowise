@@ -171,4 +171,63 @@ describe("ChatMessage truncation", () => {
     );
     expect(container.querySelector('[data-working-orb="true"]')).not.toBeNull();
   });
+
+  it("marks an unverified figure with a dotted underline and screen-reader text", () => {
+    const { container } = render(
+      <ChatMessage
+        message={{
+          ...ASSISTANT,
+          text: "It has **3 fixes** and 17 callers.",
+          unverifiedFigures: [{ text: "17", start: 23, end: 25 }],
+        }}
+        repoId="r1"
+      />,
+    );
+    const flagged = container.querySelector("[data-flagged]");
+    expect(flagged?.textContent).toBe("17 (Not found in this turn's tool results)");
+    expect(flagged?.className).toContain("decoration-dotted");
+    expect(flagged).toHaveAttribute("title", "Not found in this turn's tool results");
+    expect(container.querySelectorAll("[data-flagged]")).toHaveLength(1);
+    expect(container.querySelector("[data-chat-unverified-figures]")).not.toBeNull();
+  });
+
+  it.each([
+    ["inside emphasis", "Fixed **17** times.", 8],
+    ["inside a link", "See [17 callers](https://example.com).", 5],
+  ])("marks a figure %s", (_label, text, start) => {
+    const { container } = render(
+      <ChatMessage
+        message={{ ...ASSISTANT, text, unverifiedFigures: [{ text: "17", start, end: start + 2 }] }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector("[data-flagged]")?.firstChild?.textContent).toBe("17");
+  });
+
+  it("leaves text it cannot map by offset unmarked", () => {
+    // The escape makes the text node shorter than its source, so offsets no longer line up.
+    const { container } = render(
+      <ChatMessage
+        message={{ ...ASSISTANT, text: String.raw`3 \* 17 callers`, unverifiedFigures: [{ text: "17", start: 5, end: 7 }] }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector("[data-flagged]")).toBeNull();
+    expect(container.textContent).toContain("3 * 17 callers");
+  });
+
+  it("holds the flags back while the answer streams", () => {
+    const { container } = render(
+      <ChatMessage
+        message={{
+          ...ASSISTANT,
+          text: "17 callers",
+          isStreaming: true,
+          unverifiedFigures: [{ text: "17", start: 0, end: 2 }],
+        }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector("[data-flagged]")).toBeNull();
+  });
 });

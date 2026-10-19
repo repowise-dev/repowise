@@ -12,7 +12,7 @@
  * supplied no data, so an absent section is never read as "clean elsewhere".
  */
 
-import * as React from "react";
+import useSWR from "swr";
 
 import type {
   RelatedWorkFile,
@@ -40,41 +40,51 @@ export interface RelatedWorkSlotProps {
   relatedWorkHref?: RelatedWorkHref | undefined;
   /** Host navigation, for a surface that routes rather than follows an anchor. */
   onNavigate?: ((href: string) => void) | undefined;
+  /** The lookup failed (`useRelatedWorkQuery`), so the drawer can say so and retry. */
+  relatedError?: unknown;
+  onRelatedRetry?: (() => void) | undefined;
+}
+
+/** The related-work lookup with its failure, for a surface that says so. */
+export interface RelatedWorkQuery {
+  data: RelatedWorkResponse | undefined;
+  error: unknown;
+  retry: () => void;
 }
 
 /**
- * Fetch what every lens holds for these files, once per set of paths.
+ * Fetch what every lens holds for these files, cached per fetcher and set of
+ * paths, so reopening a file a reader already looked at costs no request.
  *
- * Same contract as `useFileOpportunity`: `undefined` while not asked, when
- * the host cannot ask, or when the lookup failed, so a caller never renders a
- * claim it has not established. Pass a stable `fetcher`.
+ * The fetcher's identity is part of the cache key: it closes over the repo,
+ * and two repos must never share an entry. Pass a stable `fetcher`.
+ */
+export function useRelatedWorkQuery(
+  fetcher: ((filePaths: string[]) => Promise<RelatedWorkResponse>) | undefined,
+  filePaths: readonly (string | null | undefined)[],
+): RelatedWorkQuery {
+  // The one key: the paths in order. A new array with the same paths is the
+  // same request.
+  const key = filePaths.filter((p): p is string => Boolean(p)).join("\n");
+  const { data, error, mutate } = useSWR(
+    fetcher && key ? ["related-work", fetcher, key] : null,
+    () => fetcher!(key.split("\n")),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+  return { data, error, retry: () => void mutate() };
+}
+
+/**
+ * {@link useRelatedWorkQuery} without the failure: `undefined` while not
+ * asked, when the host cannot ask, or when the lookup failed, so a caller
+ * never renders a claim it has not established.
  */
 export function useRelatedWork(
   fetcher: ((filePaths: string[]) => Promise<RelatedWorkResponse>) | undefined,
   filePaths: readonly (string | null | undefined)[],
 ): RelatedWorkResponse | undefined {
-  const [value, setValue] = React.useState<RelatedWorkResponse | undefined>(undefined);
-  // The one key: the paths in order. A new array with the same paths is the
-  // same request.
-  const key = filePaths.filter((p): p is string => Boolean(p)).join("\n");
-
-  React.useEffect(() => {
-    setValue(undefined);
-    if (!fetcher || !key) return;
-    let live = true;
-    void fetcher(key.split("\n"))
-      .then((result) => {
-        if (live) setValue(result);
-      })
-      .catch(() => {
-        if (live) setValue(undefined);
-      });
-    return () => {
-      live = false;
-    };
-  }, [fetcher, key]);
-
-  return value;
+  const { data, error } = useRelatedWorkQuery(fetcher, filePaths);
+  return error ? undefined : data;
 }
 
 /** Every lens, in the order the server lists them. */
@@ -144,6 +154,27 @@ export interface RelatedWorkProps extends RelatedWorkSlotProps {
   exclude?: readonly RelatedLensName[] | undefined;
   /** Heading level, so the section nests under the drawer's own headings. */
   headingLevel?: "h3" | "h4" | undefined;
+  /** Drop the heading, for a host whose disclosure already names the section. */
+  hideHeading?: boolean | undefined;
+}
+
+/** Items the section would list, so a collapsed host can say how many. */
+export function relatedWorkCount(
+  related: RelatedWorkFile | null | undefined,
+  exclude: readonly RelatedLensName[] = [],
+): { items: number; lenses: number } {
+  let items = 0;
+  let lenses = 0;
+  for (const name of RELATED_LENSES) {
+    if (exclude.includes(name)) continue;
+    const lens = related?.lenses?.[name];
+    const n = lens?.items?.length ? (lens.total ?? lens.items.length) : 0;
+    if (n > 0) {
+      items += n;
+      lenses += 1;
+    }
+  }
+  return { items, lenses };
 }
 
 export function RelatedWork({
@@ -152,6 +183,7 @@ export function RelatedWork({
   onNavigate,
   exclude = [],
   headingLevel = "h3",
+  hideHeading = false,
 }: RelatedWorkProps) {
   const lenses = RELATED_LENSES.filter((name) => !exclude.includes(name))
     .map((name) => [name, related?.lenses?.[name]] as const)
@@ -163,16 +195,18 @@ export function RelatedWork({
   const Heading = headingLevel;
   return (
     <section className="flex flex-col gap-2" aria-label="Elsewhere for this file">
-      <Heading className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        Elsewhere for this file
-      </Heading>
+      {hideHeading ? null : (
+        <Heading className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          Elsewhere for this file
+        </Heading>
+      )}
       <div className="flex flex-col gap-3">
         {lenses.map(([name, lens]) => {
           const items = lens.items ?? [];
           const total = lens.total ?? items.length;
           return (
             <div key={name} className="flex flex-col gap-1">
-              <p className="text-[11px] font-medium text-[var(--color-text-secondary)]">
+              <p className="text-xs font-medium text-[var(--color-text-secondary)]">
                 {RELATED_LENS_LABEL[name]}{" "}
                 <span className="font-normal tabular-nums text-[var(--color-text-tertiary)]">
                   {items.length < total
@@ -232,7 +266,7 @@ function RelatedRow({
                 }
               : (e) => e.stopPropagation()
           }
-          className="flex items-baseline gap-2 rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)]"
+          className="flex items-baseline gap-2 rounded text-[var(--color-text-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)]"
         >
           {text}
         </a>

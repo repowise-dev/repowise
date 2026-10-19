@@ -371,18 +371,17 @@ refresh.
 - `exclude_patterns` (optional) — gitignore-style paths; combined with root `.riskignore`
 - `baseline` (optional, int) — recent commits for percentile ranking (default `200`)
 
-**Returns:** `risk_authority` names `risk_percentile` and `classification` as
-the benchmarked, population-relative authority for live change review.
-`fix_history` reports the recency-weighted bug-fix record of the
-files touched, which is what distinguishes a small dangerous change from a large
-boring one. `diff_shape` is one sentence on size and spread, beside repo-relative
-`risk_percentile` / `review_priority` / `classification`, plus
+**Returns:** `risk_percentile` ranks the change among recent commits by diff
+size and spread; it is not a bug predictor. `fix_history` reports the
+recency-weighted bug-fix record of the files touched (manifests and lockfiles
+excluded), which is what distinguishes a small dangerous change from a large
+boring one. `diff_shape` is one sentence on size and spread and its limits, plus
 `impacted_tests` when a per-test coverage map is ingested
 (`repowise coverage add`). The raw 0-10 `score` and its absolute
 `fallback_band` sit behind `include=["diagnostics"]`: the score ranks 0.99
 against lines added, so the percentile already carries the ranking.
-`include=["scales"]` supplies the kind, units, range, calibration, authority
-and shared thresholds for each value.
+`include=["scales"]` adds the `review_priority` / `classification` tercile and
+the kind, units, range and shared thresholds for each value.
 
 **When to use:** Before merging a commit or PR range, or on work you have not
 committed yet.

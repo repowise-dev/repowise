@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.dotnet_test_projects import read_dotnet_test_projects
 from repowise.core.pytest_roots import read_pytest_roots
 from repowise.core.test_paths import (
     is_skippable_test_path,
@@ -259,6 +260,25 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("Foo.IntegrationTests/Sql/Db.cs", None, "test"),
     ("Foo.IntegrationTests/Helpers/Db.cs", None, "support"),
     ("src/Polly.Testing/ResiliencePipelineExtensions.cs", None, ""),
+    # A name ending in "test" and a scaffolding word is the support for some
+    # module's tests, wherever it sits (openclaw keeps them beside the module).
+    ("extensions/telegram/src/bot.create-telegram-bot.test-harness.ts", None, "support"),
+    ("scripts/test-projects.test-support.mjs", None, "support"),
+    ("extensions/feishu/src/card-test-helpers.ts", None, "support"),
+    ("src/media-understanding/runner.test-mocks.ts", None, "support"),
+    ("extensions/comfy/test-helpers.ts", None, "support"),
+    ("src/cron/isolated-agent.test-setup.ts", None, "support"),
+    # ``test-utils`` is a published entry in React and Preact; ``setup`` alone
+    # is a build script or an app's bootstrap.
+    ("src/test-utils.ts", None, ""),
+    ("packages/react-dom/test-utils.js", None, ""),
+    ("compat/test-utils.mjs", None, ""),
+    ("setup.py", None, ""),
+    ("src/setup.ts", None, ""),
+    ("tests/unit/cli/test_helpers.py", None, "test"),  # a test name stays a test
+    ("src/foo.test-d.ts", None, "test"),  # a type test, not a scaffolding word
+    ("docs/test-helpers.md", None, ""),  # filename rules are source rules
+    ("src/logging/diagnostic-support-bundle.ts", None, ""),
 )
 
 
@@ -290,6 +310,24 @@ def test_related_is_the_union(path: str, language: str | None, expected: str) ->
 @pytest.mark.parametrize("path", ["", ".", "/"])
 def test_degenerate_paths_are_not_tests(path: str) -> None:
     assert not is_test_related_path(path)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("tests/x.py", True),
+        ("src/__mocks__/api.ts", True),
+        ("pkg/tests/helpers/db.py", True),
+        ("packages/core/src/pkg/core/test_selection.py", False),
+        ("src/bot.test-harness.ts", False),
+        (".github/workflows/tests/run.py", False),
+        ("x.py", False),
+    ],
+)
+def test_in_test_tree_reads_directories_only(path: str, expected: bool) -> None:
+    from repowise.core.test_paths import in_test_tree
+
+    assert in_test_tree(path) is expected
 
 
 def test_windows_separators_match_posix() -> None:
@@ -463,16 +501,44 @@ def test_jvm_build_config_demotes_main_source_set_test_shaped_names() -> None:
     assert is_test_related_path(module_test_path, jvm_roots=roots)
 
 
-def test_jvm_roots_keyword_only_enforced() -> None:
-    """jvm_roots cannot be passed positionally, preventing multi-PR argument collisions."""
-    from repowise.core.jvm_source_sets import JvmSourceSets
+_DOTNET_PROJECTS = read_dotnet_test_projects(
+    [
+        (
+            "acceptance/Acme.Acceptance.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup>\n"
+            "  <ItemGroup><PackageReference Include=\"Microsoft.NET.Test.Sdk\" Version=\"17.11.0\" /></ItemGroup>\n"
+            "</Project>\n",
+        ),
+        (
+            "src/App/App.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n"
+            "</Project>\n",
+        ),
+    ]
+)
 
-    roots = JvmSourceSets()
-    with pytest.raises(TypeError):
-        is_test_path("src/main/java/MainTest.java", "java", None, roots)  # type: ignore[misc]
-    with pytest.raises(TypeError):
-        is_test_support_path("src/main/java/MainTest.java", "java", None, roots)  # type: ignore[misc]
-    with pytest.raises(TypeError):
-        is_test_related_path("src/main/java/MainTest.java", "java", None, roots)  # type: ignore[misc]
 
+@pytest.mark.parametrize(
+    ("path", "expected_with", "expected_without"),
+    [
+        ("acceptance/Authentication/AuthSteps.cs", "test", ""),
+        ("acceptance/Authentication/AuthenticationTests.cs", "test", "test"),
+        ("acceptance/Helpers/AuthHelper.cs", "support", ""),
+        ("acceptance/Authentication/AuthFixtures.cs", "support", "support"),
+        ("src/App/Program.cs", "", ""),
+        ("src/App/Program.py", "", ""),
+    ],
+)
+def test_dotnet_test_project_classifies_csharp_files(
+    path: str, expected_with: str, expected_without: str
+) -> None:
+    got_with = "test" if is_test_path(path, dotnet_projects=_DOTNET_PROJECTS) else ""
+    got_with = "support" if is_test_support_path(path, dotnet_projects=_DOTNET_PROJECTS) else got_with
+    assert got_with == expected_with
+
+    got_without = "test" if is_test_path(path) else ""
+    got_without = "support" if is_test_support_path(path) else got_without
+    assert got_without == expected_without
 

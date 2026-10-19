@@ -27,7 +27,7 @@ from repowise.core.analysis.dead_code.serving import (
     serialize_finding,
     summary_counts,
 )
-from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.finding_registry import excluded_types, served_previews
 from repowise.core.persistence.crud import get_dead_code_findings
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GitMetadata
@@ -35,11 +35,11 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._basis import call_resolution_bases
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._federation import Federation, merge_findings
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     _is_workspace_mode,
-    _resolve_all_contexts,
     _resolve_repo_context,
     attach_ignored_arguments,
     filter_rows_by_attr,
@@ -64,35 +64,41 @@ async def _get_dead_code_all_repos(
     apply_limit_note: Callable[[dict[str, Any]], None],
 ) -> dict:
     """Aggregate dead-code findings across every repo in the workspace."""
-    contexts = await _resolve_all_contexts()
-    merged_findings: list[dict] = []
-    count_parts: list[dict[str, Any]] = []
-    merged_withheld: dict[str, dict] = {}
 
-    for ctx in contexts:
+    async def _one_repo(ctx: Any) -> tuple[list[dict], dict[str, Any], dict, dict]:
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-
             repo_findings = filter_rows_by_attr(
                 await get_dead_code_findings(session, repository.id, include_withheld=True),
                 "file_path",
                 _get_exclude_spec(ctx.path),
             )
-            repo_findings, repo_withheld = filters.split_withheld(repo_findings)
-            for name, entry in repo_withheld.items():
-                merged = merged_withheld.setdefault(name, {**entry, "count": 0})
+            repo_findings, withheld = filters.split_withheld(repo_findings)
+            repo_findings, gated = filters.split_gated(repo_findings)
+            git_meta_map = await _load_git_meta_map(session, repository.id, repo_findings)
+        serialized = [
+            serialize_finding(f, git_meta_map, repository=ctx.alias)
+            for f in apply_filters(repo_findings, filters)
+        ]
+        return serialized, summary_counts(repo_findings), withheld, gated
+
+    fed = Federation()
+    answered = await fed.run(_one_repo)
+    merged_findings = merge_findings((ctx.alias, part[0]) for ctx, part in answered)
+    merged_withheld: dict[str, dict] = {}
+    merged_gated: dict[str, dict] = {}
+    for _, (_, _, withheld, gated) in answered:
+        for into, held in ((merged_withheld, withheld), (merged_gated, gated)):
+            for name, entry in held.items():
+                merged = into.setdefault(name, {**entry, "count": 0})
                 merged["count"] += entry["count"]
 
-            git_meta_map = await _load_git_meta_map(session, repository.id, repo_findings)
-
-        for f in apply_filters(repo_findings, filters):
-            serialized = serialize_finding(f, git_meta_map, repository=ctx.alias)
-            serialized["repo"] = ctx.alias
-            merged_findings.append(serialized)
-        count_parts.append(summary_counts(repo_findings))
-
     summary = build_summary(
-        merge_summary_counts(count_parts), len(merged_findings), filters, merged_withheld
+        merge_summary_counts([part[1] for _, part in answered]),
+        len(merged_findings),
+        filters,
+        merged_withheld,
+        merged_gated,
     )
     tiers = build_tiers(merged_findings, limit, tier)
     adjust_cross_repo(tiers, _cross_repo_lookup())
@@ -105,6 +111,8 @@ async def _get_dead_code_all_repos(
     }
     apply_limit_note(result_ws)
     result_ws["_meta"] = _build_meta()
+    _attach_preview(result_ws)
+    fed.annotate(result_ws, merged_findings)
     return result_ws
 
 
@@ -164,6 +172,7 @@ async def get_dead_code(
     no_unreachable: bool = False,
     no_unused_exports: bool = False,
     finding_id: str | None = None,
+    include_unverified: bool = False,
 ) -> dict:
     """Unused exports, unreachable files, zombie packages — tiered by confidence.
 
@@ -188,6 +197,8 @@ async def get_dead_code(
         include_zombie_packages: monorepo package findings (default true).
         no_unreachable: skip file-level reachability findings.
         no_unused_exports: skip public-export findings.
+        include_unverified: also show provisional kinds and languages held
+            back pending verification (``summary.gated`` counts them).
         finding_id: stable ``id`` emitted by a dead-code finding.
     """
     # MCP transport rejects payloads above ~25k tokens. A single serialized
@@ -221,8 +232,10 @@ async def get_dead_code(
         # Naming a kind, or ``include_internals`` for ``unused_internal``, is the
         # explicit request a provisional kind needs; a hidden kind stays out.
         withheld_kinds=excluded_types(
-            requested=[k for k in (kind, "unused_internal" if include_internals else None) if k]
+            requested=[k for k in (kind, "unused_internal" if include_internals else None) if k],
+            include_provisional=include_unverified,
         ),
+        include_unverified=include_unverified,
     )
 
     def _maybe_limit_note(target: dict[str, Any]) -> None:
@@ -236,23 +249,29 @@ async def get_dead_code(
     # --- repo="all": aggregate dead code across all repos ---
     if repo == "all":
         if finding_id:
-            for candidate_ctx in await _resolve_all_contexts():
-                resolved = await get_dead_code(
-                    repo=candidate_ctx.alias,
+            fed = Federation()
+            probes = await fed.run(
+                lambda ctx: get_dead_code(
+                    repo=ctx.alias if _is_workspace_mode() else None,
                     min_confidence="low",
                     finding_id=finding_id,
                 )
+            )
+            # Workspace order decides between two repos that both claim the id.
+            for _, resolved in probes:
                 if resolved.get("resolved"):
                     resolved["workspace"] = True
-                    return resolved
-            return {
-                "mode": "finding",
-                "finding_id": finding_id,
-                "finding": None,
-                "resolved": False,
-                "workspace": True,
-                "_meta": _build_meta(),
-            }
+                    return fed.annotate(resolved)
+            return fed.annotate(
+                {
+                    "mode": "finding",
+                    "finding_id": finding_id,
+                    "finding": None,
+                    "resolved": False,
+                    "workspace": True,
+                    "_meta": _build_meta(),
+                }
+            )
         result_ws = await _get_dead_code_all_repos(filters, limit, tier, _maybe_limit_note)
         attach_ignored_arguments(result_ws, ignored)
         return result_ws
@@ -267,19 +286,22 @@ async def get_dead_code(
 
         # Fetch all open findings for summary computation. Withheld kinds are
         # read too, so the summary can count what it leaves out.
-        all_findings, withheld = filters.split_withheld(
+        every_shown_kind, withheld = filters.split_withheld(
             await get_dead_code_findings(session, repository.id, include_withheld=True)
         )
+        # A lookup by id still answers for a gated finding; lists do not show it.
+        all_findings, gated = filters.split_gated(every_shown_kind)
 
-        # Phase 4: load git metadata for "last meaningful change" enrichment
-        git_meta_map = await _load_git_meta_map(session, repository.id, all_findings)
+        # Phase 4: load git metadata for "last meaningful change" enrichment,
+        # over the gated rows too so a lookup by id is enriched the same way.
+        git_meta_map = await _load_git_meta_map(session, repository.id, every_shown_kind)
 
     reference_repository = ctx.alias or repository.name
     if finding_id:
         match = next(
             (
                 row
-                for row in all_findings
+                for row in every_shown_kind
                 if finding_id in {row.id, dead_code_finding_id(row, reference_repository)}
             ),
             None,
@@ -315,7 +337,7 @@ async def get_dead_code(
         )
 
     tiers = build_tiers(serialized, limit, tier, on_overflow=_keep_overflow)
-    summary = build_summary(summary_counts(all_findings), len(filtered), filters, withheld)
+    summary = build_summary(summary_counts(all_findings), len(filtered), filters, withheld, gated)
     adjust_cross_repo(tiers, _cross_repo_lookup(), ctx.alias)
 
     result: dict[str, Any] = {"summary": summary, "tiers": tiers}
@@ -334,6 +356,22 @@ async def get_dead_code(
     )
 
     result["_meta"] = _build_meta(repository=repository)
+    _attach_preview(result)
     attach_ignored_arguments(result, ignored)
     collector.attach(result)
     return result
+
+
+def _attach_preview(result: dict[str, Any]) -> None:
+    """``_meta.preview = {"dead_code": {language: note}}`` for the preview
+    languages the tiers list a finding on; absent when none."""
+    rows = (
+        f
+        for t in result.get("tiers", {}).values()
+        if isinstance(t, dict)
+        for f in t.get("findings", [])
+        if isinstance(f, dict)
+    )
+    served = served_previews("dead_code", rows, kind="kind", get=lambda r, k: r.get(k))
+    if served:
+        result["_meta"]["preview"] = {"dead_code": served}

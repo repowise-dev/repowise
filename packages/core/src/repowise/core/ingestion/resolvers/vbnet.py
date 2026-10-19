@@ -20,12 +20,13 @@ mixed .sln) gives project-scoped answers:
 
 from __future__ import annotations
 
+from repowise.core.fsutils import repo_relative
+
 from .context import ResolverContext
 from .csharp import (
     _matches_package_prefix,
     _repo_root_resolved,
     _resolve_importer,
-    _to_repo_relative,
 )
 from .dotnet import get_or_build_index
 
@@ -72,7 +73,7 @@ def resolve_vbnet_import(
         if parent_ns in index.namespace_map:
             ordered = index.rank_type_candidates(type_name, importer_abs)
     for cand in ordered:
-        rel = _to_repo_relative(cand, repo_root_resolved)
+        rel = repo_relative(cand, repo_root_resolved)
         if rel and rel in ctx.path_set:
             return rel
 

@@ -1,4 +1,4 @@
-"""Module constants, regexes, and the GitPython noise patch for git indexing.
+"""Module constants and regexes for git indexing.
 
 Kept in one place so the per-tier modules share a single source of truth for
 the commit-depth defaults, decay half-lives, and skip heuristics.
@@ -6,7 +6,6 @@ the commit-depth defaults, decay half-lives, and skip heuristics.
 
 from __future__ import annotations
 
-import contextlib
 import re
 from typing import Any
 
@@ -17,23 +16,6 @@ from ...co_change import (
     MIN_CO_CHANGE_SUPPORT,
 )
 from ..languages.registry import REGISTRY as _LANG_REGISTRY
-
-# Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
-# When git cat-file streams are GC'd after the subprocess pipe is closed,
-# their __del__ tries to drain remaining bytes and hits a closed file.
-# This is harmless but floods stderr with tracebacks.
-try:
-    from git.cmd import _CatFileContentStream
-
-    _orig_del = _CatFileContentStream.__del__
-
-    def _quiet_del(self: Any) -> None:
-        with contextlib.suppress(ValueError, OSError):
-            _orig_del(self)
-
-    _CatFileContentStream.__del__ = _quiet_del  # type: ignore[assignment]
-except Exception:
-    pass  # git not installed — nothing to patch
 
 # Commit message prefixes that are ALWAYS skipped (no signal value).
 _HARD_SKIP_PREFIXES = ("Merge ",)
@@ -65,8 +47,9 @@ _DECISION_SIGNAL_WORDS: frozenset[str] = frozenset(
 
 _MIN_MESSAGE_LEN = 12
 
-# Default per-file commit history depth.
-_DEFAULT_COMMIT_LIMIT: int = 500
+# Default history window: the newest commits walked for per-file history and
+# stored as commit rows. Every default ``commit_limit`` reads this one value.
+_DEFAULT_COMMIT_LIMIT: int = 5000
 
 # Depth of the second, deeper repo-wide log walk that serves files absent
 # from the recent-window commit index. On repos whose history is much
@@ -118,23 +101,6 @@ def _truncate_body(body: str) -> str:
     return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
 
 
-# PR/squash-description markers — a body containing one of these reads like a
-# real PR write-up worth retaining for decision mining (mirrors the extractor's
-# ``_PR_BODY_MARKERS``; kept here to avoid a cross-package import at index time).
-_PR_BODY_MARKERS: tuple[str, ...] = (
-    "## why",
-    "## motivation",
-    "## what",
-    "## changes",
-    "## context",
-    "## summary",
-    "closes #",
-    "fixes #",
-    "resolves #",
-    "before:",
-    "after:",
-)
-
 # Co-change pair extraction widens the window because individual files
 # may only co-change a handful of times in 500 commits. On low-churn repos
 # the 500-commit window produced 0 co-change pairs every run; 2000 commits
@@ -163,7 +129,8 @@ _MAX_FILES_PER_COMMIT_FOR_COCHANGE: int = 200
 # excludes very wide commits from the History Complexity Metric because a
 # sweeping edit spreads its "change probability" so thinly that it adds noise
 # rather than signal. 30 follows the commonly cited Hassan filter; commits
-# above it are dropped from the entropy accumulation entirely.
+# above it are dropped from the entropy accumulation entirely, and from the
+# focused co-change count hidden coupling reads as evidence.
 _MAX_FILES_PER_COMMIT_FOR_ENTROPY: int = 30
 
 # Commit message classification regexes. "fix" is not here: a
@@ -183,23 +150,22 @@ _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
     ),
 }
 
-# Bug-fix commit classifier — mirrors the defect benchmark's
-# ``lib/defect_counter.find_fix_commits`` (keyword strategy) so the product's
-# ``prior_defect`` signal counts exactly the commits the benchmark labels as
-# fixes (product == benchmark). A commit subject is a fix iff it matches an
-# INCLUDE pattern and NO EXCLUDE pattern; merge commits are excluded upstream
-# (the per-file walk skips ``is_merge``), mirroring the bench's ``--no-merges``.
+# Bug-fix commit classifier: the defect benchmark's
+# ``lib/defect_counter.find_fix_commits`` keyword strategy, byte for byte. A
+# subject is a fix iff it matches an INCLUDE pattern and NO EXCLUDE pattern;
+# merge commits are excluded upstream, mirroring the bench's ``--no-merges``.
+# Accepts verb forms, compounds ("hotfix") and issue references ("fixes #12").
 #
-# The one fix definition: the per-file category counts and the evolution
-# timeline both label a commit "fix" exactly when this rule does, so every
-# fix count the product shows counts the same commits.
+# Commit rows, the per-file category counts and the evolution timeline label a
+# commit "fix" exactly when this rule does. ``prior_defect`` and the change-risk
+# ``is_fix`` flag read the type first instead (``fix_rule.py``).
 _FIX_COMMIT_INCLUDE: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bfix\b", re.IGNORECASE),
+    re.compile(r"\b(?:hot|bug)?fix(?:e[sd]|ing)?\b", re.IGNORECASE),
     re.compile(r"\bbug\b", re.IGNORECASE),
     re.compile(r"\bpatch\b", re.IGNORECASE),
     re.compile(r"\bresolves?\b", re.IGNORECASE),
-    re.compile(r"closes?\s+#\d+", re.IGNORECASE),
-    re.compile(r"fixes?\s+#\d+", re.IGNORECASE),
+    re.compile(r"\bcloses?\s+#\d+", re.IGNORECASE),
+    re.compile(r"\bfix(?:e[sd])?\s+#\d+", re.IGNORECASE),
 )
 _FIX_COMMIT_EXCLUDE: tuple[re.Pattern[str], ...] = (
     re.compile(r"^Merge ", re.IGNORECASE),
@@ -344,6 +310,37 @@ _CO_CHANGE_COMMIT_DECAY_TAU: float = CO_CHANGE_COMMIT_DECAY_TAU
 # Hotspot temporal decay: half-life for exponentially weighted churn score.
 HOTSPOT_HALFLIFE_DAYS: float = 180.0
 
+#: The rules that turn git history into stored per-file rows (change numbers,
+#: author identity). Stamped into state.json as ``git_history_version`` by every
+#: full git walk; an update that finds another value, or none, walks the whole
+#: history once instead of only the changed files, since a changed file's row is
+#: the only one an incremental walk rewrites. Bump it when such a rule changes.
+#:
+#: v1: change numbers and author identity read through ``repowise.core.forges``
+#: (GitLab ``!N`` merge requests, Azure and Bitbucket PRs, GitLab noreply and
+#: forge bot accounts).
+#: v2: co-change records carry focused_frequency, the shared commits no wider
+#: than the change-entropy sweep cap.
+#: v3: commits carry their category, and changes are rebuilt from history; the
+#: default history window grew from 500 to 5,000 commits.
+GIT_HISTORY_VERSION: int = 3
+GIT_HISTORY_VERSION_KEY = "git_history_version"
+#: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
+#: backfill`` so the next update re-walks history to label the newly bound
+#: commits, and can say so instead of reporting a rules change.
+GIT_HISTORY_BACKFILL_REWALK = "attribution-backfill"
+
+
+def git_history_stale(state: dict[str, Any]) -> bool:
+    """Whether the stored git rows predate :data:`GIT_HISTORY_VERSION`.
+
+    Unlike the health analyzer stamp, a missing stamp counts as stale: the
+    rows of an index written before it carry the change-number and identity
+    defects v1 fixes, and only a full walk rewrites the rows of files that
+    do not change.
+    """
+    return state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION
+
 # Absolute activity floors for hotspot classification (issue #361). The
 # churn percentile is repo-relative, so on a quiet repo "top quartile"
 # degenerates to "any file touched in the last 90 days" — a single drive-by
@@ -365,10 +362,6 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 HOTSPOT_MIN_COMMITS_90D: int = 3
 HOTSPOT_MIN_TEMPORAL_SCORE: float = 0.5
 HOTSPOT_HIGH_COMMITS_90D: int = 8
-
-# Regex to extract PR/MR numbers from commit messages.
-# Matches: "#123", "Merge pull request #456", "(#789)", "!42" (GitLab MR)
-_PR_NUMBER_RE = re.compile(r"(?:pull request |)\#(\d+)|\(#(\d+)\)|!(\d+)")
 
 # Allowlist of extensions for which per-file git indexing (blame, commit
 # history, hotspot/stable classification) is worth running.  Anything NOT in

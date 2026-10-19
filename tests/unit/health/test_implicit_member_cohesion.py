@@ -193,7 +193,7 @@ class C:
         return self.a
 """
     c = _classes("python", source, "c.py")["C"]
-    assert c.lcom4 == 2
+    assert c.lcom4 == 1  # ``bare`` touches no field: not a group to extract
     assert [set(g.methods) for g in c.components] == [{"__init__", "own"}, {"bare"}]
 
 

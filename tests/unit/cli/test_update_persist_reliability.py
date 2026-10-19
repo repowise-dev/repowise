@@ -695,6 +695,121 @@ def test_update_sweeps_pages_retired_since_the_index_was_built(tmp_path: Path) -
 
 
 # ---------------------------------------------------------------------------
+# A docs-mode update prunes a deleted file like the index-only one does
+# ---------------------------------------------------------------------------
+
+
+class _GraphOnly:
+    """Just enough builder for the prune: the rebuilt graph holds the kept file."""
+
+    def __init__(self, *files: str) -> None:
+        import networkx as nx
+
+        self._graph = nx.DiGraph()
+        self._graph.add_nodes_from(files, node_type="file")
+
+    def graph(self):
+        return self._graph
+
+
+class _RecordingVectors:
+    def __init__(self) -> None:
+        self.deleted: set[str] = set()
+
+    async def delete_many(self, ids) -> None:
+        self.deleted.update(ids)
+
+
+def test_full_update_leaves_no_rows_for_a_deleted_file(tmp_path: Path) -> None:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.health.refactoring.payoff import FILE_DELETED
+    from repowise.core.ingestion.change_detector import FileDiff
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        upsert_repository,
+    )
+    from repowise.core.persistence.crud import (
+        save_refactoring_suggestions,
+        write_function_facts,
+    )
+    from repowise.core.persistence.models import (
+        FunctionFact,
+        GraphNode,
+        RefactoringPayoff,
+        RefactoringSuggestion,
+    )
+    from tests.unit.persistence.test_persist_prune import KEPT, STALE, _paths, _seed
+    from tests.unit.persistence.test_prune_deleted_files import FILE_SCOPED
+    from tests.unit.persistence.test_refactoring_payoff import _fact, _plan
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / Path(KEPT).parent).mkdir(parents=True)
+    (tmp_path / KEPT).write_text("export const main = () => {};\n", encoding="utf-8")
+    stale_page = f"file_page:{STALE}"
+    asyncio.run(_seed_pages(tmp_path, "repo", [stale_page]))
+
+    async def _with_session(work):
+        engine = create_engine(get_db_url_for_repo(tmp_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await upsert_repository(session, name="repo", local_path=str(tmp_path))
+                return await work(session, repo.id)
+        finally:
+            await engine.dispose()
+
+    async def _seed_rows(session, repo_id: str) -> None:
+        await _seed(session, repo_id)
+        await save_refactoring_suggestions(session, repo_id, [_plan(KEPT), _plan(STALE)])
+        await write_function_facts(
+            session, repo_id, [_fact(f"{STALE}::run", 14, 50), _fact(f"{KEPT}::run", 3, 5)]
+        )
+
+    asyncio.run(_with_session(_seed_rows))
+
+    vectors = _RecordingVectors()
+    degraded: list[str] = []
+    asyncio.run(
+        _persist_full_update_async(
+            repo_path=tmp_path,
+            repo_name="repo",
+            generated_pages=[_page(f"file_page:{KEPT}")],
+            file_diffs=[FileDiff(STALE, "deleted", None, None, None, None)],
+            git_meta_map={},
+            new_decision_markers=[],
+            decision_vector_store=vectors,
+            provider=None,
+            partial_health_report=None,
+            dead_code_report=None,
+            graph_builder=_GraphOnly(KEPT),
+            knowledge_graph_result=None,
+            degraded=degraded,
+            parsed_files=[],
+        )
+    )
+
+    async def _check(session, repo_id: str) -> None:
+        node_ids = await _paths(session, GraphNode, GraphNode.node_id, repo_id)
+        assert not {n for n in node_ids if n.startswith(STALE)}
+        for model, column in FILE_SCOPED:
+            assert await _paths(session, model, column, repo_id) == {KEPT}, model.__name__
+        facts = set((await session.execute(select(FunctionFact.symbol_id))).scalars())
+        assert facts == {f"{KEPT}::run"}
+        plans = {
+            r.file_path: r for r in (await session.execute(select(RefactoringSuggestion))).scalars()
+        }
+        assert plans[KEPT].status == "open"
+        assert plans[STALE].status == "resolved"
+        (payoff,) = (await session.execute(select(RefactoringPayoff))).scalars()
+        assert (payoff.suggestion_id, payoff.outcome) == (plans[STALE].id, FILE_DELETED)
+
+    asyncio.run(_with_session(_check))
+    assert not any(entry.startswith("Deleted-file prune") for entry in degraded)
+    assert stale_page in vectors.deleted
+
+
+# ---------------------------------------------------------------------------
 # Lock contention: exactly one winner
 # ---------------------------------------------------------------------------
 

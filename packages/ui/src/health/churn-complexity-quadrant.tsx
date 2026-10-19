@@ -6,20 +6,14 @@ import { useMemo, useState } from "react";
 // subpath imports are fine (erased before resolution).
 import { bandForScore, formatScore } from "@repowise-dev/types";
 import type { ChurnComplexityPoint } from "@repowise-dev/types/health";
+import { median } from "../lib/math";
+import { ordinal } from "../lib/format";
 import { HEALTH_BAND_FILL } from "./tokens";
 
 export interface ChurnComplexityQuadrantProps {
   points: ChurnComplexityPoint[];
   onSelect?: (point: ChurnComplexityPoint) => void;
   height?: number;
-}
-
-/** Median of a numeric list (the data-driven quadrant split). */
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
 }
 
 /**
@@ -148,7 +142,7 @@ export function ChurnComplexityQuadrant({
                 onMouseLeave={() => setHovered(null)}
                 onClick={onSelect ? () => onSelect(p) : undefined}
               >
-                <title>{`${p.file_path}\n${p.commit_count_90d} commits/90d (${Math.round(p.churn_percentile)}th pct) · CCN ${p.max_ccn} · NLOC ${p.nloc} · score ${formatScore(p.score)}`}</title>
+                <title>{`${p.file_path}\n${p.commit_count_90d} commits/90d (${ordinal(Math.round(p.churn_percentile))} pct) · CCN ${p.max_ccn} · NLOC ${p.nloc} · score ${formatScore(p.score)}`}</title>
               </circle>
             );
           })}

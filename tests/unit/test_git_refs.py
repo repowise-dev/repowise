@@ -10,6 +10,7 @@ import pytest
 from repowise.core.git_refs import (
     BranchRef,
     ahead_behind,
+    branch_with_path,
     changed_files,
     commit_file_sets,
     current_branch,
@@ -195,6 +196,24 @@ class TestCommitFileSets:
 
     def test_a_non_repository_yields_nothing(self, tmp_path: Path) -> None:
         assert commit_file_sets(str(tmp_path / "nowhere_at_all"), "main..feat") == []
+
+
+class TestBranchWithPath:
+    def test_names_the_other_branch_that_has_the_path(self, repo: Path) -> None:
+        assert branch_with_path(str(repo), "feat_two.txt") == "feat"
+
+    def test_skips_the_checked_out_branch(self, repo: Path) -> None:
+        # Only main, the checked-out branch whose tree the caller read, has it.
+        _commit(repo, "late.txt", "late\n", "main only")
+        assert branch_with_path(str(repo), "late.txt") is None
+        assert branch_with_path(str(repo), "typo.txt") is None
+
+    def test_finds_a_file_committed_in_a_linked_worktree(self, repo: Path, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        _run(repo, "worktree", "add", "-b", "wt-branch", str(wt), "main")
+        _commit(wt, "only_in_wt.txt", "x\n", "worktree work")
+
+        assert branch_with_path(str(repo), "only_in_wt.txt") == "wt-branch"
 
 
 class TestFindPathRemoval:

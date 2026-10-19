@@ -43,10 +43,10 @@ describe("ContractLinksTable", () => {
     expect(screen.getAllByText("orders-api").length).toBeGreaterThan(0);
   });
 
-  it("splits a file into a dim directory and its name, with the full path on hover", () => {
+  it("leads with the file name and keeps the full path as its accessible name", () => {
     render(<ContractLinksTable links={[link()]} />);
-    const name = screen.getAllByText("users.ts")[0]!;
-    expect(name.parentElement).toHaveAttribute("title", "src/routes/users.ts");
+    expect(screen.getAllByText("users.ts").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("src/routes/users.ts")[0]).toHaveClass("sr-only");
     expect(screen.getAllByText("users-client.ts").length).toBeGreaterThan(0);
   });
 

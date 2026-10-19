@@ -8,7 +8,7 @@ import pytest
 
 from repowise.core.ci import github
 from repowise.core.ci.base import BaseNotFoundError, default_revspec
-from repowise.core.ci.markdown import cell, details, more_line, plural
+from repowise.core.ci.markdown import cell, code, details, more_line, plural
 
 
 def test_annotation_escapes_properties_and_message() -> None:
@@ -41,6 +41,11 @@ def test_markdown_pieces() -> None:
     assert out[:3] == ["<details>", "<summary>S</summary>", ""]
     assert out[-3:] == ["- and 2 more", "", "</details>"]
     assert details("S", []) == []
+
+
+def test_code_span_reads_the_same_on_a_crlf_checkout() -> None:
+    # A plan anchor keeps the file's CRLF; the sentence quoting it must not.
+    assert code("if (\r\n  x") == code("if (\n  x") == "`if (\n  x`"
 
 
 def _git(cwd, *args: str) -> None:
@@ -90,3 +95,28 @@ def test_in_ci_reads_the_ci_variables(env, expected) -> None:
     from repowise.core.ci.base import in_ci
 
     assert in_ci(env) is expected
+
+
+@pytest.mark.parametrize(
+    ("env", "base"),
+    [
+        ({"TF_BUILD": "True", "SYSTEM_PULLREQUEST_TARGETBRANCH": "refs/heads/release/2"}, "release/2"),
+        ({"SYSTEM_PULLREQUEST_TARGETBRANCHNAME": "dev"}, "dev"),
+        # The running CI's branch beats another CI's leftover variable.
+        ({"GITLAB_CI": "true", "CI_MERGE_REQUEST_TARGET_BRANCH_NAME": "mr", "CHANGE_TARGET": "x"}, "mr"),
+    ],
+)
+def test_default_revspec_reads_every_ci_target_branch(detached_repo, env, base) -> None:
+    assert default_revspec(str(detached_repo), env) == f"origin/{base}...HEAD"
+
+
+def test_ci_vars_cover_every_ci_and_keep_the_old_ones() -> None:
+    from repowise.core.ci.base import CI_BASE_VARS, CI_ENV_VARS, in_ci
+
+    old_markers = {"CI", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "JENKINS_URL"}
+    assert old_markers | {"TEAMCITY_VERSION", "TF_BUILD", "BITBUCKET_BUILD_NUMBER"} <= set(CI_ENV_VARS)
+    old_bases = {"GITHUB_BASE_REF", "CI_MERGE_REQUEST_TARGET_BRANCH_NAME", "CHANGE_TARGET"}
+    assert old_bases | {"BITBUCKET_PR_DESTINATION_BRANCH", "SYSTEM_PULLREQUEST_TARGETBRANCH"} <= set(
+        CI_BASE_VARS
+    )
+    assert in_ci({"SYSTEM_PULLREQUEST_TARGETBRANCH": "refs/heads/main"}) is True

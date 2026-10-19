@@ -477,6 +477,49 @@ class TestOpening:
         assert "defines `run`" not in page
         assert "- `_Impl`\n  - `def run(self)`" in page
 
+    @pytest.mark.parametrize(
+        ("language", "symbols", "member", "scope"),
+        [
+            (
+                "java",
+                [
+                    ("A", "class", "public class A", None),
+                    ("over", "method", "public void over(int n)", "A"),
+                    ("run", "method", "public void run()", "A::over#1(int)::Runnable"),
+                ],
+                "public void run()",
+                "A::over",
+            ),
+            (
+                "kotlin",
+                [
+                    ("untilReady", "function", "fun untilReady()", None),
+                    ("apply", "method", "override fun apply(): Boolean", "untilReady::Condition"),
+                ],
+                "override fun apply(): Boolean",
+                "untilReady::Condition",
+            ),
+        ],
+    )
+    def test_an_anonymous_class_member_lists_no_pseudo_type(
+        self, generator, language, symbols, member, scope
+    ):
+        ctx = _context(
+            docstring=None,
+            language=language,
+            symbols=[
+                {**_symbol(n, k, signature=sig, parent_name=p), "language": language}
+                for n, k, sig, p in symbols
+            ],
+        )
+        page = render(generator, ctx)
+
+        # Not an API entry of its own nor a member of the type around it, yet
+        # still spelled on the page.
+        assert scope not in page
+        assert f"- `{member}`" not in page
+        assert member in page
+
     def test_a_barrel_keeps_the_graph_summary(self, generator):
         page = render(
             generator,

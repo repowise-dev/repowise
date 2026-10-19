@@ -61,3 +61,30 @@ async def test_an_unknown_member_falls_back_to_the_name(setup_mcp, session) -> N
     repo_id = await _add_overloads(session)
     rows = await resolve_symbol_rows(session, repo_id, f"{_FILE}::Other::notNull#9")
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_count_only_id_returns_the_members_typed_under_it(setup_mcp, session) -> None:
+    """``notNull#1`` held from before same-count overloads carried their types."""
+    repo = (await session.execute(select(Repository))).scalars().first()
+    for suffix, start in (("#1(Object)", 3), ("#1(String)", 7), ("#2", 11)):
+        session.add(
+            WikiSymbol(
+                repository_id=repo.id,
+                file_path=_FILE,
+                symbol_id=f"{_FILE}::Validate::notNull{suffix}",
+                name="notNull",
+                qualified_name="src.Validate.Validate.notNull",
+                kind="method",
+                signature="notNull(Object obj) -> void",
+                start_line=start,
+                end_line=start + 2,
+                language="java",
+            )
+        )
+    await session.flush()
+    rows = await resolve_symbol_rows(session, repo.id, f"{_FILE}::Validate::notNull#1")
+    assert sorted(r.symbol_id for r in rows) == [
+        f"{_FILE}::Validate::notNull#1(Object)",
+        f"{_FILE}::Validate::notNull#1(String)",
+    ]

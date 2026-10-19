@@ -15,7 +15,7 @@ from click.testing import CliRunner
 
 from repowise.cli.main import cli
 
-from .test_decision_cmd import _seed_wiki_db
+from .test_decision_cmd import _create_empty_index, _seed_wiki_db
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +31,8 @@ def _no_embedder(monkeypatch):
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
-    (root / ".repowise").mkdir(parents=True)
+    root.mkdir()
+    _create_empty_index(root)
     return root
 
 

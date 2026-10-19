@@ -128,19 +128,18 @@ def test_the_range_scoped_set_is_exactly_these_steps():
     re-walks whatever it skipped. ``External systems refresh`` is the reverse,
     since it only runs when a dependency manifest is in *this* diff.
     """
-    import re
-    from pathlib import Path
+    import repowise.core.pipeline.incremental.persist_index as mod
 
-    import repowise.core.pipeline.incremental as mod
-
-    source = Path(mod.__file__).read_text(encoding="utf-8")
-    tagged = set(re.findall(r'_skip\(\s*"([^"]+)",\s*exc,\s*range_scoped=True', source))
+    tagged = {
+        step.name for step in (*mod.INCREMENTAL_STEPS, *mod.CLEANUP_STEPS) if step.range_scoped
+    }
     assert tagged == {
         "Tombstone marking",
         "Git persist",
         "Dead-code persist",
         "Health persist",
         "Symbol persist",
+        "Security persist",
         "Graph edges persist",
         "External systems refresh",
         "Tombstone full-text removal",

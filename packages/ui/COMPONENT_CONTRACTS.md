@@ -217,8 +217,10 @@ Behaviour worth knowing:
 - Optimistic row state lives here, not in the table, so resolving a row moves
   the list with it and undo can put it back.
 - Zero open findings: with `summary.analyzed_at` set, the lede reads "0 lines"
-  with a positive all-clear and no sections; without it, a neutral "Not
-  analysed yet" with a run button. Never green without a recorded run.
+  with a positive all-clear and no sections; with it `null` (no run recorded),
+  a neutral "Not analysed yet" with a run button. With the field absent (a
+  host that does not report runs), the all-clear shows without an "Analysed"
+  time; such a host should also set `analyzeDisabledReason`.
 
 ---
 
@@ -405,13 +407,19 @@ contributors only.
 
 ### `git/hotspot-table` â€” `HotspotTable`
 
-Searchable, filterable, sortable table of hotspots. Filter chips:
-`all` / `hot` / `risk` / `accelerating`. Sortable columns:
-`commits` / `churn` / `trend`. UI-local state â€” no fetch coupling.
+Server-driven table of hotspots: the host owns search, filter, sort and
+paging (the table debounces the search box and reports settled values).
+Chips (`all` / `bus_factor_1` / `accelerating` / `bug_magnet`) show the
+server's `facets` as "N of total"; sortable columns (`score` / `commits` /
+`fixes` / `churn`) render only with `onSortChange`. One quiet per-row agent
+prompt and a header "Copy prompt for these N".
 
 | Prop | Type | Required |
 |------|------|----------|
 | `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
+| `total`, `facets` | `number`, `HotspotFacets` | no |
+| `query` / `filter` / `sort` and their `on*Change` | controlled state | no |
+| `onGeneratePrompt`, `onGenerateBatchPrompt` | callbacks | no |
 
 ### `git/ownership-table` â€” `OwnershipTable`
 

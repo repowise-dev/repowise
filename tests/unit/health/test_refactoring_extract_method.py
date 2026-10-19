@@ -20,6 +20,7 @@ from repowise.core.analysis.health.refactoring.extract_method import (
     recovered_share,
 )
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
+from repowise.core.ingestion.parser import _get_language
 
 # A long function whose tail (compute-average loop) is a clean extraction.
 _PROCESS = """
@@ -90,6 +91,92 @@ def test_finds_clean_extraction_with_inferred_signature():
     assert len(best.returns) <= 1
     assert best.ccn_removed >= 1
     assert best.slice_nloc >= 5
+
+
+# The same tail as _PROCESS, with a comment opening the else arm. The CFG fix keeps
+# the arm's block on the statement's line, so the slice still sees it.
+_PROCESS_ELSE_COMMENT = """
+def process(records, threshold):
+    results = []
+    errors = 0
+    for r in records:
+        if r is None:
+            errors += 1
+            continue
+        results.append(r)
+    total = 0
+    count = 0
+    for v in results:
+        if v > threshold:
+            total += v
+            count += 1
+        else:
+            # count the misses too
+            total -= v
+    average = total / count if count else 0
+    return average, errors
+"""
+
+
+def test_a_comment_opening_the_else_arm_still_yields_the_same_extraction():
+    # The comment must not change which span is offered or the parameters it takes.
+    lmap = get_language_map("python")
+    extractions = find_extractions(_first(_PROCESS_ELSE_COMMENT), lmap)
+    assert extractions, "expected at least one extraction"
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params and "threshold" in best.params
+    assert len(best.returns) <= 1
+    assert best.ccn_removed >= 1
+    assert best.slice_nloc >= 5
+
+
+_JAVA_SWITCH_RULE_YIELD = """
+class A {
+    int pick(int[] xs, int k) {
+        int total = 0;
+        for (int x : xs) {
+            total += x;
+        }
+        int r = switch (k) {
+            case 1 -> {
+                int t = 0;
+                for (int x : xs) {
+                    if (x > 0) {
+                        t += x;
+                    }
+                    if (x > 10) {
+                        t -= 1;
+                    }
+                }
+                yield t;
+            }
+            default -> 0;
+        };
+        return r + total;
+    }
+}
+"""
+
+
+def test_a_java_switch_rule_yield_refuses_spans_that_hold_it():
+    # Lifting a span that contains a switch-rule `yield` into a helper would
+    # move the yield out of the switch rule it belongs to, so the plan cannot
+    # compile. Spans that stop before the yield stay offered.
+    if _get_language("java") is None:
+        pytest.skip("tree-sitter language pack missing for java")
+    res = analyze_file("m.java", "java", _JAVA_SWITCH_RULE_YIELD.encode(), flagged_only=False)
+    if res.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for java")
+    fn = res.functions[0]
+    lmap = get_language_map("java")
+    extractions = find_extractions(fn, lmap)
+    assert extractions, "expected at least one extraction"
+    # The yield is on line 19; no offered span may end on it, and the span
+    # that stops just before it stays the best one.
+    assert all(extraction.end_line != 19 for extraction in extractions)
+    best = extractions[0]
+    assert (best.start_line, best.end_line) == (10, 18)
 
 
 def test_no_extraction_when_every_span_has_a_jump():
@@ -164,6 +251,7 @@ def _find_extractions_reference(analysis, lmap):
         _infer_in_out,
         _loop_carry_free,
         _outs_definitely_assigned,
+        _reads_observing,
         _Scan,
         _sorted,
         _span_metrics,
@@ -184,6 +272,7 @@ def _find_extractions_reference(analysis, lmap):
     body_nloc = _stmts_nloc(body_container.named_children, lines)
     def_lines, use_lines = _var_lines(analysis.def_use)
     declared_first = _declared_before_read(analysis.def_use)
+    reads = _reads_observing(analysis, def_lines)
     decision_kinds = (
         lmap.branch_kinds
         | lmap.loop_kinds
@@ -245,7 +334,9 @@ def _find_extractions_reference(analysis, lmap):
                     continue
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
-                params, returns = _infer_in_out(def_lines, use_lines, s, e, declared_first)
+                params, returns = _infer_in_out(
+                    def_lines, use_lines, s, e, declared_first, reads=reads
+                )
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
                 if not _outs_definitely_assigned(span, returns, def_lines, lmap):
@@ -586,6 +677,7 @@ def test_detector_emits_suggestion_for_flagged_function():
         "needs_async",
         "new_symbol",
         "call_site",
+        "anchors",
     }
     assert s.plan["needs_async"] is False
     # A module-level function: the helper is a plain function too.
@@ -598,6 +690,7 @@ def test_detector_emits_suggestion_for_flagged_function():
         "params": s.plan["new_symbol"]["params"],
         "returns": s.plan["new_symbol"]["returns"],
         "signature_text": s.plan["new_symbol"]["signature_text"],
+        "return_text": "return average",
     }
     assert s.plan["call_site"]["replace_span"] == s.plan["span"]
     assert set(s.plan["span"]) == {"start", "end"}
@@ -610,105 +703,26 @@ def test_detector_emits_suggestion_for_flagged_function():
     assert s.confidence in ("medium", "high")
 
 
-def test_plan_carries_a_computed_name_not_a_hardcoded_none():
-    """``suggested_name`` was ``None`` on every extract_method plan ever stored
-    (854 of 854 on this repo's index) while Extract Helper computed one, so the
-    field's meaning depended on which detector wrote it and every surface fell
-    through to a generic "helper". It is now always a real identifier."""
+def test_plan_names_the_helper_with_a_placeholder():
+    """The plan does not assert a name: the agent applying it names the helper
+    for what it returns or does. The placeholder is valid code until then."""
     findings = [_Finding("complex_method", "process", line_start=2, health_impact=1.5)]
     s = ExtractMethodDetector().detect(_ctx(_PROCESS, findings))[0]
-    # The slice's single OUT value is ``average``, so the span is by
-    # construction the code that computes it.
     assert s.plan["returns"] == ["average"]
     # In Python's private form.
-    assert s.plan["suggested_name"] == "_compute_average"
-
-
-class _Extraction:
-    def __init__(self, returns):
-        self.returns = list(returns)
-
-
-class _Analysis:
-    def __init__(self, name):
-        self.name = name
-
-
-def test_suggested_name_unit():
-    name = ExtractMethodDetector._suggested_name
-    # Exactly one OUT -> name the helper for what it produces, in the language's
-    # own convention.
-    assert name(_Analysis("process"), _Extraction(["average"]), "python") == "compute_average"
-    # Non-identifier characters normalised through the shared slug.
-    assert name(_Analysis("p"), _Extraction(["total-count"]), "python") == "compute_total_count"
-    # A call with no language keeps the snake_case default (the pre-existing
-    # behaviour), so an unset ``ctx.language`` degrades rather than changes shape.
-    assert name(_Analysis("process"), _Extraction(["average"])) == "compute_average"
-
-
-def test_suggested_name_none_cases_are_unchanged_by_the_language():
-    """Control: the no-anchor rules this change must not touch. Each of these
-    was ``None`` before it and must stay ``None`` after, in every language."""
-    name = ExtractMethodDetector._suggested_name
-    # No single OUT -> no anchor, so no name. The enclosing function's name
-    # described the span's context, never the span, and collided with every
-    # sibling plan in the file.
-    assert name(_Analysis("run_pipeline"), _Extraction([])) is None
-    assert name(_Analysis("run_pipeline"), _Extraction(["a", "b"])) is None
-    # A return name that slugs to nothing must not yield "compute_".
-    assert name(_Analysis("process"), _Extraction(["___"])) is None
-    # An OUT named for its role, not the product: "compute_result" names
-    # nothing the reader did not already know.
-    assert name(_Analysis("process"), _Extraction(["result"])) is None
-    # Nothing usable at all -> no name at all.
-    assert name(_Analysis("___"), _Extraction([])) is None
-    # And none of the above becomes a name just because the language is camelCase.
-    for lang in ("java", "go", "typescript", "cpp", "python"):
-        assert name(_Analysis("process"), _Extraction([]), lang) is None
-        assert name(_Analysis("process"), _Extraction(["result"]), lang) is None
-        assert name(_Analysis("process"), _Extraction(["___"]), lang) is None
-
-
-def test_suggested_name_follows_the_language_convention():
-    name = ExtractMethodDetector._suggested_name
-    # camelCase languages.
-    for lang in ("java", "go", "typescript", "tsx", "javascript", "jsx", "svelte", "vue"):
-        assert name(_Analysis("process"), _Extraction(["average"]), lang) == "computeAverage", lang
-    # snake_case languages, and C++ which has no single convention.
-    for lang in ("python", "rust", "cpp"):
-        assert name(_Analysis("process"), _Extraction(["average"]), lang) == "compute_average", lang
-    # An unknown language falls back rather than raising.
-    assert name(_Analysis("process"), _Extraction(["average"]), "cobol") == "compute_average"
-    # A language whose file has several words keeps all of them.
-    assert (
-        name(_Analysis("process"), _Extraction(["total_count"]), "java") == "computeTotalCount"
-    )
-
-
-def test_suggested_name_keeps_the_out_values_own_casing():
-    name = ExtractMethodDetector._suggested_name
-    # ``meanValue`` must survive as word boundaries. Lowercasing the whole label
-    # first (the old slug) gave ``compute_meanvalue``, neither camelCase nor
-    # snake_case.
-    assert name(_Analysis("process"), _Extraction(["meanValue"]), "java") == "computeMeanValue"
-    assert name(_Analysis("process"), _Extraction(["mean_value"]), "java") == "computeMeanValue"
-    assert name(_Analysis("process"), _Extraction(["MeanValue"]), "java") == "computeMeanValue"
-    assert name(_Analysis("process"), _Extraction(["meanValue"]), "python") == "compute_mean_value"
-    # A run of capitals stays one word: splitting it needs a dictionary.
-    assert name(_Analysis("process"), _Extraction(["HTTPStatus"]), "java") == "computeHttpstatus"
-    # The role-word guard still sees a multi-word out value's joined slug.
-    assert name(_Analysis("process"), _Extraction(["item_value"]), "java") == "computeItemValue"
+    assert s.plan["suggested_name"] == "_extracted_helper"
+    assert s.plan["new_symbol"]["signature_text"].startswith("def _extracted_helper(")
 
 
 @pytest.mark.parametrize(
     ("language", "expected"),
     [
-        ("python", "_compute_average"),
-        ("rust", "compute_average"),
-        ("cpp", "compute_average"),
-        ("java", "computeAverage"),
-        ("typescript", "computeAverage"),
-        ("go", "computeAverage"),
+        ("python", "_extracted_helper"),
+        ("rust", "extracted_helper"),
+        ("cpp", "extracted_helper"),
+        ("java", "extractedHelper"),
+        ("typescript", "extractedHelper"),
+        ("go", "extractedHelper"),
     ],
 )
 def test_detector_names_the_helper_in_the_files_language(language: str, expected: str):
@@ -947,7 +961,9 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
 
     trivial = Extraction(10, 17, ("a",), (), slice_nloc=8, ccn_removed=1)
     worth = Extraction(20, 27, ("b",), (), slice_nloc=8, ccn_removed=3)
-    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None: [trivial, worth])
+    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None, _rf=None: [trivial, worth])
+    # No parsed source to anchor against: this pins span choice, not anchoring.
+    monkeypatch.setattr(extract_method, "anchor_plan", lambda _plan, _fn: True)
     fn = _Shape(12, 40)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 50, "ccn": 12, "nloc": 40,
@@ -1160,8 +1176,9 @@ def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
     shrunk = Extraction(2, 55, ("a",), (), slice_nloc=40, ccn_removed=8)  # overlaps it
     disjoint = Extraction(85, 95, ("b",), (), slice_nloc=10, ccn_removed=3)
     monkeypatch.setattr(
-        extract_method, "find_extractions", lambda _a, _l, _r=None: [whole, shrunk, disjoint]
+        extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None, _rf=None: [whole, shrunk, disjoint]
     )
+    monkeypatch.setattr(extract_method, "anchor_plan", lambda _plan, _fn: True)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 100, "ccn": 30, "nloc": 90,
                   "fn_node": None}
@@ -1180,10 +1197,11 @@ def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
 def _span_in_out(src: str, s: int, e: int):
     from repowise.core.analysis.health.dataflow import slice as slicer
 
-    def_use = _first(src).def_use
-    def_lines, use_lines = slicer._var_lines(def_use)
-    declared_first = slicer._declared_before_read(def_use)
-    return slicer._infer_in_out(def_lines, use_lines, s, e, declared_first)
+    fn = _first(src)
+    def_lines, use_lines = slicer._var_lines(fn.def_use)
+    declared_first = slicer._declared_before_read(fn.def_use)
+    reads = slicer._reads_observing(fn, def_lines)
+    return slicer._infer_in_out(def_lines, use_lines, s, e, declared_first, reads=reads)
 
 
 def test_a_comprehension_binder_is_not_a_parameter():
@@ -1230,4 +1248,26 @@ def test_a_span_holding_an_import_read_after_it_is_refused():
         spans = find_extractions(_first(src), get_language_map("python"))
     found = {(x.start_line, x.end_line): (x.params, x.returns) for x in spans}
     assert (3, 5) not in found
-    assert found[(4, 6)] == (("a", "c"), ("t",))
+    assert (4, 6) not in found
+    assert found[(3, 6)] == (("a", "c"), ("t",))
+
+
+@pytest.mark.parametrize(
+    ("prefix", "inside", "floor", "offered"),
+    [("import json\n", "", 0, True), ("", "    import json\n", 2, False)],
+)
+def test_import_scope_controls_extractability(prefix, inside, floor, offered):
+    src = f"""{prefix}def f(v):
+{inside}    n = 0
+    dump = lambda x: json.dumps(x)
+    if v: n += len(dump(v))
+    if n: n += len(dump(n))
+    return n
+"""
+    with pytest.MonkeyPatch.context() as mp:
+        from repowise.core.analysis.health.dataflow import slice as slicer
+
+        mp.setattr(slicer, "_MAX_BODY_SHARE", float("inf"))
+        mp.setattr(slicer, "_MIN_SLICE_NLOC", 1)
+        spans = find_extractions(_first(src), get_language_map("python"))
+    assert any(floor < x.start_line <= 4 <= x.end_line for x in spans) is offered

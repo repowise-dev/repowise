@@ -12,7 +12,7 @@ from typing import Any, NamedTuple
 
 from .context import RepoContext, build_context
 from .facts import RepoFacts
-from .model import HORIZONS, RULE_RANK, TIER_RANK, Action, RuleOutcome
+from .model import HORIZONS, RULE_RANK, TIER_RANK, Action, RuleOutcome, shared_priority
 from .rules import code, hygiene, signal
 from .summary import summarize
 
@@ -40,6 +40,9 @@ KEEP_PER_HORIZON = 20
 #: In the head of each tier, no rule takes more than this many places before
 #: every other rule with something to say has had one.
 PER_RULE_HEAD = 2
+
+#: The places every surface shows first: the overview's next actions.
+NEXT_ACTIONS_HEAD = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,11 +73,24 @@ def _naive(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
 
 
+def _priority(action: dict[str, Any]) -> float:
+    """The action's stored priority; a view stored before actions carried one
+    reads :func:`shared_priority` from its value or severity."""
+    stored = action.get("priority")
+    if stored is not None:
+        return stored
+    return shared_priority(
+        action.get("value"), action["severity"], action["confidence"], action["effort"]
+    )
+
+
 def _order(actions: list[Ranked]) -> list[Ranked]:
+    # Priority orders a tier; rule rank and the rule's own weight only break ties.
     ranked = sorted(
         actions,
         key=lambda r: (
             TIER_RANK[r.action["tier"]],
+            -_priority(r.action),
             RULE_RANK[r.action["rule"]],
             -r.weight,
             r.action["id"],
@@ -94,6 +110,26 @@ def _order(actions: list[Ranked]) -> list[Ranked]:
             else:
                 rest.append(r)
         out.extend(head + rest)
+    return _reserve_fix_first(out)
+
+
+def _reserve_fix_first(ordered: list[Ranked]) -> list[Ranked]:
+    """The Fix first lead first in its tier's block, so Do next and Fix first
+    lead with the same work. It never moves across tiers: an ``act_now`` row
+    stays above a ``plan`` lead. The rule emits only due items, and its
+    priorities follow the queue's order, so the lead has the highest."""
+    leads = [
+        (_priority(r.action), r.weight, -i)
+        for i, r in enumerate(ordered)
+        if r.action["rule"] == "fix_first"
+    ]
+    if not leads:
+        return ordered
+    at = -max(leads)[2]
+    tier = ordered[at].action["tier"]
+    first = next(i for i, r in enumerate(ordered) if r.action["tier"] == tier)
+    out = list(ordered)
+    out.insert(first, out.pop(at))
     return out
 
 

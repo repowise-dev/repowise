@@ -58,7 +58,7 @@ class CoverageGradientDetector:
         if cov is None:
             # No coverage data -> silent. Absent is not the same as uncovered.
             return []
-        if ctx.is_test_material:
+        if ctx.is_test_material or ctx.reexport_only:
             return []
 
         uncovered_fraction = max(0.0, (100.0 - float(cov)) / 100.0)

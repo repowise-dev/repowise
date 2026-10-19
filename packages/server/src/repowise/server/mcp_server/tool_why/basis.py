@@ -33,6 +33,28 @@ def _is_accepted_row(row: Any) -> bool:
     return isinstance(row, dict) and row.get("authority") == "accepted"
 
 
+def _decision_rows(result: dict) -> list:
+    """Every decision row served: the top-level lane and each card's rules."""
+    return [
+        *(result.get("decisions") or []),
+        *(
+            r
+            for e in (result.get("target_context") or {}).values()
+            if isinstance(e, dict)
+            for r in (e.get("governing_decisions") or [])
+        ),
+    ]
+
+
+def rests_on_decision(result: dict) -> bool:
+    """Whether *result* serves an accepted decision.
+
+    The one fact behind ``answer_basis: "decision"`` and behind any prose that
+    says no record covers the call, so the two cannot disagree.
+    """
+    return any(_is_accepted_row(r) for r in _decision_rows(result))
+
+
 def _stamp_answer_basis(result: dict) -> dict:
     """Name the strongest lane the response actually rests on.
 
@@ -49,15 +71,11 @@ def _stamp_answer_basis(result: dict) -> dict:
     entries = [
         e for e in (result.get("target_context") or {}).values() if isinstance(e, dict)
     ]
-    decision_rows = [
-        *(result.get("decisions") or []),
-        *(r for e in entries for r in (e.get("governing_decisions") or [])),
-    ]
     candidate_rows = [
         *(r for e in entries for r in (e.get("candidate_decisions") or [])),
-        *(r for r in decision_rows if not _is_accepted_row(r)),
+        *(r for r in _decision_rows(result) if not _is_accepted_row(r)),
     ]
-    if any(_is_accepted_row(r) for r in decision_rows):
+    if rests_on_decision(result):
         result["answer_basis"] = "decision"
     elif result.get("episodes"):
         result["answer_basis"] = "episode"

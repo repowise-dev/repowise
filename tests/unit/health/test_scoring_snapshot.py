@@ -70,8 +70,7 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
     # floored - fired widely but weak/non-predictive at T0
     "developer_congestion": 0.5,
     "low_cohesion": 0.5,
-    "brain_method": 0.5,
-    "bumpy_road": 0.5,
+    "repeated_nesting": 0.5,
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,
@@ -90,7 +89,7 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "low_cohesion": "structural_complexity",
     "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
-    "bumpy_road": "structural_complexity",
+    "repeated_nesting": "structural_complexity",
     "complex_conditional": "structural_complexity",
     "complex_method": "size_and_complexity",
     "large_method": "size_and_complexity",
@@ -154,37 +153,35 @@ def _result(biomarker: str, severity: Severity) -> BiomarkerResult:
 def test_known_fixture_score_is_stable():
     """A handcrafted finding set should produce a known, fixed score."""
     findings = [
-        _result("brain_method", Severity.CRITICAL),
+        _result("low_cohesion", Severity.CRITICAL),
         _result("nested_complexity", Severity.HIGH),
         _result("complex_method", Severity.MEDIUM),
         _result("untested_hotspot", Severity.HIGH),
         _result("knowledge_loss", Severity.LOW),
     ]
     scores, _ = score_file(findings)
-    # Math (defect-calibrated weights):
-    #   structural   = brain(2.0*0.5) + nested(1.2*1.34) = 1.0 + 1.608 = 2.608 -> capped at 2.5
-    #   size_and_cx  = complex_method 0.7 * 1.21 = 0.847   (under 1.5 cap)
-    #   coverage     = untested_hotspot 1.2 * 1.3 = 1.56   (under 2.0 cap)
-    #   organizational = knowledge_loss 0.3 * 0.4 = 0.12   (under 3.5 cap)
-    #   total deduction = 2.5 + 0.847 + 1.56 + 0.12 = 5.027 -> 10 - 5.027 = 4.973
-    assert scores["defect"] == 4.973
+    # Each category saturates as A * (1 - exp(-raw / A)), A = 3.09 x its cap:
+    #   structural   = cohesion(2.0*0.5) + nested(1.2*1.34) = 2.608 -> 2.213
+    #   size_and_cx  = complex_method 0.7 * 1.21 = 0.847 -> 0.774
+    #   coverage     = untested_hotspot 1.2 * 1.3 = 1.56 -> 1.379
+    #   organizational = knowledge_loss 0.3 * 0.4 = 0.12 (hard cap, not reached)
+    assert round(scores["defect"], 3) == 5.514
 
 
-def test_category_cap_clamps_score():
-    """Many critical structural findings should not exceed the -2.5 cap."""
-    findings = [_result("brain_method", Severity.CRITICAL) for _ in range(10)]
+def test_category_curve_bounds_score():
+    """Many critical structural findings saturate below 3.09 x the 2.5 cap."""
+    findings = [_result("low_cohesion", Severity.CRITICAL) for _ in range(10)]
     scores, _ = score_file(findings)
-    # Cap at -2.5, so floor on this category alone is 7.5.
-    assert scores["defect"] == 7.5
+    # raw 10.0, A = 7.725 -> 5.608
+    assert round(scores["defect"], 3) == 4.392
 
 
 def test_continuous_deduction_override_is_used_and_capped():
-    """A ``deduction`` override replaces the severity table and is category-capped.
+    """A ``deduction`` override replaces the severity table and saturates.
 
     ``coverage_gradient`` deducts 4.0 x uncovered_fraction in its own
-    ``test_coverage_gradient`` category (cap 2.0). At 25% uncovered the raw
-    deduction is 1.0 (under the cap); at 80% uncovered it is 3.2 -> clamped to
-    the 2.0 cap.
+    ``test_coverage_gradient`` category (cap 2.0, so A = 6.18). At 25% uncovered
+    the raw deduction is 1.0 -> 0.923; at 80% it is 3.2 -> 2.498.
     """
     quarter = BiomarkerResult(
         biomarker_type="coverage_gradient",
@@ -197,8 +194,8 @@ def test_continuous_deduction_override_is_used_and_capped():
         deduction=4.0 * 0.25,
     )
     scores, ded = score_file([quarter])
-    assert scores["defect"] == 9.0  # 10 - 1.0
-    assert ded == [1.0]
+    assert round(scores["defect"], 3) == 9.077
+    assert [round(d, 3) for d in ded] == [0.923]
 
     deep = BiomarkerResult(
         biomarker_type="coverage_gradient",
@@ -211,21 +208,21 @@ def test_continuous_deduction_override_is_used_and_capped():
         deduction=4.0 * 0.80,
     )
     scores2, ded2 = score_file([deep])
-    assert scores2["defect"] == 8.0  # 10 - 2.0 (cap)
-    assert ded2 == [2.0]
+    assert round(scores2["defect"], 3) == 7.502
+    assert [round(d, 3) for d in ded2] == [2.498]
 
 
 def test_error_handling_cap_bounds_stream():
-    """error_handling findings deduct 0.15 each (LOW 0.3 x 0.5 weight) in
-    their own advisory category, capped at 0.5/file regardless of count."""
+    """error_handling findings weigh 0.15 each (LOW 0.3 x 0.5 weight) in their
+    own category, which saturates toward 3.09 x its 0.5 cap whatever the count."""
     two = [_result("error_handling", Severity.LOW) for _ in range(2)]
     scores, deductions = score_file(two)
-    assert scores["defect"] == 9.7  # 10 - 2 * 0.15
-    assert deductions == [0.15, 0.15]
+    assert round(scores["defect"], 3) == 9.727  # raw 0.3 -> 0.273
+    assert [round(d, 3) for d in deductions] == [0.136, 0.136]
 
     many = [_result("error_handling", Severity.LOW) for _ in range(10)]
     scores2, _ = score_file(many)
-    assert scores2["defect"] == 9.5  # 10 * 0.15 = 1.5 raw -> clamped to the 0.5 cap
+    assert round(scores2["defect"], 3) == 9.04  # raw 1.5 -> 0.96
 
 
 def test_organizational_cap_bounds_stream():
@@ -240,17 +237,31 @@ def test_organizational_cap_bounds_stream():
 
 def test_history_cap_follows_structure():
     """Each point of code-shape deduction lets history deduct one more, to 3.5."""
-    history = [_result("prior_defect", Severity.CRITICAL) for _ in range(3)]  # 6.0 raw
-    # structure 2.5 (brain_method x 3 -> structural cap) -> history cap 3.5
-    shaped = [*history, *(_result("brain_method", Severity.CRITICAL) for _ in range(3))]
+    # 2.0 + 0.25 x 10.0 = 4.5 de-stacked
+    history = [_result("prior_defect", Severity.CRITICAL) for _ in range(6)]
+    # structure 2.486 (low_cohesion x 3, raw 3.0 saturated) -> history cap 3.486
+    shaped = [*history, *(_result("low_cohesion", Severity.CRITICAL) for _ in range(3))]
     scores, _ = score_file(shaped)
-    assert round(scores["defect"], 6) == round(10.0 - 2.5 - 3.5, 6)
-    # structure 0.847 (one MEDIUM complex_method) -> history cap 1.847
+    assert round(scores["defect"], 3) == 4.028
+    # structure 0.774 (one MEDIUM complex_method) -> history cap 1.774
     mid = [*history, _result("complex_method", Severity.MEDIUM)]
     scores, ded = score_file(mid)
-    assert round(scores["defect"], 6) == round(10.0 - 0.847 - 1.847, 6)
+    assert round(scores["defect"], 3) == 7.452
     # impacts still sum to the deduction the score was computed from
-    assert round(sum(ded), 6) == round(0.847 + 1.847, 6)
+    assert round(sum(ded), 6) == round(10.0 - scores["defect"], 6)
+
+
+def test_history_markers_destack():
+    """The largest history finding counts whole, every other one at a quarter."""
+    shaped = [_result("low_cohesion", Severity.CRITICAL) for _ in range(3)]  # structure 2.486
+    history = [
+        _result("prior_defect", Severity.CRITICAL),  # 2.0
+        _result("change_entropy", Severity.HIGH),  # 1.2 x 1.51 = 1.812
+    ]
+    scores, ded = score_file([*shaped, *history])
+    # 2.0 + 0.25 x 1.812 = 2.453, under the 3.486 cap
+    assert round(scores["defect"], 3) == 5.061
+    assert [round(d, 6) for d in ded[3:]] == [2.0, 0.453]
 
 
 def test_improving_code_never_lowers_score():

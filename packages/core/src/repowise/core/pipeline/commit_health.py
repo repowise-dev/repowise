@@ -1,9 +1,10 @@
 """Keep the per-commit health delta rows current, for both index paths.
 
-One entry point, :func:`refresh_commit_health`, used by the full index and by
-the incremental update. The difference between them is only which shas they
-hand over; everything else — what is already scanned, what the budget allows,
-how the rows are written — is the same decision and lives here once.
+Two entry points share one scan: :func:`refresh_commit_health` for the full
+index, inside its transaction, and :func:`refresh_commit_health_after_update`
+for the incremental update, after its transaction. What is already scanned,
+what the budget allows and how the rows are written is the same decision and
+lives here once.
 
 The scan is bounded on purpose — see ``change_health.commit_scan`` for the
 per-file cost that forces it. A full index seeds the most recent
@@ -12,6 +13,13 @@ per-file cost that forces it. A full index seeds the most recent
 take about half an hour. Everything older has no row, which the commit sheet
 renders as "not analysed" rather than "nothing found", and updates extend the
 covered window one push at a time.
+
+An update scans after its persist transaction has committed, never inside it:
+the scan is minutes of CPU at worst, and holding SQLite's write lock that long
+blocks every other writer (the post-commit hook's next update, MCP writes). It
+also scans the newest commits in the store rather than only the ones it just
+captured, so a commit an earlier update's budget did not reach is picked up by
+a later one instead of staying "not analysed" until a full index.
 """
 
 from __future__ import annotations
@@ -32,6 +40,13 @@ DEFAULT_COMMIT_LIMIT = 150
 #: order of magnitude with diff size, so a count alone bounds nothing.
 DEFAULT_BUDGET_SECONDS = 300.0
 
+#: Wall clock one update may spend. An update runs on every commit through the
+#: post-commit hook, so it gets a fifth of the full index's budget. A commit
+#: costs ~5 s on this repository under load (~2 s idle), so this covers about a
+#: dozen commits per run, a normal push in one update, and a longer gap drains
+#: over the next few updates instead of stalling one for five minutes.
+UPDATE_BUDGET_SECONDS = 60.0
+
 
 def _env_number(name: str, default: float) -> float:
     """Read a non-negative numeric override; ignore anything unparseable."""
@@ -49,8 +64,8 @@ def commit_limit() -> int:
     return int(_env_number("REPOWISE_COMMIT_HEALTH_COMMITS", DEFAULT_COMMIT_LIMIT))
 
 
-def budget_seconds() -> float:
-    return _env_number("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS", DEFAULT_BUDGET_SECONDS)
+def budget_seconds(default: float = DEFAULT_BUDGET_SECONDS) -> float:
+    return _env_number("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS", default)
 
 
 def recent_shas(commit_rows: list[dict] | None) -> list[str]:
@@ -77,17 +92,16 @@ async def _pending_shas(
     return [sha for sha in shas if sha not in done][:limit]
 
 
-async def _scan_and_store(
-    session: Any, repo_id: str, repo_path: str, pending: list[str], budget: float
-) -> dict[str, int]:
+async def _scan(repo_path: str, pending: list[str], budget: float) -> Any:
     from repowise.core.analysis.change_health.commit_scan import scan_commits
-    from repowise.core.persistence.crud import upsert_commit_health_bulk
 
     scan = await asyncio.to_thread(scan_commits, repo_path, pending, budget_seconds=budget)
-    if scan.delta_rows:
-        await upsert_commit_health_bulk(session, repo_id, scan.delta_rows, scan.finding_rows)
     if scan.exhausted_budget:
         logger.info("commit_health_budget_exhausted", scanned=scan.scanned, budget=budget)
+    return scan
+
+
+def _stats(pending: list[str], scan: Any) -> dict[str, int]:
     return {
         "candidates": len(pending),
         "scanned": scan.scanned,
@@ -95,6 +109,17 @@ async def _scan_and_store(
         "stored": len(scan.delta_rows),
         "findings": len(scan.finding_rows),
     }
+
+
+async def _scan_and_store(
+    session: Any, repo_id: str, repo_path: str, pending: list[str], budget: float
+) -> dict[str, int]:
+    from repowise.core.persistence.crud import upsert_commit_health_bulk
+
+    scan = await _scan(repo_path, pending, budget)
+    if scan.delta_rows:
+        await upsert_commit_health_bulk(session, repo_id, scan.delta_rows, scan.finding_rows)
+    return _stats(pending, scan)
 
 
 async def refresh_commit_health(
@@ -135,6 +160,58 @@ async def refresh_commit_health(
                 pending,
                 budget_seconds() if budget is None else budget,
             )
+    except Exception as exc:
+        logger.debug("commit_health_refresh_failed", error=str(exc))
+        return nothing
+
+
+async def refresh_commit_health_after_update(
+    session_factory: Any,
+    repo_id: str,
+    repo_path: str,
+    *,
+    budget: float | None = None,
+) -> dict[str, int]:
+    """The update's scan, run once its persist transaction has committed.
+
+    Reads the window, scans with no session open, then writes the rows in a
+    transaction of their own, so the write lock is held for the write and not
+    for the scan. The window is the newest :data:`DEFAULT_COMMIT_LIMIT` commits
+    in the store, the same window a full index seeds, newest first: the commits
+    a reader opens first are covered first, and a backlog older than the window
+    is not chased.
+
+    Never raises, and touches nothing the update already committed.
+    """
+    from repowise.core.persistence import get_session
+    from repowise.core.persistence.crud import get_git_commits, upsert_commit_health_bulk
+
+    limit = commit_limit()
+    nothing = dict.fromkeys(("candidates", "scanned", "skipped", "stored", "findings"), 0)
+    if limit <= 0:
+        return nothing
+    try:
+        async with get_session(session_factory) as session:
+            window = [
+                row.sha
+                for row in await get_git_commits(session, repo_id, limit=limit, sort="date")
+            ]
+            if not window:
+                return nothing
+            pending = await _pending_shas(session, repo_id, repo_path, window, limit)
+        if not pending:
+            return nothing
+        scan = await _scan(
+            repo_path,
+            pending,
+            budget_seconds(UPDATE_BUDGET_SECONDS) if budget is None else budget,
+        )
+        if scan.delta_rows:
+            async with get_session(session_factory) as session:
+                await upsert_commit_health_bulk(
+                    session, repo_id, scan.delta_rows, scan.finding_rows
+                )
+        return _stats(pending, scan)
     except Exception as exc:
         logger.debug("commit_health_refresh_failed", error=str(exc))
         return nothing

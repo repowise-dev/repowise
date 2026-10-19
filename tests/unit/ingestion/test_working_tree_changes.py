@@ -300,3 +300,37 @@ class TestIsCandidateSourcePath:
         # A hand-written file landing in it later is seen despite the cache.
         (tmp_path / "dist" / "cli.py").write_text("x = 1\n", encoding="utf-8")
         assert is_candidate_source_path("dist/cli.py", tmp_path, cache) is True
+
+    def test_reincluded_dir_is_candidate_source_path(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("var a = 1;\n", encoding="utf-8")
+        (tmp_path / "src" / "build" / "node_modules").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "node_modules" / "x.js").write_text(
+            "var b = 2;\n", encoding="utf-8"
+        )
+
+        # Without negation rule, build holding only JS is rejected as output.
+        assert is_candidate_source_path("src/build/index.js", tmp_path) is False
+
+        # With !src/build/, index.js is accepted, but node_modules/x.js remains blocked.
+        (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+        assert is_candidate_source_path("src/build/index.js", tmp_path) is True
+        assert is_candidate_source_path("src/build/node_modules/x.js", tmp_path) is False
+
+        # Also via extra_exclude_patterns.
+        assert (
+            is_candidate_source_path(
+                "dist/tool.js", tmp_path, extra_exclude_patterns=["!dist/"]
+            )
+            is True
+        )
+
+        # Also via custom extra_ignore_filename
+        (tmp_path / ".repowiseIgnore").unlink()
+        (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+        assert (
+            is_candidate_source_path(
+                "src/build/index.js", tmp_path, extra_ignore_filename=".customIgnore"
+            )
+            is True
+        )

@@ -36,7 +36,10 @@ For Extract Helper:
   carry a graph community label under ``module``, which named a directory the
   occurrences did not live in on every measured row. Plans stored before that
   removal still carry the key; read ``directory``, which was correct on those
-  rows too.
+  rows too. When one site already is a function the others can call, the plan
+  adds ``"reuse": {"existing_symbol", "file", "span", "reason", "sites": [{"file",
+  "span", "action": "replace_with_call" | "delete", "new_text", "replaces"}]}``
+  (``reuse.py``); plan detail serves it, list rows drop it.
 - ``evidence`` = ``{"occurrence_count": int, "duplicated_lines": int,
   "token_count": int, "co_change_count": int, "is_intra_file": bool}`` — the
   size + activity signals that justify extracting a helper.
@@ -47,10 +50,10 @@ For Extract Method:
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
   "returns": [str, ...], "suggested_name": str | None, "needs_async": bool}``
-  — the lines to lift, the inferred signature, a deterministic starting name
-  (a stage label, a banner comment, or the single OUT value of an effect-free
-  span; never one already taken in the helper's scope; else absent), and
-  whether the span awaits, so the helper is async and its call awaited. An
+  — the lines to lift, the inferred signature, a placeholder name the agent
+  applying the plan renames (``extracted_helper``, numbered when taken in the
+  helper's scope), and whether the span awaits, so the helper is async and its
+  call awaited. An
   awaiting plan adds ``"async_host": bool``, False when the enclosing function
   is not async. ``new_symbol`` and ``call_site`` carry the helper's typed
   parameters, its header and its call, written out (``extract_method``).
@@ -103,6 +106,7 @@ For Split File:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -200,6 +204,9 @@ class RefactoringContext:
     # every other detector ignores it. ``None`` when the file was not read (no
     # clones) or the read failed; the detector then omits the snippet.
     source_lines: list[str] | None = None
+    # A clone partner's lines by repo path (None: unreadable), for Extract
+    # Helper's reuse check. ``None``: not provided, no plan reuses a function.
+    read_lines: Callable[[str], list[str] | None] | None = None
 
 
 @dataclass

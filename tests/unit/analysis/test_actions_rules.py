@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from repowise.core.analysis.actions import ActionStateRecord, RepoFacts, compose_actions
 from repowise.core.analysis.actions.context import build_context
-from repowise.core.analysis.actions.engine import KEEP_PER_HORIZON
+from repowise.core.analysis.actions.engine import KEEP_PER_HORIZON, rank_actions
 from repowise.core.analysis.actions.facts import (
     CoverageState,
     DeadFacts,
@@ -21,7 +21,7 @@ from repowise.core.analysis.actions.facts import (
     RecentFinding,
     SecretFacts,
 )
-from repowise.core.analysis.actions.model import TIER_RANK, Action
+from repowise.core.analysis.actions.model import SEVERITY_VALUE, TIER_RANK, Action
 from repowise.core.analysis.actions.rules import code, hygiene, signal
 
 ANCHOR = datetime(2026, 9, 28, 12, 0)
@@ -173,9 +173,56 @@ def test_regressions_over_three_files_roll_up() -> None:
     out = _run(code.fresh_regressions, _facts(recent_findings=found))
     (a,) = out.actions
     assert a.target_kind == "repo"
-    assert a.severity == "critical"
+    assert a.severity == "high"
     assert a.includes[0] == "src/worst.py"
     assert set(a.includes) == {"src/worst.py", *(f"src/f{i}.py" for i in range(4))}
+
+
+def test_regressions_with_many_critical_findings_top_out_at_high() -> None:
+    """heyputer/everything: 132 detector-critical findings in a week of commits
+    read as a CRITICAL action. The count stays a fact; the label stays high."""
+    found = tuple(
+        _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}") for i in range(40)
+    )
+    (rollup,) = _run(code.fresh_regressions, _facts(recent_findings=found)).actions
+    (single,) = _run(code.fresh_regressions, _facts(recent_findings=found[:1])).actions
+    for a in (rollup, single):
+        assert a.severity == "high"
+        assert dict((w.label, w.value) for w in a.why)["critical findings"] == (
+            "40" if a is rollup else "1"
+        )
+
+
+def test_a_week_with_critical_findings_still_outranks_one_without() -> None:
+    critical = _run(
+        code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py", severity="critical"),))
+    ).actions[0]
+    high = _run(code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py"),))).actions[0]
+    assert critical.effective_value == SEVERITY_VALUE["critical"]
+    assert high.effective_value == SEVERITY_VALUE["high"]
+    assert critical.effective_priority > high.effective_priority
+
+
+def test_only_a_live_credential_is_critical() -> None:
+    """Every rule over facts that would push it hardest: the one critical
+    action is the credential in the working tree."""
+    hot = _file(
+        "src/hot.py", commits_90d=80, fix_commits_90d=40, dependents=50, lead=_LEAD,
+        last_commit_at=ANCHOR - timedelta(days=1), line_coverage_pct=10.0,
+    )
+    facts = _facts(
+        [hot],
+        recent_findings=tuple(
+            _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}") for i in range(10)
+        ),
+        secrets=(SecretFacts("src/config.py", "hardcoded_secret", 4, 'API_KEY = "sk_live_abc1"'),),
+        fix_first=_fix_items(),
+    )
+    view = compose_actions(facts, now=NOW)
+    week = view["horizons"]["week"]["actions"]
+    assert [a["rule"] for a in week if a["severity"] == "critical"] == ["live_secret"]
+    # The secret still leads, and the week's regressions follow it in the same tier.
+    assert [a["rule"] for a in week[:2]] == ["live_secret", "fresh_regressions"]
 
 
 def test_regressions_unavailable_store() -> None:
@@ -232,6 +279,29 @@ def test_concentration_picks_the_narrow_high_lift_folder() -> None:
     assert set(a.includes) == {f"pkg/cli/update/a{i}.py" for i in range(4)}
 
 
+def test_a_folder_names_its_first_step() -> None:
+    (a,) = _run(code.fix_concentration, _concentration_facts()).actions
+    # Every file here is untested; the most fixed one comes first.
+    assert a.title == (
+        "Stabilise `pkg/cli/update/`: first, add tests around `pkg/cli/update/a0.py` "
+        "before its next change"
+    )
+    assert "10 of the 25 bug-fix commits" in a.impact
+
+
+def test_a_folder_with_no_first_step_is_left_out_and_counted() -> None:
+    facts = _concentration_facts()
+    # No coverage report and no test map: no file can name a step.
+    unknown = {p: replace(f, tests_reaching=None) for p, f in facts.files.items()}
+    out = _run(code.fix_concentration, replace(facts, files=unknown))
+    assert out.actions == ()
+    assert out.reason == "1 folder left out: no file in it names a first step."
+
+
+def test_a_folder_whose_files_fix_first_names_has_no_first_step() -> None:
+    assert code._first_step((), {}) is None
+
+
 def test_engine_drops_fragile_rows_a_folder_absorbed() -> None:
     facts = _concentration_facts()
     # Sanity: on their own, the folder's files are fragile.
@@ -277,7 +347,9 @@ def test_fix_first_emits_now_and_next_and_leaves_later() -> None:
         ("plan", items[0].title),
         ("act_now", items[1].title),
     ]
-    assert actions[1].horizons == ("week", "quarter") and actions[0].horizons == ("quarter",)
+    # Both are due, so both are this week's as well as this quarter's.
+    assert actions[1].horizons == actions[0].horizons == ("week", "quarter")
+    assert [a.value for a in actions] == [i.value for i in items[:2]]
     assert actions[0].surface == "performance"
     assert actions[1].commands[0].mcp == f'get_health(fix_id="{items[1].id}")'
     assert len({a.action_id for a in actions}) == 2
@@ -507,6 +579,86 @@ def test_engine_keeps_the_full_total_past_the_cap() -> None:
     quarter = view["horizons"]["quarter"]
     assert len(quarter["actions"]) == KEEP_PER_HORIZON
     assert quarter["total"] == KEEP_PER_HORIZON + 5
+
+
+def _ruled(*actions: Action) -> dict:
+    return {
+        "anchor": None, "week_start": None, "context": {}, "rules": [],
+        "actions": [(a.weight, a.as_dict()) for a in actions],
+    }
+
+
+def _act(rule: str, tier: str, path: str, **kw) -> Action:
+    base = dict(
+        rule=rule, tier=tier, horizons=("week", "quarter"), severity="high", title=path,
+        impact="", why=(), target_kind="file", target_path=path, surface="file",
+        effort="M", confidence="medium", done_when="",
+    )
+    return Action(**{**base, **kw})
+
+
+def test_engine_ranks_a_tier_by_value_confidence_and_effort() -> None:
+    # Rule order alone put the folder first; per unit of effort the Fix first
+    # item (value 4, M) and a one-line doc fix (low, S, high) are worth more.
+    ruled = _ruled(
+        _act("fix_concentration", "plan", "src/", effort="L"),
+        _act("fix_first", "plan", "src/big.py", value=4),
+        _act("broken_doc_refs", "plan", "docs/a.md", severity="low", effort="S",
+             confidence="high"),
+    )
+    quarter = rank_actions(ruled, now=NOW)["horizons"]["quarter"]["actions"]
+    assert [a["rule"] for a in quarter] == ["fix_first", "broken_doc_refs", "fix_concentration"]
+    assert [a["value"] for a in quarter] == [4, 1, 3]
+
+
+def test_the_fix_first_lead_leads_its_tier_and_never_crosses_one() -> None:
+    secrets = [_act("live_secret", "act_now", f"src/s{i}.py", effort="S") for i in range(3)]
+    fragile = _act("fragile_file", "plan", "src/hot.py", confidence="high")  # priority 1.5
+    lead = _act("fix_first", "plan", "src/big.py", value=4, weight=3.0, priority=1.0)
+    second = _act("fix_first", "plan", "src/other.py", value=4, weight=2.0, priority=1.0)
+    view = rank_actions(_ruled(*secrets, fragile, second, lead), now=NOW)
+    for horizon in ("week", "quarter"):
+        actions = view["horizons"][horizon]["actions"]
+        # Every act_now row stays above it; the lead opens the plan block.
+        assert [a["tier"] for a in actions[:3]] == ["act_now"] * 3
+        assert [a["target"]["path"] for a in actions[3:]] == [
+            "src/big.py", "src/hot.py", "src/other.py",
+        ]
+
+
+def test_fix_first_actions_keep_the_queue_order() -> None:
+    items = _fix_items()
+    actions = _run(code.fix_first, _facts(fix_first=items)).actions
+    priorities = [a.effective_priority for a in actions]
+    # A later item never outranks an earlier one, whatever its effort.
+    assert priorities == sorted(priorities, reverse=True)
+    assert [a["priority"] for a in (x.as_dict() for x in actions)] == [
+        round(p, 4) for p in priorities
+    ]
+
+
+def test_an_older_fix_first_snapshot_ranks_on_severity() -> None:
+    from repowise.core.analysis.health.fix_first import FixFirstQueue
+    from repowise.core.persistence.read_snapshots import decode_or_none
+
+    stored = FixFirstQueue(items=_fix_items()).as_dict()
+    for item in stored["items"]:
+        del item["value"]
+    old = decode_or_none(FixFirstQueue, stored)
+    assert old is not None and all(i.value is None for i in old.items)
+    actions = _run(code.fix_first, _facts(fix_first=old.items)).actions
+    assert [a.effective_value for a in actions] == [
+        SEVERITY_VALUE[a.severity] for a in actions
+    ]
+
+
+def test_a_stored_action_without_a_value_ranks_on_its_severity() -> None:
+    old = _act("stale_decision", "plan", "docs/d.md", severity="critical").as_dict()
+    del old["value"], old["priority"]
+    new = _act("fix_concentration", "plan", "src/").as_dict()
+    ruled = {**_ruled(), "actions": [(0.0, new), (0.0, old)]}
+    quarter = rank_actions(ruled, now=NOW)["horizons"]["quarter"]["actions"]
+    assert [a["rule"] for a in quarter] == ["stale_decision", "fix_concentration"]
 
 
 def _secret_action(view) -> dict:

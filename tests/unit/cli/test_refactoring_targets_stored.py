@@ -49,8 +49,8 @@ def _finding(path: str, symbol: str) -> dict[str, Any]:
         "function_name": symbol,
         "line_start": 10,
         "line_end": 30,
-        # Past Fix first's size floor, so each opportunity is in the default scope.
-        "details": {"ccn": 16},
+        # Large enough to lead with no history, so each opportunity is in the default scope.
+        "details": {"ccn": 85},
         "health_impact": 3.0,
         "reason": "seeded",
         "dimension": "defect",
@@ -213,3 +213,30 @@ def test_both_sources_emit_one_row_schema(repo, monkeypatch):
 
     assert set(recomputed) == set(stored)
     assert set(recomputed["steps"][0]) == set(stored["steps"][0])
+
+
+def test_one_plan_prints_as_a_prompt_or_its_recipe(repo, monkeypatch):
+    run_async(_store(repo, _PATHS[:1]))
+    _no_parse(monkeypatch)
+    listed = CliRunner().invoke(
+        health_command, [str(repo), "--refactoring-targets", "--format", "json", "--no-workspace"]
+    )
+    out = json.loads(listed.output[listed.output.index("{") :])
+    plan_id = out["refactoring_opportunities"][0]["steps"][0]["plan_id"]
+
+    as_json = CliRunner().invoke(
+        health_command, [str(repo), "--plan", plan_id, "--format", "json", "--no-workspace"]
+    )
+    assert as_json.exit_code == 0, as_json.output
+    recipe = json.loads(as_json.output[as_json.output.index("{") :])
+    assert recipe["id"] == plan_id
+    assert recipe["steps"][0]["span"] == {"start": 12, "end": 28}
+
+    as_text = CliRunner().invoke(health_command, [str(repo), "--plan", plan_id, "--no-workspace"])
+    assert as_text.exit_code == 0, as_text.output
+    assert "## Extract Method" in as_text.output
+    assert "Move lines 12-28 of `sym0`" in as_text.output
+
+    missing = CliRunner().invoke(health_command, [str(repo), "--plan", "nope", "--no-workspace"])
+    assert missing.exit_code != 0
+    assert "--refactoring-targets" in missing.output

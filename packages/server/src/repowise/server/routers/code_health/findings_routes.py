@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException, Query
+import json
+
+from fastapi import Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,12 +13,13 @@ from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.scope import parse_scope
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
 from repowise.core.persistence import crud
-from repowise.server.deps import get_db_session
+from repowise.server.deps import get_db_session, scoped_repo_id
 from repowise.server.schemas import (
     HealthFindingResponse,
     HealthFindingWithSymbolResponse,
 )
 
+from .._unverified import UnverifiedQuery
 from ._router import router
 from .counts import CountsQuery
 from .loaders import _attach_symbol_ids
@@ -28,6 +31,9 @@ from .statuses import (
     parse_status_filter,
 )
 
+#: The findings list's held-back counts (see ``list_health_findings``).
+GATED_HEADER = "X-Repowise-Gated"
+
 
 @router.get(
     "/api/repos/{repo_id}/health/findings",
@@ -35,6 +41,7 @@ from .statuses import (
 )
 async def list_health_findings(
     repo_id: str,
+    response: Response,
     biomarker_type: str | None = Query(None),
     file_path: str | None = Query(None),
     min_severity: str | None = Query(None, description="Severity floor"),
@@ -51,6 +58,7 @@ async def list_health_findings(
     limit: int = Query(100, ge=1, le=1000),
     scope: str = ScopeQuery,
     counts: str = CountsQuery,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """Findings worth doing first, then lower-priority ones labelled with why
@@ -81,6 +89,10 @@ async def list_health_findings(
     # The exclusion holds for the list that ranks the whole repository against
     # itself. See the docstring for the three ways out.
     ranks_everything = biomarker_type is None and not include_zero_impact
+    # A file's list is the set the work queue counted its row from, and that
+    # queue reads history markers (it counts history-only files itself), so
+    # one file's findings keep them; the repo-wide list holds them back.
+    hold_history = file_path is None
     findings = await crud.get_health_findings(
         session,
         repo_id,
@@ -93,6 +105,8 @@ async def list_health_findings(
         exclude_dimensions=(
             tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if ranks_everything else None
         ),
+        include_unverified=include_unverified,
+        hold_history=hold_history,
     )
     # A finding carries a path, not ``is_test``, so narrowing it needs the
     # metric rows that do. Read them only when the answer depends on them:
@@ -105,6 +119,17 @@ async def list_health_findings(
     if parse_counts(counts) == "code_shape":
         findings = split_by_origin(findings)[0]
     shown = findings[:limit]
+    # The body is a list, so what a language gate or file hold left out rides
+    # in a header: ``{key: {count, reason}}``, absent when nothing was held.
+    gated = await crud.gated_health_counts(
+        session,
+        repo_id,
+        file_path=file_path,
+        include_unverified=include_unverified,
+        hold_history=hold_history,
+    )
+    if gated:
+        response.headers[GATED_HEADER] = json.dumps(gated, separators=(",", ":"))
     # Measured over every open finding on each file, whatever this list kept.
     reasons = await crud.health_finding_priorities(session, repo_id, shown)
     return await _attach_symbol_ids(
@@ -124,12 +149,19 @@ async def update_finding_status(
     repo_id: str,
     finding_id: str,
     payload: FindingStatusUpdate,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if payload.status not in ALLOWED_STATUSES:
         raise HTTPException(
             status_code=400, detail=f"status must be one of {sorted(ALLOWED_STATUSES)}"
         )
+    if scoped_repo_id(request) is not None:
+        from repowise.core.persistence.models import HealthFinding
+
+        existing = await session.get(HealthFinding, finding_id)
+        if existing is None or existing.repository_id != repo_id:
+            raise HTTPException(status_code=404, detail="Finding not found")
     f = await crud.update_health_finding_status(session, finding_id, payload.status)
     if f is None:
         raise HTTPException(status_code=404, detail="Finding not found")

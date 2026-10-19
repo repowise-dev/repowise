@@ -47,6 +47,7 @@ import json
 from pathlib import Path
 
 from repowise.core.agents import identity
+from repowise.core.owned_paths import CURSOR_RULES_PREFIX
 
 from ..types import (
     Capability,
@@ -85,15 +86,8 @@ METHODS = (
 #: Paired with ``marker_block.remove(delete_if_only=...)`` so install then
 #: uninstall round-trips back to "no file" rather than leaving a stub carrying
 #: nothing but our own frontmatter — which would still read as repowise-managed
-#: to anyone who opened it.
-RULES_PREFIX = (
-    "---\n"
-    "alwaysApply: true\n"
-    "---\n"
-    "\n"
-    "<!-- Add your own Cursor rules above or below the Repowise section. "
-    "Repowise only updates the managed section between markers. -->\n"
-)
+#: to anyone who opened it. Defined in core, which strips it from a working-tree score.
+RULES_PREFIX = CURSOR_RULES_PREFIX
 
 
 class RemoteServerEntryError(ValueError):
@@ -345,6 +339,41 @@ def _install_rewrite_hook(result: WriteResult) -> WriteResult:
     return result
 
 
+def user_opted_into_capture() -> bool:
+    """Whether the user config captures Cursor's edits (``attribution`` block).
+
+    Read from the user layer because the hook file is per user; each repo still
+    has to opt in before an edit there is recorded.
+    """
+    from repowise.core.attribution import load_attribution_settings
+
+    settings = load_attribution_settings(None)
+    user = settings.user
+    return (
+        not settings.do_not_track
+        and user.enabled is not False
+        and user.capture in ("local", "notes")
+        and ID in (user.agents or ())
+    )
+
+
+def _install_capture_hook(result: WriteResult) -> WriteResult:
+    """Add the ``afterFileEdit`` capture entry, only for a user who opted in."""
+    from repowise.cli.agent_adapters.cursor import install_cursor_capture_hook, user_hooks_path
+
+    from ..formats.observe import observed_action, read_bytes
+
+    if not user_opted_into_capture():
+        return result
+    hooks_path = user_hooks_path()
+    before = read_bytes(hooks_path)
+    if install_cursor_capture_hook():
+        result.record(hooks_path, observed_action(before, read_bytes(hooks_path)))
+    else:
+        result.record(hooks_path, FileAction.KEPT, "not valid JSON, or could not be written")
+    return result
+
+
 def cursor_rewrite_hook_present() -> bool:
     """Our entry is registered, or the file is unreadable and still names it."""
     from repowise.cli.agent_adapters.cursor import cursor_rewrite_hook_matcher, user_hooks_path
@@ -400,6 +429,7 @@ class CursorTarget:
     docs_url = DOCS_URL
     hook_adapter = IDENTITY.hook_adapter
     session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -433,7 +463,7 @@ class CursorTarget:
     ) -> WriteResult:
         result = WriteResult()
         if scope is Scope.USER:
-            return _install_rewrite_hook(result)
+            return _install_capture_hook(_install_rewrite_hook(result))
         if repo_path is None:
             raise ValueError("project-scope install needs a repo_path")
 
@@ -501,10 +531,12 @@ class CursorTarget:
         result = WriteResult()
         if scope is Scope.USER:
             from repowise.cli.agent_adapters.cursor import (
+                uninstall_cursor_capture_hook,
                 uninstall_cursor_rewrite_hook,
                 user_hooks_path,
             )
 
+            uninstall_cursor_capture_hook()
             removed = uninstall_cursor_rewrite_hook()
             # Asked of the file, not the boolean, which is also False for "could
             # not parse" and "write failed".
@@ -536,11 +568,11 @@ class CursorTarget:
         repo = repo_path or Path.cwd()
         return [str(mcp_config_path(repo)), str(rules_path(repo))]
 
-    def doctor(self) -> DoctorReport:
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the one user-level surface, the rewrite hook.
 
-        The MCP config and rules file are workspace-local and ``doctor()`` takes
-        no repo path, so they are not judged here.
+        The MCP config and rules file are workspace-local, so they are not
+        judged here.
         """
         from repowise.cli.agent_adapters.cursor import cursor_rewrite_hook_matcher, user_hooks_path
 

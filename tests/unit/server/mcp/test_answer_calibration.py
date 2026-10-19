@@ -309,7 +309,7 @@ def _patch_pipeline(monkeypatch, answer_mod, *, with_symbols: bool, symbol: dict
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Auth service summary."
+            h["summary"] = "Auth service summary. Callers get a bounded, limited list."
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if with_symbols and i == 0:
@@ -462,6 +462,72 @@ async def test_mechanism_question_skips_fast_path(setup_mcp, monkeypatch):
 
     result = await get_answer("How does MIN_COUNT influence the retry loop?")
     assert "grounding" not in result
+
+
+def _value_hits(name: str, signature: str) -> list[dict]:
+    sym = {"name": name, "kind": "constant", "signature": signature, "start_line": 7}
+    return [{"target_path": "pkg/models.py", "symbols": [dict(sym, _matched=True)]}]
+
+
+class TestValueExtractionRelevance:
+    """A constant that only contains a question identifier is not the answer."""
+
+    def _extract(self, question: str, name: str, signature: str):
+        from repowise.server.mcp_server.tool_answer.symbols import (
+            _extract_question_identifiers,
+            _extract_value_answer,
+        )
+
+        ids = _extract_question_identifiers(question)
+        return _extract_value_answer(_value_hits(name, signature), ids, question)
+
+    def test_exact_name_is_extracted(self) -> None:
+        out = self._extract(
+            "What is the default of _DOMINANCE_RATIO?", "_DOMINANCE_RATIO", "_DOMINANCE_RATIO = 1.2"
+        )
+        assert out is not None and out["exact_name"]
+
+    def test_identifier_inside_an_unrelated_name_is_not_extracted(self) -> None:
+        # `Symbol` sits inside `SymbolKind`; nothing in the question asks about a kind.
+        question = (
+            "How are has_method edges built from Symbol.parent_name; how does a "
+            "method's parent_name map to its class (e.g. enum constant parent 'E::A')?"
+        )
+        assert self._extract(question, "SymbolKind", "SymbolKind = Literal[") is None
+
+    def test_alias_of_the_named_function_is_not_extracted(self) -> None:
+        question = "What is the timeout for the FTS search leg in get_answer retrieval?"
+        assert (
+            self._extract(question, "_get_answer_raw", "_get_answer_raw = get_answer") is None
+        )
+
+    def test_name_the_question_spells_out_is_extracted_but_not_exact(self) -> None:
+        out = self._extract(
+            "What is the DEFAULT_TIMEOUT config value?",
+            "DEFAULT_TIMEOUT_CONFIG",
+            "DEFAULT_TIMEOUT_CONFIG = Timeout(timeout=5.0)",
+        )
+        assert out is not None and not out.get("exact_name")
+
+    def test_short_name_part_must_appear_in_the_question(self) -> None:
+        # The stemmer drops parts under 3 chars, so `V2` is checked as a token.
+        assert self._extract("What is the MAX limit?", "MAX_V2", "MAX_V2 = 8") is None
+        out = self._extract("What is the MAX v2 limit?", "MAX_V2", "MAX_V2 = 8")
+        assert out is not None and not out.get("exact_name")
+
+
+@pytest.mark.asyncio
+async def test_spelled_out_value_is_medium_not_high(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    symbol = dict(_SYMBOL, name="MIN_COUNT_FLOOR", signature="MIN_COUNT_FLOOR = 2")
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=symbol)
+
+    result = await get_answer("What is the floor value of MIN_COUNT?")
+    assert result["grounding"] == "extracted"
+    assert result["confidence"] == "medium"
+    assert "no verification Read needed" not in result["note"]
 
 
 @pytest.mark.asyncio

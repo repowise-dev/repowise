@@ -90,7 +90,12 @@ class ProgressCallback(Protocol):
         ...
 
     def on_message(self, level: str, text: str) -> None:
-        """Emit a free-form message. *level* is 'info', 'warning', or 'error'."""
+        """Emit a free-form message.
+
+        *level* is 'info', 'notice', 'warning', or 'error'. 'notice' is shown
+        prominently but is not a degradation (size-skip lines, progress tips);
+        only 'warning' and 'error' are persisted as ``state["degraded"]``.
+        """
         ...
 
     def on_stage(self, stage: str) -> None:
@@ -114,7 +119,7 @@ class LoggingProgressCallback:
         logger.info("phase_done", phase=phase)
 
     def on_message(self, level: str, text: str) -> None:
-        getattr(logger, level, logger.info)(text)
+        getattr(logger, "info" if level == "notice" else level, logger.info)(text)
 
     def on_stage(self, stage: str) -> None:
         logger.info("stage_start", stage=stage)

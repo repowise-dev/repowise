@@ -40,10 +40,11 @@ OpenCode is detected automatically when it's on `PATH`. No API keys to store.
 repowise init --provider opencode --yes
 ```
 
-It runs:
+It runs `opencode run --format json` with the repository as the working
+directory:
 
 ```bash
-opencode run --format json --dangerously-skip-permissions --dir <repo>
+cd <repo> && opencode run --format json
 ```
 
 Repowise sends the prompt on **stdin**, parses OpenCode's **JSONL** output, and treats `opencode/*` cost as `$0.00`.

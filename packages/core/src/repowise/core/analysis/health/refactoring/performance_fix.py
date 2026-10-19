@@ -8,7 +8,7 @@ from typing import Any
 
 from repowise.core.analysis.execution_graph import file_of_symbol
 
-from ..perf.actionability import PerformanceFix
+from ..perf.actionability import BOUNDARY_NOUN, PerformanceFix
 from ..perf.opportunities import PerformanceOpportunity
 from ..perf.opportunity_rank import band
 from .models import RefactoringSuggestion
@@ -34,6 +34,12 @@ _STEPS: dict[str, tuple[str | None, str]] = {
         "Select one row per key in the query instead of reducing all rows here",
     ),
 }
+# Strategies whose edit is one per loop and variable, however many lines of
+# the loop the markers fired on, with the step that names the variable.
+_PER_LOOP_STEPS: dict[str, str] = {
+    "replace_membership_collection": "Build a set from `{name}` once before the loop and probe it",
+    "buffer_string_accumulation": "Collect `{name}` in a list and join it once after the loop",
+}
 # When the fix names the construct it uses, the step says it instead.
 _API_STEPS: dict[str, tuple[str | None, str]] = {
     "batch_or_prefetch_io": (
@@ -45,6 +51,18 @@ _API_STEPS: dict[str, tuple[str | None, str]] = {
         None,
         "Run the independent {call}s concurrently, each still inside {api}",
     ),
+}
+
+# What a site's loop walks, as a step names it; an unknown source adds nothing.
+_ITERATES: dict[str, str] = {
+    "query": "rows a query returns",
+    "parameter": "a collection its caller passes in",
+    "caller_key": "the rows of one key",
+    "rare_subset": "the rows a filter keeps for a rare state",
+    "config_table": "a registry or configuration table",
+    "constant": "a fixed set",
+    "listing": "a directory listing",
+    "stream": "a stream as it arrives",
 }
 
 
@@ -68,14 +86,24 @@ def fix_steps(
     sink: str | None,
     locations: list[dict[str, object]],
     api: str | None = None,
+    boundary: str | None = None,
 ) -> list[dict[str, object]]:
     """Ordered edits for one plan; mechanical only when the strategy is proven.
 
     *sink* is the sink every site shares, or ``None``: a bulk form added to one
-    member's sink would leave the other sites' calls per-key.
+    member's sink would leave the other sites' calls per-key. *boundary* is the
+    I/O kind every site's call reaches, which the step names.
     """
+    steps = _intro_steps(strategy, intervention, sink, api)
+    steps += _site_steps(strategy, safety, locations, api, boundary)
+    return [{"order": index, **step} for index, step in enumerate(steps, 1)]
+
+
+def _intro_steps(
+    strategy: str, intervention: str | None, sink: str | None, api: str | None
+) -> list[dict[str, object]]:
+    """The step that comes before the sites', where the strategy has one."""
     intro, per_site = (_API_STEPS if api else _STEPS).get(strategy, (None, ""))
-    applicability: Applicability = "mechanical" if safety == "proven" else "judgment"
     steps: list[dict[str, object]] = []
     target = intervention or sink
     # With nothing to name, a site step says the whole edit; a strategy with no
@@ -90,23 +118,82 @@ def fix_steps(
                 "applicability": "judgment",
             }
         )
-    if per_site:
-        steps.extend(
+    return steps
+
+
+def _site_steps(
+    strategy: str,
+    safety: str,
+    locations: list[dict[str, object]],
+    api: str | None,
+    boundary: str | None = None,
+) -> list[dict[str, object]]:
+    """One step per place that changes: a call site, or a loop and variable."""
+    _, per_site = (_API_STEPS if api else _STEPS).get(strategy, (None, ""))
+    if not per_site:
+        return []
+    applicability: Applicability = "mechanical" if safety == "proven" else "judgment"
+    named = _PER_LOOP_STEPS.get(strategy)
+    if named and not api:
+        return [
             {
-                "action": per_site.format(api=api, call=_call_phrase(location.get("call"))),
-                "symbol": location.get("function_name"),
-                "file_path": location.get("file_path"),
-                "line": location.get("line_start"),
-                **({"loop_line": location["loop_line"]} if location.get("loop_line") else {}),
+                "action": (named.format(name=edit["subject"]) if edit.get("subject") else per_site)
+                + _walks(edit.get("loop_iterates")),
+                "symbol": edit.get("function_name"),
+                "file_path": edit.get("file_path"),
+                "line": edit.get("loop_line") or edit.get("line_start"),
+                **({"loop_line": edit["loop_line"]} if edit.get("loop_line") else {}),
+                **({"loop_iterates": what} if (what := edit.get("loop_iterates")) else {}),
                 "applicability": applicability,
             }
-            for location in locations
+            for edit in _loop_edits(locations)
+        ]
+    return [
+        {
+            "action": per_site.format(
+                api=api, call=_call_phrase(location.get("call"), boundary)
+            )
+            + _walks(location.get("loop_iterates")),
+            "symbol": location.get("function_name"),
+            "file_path": location.get("file_path"),
+            "line": location.get("line_start"),
+            **({"loop_line": location["loop_line"]} if location.get("loop_line") else {}),
+            **({"loop_iterates": what} if (what := location.get("loop_iterates")) else {}),
+            "applicability": applicability,
+        }
+        for location in locations
+    ]
+
+
+def _loop_edits(locations: list[dict[str, object]]) -> list[dict[str, object]]:
+    """The first location of each loop and variable.
+
+    Eight ``out +=`` lines in one loop are one edit, and so are two probes of
+    one list; a second variable in the same loop is another. A location with
+    no loop line (evidence stored before the walk kept one) stays an edit of
+    its own, since nothing says which loop it shares.
+    """
+    edits: dict[tuple[object, ...], dict[str, object]] = {}
+    for location in locations:
+        loop = location.get("loop_line")
+        key = (
+            (location.get("file_path"), loop, location.get("subject"))
+            if loop
+            else (location.get("file_path"), None, location.get("line_start"))
         )
-    return [{"order": index, **step} for index, step in enumerate(steps, 1)]
+        edits.setdefault(key, location)
+    return list(edits.values())
 
 
-def _call_phrase(call: object) -> str:
-    return f"{call} call" if call else "call"
+def _call_phrase(call: object, boundary: str | None) -> str:
+    """``session.get database call``: the call and the kind of I/O it does."""
+    noun = BOUNDARY_NOUN.get(boundary or "")
+    return " ".join(str(part) for part in (call, noun, "call") if part)
+
+
+def _walks(iterates: object) -> str:
+    phrase = _ITERATES.get(iterates) if isinstance(iterates, str) else None
+    return f" (the loop walks {phrase})" if phrase else ""
 
 
 _EFFORT_BANDS = ((1, "S"), (3, "M"), (8, "L"))
@@ -171,6 +258,10 @@ def _site_locations(evidence: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         if "call" not in site and (call := _site_call(item)):
             site["call"] = call
+        if "subject" not in site and item.get("subject"):
+            site["subject"] = item["subject"]
+        if "loop_iterates" not in site and item.get("loop_iterates"):
+            site["loop_iterates"] = item["loop_iterates"]
     return list(sites.values())
 
 
@@ -210,14 +301,20 @@ def _suggestion(
     # sink the loop reaches. The loop's own function is where the keys are
     # collected, never what gains the bulk form.
     batched_on_helper = opportunity.intervention_kind == "shared_helper"
-    steps = fix_steps(
+    intro = _intro_steps(
         fix.strategy,
-        fix.safety,
         intervention if fix.strategy != "batch_or_prefetch_io" or batched_on_helper else None,
         _shared_sink(opportunity),
-        locations,
         fix.api,
     )
+    edits = _site_steps(
+        fix.strategy, fix.safety, locations, fix.api, opportunity.boundary_kind
+    )
+    steps = [{"order": index, **step} for index, step in enumerate(intro + edits, 1)]
+    # One edit per site, as before, less the sites a loop's one step covers.
+    # Sites past the evidence cap stay one each: nothing says which share a loop.
+    per_site = len(locations) if edits else 0
+    sites = opportunity.affected_call_sites_total - (per_site - len(edits))
     mechanical = sum(step["applicability"] == "mechanical" for step in steps)
     return RefactoringSuggestion(
         refactoring_type="performance_fix",
@@ -256,9 +353,7 @@ def _suggestion(
         # Performance is a separate score dimension and its findings
         # intentionally carry zero defect-health impact.
         impact_delta=0.0,
-        effort_bucket=edit_effort(
-            opportunity.affected_call_sites_total + (len(steps) > len(locations))
-        ),
+        effort_bucket=edit_effort(sites + (len(intro) + per_site > len(locations))),
         blast_radius={
             "files": sorted({item["file_path"] for item in opportunity.evidence}),
             "file_count": opportunity.affected_files_total,

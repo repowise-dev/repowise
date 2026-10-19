@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from repowise.core.analysis.health.fix_first import FixFirstQueue, build_fix_first
+from repowise.core.analysis.health.fix_first import FixFirstQueue, build_fix_first, text
 from repowise.core.analysis.health.queue.eligibility import LOW_VALUE_KINDS
 from repowise.core.analysis.health.refactoring.performance_fix import fix_steps
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS, _perf
@@ -133,4 +133,5 @@ def test_no_text_field_carries_an_internal_token(via: str, magnitude: str) -> No
 
 def test_one_importer_reads_in_the_singular() -> None:
     item = next(i for i in _validated("unknown", "mixed", 1).items if i.kind == "finding")
-    assert item.risk.text == "Touches 1 file; 1 file imports it."
+    assert item.risk.text == "Touches 1 file; its file is imported by 1 file."
+    assert text.imports_it(1) == "1 file imports it"

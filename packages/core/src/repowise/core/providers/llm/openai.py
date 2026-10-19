@@ -5,9 +5,9 @@ Also works as a base for any OpenAI-compatible API endpoint via the
 `base_url` parameter.
 
 Recommended models (as of 2026):
-    - gpt-5.6-luna   — fastest, cheapest ($0.20/$1.20 per MTok) [default]
-    - gpt-5.4-mini   — balanced speed and quality ($0.75/$4.50 per MTok)
-    - gpt-5.4        — highest quality ($2.50/$15 per MTok)
+    - gpt-5.6-luna   — fast, cheap ($0.20/$1.20 per MTok) [default]
+    - gpt-6-luna     — cheapest ($0.10/$0.50 per MTok)
+    - gpt-6-sol      — highest quality ($2/$10 per MTok)
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from repowise.core.providers.llm.openai_compat import (
     stream_openai_chat,
     translate_openai_errors,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -73,7 +74,7 @@ def _model_leaf(model: str) -> str:
 
 def _supports_openai_reasoning_effort(model: str) -> bool:
     leaf = _model_leaf(model)
-    return leaf.startswith(("gpt-5", "o1", "o3", "o4"))
+    return leaf.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
 
 
 def _supports_chat_template_thinking_toggle(model: str) -> bool:
@@ -94,7 +95,10 @@ def _openai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
         return ("none", "low", "medium", "high")
     if leaf.startswith("gpt-5-pro"):
         return ("high",)
-    if leaf.startswith("gpt-5.6"):
+    if leaf.startswith("gpt-6.1"):
+        # 6.1 dropped `none` as well (verified live on gpt-6.1-sol, 2026-10-15).
+        return ("low", "medium", "high", "xhigh")
+    if leaf.startswith(("gpt-5.6", "gpt-6")):
         # 5.6 dropped `minimal` and added `xhigh`. Must stay above the generic
         # `gpt-5` branch, which is a prefix of this one and would otherwise win
         # and offer `minimal`, which 5.6 rejects, and only on a live call.
@@ -103,7 +107,8 @@ def _openai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
         # API rejects it with `unsupported_value`, naming exactly the five
         # below. Verified live on both gpt-5.6-luna and gpt-5.6-sol
         # (2026-08-15). Family-level rather than per-model on the same
-        # evidence: the two variants answered identically.
+        # evidence: the two variants answered identically. gpt-6-luna and
+        # gpt-6-sol answered the same way (2026-10-15).
         return ("none", "low", "medium", "high", "xhigh")
     if leaf.startswith("gpt-5"):
         return ("minimal", "low", "medium", "high")
@@ -164,17 +169,24 @@ def _openai_temperature(model: str, requested: float) -> float:
     return requested
 
 
+_OPENAI_API_URL = "https://api.openai.com/v1"
+
+#: The key sent to a local OpenAI-compatible server (LM Studio, vLLM, Ollama)
+#: when none is set. They ignore it; the SDK refuses an empty one.
+LOCAL_SERVER_API_KEY = "not-needed"
+
+
 def _openai_chat_tool_kwargs(model: str, *, has_tools: bool) -> dict[str, Any]:
     """Return Chat Completions overrides required by tool-enabled models.
 
-    GPT-5.6 models default to a non-none reasoning effort. OpenAI recommends
+    GPT-5.6 and GPT-6 models default to a non-none reasoning effort. OpenAI recommends
     the Responses API for reasoning with tool-calling, while this provider's
     repository chat loop still uses Chat Completions. Keep the family's normal
     reasoning default for generation and only disable it when function tools
     are attached. Migrating the shared chat protocol is a separate change.
     """
     leaf = _model_leaf(model)
-    if has_tools and (leaf == "gpt-5.6" or leaf.startswith("gpt-5.6-")):
+    if has_tools and (leaf in ("gpt-5.6", "gpt-6") or leaf.startswith(("gpt-5.6-", "gpt-6-"))):
         return {"reasoning_effort": "none"}
     return {}
 
@@ -203,6 +215,11 @@ def _is_loopback_url(base_url: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def needs_api_key(base_url: str | None) -> bool:
+    """False for a local server, which runs on :data:`LOCAL_SERVER_API_KEY`."""
+    return not (base_url and _is_loopback_url(base_url))
 
 
 def _openai_option(
@@ -284,8 +301,9 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
     """OpenAI Chat Completions provider.
 
     Args:
-        api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var.
-        model:     Model identifier. Defaults to gpt-5.6-luna.
+        api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var, and
+                   is optional for a local (loopback) ``base_url``.
+        model:     Model identifier. Defaults to the spec's default_model.
         base_url:  Optional custom base URL for OpenAI-compatible endpoints.
         rate_limiter: Optional RateLimiter instance.
     """
@@ -293,20 +311,22 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-5.6-luna",
+        model: str = PROVIDER_SPECS["openai"].default_model,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
     ) -> None:
+        resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not resolved_key and not needs_api_key(resolved_base_url):
+            resolved_key = LOCAL_SERVER_API_KEY
         if not resolved_key:
             raise ProviderError(
                 "openai",
                 "No API key provided. Pass api_key= or set OPENAI_API_KEY.",
             )
-        resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._api_key = resolved_key
-        self._base_url = resolved_base_url or "https://api.openai.com/v1"
+        self._base_url = resolved_base_url or _OPENAI_API_URL
         loopback = bool(resolved_base_url and _is_loopback_url(resolved_base_url))
 
         def _new_client() -> AsyncOpenAI:
@@ -441,6 +461,10 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
             "messages": full_messages,
             "stream": True,
         }
+        if self._base_url == _OPENAI_API_URL:
+            # Without it the stream carries no usage chunk. Only the hosted API
+            # is asked: an OpenAI-compatible server may reject the field.
+            kwargs["stream_options"] = {"include_usage": True}
         if tools:
             kwargs["tools"] = tools
         kwargs.update(_openai_chat_tool_kwargs(self._model, has_tools=bool(tools)))

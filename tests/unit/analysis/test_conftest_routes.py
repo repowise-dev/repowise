@@ -6,7 +6,11 @@ from textwrap import dedent
 
 import pytest
 
-from repowise.core.analysis.conftest_routes import ConftestFacts, conftest_use
+from repowise.core.analysis.conftest_routes import (
+    ConftestFacts,
+    conftest_use,
+    local_names,
+)
 
 ROUTE = ["src/app/store.py"]
 
@@ -268,3 +272,358 @@ def test_star_imports_plugins_and_unparsable_files_fail_closed() -> None:
     assert _use("from app.store import *\n").run_all
     assert _use("from app import store\npytest_plugins = ['x']\nstore.X\n").run_all
     assert _use("def broken(:\n").run_all
+
+
+_STORE_CONSTANTS = {"src/app/store.py": local_names('SIZE = 3\nNAMES = ("a", "b")\n')}
+
+
+def _autouse(imports: str, line: str, constants=None):
+    source = f"import pytest\n{imports}\n\n@pytest.fixture(autouse=True)\ndef _f():\n    {line}\n"
+    return conftest_use(source, "tests/conftest.py", ROUTE, constants)
+
+
+@pytest.mark.parametrize(
+    ("imports", "line"),
+    [
+        ("from app.store import NAMES", "loggers = [n for n in NAMES]"),
+        ("from app import store", "assert store.SIZE * 2"),
+        ("import app.store", "x = app.store.NAMES[0].upper()"),
+    ],
+)
+def test_an_autouse_fixture_reading_a_literal_constant_reaches_only_its_module(
+    imports: str, line: str
+) -> None:
+    """The constant's value is the defining module's text, which the change is not in."""
+    assert _autouse(imports, line, _STORE_CONSTANTS).run_all is None
+    # Without the module's constants (the change is in it), the read reaches it.
+    assert _autouse(imports, line).run_all
+
+
+@pytest.mark.parametrize("line", ["store.OTHER", "store.SIZE = 4", "store.configure(store.SIZE)"])
+def test_anything_but_reading_a_literal_constant_still_reaches(line: str) -> None:
+    use = _autouse("from app import store", line, _STORE_CONSTANTS)
+    assert use.run_all and "autouse fixture _f uses store" in use.run_all
+
+
+def test_a_lazy_constant_import_in_a_requested_fixture_still_reaches_its_users() -> None:
+    """The import itself runs when the fixture does."""
+    source = (
+        "import pytest\n\n@pytest.fixture\ndef names():\n"
+        "    from app.store import NAMES\n    return NAMES\n"
+    )
+    assert conftest_use(source, "tests/conftest.py", ROUTE, _STORE_CONSTANTS).fixtures == {"names"}
+
+
+def test_module_level_code_reading_a_literal_constant_does_not_keep_every_test() -> None:
+    source = "from app import store\nLIMIT = store.SIZE\n"
+    assert conftest_use(source, "tests/conftest.py", ROUTE, _STORE_CONSTANTS).run_all is None
+    assert conftest_use(source, "tests/conftest.py", ROUTE).run_all
+
+
+def test_local_constants_are_names_bound_once_at_top_level_to_immutable_literals() -> None:
+    source = dedent(
+        """
+        from x import IMPORTED
+        A = 1
+        B: int = -2
+        C = ("a", ("b", None))
+        D = frozenset({"x", "y"})
+        E = frozenset()
+        LIST = ["a"]
+        CALL = make()
+        NAME = A
+        TWICE = 1
+        TWICE = 2
+        LOCAL = 3
+        GLOBAL = 4
+        if FLAG:
+            NESTED = 5
+
+        def f():
+            LOCAL = 0
+            global GLOBAL
+        """
+    )
+    # ``f`` only declares a global, so it is a local function too; ``LIST`` may only be emptied.
+    assert local_names(source) == {"A", "B", "C", "D", "E", "f", "LIST.clear"}
+    assert local_names("from x import *\nA = 1\n") == frozenset()
+    assert local_names("frozenset = list\nA = frozenset(())\n") == frozenset()
+    assert local_names("def broken(:\n") == frozenset()
+
+
+def test_local_names_reads_each_text_once() -> None:
+    """A long-lived server asks about the same unchanged entries on every selection."""
+    source = "SIZE = 3\n\ndef f():\n    return SIZE\n"
+    local_names.cache_clear()
+    first = local_names(source)
+    assert local_names(source) is first
+    assert local_names(source + "\nEXTRA = 1\n") == {"SIZE", "f", "EXTRA"}
+    assert local_names.cache_info().hits == 1
+
+
+def test_local_functions_use_nothing_the_module_imports_from_elsewhere() -> None:
+    source = dedent(
+        """
+        import os
+        from collections import OrderedDict
+        from app.db import engine
+        from app.deco import wrap
+        from . import sibling
+
+        _cache = OrderedDict()
+        _seen = {}
+        SIZE = 3
+
+        def reset():
+            _cache.clear()
+            _seen.clear()
+
+        def doubled():
+            return SIZE * 2
+
+        def env():
+            return os.environ.get("X")
+
+        def lazy_std():
+            import json
+            return json.dumps({})
+
+        def calls_local():
+            reset()
+            return doubled()
+
+        def shadowed():
+            def inner(engine):
+                return engine
+            return inner
+
+        def uses_db():
+            return engine.connect()
+
+        def calls_db():
+            return uses_db()
+
+        def reads_state():
+            _seen.clear()
+            return len(_seen)
+
+        def lazy_repo():
+            from app.db import engine as e
+            return e
+
+        def relative():
+            return sibling.x
+
+        @wrap
+        def decorated():
+            return 1
+
+        def default(x=engine):
+            return x
+
+        def nested_db():
+            def inner():
+                return engine
+            return inner
+
+        def rebinds():
+            global LIMIT
+            LIMIT = 4
+
+        def by_name():
+            return importlib.import_module("app.db")
+
+        def evaluates():
+            return eval("engine")
+
+        def modules():
+            import sys
+            return sys.modules["app.db"]
+        """
+    )
+    names = local_names(source)
+    assert {"reset", "doubled", "env", "lazy_std", "calls_local", "shadowed", "SIZE"} <= names
+    assert not names & {
+        "uses_db",
+        "calls_db",
+        "reads_state",
+        "lazy_repo",
+        "relative",
+        "decorated",
+        "default",
+        "nested_db",
+        "rebinds",
+        "by_name",
+        "evaluates",
+        "modules",
+    }
+
+
+def test_emptying_standard_library_state_is_local_whatever_filled_it() -> None:
+    source = dedent(
+        """
+        import functools
+        from functools import cache, lru_cache
+        from app import db, deco
+
+        _seen = {}
+
+        @cache
+        def engine():
+            return db.connect()
+
+        @functools.lru_cache(maxsize=None)
+        def settings():
+            return db.settings()
+
+        @deco.wrap
+        @lru_cache
+        def stacked():
+            return 1
+
+        def reset_all():
+            engine.cache_clear()
+            settings.cache_clear()
+            _seen.clear()
+
+        def calls_engine():
+            return engine()
+        """
+    )
+    names = local_names(source)
+    assert {"engine.cache_clear", "settings.cache_clear", "_seen.clear", "reset_all"} <= names
+    assert not names & {"engine", "settings", "stacked.cache_clear", "calls_engine"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import runpy\ndef f():\n    runpy.run_module('app.models')\n",
+        "from unittest import mock\ndef f():\n    mock.patch('app.x.y').start()\n",
+        "import logging.config\ndef f():\n"
+        "    logging.config.dictConfig({'version': 1, 'handlers': {'h': {'()': 'app.x.H'}}})\n",
+        "import pydoc\ndef f():\n    return pydoc.locate('app.x.y')\n",
+        "import pickle\ndef f(b):\n    return pickle.loads(b)\n",
+        "import importlib.metadata as m\ndef f():\n    return m.entry_points()\n",
+        "def f():\n    breakpoint()\n",
+        "import sys\ndef f():\n    return sys.modules['app.x']\n",
+    ],
+)
+def test_a_standard_module_that_loads_code_by_name_is_not_local(source: str) -> None:
+    """Only standard modules vetted as never importing a named module count as outside."""
+    assert "f" not in local_names(source)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "os.system('python -m app.x')",
+        "os.popen('python -m app.x')",
+        "os.execv('python', ['python', '-m', 'app.x'])",
+        "os.spawnl(os.P_WAIT, 'python', 'python', '-m', 'app.x')",
+        "os.posix_spawn('python', ['python', '-m', 'app.x'], {})",
+        "os.startfile('app.py')",
+        "shutil.register_archive_format('x', print)",
+        "os.sys.modules['app.x'].run()",
+        "shutil.os.system('x')",
+        "re.sys.modules['app.x'].run()",
+        "threading._sys.modules['app.x'].run()",
+        "__loader__.load_module('app.x')",
+        "return __spec__.loader",
+        "return f.__globals__",
+    ],
+)
+def test_an_allowed_module_used_to_run_or_reach_code_by_name_is_not_local(body: str) -> None:
+    source = f"import os, re, shutil, threading\n\ndef f():\n    {body}\n"
+    assert "f" not in local_names(source)
+    # The same modules used for paths and the environment stay local.
+    assert "g" in local_names(
+        "import os, shutil\n\ndef g():\n"
+        "    os.makedirs(os.getcwd(), exist_ok=True)\n    return os.environ.get('X')\n"
+    )
+
+
+def test_a_conftest_reading_through_a_dunder_attribute_still_reaches() -> None:
+    use = _autouse("from app import store", "store.reset.__globals__", _STORE_FUNCTIONS)
+    assert use.run_all and "autouse fixture _f uses store" in use.run_all
+
+
+@pytest.mark.parametrize(
+    ("source", "local"),
+    [
+        ("import collections\nD = collections.OrderedDict()\ndef f():\n    D.clear()\n", True),
+        # Filled at import from something the module imports.
+        ("from app import x\nD = {}\nD.update(x.ITEMS)\ndef f():\n    D.clear()\n", False),
+        ("from app import x\nD = {}\nD['k'] = x.V\ndef f():\n    D.clear()\n", False),
+        ("from app import x\nD = dict(x.ITEMS)\ndef f():\n    D.clear()\n", False),
+    ],
+)
+def test_a_container_is_reset_locally_only_when_the_module_names_it_where_it_builds_it(
+    source: str, local: bool
+) -> None:
+    assert ("D.clear" in local_names(source)) is local
+    assert ("f" in local_names(source)) is local
+
+
+@pytest.mark.parametrize(
+    ("source", "cached"),
+    [
+        ("import functools as ft\n@ft.cache\ndef g():\n    return 1\n", True),
+        (
+            "from functools import lru_cache as memo\n@memo(maxsize=2)\ndef g():\n    return 1\n",
+            True,
+        ),
+        # A ``cache`` that is not functools' has no known ``cache_clear``.
+        ("from app import cache\n@cache\ndef g():\n    return 1\n", False),
+        ("import collections as functools\n@functools.cache\ndef g():\n    return 1\n", False),
+        ("import functools\nclass c:\n    cache = 1\n@c.cache\ndef g():\n    return 1\n", False),
+    ],
+)
+def test_only_a_functools_cache_has_a_local_cache_clear(source: str, cached: bool) -> None:
+    assert ("g.cache_clear" in local_names(source)) is cached
+
+
+_STORE_FUNCTIONS = {
+    "src/app/store.py": local_names(
+        "from functools import cache\nfrom app import db\n_seen = {}\n\n"
+        "def reset():\n    _seen.clear()\n\n"
+        "def connect():\n    return db.connect()\n\n"
+        "@cache\ndef engine():\n    return db.engine()\n"
+    )
+}
+
+
+@pytest.mark.parametrize(
+    ("imports", "line"),
+    [
+        ("from app import store", "store.reset()"),
+        ("from app.store import reset", "reset()"),
+        ("", "from app.store import reset; reset()"),
+        ("from app import store", "store._seen.clear()"),
+        ("from app.store import engine", "engine.cache_clear()"),
+    ],
+)
+def test_an_autouse_fixture_calling_a_local_function_reaches_only_its_module(
+    imports: str, line: str
+) -> None:
+    """``reset`` runs nothing ``store`` imports, so a change behind ``store`` cannot reach it."""
+    assert _autouse(imports, line, _STORE_FUNCTIONS).run_all is None
+    # The change is in ``store`` itself: the function may be what changed.
+    assert _autouse(imports, line).run_all
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "store.connect()",
+        "store.engine()",
+        "clear = store.engine.cache_clear",
+        "assert store._seen",
+        "store._seen.pop('x')",
+    ],
+)
+def test_an_autouse_fixture_using_what_the_module_imports_or_holds_still_reaches(
+    line: str,
+) -> None:
+    use = _autouse("from app import store", line, _STORE_FUNCTIONS)
+    assert use.run_all and "autouse fixture _f uses store" in use.run_all

@@ -22,13 +22,11 @@ function cc(
 }
 
 describe("CoChangeTable", () => {
-  it("renders each file as repo, dim directory and full filename", () => {
+  it("renders each file as repo, then the file name ahead of its dim directory", () => {
     const rows = [cc("api", "api/a.py", "core", "core/b.py", 0.72), cc("ui", "ui/c.tsx", "core", "core/d.py")];
     render(<CoChangeTable coChanges={rows} />);
-    expect(screen.getByText("a.py")).toBeInTheDocument();
-    expect(screen.getAllByText("api/").length).toBe(1);
-    expect(screen.getByTitle("core/b.py")).toBeInTheDocument();
-    expect(screen.getAllByText("core").length).toBe(2);
+    expect(screen.getByText("a.py").closest("[aria-hidden]")?.textContent).toBe("a.pyapi");
+    expect(screen.getByText("core/b.py")).toHaveClass("sr-only");
     expect(screen.getByText("72%")).toBeInTheDocument();
   });
 

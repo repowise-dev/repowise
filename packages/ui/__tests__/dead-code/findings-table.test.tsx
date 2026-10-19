@@ -192,7 +192,7 @@ describe("FindingsTable sort and search", () => {
     return inTable()
       .getAllByRole("row")
       .slice(1)
-      .map((r) => r.querySelector("a,span[title]")?.getAttribute("title"))
+      .map((r) => r.querySelector("[data-path]")?.getAttribute("data-path"))
       .filter(Boolean);
   }
 
@@ -284,18 +284,21 @@ describe("FindingsTable row affordances", () => {
     expect(inTable().getByText("No importers in the dependency graph")).toBeInTheDocument();
   });
 
-  it("offers an AI prompt per row and for the current selection", () => {
+  it("leads each row with the agent prompt and offers one for the filtered rows or the selection", () => {
     const onGeneratePrompt = vi.fn();
     renderTable([finding({ id: "a" }), finding({ id: "b" })], { onGeneratePrompt });
 
-    // Per-row: behind the overflow, with Resolve as the row's one visible verb.
-    fireEvent.click(inTable().getByRole("button", { name: "More actions for src/a.ts" }));
-    fireEvent.click(screen.getByRole("button", { name: "Draft AI cleanup prompt" }));
+    // Per-row: the prompt leads the row, named for the file it is about.
+    fireEvent.click(inTable().getByRole("button", { name: "Copy prompt for your agent: src/a.ts" }));
     expect(onGeneratePrompt).toHaveBeenCalledWith(["a"]);
 
-    fireEvent.click(screen.getByLabelText("Select all findings"));
-    fireEvent.click(screen.getByRole("button", { name: "AI prompt for 2 selected" }));
+    // Header: every row the filters show, until there is a selection.
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for these 2" }));
     expect(onGeneratePrompt).toHaveBeenLastCalledWith(["a", "b"]);
+
+    fireEvent.click(inTable().getByLabelText("Select finding src/a.ts"));
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for 1 selected" }));
+    expect(onGeneratePrompt).toHaveBeenLastCalledWith(["a"]);
   });
 
   it("renders the graph action from the host's route, and hides it without one", () => {

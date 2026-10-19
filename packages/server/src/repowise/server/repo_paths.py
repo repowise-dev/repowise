@@ -7,6 +7,7 @@ risk tool and the code-health routes.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 
 def normalize_target_path(target: str, repo_root: str | None = None) -> str:
@@ -47,3 +48,35 @@ def normalize_target_path(target: str, repo_root: str | None = None) -> str:
     # Collapse duplicate slashes and any trailing separator.
     parts = [p for p in normalized.split("/") if p]
     return "/".join(parts)
+
+
+def missing_path_hint(repo_root: str | None, path: str) -> dict[str, Any]:
+    """Why a ``no_such_path`` target is absent from *repo_root*, when git can say.
+
+    ``moved_to``/``removed_by_commit`` when the served branch renamed or removed
+    it (#2633). Otherwise, when another local branch has it (a worktree's
+    branch, typically), ``on_branch`` and a ``note`` naming the checkout and
+    commit that were read, so the miss does not read as a typo.
+    """
+    from repowise.core.git_head import read_head_commit
+    from repowise.core.git_refs import branch_with_path, find_path_removal
+
+    if not repo_root:
+        return {}
+    try:
+        removal = find_path_removal(repo_root, path)
+        if removal is not None:
+            return {"removed_by_commit": removal.commit, "moved_to": removal.moved_to}
+        branch = branch_with_path(repo_root, path)
+    except (OSError, ValueError):
+        return {}
+    if branch is None:
+        return {}
+    head = (read_head_commit(repo_root) or "")[:12] or "its HEAD"
+    return {
+        "on_branch": branch,
+        "note": (
+            f"Not in the served checkout {repo_root} at {head}; branch {branch} has it. "
+            "Only the served checkout is indexed."
+        ),
+    }

@@ -91,7 +91,7 @@ def _ledger_key(surface: str, category: str, text: str) -> str:
     """
     import hashlib
 
-    digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    digest = hashlib.sha1(text.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:12]
     return f"{surface}:{category}:{digest}"
 
 
@@ -421,15 +421,6 @@ def _record_opportunity(
         )
     except Exception:
         return
-
-
-def _relativize(file_path: str, repo_path: Path) -> str | None:
-    """Repo-relative POSIX path for *file_path*, or None when outside it."""
-    try:
-        rel = Path(file_path).resolve().relative_to(Path(repo_path).resolve())
-    except (ValueError, OSError):
-        return None
-    return rel.as_posix()
 
 
 @lru_cache(maxsize=8)

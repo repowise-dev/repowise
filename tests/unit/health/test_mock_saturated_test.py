@@ -174,9 +174,8 @@ def test_double(monkeypatch):
 def test_nested_function_setup_does_not_count_against_its_parent():
     """A closure's doubles belong to the closure, not the test around it.
 
-    The walker records no row for a function nested inside a function body, so
-    the setup is not attributed anywhere - which is the conservative direction:
-    it can only ever suppress a finding, never invent one.
+    The nested function has a row of its own (#3281) and the setup is counted
+    there. It asserts nothing and is not a test case, so no finding comes of it.
     """
     counts = _walk(
         """
@@ -192,7 +191,7 @@ def test_outer():
 """
     )
     assert counts["test_outer"] == (0, 1)
-    assert "helper" not in counts
+    assert counts["helper"] == (2, 0)
 
 
 def test_setup_inside_a_nested_block_is_counted():

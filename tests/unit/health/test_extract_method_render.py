@@ -98,13 +98,14 @@ def _py_plan(call: str = "await self.flush(i)"):
 def test_python_plan_carries_an_awaited_method_header_and_call():
     plan = _py_plan()
     sym = plan["new_symbol"]
-    assert plan["suggested_name"] is None  # nothing anchors a name here
+    # No label or banner: named for the host and the value it returns.
+    assert plan["suggested_name"] == "_extracted_helper"
     assert sym["signature_text"] == (
-        "async def <name>(self, items: list[int], limit: int) -> int:"
+        "async def _extracted_helper(self, items: list[int], limit: int) -> int:"
     )
     assert plan["call_site"] == {
         "replace_span": plan["span"],
-        "new_text": "total = await self.<name>(items, limit)",
+        "new_text": "total = await self._extracted_helper(items, limit)",
     }
     # The receiver is not a parameter of a method.
     assert sym["params"] == [
@@ -116,7 +117,7 @@ def test_python_plan_carries_an_awaited_method_header_and_call():
 
 def test_a_span_that_does_not_await_is_not_awaited():
     plan = _py_plan("print(-i)")
-    assert plan["new_symbol"]["signature_text"].startswith("def <name>(items: list[int]")
+    assert plan["new_symbol"]["signature_text"].startswith("def _extracted_helper(items: list[int]")
     assert "await" not in plan["call_site"]["new_text"]
 
 
@@ -217,7 +218,7 @@ def test_rust_borrows_a_value_the_host_reads_after_the_call():
         ),
         returns=(),
     )
-    sig, call, notes = render(shape)
+    sig, call, notes, _returns = render(shape)
     assert sig == "fn loadTotals(rows: &Vec<Row>, n: usize, cfg: <type>, tmp: String) {"
     assert call == "loadTotals(&rows, n, cfg, tmp);"
     assert notes == (
@@ -285,7 +286,8 @@ _TYPED_SOURCES = {
 }
 _EXPECTED_TYPES = {
     "python": {"a": "int", "b": None, "c": "list[str]", "x": "dict[str, int]"},
-    "typescript": {"a": "number", "b": "string", "c": None, "x": "Map<string, number>"},
+    # An optional parameter holds `undefined` until something narrows it.
+    "typescript": {"a": "number", "b": "string | undefined", "c": None, "x": "Map<string, number>"},
     "go": {"a": "int", "b": "int", "c": "string", "x": "[]string", "y": None},
     "java": {"a": "int", "b": "String[]", "c": "int", "x": "int", "y": None},
     "rust": {"a": "i32", "b": "&mut Vec<u8>", "c": None, "d": None, "x": "u64"},
@@ -302,7 +304,7 @@ def test_declared_types_are_read_off_the_parse(language: str):
     for d in fn.def_use.definitions:
         row = d.line - 1
         node = fn.fn_node.descendant_for_point_range((row, d.column), (row, d.column + len(d.var)))
-        found[d.var] = dialect.declared_type(node)
+        found[d.var] = dialect.declared_types.of(node)
     assert {k: found.get(k) for k in _EXPECTED_TYPES[language]} == _EXPECTED_TYPES[language]
 
 
@@ -335,6 +337,28 @@ def test_param_modes_match_the_wire_type():
     match = re.search(r"export type ExtractParamMode =(.*?);", src, re.DOTALL)
     assert match
     assert set(re.findall(r'"([a-z_]+)"', match.group(1))) == set(PARAM_MODES)
+
+
+def test_recipe_step_symbol_keys_match_the_wire_type():
+    """``RecipeStep.new_symbol`` in the TS types names every key the recipe
+    writes for an Extract Method step, ``return_text`` included."""
+    from repowise.core.analysis.health.refactoring.recipe import recipe_steps
+
+    src = (pathlib.Path(__file__).resolve().parents[3] / "packages/types/src/refactoring.ts").read_text(
+        encoding="utf-8"
+    )
+    block = re.search(r"export interface RecipeStep \{.*?new_symbol\?: \{(.*?)\};", src, re.DOTALL)
+    assert block
+    ts_keys = set(re.findall(r"^\s*([a-z_]+)\??:", block.group(1), re.MULTILINE))
+    (step,) = recipe_steps(
+        {
+            "refactoring_type": "extract_method",
+            "file_path": "m.py",
+            "target_symbol": "f",
+            "plan": {"span": {"start": 2, "end": 5}, "params": [], "returns": ["x"]},
+        }
+    )
+    assert ts_keys == set(step["new_symbol"])
 
 
 def test_list_rows_leave_the_texts_to_plan_detail():

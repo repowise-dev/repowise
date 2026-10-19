@@ -219,6 +219,27 @@ def test_each_whitespace_character_becomes_its_own_dash():
     assert resolve(idx, _anchor_ref("sql-dbt")).verdict is DriftVerdict.MISSING
 
 
+def test_repeated_headings_get_githubs_numbered_anchors():
+    """GitHub names the second ``## Usage`` ``#usage-1`` and the third
+    ``#usage-2``; only one more suffix than there are repeats exists."""
+    idx = _anchor_index("## Usage\n\n## Usage\n\nUsage\n-----\n")
+    for fragment in ("usage", "usage-1", "usage-2"):
+        assert resolve(idx, _anchor_ref(fragment)).verdict is DriftVerdict.RESOLVED
+    res = resolve(idx, _anchor_ref("usage-3"))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.origin == "anchor_no_heading"
+
+
+def test_a_suffix_skips_a_slug_a_literal_heading_already_took():
+    """``## Usage 1`` claims ``usage-1``, so the repeated ``## Usage`` after it
+    becomes ``usage-2``, and a later repeat of ``## Usage 1`` becomes
+    ``usage-1-1``. This is github-slugger's bookkeeping, not a naive count."""
+    idx = _anchor_index("## Usage\n\n## Usage 1\n\n## Usage\n\n## Usage 1\n")
+    anchors = idx.doc_anchors("README.md")
+    assert {"usage", "usage-1", "usage-2", "usage-1-1"} <= anchors
+    assert "usage-3" not in anchors
+
+
 def test_anchor_into_a_missing_document_is_uncheckable_not_missing():
     """The LINK row already reports the missing file; saying it twice would
     double-count one defect."""

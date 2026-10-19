@@ -33,6 +33,8 @@ export type QueueReason =
   | "unmeasured_cost"
   | "cold_role"
   | "background_unproven"
+  | "terminal_flow"
+  | "moderate_quiet"
   | "not_judged"
   | "covered_by_plan"
   | "not_file_lead"
@@ -45,7 +47,8 @@ export type QueueUnit = "findings" | "causes" | "plans" | "items";
  * `inventory` every open unit; `in_scope` those whose code is in scope (not
  * test, tooling, vendored, generated or docs); `eligible` those a default
  * queue holds; `due` eligible units in tier now or next; `shown` what the
- * response carries; `excluded` the non-zero reasons, so the levels add up.
+ * response carries; `excluded` the non-zero reasons; `gated` the units a
+ * language gate holds back, counted there only, so the levels add up.
  */
 export interface QueueCounts {
   inventory: number;
@@ -54,6 +57,7 @@ export interface QueueCounts {
   due: number;
   shown: number;
   excluded: Partial<Record<QueueReason, number>>;
+  gated: number;
 }
 
 /** Every unit's counts, by noun (`queue_counts` on the health overview and `repowise health --format json`). */

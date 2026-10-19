@@ -2,9 +2,31 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
-## Unreleased
+## 0.57.0
 
 ### Changed
+- `/repowise:risk` and the change-review skill lead with the change's size
+  percentile ("size and spread, not a bug predictor"), then the touched files'
+  bug-fix record (#3664).
+- The codebase-exploration skill reads `confidence` as whether the top hit
+  covers the question, with `retrieval_quality` behind
+  `include=["diagnostics"]` (#3716).
+
+## 0.56.0
+
+### Changed
+- The change-review skill reads the tests a change needs from the same
+  selection `repowise impacted-tests` makes: `tests_to_run_why` gives each
+  test's reason, and `tests_run_all` with `tests_run_all_reasons` says when no
+  smaller set can be vouched for (#3296). `pr_blast_radius` now needs
+  `include=["blast"]` (#3118), and detailed owner metrics leave the default
+  `get_risk` card (#3139).
+- `/repowise:health` and the code-health skill say that bare `repowise health`
+  reads the stored analysis, and point at `repowise health --recompute` for an
+  in-process run (#3280).
+- Lens follows the trimmed `get_risk` and `get_change_risk` replies (#3139,
+  #3152), names the tests a change needs in its review (#3296), and picks up
+  the shared loader and state styling (#3304).
 - Lens no longer approves its own MCP lookups. It registers no `tool.check`
   hook, so `get_context`, `get_change_risk`, `get_why` and `get_answer` calls
   from Lens ask Claude Code's permission like any other MCP call. The README's

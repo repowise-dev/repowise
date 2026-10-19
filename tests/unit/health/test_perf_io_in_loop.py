@@ -399,6 +399,65 @@ def test_io_in_loop_fires_regardless_of_grouped_use_order():
         assert ("io_in_loop", "db") in {(h.kind, h.detail) for h in fc.perf_hits}
 
 
+def test_a_ts_module_string_binds_no_name_of_its_own():
+    # A local named like the package (``ws``) is a loop variable, not the import.
+    src = (
+        b'import { type WebSocket, WebSocketServer } from "ws";\n'
+        b"function broadcast(sockets: Set<WebSocket>) {\n"
+        b'  for (const ws of sockets) { ws.send("reload"); }\n'
+        b"}\n"
+    )
+    fc = walk_file("t.ts", "typescript", src)
+    assert fc.io_boundary_names == {"WebSocket": "network", "WebSocketServer": "network"}
+    assert not fc.perf_hits
+
+
+def test_a_hyphenated_ts_module_path_names_no_library():
+    # ``provider-http`` is a local helper module, not the ``http`` package.
+    fc = walk_file(
+        "t.ts",
+        "typescript",
+        b'import { readBody } from "openclaw/plugin-sdk/provider-http";\n'
+        b'import { request } from "./client.js";\n',
+    )
+    assert fc.io_boundary_names == {}
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (b'import http from "node:http";\n', {"http": "network"}),
+        (b'import x = require("axios");\n', {"x": "network"}),
+        (b'import * as fs from "node:fs/promises";\n', {"fs": "filesystem"}),
+        (b'import { PrismaClient } from "@prisma/client";\n', {"PrismaClient": "db"}),
+        (b'import type { Pool } from "pg";\n', {"Pool": "db"}),
+        (b'import ws from "ws";\n', {"ws": "network"}),
+        (b'import "ws";\n', {}),
+        (b'import cfg from "./c.json" with { type: "http" };\n', {}),
+        (b'import cfg from "./c.json" assert { type: "pg" };\n', {}),
+        (b'import { Pool } from "pg" with { type: "json" };\n', {"Pool": "db"}),
+    ],
+)
+def test_a_ts_import_binds_only_its_clause_names(source: bytes, expected: dict[str, str]):
+    assert walk_file("t.ts", "typescript", source).io_boundary_names == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "language", "source", "expected"),
+    [
+        (
+            "t.go",
+            "go",
+            b'package p\nimport h "net/http"\n',
+            {"h": "network", "net": "network", "http": "network"},
+        ),
+        ("t.rb", "ruby", b'require "net/http"\n', {"net": "network", "http": "network"}),
+    ],
+)
+def test_go_and_ruby_still_bind_through_the_quoted_path(path, language, source, expected):
+    assert walk_file(path, language, source).io_boundary_names == expected
+
+
 class _FakeImportNode:
     def __init__(self, node_type: str, text: bytes, children: list[_FakeImportNode] | None = None):
         self.type = node_type
@@ -474,6 +533,50 @@ def test_string_concat_not_reported_in_test_files(path, expected):
     ctx = _ctx([PerfHit("string_concat_in_loop", 2, "f", "")])
     ctx.file_path = path
     assert len(StringConcatInLoopDetector().detect(ctx)) == expected
+
+
+def test_string_concat_one_finding_per_loop_and_string():
+    """A loop's appends to one string are one edit, so one finding on the first."""
+    ctx = _ctx(
+        [
+            PerfHit("string_concat_in_loop", 9, "f", "", 3, loop_line=7, subject="out"),
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7, subject="out"),
+            PerfHit("string_concat_in_loop", 12, "f", "", 3, loop_line=7, subject="out"),
+            # Another string in the same loop, and the same string in another loop.
+            PerfHit("string_concat_in_loop", 10, "f", "", 3, loop_line=7, subject="log"),
+            PerfHit("string_concat_in_loop", 15, "f", "", 3, loop_line=14, subject="out"),
+        ]
+    )
+    findings = sorted(StringConcatInLoopDetector().detect(ctx), key=lambda f: f.line_start)
+    # ``line_end`` stays on the first append, so an unanchored row's id is stable.
+    assert [(f.line_start, f.line_end) for f in findings] == [(8, 8), (10, 10), (15, 15)]
+    assert findings[0].details["lines"] == [8, 9, 12]
+    assert "lines" not in findings[1].details
+
+
+def test_string_concat_unnamed_targets_in_one_loop_stay_apart():
+    """``buf[0] +=`` and ``other[i] +=`` keep no name, so nothing says they are one string."""
+    ctx = _ctx(
+        [
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7),
+            PerfHit("string_concat_in_loop", 9, "f", "", 3, loop_line=7),
+            PerfHit("string_concat_in_loop", 10, "f", "", 3, loop_line=7, subject="self.a"),
+            PerfHit("string_concat_in_loop", 11, "f", "", 3, loop_line=7, subject="self.b"),
+        ]
+    )
+    findings = StringConcatInLoopDetector().detect(ctx)
+    assert sorted(f.line_start for f in findings) == [8, 9, 10, 11]
+
+
+def test_string_concat_unnamed_targets_on_one_line_stay_apart():
+    """``a[0] += x; b[0] += y`` on one line: two unnamed targets, two findings."""
+    ctx = _ctx(
+        [
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7),
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7),
+        ]
+    )
+    assert len(StringConcatInLoopDetector().detect(ctx)) == 2
 
 
 def test_no_perf_hits_yields_no_findings():

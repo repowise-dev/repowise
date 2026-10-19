@@ -161,6 +161,9 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
   );
 }
 
+/** Page types whose `target_path` is a file or a `file::symbol` id. */
+const SIGNAL_PAGE_TYPES = new Set(["file_page", "symbol_spotlight", "api_contract", "infra_page"]);
+
 /**
  * Consolidated "At a glance" signals for a file page — hotspot, ownership,
  * churn, bus factor — pulled from the git-metadata endpoint so the reader
@@ -262,11 +265,17 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
           </span>
           <span className="font-mono">{data.contributor_count}</span>
         </div>
-        {data.agent_authored_pct != null && (data.agent_commit_count ?? 0) > 0 && (
+        {(data.agent_commit_count ?? 0) > 0 && (
+          // Share of commits with a known source, beside that coverage;
+          // withheld below the coverage floor. Unknown is never human.
           <div className="flex items-center justify-between gap-2">
             <span className="text-[var(--color-text-tertiary)]">Agent-authored</span>
             <span className="font-mono">
-              {Math.round(data.agent_authored_pct * 100)}% · {data.agent_commit_count}
+              {data.agent_authored_pct != null
+                ? `≥${Math.round(data.agent_authored_pct * 100)}% of covered · `
+                : ""}
+              {data.agent_commit_count} · coverage{" "}
+              {Math.round((data.attribution_coverage ?? 0) * 100)}%
             </span>
           </div>
         )}
@@ -345,10 +354,11 @@ export function DocsViewer({
   );
 
   const targetPath = page?.target_path ?? "";
-  // Decided by page type, not path shape: a module page's target is a
-  // directory, which every row below would answer with nothing, and the
-  // reader already gives module pages their own history card.
-  const showSignals = !!targetPath && page?.page_type !== "module_page";
+  // Decided by page type, not path shape: only these target a file or a
+  // symbol. Any other target (the repo overview's repo name, a module's
+  // directory, a cycle id) is no file, so every row below asked the API for
+  // it and got a 404; module pages already have their own history card.
+  const showSignals = !!targetPath && SIGNAL_PAGE_TYPES.has(page?.page_type ?? "");
   // Security findings only make sense for real source files.
   const isFilePath =
     showSignals &&

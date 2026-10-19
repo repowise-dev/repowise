@@ -8,6 +8,7 @@ from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import (
+    GitFunctionBlame,
     GitMetadata,
     GraphMetric,
     HealthFileMetric,
@@ -18,6 +19,15 @@ from repowise.core.persistence.models import (
 )
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS, PERFORMANCE, PLANS, REFACTORING
 from tests.unit.persistence.helpers import insert_repo
+
+
+def no_tests(path, function, start, end) -> dict:
+    """What the loader's test lookup answers for a finding no seeded test reaches."""
+    return {
+        "prerequisite": (
+            f"No test reaches this; add a characterization test for `{function}` before the edit."
+        )
+    }
 
 
 def _with_json(row: dict, name: str) -> dict:
@@ -77,11 +87,63 @@ async def test_loader_matches_the_builder_over_rows(async_session) -> None:
         refactoring=REFACTORING,
         performance=PERFORMANCE,
         plans=PLANS,
+        validate=no_tests,
     )
     assert loaded == built
     # The seed exercises every kind, so equality is not over an empty queue.
     assert {i.kind for i in loaded.items} == {"refactor", "perf_fix", "finding"}
     assert loaded.basis["analyzed_commit"] == "abc"
+
+
+async def test_loader_orders_by_the_stored_function_history(async_session) -> None:
+    rid = await seed_fix_first(async_session)
+    changes = {"src/core.py::run": 9, "src/plain.py::walk": 3}
+    async_session.add_all(
+        GitFunctionBlame(repository_id=rid, symbol_id=s, file_path=s.split("::")[0], mod_count=n)
+        for s, n in {**changes, "lib/elsewhere.py::other": 40}.items()
+    )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    built = build_fix_first(
+        metrics=METRICS,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+        validate=no_tests,
+        function_changes=changes,
+    )
+    assert loaded == built
+    facts = [{f.factor: f.value for f in i.why_ranked} for i in loaded.items]
+    assert {"9 commits", "3 commits"} <= {f.get("function changed in") for f in facts}
+
+
+async def test_loader_without_function_history_keeps_the_file_weight(async_session) -> None:
+    rid = await seed_fix_first(async_session)
+    loaded = await load_fix_first(async_session, rid)
+    facts = [{f.factor for f in i.why_ranked} for i in loaded.items if i.kind != "perf_fix"]
+    assert facts and all("changes often" in f and "function changed in" not in f for f in facts)
+
+
+async def test_loader_reads_a_file_blame_skipped_for_size(async_session) -> None:
+    from sqlalchemy import update
+
+    rid = await seed_fix_first(async_session)
+    # History for one file only; src/core.py passes the commit floor with no
+    # rows (too large to blame), src/plain.py does not reach the floor.
+    async_session.add(GitFunctionBlame(repository_id=rid, symbol_id="src/repo.py::load",
+                                       file_path="src/repo.py", mod_count=4))
+    await async_session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/core.py")
+        .values(commit_count_total=40)
+    )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    facts = {i.target.file_path: {f.factor: f.value for f in i.why_ranked}
+             for i in loaded.items if i.kind != "perf_fix"}
+    assert facts["src/core.py"]["changes often"] == "yes"
+    assert facts["src/plain.py"]["function changed in"] == "0 commits"
 
 
 async def test_loader_on_an_empty_repository(async_session) -> None:
@@ -130,6 +192,7 @@ async def test_loader_reads_the_stored_code_origin(async_session) -> None:
         refactoring=REFACTORING,
         performance=PERFORMANCE,
         plans=PLANS,
+        validate=no_tests,
     )
     assert loaded.totals.excluded["docs_example"] == 1
     # The update moved the metric's ``updated_at``, so only the basis differs.
@@ -180,6 +243,7 @@ async def test_loader_reads_verified_duplicates_as_a_fact(async_session) -> None
         refactoring=REFACTORING,
         performance=PERFORMANCE,
         plans=[*PLANS, helper],
+        validate=no_tests,
     )
     loaded = await load_fix_first(async_session, rid)
     assert "src/core.py" in {i.target.file_path for i in loaded.items}
@@ -218,6 +282,7 @@ async def test_loader_reads_extractions_for_a_finding_without_a_plan(async_sessi
         refactoring=REFACTORING,
         performance=PERFORMANCE,
         plans=[*PLANS, extraction],
+        validate=no_tests,
     )
     assert (loaded.items, loaded.totals) == (built.items, built.totals)
 
@@ -237,7 +302,7 @@ async def test_every_limit_and_id_is_a_slice_of_one_build(async_session, monkeyp
     monkeypatch.setattr(loader, "_build", counting)
     loader.clear_fix_first_cache()
     rows = {"metrics": METRICS, "findings": FINDINGS, "refactoring": REFACTORING,
-            "performance": PERFORMANCE, "plans": PLANS}
+            "performance": PERFORMANCE, "plans": PLANS, "validate": no_tests}
 
     full = await load_fix_first(async_session, rid, limit=None)
     assert full == build_fix_first(**rows, limit=None)
@@ -283,7 +348,11 @@ async def test_a_finding_item_with_no_tests_stays_unknown(async_session) -> None
     rid = await seed_fix_first(async_session)
     loaded = await load_fix_first(async_session, rid)
     walk = next(i for i in loaded.items if i.target.file_path == "src/plain.py")
-    assert (walk.verify.tests, walk.verify.basis) == ((), "unknown")
+    assert (walk.verify.tests, walk.verify.basis, walk.verify.command) == ((), "unknown", None)
+    # The step to take before the edit, since no test pins today's behaviour.
+    assert walk.verify.prerequisite == (
+        "No test reaches this; add a characterization test for `walk` before the edit."
+    )
 
 
 async def test_loader_counts_dormant_causes_and_dead_code(async_session) -> None:
@@ -344,7 +413,8 @@ async def test_an_unverified_read_skips_the_test_lookup(async_session, monkeypat
     assert calls == 0
     assert [i.id for i in bare.items] == [i.id for i in (await load_fix_first(async_session, rid)).items]
     assert calls == 1
-    assert (await load_fix_first(async_session, rid, limit=None, verify=False)).items == (
-        await load_fix_first(async_session, rid, limit=None)
-    ).items
+    unverified = await load_fix_first(async_session, rid, limit=None, verify=False)
+    assert [i.id for i in unverified.items] == [
+        i.id for i in (await load_fix_first(async_session, rid, limit=None)).items
+    ]
     assert calls == 1

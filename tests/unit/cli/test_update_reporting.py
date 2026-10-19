@@ -301,3 +301,16 @@ class TestDeadCodeCountsAreScopedToTheUpdate:
 
     def test_a_missing_report_counts_as_nothing(self):
         assert reporting._dead_code_counts(None, ["changed.py"]) == (0, 0)
+
+    def test_the_panel_line_names_its_scope_beside_the_repo_wide_total(self):
+        # The run log prints the repo-wide total; the scoped line must not contradict it.
+        assert reporting._dead_code_line(self._report(), ["changed.py"]) == (
+            "1 unreachable · 1 unused exports in changed files · 4 findings repo-wide"
+        )
+        assert reporting._dead_code_line(self._report(), ["other.py"]) == (
+            "0 unreachable · 0 unused exports in changed files · 4 findings repo-wide"
+        )
+        assert reporting._dead_code_line(None, ["changed.py"]) == (
+            "0 unreachable · 0 unused exports in changed files"
+        )
+        assert reporting._dead_code_line(self._report(), None) == "2 unreachable · 2 unused exports"

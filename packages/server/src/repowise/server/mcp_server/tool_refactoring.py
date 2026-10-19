@@ -89,6 +89,7 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
             session, repository.id, ctx.alias or repository.name
         ).plan_recommendation(row)
         sug = recommendation.suggestion
+        detail = {**recommendation.detail_dict(), "id": row.public_id or row.id}
         meta = _build_meta(repository=repository)
 
     from repowise.server.mcp_server.tool_health import _serialize_refactoring
@@ -117,7 +118,7 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
     except ValueError as exc:
         return {"error": "no_provider", "detail": str(exc), "_meta": meta}
 
-    result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path)
+    result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path, detail=detail)
     payload = result.to_dict()
     payload["suggestion_id"] = public_plan["id"]
     payload["resolved"] = True

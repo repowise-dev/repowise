@@ -16,6 +16,7 @@ from repowise.core.ingestion.traverser import (
     _detect_language,
     _is_generated,
     _scan_package_dir,
+    in_blocked_dir,
 )
 
 
@@ -179,6 +180,10 @@ class TestFileTraverser:
         assert not any("__pycache__" in p for p in paths)
 
     def test_skips_unity_generated_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / "ProjectSettings").mkdir()
+        (tmp_path / "ProjectSettings" / "ProjectVersion.txt").write_text(
+            "m_EditorVersion: 6000.0.0f1\n"
+        )
         (tmp_path / "Assets" / "Scripts").mkdir(parents=True)
         (tmp_path / "Assets" / "Scripts" / "Game.cs").write_text("class Game {}")
         (tmp_path / "Library" / "PackageCache").mkdir(parents=True)
@@ -190,6 +195,39 @@ class TestFileTraverser:
         assert "Assets/Scripts/Game.cs" in paths
         assert not any(p.startswith("Library/") for p in paths)
         assert not any(p.startswith("Temp/") for p in paths)
+
+    def test_unity_dir_names_outside_unity_projects_are_indexed(self, tmp_path: Path) -> None:
+        files = {
+            "MediaBrowser.Controller/Library/ILibraryManager.cs": "interface ILibraryManager {}",
+            "MediaBrowser.Controller/Entities/Folder.cs": "class Folder {}",
+            "Tools/Builds/BuildInfo.cs": "class BuildInfo {}",
+            "Server/Logs/LogFileTask.cs": "class LogFileTask {}",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert paths == set(files)
+        assert not in_blocked_dir("Tools/Builds/BuildInfo.cs", tmp_path)
+
+    def test_skips_unity_generated_dirs_in_a_nested_unity_project(self, tmp_path: Path) -> None:
+        files = {
+            "game/ProjectSettings/ProjectVersion.txt": "m_EditorVersion: 6000.0.0f1\n",
+            "game/Assets/Player.cs": "class Player {}",
+            "game/Library/x.cs": "class X {}",
+            "src/Library/y.cs": "class Y {}",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "game/Assets/Player.cs" in paths
+        assert "src/Library/y.cs" in paths
+        assert "game/Library/x.cs" not in paths
+        assert in_blocked_dir("game/Library/x.cs", tmp_path)
+        assert not in_blocked_dir("src/Library/y.cs", tmp_path)
 
     def test_source_packages_named_like_output_dirs_are_indexed(self, tmp_path: Path) -> None:
         files = {
@@ -230,6 +268,98 @@ class TestFileTraverser:
         paths = {f.path for f in FileTraverser(tmp_path).traverse()}
 
         assert paths == {"app.py"}
+
+    def test_reincluded_dir_in_root_repowise_ignore_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text('{"name":"tool","type":"module"}', encoding="utf-8")
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text(
+            "export function bundle(entries) { return entries.map(String); }\n", encoding="utf-8"
+        )
+        (tmp_path / "src" / "app").mkdir(parents=True)
+        (tmp_path / "src" / "app" / "main.js").write_text(
+            'import { bundle } from "../build/index.js";\n', encoding="utf-8"
+        )
+
+        # Without negation rule, build holding only JS is pruned as an output dir.
+        paths_without = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" not in paths_without
+
+        # With !src/build/, the directory is re-included and indexed.
+        (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+        paths_with = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths_with
+        assert "src/app/main.js" in paths_with
+
+    def test_reincluded_dir_in_exclude_patterns_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text('{"name":"tool","type":"module"}', encoding="utf-8")
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+
+        paths = {
+            f.path
+            for f in FileTraverser(tmp_path, extra_exclude_patterns=["!src/build/"]).traverse()
+        }
+        assert "src/build/index.js" in paths
+
+    def test_reincluded_dir_in_nested_repowise_ignore_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / "src" / ".repowiseIgnore").write_text("!build/\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths
+
+    def test_reincluded_dir_does_not_reopen_nested_blocked_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+        (tmp_path / "src" / "build" / "node_modules").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / "src" / "build" / "node_modules" / "x.js").write_text(
+            "export const y = 2;\n", encoding="utf-8"
+        )
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths
+        assert "src/build/node_modules/x.js" not in paths
+
+    def test_negation_cannot_bypass_nested_repo_or_submodule_boundary(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowiseIgnore").write_text("!vendor/\n", encoding="utf-8")
+        nested = tmp_path / "vendor" / "nested_repo"
+        nested.mkdir(parents=True)
+        (nested / ".git").mkdir()
+        (nested / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "vendor" / "lib.py").write_text("y = 2\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        # vendor/lib.py is re-included by !vendor/
+        assert "vendor/lib.py" in paths
+        # But the nested git repository boundary is NEVER bypassed
+        assert "vendor/nested_repo/mod.py" not in paths
+
+    def test_cached_negations_refresh_on_file_creation_or_edit(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+
+        # 1st traversal: no ignore file, build directory is skipped as output
+        paths1 = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" not in paths1
+
+        # Now create nested .repowiseIgnore in the same process
+        (tmp_path / "src" / ".repowiseIgnore").write_text("!build/\n", encoding="utf-8")
+
+        # 2nd traversal: cache refreshes and re-includes the directory
+        paths2 = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths2
+
+    def test_custom_ignore_filename_negations(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+
+        paths = {
+            f.path
+            for f in FileTraverser(tmp_path, extra_ignore_filename=".customIgnore").traverse()
+        }
+        assert "src/build/index.js" in paths
 
     def test_traverses_e2e_specs(self, tmp_path: Path) -> None:
         """e2e spec files are indexed so they can get a file_page (#1497).
@@ -453,6 +583,30 @@ class TestFileTraverser:
         files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
         assert files["engine/src/commonMain/kotlin/io/x/core/DynamicRootTest.kt"] is False
         assert files["engine/src/test/kotlin/io/x/core/EngineTest.kt"] is True
+
+    def test_csharp_test_project_classifies_files_as_tests(self, tmp_path: Path) -> None:
+        (tmp_path / "acceptance" / "Acme.Acceptance.csproj").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "acceptance" / "Acme.Acceptance.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup>\n"
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.0" />\n'
+            '    <PackageReference Include="xunit" Version="2.9.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n"
+        )
+        (tmp_path / "acceptance" / "Authentication" / "AuthSteps.cs").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "acceptance" / "Authentication" / "AuthSteps.cs").write_text("public class AuthSteps {}\n")
+        (tmp_path / "acceptance" / "Authentication" / "AuthenticationTests.cs").write_text(
+            "public class AuthenticationTests {}\n"
+        )
+        (tmp_path / "src" / "App" / "Program.cs").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "App" / "Program.cs").write_text("public class Program {}\n")
+
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["acceptance/Authentication/AuthSteps.cs"] is True
+        assert files["acceptance/Authentication/AuthenticationTests.cs"] is True
+        assert files["src/App/Program.cs"] is False
 
     def test_file_info_fields(self, tmp_path: Path) -> None:
         (tmp_path / "calc.py").write_text("class Calc: pass")
@@ -1405,6 +1559,20 @@ class TestIsGenerated:
         assert paths == ["main.go"]
         assert traverser.stats.skipped_generated == 1
         assert traverser.stats.generated_files == ["gen.go"]
+
+    def test_generated_files_reach_the_dead_code_unindexed_list(self, tmp_path: Path) -> None:
+        # A jnigen binding is the only caller of its plugin header's helpers.
+        (tmp_path / "bindings.c").write_text(
+            '// Autogenerated by jnigen. DO NOT EDIT!\n#include "dartjni.h"\n'
+        )
+        (tmp_path / "dartjni.h").write_text("static inline void load_method(void) {}\n")
+        (tmp_path / "api.def").write_text("EXPORTS\n  load_method\n")
+        traverser = FileTraverser(tmp_path)
+        assert [f.path for f in traverser.traverse()] == ["dartjni.h"]
+        assert traverser.stats.unindexed_source_files() == [
+            ("api.def", "unknown_language"),
+            ("bindings.c", "generated"),
+        ]
 
 
 class TestConcurrentLazyInit:

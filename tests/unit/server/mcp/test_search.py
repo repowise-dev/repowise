@@ -6,6 +6,8 @@ test data, mirroring the conftest pattern from the REST API tests.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from repowise.core.persistence.search import strip_leading_headings
@@ -716,6 +718,62 @@ class TestSymbolTestPenalty:
         assert self._score("spec/openapi/users.py", language="python") == base
 
 
+def test_symbol_coverage_folds_plurals_on_both_sides():
+    from repowise.core.persistence.models import WikiSymbol
+    from repowise.server.mcp_server.tool_search_symbols import _score_symbol, _tokens
+
+    def score(name: str, query: str) -> float:
+        row = WikiSymbol(name=name, qualified_name=name, file_path="src/a.py", language="python")
+        return _score_symbol(row, None, _tokens(query), query.lower())
+
+    # Every query word is covered once ``type`` meets ``types``, either way round.
+    full = score("declared_types_in", "declared types in")
+    assert score("declared_types_in", "declared type in") == full
+    assert score("parseHeader", "parse headers") == score("parseHeader", "parse header")
+    assert score("declared_types_in", "declared kind in") < full
+
+
+@pytest.mark.parametrize(
+    "name, plural, singular",
+    [
+        ("MyClass", "my classes", "my class"),
+        ("createFactory", "create factories", "create factory"),
+        ("commandNameMatch", "command name matches", "command name match"),
+        ("cacheEntry", "cache entries", "cache entry"),
+        ("parseResponse", "parse responses", "parse response"),
+        ("statusCode", "status codes", "status code"),
+    ],
+)
+def test_irregular_s_plurals_reach_the_singular_name(name, plural, singular):
+    from repowise.core.persistence.models import WikiSymbol
+    from repowise.server.mcp_server.tool_search_symbols import (
+        _candidate_filter,
+        _score_symbol,
+        _tokens,
+    )
+
+    row = WikiSymbol(name=name, qualified_name=name, file_path="src/a.py", language="python")
+    assert _score_symbol(row, None, _tokens(plural), plural) == _score_symbol(
+        row, None, _tokens(singular), singular
+    )
+    # The candidate filter is a substring LIKE per singular form; the plural
+    # word's own forms must reach the name.
+    clause = _candidate_filter(_tokens(plural), plural)
+    sql = str(clause.compile(compile_kwargs={"literal_binds": True})).lower()
+    word = plural.split()[-1]
+    likes = set(re.findall(r"'%([^%']+)%'", sql))
+    assert any(like in name.lower() and like[:3] == word[:3] for like in likes)
+
+
+def test_a_singular_y_word_finds_its_ies_plural():
+    from repowise.server.mcp_server.tool_search_symbols import _candidate_filter, _tokens
+
+    clause = _candidate_filter(_tokens("create factory"), "create factory")
+    sql = str(clause.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert any(like in "createfactories" and like.startswith("fact")
+               for like in re.findall(r"'%([^%']+)%'", sql))
+
+
 class TestSymbolSearch:
     """mode="symbol" / "auto" routing into the structural index (issue #484)."""
 
@@ -732,7 +790,7 @@ class TestSymbolSearch:
         assert top["symbol_id"] == "src/auth/service.py::AuthService"
         assert top["name"] == "AuthService"
         assert top["kind"] == "class"
-        assert top["file"] == "src/auth/service.py"
+        assert top["path"] == "src/auth/service.py"
         assert top["start_line"] == 10
         assert top["end_line"] == 100
         assert top["next"] == "get_symbol"
@@ -812,7 +870,7 @@ class TestSymbolSearch:
         from repowise.server.mcp_server import search_codebase
 
         result = await search_codebase("AuthService", mode="symbol")
-        assert not any(r["file"] == "src/auth/service.py" for r in result["results"])
+        assert not any(r["path"] == "src/auth/service.py" for r in result["results"])
 
 
 class TestPathSearch:
@@ -824,7 +882,7 @@ class TestPathSearch:
 
         result = await search_codebase("src/auth/service.py", mode="path")
         assert result["mode"] == "path"
-        files = [r["file"] for r in result["results"]]
+        files = [r["path"] for r in result["results"]]
         assert "src/auth/service.py" in files
         top = result["results"][0]
         assert top["type"] == "file"
@@ -836,7 +894,7 @@ class TestPathSearch:
 
         result = await search_codebase("src/db/models.py")
         assert result["mode"] == "path"
-        assert any(r["file"] == "src/db/models.py" for r in result["results"])
+        assert any(r["path"] == "src/db/models.py" for r in result["results"])
 
 
 class TestHybridSearch:
@@ -1135,6 +1193,51 @@ class TestExactMatchSignal:
         seen.clear()
         await search_codebase("AuthService", mode="symbol")
         assert seen == ["AuthService"]
+
+    @pytest.mark.asyncio
+    async def test_hybrid_without_identifier_scores_symbols_on_content_words(
+        self, setup_mcp, monkeypatch
+    ):
+        # Regression for #3593: with no identifier in the question the scorer
+        # got the raw prose, so "on" matched test_basic_auth_on_session.
+        from repowise.server.mcp_server import search_codebase, tool_search
+
+        seen: list[str] = []
+        real = tool_search.search_symbols_single
+
+        async def spy(ctx, query, limit, **kwargs):
+            seen.append(query)
+            return await real(ctx, query, limit, **kwargs)
+
+        monkeypatch.setattr(tool_search, "search_symbols_single", spy)
+
+        await search_codebase("retry on connection failure", mode="hybrid")
+        assert seen, "symbol scorer was not called"
+        assert "on" not in seen[0].split(), seen
+        assert {"retry", "connection", "failure"} <= set(seen[0].split()), seen
+
+    @pytest.mark.asyncio
+    async def test_hybrid_stopword_does_not_outrank_the_content_match(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_symbol("test_basic_auth_on_session")
+        await _seed_symbol("RetryTransport")
+
+        result = await search_codebase("retry on connection failure", mode="hybrid", limit=10)
+        names = [r.get("name") for r in result["results"] if r.get("type") == "symbol"]
+        assert "RetryTransport" in names, names
+        if "test_basic_auth_on_session" in names:
+            assert names.index("RetryTransport") < names.index("test_basic_auth_on_session")
+
+    @pytest.mark.asyncio
+    async def test_symbol_mode_still_matches_stopword_identifiers(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_symbol("get_on_change")
+
+        result = await search_codebase("get_on_change", mode="symbol")
+        names = [r.get("name") for r in result["results"]]
+        assert "get_on_change" in names, names
 
     @pytest.mark.asyncio
     async def test_exact_hit_sets_true_and_no_fuzzy_note(self, setup_mcp):
@@ -1446,9 +1549,9 @@ class TestSearchCandidates:
         hit = result["results"][0]
         assert hit["path"] == "api/client.go"
         assert "target_path" not in hit  # same string as path
-        assert hit["file"] == "api/client.go"  # alias for one minor release
+        assert hit["path"] == "api/client.go"
         assert hit["symbol_id"] == "api/client.go::HTTP"
-        assert hit["file"] == "api/client.go"
+        assert hit["path"] == "api/client.go"
         assert result["candidates"] == [{"path": "api/client.go"}]
 
     @pytest.mark.asyncio
@@ -1754,7 +1857,7 @@ class TestDistinctFileWindow:
         await session.commit()
 
         res = await search_codebase("widget", mode="hybrid", limit=3)
-        files = [r["file"] for r in res["results"]]
+        files = [r["path"] for r in res["results"]]
         assert len(files) == 3 and len(set(files)) == 3
         # The exact name still leads, carrying its same-file sibling.
         lead = res["results"][0]
@@ -1773,7 +1876,7 @@ class TestDistinctFileWindow:
         assert ids[:2] == ["src/widget/core.py::Box.widget", "src/widget/core.py::widget"]
         assert all("symbols" not in r for r in res["results"])
         # Symbol rows serve path, with file as the transition alias.
-        assert all(r["path"] == r["file"] == "src/widget/core.py" for r in res["results"][:2])
+        assert all(r["path"] == "src/widget/core.py" and "file" not in r for r in res["results"][:2])
 
     @pytest.mark.asyncio
     async def test_concept_window_serves_one_row_per_file(self, setup_mcp):
@@ -1879,16 +1982,10 @@ class TestPathlessPagesInCodeLocationModes:
         assert f"{file_page['page_type']}:{file_page['path']}" == "file_page:pkg/cmd/release/list.go"
 
     @pytest.mark.asyncio
-    async def test_federated_rows_carry_path(self, setup_mcp, monkeypatch):
-        from repowise.server.mcp_server import search_codebase, tool_search
+    async def test_federated_rows_carry_path(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
 
         await self._seed()
-        ctx = await tool_search._resolve_repo_context(None)
-
-        async def one_context():
-            return [ctx]
-
-        monkeypatch.setattr(tool_search, "_resolve_all_contexts", one_context)
         res = await search_codebase("listing releases in order", mode="concept", repo="all")
         by_type = {r["page_type"]: r for r in res["results"]}
         assert by_type["file_page"]["path"] == "pkg/cmd/release/list.go"
@@ -2036,7 +2133,7 @@ class TestPathModeWithWords:
         result = await search_codebase(
             "services/_hotkey_pynput.py register hotkey", mode="path"
         )
-        assert [r["file"] for r in result["results"]] == ["services/_hotkey_pynput.py"]
+        assert [r["path"] for r in result["results"]] == ["services/_hotkey_pynput.py"]
 
 
 class TestSymbolModeExactOnly:

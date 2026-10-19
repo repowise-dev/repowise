@@ -88,7 +88,8 @@ class HealthWalkCache:
             self.misses += 1
             return None
         try:
-            value = pickle.loads(blob)
+            # Our own dumps, or an entry of the file load_sealed_pickle verified.
+            value = pickle.loads(blob)  # repowise-security-ignore: pickle_loads
         except Exception:
             self.misses += 1
             return None

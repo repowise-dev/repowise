@@ -22,6 +22,8 @@ _UI = "packages/ui/package.json"
         ('"myrepo/packages/ui/package.json"', True),
         ('"file:///abs/repo/packages/ui/package.json"', True),
         ('"PACKAGES/UI/package.json"', True),
+        ('"PACKAGES/UI/PACKAGE.JSON"', True),
+        ('"PACKAGE.JSON"', True),
         ('ROOT / "packages/web/package.json"', False),
         ('"tests/fixtures/package.json"', False),
         ('"/app/packages/web/package.json"', False),

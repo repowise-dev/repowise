@@ -55,7 +55,7 @@ describe("ChatDock", () => {
     for (const suggestion of [
       "Explain the main architectural boundaries",
       "Which parts of this repository deserve attention first?",
-      "Where should a new contributor start?",
+      "Give me a one-slide health summary with charts",
     ]) {
       expect(screen.getByRole("button", { name: suggestion })).toBeVisible();
     }

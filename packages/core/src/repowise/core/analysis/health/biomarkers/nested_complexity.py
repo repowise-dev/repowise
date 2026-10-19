@@ -1,4 +1,4 @@
-"""Nested Complexity — deeply indented control flow.
+"""Deep nesting — deeply indented control flow.
 
 Flags functions whose maximum nesting depth exceeds 4. Deep nesting is
 strongly correlated with defect density in published studies.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ..complexity.dispatch import judged_nesting
 from ..models import Severity
-from .base import BiomarkerResult, FileContext
+from .base import BiomarkerResult, FileContext, shape_details
 
 
 class NestedComplexityDetector:
@@ -41,7 +41,7 @@ class NestedComplexityDetector:
                         "max_nesting": fn.max_nesting,
                         "ccn": fn.ccn,
                         "cognitive": fn.cognitive,
-                        "dispatch_share": fn.dispatch_share,
+                        **shape_details(fn),
                     },
                     reason=f"{fn.name} nests {fn.max_nesting} levels deep",
                 )

@@ -161,8 +161,8 @@ def test_an_ambiguous_single_id_refuses_instead_of_crashing(tmp_path: Path) -> N
 
 def test_an_id_shaped_directory_stays_an_id(review_repo: Path, monkeypatch) -> None:
     """Reading a hex token as a path would drop it from the batch and exit 0."""
-    monkeypatch.chdir(review_repo.parent)
-    (review_repo.parent / "cccc").mkdir()
+    monkeypatch.chdir(review_repo)
+    (review_repo / "cccc").mkdir()
 
     result = CliRunner().invoke(
         cli, ["decision", "confirm", "aaaa", "cccc", "--preview", "--format", "json"]

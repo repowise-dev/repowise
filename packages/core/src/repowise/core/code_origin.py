@@ -90,6 +90,10 @@ _DOCSTRING_OPENER_RE = re.compile(r"""^[rRuUbB]?(?:\"\"\"|''')""")
 _GENERATED_DIR_TOKENS = frozenset({"__generated__", "generated-src", "generated-sources"})
 _GENERATED_BUILD_DIR = "generated"
 _BUILD_OUTPUT_PARENTS = frozenset({"main", "build", "target"})
+# Adjacent directories a generator owns where neither name does alone:
+# CocoaPods writes ``Pods/Target Support Files/``; a bare ``pods/`` is as often
+# a first-party package (Kubernetes pods).
+_GENERATED_DIR_PAIRS = frozenset({("pods", "target support files")})
 # Beyond the first two lines, only an explicit sentence in a comment counts:
 # Java generators put "This class is generated." in the class Javadoc, after
 # the license and the imports. The looser markers ("DO NOT EDIT") stay
@@ -109,6 +113,12 @@ _GENERATED_SENTENCE_RE = re.compile(
     r"|GENERATED\b.*(?:\bINSTEAD\b|\bDO NOT (?:HAND[- ])?(?:EDIT|MODIFY)|\bNOT BE (?:EDITED|MODIFIED))"
     r")"
 )
+# Dart build_runner's banner, written after the license, past the first two
+# lines. Only the whole line counts: "Do not modify by hand without ..." or
+# "Generated code: see docs" in a hand-written file says something else.
+_GENERATED_BANNER_LINE_RE = re.compile(r"^GENERATED CODE - DO NOT MODIFY BY HAND\s*$")
+# Visual Studio rewrites resource headers, but ingestion must keep their include edges.
+_VISUAL_CPP_BANNER_LINE_RE = re.compile(r"^MICROSOFT VISUAL C\+\+ GENERATED INCLUDE FILE\.?\s*$")
 _GENERATED_SENTENCE_LINES = 40
 _PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
 
@@ -174,9 +184,17 @@ def _leading_generated_sentence(header: str) -> bool:
         if text is None:
             if not line.startswith(_PREAMBLE_PREFIXES):
                 return False
-        elif _GENERATED_SENTENCE_RE.search(text.upper()) and not _above_import(lines, i):
+        elif _says_generated(text.upper()) and not _above_import(lines, i):
             return True
     return False
+
+
+def _says_generated(text: str) -> bool:
+    return bool(
+        _GENERATED_SENTENCE_RE.search(text)
+        or _GENERATED_BANNER_LINE_RE.search(text)
+        or _VISUAL_CPP_BANNER_LINE_RE.search(text)
+    )
 
 
 def _above_import(lines: list[str], i: int) -> bool:
@@ -218,7 +236,7 @@ def _code_suffixes() -> tuple[str, ...]:
 def _generated_suffixes() -> tuple[str, ...]:
     from .ingestion.languages.registry import REGISTRY
 
-    return tuple(sorted(REGISTRY.generated_suffixes()))
+    return tuple(sorted({s.lower() for s in REGISTRY.generated_suffixes()}))
 
 
 @cache
@@ -228,8 +246,46 @@ def _deps_suffixes() -> tuple[str, ...]:
     return tuple(sorted(REGISTRY.extensions_for(_DEPS_LANGUAGES)))
 
 
+# A bundler's output (webpack's ``[name].bundle.js``, an esbuild ``a2ui.bundle.js``).
+# Kept out of the registry's generated suffixes, which ingestion skips: the file
+# stays in the graph and only leaves the fix lists.
+_BUNDLE_SUFFIXES = (".bundle.js", ".bundle.mjs", ".bundle.cjs")
+# Dart build_runner outputs (json_serializable, freezed, auto_route, mockito,
+# flutter_gen), kept out of the registry for the same reason: a ``part`` file
+# must stay in the graph. ``.config.dart`` is not here: injectable writes one,
+# but the name is as often a hand-written config.
+_CODEGEN_SUFFIXES = (".g.dart", ".freezed.dart", ".gr.dart", ".mocks.dart", ".gen.dart")
+
+
 def _is_generated_name(name: str) -> bool:
-    return ".generated." in name or name.endswith(_generated_suffixes())
+    lowered = name.lower()
+    return (
+        ".generated." in lowered
+        or lowered.endswith(_generated_suffixes())
+        or lowered.endswith(_BUNDLE_SUFFIXES)
+        or lowered.endswith(_CODEGEN_SUFFIXES)
+    )
+
+
+# A bundler's output by its content, for chunks with no telling name: a
+# minified head (a mean line over 1,000 chars across at least 2 KB; hand-written
+# code averages well under 100), or webpack's chunk and runtime shapes, which
+# only webpack writes: ``(self.webpackChunkapp = ...).push(`` and a file
+# opening with the ``/******/`` runtime banner that defines
+# ``__webpack_require__``.
+_MINIFIED_MIN_HEAD = 2048
+_MINIFIED_MEAN_LINE = 1000
+_WEBPACK_CHUNK_RE = re.compile(
+    r"\(\s*(?:self|window|this|globalThis)(?:\.|\[\s*[\"'])webpack(?:Chunk|Jsonp)[\w$]*"
+)
+_WEBPACK_RUNTIME_RE = re.compile(r"\A\s*/\*{6}/.*?__webpack_require__", re.DOTALL)
+
+
+def _is_bundler_output(header: str) -> bool:
+    lines = header.count("\n") + 1
+    if len(header) >= _MINIFIED_MIN_HEAD and len(header) > _MINIFIED_MEAN_LINE * lines:
+        return True
+    return bool(_WEBPACK_CHUNK_RE.search(header) or _WEBPACK_RUNTIME_RE.search(header))
 
 
 # --------------------------------------------------------------------------
@@ -247,6 +303,9 @@ _VENDORED_DIR_TOKENS = frozenset(
         "node_modules",
         "bower_components",
         "site-packages",
+        # The Dart SDK's embedding headers that Flutter FFI plugins keep a copy
+        # of (``src/dart-sdk/include/dart_api_dl.h``).
+        "dart-sdk",
     }
 )
 # Matched as the first segment, or as a native tree's library shelf
@@ -413,10 +472,12 @@ _BUILD_SUFFIXES = (
     ".cake",
     ".rockspec",
 )
-# Bundler configs and gulp files, any extension a JS tool's config takes.
+# Bundler configs, gulp files, any extension a JS tool's config takes, and
+# SwiftPM version-specific manifests (``Package@swift-6.0.swift``).
 _BUILD_NAME_RE = re.compile(
     r"^(?:gulpfile|(?:webpack|vite|rollup|rolldown|rspack|esbuild|tsup)\.config(?:\.[\w-]+)*)"
     r"\.[cm]?[jt]s$"
+    r"|^package@swift-\d+(?:\.\d+){0,2}\.swift$"
 )
 # Names a build tool reads only at the root: a nested ``setup.py`` is as often
 # a module (``homeassistant/setup.py`` sets up integrations).
@@ -613,6 +674,12 @@ _TOOLING_STEM_SUFFIXES = ("_benchmark", "_benchmarks")
 _TOOLING_NAME_RE = re.compile(
     r"^(?:eslint\.config|jest\.config|vitest\.config|babel\.config|karma\.conf)\.[cm]?[jt]s$"
 )
+# Dart's package layout keeps private scripts in ``tool/`` beside ``lib/``. A bare
+# ``tool`` is shipped code elsewhere (Go's ``internal/tool``), so it counts only
+# for Dart files, and not once it sits under a package's shipped ``lib``/``bin``/
+# ``web``. Ceiling: path-only, so a ``tool/`` not at a package root also counts.
+_DART_TOOL_DIR = "tool"
+_DART_SHIPPED_DIRS = frozenset({"lib", "bin", "web"})
 
 
 def _header_text(text: str | bytes | None) -> str:
@@ -637,6 +704,7 @@ def _is_generated_path(name: str, dirs: list[str]) -> bool:
     return (
         _is_generated_name(name)
         or any(d in _GENERATED_DIR_TOKENS for d in dirs)
+        or any(pair in _GENERATED_DIR_PAIRS for pair in pairwise(dirs))
         or any(
             d == _GENERATED_BUILD_DIR and i and dirs[i - 1] in _BUILD_OUTPUT_PARENTS
             for i, d in enumerate(dirs)
@@ -677,7 +745,14 @@ def _is_tooling(name: str, dirs: list[str]) -> bool:
         or (not dirs and name in _TOOLING_ROOT_NAMES)
         or bool(_TOOLING_NAME_RE.match(name.lower()))
         or _is_benchmark_file(name)
+        or _is_dart_tool(name, dirs)
     )
+
+
+def _is_dart_tool(name: str, dirs: list[str]) -> bool:
+    if not name.lower().endswith(".dart") or _DART_TOOL_DIR not in dirs:
+        return False
+    return _DART_SHIPPED_DIRS.isdisjoint(dirs[: dirs.index(_DART_TOOL_DIR)])
 
 
 def _is_benchmark_file(name: str) -> bool:
@@ -718,9 +793,7 @@ def code_origin(
     normalized, name, dirs = split
     header = _header_text(text)
 
-    if _is_generated_path(name, dirs) or (
-        header and (_declares_generated(name, header) or _is_reference_stub(name, dirs, header))
-    ):
+    if _is_generated_path(name, dirs) or (header and _is_generated_content(name, dirs, header)):
         return "generated"
     if _is_vendored_path(name.lower(), dirs) or (
         header
@@ -729,6 +802,14 @@ def code_origin(
     ):
         return "vendored"
     return _maintained_origin(normalized, name, dirs, is_test, repo_root)
+
+
+def _is_generated_content(name: str, dirs: list[str], header: str) -> bool:
+    return (
+        _declares_generated(name, header)
+        or _is_reference_stub(name, dirs, header)
+        or _is_bundler_output(header)
+    )
 
 
 def _maintained_origin(

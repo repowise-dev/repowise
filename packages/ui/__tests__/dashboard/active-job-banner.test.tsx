@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { ActiveJobBanner } from "../../src/dashboard/active-job-banner.js";
 import type { Job } from "@repowise-dev/types/jobs";
 
@@ -60,5 +60,56 @@ describe("ActiveJobBanner", () => {
       />,
     );
     expect(screen.getByText("Details")).toBeInTheDocument();
+  });
+
+  it("shows a completed sync that lost pages to the provider as a warning with a settings link", () => {
+    const onDismiss = vi.fn();
+    render(
+      <ActiveJobBanner
+        job={makeJob({
+          status: "completed",
+          completed_pages: 0,
+          failed_pages: 10,
+          finished_at: "2026-01-01T00:01:00Z",
+          config: {
+            mode: "sync",
+            provider_issue: { kind: "auth", message: "API key rejected by openai. Update it in Settings." },
+          },
+        })}
+        settingsHref="/repos/r1/settings#provider"
+        onDismiss={onDismiss}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Sync finished with problems");
+    expect(screen.queryByText("Sync complete")).not.toBeInTheDocument();
+    expect(screen.getByText(/API key rejected by openai/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Provider settings/ })).toHaveAttribute(
+      "href",
+      "/repos/r1/settings#provider",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(onDismiss).toHaveBeenCalled();
+  });
+
+  it("links provider settings on a failure only when the provider caused it", () => {
+    const { rerender } = render(
+      <ActiveJobBanner
+        job={makeJob({ status: "failed", error_message: "Repository not found" })}
+        settingsHref="/s"
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Repository not found");
+    expect(screen.queryByRole("link", { name: /Provider settings/ })).not.toBeInTheDocument();
+    rerender(
+      <ActiveJobBanner
+        job={makeJob({
+          status: "failed",
+          error_message: "Could not reach http://localhost:11434.",
+          config: { mode: "sync", provider_issue: { kind: "unreachable", message: "x" } },
+        })}
+        settingsHref="/s"
+      />,
+    );
+    expect(screen.getByRole("link", { name: /Provider settings/ })).toBeInTheDocument();
   });
 });

@@ -9,14 +9,18 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, ClassVar
 
-from ..loop_facts import BatchForm
+from .. import loop_lexicon as lex
+from ..loop_facts import BatchForm, LoopSource
+from .iterables import IterableSources
 from .python import HTTP_VERBS
 from .ts_js_markers import TsJsMarkerHooks, first_named_child, identifier_name
 
 if TYPE_CHECKING:
     from tree_sitter import Node
 
-    from ..loop_facts import LoopMagnitude, SinkProbe
+    from ..loop_facts import LoopIterates, LoopMagnitude, SinkProbe
+
+    Source = tuple[LoopIterates, LoopMagnitude | None]
 
 # TypeScript / JavaScript. Only DISTINCTIVE method names are trusted without
 # import resolution: bare create/update/delete/count/exec collide hard with
@@ -66,14 +70,6 @@ TS_SINK_METHODS: frozenset[str] = (
     )
 )
 
-_TS_STRING_KINDS: frozenset[str] = frozenset({"string", "template_string"})
-_TS_AUG_ASSIGN_KINDS: frozenset[str] = frozenset({"augmented_assignment_expression"})
-# The walker's TS/JS loop kinds (``complexity.languages``), which cannot be
-# imported here without a cycle through the complexity package.
-_TS_LOOP_KINDS: frozenset[str] = frozenset(
-    {"for_statement", "for_in_statement", "for_of_statement", "while_statement", "do_statement"}
-)
-
 # A function/lambda scope: the boundary for the reaching-assignment walk and the
 # "not a loop exit" skip for break/return/throw inside a nested closure (a
 # callback's own ``return`` doesn't exit the loop).
@@ -92,6 +88,48 @@ _PRISMA_BULK_FORMS: dict[str, str] = {
 # method async-mutex (``runExclusive``) and bottleneck (``schedule``) run work through.
 _LIMITER_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit|mutex)$")
 _LIMITER_METHODS: frozenset[str] = frozenset({"runExclusive", "schedule"})
+
+# ESLint's rule for an ``await`` inside a loop, and its directive comments:
+# ``// eslint-disable-next-line no-await-in-loop -- why`` and friends.
+_AWAIT_IN_LOOP_RULE = "no-await-in-loop"
+_ESLINT_DIRECTIVE_RE = re.compile(
+    rb"(?://|/\*)[ \t]*eslint-(disable-next-line|disable-line|disable|enable)\b([^\r\n]*)"
+)
+
+
+def _directive_rules(tail: bytes) -> set[str]:
+    """Rule names a directive lists, its ``-- reason`` and comment end dropped."""
+    text = tail.decode("utf-8", "replace").split("*/")[0].split("--")[0]
+    return {rule.strip() for rule in text.split(",") if rule.strip()}
+
+
+def _eslint_allowed_lines(source: bytes, rule: str) -> frozenset[int]:
+    """1-indexed lines an ESLint directive naming *rule* switches it off on.
+
+    A directive with no rule list switches off every rule; it says nothing about
+    this one in particular, so it does not count.
+    """
+    lines: set[int] = set()
+    opened: int | None = None
+    for match in _ESLINT_DIRECTIVE_RE.finditer(source):
+        kind = match.group(1)
+        rules = _directive_rules(match.group(2))
+        line = source.count(b"\n", 0, match.start()) + 1
+        if kind == b"enable":
+            if opened is not None and (not rules or rule in rules):
+                lines.update(range(opened, line + 1))
+                opened = None
+        elif rule not in rules:
+            continue
+        elif kind == b"disable-next-line":
+            lines.add(line + 1)
+        elif kind == b"disable-line":
+            lines.add(line)
+        elif opened is None:
+            opened = line
+    if opened is not None:
+        lines.update(range(opened, source.count(b"\n") + 2))
+    return frozenset(lines)
 
 _ASSIGNMENT_FIELDS: dict[str, tuple[str, str]] = {
     "variable_declarator": ("name", "value"),
@@ -147,9 +185,120 @@ def _is_data_projection(node: Node) -> bool:
     return node.type == "member_expression" and prop is not None and prop.text == b"data"
 
 
+_TS_FUNCTION_KINDS = frozenset(
+    {
+        "function_declaration", "function_expression", "arrow_function", "method_definition",
+        "generator_function_declaration", "generator_function",
+    }
+)
+
+
+def _ts_walk(node: Node):
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(current.children)
+
+
+def _declares(scope: Node, name: bytes) -> bool:
+    """Whether a declarator, parameter or import anywhere in *scope* binds *name*."""
+    for node in _ts_walk(scope):
+        if node.type == "variable_declarator":
+            key = node.child_by_field_name("name")
+            if key is not None and key.text == name:
+                return True
+        elif node.type == "identifier" and node.text == name and node.parent is not None:
+            parent = node.parent
+            if parent.type in ("formal_parameters", "required_parameter", "optional_parameter"):
+                return True
+            if parent.type == "arrow_function" and parent.child_by_field_name("parameter") == node:
+                return True
+    return False
+
+
+def _top_level_number_const(root: Node, name: bytes) -> bool:
+    """``const NAME = 5`` as the only top-level binding of NAME, exported or not."""
+    found: list[Node] = []
+    for stmt in root.children:
+        decl = stmt.child_by_field_name("declaration") if stmt.type == "export_statement" else stmt
+        if decl is None:
+            continue
+        if decl.type in ("lexical_declaration", "variable_declaration"):
+            found += [
+                (decl, d) for d in decl.named_children
+                if d.type == "variable_declarator"
+                and (key := d.child_by_field_name("name")) is not None and key.text == name
+            ]
+        elif decl.type != "expression_statement" and _declares(decl, name):
+            return False  # a function, class or import binds it too
+    if len(found) != 1:
+        return False
+    decl, declarator = found[0]
+    value = declarator.child_by_field_name("value")
+    return decl.children[0].type == "const" and value is not None and value.type == "number"
+
+
+def _module_number_constant(name: bytes, node: Node) -> bool:
+    """``const NAME = 5`` at the top of *node*'s file, with no enclosing function
+    binding NAME again (a parameter or a local of the same name shadows it)."""
+    cur = node.parent
+    while cur is not None and cur.parent is not None:
+        if cur.type in _TS_FUNCTION_KINDS and _declares(cur, name):
+            return False
+        cur = cur.parent
+    return cur is not None and _top_level_number_const(cur, name)
+
+
+# Directory listings; a ``walk*`` helper or a ``recursive``/``**`` argument walks a tree.
+_TS_LISTINGS = frozenset(
+    {"readdir", "readdirSync", "glob", "globSync", "walk", "walkSync", "walkFiles"}
+)
+# Array and Map methods that walk (a projection of) their receiver.
+_TS_PASS_THROUGH = frozenset(
+    {"filter", "map", "flatMap", "toSorted", "sort", "toReversed", "reverse", "entries",
+     "keys", "values"}
+)
+# ``Object.entries(x)`` / ``Array.from(x)`` walk their first argument.
+_TS_ARG_WALKERS = frozenset({"entries", "keys", "values", "from"})
+
+
+def _text(node: Node) -> str:
+    return (node.text or b"").decode("utf-8", "replace")
+
+
+def _param_names(fn: Node) -> set[bytes]:
+    params = fn.child_by_field_name("parameters") or fn.child_by_field_name("parameter")
+    if params is None:
+        return set()
+    kinds = ("identifier", "shorthand_property_identifier_pattern")
+    return {n.text for n in _ts_walk(params) if n.type in kinds and n.text}
+
+
+def _counted_stop(loop: Node) -> Node | None:
+    """``n`` of a counted loop's ``i < n`` / ``i <= n``."""
+    cond = loop.child_by_field_name("condition")
+    if cond is not None and cond.type == "expression_statement":
+        cond = first_named_child(cond)
+    if cond is None or cond.type != "binary_expression":
+        return None
+    if not any(c.type in ("<", "<=") for c in cond.children):
+        return None
+    return cond.child_by_field_name("right")
+
+
+def _fixed_count(stop: Node) -> bool:
+    """``3``, or ``MAX`` that its file binds once to a number."""
+    if stop.type == "number":
+        return True
+    name = identifier_name(stop)
+    return bool(name) and name.isupper() and _module_number_constant(stop.text or b"", stop)
+
+
 def _slice_is_bounded(call: Node) -> bool:
-    """``.slice(a, N)`` where N is an integer literal or an ALL_CAPS named
-    constant — a constant-width read, not the whole collection."""
+    """``.slice(a, N)`` where N is an integer literal or an ALL_CAPS constant
+    its own file binds to one: a constant-width read, not the whole collection.
+    The spelling alone proves nothing."""
     args = call.child_by_field_name("arguments")
     named = [c for c in args.children if c.is_named] if args is not None else []
     if len(named) != 2:
@@ -158,7 +307,7 @@ def _slice_is_bounded(call: Node) -> bool:
     if end.type == "number":
         return True
     name = identifier_name(end)
-    return name is not None and name.isupper()
+    return bool(name and name.isupper()) and _module_number_constant(end.text or b"", end)
 
 
 def _sole_where_pair(call: Node) -> tuple[Node, Node] | None:
@@ -173,23 +322,14 @@ def _sole_where_pair(call: Node) -> tuple[Node, Node] | None:
     return (key, value) if key is not None and value is not None else None
 
 
-def _assigned_value(node: Node, name: bytes) -> Node | None:
-    """The value *node* binds to the bare identifier *name*, if it is such a binding."""
-    fields = _ASSIGNMENT_FIELDS.get(node.type)
-    if fields is None:
-        return None
-    target, value = (node.child_by_field_name(field) for field in fields)
-    if target is None or target.type != "identifier" or target.text != name:
-        return None
-    return value
-
-
-class TsJsPerfDialect(TsJsMarkerHooks):
+class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
     language = "typescript"
     markers = frozenset(
         {
             "io_in_loop",
-            "string_concat_in_loop",
+            # No ``string_concat_in_loop``: every major JS engine (V8, SpiderMonkey,
+            # JavaScriptCore) concatenates through ropes, so ``s += x`` in a loop
+            # is linear and is the idiom, not the problem (as Rust's ``push_str``).
             "resource_construction_in_loop",
             "serial_await_in_loop",
             "membership_test_against_list_in_loop",
@@ -203,8 +343,6 @@ class TsJsPerfDialect(TsJsMarkerHooks):
         }
     )
 
-    string_literal_kinds = _TS_STRING_KINDS
-    aug_assign_kinds = _TS_AUG_ASSIGN_KINDS
     switch_kinds = frozenset({"switch_statement"})
     # Node's ``child_process`` launchers return a ChildProcess at once and report
     # through callbacks or events; only their ``*Sync`` forms wait for the child.
@@ -213,32 +351,15 @@ class TsJsPerfDialect(TsJsMarkerHooks):
     # is excluded with them, a recall loss only.
     hot_path_excluded_methods = frozenset({"spawn", "exec", "execFile"})
 
-    def is_string_concat(self, node: Node) -> bool:
-        """``s += "x"`` that can grow ``s`` across loop iterations.
-
-        A ``let`` declared or freshly assigned inside the loop body is bounded
-        per pass, and an append right before ``break`` / ``return`` / ``throw``
-        runs once. A member or subscript target (``buf[0] += ...``) keeps the
-        flag: nothing here re-binds it.
-        """
-        if not super().is_string_concat(node):
-            return False
-        left = node.child_by_field_name("left")
-        if left is None or left.type != "identifier" or left.text is None:
-            return True
-        return self.accumulates_across_iterations(node, left.text, _TS_LOOP_KINDS)
-
-    def binds_name(self, node: Node, name: bytes) -> bool:
-        # ``s = s + part`` keeps accumulating; only a value not built from ``s`` resets it.
-        value = _assigned_value(node, name)
-        return value is not None and not any(
-            n.type == "identifier" and n.text == name for n in self._walk(value)
-        )
-
     # Only ``for ... of`` / ``for ... in`` multiply over a collection. C-style
     # ``for (;;)``, ``while`` and ``do`` are cursors (pagination / polling), so
     # they do not make an inner sink a nested O(n*m) round-trip.
     _ITERATION_LOOP_KINDS: frozenset[str] = frozenset({"for_in_statement", "for_of_statement"})
+
+    def awaits_in_loop_allowed(self, source: bytes) -> frozenset[int]:
+        if _AWAIT_IN_LOOP_RULE.encode() not in source:
+            return frozenset()
+        return _eslint_allowed_lines(source, _AWAIT_IN_LOOP_RULE)
 
     def is_iteration_loop(self, node: Node) -> bool:
         return node.type in self._ITERATION_LOOP_KINDS
@@ -357,8 +478,9 @@ class TsJsPerfDialect(TsJsMarkerHooks):
         if method == "slice":
             return "bounded" if _slice_is_bounded(call) else None
         if probe(call) in ("db", "network"):
-            # A read capped in the query (``take: n``) is as large as its cap.
-            capped = any(_pair_key_is(n, b"take") for n in self._walk(call))
+            # A read capped in the query (``take: n``) is as large as its cap, and
+            # one filtered to a set of keys (``id: { in: ids }``) as large as the keys.
+            capped = any(_pair_key_is(n, k) for n in self._walk(call) for k in (b"take", b"in"))
             return None if capped else "grows_with_data"
         if method == "json":
             # ``fetch(url).json()`` / ``(await sink()).json()`` — a
@@ -366,25 +488,147 @@ class TsJsPerfDialect(TsJsMarkerHooks):
             return self._grows(self._magnitude_of_expr(_callee_object(call), probe, depth + 1))
         return None
 
-    def _reaching_assignment(self, loop: Node, name: bytes) -> Node | None:
-        """The value of the last ``name = ...`` before *loop* in its function."""
-        last: tuple[int, Node] | None = None
-        for node in self._walk(_enclosing_scope(loop), prune=_FN_KINDS):
-            if node.end_byte > loop.start_byte:
-                continue
-            value = _assigned_value(node, name)
-            if value is not None and (last is None or node.start_byte > last[0]):
-                last = (node.start_byte, value)
-        return last[1] if last is not None else None
+    # -- what a loop walks: the shared reading (perf/dialects/iterables.py) -------
+    function_kinds = _FN_KINDS
+    member_kinds = frozenset({"member_expression"})
+    recursive_listings = frozenset({"walk", "walkSync", "walkFiles"})
+    recursive_marks = (b"**", b"recursive: true")
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "else_clause", "switch_statement", "switch_case", "switch_default",
+            "for_statement", "for_in_statement", "while_statement", "do_statement",
+            "try_statement", "catch_clause", "ternary_expression",
+        }
+    )
+    # The iterable's own syntax (``_magnitude_of_expr``) says whether a read grows.
+    read_grows = None
 
-    def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
+    def _scope(self, anchor: Node) -> Node | None:
+        # A script's top-level loop reads the bindings around it.
+        return _enclosing_scope(anchor)
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        fields = _ASSIGNMENT_FIELDS.get(node.type)
+        if fields is None:
+            return []
+        target, value = (node.child_by_field_name(field) for field in fields)
+        ok = target is not None and target.type == "identifier" and target.text and value is not None
+        return [(target.text, value)] if ok else []
+
+    def loop_source(self, loop: Node, probe: SinkProbe) -> LoopSource | None:
+        if loop.type == "for_statement":
+            iterates, claim = self._counted_source(loop, probe)
+            return LoopSource(iterates, claim or "unknown") if iterates != "unknown" else None
         if not self.is_iteration_loop(loop):
             return None
         right = loop.child_by_field_name("right")
-        magnitude = self._magnitude_of_expr(right, probe)
-        if magnitude is None and right is not None and identifier_name(right):
-            return self._magnitude_of_expr(self._reaching_assignment(loop, right.text), probe)
+        baseline = self._expr_magnitude(right, loop, probe)
+        iterates, claim = self._source(right, loop, probe, hop=True)
+        if iterates == "unknown" and baseline is None:
+            return None
+        return LoopSource(iterates, claim or baseline or "unknown")
+
+    def _expr_magnitude(
+        self, expr: Node | None, loop: Node, probe: SinkProbe
+    ) -> LoopMagnitude | None:
+        """What *expr*'s syntax proves, one step through the name's last assignment."""
+        magnitude = self._magnitude_of_expr(expr, probe)
+        if magnitude is None and expr is not None and identifier_name(expr):
+            return self._magnitude_of_expr(self.reaching_value(loop, expr.text), probe)
         return magnitude
+
+    def _counted_source(self, loop: Node, probe: SinkProbe) -> Source:
+        """``i < 3`` / ``i < MAX`` (a literal its file binds once) is a constant;
+        ``i < rows.length`` walks ``rows``."""
+        stop = _counted_stop(loop)
+        if stop is None:
+            return "unknown", None
+        if _fixed_count(stop):
+            return "constant", "bounded"
+        prop = stop.child_by_field_name("property") if stop.type == "member_expression" else None
+        if prop is not None and prop.text == b"length":
+            walked = stop.child_by_field_name("object")
+            iterates, claim = self._source(walked, loop, probe, hop=True)
+            return iterates, claim or self._expr_magnitude(walked, loop, probe)
+        return "unknown", None
+
+    def _source(self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        """What *expr* walks, and the magnitude that settles when it differs from
+        what the iterable's syntax alone proves (``None``: keep that)."""
+        if expr is None:
+            return "unknown", None
+        node = _unwrap(expr)
+        if node.type == "binary_expression" and any(c.type in ("||", "??") for c in node.children):
+            return self._source(node.child_by_field_name("left"), loop, probe, hop=hop)
+        if node.type in ("identifier", "member_expression") and lex.is_config_name(_text(node)):
+            # A registry grows with what users register: the name alone bounds nothing.
+            return "config_table", None
+        if node.type == "identifier":
+            value = self.reaching_value(loop, node.text or b"") if hop else None
+            if value is not None:
+                return self._source(value, loop, probe, hop=False)
+            if (node.text or b"") in _param_names(_enclosing_scope(loop)):
+                return "parameter", None
+            return "unknown", None
+        if node.type == "member_expression" and _is_data_projection(node):
+            return self._source(node.child_by_field_name("object"), loop, probe, hop=hop)
+        if node.type == "call_expression":
+            return self._call_source(node, loop, probe, hop=hop)
+        return "unknown", None
+
+    def _call_source(self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        method, fn, receiver, first = self._call_bits(call)
+        if lex.is_config_name(self._dotted_path(fn) or "", callee=True):
+            return "config_table", None
+        if method == "slice" and _slice_is_bounded(call):
+            # A fixed-width slice bounds the trip count, not what is walked.
+            return self._source(receiver, loop, probe, hop=hop)[0], "bounded"
+        if receiver is not None and (
+            receiver.text in (b"Object", b"Array") or method in _TS_PASS_THROUGH
+        ):
+            return self._walked_source(method, receiver, first, loop, probe, hop=hop)
+        if method in _TS_LISTINGS:
+            return "listing", "grows_with_data" if self._walks_repo(call, method, loop) else None
+        if probe(call) in ("db", "network"):
+            return self._query(call, loop)
+        return "unknown", None
+
+    def _call_bits(self, call: Node) -> tuple[str, Node | None, Node | None, Node | None]:
+        """``(method, callee, receiver, first argument)`` of a call."""
+        fn = call.child_by_field_name("function")
+        is_member = fn is not None and fn.type == "member_expression"
+        args = call.child_by_field_name("arguments")
+        first = next((c for c in args.children if c.is_named), None) if args is not None else None
+        return self.callee_method_name(call) or "", fn, _callee_object(call) if is_member else None, first
+
+    def _walked_source(
+        self,
+        method: str,
+        receiver: Node,
+        first: Node | None,
+        loop: Node,
+        probe: SinkProbe,
+        *,
+        hop: bool,
+    ) -> Source:
+        """``Object.entries(x)`` / ``Array.from(x)`` walk ``x``; ``xs.filter(f)`` walks ``xs``."""
+        if receiver.text in (b"Object", b"Array"):
+            if method not in _TS_ARG_WALKERS:
+                return "unknown", None
+            return self._source(first, loop, probe, hop=hop)
+        return self._source(receiver, loop, probe, hop=hop)
+
+    def reads_config_table(self, call: Node, nodes: list[Node]) -> bool:
+        """Every table the read names is a registry (``FROM repos``), or with no SQL,
+        the delegate does (``prisma.repository.findMany()``)."""
+        sql = [n.text or b"" for n in self._walk(call) if n.type in ("string", "template_string")]
+        sql = [text for text in sql if lex.sql_tables(text)]
+        if sql:
+            return all(lex.is_config_sql(text) for text in sql)
+        model = _callee_object(call)
+        prop = model.child_by_field_name("property") if model is not None else None
+        delegate = _text(prop) if prop is not None and model.type == "member_expression" else ""
+        return bool(delegate) and lex.is_config_model(delegate[:1].upper() + delegate[1:])
 
     def _awaited_wrapper_call(self, closure: Node) -> Node | None:
         """The awaited call *closure* is passed to (``await limit(() => f(x))``).

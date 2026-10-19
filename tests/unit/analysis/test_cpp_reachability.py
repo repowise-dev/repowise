@@ -87,6 +87,23 @@ class TestCppFileReachable:
         pkgs = build_cpp_package_files(graph)
         assert is_cpp_file_reachable("a/foo.h", graph, pkgs) is True
 
+    def test_co_change_is_not_an_importer(self) -> None:
+        # Committed together is history: no include reaches the file or its sibling.
+        graph = _build_graph(
+            {
+                "a/foo.cc": _cpp_file(),
+                "a/foo_impl.cc": _cpp_file(),
+                "b/bar.cc": _cpp_file(),
+            },
+            edges=[
+                ("b/bar.cc", "a/foo.cc", {"edge_type": "co_changes"}),
+                ("b/bar.cc", "a/foo_impl.cc", {"edge_type": "co_changes"}),
+            ],
+        )
+        pkgs = build_cpp_package_files(graph)
+        assert is_cpp_file_reachable("a/foo.cc", graph, pkgs) is False
+        assert is_cpp_file_reachable("a/foo_impl.cc", graph, pkgs) is False
+
     def test_main_carrier_is_reachable(self) -> None:
         graph = _build_graph(
             {

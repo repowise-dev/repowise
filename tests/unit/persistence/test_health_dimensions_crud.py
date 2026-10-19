@@ -258,3 +258,54 @@ async def test_get_health_findings_accepts_comma_separated_biomarker_types(async
     # Single value still behaves as an exact match.
     single = await get_health_findings(async_session, repo.id, biomarker_type="change_entropy")
     assert {r.biomarker_type for r in single} == {"change_entropy"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("head", ["new", None])
+async def test_a_history_rescore_stamps_the_commit_it_read(async_session, monkeypatch, head):
+    """The health basis reads the newest metric row. A history refresh rewrote
+    unchanged files' rows but kept their first commit, so the basis read 100
+    commits behind. With HEAD unreadable the stamp is cleared, not kept."""
+    from types import SimpleNamespace
+
+    import repowise.core.analysis.health.history_refresh as history_refresh
+    import repowise.core.persistence.crud as crud
+    import repowise.core.pipeline.persist as persist
+    from repowise.core.pipeline.incremental import refresh_unchanged_history
+
+    repo = await insert_repo(async_session)
+    await upsert_health_metrics(
+        async_session, repo.id, [_metric("a.py"), _metric("b.py")], analyzed_commit="old"
+    )
+    await async_session.commit()
+
+    async def git_rows(*_args, **_kwargs):
+        return {"a.py": object()}
+
+    def rescore(**_kwargs):
+        return [
+            SimpleNamespace(
+                file_path="a.py",
+                score=5.0,
+                defect_score=5.0,
+                maintainability_score=6.0,
+                performance_score=None,
+                structure_deduction=1.0,
+                history_deduction=1.5,
+                findings=[],
+            )
+        ]
+
+    async def read_head(*_args):
+        return head
+
+    monkeypatch.setattr(crud, "get_all_git_metadata", git_rows)
+    monkeypatch.setattr(history_refresh, "git_meta_rows_to_map", lambda rows: {"a.py": {}})
+    monkeypatch.setattr(history_refresh, "active_contributors", lambda meta: 1)
+    monkeypatch.setattr(history_refresh, "refresh_history", rescore)
+    monkeypatch.setattr(persist, "_analyzed_commit", read_head)
+
+    await refresh_unchanged_history(async_session, repo.id, ".", skip_paths=set())
+    rows = {r.file_path: r for r in await get_health_metrics(async_session, repo.id)}
+    assert (rows["a.py"].score, rows["a.py"].analyzed_commit) == (5.0, head)
+    assert rows["b.py"].analyzed_commit == "old"  # not rescored, not restamped

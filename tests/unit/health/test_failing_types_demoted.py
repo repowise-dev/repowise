@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
-    effective_safe_to_delete,
 )
 from repowise.core.analysis.finding_registry import excluded_types, status_of
 from repowise.core.analysis.health.biomarkers.base import FileContext

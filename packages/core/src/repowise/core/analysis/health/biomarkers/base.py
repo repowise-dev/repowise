@@ -70,6 +70,8 @@ class FileContext:
     branch_coverage_pct: float | None = None
     covered_lines: set[int] = field(default_factory=set)
     total_coverable_lines: int = 0
+    # Only a docstring, imports and export lists: no code for coverage to measure.
+    reexport_only: bool = False
     # Duplication signals (populated when the engine ran the
     # duplication detector for this analyze() call). ``clones`` is the
     # list of clone pairs this file participates in; ``duplication_pct``
@@ -163,6 +165,15 @@ class BiomarkerResult:
     # carried for display/filtering. Stays fully per-finding attributable, so
     # the linear ``health_impact`` contract holds.
     deduction: float | None = None
+
+
+def shape_details(fn: FunctionComplexity) -> dict[str, Any]:
+    """The shape facts every function-size marker stores beside its numbers:
+    the dispatch share always, the terminal share only when there is one."""
+    out: dict[str, Any] = {"dispatch_share": fn.dispatch_share}
+    if fn.terminal_share:
+        out["terminal_share"] = fn.terminal_share
+    return out
 
 
 class Biomarker(Protocol):
