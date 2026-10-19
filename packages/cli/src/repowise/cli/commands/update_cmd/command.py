@@ -1424,6 +1424,7 @@ def _run_partial_analyses(run: UpdateRun) -> None:
         stored_performance_callers=stored_performance_callers,
         repo_function_mod_p80=repo_function_mod_p80,
         timings=run.timings,
+        dead_code=not _dead_code_unchanged(run),
     )
     run.doc_drift_report = _run_doc_drift_partial(
         run.graph_builder,
@@ -1433,6 +1434,49 @@ def _run_partial_analyses(run: UpdateRun) -> None:
         base_ref=run.base_ref,
         file_diffs=run.file_diffs,
     )
+
+
+_PROSE_SUFFIXES = frozenset({".rst"})
+
+
+def _is_prose(path: str) -> bool:
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    suffix = Path(path).suffix.lower()
+    return suffix in _PROSE_SUFFIXES or REGISTRY.from_extension(suffix) in ("markdown", "asciidoc")
+
+
+def _dead_code_unchanged(run: UpdateRun) -> bool:
+    """Whether the stored dead-code findings still stand and nothing this run reads new ones.
+
+    True only when every changed file is prose, no analyzer, parser, renderer,
+    history or config change forces a re-score, and neither a page render nor a
+    knowledge-graph rebuild in this run consumes the report.
+    """
+    config = run.config
+    if (
+        run.analyzer_changed
+        or run.extraction_changed
+        or run.renderer_changed
+        or run.history_stale
+        or config.changed
+    ):
+        return False
+    changed = [path for fd in run.file_diffs for path in (fd.path, fd.old_path) if path]
+    rendered = run.affected.regenerate if run.affected is not None else []
+    if not all(map(_is_prose, [*changed, *rendered])) or run.stale_deterministic_ids:
+        return False
+    from repowise.core.analysis.knowledge_graph import (
+        compute_kg_fingerprint,
+        should_skip_kg_rebuild,
+    )
+
+    prior = (run.state.get("knowledge_graph") or {}).get("fingerprint")
+    kg_path = Path(run.repo_path) / ".repowise" / "knowledge-graph.json"
+    try:
+        return should_skip_kg_rebuild(prior, compute_kg_fingerprint(run.graph_builder), kg_path)
+    except Exception:
+        return False
 
 
 def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:

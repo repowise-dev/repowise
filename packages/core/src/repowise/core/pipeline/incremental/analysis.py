@@ -51,6 +51,7 @@ def run_partial_analysis(
     coverage_map: dict[str, dict] | None = None,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
+    dead_code: bool = True,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -87,6 +88,9 @@ def run_partial_analysis(
     ``timings`` records the two analyses as ``analysis.health`` and
     ``analysis.dead_code``. Their costs move independently with the edit, so
     they are never folded into one row.
+
+    ``dead_code=False`` skips the dead-code pass and returns ``None`` for it,
+    which keeps the stored findings.
     """
     log = log or _noop_log
 
@@ -106,6 +110,7 @@ def run_partial_analysis(
         from repowise.core.analysis.execution_graph import ExecutionGraphIndex
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
+        from repowise.core.analysis.health.scope import scores_language
 
         _health_changed = {
             fd.path for fd in file_diffs if fd.status in ("added", "modified", "renamed")
@@ -143,7 +148,13 @@ def run_partial_analysis(
                 changed_files=_health_scope,
                 repo_function_mod_p80=repo_function_mod_p80,
                 timings=timings,
-                duplication_files=_health_changed,
+                # Clone pairs are read only for code; a prose-only change splices nothing.
+                duplication_files={
+                    pf.file_info.path
+                    for pf in parsed_files
+                    if pf.file_info.path in _health_changed
+                    and scores_language(pf.file_info.language)
+                },
             )
             # The closure exists only to refresh interprocedural performance.
             # Preserve the historical changed-file scope for every other
@@ -187,6 +198,8 @@ def run_partial_analysis(
     # short-circuit, which left the closure's reference to
     # ``dead_code_report`` unbound and crashed every ``--index-only`` run.
     dead_code_report = None
+    if not dead_code:
+        return partial_health_report, None
     if timings is not None:
         timings.start("analysis.dead_code")
     try:

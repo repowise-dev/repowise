@@ -790,7 +790,8 @@ class HealthAnalyzer:
         """
         from repowise.core.pipeline.phase_timing import timed
 
-        if "dry_violation" in run.disabled:
+        # An empty splice set: no file whose clone list a biomarker reads changed.
+        if "dry_violation" in run.disabled or changed == set():
             return DuplicationReport()
         try:
             with timed(timings, "analysis.health.duplication"):
