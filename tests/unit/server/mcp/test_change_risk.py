@@ -435,7 +435,8 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    it = (await module.get_change_risk(baseline=0))["impacted_tests"]
+    assert "why" not in (await module.get_change_risk(baseline=0))["impacted_tests"]
+    it = (await module.get_change_risk(baseline=0, include=["tests"]))["impacted_tests"]
 
     assert it["status"] == "selected"
     assert it["basis"] == "inferred"

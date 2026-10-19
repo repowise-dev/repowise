@@ -140,7 +140,10 @@ async def test_a_surfaced_finding_can_be_expanded_by_its_id(tool, make_repo):
 
     listing = await module.get_change_risk("HEAD", baseline=0)
     row = listing["health_delta"]["top_findings"][0]
-    assert row["inspect"] == f"get_change_risk(revspec='HEAD', finding_id={row['id']!r})"
+    assert "inspect" not in row
+    full = await module.get_change_risk("HEAD", baseline=0, include=["findings"])
+    inspect = full["health_delta"]["top_findings"][0]["inspect"]
+    assert inspect == f"get_change_risk(revspec='HEAD', finding_id={row['id']!r})"
 
     detail = await module.get_change_risk("HEAD", baseline=0, finding_id=row["id"])
 

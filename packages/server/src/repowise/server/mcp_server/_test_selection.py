@@ -27,6 +27,9 @@ from repowise.server.mcp_server._budget import OmissionCollector
 _REASONS_LIMIT = 3
 #: Changed files whose deciding evidence is named.
 _BASIS_LIMIT = 10
+#: Share of the suite past which a selection made on a lagging index is
+#: labelled ``degraded``: the files the index has not seen filled it, not the change.
+_DEGRADED_SHARE = 0.5
 #: Past this the agent is told to run the CLI instead of waiting. Ceiling: the
 #: call walk is per-level SQL; loading call edges once is the upgrade.
 SELECTION_TIMEOUT_SECONDS = 30.0
@@ -307,16 +310,26 @@ def selection_block(
     *,
     limit: int,
     label: str,
+    detail: bool = True,
 ) -> dict[str, Any]:
     """The wire view of *selection*: verdict, reasons, the run list's head and why.
 
     ``tests_to_run`` empty with ``run_all`` false means the change needs no
     test (documentation, a deleted test); with ``run_all`` true it means nothing
-    narrower than the full suite is known.
+    narrower than the full suite is known. ``status`` is ``degraded`` when the
+    index predates files outside the change and the selection holds over half
+    the suite: the list stands and ``summary`` says why. The tail of a list
+    holding most of the suite is not stored when every test is to run anyway.
+    *detail* adds ``why`` and ``basis_by_file``.
     """
     run_list = list(selection.tests)  # in run order (``test_ranking``)
     shown = run_list[:limit]
-    if len(run_list) > limit:
+    known = set(selection.known_tests)
+    held = len(known & set(selection.test_files))
+    broad = held > len(known) * _DEGRADED_SHARE
+    degraded = broad and not selection.run_all and bool(result.get("index_gap"))
+    # Most of the suite under a verdict to run all of it: the tail restores nothing to act on.
+    if len(run_list) > limit and not (broad and (selection.run_all or degraded)):
         collector.add(
             f"{label}.tests_to_run beyond cap={limit} ({len(run_list) - limit} dropped)",
             run_list[limit:],
@@ -330,8 +343,9 @@ def selection_block(
         )
     basis_rows = sorted(selection.basis.items())
     always = sum(not selected_by_change(selection, t) for t in selection.test_files)
+    status = "run_all" if selection.run_all else "degraded" if degraded else "selected"
     block: dict[str, Any] = {
-        "status": "run_all" if selection.run_all else "selected",
+        "status": status,
         "run_all": selection.run_all,
         "reasons": reasons[:_REASONS_LIMIT],
         "reasons_total": len(reasons),
@@ -342,14 +356,22 @@ def selection_block(
         "total": len(run_list),
         "truncated": len(run_list) > limit,
         "always_run_total": always,
-        "why": {
-            path: selection.why[path]
-            for path in dict.fromkeys(t.split("::", 1)[0] for t in shown)
-            if path in selection.why
-        },
-        "basis_by_file": dict(basis_rows[:_BASIS_LIMIT]),
-        "summary": _summary(selection, len(run_list), always, limit),
+        "summary": (
+            f"the index predates files changed outside this change, so {held} of "
+            f"{len(known)} test files were selected; run the whole suite, or "
+            "`repowise update` to narrow it."
+            if degraded
+            else _summary(selection, len(run_list), always, limit)
+        ),
     }
+    if not detail:
+        return block
+    block["why"] = {
+        path: selection.why[path]
+        for path in dict.fromkeys(t.split("::", 1)[0] for t in shown)
+        if path in selection.why
+    }
+    block["basis_by_file"] = dict(basis_rows[:_BASIS_LIMIT])
     if len(basis_rows) > _BASIS_LIMIT:
         block["basis_by_file_total"] = len(basis_rows)
         collector.add(

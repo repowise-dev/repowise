@@ -129,7 +129,7 @@ async def _change_risk(monkeypatch, repo: Path, factory) -> dict:
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    return await module.get_change_risk("HEAD", baseline=0)
+    return await module.get_change_risk("HEAD", baseline=0, include=["tests"])
 
 
 async def _risk_directive(monkeypatch, repo: Path, factory, changed: list[str]) -> dict:
@@ -500,3 +500,48 @@ async def test_a_repeated_selection_is_reused_until_the_tree_or_index_moves(
         await session.execute(update(Repository).values(head_commit="moved"))
         await session.commit()
     assert await _select() is not dirty and len(threads) == 3
+
+
+def _broad(*, run_all: bool = False) -> object:
+    from repowise.core.analysis.test_selection import Selection
+
+    suite = tuple(f"tests/test_{i}.py" for i in range(20))
+    return Selection(
+        run_all=run_all,
+        reasons=("an index-gap reason",),
+        tests=suite[:15],
+        test_files=suite[:15],
+        known_tests=suite,
+    )
+
+
+@pytest.mark.parametrize("gap", [["src/elsewhere.py"], []])
+def test_a_lagging_index_that_fills_most_of_the_suite_reads_degraded(tmp_path, gap) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block(
+        {"index_gap": gap}, _broad(), collector, limit=10, label="impacted_tests", detail=False
+    )
+
+    assert "why" not in block and "basis_by_file" not in block
+    if gap:
+        assert block["status"] == "degraded" and block["run_all"] is False
+        assert "so 15 of 20 test files were selected; run the whole suite" in block["summary"]
+        # Most of the suite under a run-everything verdict: no tail is stored.
+        assert collector.empty
+    else:
+        assert block["status"] == "selected"
+        assert not collector.empty
+
+
+def test_a_run_all_list_holding_most_of_the_suite_stores_no_tail(tmp_path) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block({}, _broad(run_all=True), collector, limit=10, label="impacted_tests")
+
+    assert block["status"] == "run_all" and block["truncated"] is True
+    assert collector.empty

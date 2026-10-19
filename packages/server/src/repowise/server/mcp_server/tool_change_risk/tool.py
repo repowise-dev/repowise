@@ -94,6 +94,7 @@ async def _attach_change_blocks(
     changed_read: tuple[Any, Any],
     collector: OmissionCollector,
     include_paths: tuple[str, ...] = (),
+    tests_detail: bool = False,
 ) -> None:
     """Attach the tests, patch coverage, prior fixes and cross-repo blocks, in that order."""
     changed, changed_error = changed_read
@@ -105,6 +106,7 @@ async def _attach_change_blocks(
         revspec=revspec,
         working_tree=result.working_tree,
         owned_excludes=result.owned_excludes,
+        detail=tests_detail,
     )
     patch_changed, patch_error, patch_label, patch_revspec = await _push_change(
         str(ctx.path),
@@ -185,7 +187,7 @@ async def get_change_risk(
     were skipped. ``risk_percentile`` and ``diff_shape`` measure diff size
     only, not danger.
 
-    ``impacted_tests`` is the ``impacted-tests`` selection; read ``run_all``.
+    ``impacted_tests`` is the ``impacted-tests`` selection; read ``status``.
     ``patch_coverage`` is the share of changed executable lines stored coverage
     ran; ``hints`` name tests to extend. ``fix_history`` is the changed files'
     bug-fix record, ``overlap`` the past fixes on these exact lines,
@@ -202,7 +204,7 @@ async def get_change_risk(
             comma-separated string, e.g. ``"src/api/,src/db/"``. Omit for all.
         baseline: Recent commits sampled for percentile ranking; 0 disables it.
         include: ``"findings"``, ``"diagnostics"`` (raw mechanics),
-            ``"scales"`` (units, tercile) or ``"evidence"`` (checklist).
+            ``"scales"``, ``"evidence"`` or ``"tests"`` (why each runs).
         finding_id: Expand one ``health_delta`` finding by its id.
     """
     if repo == "all":
@@ -269,6 +271,7 @@ async def get_change_risk(
                 (changed, changed_error),
                 collector,
                 includes,
+                tests_detail="tests" in include_set,
             )
         independent = await _attach_branch_blocks(
             ctx, payload, changed, collector, revspec, finding_id

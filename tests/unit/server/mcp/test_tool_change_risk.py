@@ -900,6 +900,63 @@ def test_the_patch_coverage_action_joins_the_directive(monkeypatch):
     )
 
 
+def test_a_degraded_selection_asks_for_every_test_with_its_summary(monkeypatch):
+    def _broken(_path):
+        raise RuntimeError("no comparison")
+
+    monkeypatch.setattr(tool, "_delta_service", _broken)
+    delta = tool._compare_health("/repo", None, (), ())
+    summary = "the index predates files changed outside this change, so 15 of 20 test files"
+    payload = {
+        "impacted_tests": {
+            "status": "degraded",
+            "run_all": False,
+            "tests_to_run": ["tests/test_0.py"],
+            "basis": "inferred",
+            "summary": summary,
+        }
+    }
+
+    tool._attach_health(payload, delta, None, expand=False)
+    assert f"Run every test: {summary}" in payload["directive"]["next_actions"]
+
+
+def _full_patch(freshness: str, *, gate: str = "not_set", measured: int = 0) -> dict:
+    return {
+        "patch_coverage_pct": 50.0 if measured else None,
+        "covered_line_count": measured,
+        "coverable_line_count": 2 * measured,
+        "threshold": None,
+        "min_coverable_lines": None,
+        "gate": gate,
+        "file_counts": {"measured": measured, "stale_file": 2, "out_of_scope": 0},
+        "files": [{"file_path": "src/a.py", "status": "measured"}] if measured else [],
+        "scope": {"label": "HEAD", "freshness": freshness, "config_errors": []},
+        "path_gates": [],
+        "risky": None,
+        "project": None,
+        "branches": None,
+    }
+
+
+def test_ungated_or_stale_patch_coverage_reads_as_status_and_freshness():
+    compact = tool._compact_patch_coverage
+    assert compact(_full_patch("stale")) == {
+        "status": "not_measured",
+        "freshness": "stale",
+        "file_counts": {"stale_file": 2},
+    }
+    measured = compact(_full_patch("current", measured=1))
+    assert measured["status"] == "measured"
+    assert measured["files"] == [{"file_path": "src/a.py", "status": "measured"}]
+    assert "gate" not in measured
+    # A gate set on stale coverage keeps its verdict beside the compact fields.
+    assert compact(_full_patch("stale", gate="no_data"))["gate"] == "no_data"
+    # A current gate is a verdict, so the whole block stays.
+    gated = _full_patch("current", gate="fail", measured=1)
+    assert compact(gated) is gated
+
+
 @pytest.mark.asyncio
 async def test_index_dependents_come_from_the_stored_graph(setup_mcp, factory):
     """Distinct importing files per file, read once for both sides of the delta."""
