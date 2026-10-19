@@ -226,7 +226,8 @@ def _attach_impact(
     """The legacy ``cross_repo_impact`` block, for a target with cross-repo rows.
 
     ``cross_repo_consumers`` keeps its old name; each row and the sibling
-    marker say it is historical co-change.
+    marker say it is historical co-change. The deprecated list is left out
+    when empty, so it never reads as "no consumers" beside ``affected_repos``.
     """
     target = r["target"]
     impact = r.setdefault("cross_repo_impact", {})
@@ -242,17 +243,18 @@ def _attach_impact(
         }
         for p in cross_partners
     ]
-    _set_capped(
-        impact,
-        "cross_repo_consumers",
-        legacy_co_changes,
-        collector,
-        target,
-        extra={
-            "cross_repo_consumers_semantics": "historical_co_change_partners",
-            "cross_repo_consumers_deprecated": True,
-        },
-    )
+    if legacy_co_changes:
+        _set_capped(
+            impact,
+            "cross_repo_consumers",
+            legacy_co_changes,
+            collector,
+            target,
+            extra={
+                "cross_repo_consumers_semantics": "historical_co_change_partners",
+                "cross_repo_consumers_deprecated": True,
+            },
+        )
     affected = _affected_repos(alias, links["all"])
     impact["cross_repo_consumers_analysis"] = cross_state
     impact["affected_repos"] = affected

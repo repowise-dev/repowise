@@ -418,14 +418,29 @@ def compute_impact(tiers: dict) -> dict:
     return {
         "total_lines_reclaimable": total_lines,
         "safe_lines_reclaimable": safe_lines,
-        "recommendation": (
+        "recommendation": _recommendation(tiers),
+    }
+
+
+def _recommendation(tiers: dict) -> str:
+    """Point at the best tier that has findings, never at an empty one."""
+    if tiers.get("high", {}).get("count"):
+        return (
             "Start with the 'high' tier — these have no references in the graph and are the "
             "strongest cleanup candidates. Confirm each (runtime-loaded config/bootstrap/database "
             "files are flagged but never auto-marked safe), then review 'medium' tier with your team."
-            if total_lines > 0
-            else "No dead code found matching your filters."
-        ),
-    }
+        )
+    if tiers.get("medium", {}).get("count"):
+        return (
+            "Review the 'medium' tier with your team — likely unused but may have indirect "
+            "references. Confirm each before deleting."
+        )
+    if tiers.get("low", {}).get("count"):
+        return (
+            "Only 'low' tier findings — they may be used via dynamic imports or reflection. "
+            "Investigate before deleting."
+        )
+    return "No dead code found matching your filters."
 
 
 class CrossRepoLookup(Protocol):
@@ -437,26 +452,27 @@ class CrossRepoLookup(Protocol):
 
 
 def adjust_cross_repo(
-    tiers: dict, lookup: CrossRepoLookup | None, repo_alias: str | None = None
+    findings: list[dict], lookup: CrossRepoLookup | None, repo_alias: str | None = None
 ) -> None:
-    """Lower confidence on served findings that other repos consume, in place.
+    """Lower confidence on serialized findings that other repos consume, in place.
 
-    A finding's own ``repo`` wins over *repo_alias*, so one call covers both a
-    single repo and the workspace-wide merge.
+    Runs before :func:`build_tiers`, so a lowered finding lands in the tier its
+    new confidence belongs to. A finding's own ``repo`` wins over *repo_alias*,
+    so one call covers both a single repo and the workspace-wide merge.
     """
     if lookup is None:
         return
-    for tier_data in tiers.values():
-        for finding in tier_data.get("findings", []):
-            alias = finding.get("repo", repo_alias)
-            if alias:
-                _adjust_one(finding, lookup, alias)
+    for finding in findings:
+        alias = finding.get("repo", repo_alias)
+        if alias:
+            _adjust_one(finding, lookup, alias)
 
 
 def _adjust_one(finding: dict, lookup: CrossRepoLookup, alias: str) -> None:
     consumers = lookup.has_cross_repo_consumers(alias, finding.get("file_path", ""))
     if consumers:
         finding["confidence"] = round(finding["confidence"] * 0.5, 2)
+        finding["safe_to_delete"] = False
         consumer_repos = sorted({c["repo"] for c in consumers})
         finding["cross_repo_note"] = (
             f"Confidence reduced: {len(consumers)} cross-repo consumer(s) "
@@ -469,6 +485,7 @@ def _adjust_one(finding: dict, lookup: CrossRepoLookup, alias: str) -> None:
     depending = lookup.get_repos_depending_on(alias)
     if depending:
         finding["confidence"] = round(finding["confidence"] * 0.3, 2)
+        finding["safe_to_delete"] = False
         finding["cross_repo_note"] = (
             f"This export may be consumed by: {', '.join(depending)}. Verify before deletion."
         )

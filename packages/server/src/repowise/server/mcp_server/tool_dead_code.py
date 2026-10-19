@@ -57,6 +57,17 @@ def _cross_repo_lookup() -> CrossRepoLookup | None:
     return enricher
 
 
+def _adjust_cross_repo(
+    findings: list[dict], filters: FindingFilters, repo_alias: str | None
+) -> list[dict]:
+    """Apply the cross-repo confidence cut before tiering; re-apply ``safe_only``,
+    since a cross-repo consumer withdraws ``safe_to_delete``."""
+    adjust_cross_repo(findings, _cross_repo_lookup(), repo_alias)
+    if filters.safe_only:
+        return [f for f in findings if f["safe_to_delete"]]
+    return findings
+
+
 async def _get_dead_code_all_repos(
     filters: FindingFilters,
     limit: int,
@@ -93,6 +104,7 @@ async def _get_dead_code_all_repos(
                 merged = into.setdefault(name, {**entry, "count": 0})
                 merged["count"] += entry["count"]
 
+    merged_findings = _adjust_cross_repo(merged_findings, filters, None)
     summary = build_summary(
         merge_summary_counts([part[1] for _, part in answered]),
         len(merged_findings),
@@ -101,7 +113,6 @@ async def _get_dead_code_all_repos(
         merged_gated,
     )
     tiers = build_tiers(merged_findings, limit, tier)
-    adjust_cross_repo(tiers, _cross_repo_lookup())
 
     result_ws: dict[str, Any] = {
         "workspace": True,
@@ -336,9 +347,9 @@ async def get_dead_code(
             "\n".join(json.dumps(f, separators=(",", ":")) for f in beyond),
         )
 
+    serialized = _adjust_cross_repo(serialized, filters, ctx.alias)
     tiers = build_tiers(serialized, limit, tier, on_overflow=_keep_overflow)
-    summary = build_summary(summary_counts(all_findings), len(filtered), filters, withheld, gated)
-    adjust_cross_repo(tiers, _cross_repo_lookup(), ctx.alias)
+    summary = build_summary(summary_counts(all_findings), len(serialized), filters, withheld, gated)
 
     result: dict[str, Any] = {"summary": summary, "tiers": tiers}
     if group_by == "directory":
