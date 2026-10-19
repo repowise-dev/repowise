@@ -360,11 +360,6 @@ class PerformanceQuery:
     def area_prefix(self) -> str | None:
         return f"{self.area}/" if self.area else None
 
-    def position(self, index: int) -> int | None:
-        """The served row's place in the queue, or ``None`` (the stored rank)
-        when another order lists it: a place by leverage is not a rank."""
-        return self.offset + index if self.sort == DEFAULT_SORT else None
-
     @property
     def status(self) -> str:
         return "open"
@@ -443,6 +438,12 @@ class PerformanceQuery:
         if self.role is None:
             return QUEUE_ROLES
         return None if self.role == "all" else frozenset({self.role})
+
+
+def served_position(query: PerformanceQuery, index: int) -> int | None:
+    """Row *index*'s place in the ranked list *query* serves, or ``None`` (the
+    stored rank) when another order lists it: a place by leverage is no rank."""
+    return query.offset + index if query.sort == DEFAULT_SORT else None
 
 
 def _resolve_context(context: str | None, ignored: dict[str, str]) -> PerformanceContext:
@@ -586,7 +587,7 @@ def serialize(
     its summary shape, so its responses do not grow.
 
     ``position`` is the row's 0-based place in the ranked list that serves it
-    (:meth:`PerformanceQuery.position`); the stored rank counts every cause in
+    (:func:`served_position`); the stored rank counts every cause in
     the repository, so a filtered list numbered by it skips. ``None`` keeps the
     stored rank, as a lookup by id does.
     """
@@ -839,6 +840,7 @@ __all__ = [
     "row_sort_key",
     "scope_counts",
     "serialize",
+    "served_position",
     "sort_keys",
     "summary_payload",
     "unresolved_detail",

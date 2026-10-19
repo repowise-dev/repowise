@@ -34,6 +34,7 @@ from repowise.core.analysis.health.perf.serving import (
     rescope_summary,
     scope_counts,
     serialize,
+    served_position,
     summary_payload,
     unresolved_detail,
 )
@@ -145,7 +146,7 @@ class PerformanceHealthService:
                     links[row.opportunity_id],
                     summary=query.view == "summary",
                     decisions=row_decisions,
-                    position=query.position(index),
+                    position=served_position(query, index),
                 ),
                 **(
                     evidence_block(
