@@ -286,15 +286,13 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
 def file_page_eligible(parsed: Any, *, is_hotspot: bool) -> bool:
     """Whether *parsed* clears every per-file gate of file-page selection.
 
-    The gates that depend on the rest of the repository (the cap, near-clone
-    dedupe) are not asked: a file they drop still gets a page from an update
-    that re-renders it alone, so retiring its page would only flap.
+    Repo-wide gates (cap, near-clone dedupe) are not asked: an update rendering
+    the file alone would still give it a page.
     """
     return (
         _is_code_file(parsed)
         and _passes_importance_floor(parsed)
-        # Graph metrics only add to a positive score; zero means no symbols
-        # and no entry-point or hotspot signal.
+        # Graph metrics only add to a positive score.
         and score_file(
             parsed,
             pagerank=0.0,
@@ -396,11 +394,7 @@ def _build_symbol_candidates(
 def rank_symbol_candidates(
     inputs: SelectionInputs,
 ) -> tuple[list[tuple[float, tuple[str, str]]], int]:
-    """Every production spotlight candidate in rank order, and how many selection keeps.
-
-    Selection takes the first ``keep``; an update reads the rest of the ranking
-    to tell a symbol just past the cut from one far outside it.
-    """
+    """Every production spotlight candidate in rank order, and how many selection keeps."""
     max_pr = max(inputs.pagerank.values(), default=0.0)
     test_paths = {p.file_info.path for p in inputs.parsed_files if p.file_info.is_test}
     scored: list[tuple[float, tuple[str, str]]] = []

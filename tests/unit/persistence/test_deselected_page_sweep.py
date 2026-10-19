@@ -1,10 +1,4 @@
-"""`repowise update` retires template pages the selection no longer picks.
-
-A page whose file still exists but fails selection (a test file, a symbol-less
-shim, a spotlight that fell out of the top slice) used to be kept forever: a
-stale one sent every idle update down the full rebuild to re-render a page the
-render then declined, and a fresh one kept serving its last render.
-"""
+"""`repowise update` retires template pages the selection no longer picks."""
 
 from __future__ import annotations
 
@@ -116,6 +110,21 @@ class TestDeselectedFilePages:
         assert await _sweep(async_session, repo_id) == []
         assert await _ids(async_session) == {page}
 
+    async def test_this_runs_hotspot_flag_keeps_a_symbol_less_page(
+        self, async_session, repo_id
+    ) -> None:
+        shim = await _add(async_session, repo_id, "file_page", "src/shim.py")
+        swept = await sweep_deselected_pages(
+            async_session,
+            repo_id,
+            _parsed(),
+            _builder(),
+            GenerationConfig(),
+            {"src/shim.py": {"is_hotspot": True}},
+        )
+        assert swept == []
+        assert await _ids(async_session) == {shim}
+
     async def test_model_written_page_is_kept(self, async_session, repo_id) -> None:
         page = await _add(
             async_session, repo_id, "file_page", "tests/test_a.py", provider_name="openai"
@@ -139,6 +148,20 @@ class TestDeselectedSpotlights:
 
         assert sorted(swept) == sorted([out, test_sym])
         assert await _ids(async_session) == {top, boundary}
+
+    async def test_near_clone_loser_is_retired(self, async_session, repo_id) -> None:
+        # Three same-shaped files in one directory: generation keeps the top one.
+        clones = [_Parsed(_FileInfo(f"gen/c{i}.py"), [_Symbol("run")]) for i in range(3)]
+        builder = _Builder({"gen/c0.py": 1.0, "gen/c1.py": 0.9, "gen/c2.py": 0.8})
+        kept = await _add(async_session, repo_id, "symbol_spotlight", "gen/c0.py::run")
+        loser = await _add(async_session, repo_id, "symbol_spotlight", "gen/c1.py::run")
+
+        swept = await sweep_deselected_pages(
+            async_session, repo_id, clones, builder, GenerationConfig(top_symbol_percentile=1.0)
+        )
+
+        assert swept == [loser]
+        assert await _ids(async_session) == {kept}
 
     async def test_unparsed_file_keeps_its_spotlight(self, async_session, repo_id) -> None:
         page = await _add(async_session, repo_id, "symbol_spotlight", "gone.py::f")

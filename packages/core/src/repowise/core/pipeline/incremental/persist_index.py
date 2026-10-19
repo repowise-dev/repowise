@@ -119,14 +119,14 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
         ctx.swept_page_ids += await sweep_absent_symbol_spotlights(
             ctx.session, ctx.repo_id, ctx.graph_builder
         )
-        # Pages of files and symbols the selection no longer picks. Their
-        # vectors go too: unlike the pages above, these may carry embeddings.
+        # Unlike the pages above, these may carry embeddings.
         ctx.deselected_page_ids = await sweep_deselected_pages(
             ctx.session,
             ctx.repo_id,
             ctx.parsed_files,
             ctx.graph_builder,
             _generation_config(ctx.repo_path),
+            ctx.git_meta_map,
         )
         ctx.swept_page_ids += ctx.deselected_page_ids
 

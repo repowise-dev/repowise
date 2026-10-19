@@ -323,9 +323,7 @@ async def sweep_absent_symbol_spotlights(
     return stale
 
 
-# A spotlight is retired only once its symbol ranks past this multiple of the
-# selection's cut (top 15% under the default 10%), so a symbol hovering at the
-# boundary keeps its page instead of losing and regaining it run to run.
+# Hysteresis: a spotlight is retired only past this multiple of the selection's cut.
 SPOTLIGHT_RETIRE_MARGIN = 1.5
 
 
@@ -335,17 +333,13 @@ async def sweep_deselected_pages(
     parsed_files: list[Any] | None,
     graph_builder: Any,
     config: Any,
+    git_meta_map: dict | None = None,
 ) -> list[str]:
     """Delete template file pages and spotlights the selection no longer picks.
 
-    An update renders only the changed files, so a page whose file still exists
-    but fails selection (a test file, a symbol-less shim, a spotlight that fell
-    out of the top slice) was never visited again: a stale one sent every idle
-    update down the full rebuild path to re-render a page the render then
-    declined, and a fresh one kept serving its last render.
-
-    Only files in this run's parse are judged, so an unparsed file keeps its
-    pages. Model-written pages are left alone.
+    An update renders only changed files, so nothing else revisits these. Only
+    files in this run's parse are judged; model-written pages are left alone.
+    *git_meta_map* (this run's rows) overrides the stored hotspot flags.
     """
     from sqlalchemy import delete, select
 
@@ -393,6 +387,11 @@ async def sweep_deselected_pages(
             .scalars()
             .all()
         )
+        for path, meta in (git_meta_map or {}).items():
+            if meta.get("is_hotspot"):
+                hotspots.add(path)
+            else:
+                hotspots.discard(path)
         retired += [
             pid
             for pid, path in file_rows
