@@ -771,3 +771,50 @@ def test_an_untrimmed_last_page_names_no_next_call(setup_mcp: str) -> None:
     result = _enforce_health(payload, only=["fix_first"], limit=25)
     assert len(result["fix_first"]["items"]) == 25
     assert "fix_first" not in (result.get("recovery") or {})
+
+
+def _evidence_row(kind: str, details: int) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "label": kind.replace("_", " "),
+        "status": "ok",
+        "basis": "measured",
+        "value": 1,
+        "details": [{"path": f"src/{kind}/file_{i}.py", "note": "x" * 400} for i in range(details)],
+    }
+
+
+def test_requested_evidence_is_trimmed_not_dropped(setup_mcp: str) -> None:
+    rows = [_evidence_row("reaching_tests", 60), _evidence_row("owners", 20)]
+    rows += [_evidence_row(f"small_{i}", 1) for i in range(9)]
+    payload = {
+        "directive": {"status": "review", "action": "Read the evidence."},
+        "health_delta": {"status": "available"},
+        "evidence": {"schema_version": 1, "items": rows},
+    }
+
+    result = _enforce("get_change_risk", payload, include=["evidence"])
+
+    items = result["evidence"]["items"]
+    assert [row["kind"] for row in items] == [row["kind"] for row in rows]
+    assert all({"kind", "label", "status", "basis", "value"} <= set(row) for row in items)
+    # The heaviest row lost its tail first; the light rows kept every detail.
+    assert items[0]["details_omitted"] > 0 and items[0]["details"]
+    assert all(len(row["details"]) == 1 for row in items[2:])
+    assert result["truncated"] is True and "repowise#" in json.dumps(result)
+    budget = result["_meta"]["response_budget"]
+    assert budget["serialized_chars"] <= budget["limit_chars"] == EXPANDED_RESPONSE_CHARS
+
+
+def test_a_small_requested_evidence_block_is_untouched(setup_mcp: str) -> None:
+    rows = [_evidence_row("owners", 2), _evidence_row("decisions_crossed", 1)]
+    payload = {
+        "directive": {"status": "ok"},
+        "health_delta": {"status": "available"},
+        "evidence": {"schema_version": 1, "items": rows},
+    }
+
+    result = _enforce("get_change_risk", payload, include=["evidence"])
+
+    assert result["evidence"]["items"] == rows
+    assert "truncated" not in result
