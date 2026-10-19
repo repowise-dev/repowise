@@ -88,12 +88,11 @@ def change_row(
 def _read_changes(
     repo_path: Path, limit: int, since: str | None, taken: dict[str, str]
 ) -> list[ReconstructedChange] | None:
-    import git as gitpython
-
     from repowise.core.forges import detect_forge
+    from repowise.core.git_repo import Repo
     from repowise.core.ingestion.git_indexer.indexer import GitIndexer
 
-    repo = gitpython.Repo(repo_path, search_parent_directories=True)
+    repo = Repo(repo_path, search_parent_directories=True)
     try:
         # A partial clone would fetch blobs for --numstat: never from here.
         if GitIndexer._partial_clone_filter(repo) is not None:
