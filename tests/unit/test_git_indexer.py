@@ -318,6 +318,48 @@ class TestHotspotAbsoluteFloors:
         assets = next(m for m in metas if m["file_path"] == "assets.bin")
         assert assets["is_hotspot"] is True
 
+    def test_percentiles_parity_with_sql_percent_rank(self) -> None:
+        """N=5 percentiles mirror SQL PERCENT_RANK() exactly: [0.0, 0.25, 0.50, 0.75, 1.00]."""
+        from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+        metas = [
+            {
+                "file_path": f"f{i}.py",
+                "temporal_hotspot_score": float(i * 10),
+                "commit_count_90d": 10,
+                "lines": 100,
+            }
+            for i in range(1, 6)
+        ]
+        compute_percentiles(metas)
+        pcts = [m["churn_percentile"] for m in metas]
+        assert pcts == [0.0, 0.25, 0.50, 0.75, 1.00]
+        # f4 and f5 are >= 0.75 and clear floors
+        assert metas[0].get("is_hotspot", False) is False
+        assert metas[1].get("is_hotspot", False) is False
+        assert metas[2].get("is_hotspot", False) is False
+        assert metas[3].get("is_hotspot", False) is True
+        assert metas[4].get("is_hotspot", False) is True
+
+    def test_percentiles_tie_breaking_shared_rank(self) -> None:
+        """Ties share the same rank and hotspot classification instead of being arbitrarily split."""
+        from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+        metas = [
+            {"file_path": "quiet.py", "temporal_hotspot_score": 1.0, "commit_count_90d": 2, "lines": 50},
+            {"file_path": "tied_a.py", "temporal_hotspot_score": 50.0, "commit_count_90d": 12, "lines": 100},
+            {"file_path": "tied_b.py", "temporal_hotspot_score": 50.0, "commit_count_90d": 12, "lines": 100},
+            {"file_path": "tied_c.py", "temporal_hotspot_score": 50.0, "commit_count_90d": 12, "lines": 100},
+        ]
+        compute_percentiles(metas)
+        assert metas[0]["churn_percentile"] == 0.0
+        # All three tied items have exactly 1 file scoring strictly lower out of 3 possible: 1 / 3 = 0.333...
+        assert metas[1]["churn_percentile"] == pytest.approx(1 / 3)
+        assert metas[2]["churn_percentile"] == pytest.approx(1 / 3)
+        assert metas[3]["churn_percentile"] == pytest.approx(1 / 3)
+        # Hotspot status is identical for all three
+        assert metas[1].get("is_hotspot", False) == metas[2].get("is_hotspot", False) == metas[3].get("is_hotspot", False)
+
 
 class TestCountActiveContributors:
     """count_active_contributors derives the repo's 90-day team size from

@@ -265,26 +265,36 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
     if not metadata_list:
         return
 
-    # Sort by temporal_hotspot_score (primary) then commit_count_90d (tiebreak)
-    sorted_by_churn = sorted(
-        range(len(metadata_list)),
-        key=lambda i: (
-            metadata_list[i].get("temporal_hotspot_score") or 0.0,
-            metadata_list[i].get("commit_count_90d", 0),
-        ),
-    )
-
     total = len(metadata_list)
-    for rank, idx in enumerate(sorted_by_churn):
-        meta = metadata_list[idx]
-        churn_pct = rank / total if total > 0 else 0.0
-        meta["churn_percentile"] = churn_pct
-        # Hotspot: top 25% churn (churn_percentile >= 0.75) AND the absolute
-        # activity floors — without the floors, a quiet repo's top quartile is
-        # just "every file touched in 90 days" (issue #361). Folded into the
-        # rank loop so the list is scanned once.
-        if churn_pct >= 0.75 and meets_hotspot_floors(meta):
-            meta["is_hotspot"] = True
+    if total < 2:
+        for meta in metadata_list:
+            meta["churn_percentile"] = 0.0
+    else:
+        # Group keys to mirror SQL PERCENT_RANK() with tie-awareness:
+        # (RANK() - 1) / (total - 1)
+        keys = [
+            (
+                float(m.get("temporal_hotspot_score") or 0.0),
+                int(m.get("commit_count_90d") or 0),
+            )
+            for m in metadata_list
+        ]
+        unique_keys = sorted(set(keys))
+        rank_lookup: dict[tuple[float, int], float] = {}
+        running = 0
+        for key in unique_keys:
+            rank_lookup[key] = running / (total - 1)
+            running += sum(1 for k in keys if k == key)
+
+        for meta, key in zip(metadata_list, keys, strict=True):
+            churn_pct = min(rank_lookup[key], 1.0)
+            meta["churn_percentile"] = churn_pct
+            # Hotspot: top 25% churn (churn_percentile >= 0.75) AND the absolute
+            # activity floors — without the floors, a quiet repo's top quartile is
+            # just "every file touched in 90 days" (issue #361). Folded into the
+            # rank loop so the list is scanned once.
+            if churn_pct >= 0.75 and meets_hotspot_floors(meta):
+                meta["is_hotspot"] = True
 
     # Files with zero entropy — every file on the ESSENTIAL tier, plus
     # FULL-tier files that only ever changed alone — stay at 0.0 so the
