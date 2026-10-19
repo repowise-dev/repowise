@@ -82,3 +82,8 @@ def test_commands_name_a_package_only_for_tasks_the_root_lacks(tmp_path):
     assert "same" not in commands
     assert commands["app"]["build"] == "npm run build"
     assert _build_commands(None, []) == {}
+
+
+def test_twin_module_pages_do_not_stall_the_widening():
+    pages = [_page("src", "1"), _page("src", "2"), _page("src/a", "1.1")]
+    assert [h.target_path for h in _key_module_heads(pages)] == ["src/a"]

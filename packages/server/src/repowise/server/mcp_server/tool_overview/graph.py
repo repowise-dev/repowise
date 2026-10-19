@@ -202,7 +202,7 @@ _COMMAND_PACKAGES = 8
 
 
 def _build_commands(repo_root: Any, package_roots: list[str]) -> dict[str, dict[str, str]]:
-    """Build/test/lint commands read from manifests: the root's, then each
+    """Build, test, lint, dev, format and typecheck commands read from manifests: the root's, then each
     package's that names a task the root does not. Run those from the package."""
     if not repo_root:
         return {}
@@ -213,7 +213,7 @@ def _build_commands(repo_root: Any, package_roots: list[str]) -> dict[str, dict[
     root = detect_build_commands(base)
     out: dict[str, dict[str, str]] = {".": root} if root else {}
     for package in package_roots:
-        if len(out) > _COMMAND_PACKAGES or not package:
+        if len(out) - ("." in out) >= _COMMAND_PACKAGES or not package:
             continue
         found = detect_build_commands(base / package)
         if set(found) - set(root):

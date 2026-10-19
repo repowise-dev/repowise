@@ -48,7 +48,6 @@ from repowise.core.entry_candidacy import (
     conventional_entry_stems,
     entry_point_depth,
 )
-from repowise.core.generation.layers import DOCS_TOOLING_LAYER, infer_layer
 
 
 def _name_bucket(path: str, conventional_stems: frozenset[str]) -> int:
@@ -191,13 +190,18 @@ def rank_entry_points(
     ]
 
 
+#: Directories of build and CI tooling. Narrower than the layer map's tooling
+#: tokens: a ``plugins/`` tree can be a runtime plugin system.
+_TOOLING_DIRS = frozenset({"scripts", "docker"})
+
+
 def orientation_entry_points_view(paths: Iterable[str]) -> list[str]:
-    """*paths* without tooling (``scripts/``, ``docker/``, ``plugins/``), order kept.
+    """*paths* without build and CI tooling (``scripts/``, ``docker/``), order kept.
 
     A lint or gate script is a real entry point, so candidacy and dead code keep
     it, but it is not where a reader enters the system. When tooling is all
     there is, the list is returned whole rather than emptied.
     """
     paths = list(paths)
-    runtime = [p for p in paths if infer_layer(p) != DOCS_TOOLING_LAYER]
+    runtime = [p for p in paths if not _TOOLING_DIRS & set(p.lower().split("/")[:-1])]
     return runtime or paths

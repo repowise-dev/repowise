@@ -152,12 +152,15 @@ def _key_module_heads(pages: list[Any]) -> list[Any]:
         # Open the head with the most pages beneath it into its own top layer.
         def beneath(head: Any) -> list[Any]:
             path = head.target_path or ""
-            return [p for p in pages if p is not head and _under(p.target_path or "", path)]
+            return [
+                p for p in pages if (p.target_path or "") != path and _under(p.target_path or "", path)
+            ]
 
         widest = max(heads, key=lambda h: len(beneath(h)), default=None)
         if widest is None or not beneath(widest):
             break
-        heads = [h for h in heads if h is not widest] + _topmost(beneath(widest))
+        gone = widest.target_path or ""
+        heads = [h for h in heads if (h.target_path or "") != gone] + _topmost(beneath(widest))
     return sorted(heads, key=_module_order_key)[:_MODULE_CAP]
 
 
