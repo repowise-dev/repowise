@@ -704,6 +704,13 @@ class TestScanFile:
             ("a.py", "cache_key = hashlib.md5(token).hexdigest()\n", True),
             ("a.py", "digest = hashlib.md5(data).hexdigest()[8:]\n", True),
             ("a.py", "full = hashlib.md5(data).digest()\n", True),
+            ("a.py", "pw = hashlib.md5(p.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "whole = hashlib.md5(data).hexdigest()[:32]\n", True),
+            ("a.py", "mac = hmac.new(k, m, hashlib.md5).hexdigest()[:8]\n", True),
+            ("a.py", "if cache_key in seen: h = hashlib.md5(data).hexdigest()\n", True),
+            ("a.ts", 'const cacheKey: string = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'row = {"etag": hashlib.md5(body).hexdigest()}\n', False),
+            ("a.py", "author_slug = hashlib.md5(name.encode()).hexdigest()\n", False),
         ],
     )
     def test_weak_hash_is_an_algorithm_in_use(self, path: str, source: str, expected: bool) -> None:
