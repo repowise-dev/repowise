@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import shutil
 import subprocess
 import time
@@ -22,6 +23,7 @@ from repowise.server.mcp_server._helpers import (
     attach_ignored_arguments,
 )
 
+from . import cache as _cache
 from .branches import _branch_overlap_block, _independent_changes_block
 from .changed import _changed_in_scope, _push_change
 from .cross_repo import _cross_repo_block
@@ -204,6 +206,13 @@ async def get_change_risk(
     ctx = await _pkg._resolve_repo_context(repo)
     started = time.perf_counter()
     includes = _path_patterns(include_paths)
+    key = await _cache.cache_key(ctx, revspec, extensions, exclude_patterns, includes, baseline)
+    hit = _cache.lookup(key)
+    if hit is not None and finding_id is not None:
+        return _drill_down({"ref": hit.ref}, hit.delta, finding_id, revspec)
+    if hit is not None and _cache.payload_key(include) in hit.payloads:
+        elapsed = (time.perf_counter() - started) * 1000
+        return _cache.served(hit.payloads[_cache.payload_key(include)], elapsed)
     result, error = await _score_change(
         ctx.path, revspec, extensions, exclude_patterns, includes, baseline
     )
@@ -266,6 +275,7 @@ async def get_change_risk(
         raise
     delta = await delta_task
     await _attach_health_references(ctx, delta)
+    scored_entry = _cache.remember(key, payload["ref"], delta)
     if finding_id is not None:
         return _drill_down(payload, delta, finding_id, revspec)
     payload["diff_shape"] = _diff_shape_sentence(payload, diagnostics)
@@ -301,6 +311,8 @@ async def get_change_risk(
     )
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
+    if scored_entry is not None:
+        scored_entry.payloads[_cache.payload_key(include)] = copy.deepcopy(payload)
     return payload
 
 
