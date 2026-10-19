@@ -127,3 +127,13 @@ def test_objc_header_and_implementation_are_one_class_not_an_ambiguity(tmp_path)
     graph, dead = _analyze(tmp_path)
     assert graph.nodes["Mac/Panel.m"].get("is_entry_point")
     assert "Mac/Panel.m" not in dead
+
+
+def test_unselected_plist_name_is_not_assumed_to_be_runtime_metadata(tmp_path):
+    _write(tmp_path, {
+        "App/Controller.swift": "class Unselected: NSObject {}",
+        "App/Config.plist": plistlib.dumps({"NSPrincipalClass": "Unselected"}),
+    })
+    graph, dead = _analyze(tmp_path)
+    assert "App/Controller.swift" in dead
+    assert not graph.nodes["App/Controller.swift"].get("is_entry_point")
