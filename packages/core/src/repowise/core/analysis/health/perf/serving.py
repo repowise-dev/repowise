@@ -440,10 +440,14 @@ class PerformanceQuery:
         return None if self.role == "all" else frozenset({self.role})
 
 
-def served_position(query: PerformanceQuery, index: int) -> int | None:
-    """Row *index*'s place in the ranked list *query* serves, or ``None`` (the
-    stored rank) when another order lists it: a place by leverage is no rank."""
-    return query.offset + index if query.sort == DEFAULT_SORT else None
+def served_position(query: PerformanceQuery, index: int, stored: int) -> int:
+    """Row *index*'s 0-based place in the ranked list *query* serves.
+
+    The stored rank counts every cause in the repository, so a filtered list
+    numbered by it skips. Another order keeps *stored*: a place by leverage is
+    no rank, and a lookup by id has no list.
+    """
+    return query.offset + index if query.sort == DEFAULT_SORT else stored
 
 
 def _resolve_context(context: str | None, ignored: dict[str, str]) -> PerformanceContext:
@@ -569,12 +573,7 @@ def intervention_file(opportunity: PerformanceOpportunity) -> str:
 
 
 def serialize(
-    row: Any,
-    link: PlanLink,
-    *,
-    summary: bool = False,
-    decisions: bool = False,
-    position: int | None = None,
+    row: Any, link: PlanLink, *, summary: bool = False, decisions: bool = False
 ) -> dict[str, Any]:
     """Rebuild the canonical opportunity payload from row plus details.
 
@@ -586,10 +585,8 @@ def serialize(
     list a person acts on from (the dashboard queue). The agent surface keeps
     its summary shape, so its responses do not grow.
 
-    ``position`` is the row's 0-based place in the ranked list that serves it
-    (:func:`served_position`); the stored rank counts every cause in
-    the repository, so a filtered list numbered by it skips. ``None`` keeps the
-    stored rank, as a lookup by id does.
+    ``rank_position`` is the stored rank; a list serves
+    :func:`served_position` in its place.
     """
     details = detail_map(row)
     payload = {
@@ -609,7 +606,7 @@ def serialize(
         "confidence": field(row, "evidence_confidence"),
         "actionability_state": field(row, "actionability_state"),
         "rank_score": field(row, "rank_score"),
-        "rank_position": field(row, "rank_position") if position is None else position,
+        "rank_position": field(row, "rank_position"),
         "why_ranked": details.get("why_ranked", []),
         # An older store has no per-group answer; its marker gives the old one.
         "may_lead": details.get(

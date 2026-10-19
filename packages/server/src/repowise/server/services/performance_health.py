@@ -146,8 +146,8 @@ class PerformanceHealthService:
                     links[row.opportunity_id],
                     summary=query.view == "summary",
                     decisions=row_decisions,
-                    position=served_position(query, index),
                 ),
+                "rank_position": served_position(query, index, row.rank_position),
                 **(
                     evidence_block(
                         evidence.get(row.opportunity_id, []), row.observations_total, 0
