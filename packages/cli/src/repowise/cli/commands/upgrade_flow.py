@@ -187,6 +187,16 @@ async def _backfill_git(
     )
 
 
+async def _scan_commit_health(sf: Any, repo_id: str, repo_path: Path) -> None:
+    """Per-commit health at the full index's budget: an upgrade is expected to take long."""
+    from repowise.core.pipeline.commit_health import (
+        budget_seconds,
+        refresh_commit_health_after_update,
+    )
+
+    await refresh_commit_health_after_update(sf, repo_id, str(repo_path), budget=budget_seconds())
+
+
 async def _persist_authoritative_pages(
     *,
     session: Any,
@@ -329,6 +339,7 @@ async def _run_upgrade(
     await _recompute_full_tier_health(
         engine, sf, repo_id, repo_path, graph_builder, git_meta_map, parsed_files
     )
+    await _scan_commit_health(sf, repo_id, repo_path)
     if checkpoint:
         checkpoint("health")
 

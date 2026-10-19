@@ -40,10 +40,10 @@ DEFAULT_COMMIT_LIMIT = 150
 #: order of magnitude with diff size, so a count alone bounds nothing.
 DEFAULT_BUDGET_SECONDS = 300.0
 
-#: Wall clock one update may spend. An update runs on every commit through the
-#: post-commit hook, so this covers the new commit or two and a backlog (a long
-#: gap, an analyzer bump) drains a few commits per later update instead of
-#: adding a minute to each one.
+#: Wall clock one update may spend on new commits (~2-5 s each). An update runs
+#: on every commit through the post-commit hook, so a long gap drains a few
+#: commits per later update; a backlog of rows an older analyzer wrote gets
+#: :data:`DEFAULT_BUDGET_SECONDS` instead (see :func:`_rescan_backlog`).
 UPDATE_BUDGET_SECONDS = 10.0
 
 
@@ -89,6 +89,23 @@ async def _pending_shas(
         session, repo_id, **current_fingerprint(repo_path)
     )
     return [sha for sha in shas if sha not in done][:limit]
+
+
+async def _rescan_backlog(session: Any, repo_id: str, pending: list[str]) -> bool:
+    """Whether a pending sha already has a row, i.e. an analyzer or rules change re-pended it."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import GitCommitHealthDelta
+
+    row = await session.execute(
+        select(GitCommitHealthDelta.sha)
+        .where(
+            GitCommitHealthDelta.repository_id == repo_id,
+            GitCommitHealthDelta.sha.in_(pending),
+        )
+        .limit(1)
+    )
+    return row.first() is not None
 
 
 async def _scan(repo_path: str, pending: list[str], budget: float) -> Any:
@@ -198,13 +215,14 @@ async def refresh_commit_health_after_update(
             if not window:
                 return nothing
             pending = await _pending_shas(session, repo_id, repo_path, window, limit)
+            if pending and budget is None:
+                backlog = await _rescan_backlog(session, repo_id, pending)
+                budget = budget_seconds(
+                    DEFAULT_BUDGET_SECONDS if backlog else UPDATE_BUDGET_SECONDS
+                )
         if not pending:
             return nothing
-        scan = await _scan(
-            repo_path,
-            pending,
-            budget_seconds(UPDATE_BUDGET_SECONDS) if budget is None else budget,
-        )
+        scan = await _scan(repo_path, pending, budget)
         if scan.delta_rows:
             async with get_session(session_factory) as session:
                 await upsert_commit_health_bulk(

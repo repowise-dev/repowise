@@ -143,3 +143,21 @@ def test_full_upgrade_restores_parse_only_attrs_after_the_reparse() -> None:
 
     reparse = src.index("_reparse(repo_path")
     assert src.index("restore_parse_only_attrs(parsed_files)") > reparse
+
+
+async def test_full_upgrade_scans_commit_health_at_the_full_budget(monkeypatch) -> None:
+    from repowise.core.pipeline import commit_health
+
+    budgets: list[float] = []
+
+    async def refresh(_sf, _repo_id, _path, *, budget=None):
+        budgets.append(budget)
+
+    monkeypatch.delenv("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS", raising=False)
+    monkeypatch.setattr(commit_health, "refresh_commit_health_after_update", refresh)
+    await upgrade_flow._scan_commit_health(object(), "repo", "/r")
+    monkeypatch.setenv("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS", "7")
+    await upgrade_flow._scan_commit_health(object(), "repo", "/r")
+
+    assert budgets == [commit_health.DEFAULT_BUDGET_SECONDS, 7.0]
+    assert "_scan_commit_health" in inspect.getsource(upgrade_flow._run_upgrade)
