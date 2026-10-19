@@ -33,6 +33,7 @@ class LiveScores:
     against: str | None
     #: False with no index: history and coverage are then left out.
     indexed: bool
+    cross_file_clones_omitted: bool = False
 
 
 def repo_paths(repo_path: Path, raw: tuple[str, ...]) -> list[str]:
@@ -68,7 +69,14 @@ def score_live(repo_path: Path, paths: list[str], against: str | None) -> LiveSc
             raise click.ClickException(str(exc)) from exc
         base_metrics = _analyze(analyzer, source.read(sha, paths), paths, inputs).metrics
     rows = file_score_deltas(base_metrics, head.metrics, paths, {}, full=True)
-    return LiveScores(rows=rows, head=head, against=against, indexed=inputs.has_history)
+    clones_omitted = len(inputs.git_meta) > len(paths) if inputs.has_history else True
+    return LiveScores(
+        rows=rows,
+        head=head,
+        against=against,
+        indexed=inputs.has_history,
+        cross_file_clones_omitted=clones_omitted,
+    )
 
 
 def analyzer_config(repo_path: Path, paths: list[str]) -> dict | None:
@@ -133,6 +141,10 @@ def render_live(scores: LiveScores, fmt: str) -> None:
             f"{change.head:.2f} ({change.head - change.base:+.2f}; structure deduction "
             f"{change.structure_delta:+.2f})"
         )
+    if scores.cross_file_clones_omitted:
+        console.print(
+            "[dim]Cross-file clones outside the evaluated paths are not counted.[/dim]"
+        )
     if not scores.indexed:
         console.print(
             "[dim]No index history: history, coverage and test pairing are left out "
@@ -148,6 +160,7 @@ def live_payload(scores: LiveScores) -> dict[str, Any]:
     return {
         "basis": "live",
         "history_source": "index" if scores.indexed else "none",
+        "cross_file_clones": "passed_paths_only" if scores.cross_file_clones_omitted else "full",
         "against": scores.against,
         "files": [
             {**row.as_dict(), "head_history": _history(scores.head, row.path)}

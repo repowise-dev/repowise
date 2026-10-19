@@ -311,6 +311,8 @@ class FileEvaluator:
         biomarker_results = detect_all(ctx, disabled=disabled)
         if ctx.blame_index is None:
             biomarker_results.extend(self._replayed(ctx, disabled))
+        if not any(b.biomarker_type == "dry_violation" for b in biomarker_results):
+            biomarker_results.extend(self._replayed_dry(ctx, disabled))
         biomarker_results = remap_severities(
             biomarker_results, self.run.file_severity_overrides(file_path)
         )
@@ -333,6 +335,25 @@ class FileEvaluator:
             if replayed.biomarker_type == "function_hotspot" and not refresh_replayed(
                 replayed, ctx.all_functions
             ):
+                continue
+            out.append(replayed)
+        return out
+
+    def _replayed_dry(self, ctx: FileContext, disabled: list[str]) -> list[BiomarkerResult]:
+        """Stored dry_violation findings replayed when a clone partner was not scored."""
+        if "dry_violation" in disabled:
+            return []
+        out = []
+        for stored in self.analyzer.stored_dry_findings.get(ctx.file_path, ()):
+            replayed = as_biomarker_result(stored)
+            if replayed.biomarker_type != "dry_violation":
+                continue
+            partner = replayed.details.get("worst_clone_partner")
+            if partner and partner in self.analyzer._abs_paths:
+                continue
+            raw = self.analyzer.read_source(ctx.file_path)
+            line_count = len(raw.splitlines()) if raw else 0
+            if replayed.line_start and replayed.line_end and replayed.line_end > line_count:
                 continue
             out.append(replayed)
         return out

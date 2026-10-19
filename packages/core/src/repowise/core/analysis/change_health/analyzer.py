@@ -180,6 +180,7 @@ def _index_kwargs(index: IndexInputs) -> dict[str, Any]:
         "coverage_map": index.coverage,
         "tested_files": index.tested_files,
         "stored_blame_findings": index.blame_findings,
+        "stored_dry_findings": index.dry_findings,
     }
 
 

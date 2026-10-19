@@ -542,6 +542,7 @@ class HealthAnalyzer:
         repo_root: Any | None = None,
         source_reader: SourceReader | None = None,
         stored_blame_findings: dict[str, list[Any]] | None = None,
+        stored_dry_findings: dict[str, list[Any]] | None = None,
         file_dependents: dict[str, int] | None = None,
         tested_files: set[str] | frozenset[str] | None = None,
     ) -> None:
@@ -591,6 +592,9 @@ class HealthAnalyzer:
         # without a blame index (a re-score from stored git metadata) so the
         # pass does not delete what it cannot recompute.
         self.stored_blame_findings = stored_blame_findings or {}
+        # Stored ``dry_violation`` findings by path, replayed when a clone partner
+        # was not passed to the pass so cross-file clones are not lost.
+        self.stored_dry_findings = stored_dry_findings or {}
         # Dependents counts to gate centrality on instead of this graph's. A
         # revision comparison passes the other side's, so a file crossing a
         # centrality gate inside a partial graph is not read as a code change.

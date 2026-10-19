@@ -27,6 +27,7 @@ class IndexInputs:
     tested_files: frozenset[str] = frozenset()
     blame_findings: dict[str, list[Any]] = field(default_factory=dict)
     dependents: dict[str, int] | None = None
+    dry_findings: dict[str, list[Any]] = field(default_factory=dict)
 
     @property
     def has_history(self) -> bool:
@@ -50,6 +51,7 @@ async def load_index_inputs(session: AsyncSession, repository_id: str) -> IndexI
         tested_files=frozenset(tested.scalars().all()),
         blame_findings=await _blame_findings(session, repository_id),
         dependents=await index_dependents(session, repository_id),
+        dry_findings=await _dry_findings(session, repository_id),
     )
 
 
@@ -59,6 +61,20 @@ async def _blame_findings(session: AsyncSession, repository_id: str) -> dict[str
         select(HealthFinding).where(
             HealthFinding.repository_id == repository_id,
             HealthFinding.biomarker_type.in_(BLAME_MARKERS),
+        )
+    )
+    out: dict[str, list[Any]] = {}
+    for finding in rows.scalars():
+        out.setdefault(finding.file_path, []).append(finding)
+    return out
+
+
+async def _dry_findings(session: AsyncSession, repository_id: str) -> dict[str, list[Any]]:
+    """Stored dry_violation findings by path, replayed when clone partners are not passed."""
+    rows = await session.execute(
+        select(HealthFinding).where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.biomarker_type == "dry_violation",
         )
     )
     out: dict[str, list[Any]] = {}
