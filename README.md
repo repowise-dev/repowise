@@ -327,7 +327,7 @@ repowise impacted-tests main..HEAD   # only the tests this diff exercises
 repowise health                      # untested hotspots, graph-aware
 ```
 
-<sub>Checked against a real <code>coverage run --contexts=test</code> on this repository:
+<sub>Checked against real per-test coverage on this repository:
 <strong>95.7% precision</strong> on what reaches a file and <strong>97.5% on the run
 list</strong>. Every row is stamped <code>basis: "measured"</code> or
 <code>"inferred"</code>, measured wins where both can answer, and an empty answer means

@@ -305,17 +305,26 @@ def _ownership(
     owned = sum(owners.values())
     main: list[str] = []
     held = 0
-    for person, count in sorted(owners.items(), key=lambda kv: (-kv[1], kv[0])):
+    ranked = sorted(owners.items(), key=lambda kv: (-kv[1], kv[0]))
+    for person, count in ranked:
         if held * 2 > owned:
             break
         main.append(person)
         held += count
+    # Keep the deterministic main set for activity checks. A tie split by the
+    # majority cutoff carries no ownership signal in the diff, however.
+    margin = (
+        [person for person, count in ranked if count == owners[main[-1]]]
+        if main and len(main) < len(ranked) and ranked[len(main)][1] == owners[main[-1]]
+        else []
+    )
     recent_authors = {resolve(c["author_name"], c["author_email"]) for c in commits}
     return {
         "owned_files": owned,
         "owner_count": len(owners),
         # Without a key there is nothing safe to compare, so no set is kept.
         "main_owners": sorted(_keyed(key, k) for k in main) if key else None,
+        "margin_tied_owners": sorted(_keyed(key, k) for k in margin) if key else None,
         "active_main_owners": sum(1 for k in main if k in recent_authors),
         "recent_commits": len({c["sha"] for c in commits}),
         "recent_capped": capped,

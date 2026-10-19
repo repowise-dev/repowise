@@ -158,7 +158,7 @@ class ContextCoverageReport:
     """Per-test records parsed from one context-carrying report.
 
     ``has_contexts`` is the loud-degradation signal: a report run *without*
-    contexts (a plain lcov, or ``coverage run`` with no ``--contexts``)
+    contexts (a plain lcov, or a ``.coverage`` without contexts)
     parses to ``records=[]`` and ``has_contexts=False`` so callers can say
     "aggregate only, per-test features unavailable" instead of silently
     emitting nothing.

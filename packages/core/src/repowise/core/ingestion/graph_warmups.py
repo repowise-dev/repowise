@@ -417,9 +417,32 @@ def _warmup_swift(ctx: ResolverContext) -> None:
 
 
 def _warmup_dotnet(ctx: ResolverContext) -> None:
+    """Build the .NET project index, then mark every C# file of a project that
+    ships a package as published, for the per-symbol public API flag
+    (``analysis.public_api``).
+
+    The package comes from the same reader dead code uses, so the two cannot
+    disagree about what ships. A file belongs to its innermost project: a
+    sample or test project nested in a library's folder ships nothing. With no
+    readable project file nothing is stamped.
+    """
+    from ..analysis.published_packages import BuildFacts, dotnet_published, package_of
     from .resolvers.dotnet import get_or_build_index
 
-    get_or_build_index(ctx)
+    index = get_or_build_index(ctx)
+    graph = getattr(ctx, "graph", None)
+    if index is None or graph is None:
+        return
+    roots = dotnet_published(BuildFacts(repo_root=index.repo_path, dotnet_index=index))
+    if not any(roots.values()):
+        return
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for path, pf in parsed.items():
+        if pf.file_info.language != "csharp":
+            continue
+        node = graph.nodes.get(path)
+        if node is not None and package_of(path, roots):
+            node["package_export"] = True
 
 
 def _warmup_rust(ctx: ResolverContext) -> None:
