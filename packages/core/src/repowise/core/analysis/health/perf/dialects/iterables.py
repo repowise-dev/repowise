@@ -265,26 +265,39 @@ class IterableSources(BasePerfDialect):
         level = [expr] if expr is not None else []
         seen: set[bytes | None] = set()
         tables: set[str] = set()
-        found = False
         for _ in range(_TABLE_HOPS):
-            values: list[Node] = []
-            stack = list(level)
-            while stack:
-                node = stack.pop()
-                if self._is_read(node, probe):
-                    named = self.read_tables(node, self._query_parts(node, loop)[0])
-                    if not named:
-                        return ()
-                    tables.update(named)
-                    found = True
-                elif node.type in self.name_kinds:
-                    if node.text not in seen:
-                        seen.add(node.text)
-                        values.extend(filter(None, [self.reaching_value(loop, node.text or b"")]))
-                elif node.type not in _BLOCKS:
-                    stack.extend(node.named_children)
-            level = values
-        return tuple(sorted(tables)) if found else None
+            found = self._read_level(level, loop, probe, seen, tables)
+            if found is None:
+                return ()
+            level = found
+        return tuple(sorted(tables)) or None
+
+    def _read_level(
+        self,
+        level: list[Node],
+        loop: Node,
+        probe: SinkProbe,
+        seen: set[bytes | None],
+        tables: set[str],
+    ) -> list[Node] | None:
+        """Add the tables of the reads under *level* to *tables*, and return the
+        values of the names it reads first; ``None`` when a read names no table."""
+        values: list[Node] = []
+        stack = list(level)
+        while stack:
+            node = stack.pop()
+            if self._is_read(node, probe):
+                named = self.read_tables(node, self._query_parts(node, loop)[0])
+                if not named:
+                    return None
+                tables.update(named)
+            elif node.type in self.name_kinds:
+                if node.text not in seen:
+                    seen.add(node.text)
+                    values.extend(filter(None, [self.reaching_value(loop, node.text or b"")]))
+            elif node.type not in _BLOCKS:
+                stack.extend(node.named_children)
+        return values
 
     def _is_read(self, node: Node, probe: SinkProbe) -> bool:
         is_call = node.type in self.read_call_kinds or self.call_parts(node) is not None

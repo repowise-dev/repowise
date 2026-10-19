@@ -359,24 +359,26 @@ def _record_column(stmt: Node, rc: _RawClass) -> None:
     mapped_column(...)`` or a bare ``name: Mapped[str]`` into *rc*."""
     attr = ident(stmt.child_by_field_name("left"))
     right = stmt.child_by_field_name("right")
-    if attr is None:
-        return
     if attr == "__tablename__":
         rc.table = _string_content(right) or rc.table
+    elif attr is None:
         return
-    if right is None:
+    elif right is None:
         if _mapped_info(stmt.child_by_field_name("type"))[0]:
             rc.columns.add(attr)
-        return
-    if right.type != "call" or _callee_last_segment(right) not in _COLUMN_CALLS:
-        return
-    positional, _ = _call_args(right)
-    rc.columns.add((_string_content(positional[0]) if positional else None) or attr)
-    for node in walk(right):
-        if node.type == "call" and _callee_last_segment(node) == "ForeignKey":
-            target = _foreign_target(node)
-            if target:
-                rc.foreign_tables.add(target)
+    elif right.type == "call" and _callee_last_segment(right) in _COLUMN_CALLS:
+        positional, _ = _call_args(right)
+        rc.columns.add((_string_content(positional[0]) if positional else None) or attr)
+        rc.foreign_tables.update(_foreign_targets(right))
+
+
+def _foreign_targets(column: Node) -> set[str]:
+    return {
+        target
+        for node in walk(column)
+        if node.type == "call" and _callee_last_segment(node) == "ForeignKey"
+        if (target := _foreign_target(node))
+    }
 
 
 # -- per-file scan + cross-file merge ---------------------------------------------
@@ -549,6 +551,18 @@ def build_model_index(parsed_files: Iterable[Any], read_source: SourceReader) ->
     )
 
 
+def _inherited(
+    name: str, own: dict[str, set[str]], bases: dict[str, set[str]], seen: set[str]
+) -> set[str]:
+    """What *name* and the bases it reaches declare in *own*; cycle-safe."""
+    seen.add(name)
+    found = set(own.get(name, ()))
+    for base in bases.get(name, ()):
+        if base not in seen:
+            found |= _inherited(base, own, bases, seen)
+    return found
+
+
 def _schema_maps(schema: dict[str, list[_RawClass]]) -> dict[str, Any]:
     """The column, table-name and foreign-key maps of :class:`ModelIndex`. Two
     classes of one name pool what they declare, and a class takes what the
@@ -556,21 +570,13 @@ def _schema_maps(schema: dict[str, list[_RawClass]]) -> dict[str, Any]:
     table read as larger, never smaller."""
     bases = {n: {b for rc in rcs for b in rc.bases if b != n} for n, rcs in schema.items()}
 
-    def inherited(name: str, own: dict[str, set[str]], seen: set[str]) -> set[str]:
-        seen.add(name)
-        found = set(own.get(name, ()))
-        for base in bases.get(name, ()):
-            if base not in seen:
-                found |= inherited(base, own, seen)
-        return found
-
     columns = {n: {c for rc in rcs for c in rc.columns} for n, rcs in schema.items()}
     foreign = {n: {t for rc in rcs for t in rc.foreign_tables} for n, rcs in schema.items()}
     tables = {n: next((rc.table for rc in rcs if rc.table), None) for n, rcs in schema.items()}
     return {
-        "columns": {n: frozenset(inherited(n, columns, set())) for n in schema},
+        "columns": {n: frozenset(_inherited(n, columns, bases, set())) for n in schema},
         "table_names": {n: t for n, t in tables.items() if t},
-        "foreign_tables": {n: frozenset(inherited(n, foreign, set())) for n in schema},
+        "foreign_tables": {n: frozenset(_inherited(n, foreign, bases, set())) for n in schema},
     }
 
 
